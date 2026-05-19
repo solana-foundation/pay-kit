@@ -2,6 +2,7 @@
 
 mod charge;
 pub mod session;
+pub mod subscription;
 
 pub use charge::ChargeRequest;
 pub use session::{
@@ -9,6 +10,10 @@ pub use session::{
     MeteringUsage, OpenPayload, SessionAction, SessionMode, SessionPullVoucherStrategy,
     SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
     DEFAULT_SESSION_EXPIRES_AT,
+};
+pub use subscription::{
+    ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
+    SubscriptionRequest,
 };
 
 /// Convert a human-readable amount to base units.

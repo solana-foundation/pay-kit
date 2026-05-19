@@ -80,5 +80,12 @@ export type {
 } from './SessionFetch.js';
 export { createSessionUsageMeter, SessionUsageMeter } from './SessionUsageMeter.js';
 export type { SessionUsagePrice, SessionUsagePricer, SessionUsagePricingContext } from './SessionUsageMeter.js';
+export { buildSubscriptionActivationTransaction, subscription } from './Subscription.js';
+export {
+    assertPeriodHoursInRange,
+    deriveSubscriptionAuthorityPda,
+    deriveSubscriptionPda,
+    mapSubscriptionPeriodToHours,
+} from '../shared/subscription.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from 'solana-mpp-sdk/client'
 export { Mppx } from 'mppx/client';

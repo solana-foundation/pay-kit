@@ -5,6 +5,15 @@ export const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 export const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 export const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
+/** Canonical subscriptions program ID. */
+export const SUBSCRIPTIONS_PROGRAM = 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44';
+
+/** subscriptions program instruction discriminators (single byte). */
+export const SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR = 0;
+export const SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR = 10;
+export const SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR = 11;
+export const SUBSCRIPTIONS_CANCEL_DISCRIMINATOR = 12;
+
 // The canonical mainnet slug is `mainnet`. The legacy `mainnet-beta`
 // spelling is kept as an aliased key so direct bracket access from
 // consumer code (e.g. USDC['mainnet-beta']) keeps working through the
