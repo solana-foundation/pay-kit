@@ -44,6 +44,7 @@ final class ChargeServer
         string $authorizationHeader,
         PaymentVerifier $verifier,
         ?DateTimeImmutable $now = null,
+        ?ChargeRequest $expectedRequest = null,
     ): VerificationResult {
         try {
             $credential = Credential::fromAuthorizationHeader($authorizationHeader);
@@ -63,9 +64,13 @@ final class ChargeServer
         }
 
         try {
-            ChargeRequest::fromArray($challenge->decodeRequest());
+            $request = ChargeRequest::fromArray($challenge->decodeRequest());
         } catch (InvalidArgumentException $error) {
             return VerificationResult::failure($error->getMessage());
+        }
+
+        if ($expectedRequest !== null && $request->toArray() !== $expectedRequest->toArray()) {
+            return VerificationResult::failure('charge request mismatch');
         }
 
         return $verifier->verify($credential, $challenge);

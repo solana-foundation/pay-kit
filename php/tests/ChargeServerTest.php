@@ -81,6 +81,46 @@ final class ChargeServerTest extends TestCase
         self::assertSame('challenge expired', $result->reason);
     }
 
+    public function testRejectsCrossRouteChargeRequestReplay(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $cheapRequest = new ChargeRequest(amount: '500', currency: 'USDC', externalId: 'cheap');
+        $expensiveRequest = new ChargeRequest(amount: '1000', currency: 'USDC', externalId: 'expensive');
+        $challenge = $server->createChallenge($cheapRequest);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+            expectedRequest: $expensiveRequest,
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('charge request mismatch', $result->reason);
+    }
+
+    public function testAcceptsMatchingExpectedChargeRequest(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = new ChargeRequest(amount: '1000', currency: 'USDC', externalId: 'order-001');
+        $challenge = $server->createChallenge($request);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::success(reference: 'tx-signature', externalId: 'order-001');
+                }
+            },
+            expectedRequest: $request,
+        );
+
+        self::assertTrue($result->ok);
+        self::assertSame('tx-signature', $result->reference);
+    }
+
     private function unusedVerifier(): PaymentVerifier
     {
         return new class implements PaymentVerifier {
