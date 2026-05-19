@@ -5,6 +5,7 @@ export type InteropEnvironment = {
   network: string;
   mint: string;
   amount: string;
+  price: string;
   resourcePath: string;
   replaySource?: {
     amount: string;
@@ -45,6 +46,7 @@ export function readInteropEnvironment(): InteropEnvironment {
     network: process.env.MPP_INTEROP_NETWORK ?? interopScenario.network,
     mint: process.env.MPP_INTEROP_MINT ?? interopScenario.asset,
     amount: process.env.MPP_INTEROP_AMOUNT ?? interopScenario.amount,
+    price: process.env.MPP_INTEROP_PRICE ?? interopScenario.price,
     resourcePath:
       process.env.MPP_INTEROP_RESOURCE_PATH ?? interopScenario.resourcePath,
     replaySource:

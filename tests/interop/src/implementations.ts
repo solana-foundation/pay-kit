@@ -74,4 +74,11 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust", "MPP_INTEROP_SERVERS", true),
   },
+  {
+    id: "lua",
+    label: "Lua HTTP server",
+    role: "server",
+    command: ["pnpm", "exec", "node", "--import", "tsx", "src/fixtures/lua/server.ts"],
+    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
+  },
 ];
