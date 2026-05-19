@@ -1,0 +1,80 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SolanaMpp\Core;
+
+use DateTimeImmutable;
+use InvalidArgumentException;
+
+final class Receipt
+{
+    public function __construct(
+        public readonly string $status,
+        public readonly string $method,
+        public readonly string $timestamp,
+        public readonly string $reference,
+        public readonly string $challengeId = '',
+        public readonly string $externalId = '',
+    ) {
+        if ($this->status === '' || $this->method === '' || $this->timestamp === '' || $this->reference === '') {
+            throw new InvalidArgumentException('Receipt is missing required fields');
+        }
+    }
+
+    public static function success(
+        string $method,
+        string $reference,
+        string $challengeId = '',
+        string $externalId = '',
+        ?DateTimeImmutable $now = null,
+    ): self {
+        return new self(
+            status: 'success',
+            method: $method,
+            timestamp: ($now ?? new DateTimeImmutable())->format('Y-m-d\TH:i:s.v\Z'),
+            reference: $reference,
+            challengeId: $challengeId,
+            externalId: $externalId,
+        );
+    }
+
+    public function isSuccess(): bool
+    {
+        return $this->status === 'success';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        $value = [
+            'status' => $this->status,
+            'method' => $this->method,
+            'timestamp' => $this->timestamp,
+            'reference' => $this->reference,
+            'challengeId' => $this->challengeId,
+        ];
+        if ($this->externalId !== '') {
+            $value['externalId'] = $this->externalId;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    public static function fromArray(array $value): self
+    {
+        return new self(
+            status: (string)($value['status'] ?? ''),
+            method: (string)($value['method'] ?? ''),
+            timestamp: (string)($value['timestamp'] ?? ''),
+            reference: (string)($value['reference'] ?? ''),
+            challengeId: (string)($value['challengeId'] ?? ''),
+            externalId: (string)($value['externalId'] ?? ''),
+        );
+    }
+}
