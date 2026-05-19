@@ -34,6 +34,28 @@ function M.service_worker_js()
   return assets.service_worker_js
 end
 
+local function replace_once(input, token, value)
+  local output = input:gsub(token, function()
+    return value
+  end, 1)
+  return output
+end
+
+local function amount_display(request)
+  local amount = tonumber(request.amount or '')
+  if amount == nil then
+    return tostring(request.amount or '')
+  end
+  local method_details = request.methodDetails or {}
+  local decimals = tonumber(method_details.decimals or 6) or 6
+  local divisor = 10 ^ decimals
+  local value = amount / divisor
+  if value % 1 == 0 then
+    return '$' .. tostring(value)
+  end
+  return '$' .. string.format('%.2f', value)
+end
+
 function M.challenge_to_html(challenge, rpc_url)
   local plain = {
     id = challenge.id,
@@ -49,13 +71,15 @@ function M.challenge_to_html(challenge, rpc_url)
 
   local challenge_json = json.encode(plain)
 
-  -- Decode the base64url request field to extract network from methodDetails.
+  -- Decode the base64url request field to extract display data and network.
   local network = 'mainnet-beta'
+  local request_data = {}
   local decoded_payload, decode_err = base64url.decode(plain.request)
   if decoded_payload then
-    local ok, request_data = pcall(json.decode, decoded_payload)
-    if ok and type(request_data) == 'table' then
-      local method_details = request_data.methodDetails
+    local ok, decoded_request = pcall(json.decode, decoded_payload)
+    if ok and type(decoded_request) == 'table' then
+      request_data = decoded_request
+      local method_details = decoded_request.methodDetails
       if type(method_details) == 'table' and type(method_details.network) == 'string' then
         network = method_details.network
       end
@@ -70,35 +94,30 @@ function M.challenge_to_html(challenge, rpc_url)
     rpcUrl = rpc_url,
     testMode = test_mode,
   }
-  local embedded_json = json.encode(embedded_data)
+  local embedded_json = json.encode(embedded_data):gsub('<', '\\u003c')
 
-  local parts = {
-    '<!DOCTYPE html>',
-    '<html lang="en">',
-    '<head>',
-    '<meta charset="utf-8">',
-    '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<title>Payment Required</title>',
-    '<style>',
-    'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f7fafc; color: #1a202c; }',
-    'pre { background: #edf2f7; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; max-width: 600px; margin: 20px auto; }',
-    '</style>',
-    '</head>',
-    '<body>',
-    '<details style="max-width:600px;margin:0 auto 20px">',
-    '<summary style="cursor:pointer;color:#718096;font-size:14px">Challenge details</summary>',
-    '<pre>' .. html_escape(challenge_json) .. '</pre>',
-    '</details>',
-    '<div id="root"></div>',
-    -- JSON inside <script type="application/json"> is not parsed as HTML.
-    -- json.encode already escapes special chars in string values.
-    '<script type="application/json" id="__MPP_DATA__">' .. embedded_json .. '</script>',
-    '<script>' .. assets.payment_ui_js .. '</script>',
-    '</body>',
-    '</html>',
-  }
+  local description = challenge.description or request_data.description
+  local description_html = ''
+  if type(description) == 'string' and description ~= '' then
+    description_html = '<p class="mppx-summary-description">' .. html_escape(description) .. '</p>'
+  end
 
-  return table.concat(parts, '\n')
+  local expires_html = ''
+  if type(challenge.expires) == 'string' and challenge.expires ~= '' then
+    local escaped_expires = html_escape(challenge.expires)
+    expires_html = '<p class="mppx-summary-expires">Expires at <time datetime="' .. escaped_expires .. '">' .. escaped_expires .. '</time></p>'
+  end
+
+  local output = assets.html_template
+  output = replace_once(output, '{{AMOUNT}}', html_escape(amount_display(request_data)))
+  output = replace_once(output, '{{DESCRIPTION}}', description_html)
+  output = replace_once(output, '{{EXPIRES}}', expires_html)
+  output = replace_once(output, '{{DATA_JSON}}', embedded_json)
+  output = output:gsub('^<!doctype html>', '<!DOCTYPE html>', 1)
+
+  -- Keep the old debug block so local tests and developers can inspect the
+  -- challenge without executing the generated browser bundle.
+  return output .. '\n<details hidden><pre>' .. html_escape(challenge_json) .. '</pre></details>'
 end
 
 return M
