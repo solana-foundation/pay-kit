@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 from solana_mpp._base64url import encode_json
 from solana_mpp._types import PaymentChallenge
 from solana_mpp.server.payment_page import (
@@ -11,6 +14,16 @@ from solana_mpp.server.payment_page import (
     is_service_worker_request,
     service_worker_js,
 )
+
+
+def embedded_payment_data(html: str) -> dict:
+    match = re.search(
+        r'<script id="__MPP_DATA__" type="application/json">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert match is not None
+    return json.loads(match.group(1))
 
 
 class TestChallengeToHtml:
@@ -24,13 +37,15 @@ class TestChallengeToHtml:
             request=request,
         )
         html = challenge_to_html(challenge, "https://api.devnet.solana.com", "devnet")
-        assert "<!DOCTYPE html>" in html
-        assert "test-id" in html
+        assert "<!doctype html>" in html
         assert "__MPP_DATA__" in html
-        assert "devnet" in html
+        data = embedded_payment_data(html)
+        assert data["challenge"]["id"] == "test-id"
+        assert data["network"] == "devnet"
+        assert data["rpcUrl"] == "https://api.devnet.solana.com"
 
     def test_escapes_xss(self):
-        """Challenge data should be HTML-escaped."""
+        """Embedded challenge data should not inject raw HTML."""
         request = encode_json({"amount": "1000", "description": '<script>alert("xss")</script>'})
         challenge = PaymentChallenge(
             id='<img onerror="alert(1)">',
@@ -42,25 +57,34 @@ class TestChallengeToHtml:
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
         # Raw XSS should not appear unescaped
         assert '<img onerror="alert(1)">' not in html
-        assert "&lt;img" in html
+        assert "\\u003cimg" in html
+        assert embedded_payment_data(html)["challenge"]["id"] == '<img onerror="alert(1)">'
 
     def test_includes_description(self):
-        request = encode_json({"amount": "1000", "description": "Test payment"})
-        challenge = PaymentChallenge(id="test", realm="api", method="solana", intent="charge", request=request)
+        request = encode_json({"amount": "1000"})
+        challenge = PaymentChallenge(
+            id="test",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=request,
+            description="Test payment",
+        )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
         assert "Test payment" in html
+        assert embedded_payment_data(html)["challenge"]["description"] == "Test payment"
 
-    def test_test_mode_devnet(self):
+    def test_embeds_devnet_network(self):
         request = encode_json({"amount": "1000"})
         challenge = PaymentChallenge(id="test", realm="api", method="solana", intent="charge", request=request)
         html = challenge_to_html(challenge, "https://api.devnet.solana.com", "devnet")
-        assert '"testMode":true' in html
+        assert embedded_payment_data(html)["network"] == "devnet"
 
-    def test_test_mode_mainnet(self):
+    def test_embeds_mainnet_network(self):
         request = encode_json({"amount": "1000"})
         challenge = PaymentChallenge(id="test", realm="api", method="solana", intent="charge", request=request)
         html = challenge_to_html(challenge, "https://api.mainnet-beta.solana.com", "mainnet-beta")
-        assert '"testMode":false' in html
+        assert embedded_payment_data(html)["network"] == "mainnet-beta"
 
 
 class TestAcceptsHtml:
