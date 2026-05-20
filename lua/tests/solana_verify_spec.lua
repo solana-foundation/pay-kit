@@ -668,6 +668,41 @@ t.test('signature verifier rejects unmatched token owner', function()
   end, 'no matching token transfer')
 end)
 
+t.test('signature verifier rejects unsupported token program', function()
+  t.assert_error(function()
+    verify.verify_signature(signature_context({
+      request = {
+        amount = '2500',
+        currency = 'mint-1',
+        recipient = 'recipient-1',
+        methodDetails = {
+          tokenProgram = 'UnsupportedToken11111111111111111111111111111',
+        },
+      },
+      method_details = {
+        tokenProgram = 'UnsupportedToken11111111111111111111111111111',
+      },
+    }), {
+      fetch_transaction = function()
+        return {
+          meta = { err = nil },
+          transaction = {
+            message = {
+              instructions = {},
+            },
+          },
+        }
+      end,
+      fetch_token_account = function()
+        return {
+          owner = 'recipient-1',
+          mint = 'mint-1',
+        }
+      end,
+    })
+  end, 'unsupported token program')
+end)
+
 t.test('signature verifier handles transaction payload mode through pull verification', function()
   local verifier = verify.new_signature_verifier({
     send_transaction = function(transaction)

@@ -126,6 +126,27 @@ t.test('verify credential requires verification callback', function()
   end, 'verify_payment callback is required')
 end)
 
+t.test('verify credential rejects missing settlement reference', function()
+  local server = mpp.server.new({
+    recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = 'test-secret',
+    store = mpp.store.memory(),
+    verify_payment = function()
+      return {}
+    end,
+  })
+  local challenge = server:charge('0.001')
+  local credential = mpp.NewPaymentCredential(challenge:to_echo(), {
+    type = 'signature',
+  })
+  t.assert_error(function()
+    server:verify_credential(credential, 1770000000)
+  end, 'reference')
+end)
+
 t.test('verify credential accepts transaction payload when lua verifier hooks are used', function()
   local server = mpp.server.new({
     recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',

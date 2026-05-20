@@ -115,6 +115,54 @@ t.test('with_expected rejects amount mismatch', function()
   end, 'amount')
 end)
 
+t.test('with_expected rejects currency mismatch', function()
+  local server = new_server()
+  local challenge = server:charge('0.10')
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local expected = challenge.request:decode()
+  expected.currency = 'SOL'
+
+  t.assert_error(function()
+    server:verify_credential_with_expected(credential, expected, 1770000000)
+  end, 'currency')
+end)
+
+t.test('with_expected rejects recipient mismatch', function()
+  local server = new_server()
+  local challenge = server:charge('0.10')
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local expected = challenge.request:decode()
+  expected.recipient = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ'
+
+  t.assert_error(function()
+    server:verify_credential_with_expected(credential, expected, 1770000000)
+  end, 'recipient')
+end)
+
+t.test('with_expected routes expected request into settlement', function()
+  local seen_network = nil
+  local server = mpp.server.new({
+    recipient = TEST_RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = TEST_SECRET,
+    store = mpp.store.memory(),
+    verify_payment = function(context)
+      seen_network = context.request.methodDetails.network
+      return { reference = context.payload.signature }
+    end,
+  })
+  local challenge = server:charge('0.10')
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local expected = challenge.request:decode()
+  expected.methodDetails.network = 'devnet'
+
+  server:verify_credential_with_expected(credential, expected, 1770000000)
+
+  t.assert_equal(seen_network, 'devnet')
+end)
+
 t.test('with_expected accepts matching route', function()
   -- When credential matches route, the binding/Tier-2 layer must not reject.
   -- Settlement runs (the user's verify_payment callback succeeds with our
