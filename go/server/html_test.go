@@ -184,7 +184,7 @@ func TestFormatAmountDisplay(t *testing.T) {
 	}{
 		{"usdc whole", "1000000", "USDC", 6, "$1"},
 		{"usdc fractional", "1230000", "USDC", 6, "$1.23"},
-		{"sol", "500000000", "sol", 6, "0.50 SOL"},
+		{"sol uses lamports", "500000000", "sol", 6, "0.50 SOL"},
 		{"invalid amount", "not-a-number", "USDC", 6, "$0"},
 		{"custom currency truncated", "123456", "LONGTOKENMINT", 6, "0.12 LONGTO"},
 	}

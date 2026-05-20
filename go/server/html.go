@@ -99,6 +99,7 @@ func (m *Mpp) ChallengeToHTML(challenge mpp.PaymentChallenge) (string, error) {
 func formatAmountDisplay(amountRaw, currency string, decimals uint8) string {
 	d := int(decimals)
 	if strings.EqualFold(currency, "sol") {
+		// Native SOL amounts are always lamports, regardless of the server default.
 		d = 9
 	}
 
