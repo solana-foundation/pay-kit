@@ -145,19 +145,21 @@ function writePaymentRequired(
   challenge: PhpChallenge,
   detail: string,
 ): void {
+  const body = JSON.stringify({
+    detail,
+    status: 402,
+    title: "Payment Required",
+    type: "https://paymentauth.org/problems/payment-required",
+  });
+
   response.writeHead(402, {
     "cache-control": "no-store",
+    "connection": "close",
+    "content-length": Buffer.byteLength(body),
     "content-type": "application/problem+json",
     "www-authenticate": challenge.wwwAuthenticate,
   });
-  response.end(
-    JSON.stringify({
-      detail,
-      status: 402,
-      title: "Payment Required",
-      type: "https://paymentauth.org/problems/payment-required",
-    }),
-  );
+  response.end(body);
 }
 
 function isProtectedPath(
@@ -333,6 +335,7 @@ function isPaymentRejected(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("charge request mismatch") ||
+    message.includes("challenge realm mismatch") ||
     message.includes("challenge verification failed") ||
     message.includes("challenge expired") ||
     message.includes("challenge method or intent mismatch")
