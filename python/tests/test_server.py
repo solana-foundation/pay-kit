@@ -6,8 +6,9 @@ import pytest
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
-from solders.message import Message
+from solders.message import Message, MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
@@ -19,6 +20,7 @@ from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
     Mpp,
+    _verify_local_transaction_intent,
     _verify_parsed_memo_instructions,
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
@@ -60,6 +62,33 @@ def _build_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str
     message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
     transaction = Transaction.new_unsigned(message)
     transaction.sign([signer], blockhash)
+
+    import base64
+
+    return base64.b64encode(bytes(transaction)).decode("ascii")
+
+
+def _build_versioned_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str:
+    signer = Keypair()
+    instructions = [
+        transfer(
+            TransferParams(
+                from_pubkey=signer.pubkey(),
+                to_pubkey=Pubkey.from_string(recipient),
+                lamports=lamports,
+            )
+        )
+    ]
+    if memo:
+        instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
+
+    blockhash = Hash.from_string(TEST_BLOCKHASH)
+    message = MessageV0.try_compile(signer.pubkey(), instructions, [], blockhash)
+    signature = signer.sign_message(to_bytes_versioned(message))
+
+    from solders.transaction import VersionedTransaction
+
+    transaction = VersionedTransaction.populate(message, [Signature.from_bytes(bytes(signature))])
 
     import base64
 
@@ -257,6 +286,15 @@ class TestCharge:
         challenge = handler.charge("1.00")
         request = challenge.decode_request()
         assert request["methodDetails"]["tokenProgram"] == expected_program
+
+
+class TestLocalTransactionIntent:
+    def test_accepts_versioned_sol_transfer(self):
+        request = ChargeRequest(amount="1000", currency="SOL", recipient=TEST_RECIPIENT)
+        details = MethodDetails(network="mainnet-beta")
+        transaction = _build_versioned_sol_transaction(TEST_RECIPIENT, 1000)
+
+        _verify_local_transaction_intent(transaction, request, details)
 
 
 class TestVerifyCredential:

@@ -261,29 +261,34 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
 
     raw = base64.b64decode(transaction_b64)
     try:
-        tx = Transaction.from_bytes(raw)
+        tx = VersionedTransaction.from_bytes(raw)
         return str(tx.message.recent_blockhash)
     except Exception:
-        vtx = VersionedTransaction.from_bytes(raw)
-        return str(vtx.message.recent_blockhash)
+        tx = Transaction.from_bytes(raw)
+        return str(tx.message.recent_blockhash)
 
 
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
     """Decode local transfer and memo instructions from a legacy transaction."""
-    from solders.transaction import Transaction
+    from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
     try:
-        tx = Transaction.from_bytes(raw)
+        tx = VersionedTransaction.from_bytes(raw)
+        message = tx.message
     except Exception as exc:
-        raise PaymentError(
-            "unsupported transaction shape for pre-broadcast verification",
-            code="invalid-payload-type",
-        ) from exc
+        try:
+            tx = Transaction.from_bytes(raw)
+            message = tx.message
+        except Exception:
+            raise PaymentError(
+                "unsupported transaction shape for pre-broadcast verification",
+                code="invalid-payload-type",
+            ) from exc
 
-    account_keys = [str(key) for key in tx.message.account_keys]
+    account_keys = [str(key) for key in message.account_keys]
     instructions: list[dict[str, Any]] = []
-    for instruction in tx.message.instructions:
+    for instruction in message.instructions:
         try:
             program_id = account_keys[int(instruction.program_id_index)]
         except IndexError as exc:
@@ -656,11 +661,6 @@ class Mpp:
             ) from exc
         check_network_blockhash(self._network, blockhash_b58)
         _verify_local_transaction_intent(payload.transaction, request, details)
-
-        # Decode and process the transaction
-        # In a real implementation, this would use solders to deserialize,
-        # optionally co-sign, simulate, send, confirm, and verify on-chain.
-        # For now we provide the verification skeleton.
 
         # Replay protection
         consumed_key = _CONSUMED_PREFIX + payload.transaction[:64]
