@@ -25,6 +25,10 @@ type LuaVerified = {
 };
 
 const luaBin = resolveLuaBinary();
+const LUA_BRIDGE_TIMEOUT_MS = Number.parseInt(
+  process.env.MPP_INTEROP_LUA_BRIDGE_TIMEOUT_MS ?? "10000",
+  10,
+);
 
 async function main() {
   if (!luaBin) {
@@ -57,15 +61,24 @@ async function main() {
         return;
       }
 
-      const challenge = await buildChallenge(
-        environment,
-        feePayerSigner.address,
-        priceForPath(url.pathname, environment),
-      );
+      const price = priceForPath(url.pathname, environment);
       const authorization = headerValue(request.headers.authorization);
+      let challenge: LuaChallenge | undefined;
+      const getChallenge = async () => {
+        challenge ??= await buildChallenge(
+          environment,
+          feePayerSigner.address,
+          price,
+        );
+        return challenge;
+      };
 
       if (!authorization) {
-        writePaymentRequired(response, challenge, "Payment is required (Lua interop server).");
+        writePaymentRequired(
+          response,
+          await getChallenge(),
+          "Payment is required (Lua interop server).",
+        );
         return;
       }
 
@@ -73,15 +86,17 @@ async function main() {
         environment,
         feePayerSigner.address,
         authorization,
-        challenge.request,
+        expectedRequestForPath(url.pathname, environment, feePayerSigner.address),
       ).catch((error: unknown) => {
         if (isPaymentRejected(error)) {
-          writePaymentRequired(
-            response,
-            challenge,
-            error instanceof Error ? error.message : String(error),
-          );
-          return undefined;
+          return getChallenge().then((nextChallenge) => {
+            writePaymentRequired(
+              response,
+              nextChallenge,
+              error instanceof Error ? error.message : String(error),
+            );
+            return undefined;
+          });
         }
         throw error;
       });
@@ -95,7 +110,7 @@ async function main() {
       if (isNetworkMismatch(environment.network, blockhash)) {
         writePaymentRequired(
           response,
-          challenge,
+          await getChallenge(),
           `Signed against localnet but the server expects ${environment.network}.`,
         );
         return;
@@ -189,6 +204,39 @@ function priceForPath(
   return environment.price;
 }
 
+function amountForPath(
+  path: string,
+  environment: ReturnType<typeof readInteropEnvironment>,
+): string {
+  if (path === environment.replaySource?.resourcePath) {
+    return environment.replaySource.amount;
+  }
+  return environment.amount;
+}
+
+function expectedRequestForPath(
+  path: string,
+  environment: ReturnType<typeof readInteropEnvironment>,
+  feePayerKey: string,
+): Record<string, unknown> {
+  const methodDetails: Record<string, unknown> = {
+    decimals: 6,
+    feePayer: true,
+    feePayerKey,
+    network: environment.network,
+  };
+  if (environment.splits.length > 0) {
+    methodDetails.splits = environment.splits;
+  }
+
+  return {
+    amount: amountForPath(path, environment),
+    currency: environment.mint,
+    methodDetails,
+    recipient: environment.payTo,
+  };
+}
+
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value[0];
@@ -263,15 +311,39 @@ async function runLuaBridge<T>(payload: unknown): Promise<T> {
   });
 
   child.stdin.end(`${JSON.stringify(payload)}\n`);
-  const code = await new Promise<number | null>((resolve) =>
-    child.once("exit", resolve),
-  );
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new Error(
+          `Lua bridge timed out after ${LUA_BRIDGE_TIMEOUT_MS}ms: ${stderr}${stdout}`,
+        ),
+      );
+    }, LUA_BRIDGE_TIMEOUT_MS);
+
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (exitCode) => {
+      clearTimeout(timeout);
+      resolve(exitCode);
+    });
+  });
 
   if (code !== 0) {
     throw new Error(`Lua bridge exited with ${code}: ${stderr}${stdout}`);
   }
 
-  return JSON.parse(stdout) as T;
+  try {
+    return JSON.parse(stdout) as T;
+  } catch (error) {
+    throw new Error(
+      `Lua bridge returned invalid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }: ${stdout}`,
+    );
+  }
 }
 
 async function rpc<T>(rpcUrl: string, method: string, params: unknown[]): Promise<T> {
