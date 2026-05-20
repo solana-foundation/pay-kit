@@ -329,6 +329,21 @@ func TestBuildChargeTransactionTokenWithFeePayer(t *testing.T) {
 	}
 }
 
+func TestBuildChargeTransactionRejectsUnsupportedTokenProgramHint(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	mint := testutil.NewPrivateKey().PublicKey()
+	decimals := uint8(6)
+
+	if _, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, protocol.MethodDetails{
+		Decimals:     &decimals,
+		TokenProgram: protocol.SystemProgram,
+	}, BuildOptions{}); err == nil {
+		t.Fatal("expected unsupported token program hint to fail")
+	}
+}
+
 func TestBuildChargeTransactionSOLBroadcast(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()

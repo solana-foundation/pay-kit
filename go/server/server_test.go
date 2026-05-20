@@ -461,6 +461,95 @@ func TestVerifyTransfersAgainstChallengeAcceptsSPLExternalIDMemo(t *testing.T) {
 	}
 }
 
+func TestVerifyTransfersAgainstChallengeRejectsMissingSPLSplitMemo(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	splitRecipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+	splitATA, err := solanautil.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find split ata failed: %v", err)
+	}
+
+	primaryIx, err := token.NewTransferCheckedInstruction(
+		800,
+		6,
+		sourceATA,
+		mint,
+		recipientATA,
+		payer.PublicKey(),
+		nil,
+	).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build primary transfer failed: %v", err)
+	}
+	splitIx, err := token.NewTransferCheckedInstruction(
+		200,
+		6,
+		sourceATA,
+		mint,
+		splitATA,
+		payer.PublicKey(),
+		nil,
+	).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build split transfer failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, primaryIx, splitIx)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: splitRecipient.String(), Amount: "200", Memo: "platform fee"}},
+	}); err == nil {
+		t.Fatal("expected missing SPL split memo to fail")
+	}
+}
+
+func TestVerifyTransfersAgainstChallengeRejectsUnexpectedSPLMemo(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+
+	primaryIx, err := token.NewTransferCheckedInstruction(
+		1000,
+		6,
+		sourceATA,
+		mint,
+		recipientATA,
+		payer.PublicKey(),
+		nil,
+	).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build primary transfer failed: %v", err)
+	}
+	memoIx, err := solanautil.BuildMemoInstruction("unexpected")
+	if err != nil {
+		t.Fatalf("build memo failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, primaryIx, memoIx)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{}); err == nil {
+		t.Fatal("expected unexpected SPL memo to fail")
+	}
+}
+
 func TestVerifyTransfersAgainstChallengeRejectsWrongSPLMint(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
@@ -676,6 +765,21 @@ func TestVerifyCredentialMissingTransactionData(t *testing.T) {
 	}
 	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
 		t.Fatal("expected error for missing transaction data")
+	}
+}
+
+func TestVerifyCredentialMalformedTransactionData(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, _ := handler.Charge(context.Background(), "0.001")
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type":        "transaction",
+		"transaction": "not-base64",
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+		t.Fatal("expected error for malformed transaction data")
 	}
 }
 

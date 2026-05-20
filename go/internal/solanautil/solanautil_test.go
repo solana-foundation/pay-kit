@@ -2,6 +2,7 @@ package solanautil
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -129,6 +130,29 @@ func TestAssociatedTokenHelpers(t *testing.T) {
 	_, err = BuildComputeUnitPrice(1)
 	if err != nil {
 		t.Fatalf("compute unit price failed: %v", err)
+	}
+}
+
+func TestBuildMemoInstruction(t *testing.T) {
+	ix, err := BuildMemoInstruction("order-123")
+	if err != nil {
+		t.Fatalf("memo failed: %v", err)
+	}
+	if ix == nil {
+		t.Fatal("expected memo instruction")
+	}
+	data, err := ix.Data()
+	if err != nil {
+		t.Fatalf("memo data failed: %v", err)
+	}
+	if string(data) != "order-123" {
+		t.Fatalf("unexpected memo data %q", string(data))
+	}
+}
+
+func TestBuildMemoInstructionRejectsLongMemo(t *testing.T) {
+	if _, err := BuildMemoInstruction(strings.Repeat("x", 567)); err == nil {
+		t.Fatal("expected long memo to fail")
 	}
 }
 
@@ -274,6 +298,31 @@ func TestResolveTokenProgramMintNotFound(t *testing.T) {
 	// Not in MintOwners map
 	if _, err := ResolveTokenProgram(context.Background(), rpcClient, mint, ""); err == nil {
 		t.Fatal("expected error for mint not found")
+	}
+}
+
+func TestResolveTokenProgramUnsupportedOwner(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	mint := testutil.NewPrivateKey().PublicKey()
+	rpcClient.MintOwners[mint.String()] = solana.SystemProgramID
+	if _, err := ResolveTokenProgram(context.Background(), rpcClient, mint, ""); err == nil {
+		t.Fatal("expected unsupported mint owner error")
+	}
+}
+
+func TestResolveRecentBlockhashRejectsInvalidProvided(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	if _, err := ResolveRecentBlockhash(context.Background(), rpcClient, "not-a-blockhash"); err == nil {
+		t.Fatal("expected invalid provided blockhash to fail")
+	}
+}
+
+func TestSplitAmountsRejectsPartiallyNumericAmount(t *testing.T) {
+	splits := []protocol.Split{
+		{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "100abc"},
+	}
+	if _, err := SplitAmounts(1000, splits); err == nil {
+		t.Fatal("expected error for partially numeric split amount")
 	}
 }
 

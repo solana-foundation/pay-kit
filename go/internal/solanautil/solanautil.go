@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"time"
 
 	bin "github.com/gagliardetto/binary"
@@ -269,8 +270,8 @@ func SplitAmounts(total uint64, splits []protocol.Split) (uint64, error) {
 	}
 	var splitTotal uint64
 	for _, split := range splits {
-		var amount uint64
-		if _, err := fmt.Sscanf(split.Amount, "%d", &amount); err != nil {
+		amount, err := strconv.ParseUint(split.Amount, 10, 64)
+		if err != nil {
 			return 0, fmt.Errorf("invalid split amount %q", split.Amount)
 		}
 		splitTotal += amount

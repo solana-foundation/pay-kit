@@ -195,6 +195,54 @@ func TestVerifyCredentialWithExpectedRejectsAmountMismatch(t *testing.T) {
 	}
 }
 
+func TestVerifyCredentialWithExpectedRejectsCurrencyMismatch(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	cred := signatureCredentialFromEcho(t, challenge.ToEcho())
+
+	var expected intents.ChargeRequest
+	if decErr := challenge.Request.Decode(&expected); decErr != nil {
+		t.Fatalf("decode: %v", decErr)
+	}
+	expected.Currency = "USDC"
+
+	_, err = handler.VerifyCredentialWithExpected(context.Background(), cred, expected)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "currency") {
+		t.Fatalf("expected currency mismatch, got: %v", err)
+	}
+	var paymentErr *mpp.Error
+	if !mppErrAs(err, &paymentErr) || paymentErr.Code != mpp.ErrCodeChallengeMismatch {
+		t.Fatalf("expected challenge-mismatch mpp error, got %T: %v", err, err)
+	}
+}
+
+func TestVerifyCredentialWithExpectedRejectsRecipientMismatch(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	cred := signatureCredentialFromEcho(t, challenge.ToEcho())
+
+	var expected intents.ChargeRequest
+	if decErr := challenge.Request.Decode(&expected); decErr != nil {
+		t.Fatalf("decode: %v", decErr)
+	}
+	expected.Recipient = testutil.NewPrivateKey().PublicKey().String()
+
+	_, err = handler.VerifyCredentialWithExpected(context.Background(), cred, expected)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "recipient") {
+		t.Fatalf("expected recipient mismatch, got: %v", err)
+	}
+	var paymentErr *mpp.Error
+	if !mppErrAs(err, &paymentErr) || paymentErr.Code != mpp.ErrCodeRecipientMismatch {
+		t.Fatalf("expected recipient-mismatch mpp error, got %T: %v", err, err)
+	}
+}
+
 // Sanity check: a credential that matches the route's expected request must
 // reach settlement (it'll fail downstream because the payload is bogus, but
 // the failure must NOT be a binding/Tier-2 mismatch).
