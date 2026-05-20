@@ -13,7 +13,14 @@ type RunningServer = {
   ready: ReadyMessage;
 };
 
-const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+const DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+
+function adapterOutputTimeoutMs(): number {
+  return Number(
+    process.env.MPP_INTEROP_ADAPTER_OUTPUT_TIMEOUT_MS ??
+      DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS,
+  );
+}
 
 async function waitForJsonMessage<T extends AdapterMessage>(
   child: ChildProcess,
@@ -53,7 +60,7 @@ async function waitForJsonMessage<T extends AdapterMessage>(
         });
       }),
       delay(timeoutMs).then(() => {
-        child.kill("SIGTERM");
+        terminateProcess(child, "SIGTERM");
         throw new Error(
           `Timed out waiting for adapter output after ${timeoutMs}ms`,
         );
@@ -89,7 +96,7 @@ export async function startServer(
   try {
     ready = await waitForJsonMessage<ReadyMessage>(
       child,
-      ADAPTER_OUTPUT_TIMEOUT_MS,
+      adapterOutputTimeoutMs(),
     );
   } catch (error) {
     await stopChildProcess(child);
@@ -120,7 +127,7 @@ export async function runClient(
   try {
     result = await waitForJsonMessage<ClientRunResult>(
       child,
-      ADAPTER_OUTPUT_TIMEOUT_MS,
+      adapterOutputTimeoutMs(),
     );
     await waitForExit(child, "Client adapter");
   } catch (error) {
@@ -170,12 +177,16 @@ async function stopChildProcess(child: ChildProcess): Promise<void> {
   });
 
   terminateProcess(child, "SIGTERM");
-  await Promise.race([
-    exited,
-    delay(5_000).then(() => {
-      terminateProcess(child, "SIGKILL");
-    }),
+  const exitedAfterTerm = await Promise.race([
+    exited.then(() => true),
+    delay(5_000).then(() => false),
   ]);
+  if (exitedAfterTerm) {
+    return;
+  }
+
+  terminateProcess(child, "SIGKILL");
+  await Promise.race([exited, delay(5_000)]);
 }
 
 function terminateProcess(

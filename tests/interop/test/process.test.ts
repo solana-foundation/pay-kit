@@ -13,6 +13,26 @@ function adapter(command: string): ImplementationDefinition {
 }
 
 describe("adapter process lifecycle", () => {
+  it("cleans up server adapters that never signal readiness", async () => {
+    const previousTimeout = process.env.MPP_INTEROP_ADAPTER_OUTPUT_TIMEOUT_MS;
+    process.env.MPP_INTEROP_ADAPTER_OUTPUT_TIMEOUT_MS = "50";
+    try {
+      await expect(
+        startServer(
+          adapter(`
+            setInterval(() => {}, 1000);
+          `),
+        ),
+      ).rejects.toThrow("Timed out waiting for adapter output");
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.MPP_INTEROP_ADAPTER_OUTPUT_TIMEOUT_MS;
+      } else {
+        process.env.MPP_INTEROP_ADAPTER_OUTPUT_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  });
+
   it("cleans up server adapters that emit invalid readiness", async () => {
     await expect(
       startServer(
