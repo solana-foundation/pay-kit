@@ -74,4 +74,11 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust", "MPP_INTEROP_SERVERS", true),
   },
+  {
+    id: "php",
+    label: "PHP HTTP server",
+    role: "server",
+    command: ["pnpm", "exec", "node", "--import", "tsx", "src/fixtures/php/server.ts"],
+    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
+  },
 ];
