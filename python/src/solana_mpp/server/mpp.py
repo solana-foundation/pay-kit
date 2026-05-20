@@ -18,6 +18,7 @@ from solana_mpp._errors import (
 from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.protocol.intents import ChargeRequest, parse_units
 from solana_mpp.protocol.solana import (
+    ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
@@ -40,6 +41,7 @@ _CONSUMED_PREFIX = "solana-charge:consumed:"
 _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 _SYSTEM_TRANSFER_INSTRUCTION = 2
 _TOKEN_TRANSFER_CHECKED_INSTRUCTION = 12
+_ASSOCIATED_TOKEN_CREATE_IDEMPOTENT_INSTRUCTION = 1
 
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
@@ -122,22 +124,84 @@ def _verify_parsed_spl_transfers(
         transfers.pop(match_index)
 
 
-def _verify_ata_owner(ata_address: str, expected_owner: str, mint: str, token_program: str) -> bool:
-    """Verify that an ATA address belongs to the expected owner by deriving it."""
+def _validate_split_ata_creation_policy(currency: str, network: str, splits: list[Any]) -> None:
+    if not any(getattr(split, "ata_creation_required", False) for split in splits):
+        return
+    if is_native_sol(currency):
+        raise PaymentError("ataCreationRequired requires an SPL token currency", code="invalid-config")
+
+    mint = resolve_mint(currency, network)
+    if mint != currency:
+        raise PaymentError(
+            "ataCreationRequired requires currency to be an SPL token mint address",
+            code="invalid-config",
+        )
+
     try:
         from solders.pubkey import Pubkey
 
-        owner_pk = Pubkey.from_string(expected_owner)
-        mint_pk = Pubkey.from_string(mint)
-        tp_pk = Pubkey.from_string(token_program)
-        ata_program = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-        expected_ata, _bump = Pubkey.find_program_address(
-            [bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)],
-            ata_program,
+        Pubkey.from_string(currency)
+    except Exception as exc:
+        raise PaymentError(
+            f"ataCreationRequired requires a valid SPL token mint address: {exc}",
+            code="invalid-config",
+        ) from exc
+
+
+def _verify_parsed_ata_creation_instructions(
+    instructions: list[dict[str, Any]],
+    request: ChargeRequest,
+    details: MethodDetails,
+) -> None:
+    required_recipients = [split.recipient for split in details.splits if split.ata_creation_required]
+    if not required_recipients:
+        return
+
+    _validate_split_ata_creation_policy(request.currency, details.network, details.splits)
+    mint = resolve_mint(request.currency, details.network)
+    token_program = details.token_program or default_token_program_for_currency(request.currency, details.network)
+    ata_creations = [
+        instruction
+        for instruction in instructions
+        if _parsed_program_id(instruction) == ASSOCIATED_TOKEN_PROGRAM
+        and ((instruction.get("parsed") or {}).get("type") == "createIdempotent")
+    ]
+
+    for recipient in required_recipients:
+        expected_ata = _derive_ata_address(recipient, mint, token_program)
+        match_index = next(
+            (
+                index
+                for index, instruction in enumerate(ata_creations)
+                if _parsed_ata_creation_matches(instruction, recipient, expected_ata, mint, token_program)
+            ),
+            -1,
         )
-        return str(expected_ata) == ata_address
+        if match_index == -1:
+            raise PaymentError("Missing required ATA creation for split recipient", code="invalid-payload")
+        ata_creations.pop(match_index)
+
+
+def _verify_ata_owner(ata_address: str, expected_owner: str, mint: str, token_program: str) -> bool:
+    """Verify that an ATA address belongs to the expected owner by deriving it."""
+    try:
+        return _derive_ata_address(expected_owner, mint, token_program) == ata_address
     except Exception:
         return False
+
+
+def _derive_ata_address(owner: str, mint: str, token_program: str) -> str:
+    from solders.pubkey import Pubkey
+
+    owner_pk = Pubkey.from_string(owner)
+    mint_pk = Pubkey.from_string(mint)
+    tp_pk = Pubkey.from_string(token_program)
+    ata_program = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
+    expected_ata, _bump = Pubkey.find_program_address(
+        [bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)],
+        ata_program,
+    )
+    return str(expected_ata)
 
 
 def _parsed_program_id(instruction: dict[str, Any]) -> str:
@@ -146,7 +210,47 @@ def _parsed_program_id(instruction: dict[str, Any]) -> str:
         return program_id
     if instruction.get("program") == "spl-memo":
         return MEMO_PROGRAM
+    if instruction.get("program") == "spl-associated-token-account":
+        return ASSOCIATED_TOKEN_PROGRAM
     return ""
+
+
+def _parsed_info_string(info: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = info.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _parsed_ata_creation_matches(
+    instruction: dict[str, Any],
+    owner: str,
+    ata: str,
+    mint: str,
+    token_program: str,
+) -> bool:
+    parsed = instruction.get("parsed")
+    if not isinstance(parsed, dict):
+        return False
+    info = parsed.get("info")
+    if not isinstance(info, dict):
+        return False
+
+    parsed_owner = _parsed_info_string(info, ("wallet", "owner"))
+    parsed_ata = _parsed_info_string(info, ("account", "associatedAccount", "associatedTokenAddress"))
+    parsed_mint = _parsed_info_string(info, ("mint",))
+    parsed_token_program = _parsed_info_string(info, ("tokenProgram",)) or token_program
+    if parsed_token_program not in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
+        raise PaymentError("ATA creation uses an unsupported token program", code="invalid-payload")
+
+    return (
+        parsed_owner == owner
+        and parsed_ata == ata
+        and parsed_mint == mint
+        and parsed_token_program == token_program
+        and _verify_ata_owner(parsed_ata, parsed_owner, parsed_mint, parsed_token_program)
+    )
 
 
 def _parsed_memo_text(instruction: dict[str, Any]) -> str | None:
@@ -352,6 +456,34 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             except UnicodeDecodeError as exc:
                 raise PaymentError("memo instruction is not valid UTF-8", code="invalid-payload") from exc
             instructions.append({"programId": MEMO_PROGRAM, "parsed": memo})
+        elif program_id == ASSOCIATED_TOKEN_PROGRAM:
+            if len(data) != 1 or data[0] != _ASSOCIATED_TOKEN_CREATE_IDEMPOTENT_INSTRUCTION:
+                continue
+            if len(instruction.accounts) < 6:
+                raise PaymentError("ATA creation instruction is missing accounts", code="invalid-payload")
+            try:
+                ata = account_keys[int(instruction.accounts[1])]
+                owner = account_keys[int(instruction.accounts[2])]
+                mint = account_keys[int(instruction.accounts[3])]
+                token_program = account_keys[int(instruction.accounts[5])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "ATA creation instruction references an unknown account", code="invalid-payload"
+                ) from exc
+            instructions.append(
+                {
+                    "programId": ASSOCIATED_TOKEN_PROGRAM,
+                    "parsed": {
+                        "type": "createIdempotent",
+                        "info": {
+                            "account": ata,
+                            "mint": mint,
+                            "owner": owner,
+                            "tokenProgram": token_program,
+                        },
+                    },
+                }
+            )
 
     return instructions
 
@@ -366,6 +498,7 @@ def _verify_local_transaction_intent(
     if is_native_sol(request.currency):
         _verify_parsed_sol_transfers(instructions, request, details)
     else:
+        _verify_parsed_ata_creation_instructions(instructions, request, details)
         _verify_parsed_spl_transfers(instructions, request, details)
     _verify_parsed_memo_instructions(instructions, request, details)
 
@@ -445,6 +578,8 @@ class Mpp:
     def charge_with_options(self, amount: str, options: ChargeOptions) -> PaymentChallenge:
         """Create a charge challenge with optional fields."""
         base_units = parse_units(amount, self._decimals)
+        splits = MethodDetails.from_dict({"splits": options.splits}).splits
+        _validate_split_ata_creation_policy(self._currency, self._network, splits)
 
         details: dict[str, Any] = {"network": self._network}
         if not is_native_sol(self._currency):
@@ -741,5 +876,6 @@ class Mpp:
         if is_native_sol(request.currency):
             _verify_parsed_sol_transfers(instructions, request, details)
         else:
+            _verify_parsed_ata_creation_instructions(instructions, request, details)
             _verify_parsed_spl_transfers(instructions, request, details)
         _verify_parsed_memo_instructions(instructions, request, details)

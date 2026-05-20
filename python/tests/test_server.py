@@ -15,7 +15,7 @@ from solders.transaction import Transaction
 from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_mpp._types import ChallengeEcho, PaymentCredential
 from solana_mpp.protocol.intents import ChargeRequest
-from solana_mpp.protocol.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
+from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM, MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
 from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
@@ -33,6 +33,7 @@ TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 USDC_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 ATA_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 TEST_BLOCKHASH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 
 def _derive_ata(owner: str, mint: str, token_program: str = TOKEN_PROGRAM) -> str:
@@ -122,6 +123,60 @@ def _build_spl_transfer_checked_transaction(
     ]
     if memo:
         instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
+
+    blockhash = Hash.from_string(TEST_BLOCKHASH)
+    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+    transaction = Transaction.new_unsigned(message)
+    transaction.sign([signer], blockhash)
+
+    import base64
+
+    return base64.b64encode(bytes(transaction)).decode("ascii")
+
+
+def _build_spl_split_transaction(
+    recipient: str,
+    split_recipient: str,
+    mint: str,
+    primary_amount: int,
+    split_amount: int,
+    create_split_ata: bool,
+    token_program: str = TOKEN_PROGRAM,
+    decimals: int = 6,
+) -> str:
+    signer = Keypair()
+    mint_key = Pubkey.from_string(mint)
+    recipient_ata = Pubkey.from_string(_derive_ata(recipient, mint, token_program))
+    split_ata = Pubkey.from_string(_derive_ata(split_recipient, mint, token_program))
+    instructions = []
+    if create_split_ata:
+        instructions.append(
+            Instruction(
+                Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
+                bytes([1]),
+                [
+                    AccountMeta(signer.pubkey(), True, True),
+                    AccountMeta(split_ata, False, True),
+                    AccountMeta(Pubkey.from_string(split_recipient), False, False),
+                    AccountMeta(mint_key, False, False),
+                    AccountMeta(Pubkey.from_string(SYSTEM_PROGRAM), False, False),
+                    AccountMeta(Pubkey.from_string(token_program), False, False),
+                ],
+            )
+        )
+    for destination, amount in ((recipient_ata, primary_amount), (split_ata, split_amount)):
+        instructions.append(
+            Instruction(
+                Pubkey.from_string(token_program),
+                bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals]),
+                [
+                    AccountMeta(Pubkey.new_unique(), False, True),
+                    AccountMeta(mint_key, False, False),
+                    AccountMeta(destination, False, True),
+                    AccountMeta(signer.pubkey(), True, False),
+                ],
+            )
+        )
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
     message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
@@ -287,12 +342,102 @@ class TestCharge:
         request = challenge.decode_request()
         assert request["methodDetails"]["tokenProgram"] == expected_program
 
+    def test_charge_rejects_split_ata_creation_for_native_sol(self):
+        handler = Mpp(Config(recipient=TEST_RECIPIENT, currency="SOL", decimals=9, secret_key=TEST_SECRET))
+
+        with pytest.raises(PaymentError, match="SPL token currency"):
+            handler.charge_with_options(
+                "1.00",
+                ChargeOptions(
+                    splits=[
+                        {
+                            "recipient": str(Pubkey.new_unique()),
+                            "amount": "50000",
+                            "ataCreationRequired": True,
+                        }
+                    ]
+                ),
+            )
+
+    def test_charge_rejects_split_ata_creation_for_stablecoin_symbol(self, mpp: Mpp):
+        with pytest.raises(PaymentError, match="mint address"):
+            mpp.charge_with_options(
+                "1.00",
+                ChargeOptions(
+                    splits=[
+                        {
+                            "recipient": str(Pubkey.new_unique()),
+                            "amount": "50000",
+                            "ataCreationRequired": True,
+                        }
+                    ]
+                ),
+            )
+
+    def test_charge_accepts_split_ata_creation_for_raw_mint(self):
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency=USDC_DEVNET,
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=FakeRPC(),
+            )
+        )
+        split = {"recipient": str(Pubkey.new_unique()), "amount": "50000", "ataCreationRequired": True}
+
+        challenge = handler.charge_with_options("1.00", ChargeOptions(splits=[split]))
+        request = challenge.decode_request()
+
+        assert request["currency"] == USDC_DEVNET
+        assert request["methodDetails"]["splits"] == [split]
+
 
 class TestLocalTransactionIntent:
     def test_accepts_versioned_sol_transfer(self):
         request = ChargeRequest(amount="1000", currency="SOL", recipient=TEST_RECIPIENT)
         details = MethodDetails(network="mainnet-beta")
         transaction = _build_versioned_sol_transaction(TEST_RECIPIENT, 1000)
+
+        _verify_local_transaction_intent(transaction, request, details)
+
+    def test_rejects_missing_required_split_ata_creation(self):
+        split_recipient = str(Pubkey.new_unique())
+        request = ChargeRequest(amount="1000000", currency=USDC_DEVNET, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            splits=[Split(recipient=split_recipient, amount="50000", ata_creation_required=True)],
+        )
+        transaction = _build_spl_split_transaction(
+            TEST_RECIPIENT,
+            split_recipient,
+            USDC_DEVNET,
+            950000,
+            50000,
+            create_split_ata=False,
+        )
+
+        with pytest.raises(PaymentError, match="Missing required ATA creation"):
+            _verify_local_transaction_intent(transaction, request, details)
+
+    def test_accepts_required_split_ata_creation(self):
+        split_recipient = str(Pubkey.new_unique())
+        request = ChargeRequest(amount="1000000", currency=USDC_DEVNET, recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            splits=[Split(recipient=split_recipient, amount="50000", ata_creation_required=True)],
+        )
+        transaction = _build_spl_split_transaction(
+            TEST_RECIPIENT,
+            split_recipient,
+            USDC_DEVNET,
+            950000,
+            50000,
+            create_split_ata=True,
+        )
 
         _verify_local_transaction_intent(transaction, request, details)
 
@@ -692,6 +837,70 @@ class TestVerifyCredential:
         with pytest.raises(PaymentError, match="No memo instruction found"):
             await mpp.verify_credential(credential)
         assert rpc.sent == []
+
+    async def test_signature_verification_rejects_missing_required_split_ata_creation(self):
+        split_recipient = str(Pubkey.new_unique())
+        tx = {
+            "meta": {"err": None},
+            "transaction": {
+                "message": {
+                    "instructions": [
+                        {
+                            "programId": TOKEN_PROGRAM,
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "destination": _derive_ata(TEST_RECIPIENT, USDC_DEVNET),
+                                    "mint": USDC_DEVNET,
+                                    "tokenAmount": {"amount": "950000"},
+                                },
+                            },
+                        },
+                        {
+                            "programId": TOKEN_PROGRAM,
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "destination": _derive_ata(split_recipient, USDC_DEVNET),
+                                    "mint": USDC_DEVNET,
+                                    "tokenAmount": {"amount": "50000"},
+                                },
+                            },
+                        },
+                    ]
+                }
+            },
+        }
+        rpc = FakeRPC(tx=tx)
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency=USDC_DEVNET,
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = handler.charge_with_options(
+            "1.00",
+            ChargeOptions(
+                splits=[
+                    {
+                        "recipient": split_recipient,
+                        "amount": "50000",
+                        "ataCreationRequired": True,
+                    }
+                ]
+            ),
+        )
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={"type": "signature", "signature": VALID_SIGNATURE},
+        )
+
+        with pytest.raises(PaymentError, match="Missing required ATA creation"):
+            await handler.verify_credential(credential)
 
 
 class TestParsedTransferVerification:
