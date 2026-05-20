@@ -353,8 +353,8 @@ def _status_ok(response: Any) -> bool:
 def _extract_recent_blockhash(transaction_b64: str) -> str:
     """Decode a base64 transaction and return its recent blockhash (base58).
 
-    Tries the legacy ``Transaction`` first (the most common shape from our
-    SDK clients) and falls back to ``VersionedTransaction``. Kept thin so
+    Tries ``VersionedTransaction`` first and falls back to the legacy
+    ``Transaction`` shape. Kept thin so
     the surrounding network check can be exercised by tests without a full
     verification pipeline in place.
     """
