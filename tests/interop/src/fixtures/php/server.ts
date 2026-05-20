@@ -23,6 +23,22 @@ type PhpVerified = {
   signature?: string;
 };
 
+type PhpBridgeErrorPayload = {
+  type: "error";
+  code: string;
+  error: string;
+};
+
+class PhpBridgeError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PhpBridgeError";
+  }
+}
+
 async function main() {
   const environment = readInteropEnvironment();
   const feePayerSigner = await createKeyPairSignerFromBytes(
@@ -254,10 +270,26 @@ async function runPhpBridge<T>(payload: unknown): Promise<T> {
   );
 
   if (code !== 0) {
+    const parsed = parseBridgeError(stdout);
+    if (parsed) {
+      throw new PhpBridgeError(parsed.code, parsed.error);
+    }
     throw new Error(`PHP bridge exited with ${code}: ${stderr}${stdout}`);
   }
 
   return JSON.parse(stdout) as T;
+}
+
+function parseBridgeError(stdout: string): PhpBridgeErrorPayload | undefined {
+  try {
+    const payload = JSON.parse(stdout) as Partial<PhpBridgeErrorPayload>;
+    if (payload.type === "error" && payload.code && payload.error) {
+      return payload as PhpBridgeErrorPayload;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 async function rpc<T>(rpcUrl: string, method: string, params: unknown[]): Promise<T> {
@@ -332,13 +364,15 @@ function isNetworkMismatch(network: string, blockhash: string | null): boolean {
 }
 
 function isPaymentRejected(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
   return (
-    message.includes("charge request mismatch") ||
-    message.includes("challenge realm mismatch") ||
-    message.includes("challenge verification failed") ||
-    message.includes("challenge expired") ||
-    message.includes("challenge method or intent mismatch")
+    error instanceof PhpBridgeError &&
+    [
+      "charge_request_mismatch",
+      "challenge_realm_mismatch",
+      "challenge_verification_failed",
+      "challenge_expired",
+      "challenge_method_or_intent_mismatch",
+    ].includes(error.code)
   );
 }
 

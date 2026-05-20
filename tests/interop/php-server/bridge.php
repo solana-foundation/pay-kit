@@ -132,6 +132,18 @@ function verify_payment(array $input): void
     ]);
 }
 
+function error_code(string $message): string
+{
+    return match (true) {
+        str_contains($message, 'charge request mismatch') => 'charge_request_mismatch',
+        str_contains($message, 'challenge realm mismatch') => 'challenge_realm_mismatch',
+        str_contains($message, 'challenge verification failed') => 'challenge_verification_failed',
+        str_contains($message, 'challenge expired') => 'challenge_expired',
+        str_contains($message, 'challenge method or intent mismatch') => 'challenge_method_or_intent_mismatch',
+        default => 'bridge_error',
+    };
+}
+
 try {
     $input = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
     if (!is_array($input)) {
@@ -145,6 +157,10 @@ try {
         default => throw new InvalidArgumentException('unsupported command: ' . $command),
     };
 } catch (Throwable $error) {
-    write_json(['type' => 'error', 'error' => $error->getMessage()]);
+    write_json([
+        'type' => 'error',
+        'code' => error_code($error->getMessage()),
+        'error' => $error->getMessage(),
+    ]);
     exit(1);
 }

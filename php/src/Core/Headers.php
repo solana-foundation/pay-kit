@@ -49,7 +49,7 @@ final class Headers
             }
         }
 
-        Base64Url::decodeJson($params['request']);
+        Base64Url::decodeJson($params['request']); // validate the encoded charge request
 
         return new Challenge(
             id: $params['id'],
