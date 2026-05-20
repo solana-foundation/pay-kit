@@ -20,6 +20,15 @@ from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
     Mpp,
+    _build_expected_transfers,
+    _json_like,
+    _parsed_ata_creation_matches,
+    _parsed_info_string,
+    _parsed_program_id,
+    _rpc_value,
+    _status_ok,
+    _transaction_dict,
+    _verify_ata_owner,
     _verify_local_transaction_intent,
     _verify_parsed_memo_instructions,
     _verify_parsed_sol_transfers,
@@ -904,6 +913,13 @@ class TestVerifyCredential:
 
 
 class TestParsedTransferVerification:
+    def test_build_expected_transfers_rejects_splits_that_consume_amount(self):
+        request = ChargeRequest(amount="1000", currency="sol", recipient="recipient-1")
+        details = MethodDetails(splits=[Split(recipient="recipient-2", amount="1000")])
+
+        with pytest.raises(PaymentError, match="primary recipient"):
+            _build_expected_transfers(request, details)
+
     def test_sol_verifier_rejects_duplicate_split_reuse(self):
         request = ChargeRequest(amount="1000", currency="sol", recipient="recipient-1")
         details = MethodDetails(
@@ -1046,3 +1062,68 @@ class TestParsedTransferVerification:
 
         with pytest.raises(PaymentError, match="No memo instruction found for split memo"):
             _verify_parsed_memo_instructions(instructions, request, details)
+
+
+class TestVerifierHelpers:
+    def test_verify_ata_owner_returns_false_for_invalid_address(self):
+        assert not _verify_ata_owner("not-an-ata", "not-an-owner", "not-a-mint", TOKEN_PROGRAM)
+
+    def test_parsed_program_id_accepts_named_associated_token_program(self):
+        instruction = {"program": "spl-associated-token-account"}
+
+        assert _parsed_program_id(instruction) == ASSOCIATED_TOKEN_PROGRAM
+
+    def test_parsed_info_string_returns_empty_for_missing_keys(self):
+        assert _parsed_info_string({"owner": None}, ("wallet", "owner")) == ""
+
+    def test_parsed_ata_creation_matches_rejects_non_dict_shapes(self):
+        assert not _parsed_ata_creation_matches({}, "owner", "ata", "mint", TOKEN_PROGRAM)
+        assert not _parsed_ata_creation_matches({"parsed": {"info": "not-a-dict"}}, "owner", "ata", "mint", TOKEN_PROGRAM)
+
+    def test_parsed_ata_creation_matches_rejects_unsupported_token_program(self):
+        instruction = {
+            "parsed": {
+                "info": {
+                    "wallet": "owner",
+                    "account": "ata",
+                    "mint": "mint",
+                    "tokenProgram": "unsupported-token-program",
+                }
+            }
+        }
+
+        with pytest.raises(PaymentError, match="unsupported token program"):
+            _parsed_ata_creation_matches(instruction, "owner", "ata", "mint", TOKEN_PROGRAM)
+
+    def test_rpc_value_handles_none_and_dict_values(self):
+        assert _rpc_value(None) is None
+        assert _rpc_value({"value": "ok"}) == "ok"
+        assert _rpc_value({"other": "ok"}) == {"other": "ok"}
+
+    def test_json_like_handles_objects_with_to_json_and_dict(self):
+        class JsonObject:
+            def to_json(self):
+                return '{"value": {"nested": true}}'
+
+        class PlainObject:
+            def __init__(self):
+                self.value = JsonObject()
+
+        assert _json_like(JsonObject()) == {"value": {"nested": True}}
+        assert _json_like(PlainObject()) == {"value": {"value": {"nested": True}}}
+
+    def test_transaction_dict_rejects_missing_transaction_key(self):
+        assert _transaction_dict(None) is None
+        assert _transaction_dict({"value": {"meta": {}}}) is None
+
+    def test_status_ok_handles_empty_and_error_entries(self):
+        assert not _status_ok({"value": []})
+        assert not _status_ok({"value": [{"err": "failed"}]})
+        assert _status_ok({"value": [{"err": None}]})
+
+    def test_confirmed_transaction_rejects_on_chain_error(self):
+        handler = Mpp(Config(recipient=TEST_RECIPIENT, currency="SOL", decimals=9, secret_key=TEST_SECRET))
+        request = ChargeRequest(amount="1000", currency="SOL", recipient=TEST_RECIPIENT)
+
+        with pytest.raises(PaymentError, match="transaction failed"):
+            handler._verify_confirmed_transaction({"meta": {"err": {"InstructionError": [0, "Custom"]}}}, request, MethodDetails())
