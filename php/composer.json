@@ -20,7 +20,8 @@
     }
   },
   "scripts": {
-    "test": "phpunit"
+    "test": "phpunit",
+    "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text"
   },
   "config": {
     "sort-packages": true

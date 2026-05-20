@@ -49,3 +49,6 @@ cd php
 composer install
 composer test
 ```
+
+CI also runs `composer run test:coverage` with a coverage driver and uploads
+`php/build/coverage/clover.xml`.
