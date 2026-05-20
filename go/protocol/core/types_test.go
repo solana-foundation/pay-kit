@@ -74,6 +74,28 @@ func TestBase64URLJSONValueCanonicalizesStructFields(t *testing.T) {
 	}
 }
 
+func TestBase64URLJSONValuePreservesLargeJSONNumbers(t *testing.T) {
+	type request struct {
+		Sequence uint64 `json:"sequence"`
+		Amount   string `json:"amount"`
+	}
+	value, err := NewBase64URLJSONValue(request{
+		Sequence: 9_007_199_254_740_993,
+		Amount:   "1000",
+	})
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	decoded, err := Base64URLDecode(value.Raw())
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	want := `{"amount":"1000","sequence":9007199254740993}`
+	if string(decoded) != want {
+		t.Fatalf("unexpected canonical JSON:\n got %s\nwant %s", decoded, want)
+	}
+}
+
 func TestIntentNameIsCharge(t *testing.T) {
 	if !NewIntentName("Charge").IsCharge() {
 		t.Fatal("expected charge intent")

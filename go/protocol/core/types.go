@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -48,8 +49,10 @@ func NewBase64URLJSONValue(value any) (Base64URLJSON, error) {
 	if err != nil {
 		return Base64URLJSON{}, err
 	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	var canonicalValue any
-	if err := json.Unmarshal(raw, &canonicalValue); err != nil {
+	if err := decoder.Decode(&canonicalValue); err != nil {
 		return Base64URLJSON{}, err
 	}
 	canonicalRaw, err := json.Marshal(canonicalValue)

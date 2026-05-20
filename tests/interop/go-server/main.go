@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 
@@ -99,10 +100,13 @@ func run() error {
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(stopCh)
 
 	select {
 	case <-stopCh:
-		_ = server.Shutdown(context.Background())
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownContext)
 		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -214,14 +218,22 @@ func readEnvironment() (interopEnvironment, error) {
 	if err != nil {
 		return interopEnvironment{}, err
 	}
+	rpcURL, err := requiredEnv("MPP_INTEROP_RPC_URL")
+	if err != nil {
+		return interopEnvironment{}, err
+	}
+	payTo, err := requiredEnv("MPP_INTEROP_PAY_TO")
+	if err != nil {
+		return interopEnvironment{}, err
+	}
 	environment := interopEnvironment{
-		RPCURL:           requiredEnv("MPP_INTEROP_RPC_URL"),
+		RPCURL:           rpcURL,
 		Network:          envOrDefault("MPP_INTEROP_NETWORK", "localnet"),
 		Mint:             envOrDefault("MPP_INTEROP_MINT", "USDC"),
 		Price:            envOrDefault("MPP_INTEROP_PRICE", "0.001"),
 		ResourcePath:     envOrDefault("MPP_INTEROP_RESOURCE_PATH", "/protected"),
 		SettlementHeader: envOrDefault("MPP_INTEROP_SETTLEMENT_HEADER", "x-fixture-settlement"),
-		PayTo:            requiredEnv("MPP_INTEROP_PAY_TO"),
+		PayTo:            payTo,
 		SecretKey:        envOrDefault("MPP_INTEROP_SECRET_KEY", "mpp-interop-secret-key"),
 		Splits:           splits,
 		FeePayerSecret:   feePayer,
@@ -232,9 +244,6 @@ func readEnvironment() (interopEnvironment, error) {
 			Price:        os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PRICE"),
 			ResourcePath: os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH"),
 		}
-	}
-	if environment.RPCURL == "" || environment.PayTo == "" {
-		return interopEnvironment{}, fmt.Errorf("required interop environment is missing")
 	}
 	return environment, nil
 }
@@ -252,7 +261,10 @@ func readSplits() ([]protocol.Split, error) {
 }
 
 func readPrivateKeyEnv(name string) (solana.PrivateKey, error) {
-	raw := requiredEnv(name)
+	raw, err := requiredEnv(name)
+	if err != nil {
+		return nil, err
+	}
 	var values []int
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
@@ -270,12 +282,12 @@ func readPrivateKeyEnv(name string) (solana.PrivateKey, error) {
 	return solana.PrivateKey(key), nil
 }
 
-func requiredEnv(name string) string {
+func requiredEnv(name string) (string, error) {
 	value := os.Getenv(name)
 	if value == "" {
-		return ""
+		return "", fmt.Errorf("%s is required", name)
 	}
-	return value
+	return value, nil
 }
 
 func envOrDefault(name, fallback string) string {
