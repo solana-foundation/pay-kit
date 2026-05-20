@@ -41,6 +41,26 @@ class ChargeCredentialTest {
     }
 
     @Test
+    fun transactionProviderCanUseSolanaSigner() {
+        val challenge = MppHeaders.parseWWWAuthenticate(challengeHeader())
+        val signer = MemorySigner.generate()
+        val builder = ChargeCredentialBuilder(
+            ChargeTransactionProvider { request ->
+                val message = "${request.externalId}:${request.recipient}:${signer.address}".encodeToByteArray()
+                Base64Url.encode(signer.sign(message))
+            }
+        )
+
+        val encoded = builder.authorizationHeader(challenge).removePrefix("Payment ")
+        val credential = Json.decodeFromString<PaymentCredential>(
+            Base64Url.decode(encoded).decodeToString(),
+        )
+
+        assertEquals("transaction", credential.payload.type)
+        assertTrue(credential.payload.transaction?.isNotBlank() == true)
+    }
+
+    @Test
     fun rejectsUnsupportedIntent() {
         val challenge = PaymentChallenge(
             id = "challenge-2",
