@@ -74,4 +74,15 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust", "MPP_INTEROP_SERVERS", true),
   },
+  {
+    id: "python",
+    label: "Python HTTP server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "cd ../../python && uv run --extra dev python ../tests/interop/python-server/main.py",
+    ],
+    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
+  },
 ];

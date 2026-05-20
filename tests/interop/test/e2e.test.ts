@@ -12,6 +12,7 @@ import { runClient, startServer, stopServer } from "../src/process";
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const MINT_ACCOUNT_SIZE = 82;
 
 const runningServers: RunningServer[] = [];
@@ -86,6 +87,7 @@ beforeAll(async () => {
     createSplMintAccountData(6),
     TOKEN_PROGRAM,
   );
+  surfnet.setAccount(client.publicKey, 2_000_000_000, new Uint8Array(), SYSTEM_PROGRAM);
   surfnet.fundToken(client.publicKey, baseScenario.asset, 100_000);
   surfnet.fundToken(payTo.publicKey, baseScenario.asset, 1);
 
