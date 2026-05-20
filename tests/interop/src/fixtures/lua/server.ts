@@ -67,7 +67,20 @@ async function main() {
         feePayerSigner.address,
         authorization,
         challenge.request,
-      );
+      ).catch((error: unknown) => {
+        if (isPaymentRejected(error)) {
+          writePaymentRequired(
+            response,
+            challenge,
+            error instanceof Error ? error.message : String(error),
+          );
+          return undefined;
+        }
+        throw error;
+      });
+      if (!verified) {
+        return;
+      }
       if (!verified.transaction) {
         throw new Error("Lua verifier did not return a transaction payload");
       }
@@ -326,6 +339,17 @@ function isNetworkMismatch(network: string, blockhash: string | null): boolean {
     network !== "localnet" &&
     blockhash !== null &&
     blockhash.startsWith("SURFNETxSAFEHASH")
+  );
+}
+
+function isPaymentRejected(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("amount mismatch") ||
+    message.includes("charge request mismatch") ||
+    message.includes("challenge verification failed") ||
+    message.includes("challenge expired") ||
+    message.includes("challenge method or intent mismatch")
   );
 }
 
