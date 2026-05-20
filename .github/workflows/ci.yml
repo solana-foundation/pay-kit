@@ -223,9 +223,18 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.5.1"
-      - name: Run tests
+      - name: Run tests with coverage
         working-directory: kotlin
-        run: gradle test
+        run: gradle test jacocoTestReport
+      - name: Upload Kotlin coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kotlin-coverage
+          path: |
+            kotlin/build/reports/jacoco/test/jacocoTestReport.xml
+            kotlin/build/reports/jacoco/test/html/
+          if-no-files-found: ignore
 
   integration:
     name: Integration tests
