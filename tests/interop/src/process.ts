@@ -71,6 +71,7 @@ function spawnAdapter(
   const [command, ...args] = implementation.command;
   return spawn(command, args, {
     cwd: process.cwd(),
+    detached: process.platform !== "win32",
     env: {
       ...process.env,
       ...extraEnv,
@@ -84,13 +85,19 @@ export async function startServer(
   extraEnv: Record<string, string> = {},
 ): Promise<RunningServer> {
   const child = spawnAdapter(implementation, extraEnv);
-  const ready = await waitForJsonMessage<ReadyMessage>(
-    child,
-    ADAPTER_OUTPUT_TIMEOUT_MS,
-  );
+  let ready: ReadyMessage;
+  try {
+    ready = await waitForJsonMessage<ReadyMessage>(
+      child,
+      ADAPTER_OUTPUT_TIMEOUT_MS,
+    );
+  } catch (error) {
+    await stopChildProcess(child);
+    throw error;
+  }
 
   if (ready.type !== "ready" || ready.role !== "server" || !ready.port) {
-    child.kill("SIGTERM");
+    await stopChildProcess(child);
     throw new Error(
       `Unexpected server readiness payload from ${implementation.id}`,
     );
@@ -109,11 +116,17 @@ export async function runClient(
     ...extraEnv,
   });
 
-  const result = await waitForJsonMessage<ClientRunResult>(
-    child,
-    ADAPTER_OUTPUT_TIMEOUT_MS,
-  );
-  await waitForExit(child, "Client adapter");
+  let result: ClientRunResult;
+  try {
+    result = await waitForJsonMessage<ClientRunResult>(
+      child,
+      ADAPTER_OUTPUT_TIMEOUT_MS,
+    );
+    await waitForExit(child, "Client adapter");
+  } catch (error) {
+    await stopChildProcess(child);
+    throw error;
+  }
 
   if (result.type !== "result" || result.role !== "client") {
     throw new Error(
@@ -144,13 +157,45 @@ async function waitForExit(child: ChildProcess, label: string): Promise<void> {
 }
 
 export async function stopServer(server: RunningServer): Promise<void> {
-  server.child.kill("SIGTERM");
+  await stopChildProcess(server.child);
+}
+
+async function stopChildProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) {
+    return;
+  }
+
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+  });
+
+  terminateProcess(child, "SIGTERM");
   await Promise.race([
-    new Promise<void>((resolve) => {
-      server.child.once("exit", () => resolve());
-    }),
+    exited,
     delay(5_000).then(() => {
-      server.child.kill("SIGKILL");
+      terminateProcess(child, "SIGKILL");
     }),
   ]);
+}
+
+function terminateProcess(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (child.exitCode !== null || child.pid === undefined) {
+    return;
+  }
+
+  try {
+    if (process.platform !== "win32") {
+      process.kill(-child.pid, signal);
+      return;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      return;
+    }
+  }
+
+  child.kill(signal);
 }
