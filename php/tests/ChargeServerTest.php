@@ -121,6 +121,78 @@ final class ChargeServerTest extends TestCase
         self::assertSame('tx-signature', $result->reference);
     }
 
+    public function testExpectedChargeRequestIgnoresVolatileRecentBlockhash(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challengeRequest = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: [
+                'network' => 'localnet',
+                'recentBlockhash' => 'old-blockhash',
+            ],
+        );
+        $expectedRequest = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: [
+                'network' => 'localnet',
+                'recentBlockhash' => 'new-blockhash',
+            ],
+        );
+        $challenge = $server->createChallenge($challengeRequest);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::success(reference: 'tx-signature');
+                }
+            },
+            expectedRequest: $expectedRequest,
+        );
+
+        self::assertTrue($result->ok);
+    }
+
+    public function testExpectedChargeRequestComparisonIsJsonOrderIndependent(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challengeRequest = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: [
+                'network' => 'localnet',
+                'feePayer' => true,
+            ],
+        );
+        $expectedRequest = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: [
+                'feePayer' => true,
+                'network' => 'localnet',
+            ],
+        );
+        $challenge = $server->createChallenge($challengeRequest);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::success(reference: 'tx-signature');
+                }
+            },
+            expectedRequest: $expectedRequest,
+        );
+
+        self::assertTrue($result->ok);
+    }
+
     private function unusedVerifier(): PaymentVerifier
     {
         return new class implements PaymentVerifier {

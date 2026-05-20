@@ -6,6 +6,7 @@ namespace SolanaMpp\Server;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use SolanaMpp\Core\Base64Url;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
@@ -69,7 +70,7 @@ final class ChargeServer
             return VerificationResult::failure($error->getMessage());
         }
 
-        if ($expectedRequest !== null && $request->toArray() !== $expectedRequest->toArray()) {
+        if ($expectedRequest !== null && !$this->matchesExpectedRequest($request, $expectedRequest)) {
             return VerificationResult::failure('charge request mismatch');
         }
 
@@ -103,5 +104,46 @@ final class ChargeServer
             digest: $echo->digest,
             opaque: $echo->opaque,
         );
+    }
+
+    private function matchesExpectedRequest(ChargeRequest $request, ChargeRequest $expectedRequest): bool
+    {
+        return Base64Url::encodeJson($this->comparableRequest($request->toArray())) ===
+            Base64Url::encodeJson($this->comparableRequest($expectedRequest->toArray()));
+    }
+
+    /**
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private function comparableRequest(array $request): array
+    {
+        if (isset($request['methodDetails']) && is_array($request['methodDetails'])) {
+            unset($request['methodDetails']['recentBlockhash']);
+        }
+
+        return $this->canonicalizeArray($request);
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @return array<mixed>
+     */
+    private function canonicalizeArray(array $value): array
+    {
+        if (array_is_list($value)) {
+            return array_map(
+                fn (mixed $nested): mixed => is_array($nested) ? $this->canonicalizeArray($nested) : $nested,
+                $value,
+            );
+        }
+
+        ksort($value, SORT_STRING);
+        foreach ($value as $key => $nested) {
+            unset($value[$key]);
+            $value[(string)$key] = is_array($nested) ? $this->canonicalizeArray($nested) : $nested;
+        }
+
+        return $value;
     }
 }

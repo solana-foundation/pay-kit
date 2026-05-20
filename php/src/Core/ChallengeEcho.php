@@ -48,12 +48,18 @@ final class ChallengeEcho
      */
     public static function fromArray(array $value): self
     {
+        $request = $value['request'] ?? '';
+        if (is_array($request)) {
+            /** @var array<string, mixed> $request */
+            $request = Base64Url::encodeJson($request);
+        }
+
         return new self(
             id: (string)($value['id'] ?? ''),
             realm: (string)($value['realm'] ?? ''),
             method: (string)($value['method'] ?? ''),
             intent: (string)($value['intent'] ?? ''),
-            request: (string)($value['request'] ?? ''),
+            request: (string)$request,
             expires: (string)($value['expires'] ?? ''),
             digest: (string)($value['digest'] ?? ''),
             opaque: isset($value['opaque']) ? (string)$value['opaque'] : null,

@@ -7,6 +7,7 @@ namespace SolanaMpp\Tests;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use SolanaMpp\Core\Challenge;
+use SolanaMpp\Core\ChallengeEcho;
 
 final class ChallengeTest extends TestCase
 {
@@ -36,5 +37,46 @@ final class ChallengeTest extends TestCase
         self::assertSame('solana', $echo['method']);
         self::assertSame('charge', $echo['intent']);
         self::assertSame($challenge->request, $echo['request']);
+    }
+
+    public function testObjectRequestEchoIsJsonOrderIndependent(): void
+    {
+        $challenge = Challenge::withSecret(
+            secretKey: 'secret',
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: [
+                'currency' => 'USDC',
+                'amount' => '1000',
+                'methodDetails' => [
+                    'network' => 'localnet',
+                    'feePayer' => true,
+                ],
+            ],
+        );
+        $echo = ChallengeEcho::fromArray([
+            'id' => $challenge->id,
+            'realm' => $challenge->realm,
+            'method' => $challenge->method,
+            'intent' => $challenge->intent,
+            'request' => [
+                'methodDetails' => [
+                    'feePayer' => true,
+                    'network' => 'localnet',
+                ],
+                'amount' => '1000',
+                'currency' => 'USDC',
+            ],
+        ]);
+        $verified = new Challenge(
+            id: $echo->id,
+            realm: $echo->realm,
+            method: $echo->method,
+            intent: $echo->intent,
+            request: $echo->request,
+        );
+
+        self::assertTrue($verified->verify('secret'));
     }
 }

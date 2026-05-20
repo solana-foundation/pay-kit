@@ -23,7 +23,7 @@ final class CredentialTest extends TestCase
         $parsed = Credential::fromAuthorizationHeader($credential->toAuthorizationHeader());
 
         self::assertSame($challenge->id, $parsed->challenge->id);
-        self::assertSame(['type' => 'signature', 'signature' => 'sig'], $parsed->payload);
+        self::assertEquals(['signature' => 'sig', 'type' => 'signature'], $parsed->payload);
         self::assertSame('did:pkh:solana:test', $parsed->source);
     }
 

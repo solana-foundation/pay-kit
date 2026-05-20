@@ -34,7 +34,7 @@ final class Base64Url
     public static function encodeJson(array $value): string
     {
         try {
-            return self::encode(json_encode($value, JSON_THROW_ON_ERROR));
+            return self::encode(json_encode(self::canonicalizeJson($value), JSON_THROW_ON_ERROR));
         } catch (JsonException $error) {
             throw new InvalidArgumentException('Invalid JSON value', previous: $error);
         }
@@ -67,5 +67,28 @@ final class Base64Url
         }
 
         return $value . str_repeat('=', 4 - $remainder);
+    }
+
+    /**
+     * @param mixed $value
+     * @return mixed
+     */
+    private static function canonicalizeJson(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(self::canonicalizeJson(...), $value);
+        }
+
+        ksort($value, SORT_STRING);
+        foreach ($value as $key => $nested) {
+            unset($value[$key]);
+            $value[(string)$key] = self::canonicalizeJson($nested);
+        }
+
+        return $value;
     }
 }
