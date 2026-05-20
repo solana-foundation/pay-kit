@@ -54,8 +54,10 @@ final class Receipt
             'method' => $this->method,
             'timestamp' => $this->timestamp,
             'reference' => $this->reference,
-            'challengeId' => $this->challengeId,
         ];
+        if ($this->challengeId !== '') {
+            $value['challengeId'] = $this->challengeId;
+        }
         if ($this->externalId !== '') {
             $value['externalId'] = $this->externalId;
         }

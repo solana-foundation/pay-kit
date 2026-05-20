@@ -73,7 +73,12 @@ final class ChargeRequest
 
     private static function assertBaseUnits(string $value, string $field): void
     {
-        if ($value === '' || !ctype_digit($value) || ltrim($value, '0') === '') {
+        if (
+            $value === '' ||
+            !ctype_digit($value) ||
+            ltrim($value, '0') === '' ||
+            (strlen($value) > 1 && str_starts_with($value, '0'))
+        ) {
             throw new InvalidArgumentException(sprintf('%s must be a positive base-unit integer string', $field));
         }
     }

@@ -103,7 +103,7 @@ async function main() {
         writePaymentRequired(
           response,
           challenge,
-          `Signed against localnet but the server expects ${environment.network}.`,
+          `Signed with a Surfpool localnet blockhash but the server expects ${environment.network}.`,
         );
         return;
       }

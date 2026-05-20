@@ -223,9 +223,6 @@ jobs:
       - name: Install dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
-      - name: Run tests
-        working-directory: php
-        run: composer test
       - name: Run tests with coverage
         working-directory: php
         run: |

@@ -47,4 +47,12 @@ final class ChargeRequestTest extends TestCase
 
         new ChargeRequest(amount: '0', currency: 'USDC');
     }
+
+    public function testRejectsLeadingZeroAmount(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('amount must be a positive base-unit integer string');
+
+        new ChargeRequest(amount: '01000', currency: 'USDC');
+    }
 }
