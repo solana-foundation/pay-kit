@@ -59,39 +59,49 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         receipt_header = format_receipt(receipt)
+        body = b'{"ok":true,"paid":true}'
         self.send_response(200)
         self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("connection", "close")
         self.send_header("payment-receipt", receipt_header)
         self.send_header(environment["settlement_header"], receipt.reference)
         self.end_headers()
-        self.wfile.write(b'{"ok":true,"paid":true}')
+        self.close_connection = True
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
 
     def write_payment_required(self, challenge: Any, detail: str) -> None:
+        body = json.dumps(
+            {
+                "detail": detail,
+                "status": 402,
+                "title": "Payment Required",
+                "type": "https://paymentauth.org/problems/payment-required",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
         self.send_response(402)
         self.send_header("cache-control", "no-store")
         self.send_header("content-type", "application/problem+json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("connection", "close")
         self.send_header("www-authenticate", format_www_authenticate(challenge))
         self.end_headers()
-        self.wfile.write(
-            json.dumps(
-                {
-                    "detail": detail,
-                    "status": 402,
-                    "title": "Payment Required",
-                    "type": "https://paymentauth.org/problems/payment-required",
-                },
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
+        self.close_connection = True
+        self.wfile.write(body)
 
     def write_json(self, status: int, body: dict[str, Any]) -> None:
+        encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(encoded)))
+        self.send_header("connection", "close")
         self.end_headers()
-        self.wfile.write(json.dumps(body, separators=(",", ":")).encode("utf-8"))
+        self.close_connection = True
+        self.wfile.write(encoded)
 
     @staticmethod
     def is_protected_path(path: str, environment: dict[str, Any]) -> bool:

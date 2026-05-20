@@ -211,6 +211,33 @@ jobs:
           name: go-coverage
           path: go/coverage.out
 
+  test-python:
+    name: Python tests
+    needs: build-html
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download HTML assets
+        uses: actions/download-artifact@v7
+        with:
+          name: html-assets
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Run tests with coverage
+        working-directory: python
+        run: uv run --extra dev pytest --cov=solana_mpp --cov-report=term-missing --cov-report=xml:coverage.xml --cov-report=json:coverage.json
+      - name: Upload Python coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage
+          path: |
+            python/coverage.xml
+            python/coverage.json
+
   integration:
     name: Integration tests
     needs: build-html
@@ -418,6 +445,11 @@ jobs:
       - name: Build Rust interop adapters
         working-directory: rust
         run: cargo build --bin interop_client --bin interop_server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv for Python interop server
+        run: python -m pip install uv
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
@@ -436,6 +468,12 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: rust
+      - name: Run Python server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays python server"
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: python
       - name: Run Rust end-to-end interop smoke
         working-directory: tests/interop
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
