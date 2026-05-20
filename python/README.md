@@ -48,9 +48,7 @@ pay curl http://localhost:4567/paid
 
 ## Interop
 
-The cross-language interop harness lives in `../tests/interop`.
-
-```bash
-cd ../tests/interop
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=python pnpm test
-```
+The cross-language interop harness lives in `../tests/interop`. Python adapter
+coverage is being added separately; on current `main`, use the Python test suite
+above for Python changes and the TypeScript/Rust interop harness for
+cross-language regression checks.

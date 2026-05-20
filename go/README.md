@@ -49,9 +49,11 @@ pay curl http://localhost:4567/paid
 
 ## Interop
 
-The cross-language interop harness lives in `../tests/interop`.
+The cross-language interop harness lives in `../tests/interop`. On current
+`main`, Go is registered as an opt-in client adapter. Use Rust as the reference
+server when running the Go client through the harness.
 
 ```bash
 cd ../tests/interop
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go pnpm test
+MPP_INTEROP_CLIENTS=go MPP_INTEROP_SERVERS=rust pnpm test
 ```
