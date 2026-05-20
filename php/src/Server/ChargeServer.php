@@ -57,6 +57,9 @@ final class ChargeServer
         if ($challenge->method !== $this->method || $challenge->intent !== 'charge') {
             return VerificationResult::failure('challenge method or intent mismatch');
         }
+        if ($challenge->realm !== $this->realm) {
+            return VerificationResult::failure('challenge realm mismatch');
+        }
         if (!$challenge->verify($this->secretKey)) {
             return VerificationResult::failure('challenge verification failed');
         }

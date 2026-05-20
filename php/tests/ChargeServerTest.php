@@ -62,6 +62,22 @@ final class ChargeServerTest extends TestCase
         self::assertSame('challenge verification failed', $result->reason);
     }
 
+    public function testRejectsCredentialsForWrongRealm(): void
+    {
+        $issuer = new ChargeServer(secretKey: 'secret', realm: 'issuer-api');
+        $server = new ChargeServer(secretKey: 'secret', realm: 'server-api');
+        $challenge = $issuer->createChallenge(new ChargeRequest(amount: '1', currency: 'USDC'));
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('challenge realm mismatch', $result->reason);
+    }
+
     public function testRejectsExpiredChallenge(): void
     {
         $server = new ChargeServer(secretKey: 'secret', realm: 'api');
@@ -191,6 +207,28 @@ final class ChargeServerTest extends TestCase
         );
 
         self::assertTrue($result->ok);
+    }
+
+    public function testPropagatesVerifierFailure(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = new ChargeRequest(amount: '1000', currency: 'USDC');
+        $challenge = $server->createChallenge($request);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::failure('missing transaction payload');
+                }
+            },
+            expectedRequest: $request,
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('missing transaction payload', $result->reason);
     }
 
     private function unusedVerifier(): PaymentVerifier
