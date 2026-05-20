@@ -23,7 +23,7 @@ type LuaVerified = {
   signature?: string;
 };
 
-const luaBin = process.env.MPP_INTEROP_LUA_BIN ?? "/Users/efebarandurmaz/lua-5.5.0/src/lua";
+const luaBin = process.env.MPP_INTEROP_LUA_BIN ?? "lua";
 
 async function main() {
   const environment = readInteropEnvironment();

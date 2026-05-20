@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-const LUA_BIN = process.env.MPP_INTEROP_LUA_BIN ?? "/Users/efebarandurmaz/lua-5.5.0/src/lua";
+const LUA_BIN = process.env.MPP_INTEROP_LUA_BIN ?? "lua";
 
 describe("Lua interop server bridge", () => {
   it("builds a route-bound charge challenge using the Lua SDK", async () => {
