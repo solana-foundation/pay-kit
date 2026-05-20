@@ -34,3 +34,19 @@ For coverage, when `luacov` is available:
 ```bash
 just lua-test-cover
 ```
+
+## Local Payment Check
+
+Lua is server-side only in this repository. Use `curl` to confirm a Lua-backed
+server returns a payment challenge, then use the `pay` CLI to complete the 402
+challenge/credential flow.
+
+```bash
+brew install pay
+
+# payment required
+curl http://localhost:4567/paid
+
+# payment successful
+pay curl http://localhost:4567/paid
+```
