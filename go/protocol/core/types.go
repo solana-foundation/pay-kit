@@ -48,7 +48,15 @@ func NewBase64URLJSONValue(value any) (Base64URLJSON, error) {
 	if err != nil {
 		return Base64URLJSON{}, err
 	}
-	return Base64URLJSON{raw: Base64URLEncode(raw)}, nil
+	var canonicalValue any
+	if err := json.Unmarshal(raw, &canonicalValue); err != nil {
+		return Base64URLJSON{}, err
+	}
+	canonicalRaw, err := json.Marshal(canonicalValue)
+	if err != nil {
+		return Base64URLJSON{}, err
+	}
+	return Base64URLJSON{raw: Base64URLEncode(canonicalRaw)}, nil
 }
 
 // Raw returns the raw base64url value.
