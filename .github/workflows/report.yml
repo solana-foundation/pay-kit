@@ -39,15 +39,9 @@ jobs:
         continue-on-error: true
       - uses: actions/download-artifact@v7
         with:
-          name: surfpool-reports-rust
+          pattern: surfpool-reports-*
           path: surfpool-reports
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
-      - uses: actions/download-artifact@v7
-        with:
-          name: surfpool-reports-ts
-          path: surfpool-reports
+          merge-multiple: true
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
@@ -64,22 +58,36 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-rust-
       - name: Generate merged report
         run: |
-          COUNT=$(ls surfpool-reports/*.json 2>/dev/null | wc -l)
+          mkdir -p surfpool-reports
+          COUNT=$(find surfpool-reports -name '*.json' -type f | wc -l)
           if [ "$COUNT" -gt 0 ]; then
             echo "Generating report from $COUNT surfpool instances..."
             mkdir -p rust/target
             ln -sfn "$PWD/surfpool-reports" rust/target/surfpool-reports
             cd rust && cargo test --test charge_integration generate_report -- --nocapture 2>&1 || true
             [ -f target/surfpool-report.html ] && cp target/surfpool-report.html ../surfpool-report.html
+          else
+            echo "No Surfpool report artifacts found; skipping merged report generation."
           fi
 
       # Fetch the reusable action
       - uses: actions/checkout@v5
         with:
           repository: solana-foundation/surfpool
-          ref: feat/sdk
+          ref: feat/sdk-report
           sparse-checkout: .github/actions
           path: _surfpool
+        continue-on-error: true
+
+      - name: Check report action
+        id: report-action
+        run: |
+          if [ -f "_surfpool/.github/actions/test-report/action.yml" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Surfpool test-report action is unavailable; skipping PR report comment."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Resolve PR number from the workflow run
       - name: Get PR number
@@ -95,7 +103,7 @@ jobs:
 
       # Post unified comment
       - name: Post test report
-        if: steps.pr.outputs.number != ''
+        if: steps.pr.outputs.number != '' && steps.report-action.outputs.available == 'true'
         uses: ./_surfpool/.github/actions/test-report
         with:
           ts-coverage-json: ts-cov/coverage-summary.json
