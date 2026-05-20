@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { resolveLuaBinary } from "../src/fixtures/lua/binary";
 
-const LUA_BIN = process.env.MPP_INTEROP_LUA_BIN ?? "lua";
+const LUA_BIN = resolveLuaBinary();
 
 describe("Lua interop server bridge", () => {
-  it("builds a route-bound charge challenge using the Lua SDK", async () => {
+  const luaIt = LUA_BIN ? it : it.skip;
+
+  luaIt("builds a route-bound charge challenge using the Lua SDK", async () => {
     const result = await runLuaBridge({
       command: "challenge",
       currency: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
@@ -34,6 +37,12 @@ describe("Lua interop server bridge", () => {
 });
 
 async function runLuaBridge(input: unknown): Promise<Record<string, unknown>> {
+  if (!LUA_BIN) {
+    throw new Error(
+      "Lua bridge test requires a Lua binary. Set MPP_INTEROP_LUA_BIN or install lua in PATH.",
+    );
+  }
+
   const child = spawn(LUA_BIN, ["lua-server/bridge.lua"], {
     cwd: process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],

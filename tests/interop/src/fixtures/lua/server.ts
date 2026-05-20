@@ -8,6 +8,7 @@ import {
 } from "@solana/kit";
 import { coSignBase64Transaction } from "../../../../../typescript/packages/mpp/src/utils/transactions";
 import { readInteropEnvironment } from "../typescript/shared";
+import { resolveLuaBinary } from "./binary";
 
 type LuaChallenge = {
   type: "challenge";
@@ -23,9 +24,15 @@ type LuaVerified = {
   signature?: string;
 };
 
-const luaBin = process.env.MPP_INTEROP_LUA_BIN ?? "lua";
+const luaBin = resolveLuaBinary();
 
 async function main() {
+  if (!luaBin) {
+    throw new Error(
+      "Lua interop server requires a Lua binary. Set MPP_INTEROP_LUA_BIN or install lua in PATH.",
+    );
+  }
+
   const environment = readInteropEnvironment();
   const feePayerSigner = await createKeyPairSignerFromBytes(
     environment.feePayerSecretKey,
@@ -232,7 +239,14 @@ async function verifyCredential(
 }
 
 async function runLuaBridge<T>(payload: unknown): Promise<T> {
-  const child = spawn(luaBin, ["lua-server/bridge.lua"], {
+  const command = luaBin;
+  if (!command) {
+    throw new Error(
+      "Lua interop server requires a Lua binary. Set MPP_INTEROP_LUA_BIN or install lua in PATH.",
+    );
+  }
+
+  const child = spawn(command, ["lua-server/bridge.lua"], {
     cwd: process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],
   });
