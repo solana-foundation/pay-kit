@@ -29,6 +29,21 @@ cd lua
 lua tests/run.lua
 ```
 
+## Local Payment Check
+
+Use `curl` to confirm the server returns a payment challenge, then use the
+`pay` CLI to complete the 402 challenge/credential flow.
+
+```bash
+brew install pay
+
+# payment required
+curl http://localhost:4567/paid
+
+# payment successful
+pay curl http://localhost:4567/paid
+```
+
 For coverage, when `luacov` is available:
 
 ```bash

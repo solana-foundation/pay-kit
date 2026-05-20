@@ -211,6 +211,19 @@ jobs:
           name: go-coverage
           path: go/coverage.out
 
+  test-lua:
+    name: Lua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - name: Run tests
+        working-directory: lua
+        run: lua5.4 tests/run.lua
+
   integration:
     name: Integration tests
     needs: build-html
