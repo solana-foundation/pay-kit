@@ -1,10 +1,13 @@
 package com.solana.mpp
 
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
+import java.security.KeyPairGenerator
 
 class ChargeCredentialTest {
     @Test
@@ -61,6 +64,19 @@ class ChargeCredentialTest {
     }
 
     @Test
+    fun memorySignerUsesRawEd25519PublicKeyBytes() {
+        val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val signer = MemorySigner.fromKeyPair(keyPair)
+        val publicKey = Base64Url.decode(signer.publicKey)
+        val derPublicKey = keyPair.public.encoded
+
+        assertEquals(32, publicKey.size)
+        assertNotEquals(Base64Url.encode(derPublicKey), signer.publicKey)
+        assertContentEquals(derPublicKey.copyOfRange(derPublicKey.size - 32, derPublicKey.size), publicKey)
+        assertEquals(signer.publicKey, signer.address)
+    }
+
+    @Test
     fun rejectsUnsupportedIntent() {
         val challenge = PaymentChallenge(
             id = "challenge-2",
@@ -83,6 +99,21 @@ class ChargeCredentialTest {
                 """Payment id="challenge-3", realm="MPP Payment", method="solana", intent="charge", request="@@@"""",
             )
         }
+    }
+
+    @Test
+    fun rejectsUnterminatedQuotedAuthParam() {
+        assertFailsWith<MppException.InvalidHeader> {
+            MppHeaders.parseWWWAuthenticate(
+                """Payment id="challenge-4", realm="MPP Payment", method="solana", intent="charge", request="${encodedRequest()}""",
+            )
+        }
+    }
+
+    private class StaticChargeTransactionProvider(
+        private val transaction: String,
+    ) : ChargeTransactionProvider {
+        override fun buildTransaction(request: ChargeRequest): String = transaction
     }
 
     private fun challengeHeader(): String =

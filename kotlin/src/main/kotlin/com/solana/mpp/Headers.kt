@@ -75,6 +75,7 @@ object MppHeaders {
 
             val decoded = StringBuilder()
             var escaped = false
+            var closed = false
             while (index < value.length) {
                 val char = value[index]
                 index += 1
@@ -84,10 +85,14 @@ object MppHeaders {
                         escaped = false
                     }
                     char == '\\' -> escaped = true
-                    char == '"' -> break
+                    char == '"' -> {
+                        closed = true
+                        break
+                    }
                     else -> decoded.append(char)
                 }
             }
+            if (!closed || escaped) throw MppException.InvalidHeader
             params[key] = decoded.toString()
         }
 
