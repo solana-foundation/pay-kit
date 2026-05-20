@@ -249,7 +249,6 @@ def _parsed_ata_creation_matches(
         and parsed_ata == ata
         and parsed_mint == mint
         and parsed_token_program == token_program
-        and _verify_ata_owner(parsed_ata, parsed_owner, parsed_mint, parsed_token_program)
     )
 
 

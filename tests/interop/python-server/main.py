@@ -23,6 +23,7 @@ from solana_mpp._errors import PaymentError  # noqa: E402
 from solana_mpp._headers import format_receipt, format_www_authenticate, parse_authorization  # noqa: E402
 from solana_mpp.protocol.intents import ChargeRequest  # noqa: E402
 from solana_mpp.server.mpp import ChargeOptions, Config, Mpp  # noqa: E402
+from solana_mpp.store import MemoryStore  # noqa: E402
 
 
 class InteropServer(ThreadingHTTPServer):
@@ -128,6 +129,7 @@ def build_challenge(environment: dict[str, Any], price: str) -> Any:
             rpc_url=environment["rpc_url"],
             secret_key=environment["secret_key"],
             realm="MPP Interop",
+            store=environment["store"],
         )
     )
     return handler.charge_with_options(
@@ -151,6 +153,7 @@ async def verify_credential(environment: dict[str, Any], authorization: str, cha
                 rpc_url=environment["rpc_url"],
                 secret_key=environment["secret_key"],
                 realm="MPP Interop",
+                store=environment["store"],
                 rpc=rpc_client,
             )
         )
@@ -192,6 +195,7 @@ def required_env(name: str) -> str:
 
 def main() -> None:
     environment = read_environment()
+    environment["store"] = MemoryStore()
     server = InteropServer(("127.0.0.1", 0), Handler)
     try:
         server.environment = environment
