@@ -211,6 +211,15 @@ jobs:
           name: go-coverage
           path: go/coverage.out
 
+  test-swift:
+    name: Swift tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run tests
+        working-directory: swift
+        run: swift test
+
   integration:
     name: Integration tests
     needs: build-html
