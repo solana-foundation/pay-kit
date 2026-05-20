@@ -20,6 +20,63 @@ struct ChargeCredentialTests {
     }
 
     @Test
+    func parsesAuthParamsWithWhitespaceBeforeQuotedValues() throws {
+        let request = try Self.encodedRequest()
+        let challenge = try MppHeaders.parseWWWAuthenticate(
+            """
+            Payment id= "challenge-1", realm= \t"MPP Payment", method= "solana", intent= "charge", request= "\(request)"
+            """
+        )
+
+        #expect(challenge.id == "challenge-1")
+        #expect(challenge.realm == "MPP Payment")
+        #expect(challenge.request == request)
+    }
+
+    @Test
+    func rejectsUnterminatedQuotedAuthParam() throws {
+        let request = try Self.encodedRequest()
+
+        #expect(throws: MppError.invalidHeader) {
+            _ = try MppHeaders.parseWWWAuthenticate(
+                """
+                Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="\(request)
+                """
+            )
+        }
+    }
+
+    @Test
+    func rejectsDanglingEscapeInQuotedAuthParam() throws {
+        #expect(throws: MppError.invalidHeader) {
+            _ = try MppHeaders.parseWWWAuthenticate(
+                """
+                Payment id="challenge-1\\
+                """
+            )
+        }
+    }
+
+    @Test
+    func preservesChargeRequestDecodeDetails() throws {
+        let invalidRequest = Base64URL.encode(Data(#"{"amount":"1000"}"#.utf8))
+        let challenge = try PaymentChallenge(
+            id: "challenge-4",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: invalidRequest
+        )
+
+        do {
+            _ = try challenge.chargeRequest
+            Issue.record("expected invalid JSON error")
+        } catch let MppError.invalidJSON(detail) {
+            #expect(detail.contains("currency"))
+        }
+    }
+
+    @Test
     func serializesPullModeAuthorizationCredential() async throws {
         let challenge = try MppHeaders.parseWWWAuthenticate(Self.challengeHeader())
         let builder = ChargeCredentialBuilder(

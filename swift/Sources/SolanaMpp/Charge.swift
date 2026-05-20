@@ -1,10 +1,10 @@
 import Foundation
 
-public protocol ChargeTransactionProviding {
+public protocol ChargeTransactionProviding: Sendable {
     func buildTransaction(for request: ChargeRequest) async throws -> String
 }
 
-public struct StaticChargeTransactionProvider: ChargeTransactionProviding {
+public struct StaticChargeTransactionProvider: ChargeTransactionProviding, Sendable {
     private let transaction: String
 
     public init(transaction: String) {
@@ -16,10 +16,10 @@ public struct StaticChargeTransactionProvider: ChargeTransactionProviding {
     }
 }
 
-public struct ChargeCredentialBuilder {
-    private let transactionProvider: ChargeTransactionProviding
+public struct ChargeCredentialBuilder: Sendable {
+    private let transactionProvider: any ChargeTransactionProviding
 
-    public init(transactionProvider: ChargeTransactionProviding) {
+    public init(transactionProvider: any ChargeTransactionProviding) {
         self.transactionProvider = transactionProvider
     }
 

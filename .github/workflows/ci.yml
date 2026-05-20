@@ -216,9 +216,16 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Run tests
+      - name: Run tests with coverage
         working-directory: swift
-        run: swift test
+        run: swift test --enable-code-coverage
+      - name: Upload Swift coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-coverage
+          path: swift/.build/debug/codecov/
+          if-no-files-found: ignore
 
   integration:
     name: Integration tests

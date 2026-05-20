@@ -3,13 +3,13 @@ import Foundation
 public enum MppError: Error, Equatable {
     case invalidBase64URL
     case invalidHeader
-    case invalidJSON
+    case invalidJSON(String)
     case invalidPaymentScheme
     case missingField(String)
     case unsupportedChallenge(method: String, intent: String)
 }
 
-public struct PaymentChallenge: Codable, Equatable {
+public struct PaymentChallenge: Codable, Equatable, Sendable {
     public let id: String
     public let realm: String
     public let method: String
@@ -25,7 +25,7 @@ public struct PaymentChallenge: Codable, Equatable {
             do {
                 return try JSONDecoder().decode(ChargeRequest.self, from: data)
             } catch {
-                throw MppError.invalidJSON
+                throw MppError.invalidJSON(String(describing: error))
             }
         }
     }
@@ -71,7 +71,7 @@ public struct PaymentChallenge: Codable, Equatable {
     }
 }
 
-public struct ChallengeEcho: Codable, Equatable {
+public struct ChallengeEcho: Codable, Equatable, Sendable {
     public let id: String
     public let realm: String
     public let method: String
@@ -82,7 +82,7 @@ public struct ChallengeEcho: Codable, Equatable {
     public let opaque: String?
 }
 
-public struct ChargeRequest: Codable, Equatable {
+public struct ChargeRequest: Codable, Equatable, Sendable {
     public let amount: String
     public let currency: String
     public let recipient: String
@@ -90,7 +90,7 @@ public struct ChargeRequest: Codable, Equatable {
     public let methodDetails: SolanaChargeMethodDetails
 }
 
-public struct SolanaChargeMethodDetails: Codable, Equatable {
+public struct SolanaChargeMethodDetails: Codable, Equatable, Sendable {
     public let network: String?
     public let decimals: Int?
     public let feePayer: Bool?
@@ -100,14 +100,14 @@ public struct SolanaChargeMethodDetails: Codable, Equatable {
     public let tokenProgram: String?
 }
 
-public struct SolanaChargeSplit: Codable, Equatable {
+public struct SolanaChargeSplit: Codable, Equatable, Sendable {
     public let recipient: String
     public let amount: String
     public let ataCreationRequired: Bool?
     public let memo: String?
 }
 
-public struct PaymentCredential: Codable, Equatable {
+public struct PaymentCredential: Codable, Equatable, Sendable {
     public let challenge: ChallengeEcho
     public let payload: CredentialPayload
     public let source: String?
@@ -119,7 +119,7 @@ public struct PaymentCredential: Codable, Equatable {
     }
 }
 
-public enum CredentialPayload: Codable, Equatable {
+public enum CredentialPayload: Codable, Equatable, Sendable {
     case transaction(String)
     case signature(String)
 

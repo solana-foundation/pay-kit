@@ -71,8 +71,14 @@ public enum MppHeaders {
                 throw MppError.invalidHeader
             }
             let key = value[keyStart..<index].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else {
+                throw MppError.invalidHeader
+            }
             index = value.index(after: index)
 
+            while index < value.endIndex, value[index].isWhitespace {
+                index = value.index(after: index)
+            }
             guard index < value.endIndex, value[index] == "\"" else {
                 throw MppError.invalidHeader
             }
@@ -80,6 +86,7 @@ public enum MppHeaders {
 
             var decoded = ""
             var escaped = false
+            var closed = false
             while index < value.endIndex {
                 let char = value[index]
                 index = value.index(after: index)
@@ -89,10 +96,14 @@ public enum MppHeaders {
                 } else if char == "\\" {
                     escaped = true
                 } else if char == "\"" {
+                    closed = true
                     break
                 } else {
                     decoded.append(char)
                 }
+            }
+            guard closed, !escaped else {
+                throw MppError.invalidHeader
             }
             params[key] = decoded
         }
