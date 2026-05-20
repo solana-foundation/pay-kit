@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestDefaultRPCURL(t *testing.T) {
 	if DefaultRPCURL("devnet") != "https://api.devnet.solana.com" {
@@ -63,5 +66,21 @@ func TestDefaultTokenProgramForCurrency(t *testing.T) {
 		if DefaultTokenProgramForCurrency(currency, "mainnet-beta") != TokenProgram {
 			t.Fatalf("expected %s to default to SPL Token", currency)
 		}
+	}
+}
+
+func TestSplitJSONIncludesAtaCreationRequired(t *testing.T) {
+	ataCreationRequired := true
+	raw, err := json.Marshal(Split{
+		Recipient:           "recipient",
+		Amount:              "250",
+		AtaCreationRequired: &ataCreationRequired,
+	})
+	if err != nil {
+		t.Fatalf("marshal split: %v", err)
+	}
+	want := `{"recipient":"recipient","amount":"250","ataCreationRequired":true}`
+	if string(raw) != want {
+		t.Fatalf("unexpected split json:\n got %s\nwant %s", raw, want)
 	}
 }
