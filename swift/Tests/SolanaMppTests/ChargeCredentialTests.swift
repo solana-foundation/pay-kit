@@ -39,6 +39,30 @@ struct ChargeCredentialTests {
     }
 
     @Test
+    func transactionProviderCanUseSolanaSigner() async throws {
+        let challenge = try MppHeaders.parseWWWAuthenticate(Self.challengeHeader())
+        let signer = MemorySigner(
+            publicKey: Data("dev-public-key".utf8),
+            address: "feePayer1111111111111111111111111111111"
+        ) { message in
+            #expect(String(decoding: message, as: UTF8.self) == "charge:1000:recipient11111111111111111111111111111111")
+            return Data("signed-transaction-bytes".utf8)
+        }
+        let builder = ChargeCredentialBuilder(
+            transactionProvider: SignerBackedTransactionProvider(signer: signer)
+        )
+
+        let header = try await builder.authorizationHeader(for: challenge)
+        let encoded = String(header.dropFirst("Payment ".count))
+        let credentialData = try Base64URL.decode(encoded)
+        let credential = try JSONDecoder().decode(PaymentCredential.self, from: credentialData)
+        let request = try challenge.chargeRequest
+
+        #expect(signer.address == request.methodDetails.feePayerKey)
+        #expect(credential.payload == .transaction("c2lnbmVkLXRyYW5zYWN0aW9uLWJ5dGVz"))
+    }
+
+    @Test
     func rejectsUnsupportedIntent() async throws {
         let request = try Self.encodedRequest()
         let challenge = try PaymentChallenge(
@@ -103,5 +127,15 @@ struct ChargeCredentialTests {
         }
         """
         return Base64URL.encode(Data(json.utf8))
+    }
+}
+
+private struct SignerBackedTransactionProvider: ChargeTransactionProviding {
+    let signer: any SolanaSigner
+
+    func buildTransaction(for request: ChargeRequest) async throws -> String {
+        let message = Data("charge:\(request.amount):\(request.recipient)".utf8)
+        let signedTransaction = try await signer.sign(message: message)
+        return signedTransaction.base64EncodedString()
     }
 }
