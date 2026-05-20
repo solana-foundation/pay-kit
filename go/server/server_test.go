@@ -8,12 +8,14 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/token"
+	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 
 	"github.com/solana-foundation/mpp-sdk/go"
 	"github.com/solana-foundation/mpp-sdk/go/client"
 	"github.com/solana-foundation/mpp-sdk/go/internal/solanautil"
 	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
 	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
 )
 
 func newTestMpp(t *testing.T) (*Mpp, *testutil.FakeRPC, testutilConfig) {
@@ -584,6 +586,55 @@ func TestVerifyTransfersAgainstChallengeRejectsWrongSPLMint(t *testing.T) {
 	}
 }
 
+func TestVerifyTransfersAgainstChallengeAcceptsToken2022Transfer(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	tokenProgram := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, tokenProgram)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+	ix, err := token2022.NewTransferCheckedInstruction(
+		1000,
+		6,
+		sourceATA,
+		mint,
+		recipientATA,
+		payer.PublicKey(),
+		nil,
+	).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build transfer failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, ix)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{
+		TokenProgram: protocol.Token2022Program,
+	}); err != nil {
+		t.Fatalf("expected token2022 transfer to pass: %v", err)
+	}
+}
+
+func TestBuildExpectedTransfersRejectsInvalidSplitFields(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey()
+	if _, err := buildExpectedTransfers(1000, recipient, protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "not-a-number"}},
+	}); err == nil {
+		t.Fatal("expected invalid split amount to fail")
+	}
+	if _, err := buildExpectedTransfers(1000, recipient, protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: "not-a-pubkey", Amount: "100"}},
+	}); err == nil {
+		t.Fatal("expected invalid split recipient to fail")
+	}
+}
+
 func TestVerifyCredentialExpiredChallengeRejected(t *testing.T) {
 	handler, _, _ := newTestMpp(t)
 	challenge, err := handler.ChargeWithOptions(context.Background(), "0.001", ChargeOptions{
@@ -601,6 +652,48 @@ func TestVerifyCredentialExpiredChallengeRejected(t *testing.T) {
 	}
 	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
 		t.Fatal("expected expired challenge to fail")
+	}
+}
+
+func TestVerifyCredentialRejectsInvalidPayloadType(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type": "voucher",
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+		t.Fatal("expected invalid payload type to fail")
+	}
+}
+
+func TestVerifyCredentialWithExpectedRejectsInvalidExpectedMethodDetails(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type":      "signature",
+		"signature": testutil.NewPrivateKey().PublicKey().String(),
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+
+	var expected intents.ChargeRequest
+	if err := challenge.Request.Decode(&expected); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	expected.MethodDetails = map[string]any{"decimals": "not-a-number"}
+
+	if _, err := handler.VerifyCredentialWithExpected(context.Background(), credential, expected); err == nil {
+		t.Fatal("expected invalid expected methodDetails to fail")
 	}
 }
 

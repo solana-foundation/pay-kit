@@ -48,6 +48,23 @@ func hasVaryAuthorization(header http.Header) bool {
 	return false
 }
 
+func TestMarkAuthorizationBoundResponsePreservesExistingVary(t *testing.T) {
+	withAuthorization := http.Header{"Vary": {"Accept-Encoding, Authorization"}}
+	markAuthorizationBoundResponse(withAuthorization)
+	if got := withAuthorization.Values("Vary"); len(got) != 1 {
+		t.Fatalf("expected existing authorization vary to be preserved, got %#v", got)
+	}
+	if withAuthorization.Get("Cache-Control") != "no-store" {
+		t.Fatal("expected no-store cache control")
+	}
+
+	wildcard := http.Header{"Vary": {"*"}}
+	markAuthorizationBoundResponse(wildcard)
+	if got := wildcard.Values("Vary"); len(got) != 1 || got[0] != "*" {
+		t.Fatalf("expected wildcard vary to be preserved, got %#v", got)
+	}
+}
+
 func TestMiddlewareNoAuth402(t *testing.T) {
 	m := newMiddlewareTestMpp(t)
 	handler := PaymentMiddleware(m, constantCharge("0.001"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -329,6 +329,25 @@ func TestBuildChargeTransactionTokenWithFeePayer(t *testing.T) {
 	}
 }
 
+func TestBuildChargeTransactionTokenRejectsInvalidFeePayerKey(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	mint := testutil.NewPrivateKey().PublicKey()
+	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+	decimals := uint8(6)
+	enabled := true
+
+	_, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, protocol.MethodDetails{
+		Decimals:    &decimals,
+		FeePayer:    &enabled,
+		FeePayerKey: "not-a-pubkey",
+	}, BuildOptions{})
+	if err == nil {
+		t.Fatal("expected invalid fee payer key to fail")
+	}
+}
+
 func TestBuildChargeTransactionRejectsUnsupportedTokenProgramHint(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()
@@ -421,6 +440,22 @@ func TestBuildCredentialHeaderInvalidRequest(t *testing.T) {
 	}
 	if _, err := BuildCredentialHeader(context.Background(), signer, rpcClient, challenge); err == nil {
 		t.Fatal("expected error for invalid request")
+	}
+}
+
+func TestBuildCredentialHeaderRejectsInvalidMethodDetails(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signer := testutil.NewPrivateKey()
+	challengeRequest, _ := mpp.NewBase64URLJSONValue(map[string]any{
+		"amount":        "1000",
+		"currency":      "sol",
+		"recipient":     testutil.NewPrivateKey().PublicKey().String(),
+		"methodDetails": map[string]any{"decimals": "not-a-number"},
+	})
+	challenge := mpp.NewChallengeWithSecret("secret", "realm", "solana", "charge", challengeRequest)
+
+	if _, err := BuildCredentialHeader(context.Background(), signer, rpcClient, challenge); err == nil {
+		t.Fatal("expected invalid methodDetails to fail")
 	}
 }
 

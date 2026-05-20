@@ -51,9 +51,9 @@ func TestAcceptsHTML(t *testing.T) {
 
 func TestIsServiceWorkerRequest(t *testing.T) {
 	tests := []struct {
-		name    string
-		rawURL  string
-		want    bool
+		name   string
+		rawURL string
+		want   bool
 	}{
 		{"with param", "http://example.com/?__mpp_worker", true},
 		{"with param and value", "http://example.com/?__mpp_worker=1", true},
@@ -171,5 +171,29 @@ func TestChallengeToHTMLEscapesDescription(t *testing.T) {
 	}
 	if !strings.Contains(html, `&lt;script&gt;alert(1)&lt;/script&gt;`) {
 		t.Fatal("expected HTML-escaped description in output")
+	}
+}
+
+func TestFormatAmountDisplay(t *testing.T) {
+	tests := []struct {
+		name     string
+		amount   string
+		currency string
+		decimals uint8
+		want     string
+	}{
+		{"usdc whole", "1000000", "USDC", 6, "$1"},
+		{"usdc fractional", "1230000", "USDC", 6, "$1.23"},
+		{"sol", "500000000", "sol", 6, "0.50 SOL"},
+		{"invalid amount", "not-a-number", "USDC", 6, "$0"},
+		{"custom currency truncated", "123456", "LONGTOKENMINT", 6, "0.12 LONGTO"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatAmountDisplay(tt.amount, tt.currency, tt.decimals); got != tt.want {
+				t.Fatalf("formatAmountDisplay() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 )
@@ -84,6 +85,26 @@ func TestParseWWWAuthenticateMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestParseWWWAuthenticateRejectsMalformedParams(t *testing.T) {
+	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1000"})
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"unterminated quote", `Payment id="abc, realm="r", method="solana", intent="charge", request="` + request.Raw() + `"`},
+		{"duplicate parameter", `Payment id="abc", id="def", realm="r", method="solana", intent="charge", request="` + request.Raw() + `"`},
+		{"invalid parameter", `Payment id, realm="r", method="solana", intent="charge", request="` + request.Raw() + `"`},
+		{"invalid request json", `Payment id="abc", realm="r", method="solana", intent="charge", request="bm90LWpzb24"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseWWWAuthenticate(tc.header); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
 func TestParseWWWAuthenticateWithOpaqueAndDigest(t *testing.T) {
 	opaque, _ := NewBase64URLJSONValue(map[string]string{"session": "xyz"})
 	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1000"})
@@ -156,6 +177,25 @@ func TestParseAuthorizationInvalidBase64(t *testing.T) {
 	}
 }
 
+func TestParseAuthorizationInvalidJSON(t *testing.T) {
+	header := PaymentScheme + " " + Base64URLEncode([]byte("not-json"))
+	if _, err := ParseAuthorization(header); err == nil {
+		t.Fatal("expected invalid credential JSON error")
+	}
+}
+
+func TestParseReceiptRejectsMalformedValues(t *testing.T) {
+	if _, err := ParseReceipt("not-base64"); err == nil {
+		t.Fatal("expected invalid base64 receipt error")
+	}
+	if _, err := ParseReceipt(Base64URLEncode([]byte("not-json"))); err == nil {
+		t.Fatal("expected invalid JSON receipt error")
+	}
+	if _, err := ParseReceipt(string(make([]byte, 17*1024))); err == nil {
+		t.Fatal("expected oversized receipt error")
+	}
+}
+
 func TestFormatAuthorizationRoundTrip(t *testing.T) {
 	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "500"})
 	challenge := NewChallengeWithSecret("secret", "realm", NewMethodName("solana"), NewIntentName("charge"), request)
@@ -177,6 +217,14 @@ func TestFormatAuthorizationRoundTrip(t *testing.T) {
 	}
 	if payload["type"] != "transaction" {
 		t.Fatalf("unexpected payload type: %q", payload["type"])
+	}
+}
+
+func TestFormatAuthorizationRejectsInvalidRawPayload(t *testing.T) {
+	raw := json.RawMessage(`{"unterminated"`)
+	_, err := FormatAuthorization(PaymentCredential{Payload: &raw})
+	if err == nil {
+		t.Fatal("expected invalid raw payload to fail")
 	}
 }
 

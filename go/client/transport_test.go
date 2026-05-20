@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -18,6 +19,16 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type errReadCloser struct{}
+
+func (errReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("read failed")
+}
+
+func (errReadCloser) Close() error {
+	return nil
+}
+
 func newTestChallenge() mpp.PaymentChallenge {
 	fakeRPC := testutil.NewFakeRPC()
 	request, _ := mpp.NewBase64URLJSONValue(map[string]any{
@@ -30,6 +41,52 @@ func newTestChallenge() mpp.PaymentChallenge {
 		},
 	})
 	return mpp.NewChallengeWithSecret("secret", "realm", "solana", "charge", request)
+}
+
+func TestTransportDefaults(t *testing.T) {
+	transport := &PaymentTransport{}
+	if transport.base() != http.DefaultTransport {
+		t.Fatal("expected default transport")
+	}
+	if got := transport.buildOptions(); got != (BuildOptions{}) {
+		t.Fatalf("expected empty build options, got %#v", got)
+	}
+
+	opts := &BuildOptions{ComputeUnitLimit: 400_000, ComputeUnitPrice: 10}
+	transport.Options = opts
+	if got := transport.buildOptions(); got != *opts {
+		t.Fatalf("expected configured build options, got %#v", got)
+	}
+}
+
+func TestTransportReturnsBodyReadError(t *testing.T) {
+	transport := &PaymentTransport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			t.Fatal("base transport should not be called when request body cannot be buffered")
+			return nil, nil
+		}),
+	}
+
+	req, _ := http.NewRequest("POST", "http://example.com", nil)
+	req.Body = errReadCloser{}
+	_, err := transport.RoundTrip(req)
+	if err == nil || !strings.Contains(err.Error(), "read failed") {
+		t.Fatalf("expected body read error, got %v", err)
+	}
+}
+
+func TestTransportReturnsBaseError(t *testing.T) {
+	transport := &PaymentTransport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("network failed")
+		}),
+	}
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	_, err := transport.RoundTrip(req)
+	if err == nil || !strings.Contains(err.Error(), "network failed") {
+		t.Fatalf("expected base transport error, got %v", err)
+	}
 }
 
 func TestTransportPassthroughNon402(t *testing.T) {
@@ -52,6 +109,48 @@ func TestTransportPassthroughNon402(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestTransportBuildCredentialFailureReturnsOriginal402(t *testing.T) {
+	request, err := mpp.NewBase64URLJSONValue(map[string]any{
+		"amount":    "not-a-number",
+		"currency":  "sol",
+		"recipient": testutil.NewPrivateKey().PublicKey().String(),
+	})
+	if err != nil {
+		t.Fatalf("request encode failed: %v", err)
+	}
+	challenge := mpp.NewChallengeWithSecret("secret", "realm", "solana", "charge", request)
+	wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
+	if err != nil {
+		t.Fatalf("format challenge: %v", err)
+	}
+
+	calls := 0
+	transport := &PaymentTransport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: http.StatusPaymentRequired,
+				Body:       io.NopCloser(strings.NewReader("payment required")),
+				Header:     http.Header{"Www-Authenticate": {wwwAuth}},
+			}, nil
+		}),
+		Signer: testutil.NewPrivateKey(),
+		RPC:    testutil.NewFakeRPC(),
+	}
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("expected original 402, got %d", resp.StatusCode)
+	}
+	if calls != 1 {
+		t.Fatalf("expected no retry when credential build fails, got %d calls", calls)
 	}
 }
 
@@ -225,7 +324,16 @@ func TestTransportPOSTBodyReplay(t *testing.T) {
 func TestNewClient(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	rpc := testutil.NewFakeRPC()
-	c := NewClient(signer, rpc)
+	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+			Header:     http.Header{},
+		}, nil
+	})
+	c := NewClient(signer, rpc, func(t *PaymentTransport) {
+		t.Base = base
+	})
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
@@ -235,6 +343,9 @@ func TestNewClient(t *testing.T) {
 	}
 	if pt.Signer == nil || pt.RPC == nil {
 		t.Fatal("expected signer and rpc to be set")
+	}
+	if pt.Base == nil {
+		t.Fatal("expected option to configure base transport")
 	}
 }
 

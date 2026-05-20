@@ -43,6 +43,14 @@ func TestPaymentCredentialPayloadAs(t *testing.T) {
 	}
 }
 
+func TestNewPaymentCredentialRejectsUnmarshalablePayload(t *testing.T) {
+	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1000"})
+	challenge := NewChallengeWithSecret("secret", "realm", NewMethodName("solana"), NewIntentName("charge"), request)
+	if _, err := NewPaymentCredential(challenge.ToEcho(), map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("expected marshal error")
+	}
+}
+
 func TestIsExpiredEmptyString(t *testing.T) {
 	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1"})
 	challenge := NewChallengeWithSecretFull("s", "r", NewMethodName("solana"), NewIntentName("charge"), request, "", "", "", nil)

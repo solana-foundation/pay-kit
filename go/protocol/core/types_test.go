@@ -47,6 +47,23 @@ func TestBase64URLJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBase64URLJSONValueRejectsUnmarshalableValue(t *testing.T) {
+	if _, err := NewBase64URLJSONValue(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("expected marshal error")
+	}
+}
+
+func TestBase64URLJSONDecodeRejectsInvalidRawValue(t *testing.T) {
+	value := NewBase64URLJSONRaw("not-base64")
+	var out map[string]any
+	if err := value.Decode(&out); err == nil {
+		t.Fatal("expected invalid base64 decode error")
+	}
+	if _, err := value.DecodeValue(); err == nil {
+		t.Fatal("expected invalid base64 decode value error")
+	}
+}
+
 func TestBase64URLJSONValueCanonicalizesStructFields(t *testing.T) {
 	type request struct {
 		Currency      string         `json:"currency"`

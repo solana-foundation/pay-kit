@@ -2,6 +2,7 @@ package solanautil
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -11,6 +12,19 @@ import (
 	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
 	"github.com/solana-foundation/mpp-sdk/go/protocol"
 )
+
+type failingSigner struct {
+	key solana.PublicKey
+	err error
+}
+
+func (s failingSigner) PublicKey() solana.PublicKey {
+	return s.key
+}
+
+func (s failingSigner) Sign([]byte) (solana.Signature, error) {
+	return solana.Signature{}, s.err
+}
 
 func TestSplitAmounts(t *testing.T) {
 	primary, err := SplitAmounts(1000, []protocol.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "100"}})
@@ -71,6 +85,39 @@ func TestSignEncodeDecodeTransaction(t *testing.T) {
 	}
 	if len(decoded.Signatures) != 1 || decoded.Signatures[0].IsZero() {
 		t.Fatal("expected decoded signature")
+	}
+}
+
+func TestSignTransactionRejectsSignerFailure(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	transfer, err := BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
+	if err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	if err != nil {
+		t.Fatalf("tx failed: %v", err)
+	}
+	if err := SignTransaction(tx, failingSigner{key: payer.PublicKey(), err: errors.New("sign failed")}); err == nil {
+		t.Fatal("expected signer failure")
+	}
+}
+
+func TestSignTransactionRejectsUnexpectedSigner(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	other := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	transfer, err := BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
+	if err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	tx, err := solana.NewTransaction([]solana.Instruction{transfer}, testutil.NewFakeRPC().Blockhash, solana.TransactionPayer(payer.PublicKey()))
+	if err != nil {
+		t.Fatalf("tx failed: %v", err)
+	}
+	if err := SignTransaction(tx, other); err == nil {
+		t.Fatal("expected non-required signer to fail")
 	}
 }
 
@@ -334,5 +381,33 @@ func TestWaitForConfirmationReturnsFailure(t *testing.T) {
 	}
 	if err := WaitForConfirmation(context.Background(), rpcClient, signature); err == nil {
 		t.Fatal("expected confirmation failure")
+	}
+}
+
+func TestWaitForConfirmationReturnsContextError(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	signature := solana.MustSignatureFromBase58("5jKh25biPsnrmLWXXuqKNH2Q67Q4UmVVx8Gf2wrS6VoCeyfGE9wKikjY7Q1GQQgmpQ3xy7wJX5U1rcz82q4R8Nkv")
+	rpcClient.Statuses[signature.String()] = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := WaitForConfirmation(ctx, rpcClient, signature); err == nil {
+		t.Fatal("expected context cancellation")
+	}
+}
+
+func TestSimulateTransactionReturnsSimulationError(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	rpcClient.SimulateErr = errors.New("simulate failed")
+	if err := SimulateTransaction(context.Background(), rpcClient, &solana.Transaction{}); err == nil {
+		t.Fatal("expected simulate error")
+	}
+}
+
+func TestFetchTransactionReturnsRPCError(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	rpcClient.GetTxErr = errors.New("get transaction failed")
+	signature := solana.MustSignatureFromBase58("5jKh25biPsnrmLWXXuqKNH2Q67Q4UmVVx8Gf2wrS6VoCeyfGE9wKikjY7Q1GQQgmpQ3xy7wJX5U1rcz82q4R8Nkv")
+	if _, _, err := FetchTransaction(context.Background(), rpcClient, signature); err == nil {
+		t.Fatal("expected get transaction error")
 	}
 }
