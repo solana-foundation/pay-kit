@@ -97,6 +97,50 @@ final class ChargeServerTest extends TestCase
         self::assertSame('challenge expired', $result->reason);
     }
 
+    public function testRejectsMalformedAuthorizationHeader(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+
+        $result = $server->verifyAuthorizationHeader('Bearer invalid', $this->unusedVerifier());
+
+        self::assertFalse($result->ok);
+        self::assertSame('Expected Payment scheme', $result->reason);
+    }
+
+    public function testRejectsChallengeMethodMismatch(): void
+    {
+        $issuer = new ChargeServer(secretKey: 'secret', realm: 'api', method: 'card');
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api', method: 'solana');
+        $challenge = $issuer->createChallenge(new ChargeRequest(amount: '1', currency: 'USD'));
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'card']);
+
+        $result = $server->verifyAuthorizationHeader($credential->toAuthorizationHeader(), $this->unusedVerifier());
+
+        self::assertFalse($result->ok);
+        self::assertSame('challenge method or intent mismatch', $result->reason);
+    }
+
+    public function testRejectsInvalidChargeRequestEcho(): void
+    {
+        $request = 'not-json';
+        $challenge = new Challenge(
+            id: Challenge::computeId('secret', 'api', 'solana', 'charge', $request),
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: $request,
+        );
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = (new ChargeServer(secretKey: 'secret', realm: 'api'))->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('Invalid JSON value', $result->reason);
+    }
+
     public function testRejectsCrossRouteChargeRequestReplay(): void
     {
         $server = new ChargeServer(secretKey: 'secret', realm: 'api');
@@ -229,6 +273,17 @@ final class ChargeServerTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('missing transaction payload', $result->reason);
+    }
+
+    public function testRejectsReceiptForFailedVerification(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDC'));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Cannot create a receipt for a failed verification');
+
+        $server->createReceiptHeader($challenge, VerificationResult::failure('missing transaction payload'));
     }
 
     private function unusedVerifier(): PaymentVerifier

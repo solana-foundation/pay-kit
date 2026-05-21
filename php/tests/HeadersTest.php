@@ -43,12 +43,60 @@ final class HeadersTest extends TestCase
         self::assertSame($challenge->id, Headers::parseWwwAuthenticate($header)->id);
     }
 
+    public function testParsesUnquotedAuthParams(): void
+    {
+        $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);
+        $header = sprintf(
+            'Payment id=%s, realm=api, method=solana, intent=charge, request=%s',
+            $challenge->id,
+            $challenge->request,
+        );
+
+        $parsed = Headers::parseWwwAuthenticate($header);
+
+        self::assertSame($challenge->id, $parsed->id);
+        self::assertSame('api', $parsed->realm);
+    }
+
+    public function testEscapesQuotedAuthParams(): void
+    {
+        $challenge = Challenge::withSecret(
+            secretKey: 'secret',
+            realm: 'api "quoted"',
+            method: 'solana',
+            intent: 'charge',
+            request: ['amount' => '1', 'currency' => 'USDC'],
+            opaque: 'opaque \\ value',
+        );
+
+        $parsed = Headers::parseWwwAuthenticate(Headers::formatWwwAuthenticate($challenge));
+
+        self::assertSame('api "quoted"', $parsed->realm);
+        self::assertSame('opaque \\ value', $parsed->opaque);
+    }
+
     public function testRejectsInvalidChallengeHeader(): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Expected Payment scheme');
 
         Headers::parseWwwAuthenticate('Bearer realm="api"');
+    }
+
+    public function testRejectsMissingChallengeFields(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Missing "request" field');
+
+        Headers::parseWwwAuthenticate('Payment id="id", realm="api", method="solana", intent="charge"');
+    }
+
+    public function testRejectsInvalidAuthParameter(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid auth parameter');
+
+        Headers::parseWwwAuthenticate('Payment id realm="api"');
     }
 
     public function testRejectsDuplicateAuthParams(): void
@@ -60,6 +108,22 @@ final class HeadersTest extends TestCase
         $this->expectExceptionMessage('Duplicate auth parameter');
 
         Headers::parseWwwAuthenticate($header);
+    }
+
+    public function testRejectsUnterminatedQuotedAuthParam(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unterminated quoted value');
+
+        Headers::parseWwwAuthenticate('Payment id="id');
+    }
+
+    public function testRejectsDanglingQuotedEscape(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid quoted value');
+
+        Headers::parseWwwAuthenticate('Payment id="id\\');
     }
 
     public function testRejectsCrlfInFormattedAuthParams(): void
@@ -76,6 +140,22 @@ final class HeadersTest extends TestCase
         $this->expectExceptionMessage('Invalid header value');
 
         Headers::formatWwwAuthenticate($challenge);
+    }
+
+    public function testRejectsOversizedReceiptHeader(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Receipt exceeds maximum length');
+
+        Headers::parseReceipt(str_repeat('a', 16 * 1024 + 1));
+    }
+
+    public function testRejectsInvalidReceiptJson(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid base64url value');
+
+        Headers::parseReceipt('not-base64url!');
     }
 
     public function testReceiptHeaderRoundTrip(): void
