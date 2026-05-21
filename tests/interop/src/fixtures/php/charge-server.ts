@@ -30,6 +30,11 @@ type PhpBridgeErrorPayload = {
   error: string;
 };
 
+export type SignatureStatus = {
+  confirmationStatus?: string;
+  err?: unknown;
+} | null;
+
 export class PhpBridgeError extends Error {
   constructor(
     readonly code: string,
@@ -330,23 +335,33 @@ async function sendTransaction(
   ]);
 }
 
-async function waitForSignature(
+export async function waitForSignature(
   rpcUrl: string,
   signature: string,
 ): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const status = await rpc<{ value: Array<{ confirmationStatus?: string } | null> }>(
+    const status = await rpc<{ value: SignatureStatus[] }>(
       rpcUrl,
       "getSignatureStatuses",
       [[signature]],
     );
-    const confirmationStatus = status.value[0]?.confirmationStatus;
-    if (confirmationStatus === "confirmed" || confirmationStatus === "finalized") {
+    if (isSettledSignatureStatus(signature, status.value[0] ?? null)) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Timed out waiting for transaction ${signature}`);
+}
+
+export function isSettledSignatureStatus(
+  signature: string,
+  status: SignatureStatus,
+): boolean {
+  if (status?.err) {
+    throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+  }
+  return status?.confirmationStatus === "confirmed" ||
+    status?.confirmationStatus === "finalized";
 }
 
 function extractRecentBlockhash(transaction: string): string | null {

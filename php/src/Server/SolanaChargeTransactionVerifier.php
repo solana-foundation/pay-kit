@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SolanaMpp\Server;
 
 use InvalidArgumentException;
+use Throwable;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Json;
@@ -41,6 +42,8 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             $this->verifyTransaction($transaction, $request);
         } catch (InvalidArgumentException $error) {
             return VerificationResult::failure($error->getMessage());
+        } catch (Throwable) {
+            return VerificationResult::failure('invalid transaction payload');
         }
 
         return VerificationResult::success(reference: $transaction);

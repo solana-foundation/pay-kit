@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isSettledSignatureStatus,
   isPaymentRejected,
   PhpBridgeError,
 } from "../src/fixtures/php/charge-server";
@@ -17,5 +18,24 @@ describe("php bridge errors", () => {
     expect(isPaymentRejected(new PhpBridgeError("bridge_error", "boom"))).toBe(
       false,
     );
+  });
+
+  it("rejects confirmed transactions with on-chain errors", () => {
+    expect(() =>
+      isSettledSignatureStatus("sig", {
+        confirmationStatus: "confirmed",
+        err: { InstructionError: [0, "Custom"] },
+      }),
+    ).toThrow("Transaction sig failed");
+  });
+
+  it("accepts confirmed and finalized transactions without on-chain errors", () => {
+    expect(isSettledSignatureStatus("sig", {
+      confirmationStatus: "confirmed",
+    })).toBe(true);
+    expect(isSettledSignatureStatus("sig", {
+      confirmationStatus: "finalized",
+    })).toBe(true);
+    expect(isSettledSignatureStatus("sig", null)).toBe(false);
   });
 });

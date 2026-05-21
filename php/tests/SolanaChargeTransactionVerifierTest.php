@@ -75,6 +75,15 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertSame('invalid transaction payload', $result->reason);
     }
 
+    public function testRejectsMalformedBinaryTransactionPayload(): void
+    {
+        $fixture = $this->fixture();
+        $result = $this->verify($this->request($fixture), base64_encode("\xffnot-a-transaction"));
+
+        self::assertFalse($result->ok);
+        self::assertNotSame('', $result->reason);
+    }
+
     public function testAcceptsNativeSolTransferWithSplitAndMemos(): void
     {
         $fixture = $this->fixture();
