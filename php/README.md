@@ -59,7 +59,7 @@ pay curl http://localhost:4567/paid
 
 ## Client compatibility matrix
 
-| Cell | Status |
+| Intent | Status |
 |---|:---:|
 | `x402/exact` | — |
 | `x402/upto` | — |
