@@ -46,7 +46,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             return VerificationResult::failure('invalid transaction payload');
         }
 
-        return VerificationResult::success(reference: $transaction);
+        return VerificationResult::success(reference: '');
     }
 
     private function verifyTransaction(string $transactionBase64, ChargeRequest $request): void
@@ -403,7 +403,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
                 throw new InvalidArgumentException('Unexpected program instruction in payment transaction: ' . $programId);
             }
             if ($programId === self::COMPUTE_BUDGET_PROGRAM) {
-                $this->validateComputeBudgetInstruction($instruction['data']);
+                $this->validateComputeBudgetInstruction($instruction);
                 continue;
             }
             if (isset($matched[$index])) {
@@ -431,9 +431,20 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         }
     }
 
-    private function validateComputeBudgetInstruction(string $data): void
+    /**
+     * @param array{programIdIndex: int, accounts: array<int, int>, data: string} $instruction
+     */
+    private function validateComputeBudgetInstruction(array $instruction): void
     {
+        if ($instruction['accounts'] !== []) {
+            throw new InvalidArgumentException('compute budget instruction must not have accounts');
+        }
+
+        $data = $instruction['data'];
         $kind = $data === '' ? null : ord($data[0]);
+        // Keep this aligned with the Rust/TypeScript MPP charge verifier.
+        // Generic Solana compute-budget instructions may be valid, but MPP
+        // charge payments currently only allow limit and price instructions.
         if ($kind === 2 && strlen($data) === 5) {
             $units = $this->readU32Le(substr($data, 1, 4));
             if ($units > self::MAX_COMPUTE_UNIT_LIMIT) {

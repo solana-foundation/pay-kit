@@ -10,7 +10,7 @@ import {
 import { coSignBase64Transaction } from "../../../../../typescript/packages/mpp/src/utils/transactions";
 import { readInteropEnvironment } from "../typescript/shared";
 
-type PhpChallenge = {
+export type PhpChallenge = {
   type: "challenge";
   request: Record<string, unknown>;
   wwwAuthenticate: string;
@@ -18,8 +18,6 @@ type PhpChallenge = {
 
 type PhpVerified = {
   type: "verified";
-  receipt: string;
-  reference: string;
   transaction?: string;
   signature?: string;
 };
@@ -124,7 +122,7 @@ async function main() {
       response.writeHead(200, {
         "content-type": "application/json",
         [environment.settlementHeader]: signature,
-        "payment-receipt": verified.receipt,
+        "payment-receipt": formatPaymentReceipt(signature, challenge),
       });
       response.end(JSON.stringify({ ok: true, paid: true }));
     } catch (error) {
@@ -362,6 +360,48 @@ export function isSettledSignatureStatus(
   }
   return status?.confirmationStatus === "confirmed" ||
     status?.confirmationStatus === "finalized";
+}
+
+export function formatPaymentReceipt(
+  reference: string,
+  challenge: PhpChallenge,
+): string {
+  const receipt: Record<string, string> = {
+    method: "solana",
+    reference,
+    status: "success",
+    timestamp: new Date().toISOString(),
+  };
+  const challengeId = authParam(challenge.wwwAuthenticate, "id");
+  if (challengeId) {
+    receipt.challengeId = challengeId;
+  }
+  const externalId = challenge.request.externalId;
+  if (typeof externalId === "string" && externalId !== "") {
+    receipt.externalId = externalId;
+  }
+  return Buffer.from(JSON.stringify(canonicalizeJson(receipt))).toString(
+    "base64url",
+  );
+}
+
+function authParam(header: string, name: string): string | undefined {
+  const match = header.match(new RegExp(`${name}="([^"]*)"`));
+  return match?.[1];
+}
+
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalizeJson(nested)]),
+    );
+  }
+  return value;
 }
 
 function extractRecentBlockhash(transaction: string): string | null {

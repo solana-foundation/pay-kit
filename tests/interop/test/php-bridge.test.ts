@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatPaymentReceipt,
   isSettledSignatureStatus,
   isPaymentRejected,
   PhpBridgeError,
@@ -37,5 +38,22 @@ describe("php bridge errors", () => {
       confirmationStatus: "finalized",
     })).toBe(true);
     expect(isSettledSignatureStatus("sig", null)).toBe(false);
+  });
+
+  it("formats receipts with the settled signature as reference", () => {
+    const receiptHeader = formatPaymentReceipt("settled-signature", {
+      type: "challenge",
+      request: { externalId: "order-1" },
+      wwwAuthenticate: 'Payment id="challenge-id", method="solana"',
+    });
+    const receipt = JSON.parse(Buffer.from(receiptHeader, "base64url").toString("utf8")) as {
+      challengeId?: string;
+      externalId?: string;
+      reference?: string;
+    };
+
+    expect(receipt.challengeId).toBe("challenge-id");
+    expect(receipt.externalId).toBe("order-1");
+    expect(receipt.reference).toBe("settled-signature");
   });
 });

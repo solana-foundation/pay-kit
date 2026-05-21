@@ -135,8 +135,6 @@ function verify_payment(array $input): void
 
     write_json([
         'type' => 'verified',
-        'receipt' => $server->createReceiptHeader($credential->challenge->toChallenge(), $result),
-        'reference' => $result->reference,
         'transaction' => $credential->payload['transaction'] ?? null,
         'signature' => $credential->payload['signature'] ?? null,
     ]);

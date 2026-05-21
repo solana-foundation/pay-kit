@@ -15,6 +15,7 @@ use SolanaPhpSdk\Programs\ComputeBudgetProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
+use SolanaPhpSdk\Transaction\AccountMeta;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\TransactionInstruction;
 
@@ -28,7 +29,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = $this->verify($request, $transaction);
 
         self::assertTrue($result->ok, $result->reason);
-        self::assertSame($transaction, $result->reference);
+        self::assertSame('', $result->reference);
     }
 
     public function testRejectsSplTransactionWithWrongAmount(): void
@@ -329,6 +330,28 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = $this->verify($request, $transaction);
 
         self::assertTrue($result->ok, $result->reason);
+    }
+
+    public function testRejectsComputeBudgetInstructionWithAccounts(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $instruction = ComputeBudgetProgram::setComputeUnitLimit(1000);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                new TransactionInstruction(
+                    ComputeBudgetProgram::programId(),
+                    [AccountMeta::readonly($fixture['recipient'])],
+                    $instruction->data,
+                ),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('compute budget instruction must not have accounts', $result->reason);
     }
 
     public function testRejectsUnexpectedProgramInstruction(): void
