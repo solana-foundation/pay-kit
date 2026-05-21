@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SolanaMpp\Tests;
 
+use DateTimeImmutable;
+use DateTimeZone;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SolanaMpp\Core\Receipt;
@@ -30,6 +32,17 @@ final class ReceiptTest extends TestCase
 
         self::assertSame('challenge-id', $receipt->toArray()['challengeId']);
         self::assertSame('order-1', $receipt->toArray()['externalId']);
+    }
+
+    public function testSuccessTimestampIsNormalizedToUtc(): void
+    {
+        $receipt = Receipt::success(
+            method: 'solana',
+            reference: 'sig',
+            now: new DateTimeImmutable('2026-05-19T03:30:00.123+03:00', new DateTimeZone('Europe/Istanbul')),
+        );
+
+        self::assertSame('2026-05-19T00:30:00.123Z', $receipt->timestamp);
     }
 
     public function testParsesReceiptFromArray(): void

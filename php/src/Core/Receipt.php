@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SolanaMpp\Core;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use InvalidArgumentException;
 
 final class Receipt
@@ -32,7 +33,7 @@ final class Receipt
         return new self(
             status: 'success',
             method: $method,
-            timestamp: ($now ?? new DateTimeImmutable())->format('Y-m-d\TH:i:s.v\Z'),
+            timestamp: ($now ?? new DateTimeImmutable())->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.v\Z'),
             reference: $reference,
             challengeId: $challengeId,
             externalId: $externalId,
