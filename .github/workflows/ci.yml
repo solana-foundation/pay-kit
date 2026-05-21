@@ -434,6 +434,10 @@ jobs:
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
+      - name: Install Lua for Lua interop
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck
@@ -462,3 +466,4 @@ jobs:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: lua
           MPP_INTEROP_SCENARIOS: charge-basic
+          MPP_INTEROP_LUA_BIN: lua5.4
