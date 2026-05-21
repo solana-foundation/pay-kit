@@ -41,6 +41,9 @@
     "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 90"
   },
   "config": {
+    "platform": {
+      "php": "8.3.31"
+    },
     "sort-packages": true
   },
   "minimum-stability": "stable"
