@@ -6,6 +6,7 @@ namespace SolanaMpp\Tests;
 
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
@@ -323,6 +324,28 @@ final class ChargeServerTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('missing transaction payload', $result->reason);
+    }
+
+    public function testVerifierExceptionsFailClosed(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = new ChargeRequest(amount: '1000', currency: 'USDC');
+        $challenge = $server->createChallenge($request);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class () implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    throw new RuntimeException('sdk parser failed');
+                }
+            },
+            expectedRequest: $request,
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('payment verification failed', $result->reason);
     }
 
     public function testRejectsReceiptForFailedVerification(): void

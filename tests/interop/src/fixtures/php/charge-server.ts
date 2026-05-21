@@ -88,7 +88,6 @@ async function main() {
 
       const verified = await verifyCredential(
         environment,
-        feePayerSigner.address,
         authorization,
         challenge.request,
       ).catch((error: unknown) => {
@@ -239,20 +238,13 @@ async function buildChallenge(
 
 async function verifyCredential(
   environment: ReturnType<typeof readInteropEnvironment>,
-  feePayerKey: string,
   authorization: string,
   expected: Record<string, unknown>,
 ): Promise<PhpVerified> {
   return await runPhpBridge<PhpVerified>({
     authorization,
     command: "verify",
-    currency: environment.mint,
-    decimals: 6,
     expected,
-    feePayer: true,
-    feePayerKey,
-    network: environment.network,
-    recipient: environment.payTo,
     secretKey: environment.secretKey,
   });
 }

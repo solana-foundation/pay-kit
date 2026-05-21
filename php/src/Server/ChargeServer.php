@@ -6,6 +6,7 @@ namespace SolanaMpp\Server;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Throwable;
 use SolanaMpp\Core\Base64Url;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
@@ -68,6 +69,8 @@ final class ChargeServer
             $challenge = $this->challengeFromEcho($credential);
         } catch (InvalidArgumentException $error) {
             return VerificationResult::failure($error->getMessage());
+        } catch (Throwable) {
+            return VerificationResult::failure('invalid payment credential');
         }
 
         if ($challenge->method !== $this->method || $challenge->intent !== 'charge') {
@@ -87,13 +90,21 @@ final class ChargeServer
             $request = ChargeRequest::fromArray($challenge->decodeRequest());
         } catch (InvalidArgumentException $error) {
             return VerificationResult::failure($error->getMessage());
+        } catch (Throwable) {
+            return VerificationResult::failure('invalid charge request');
         }
 
         if ($expectedRequest !== null && !$this->matchesExpectedRequest($request, $expectedRequest)) {
             return VerificationResult::failure('charge request mismatch');
         }
 
-        return $verifier->verify($credential, $challenge);
+        try {
+            return $verifier->verify($credential, $challenge);
+        } catch (InvalidArgumentException $error) {
+            return VerificationResult::failure($error->getMessage());
+        } catch (Throwable) {
+            return VerificationResult::failure('payment verification failed');
+        }
     }
 
     /**
