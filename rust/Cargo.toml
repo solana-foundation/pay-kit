@@ -28,6 +28,9 @@ solana-signature = { version = "3.1", default-features = false, features = ["def
 solana-system-interface = { version = "2.0", default-features = false }
 solana-transaction = { version = "3.0", default-features = false }
 solana-transaction-status = { version = "3.1", default-features = false }
+# Keep spl-token-2022-interface 2.1 compiling until Solana 3.1 can move to
+# the newer token-2022 interface line.
+solana-zero-copy = { version = "=1.0.0", default-features = false }
 
 # Async
 tokio = { version = "1", features = ["full"], optional = true }
