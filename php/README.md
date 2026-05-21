@@ -50,6 +50,11 @@ PHP is server-side only for the current MPP roadmap. Use a client SDK or the
 ```bash
 brew install pay
 
+# start the example server
+cd php
+composer install
+php -S 127.0.0.1:4567 examples/charge-server.php
+
 # payment required
 curl http://localhost:4567/paid
 

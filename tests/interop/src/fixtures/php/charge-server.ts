@@ -18,6 +18,7 @@ export type PhpChallenge = {
 
 type PhpVerified = {
   type: "verified";
+  challenge: PhpReceiptChallenge;
   transaction?: string;
   signature?: string;
 };
@@ -26,6 +27,11 @@ type PhpBridgeErrorPayload = {
   type: "error";
   code: string;
   error: string;
+};
+
+type PhpReceiptChallenge = {
+  id: string;
+  request: Record<string, unknown>;
 };
 
 export type SignatureStatus = {
@@ -122,7 +128,7 @@ async function main() {
       response.writeHead(200, {
         "content-type": "application/json",
         [environment.settlementHeader]: signature,
-        "payment-receipt": formatPaymentReceipt(signature, challenge),
+        "payment-receipt": formatPaymentReceipt(signature, verified.challenge),
       });
       response.end(JSON.stringify({ ok: true, paid: true }));
     } catch (error) {
@@ -364,18 +370,15 @@ export function isSettledSignatureStatus(
 
 export function formatPaymentReceipt(
   reference: string,
-  challenge: PhpChallenge,
+  challenge: PhpReceiptChallenge,
 ): string {
   const receipt: Record<string, string> = {
+    challengeId: challenge.id,
     method: "solana",
     reference,
     status: "success",
     timestamp: new Date().toISOString(),
   };
-  const challengeId = authParam(challenge.wwwAuthenticate, "id");
-  if (challengeId) {
-    receipt.challengeId = challengeId;
-  }
   const externalId = challenge.request.externalId;
   if (typeof externalId === "string" && externalId !== "") {
     receipt.externalId = externalId;
@@ -383,11 +386,6 @@ export function formatPaymentReceipt(
   return Buffer.from(JSON.stringify(canonicalizeJson(receipt))).toString(
     "base64url",
   );
-}
-
-function authParam(header: string, name: string): string | undefined {
-  const match = header.match(new RegExp(`${name}="([^"]*)"`));
-  return match?.[1];
 }
 
 function canonicalizeJson(value: unknown): unknown {

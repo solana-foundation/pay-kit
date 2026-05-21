@@ -42,9 +42,8 @@ describe("php bridge errors", () => {
 
   it("formats receipts with the settled signature as reference", () => {
     const receiptHeader = formatPaymentReceipt("settled-signature", {
-      type: "challenge",
+      id: "credential-challenge-id",
       request: { externalId: "order-1" },
-      wwwAuthenticate: 'Payment id="challenge-id", method="solana"',
     });
     const receipt = JSON.parse(Buffer.from(receiptHeader, "base64url").toString("utf8")) as {
       challengeId?: string;
@@ -52,7 +51,7 @@ describe("php bridge errors", () => {
       reference?: string;
     };
 
-    expect(receipt.challengeId).toBe("challenge-id");
+    expect(receipt.challengeId).toBe("credential-challenge-id");
     expect(receipt.externalId).toBe("order-1");
     expect(receipt.reference).toBe("settled-signature");
   });

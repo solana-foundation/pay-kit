@@ -135,6 +135,10 @@ function verify_payment(array $input): void
 
     write_json([
         'type' => 'verified',
+        'challenge' => [
+            'id' => $credential->challenge->id,
+            'request' => $credential->challenge->toChallenge()->decodeRequest(),
+        ],
         'transaction' => $credential->payload['transaction'] ?? null,
         'signature' => $credential->payload['signature'] ?? null,
     ]);
