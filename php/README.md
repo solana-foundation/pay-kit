@@ -126,7 +126,7 @@ headers. Use the interop harness for the full Surfpool-backed transaction flow.
 | Dependency | Why | Version |
 |---|---|---|
 | PHP standard library | server-side 402 helpers and HMAC challenge signing | 8.1+ |
-| `solana-php/solana-sdk` | Solana transaction decode plus SPL Token, ATA, Memo, and System program primitives | `dev-master#0bde2b0` |
+| `solana-php/solana-sdk` | Solana transaction decode plus SPL Token, ATA, Memo, and System program primitives | `dev-master` locked at `0bde2b0` |
 | `phpunit/phpunit` | tests and coverage gate | `^10.0 || ^11.0` |
 | `phpstan/phpstan` | static analysis at max level | `^2.1` |
 | `friendsofphp/php-cs-fixer` | PSR-12-compatible format checks | `^3.89` |

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "43750041a848c67c8740517e58ffddac",
+    "content-hash": "76570c68b5f99fb77e380411cd5001a0",
     "packages": [
         {
             "name": "solana-php/solana-sdk",
