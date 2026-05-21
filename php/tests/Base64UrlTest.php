@@ -69,11 +69,27 @@ final class Base64UrlTest extends TestCase
         Base64Url::decodeJson(Base64Url::encode('{'));
     }
 
+    public function testRejectsNonJsonValuesDuringCanonicalization(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('JSON value must be a scalar, object, or list');
+
+        Base64Url::encodeJson(['object' => (object)['not' => 'json']]);
+    }
+
     public function testRejectsJsonScalars(): void
     {
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('JSON value must be an object');
 
         Base64Url::decodeJson(Base64Url::encode('"not-an-object"'));
+    }
+
+    public function testRejectsJsonListsAtRoot(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('JSON value must be an object');
+
+        Base64Url::decodeJson(Base64Url::encode('[1,2,3]'));
     }
 }

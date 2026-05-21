@@ -68,8 +68,53 @@ final class Base64Url
             throw new InvalidArgumentException('JSON value must be an object');
         }
 
-        /** @var array<string, mixed> $decoded */
-        return $decoded;
+        return Json::object($decoded, 'JSON value');
+    }
+
+    /**
+     * @param array<array-key, mixed>|bool|float|int|string|null $value
+     * @return array<array-key, mixed>|bool|float|int|string|null
+     */
+    private static function canonicalizeJson(array|bool|float|int|string|null $value): array|bool|float|int|string|null
+    {
+        if (!is_array($value)) {
+            return self::canonicalizeScalar($value);
+        }
+
+        if (array_is_list($value)) {
+            $items = [];
+            foreach ($value as $nested) {
+                $items[] = is_array($nested) ? self::canonicalizeJson($nested) : self::canonicalizeScalar($nested);
+            }
+
+            return $items;
+        }
+
+        ksort($value, SORT_STRING);
+        foreach ($value as $key => $nested) {
+            unset($value[$key]);
+            $value[(string)$key] = is_array($nested) ? self::canonicalizeJson($nested) : self::canonicalizeScalar($nested);
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return bool|float|int|string|null
+     */
+    private static function canonicalizeScalar(mixed $value): bool|float|int|string|null
+    {
+        if (
+            $value === null ||
+            is_bool($value) ||
+            is_float($value) ||
+            is_int($value) ||
+            is_string($value)
+        ) {
+            return $value;
+        }
+
+        throw new InvalidArgumentException('JSON value must be a scalar, object, or list');
     }
 
     private static function pad(string $value): string
@@ -80,28 +125,5 @@ final class Base64Url
         }
 
         return $value . str_repeat('=', 4 - $remainder);
-    }
-
-    /**
-     * @param mixed $value
-     * @return mixed
-     */
-    private static function canonicalizeJson(mixed $value): mixed
-    {
-        if (!is_array($value)) {
-            return $value;
-        }
-
-        if (array_is_list($value)) {
-            return array_map(self::canonicalizeJson(...), $value);
-        }
-
-        ksort($value, SORT_STRING);
-        foreach ($value as $key => $nested) {
-            unset($value[$key]);
-            $value[(string)$key] = self::canonicalizeJson($nested);
-        }
-
-        return $value;
     }
 }
