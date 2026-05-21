@@ -11,9 +11,12 @@ use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\SolanaChargeTransactionVerifier;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
+use SolanaPhpSdk\Programs\ComputeBudgetProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
+use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Transaction\Transaction;
+use SolanaPhpSdk\Transaction\TransactionInstruction;
 
 final class SolanaChargeTransactionVerifierTest extends TestCase
 {
@@ -50,13 +53,126 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertStringContainsString('Missing required ATA creation instruction', $result->reason);
     }
 
-    /**
-     * @param array<string, PublicKey> $fixture
-     */
-    private function request(array $fixture, string $amount = '1000'): ChargeRequest
+    public function testRejectsMissingTransactionPayload(): void
     {
-        return new ChargeRequest(
-            amount: $amount,
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: []);
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('missing transaction payload', $result->reason);
+    }
+
+    public function testRejectsInvalidTransactionPayload(): void
+    {
+        $fixture = $this->fixture();
+        $result = $this->verify($this->request($fixture), 'not-base64!');
+
+        self::assertFalse($result->ok);
+        self::assertSame('invalid transaction payload', $result->reason);
+    }
+
+    public function testAcceptsNativeSolTransferWithSplitAndMemos(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $transaction = $this->solTransactionPayload($fixture);
+        $result = $this->verify($request, $transaction);
+
+        self::assertTrue($result->ok, $result->reason);
+    }
+
+    public function testRejectsNativeSolAtaCreation(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture, splitAtaRequired: true);
+        $transaction = $this->solTransactionPayload($fixture);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ataCreationRequired requires an SPL token charge', $result->reason);
+    }
+
+    public function testRejectsFeePayerFundingNativeSolPayment(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->solRequest($fixture);
+        $transaction = $this->solTransactionPayload($fixture, primarySource: $fixture['feePayer']);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('fee payer cannot fund the SOL payment transfer', $result->reason);
+    }
+
+    public function testRejectsTooManySplits(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, splits: array_fill(0, 9, [
+            'recipient' => $fixture['splitRecipient']->toBase58(),
+            'amount' => '1',
+        ]));
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('too many splits', $result->reason);
+    }
+
+    public function testRejectsSplitsThatConsumeTheWholeAmount(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, splits: [[
+            'recipient' => $fixture['splitRecipient']->toBase58(),
+            'amount' => '1000',
+        ]]);
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('split amounts exceed total amount', $result->reason);
+    }
+
+    public function testRejectsMissingRecipient(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, recipient: '');
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('recipient is required', $result->reason);
+    }
+
+    public function testRejectsFeePayerMismatch(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, feePayerKey: $fixture['payer']->toBase58());
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('transaction fee payer mismatch', $result->reason);
+    }
+
+    public function testRejectsMissingFeePayerKey(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, feePayerKey: '');
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('feePayer=true requires feePayerKey', $result->reason);
+    }
+
+    public function testRejectsMalformedSplitsValue(): void
+    {
+        $fixture = $this->fixture();
+        $request = new ChargeRequest(
+            amount: '1000',
             currency: $fixture['mint']->toBase58(),
             recipient: $fixture['recipient']->toBase58(),
             externalId: 'order-123',
@@ -66,11 +182,202 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
                 'tokenProgram' => TokenProgram::PROGRAM_ID,
                 'feePayer' => true,
                 'feePayerKey' => $fixture['feePayer']->toBase58(),
+                'splits' => 'invalid',
+            ],
+        );
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('splits must be an array', $result->reason);
+    }
+
+    public function testRejectsSplitWithoutRecipientAndAmount(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, splits: [[]]);
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('split recipient and amount are required', $result->reason);
+    }
+
+    public function testRejectsFeePayerAuthorizingSplTransfer(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            authority: $fixture['feePayer'],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('fee payer cannot authorize the SPL payment transfer', $result->reason);
+    }
+
+    public function testRejectsFeePayerTokenAccountFundingSplTransfer(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $feePayerAta = AssociatedTokenProgram::findAssociatedTokenAddress(
+            $fixture['feePayer'],
+            $fixture['mint'],
+            TokenProgram::programId(),
+        )[0];
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            sourceTokenAccount: $feePayerAta,
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('fee payer token account cannot fund the SPL payment transfer', $result->reason);
+    }
+
+    public function testRejectsMissingExternalIdMemo(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true, includeExternalIdMemo: false);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('No memo instruction found for externalId memo', $result->reason);
+    }
+
+    public function testRejectsExcessiveComputeUnitLimit(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [ComputeBudgetProgram::setComputeUnitLimit(200_001)],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('compute unit limit exceeds maximum', $result->reason);
+    }
+
+    public function testRejectsExcessiveComputeUnitPrice(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [ComputeBudgetProgram::setComputeUnitPrice(5_000_001)],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('compute unit price exceeds maximum', $result->reason);
+    }
+
+    public function testAcceptsComputeBudgetWithinVerifierLimits(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                ComputeBudgetProgram::setComputeUnitLimit(200_000),
+                ComputeBudgetProgram::setComputeUnitPrice(5_000_000),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertTrue($result->ok, $result->reason);
+    }
+
+    public function testRejectsUnexpectedProgramInstruction(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $program = PublicKey::fromBytes(str_repeat("\x07", 32));
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [new TransactionInstruction($program, [], '')],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('Unexpected program instruction in payment transaction', $result->reason);
+    }
+
+    public function testRejectsNonIdempotentAtaCreation(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true, idempotentAta: false);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('Only idempotent ATA creation is allowed', $result->reason);
+    }
+
+    /**
+     * @param array<string, PublicKey> $fixture
+     * @param array<int, array<string, mixed>>|null $splits
+     */
+    private function request(
+        array $fixture,
+        string $amount = '1000',
+        ?string $recipient = null,
+        ?string $feePayerKey = null,
+        ?array $splits = null,
+    ): ChargeRequest {
+        $splits ??= [
+            [
+                'recipient' => $fixture['splitRecipient']->toBase58(),
+                'amount' => '250',
+                'ataCreationRequired' => true,
+                'memo' => 'split memo',
+            ],
+        ];
+
+        return new ChargeRequest(
+            amount: $amount,
+            currency: $fixture['mint']->toBase58(),
+            recipient: $recipient ?? $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 6,
+                'tokenProgram' => TokenProgram::PROGRAM_ID,
+                'feePayer' => true,
+                'feePayerKey' => $feePayerKey ?? $fixture['feePayer']->toBase58(),
+                'splits' => $splits,
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, PublicKey> $fixture
+     */
+    private function solRequest(array $fixture, bool $splitAtaRequired = false): ChargeRequest
+    {
+        return new ChargeRequest(
+            amount: '1000',
+            currency: 'SOL',
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'feePayer' => true,
+                'feePayerKey' => $fixture['feePayer']->toBase58(),
                 'splits' => [
                     [
                         'recipient' => $fixture['splitRecipient']->toBase58(),
                         'amount' => '250',
-                        'ataCreationRequired' => true,
+                        'ataCreationRequired' => $splitAtaRequired,
                         'memo' => 'split memo',
                     ],
                 ],
@@ -80,9 +387,17 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
     /**
      * @param array<string, PublicKey> $fixture
+     * @param array<int, TransactionInstruction> $extraInstructions
      */
-    private function transactionPayload(array $fixture, bool $includeSplitAta): string
-    {
+    private function transactionPayload(
+        array $fixture,
+        bool $includeSplitAta,
+        ?PublicKey $authority = null,
+        ?PublicKey $sourceTokenAccount = null,
+        bool $includeExternalIdMemo = true,
+        bool $idempotentAta = true,
+        array $extraInstructions = [],
+    ): string {
         $tokenProgram = TokenProgram::programId();
         $recipientAta = AssociatedTokenProgram::findAssociatedTokenAddress(
             $fixture['recipient'],
@@ -97,35 +412,65 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         $instructions = [];
         $instructions[] = TokenProgram::transferChecked(
-            $fixture['sourceTokenAccount'],
+            $sourceTokenAccount ?? $fixture['sourceTokenAccount'],
             $fixture['mint'],
             $recipientAta,
-            $fixture['payer'],
+            $authority ?? $fixture['payer'],
             750,
             6,
             $tokenProgram,
         );
         if ($includeSplitAta) {
-            $instructions[] = AssociatedTokenProgram::createIdempotent(
-                $fixture['feePayer'],
-                $splitAta,
-                $fixture['splitRecipient'],
-                $fixture['mint'],
-                $tokenProgram,
-            );
+            $instructions[] = $idempotentAta
+                ? AssociatedTokenProgram::createIdempotent(
+                    $fixture['feePayer'],
+                    $splitAta,
+                    $fixture['splitRecipient'],
+                    $fixture['mint'],
+                    $tokenProgram,
+                )
+                : AssociatedTokenProgram::create(
+                    $fixture['feePayer'],
+                    $splitAta,
+                    $fixture['splitRecipient'],
+                    $fixture['mint'],
+                    $tokenProgram,
+                );
         }
         $instructions[] = TokenProgram::transferChecked(
-            $fixture['sourceTokenAccount'],
+            $sourceTokenAccount ?? $fixture['sourceTokenAccount'],
             $fixture['mint'],
             $splitAta,
-            $fixture['payer'],
+            $authority ?? $fixture['payer'],
             250,
             6,
             $tokenProgram,
         );
+        if ($includeExternalIdMemo) {
+            $instructions[] = MemoProgram::create('order-123');
+        }
+        $instructions[] = MemoProgram::create('split memo');
+        array_push($instructions, ...$extraInstructions);
+
+        $transaction = Transaction::new(
+            $instructions,
+            $fixture['feePayer'],
+            str_repeat("\x09", 32),
+        );
+
+        return base64_encode($transaction->serialize(verifySignatures: false));
+    }
+
+    /**
+     * @param array<string, PublicKey> $fixture
+     */
+    private function solTransactionPayload(array $fixture, ?PublicKey $primarySource = null): string
+    {
+        $instructions = [];
+        $instructions[] = SystemProgram::transfer($primarySource ?? $fixture['payer'], $fixture['recipient'], 750);
+        $instructions[] = SystemProgram::transfer($fixture['payer'], $fixture['splitRecipient'], 250);
         $instructions[] = MemoProgram::create('order-123');
         $instructions[] = MemoProgram::create('split memo');
-
         $transaction = Transaction::new(
             $instructions,
             $fixture['feePayer'],
