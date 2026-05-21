@@ -18,6 +18,10 @@ wire-compatible with the Rust reference at `mpp-sdk/rust` (in the
 - Reference Rust crate — `mpp-sdk/rust` (every wire-format claim in
   this skill is grep-able to a path under that tree)
 
+Before implementing a new language or changing a compatibility matrix, read
+`references/source-truth.md`. Before tagging a PR ready for review, read
+`references/pr-readiness.md`.
+
 ## Compatibility matrix — pick the cells in scope
 
 Both the client and server README matrices use the same seven rows. Confirm
@@ -77,6 +81,9 @@ the directory skeleton and CI from earlier ones.
    client and server matrices (with the seven rows above), example
    walkthrough, Solana dependency list, and links to spec. The matrix
    must use the exact row order shown above so it's diffable across SDKs.
+8. **Tag review readiness.** Read `references/pr-readiness.md`, address
+   Greptile feedback, and leave a short PR comment with the skill used,
+   verification commands, coverage signal, interop pairs, and known limits.
 
 ## Hard rules
 

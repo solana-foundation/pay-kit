@@ -59,7 +59,7 @@ any HTTP API accept payments using the `402 Payment Required` flow.
 | `x402/batch-settlement` | — |
 | `mpp/charge/pull` | ✅ |
 | `mpp/charge/push` | ✅ |
-| `mpp/session` | ✅ |
+| `mpp/session` | — |
 | `mpp/subscription` | — |
 
 ## Server compatibility matrix
@@ -71,7 +71,7 @@ any HTTP API accept payments using the `402 Payment Required` flow.
 | `x402/batch-settlement` | — |
 | `mpp/charge/pull` | ✅ |
 | `mpp/charge/push` | ✅ |
-| `mpp/session` | ✅ |
+| `mpp/session` | — |
 | `mpp/subscription` | — |
 
 ## How to use the library
@@ -152,6 +152,9 @@ MIT
   Reordering breaks the cross-language `README.md` table at the root.
 - **Use `—` not "n/a"** for un-shipped cells. The root README's matrix
   comparison and Playwright snapshot tests pattern-match the symbol.
+- **Do not mark optional cells as shipped by default.** `mpp/session`,
+  `mpp/subscription`, and all x402 rows stay `—` until the target SDK has
+  matching unit tests, coverage, and interop evidence for that exact cell.
 - **Badges:** language + coverage are mandatory; tests count is
   optional (used by Rust which doesn't report a coverage % yet).
 - **Snippets must be runnable.** Each `<lang>` block should compile or

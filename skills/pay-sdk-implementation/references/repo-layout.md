@@ -37,16 +37,16 @@ in the intent leaves translate directly:
 │   │   │   └── types.<ext>          ← MethodName, IntentName, Base64UrlJson, ReceiptStatus
 │   │   ├── intents/
 │   │   │   ├── charge.<ext>         ← ChargeRequest (string amounts; methodDetails)
-│   │   │   └── session.<ext>        ← SessionRequest, OpenPayload, VoucherData, Commit/Close/TopUp
+│   │   │   └── session.<ext>        ← add only when implementing mpp/session
 │   │   └── solana.<ext>             ← programs::*, mints::*, resolve_stablecoin_mint
 │   ├── server/
 │   │   ├── charge.<ext>             ← Mpp handler: charge(), charge_with_options(), verify_credential[_with_expected]()
-│   │   ├── session.<ext>            ← Session lifecycle handler
+│   │   ├── session.<ext>            ← add only when implementing mpp/session
 │   │   ├── html.<ext>               ← Payment-link page renderer
 │   │   └── html/                    ← Generated payment-link assets (DO NOT EDIT BY HAND)
 │   ├── client/
 │   │   ├── charge.<ext>             ← build_charge_transaction, build_credential_header
-│   │   ├── session.<ext>            ← Session client (open, voucher, commit, close)
+│   │   ├── session.<ext>            ← add only when implementing mpp/session
 │   │   ├── http_stream.<ext>        ← Optional: SSE / metered streaming helper
 │   │   └── payment_channels.<ext>   ← Optional: payment-channels program client
 │   └── bin/                         ← or `cmd/`, `scripts/` — interop adapters
