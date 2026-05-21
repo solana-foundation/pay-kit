@@ -84,8 +84,10 @@ pay curl http://localhost:4567/paid
 The PHP server checkmark means this package can issue charge challenges,
 validate `Payment` credentials, pin the echoed charge request to the protected
 route, and emit payment receipts. Native PHP transaction settlement verification
-is a follow-up; the Surfpool-backed interop server currently broadcasts the
-TypeScript-built Solana transaction after PHP accepts the credential envelope.
+now decodes and validates pull-mode transaction payloads before server
+co-sign/broadcast. RPC-backed broadcast, confirmation, and replay storage are
+follow-ups; the Surfpool-backed interop server still performs the final
+broadcast after PHP accepts the credential envelope.
 
 ## How to use the library
 
@@ -123,19 +125,18 @@ headers. Use the interop harness for the full Surfpool-backed transaction flow.
 | Dependency | Why | Version |
 |---|---|---|
 | PHP standard library | server-side 402 helpers and HMAC challenge signing | 8.1+ |
+| `solana-php/solana-sdk` | Solana transaction decode plus SPL Token, ATA, Memo, and System program primitives | `dev-master#0bde2b0` |
 | `phpunit/phpunit` | tests and coverage gate | `^10.0 || ^11.0` |
-| Solana transaction builder | client-side payment construction | — |
 | Ed25519 verifier | server-side voucher verification | — |
 | RFC 8785 canonical JSON | request field pre-base64url | local implementation |
 
 PHP does not currently construct Solana transactions or act as a wallet client.
 The TypeScript interop fixture verifies PHP server behavior by combining this
 package with the TypeScript transaction client.
-[`solana-php/solana-sdk`](https://github.com/SolDapper/solana-php) is the
-current candidate for future direct PHP Solana transaction/RPC support once its
-package distribution and the MPP-owned settlement verifier semantics are
-calibrated. It is intentionally not a dependency of this server-side charge
-pass.
+`solana-php/solana-sdk` is installed from GitHub as a VCS dependency because
+the package is not yet available through the default Composer registry lookup.
+MPP still owns the payment verification semantics; the dependency only supplies
+Solana wire primitives.
 
 ## Coding convention
 

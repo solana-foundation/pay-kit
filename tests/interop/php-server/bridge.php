@@ -7,8 +7,7 @@ use SolanaMpp\Core\Headers;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\PaymentVerifier;
-use SolanaMpp\Server\VerificationResult;
+use SolanaMpp\Server\SolanaChargeTransactionVerifier;
 
 require_once __DIR__ . '/../../../php/vendor/autoload.php';
 
@@ -91,25 +90,6 @@ function challenge(array $input): void
 }
 
 /**
- * Echoes a successful transaction or signature payload as the settlement reference.
- */
-final class EchoVerifier implements PaymentVerifier
-{
-    /**
-     * Verify the credential payload and return the echoed settlement reference.
-     */
-    public function verify(Credential $credential, Challenge $challenge): VerificationResult
-    {
-        $reference = $credential->payload['signature'] ?? $credential->payload['transaction'] ?? '';
-        if (!is_string($reference) || $reference === '') {
-            return VerificationResult::failure('missing settlement reference');
-        }
-
-        return VerificationResult::success(reference: (string) $reference);
-    }
-}
-
-/**
  * Verify a Payment credential against an expected charge request.
  *
  * @param array<string, mixed> $input
@@ -123,7 +103,7 @@ function verify_payment(array $input): void
     $expected = ChargeRequest::fromArray(required($input, 'expected'));
     $result = $server->verifyAuthorizationHeader(
         (string) required($input, 'authorization'),
-        new EchoVerifier(),
+        new SolanaChargeTransactionVerifier(),
         expectedRequest: $expected,
     );
     if (!$result->ok) {
