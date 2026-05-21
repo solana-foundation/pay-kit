@@ -420,14 +420,7 @@ function isNetworkMismatch(network: string, blockhash: string | null): boolean {
 export function isPaymentRejected(error: unknown): boolean {
   return (
     error instanceof PhpBridgeError &&
-    [
-      "charge_request_mismatch",
-      "challenge_realm_mismatch",
-      "challenge_verification_failed",
-      "challenge_expired",
-      "challenge_method_or_intent_mismatch",
-      "payment_rejected",
-    ].includes(error.code)
+    error.code === "payment_rejected"
   );
 }
 

@@ -151,11 +151,6 @@ function error_code(string $message): string
 {
     return match (true) {
         str_starts_with($message, 'payment rejected: ') => 'payment_rejected',
-        str_contains($message, 'charge request mismatch') => 'charge_request_mismatch',
-        str_contains($message, 'challenge realm mismatch') => 'challenge_realm_mismatch',
-        str_contains($message, 'challenge verification failed') => 'challenge_verification_failed',
-        str_contains($message, 'challenge expired') => 'challenge_expired',
-        str_contains($message, 'challenge method or intent mismatch') => 'challenge_method_or_intent_mismatch',
         default => 'bridge_error',
     };
 }
