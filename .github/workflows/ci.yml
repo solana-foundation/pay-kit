@@ -429,6 +429,9 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
       - name: Download HTML assets
         uses: actions/download-artifact@v7
         with:
@@ -445,6 +448,9 @@ jobs:
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
+      - name: Install PHP interop dependencies
+        working-directory: php
+        run: composer install --no-interaction --no-progress
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck
