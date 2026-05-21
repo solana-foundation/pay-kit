@@ -44,4 +44,33 @@ final class CredentialTest extends TestCase
 
         Credential::fromAuthorizationHeader('Bearer token');
     }
+
+    public function testRejectsOversizedCredentialToken(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Token exceeds maximum length of 16384 bytes');
+
+        Credential::fromAuthorizationHeader('Payment ' . str_repeat('a', 16 * 1024 + 1));
+    }
+
+    public function testRejectsCredentialMissingChallengeObject(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid credential JSON structure');
+
+        Credential::fromAuthorizationHeader('Payment ' . \SolanaMpp\Core\Base64Url::encodeJson(['payload' => ['type' => 'signature']]));
+    }
+
+    public function testRejectsNonObjectPayload(): void
+    {
+        $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Credential payload must be an object');
+
+        Credential::fromAuthorizationHeader('Payment ' . \SolanaMpp\Core\Base64Url::encodeJson([
+            'challenge' => $challenge->toEcho()->toArray(),
+            'payload' => 'sig',
+        ]));
+    }
 }

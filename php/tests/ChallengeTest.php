@@ -28,6 +28,43 @@ final class ChallengeTest extends TestCase
         self::assertFalse($challenge->isExpired(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
     }
 
+    public function testChallengeWithoutExpiryIsNotExpired(): void
+    {
+        $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);
+
+        self::assertFalse($challenge->isExpired(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
+    }
+
+    public function testInvalidExpiryFailsClosed(): void
+    {
+        $challenge = Challenge::withSecret(
+            secretKey: 'secret',
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: ['amount' => '1', 'currency' => 'USDC'],
+            expires: 'not-a-date',
+        );
+
+        self::assertTrue($challenge->isExpired(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
+    }
+
+    public function testRejectsMissingRequiredChallengeFields(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Challenge is missing required fields');
+
+        new Challenge(id: '', realm: 'api', method: 'solana', intent: 'charge', request: 'request');
+    }
+
+    public function testRejectsNonLowercaseMethod(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Challenge method must be lowercase ASCII');
+
+        new Challenge(id: 'id', realm: 'api', method: 'Solana', intent: 'charge', request: 'request');
+    }
+
     public function testChallengeEchoPreservesWireFields(): void
     {
         $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);

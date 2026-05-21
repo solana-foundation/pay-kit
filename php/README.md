@@ -18,6 +18,22 @@ The current implementation provides:
 Session, subscription, and framework middleware helpers should land as separate
 reviewable commits.
 
+## Compatibility
+
+| Cell | Client | Server |
+|---|:---:|:---:|
+| `x402/exact` | — | — |
+| `x402/upto` | — | — |
+| `x402/batch-settlement` | — | — |
+| `mpp/charge/pull` | — | supported |
+| `mpp/charge/push` | — | — |
+| `mpp/session` | — | — |
+| `mpp/subscription` | — | — |
+
+PHP currently verifies server-side MPP charge credentials and participates in
+the TypeScript interop harness as a server adapter. It does not provide a PHP
+client, transaction builder, or wallet integration.
+
 ## Layout
 
 ```text
@@ -28,6 +44,9 @@ php/
 ```
 
 ## Local Payment Check
+
+Start a PHP-backed protected endpoint through the interop harness or an
+application embedding `SolanaMpp\Server\ChargeServer`.
 
 Use `curl` to confirm the server returns a payment challenge, then use the
 `pay` CLI to complete the 402 challenge/credential flow.
@@ -51,4 +70,5 @@ composer test
 ```
 
 CI also runs `composer run test:coverage` with a coverage driver and uploads
-`php/build/coverage/clover.xml`.
+`php/build/coverage/clover.xml`. The coverage command enforces a 90% line
+coverage gate.

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SolanaMpp\Tests;
 
+use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use SolanaMpp\Core\Receipt;
 
@@ -29,5 +30,29 @@ final class ReceiptTest extends TestCase
 
         self::assertSame('challenge-id', $receipt->toArray()['challengeId']);
         self::assertSame('order-1', $receipt->toArray()['externalId']);
+    }
+
+    public function testParsesReceiptFromArray(): void
+    {
+        $receipt = Receipt::fromArray([
+            'status' => 'success',
+            'method' => 'solana',
+            'timestamp' => '2026-05-19T00:00:00.000Z',
+            'reference' => 'sig',
+            'challengeId' => 'challenge-id',
+            'externalId' => 'order-1',
+        ]);
+
+        self::assertTrue($receipt->isSuccess());
+        self::assertSame('challenge-id', $receipt->challengeId);
+        self::assertSame('order-1', $receipt->externalId);
+    }
+
+    public function testRejectsMissingReceiptFields(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Receipt is missing required fields');
+
+        Receipt::fromArray(['status' => 'success']);
     }
 }

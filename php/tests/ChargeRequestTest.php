@@ -55,4 +55,24 @@ final class ChargeRequestTest extends TestCase
 
         new ChargeRequest(amount: '01000', currency: 'USDC');
     }
+
+    public function testRejectsMissingCurrency(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('currency is required');
+
+        new ChargeRequest(amount: '1000', currency: '');
+    }
+
+    public function testRejectsNonObjectMethodDetails(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('methodDetails must be an object');
+
+        ChargeRequest::fromArray([
+            'amount' => '1000',
+            'currency' => 'USDC',
+            'methodDetails' => 'localnet',
+        ]);
+    }
 }

@@ -51,6 +51,33 @@ final class HeadersTest extends TestCase
         Headers::parseWwwAuthenticate('Bearer realm="api"');
     }
 
+    public function testRejectsDuplicateAuthParams(): void
+    {
+        $challenge = Challenge::withSecret('secret', 'api', 'solana', 'charge', ['amount' => '1', 'currency' => 'USDC']);
+        $header = Headers::formatWwwAuthenticate($challenge) . ', method="solana"';
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Duplicate auth parameter');
+
+        Headers::parseWwwAuthenticate($header);
+    }
+
+    public function testRejectsCrlfInFormattedAuthParams(): void
+    {
+        $challenge = Challenge::withSecret(
+            secretKey: 'secret',
+            realm: "api\r\nx-injected: 1",
+            method: 'solana',
+            intent: 'charge',
+            request: ['amount' => '1', 'currency' => 'USDC'],
+        );
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid header value');
+
+        Headers::formatWwwAuthenticate($challenge);
+    }
+
     public function testReceiptHeaderRoundTrip(): void
     {
         $receipt = Receipt::success(

@@ -124,6 +124,9 @@ final class Headers
 
             if ($index < $length && $value[$index] === '"') {
                 [$parsed, $index] = self::parseQuotedValue($value, $index + 1);
+                if (array_key_exists($key, $params)) {
+                    throw new InvalidArgumentException('Duplicate auth parameter');
+                }
                 $params[$key] = $parsed;
                 continue;
             }
@@ -131,6 +134,9 @@ final class Headers
             $valueStart = $index;
             while ($index < $length && $value[$index] !== ',') {
                 $index++;
+            }
+            if (array_key_exists($key, $params)) {
+                throw new InvalidArgumentException('Duplicate auth parameter');
             }
             $params[$key] = trim(substr($value, $valueStart, $index - $valueStart));
         }
@@ -168,6 +174,10 @@ final class Headers
 
     private static function escapeQuoted(string $value): string
     {
+        if (str_contains($value, "\r") || str_contains($value, "\n")) {
+            throw new InvalidArgumentException('Invalid header value');
+        }
+
         return str_replace(['\\', '"'], ['\\\\', '\\"'], $value);
     }
 }
