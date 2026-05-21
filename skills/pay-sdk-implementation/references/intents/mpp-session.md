@@ -52,7 +52,7 @@ See `rust/src/protocol/intents/session.rs:101-167`.
 
 ### Client `Authorization` — `SessionAction` (tagged)
 
-Discriminated by `"action": "open" | "voucher" | "commit" | "topup" | "close"`.
+Discriminated by `"action": "open" | "voucher" | "commit" | "topUp" | "close"`.
 
 - `open` — `OpenPayload`. Shape varies by `mode`:
   - **Push (payment channel)** — `channelId`, `deposit`, `payer`,
@@ -63,7 +63,7 @@ Discriminated by `"action": "open" | "voucher" | "commit" | "topup" | "close"`.
     `initMultiDelegateTx` + `updateDelegationTx`.
 - `voucher` — `VoucherPayload { voucher: SignedVoucher }`.
 - `commit` — `CommitPayload { deliveryId, voucher }`.
-- `topup` — `TopUpPayload { channelId, newDeposit, signature }`.
+- `topUp` — `TopUpPayload { channelId, newDeposit, signature }`.
 - `close` — `ClosePayload { channelId, voucher? }`.
 
 See `rust/src/protocol/intents/session.rs:185-647`.
@@ -199,7 +199,7 @@ Unit tests (mirror `rust/src/protocol/intents/session.rs::tests`):
 
 Integration:
 
-- Surfpool-backed session lifecycle: open → 3 vouchers → topup → 2 more
+- Surfpool-backed session lifecycle: open → 3 vouchers → topUp → 2 more
   vouchers → close. Verify final on-chain settlement matches the
   cumulative voucher.
 
