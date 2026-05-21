@@ -60,19 +60,18 @@ final class ChallengeEcho
     {
         $request = $value['request'] ?? '';
         if (is_array($request)) {
-            /** @var array<string, mixed> $request */
-            $request = Base64Url::encodeJson($request);
+            $request = Base64Url::encodeJson(Json::object($request, 'request'));
         }
 
         return new self(
-            id: (string)($value['id'] ?? ''),
-            realm: (string)($value['realm'] ?? ''),
-            method: (string)($value['method'] ?? ''),
-            intent: (string)($value['intent'] ?? ''),
-            request: (string)$request,
-            expires: (string)($value['expires'] ?? ''),
-            digest: (string)($value['digest'] ?? ''),
-            opaque: isset($value['opaque']) ? (string)$value['opaque'] : null,
+            id: Json::optionalString($value['id'] ?? null, 'id'),
+            realm: Json::optionalString($value['realm'] ?? null, 'realm'),
+            method: Json::optionalString($value['method'] ?? null, 'method'),
+            intent: Json::optionalString($value['intent'] ?? null, 'intent'),
+            request: Json::optionalString($request, 'request'),
+            expires: Json::optionalString($value['expires'] ?? null, 'expires'),
+            digest: Json::optionalString($value['digest'] ?? null, 'digest'),
+            opaque: isset($value['opaque']) ? Json::string($value['opaque'], 'opaque') : null,
         );
     }
 }

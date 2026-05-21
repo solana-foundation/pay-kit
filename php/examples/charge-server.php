@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
+use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\PaymentVerifier;
@@ -41,7 +42,8 @@ $request = new ChargeRequest(
     ],
 );
 
-$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$requestUri = Json::optionalString($_SERVER['REQUEST_URI'] ?? null, 'REQUEST_URI', '/');
+$path = parse_url($requestUri, PHP_URL_PATH);
 if ($path !== '/paid') {
     http_response_code(404);
     header('content-type: application/json');
@@ -49,7 +51,7 @@ if ($path !== '/paid') {
     return;
 }
 
-$authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+$authorization = Json::optionalString($_SERVER['HTTP_AUTHORIZATION'] ?? null, 'HTTP_AUTHORIZATION');
 if ($authorization === '') {
     http_response_code(402);
     header('cache-control: no-store');

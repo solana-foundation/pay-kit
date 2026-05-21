@@ -69,11 +69,10 @@ final class Credential
             throw new InvalidArgumentException('Credential payload must be an object');
         }
 
-        /** @var array<string, mixed> $payload */
         return new self(
-            challenge: ChallengeEcho::fromArray($decoded['challenge']),
-            payload: $payload,
-            source: isset($decoded['source']) ? (string)$decoded['source'] : null,
+            challenge: ChallengeEcho::fromArray(Json::object($decoded['challenge'], 'challenge')),
+            payload: Json::object($payload, 'payload'),
+            source: isset($decoded['source']) ? Json::string($decoded['source'], 'source') : null,
         );
     }
 

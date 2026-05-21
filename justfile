@@ -112,6 +112,33 @@ py-fmt:
 py-typecheck:
     cd python && pyright
 
+# ── PHP ──
+
+# Install PHP SDK dependencies
+php-install:
+    cd php && composer install
+
+# Build PHP package metadata
+php-build:
+    cd php && composer validate
+
+# Test PHP SDK
+php-test:
+    cd php && composer test
+
+# Format PHP SDK
+php-fmt:
+    cd php && vendor/bin/php-cs-fixer fix --using-cache=no
+
+# Lint PHP SDK
+php-lint:
+    cd php && composer run lint
+
+# Run PHP coverage with a minimum threshold of 90%
+php-test-cover:
+    cd php && mkdir -p build/coverage
+    cd php && composer run test:coverage
+
 # ── HTML Payment Links ──
 
 # Install HTML payment link dependencies
@@ -133,16 +160,16 @@ html-test-e2e:
 # ── Orchestration ──
 
 # Build compiled SDKs
-build: html-build ts-build rs-build go-build
+build: html-build ts-build rs-build go-build php-build
 
 # Run all unit tests
-test: ts-test rs-test go-test lua-test py-test
+test: ts-test rs-test go-test lua-test py-test php-test
 
 # Run all tests including integration + coverage gates
-test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover
+test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover php-test-cover
 
 # Format everything
-fmt: ts-fmt rs-fmt go-fmt py-fmt
+fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover php-lint php-test-cover

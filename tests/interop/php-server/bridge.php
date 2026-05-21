@@ -5,6 +5,7 @@ declare(strict_types=1);
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
 use SolanaMpp\Core\Challenge;
+use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\SolanaChargeTransactionVerifier;
@@ -37,6 +38,27 @@ function required(array $input, string $key): mixed
 }
 
 /**
+ * Read a required bridge input string.
+ *
+ * @param array<string, mixed> $input
+ */
+function required_string(array $input, string $key): string
+{
+    return Json::string(required($input, $key), $key);
+}
+
+/**
+ * Read a required bridge input object.
+ *
+ * @param array<string, mixed> $input
+ * @return array<string, mixed>
+ */
+function required_object(array $input, string $key): array
+{
+    return Json::object(required($input, $key), $key);
+}
+
+/**
  * Build the charge request used for both challenge issuance and replay pinning.
  *
  * @param array<string, mixed> $input
@@ -61,10 +83,10 @@ function charge_request(array $input): ChargeRequest
     }
 
     return new ChargeRequest(
-        amount: (string) required($input, 'amount'),
-        currency: (string) required($input, 'currency'),
-        recipient: (string) required($input, 'recipient'),
-        description: isset($input['description']) ? (string) $input['description'] : '',
+        amount: required_string($input, 'amount'),
+        currency: required_string($input, 'currency'),
+        recipient: required_string($input, 'recipient'),
+        description: Json::optionalString($input['description'] ?? null, 'description'),
         methodDetails: $methodDetails,
     );
 }
@@ -77,7 +99,7 @@ function charge_request(array $input): ChargeRequest
 function challenge(array $input): void
 {
     $server = new ChargeServer(
-        secretKey: (string) required($input, 'secretKey'),
+        secretKey: required_string($input, 'secretKey'),
         realm: 'MPP Interop',
     );
     $request = charge_request($input);
@@ -97,20 +119,20 @@ function challenge(array $input): void
 function verify_payment(array $input): void
 {
     $server = new ChargeServer(
-        secretKey: (string) required($input, 'secretKey'),
+        secretKey: required_string($input, 'secretKey'),
         realm: 'MPP Interop',
     );
-    $expected = ChargeRequest::fromArray(required($input, 'expected'));
+    $expected = ChargeRequest::fromArray(required_object($input, 'expected'));
     $result = $server->verifyAuthorizationHeader(
-        (string) required($input, 'authorization'),
+        required_string($input, 'authorization'),
         new SolanaChargeTransactionVerifier(),
         expectedRequest: $expected,
     );
     if (!$result->ok) {
-        throw new InvalidArgumentException($result->reason ?? 'payment verification failed');
+        throw new InvalidArgumentException($result->reason);
     }
 
-    $credential = Credential::fromAuthorizationHeader((string) required($input, 'authorization'));
+    $credential = Credential::fromAuthorizationHeader(required_string($input, 'authorization'));
     $echo = $credential->challenge;
     $challenge = new Challenge(
         id: $echo->id,
@@ -149,12 +171,9 @@ function error_code(string $message): string
 }
 
 try {
-    $input = json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR);
-    if (!is_array($input)) {
-        throw new InvalidArgumentException('input must be an object');
-    }
+    $input = Json::object(json_decode(stream_get_contents(STDIN), true, flags: JSON_THROW_ON_ERROR), 'input');
 
-    $command = (string) required($input, 'command');
+    $command = required_string($input, 'command');
     match ($command) {
         'challenge' => challenge($input),
         'verify' => verify_payment($input),

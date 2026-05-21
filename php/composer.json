@@ -14,6 +14,8 @@
     "solana-php/solana-sdk": "dev-master#0bde2b07d6a6143f34bc3571a12e71443565ef3b"
   },
   "require-dev": {
+    "friendsofphp/php-cs-fixer": "^3.89",
+    "phpstan/phpstan": "^2.1",
     "phpunit/phpunit": "^10.0 || ^11.0"
   },
   "autoload": {
@@ -27,7 +29,14 @@
     }
   },
   "scripts": {
-    "lint": "find src tests examples ../tests/interop/php-server -name '*.php' -print0 | xargs -0 -n1 php -l",
+    "format:check": "php-cs-fixer fix --dry-run --diff --using-cache=no --sequential",
+    "lint:syntax": "find src tests examples ../tests/interop/php-server -name '*.php' -print0 | xargs -0 -n1 php -l",
+    "lint:static": "phpstan analyse --level=max --debug --memory-limit=1G src tests examples ../tests/interop/php-server",
+    "lint": [
+      "@lint:syntax",
+      "@format:check",
+      "@lint:static"
+    ],
     "test": "phpunit",
     "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 90"
   },

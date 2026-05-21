@@ -28,7 +28,7 @@ final class ChargeServerTest extends TestCase
 
         $result = $server->verifyAuthorizationHeader(
             $credential->toAuthorizationHeader(),
-            new class implements PaymentVerifier {
+            new class () implements PaymentVerifier {
                 public function verify(Credential $credential, Challenge $challenge): VerificationResult
                 {
                     TestCase::assertSame('sig', $credential->payload['signature']);
@@ -218,7 +218,7 @@ final class ChargeServerTest extends TestCase
 
         $result = $server->verifyAuthorizationHeader(
             $credential->toAuthorizationHeader(),
-            new class implements PaymentVerifier {
+            new class () implements PaymentVerifier {
                 public function verify(Credential $credential, Challenge $challenge): VerificationResult
                 {
                     return VerificationResult::success(reference: 'tx-signature', externalId: 'order-001');
@@ -255,7 +255,7 @@ final class ChargeServerTest extends TestCase
 
         $result = $server->verifyAuthorizationHeader(
             $credential->toAuthorizationHeader(),
-            new class implements PaymentVerifier {
+            new class () implements PaymentVerifier {
                 public function verify(Credential $credential, Challenge $challenge): VerificationResult
                 {
                     return VerificationResult::success(reference: 'tx-signature');
@@ -291,7 +291,7 @@ final class ChargeServerTest extends TestCase
 
         $result = $server->verifyAuthorizationHeader(
             $credential->toAuthorizationHeader(),
-            new class implements PaymentVerifier {
+            new class () implements PaymentVerifier {
                 public function verify(Credential $credential, Challenge $challenge): VerificationResult
                 {
                     return VerificationResult::success(reference: 'tx-signature');
@@ -312,7 +312,7 @@ final class ChargeServerTest extends TestCase
 
         $result = $server->verifyAuthorizationHeader(
             $credential->toAuthorizationHeader(),
-            new class implements PaymentVerifier {
+            new class () implements PaymentVerifier {
                 public function verify(Credential $credential, Challenge $challenge): VerificationResult
                 {
                     return VerificationResult::failure('missing transaction payload');
@@ -338,7 +338,7 @@ final class ChargeServerTest extends TestCase
 
     private function unusedVerifier(): PaymentVerifier
     {
-        return new class implements PaymentVerifier {
+        return new class () implements PaymentVerifier {
             public function verify(Credential $credential, Challenge $challenge): VerificationResult
             {
                 TestCase::fail('verifier should not be called');

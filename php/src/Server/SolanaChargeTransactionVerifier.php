@@ -7,6 +7,7 @@ namespace SolanaMpp\Server;
 use InvalidArgumentException;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
+use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
@@ -62,7 +63,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         $totalAmount = $this->parseAmount($request->amount, 'amount');
         $splitTotal = 0;
         foreach ($splits as $split) {
-            $splitTotal += $this->parseAmount((string) $split['amount'], 'split amount');
+            $splitTotal += $this->parseAmount(Json::string($split['amount'] ?? null, 'split.amount'), 'split amount');
         }
         $primaryAmount = $totalAmount - $splitTotal;
         if ($primaryAmount <= 0) {
@@ -85,8 +86,8 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             foreach ($splits as $split) {
                 $this->matchSolTransfer(
                     $decoded,
-                    (string) $split['recipient'],
-                    $this->parseAmount((string) $split['amount'], 'split amount'),
+                    Json::string($split['recipient'] ?? null, 'split.recipient'),
+                    $this->parseAmount(Json::string($split['amount'] ?? null, 'split.amount'), 'split amount'),
                     $feePayer,
                     $matched,
                 );
@@ -106,7 +107,8 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         }
 
         $mint = new PublicKey($request->currency);
-        $tokenProgram = new PublicKey((string) ($methodDetails['tokenProgram'] ?? TokenProgram::PROGRAM_ID));
+        $tokenProgram = new PublicKey(Json::optionalString($methodDetails['tokenProgram'] ?? null, 'methodDetails.tokenProgram', TokenProgram::PROGRAM_ID));
+        $decimals = Json::optionalInt($methodDetails['decimals'] ?? null, 'methodDetails.decimals');
         $allowedAtaOwners = $this->allowedAtaOwners($splits, $feePayer);
         if ($requiredAtaOwners !== [] && $request->currency !== $mint->toBase58()) {
             throw new InvalidArgumentException('ataCreationRequired requires currency to be an SPL token mint address');
@@ -118,18 +120,18 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             $mint,
             $tokenProgram,
             $primaryAmount,
-            $methodDetails['decimals'] ?? null,
+            $decimals,
             $feePayer,
             $matched,
         );
         foreach ($splits as $split) {
             $this->matchSplTransfer(
                 $decoded,
-                (string) $split['recipient'],
+                Json::string($split['recipient'] ?? null, 'split.recipient'),
                 $mint,
                 $tokenProgram,
-                $this->parseAmount((string) $split['amount'], 'split amount'),
-                $methodDetails['decimals'] ?? null,
+                $this->parseAmount(Json::string($split['amount'] ?? null, 'split.amount'), 'split amount'),
+                $decimals,
                 $feePayer,
                 $matched,
             );
@@ -202,16 +204,16 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             throw new InvalidArgumentException('splits must be an array');
         }
 
-        return array_values(array_map(static function (mixed $split): array {
-            if (!is_array($split)) {
-                throw new InvalidArgumentException('split must be an object');
-            }
+        $normalized = [];
+        foreach ($splits as $split) {
+            $split = Json::object($split, 'split');
             if (!isset($split['recipient'], $split['amount'])) {
                 throw new InvalidArgumentException('split recipient and amount are required');
             }
+            $normalized[] = $split;
+        }
 
-            return $split;
-        }, $splits));
+        return $normalized;
     }
 
     /**
@@ -277,7 +279,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         PublicKey $mint,
         PublicKey $tokenProgram,
         int $amount,
-        mixed $expectedDecimals,
+        ?int $expectedDecimals,
         ?PublicKey $feePayer,
         array &$matched,
     ): void {
@@ -291,7 +293,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             if ($this->readU64Le(substr($instruction['data'], 1, 8)) !== $amount) {
                 continue;
             }
-            if ($expectedDecimals !== null && ord($instruction['data'][9]) !== (int) $expectedDecimals) {
+            if ($expectedDecimals !== null && ord($instruction['data'][9]) !== $expectedDecimals) {
                 continue;
             }
 
@@ -359,7 +361,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         }
         foreach ($splits as $index => $split) {
             if (isset($split['memo']) && $split['memo'] !== '') {
-                $memos['split-' . $index] = (string) $split['memo'];
+                $memos['split-' . $index] = Json::string($split['memo'], 'split.memo');
             }
         }
 
@@ -509,7 +511,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         $owners = [];
         foreach ($splits as $split) {
             if (($split['ataCreationRequired'] ?? false) === true) {
-                $owners[(string) $split['recipient']] = true;
+                $owners[Json::string($split['recipient'] ?? null, 'split.recipient')] = true;
             }
         }
 
@@ -528,7 +530,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
 
         $owners = [];
         foreach ($splits as $split) {
-            $owners[(string) $split['recipient']] = true;
+            $owners[Json::string($split['recipient'] ?? null, 'split.recipient')] = true;
         }
 
         return $owners;
@@ -585,7 +587,16 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             throw new InvalidArgumentException('expected 4 bytes');
         }
 
-        return unpack('V', $bytes)[1];
+        $unpacked = unpack('Vvalue', $bytes);
+        if ($unpacked === false) {
+            throw new InvalidArgumentException('expected 4 bytes');
+        }
+        $value = $unpacked['value'];
+        if (!is_int($value)) {
+            throw new InvalidArgumentException('expected 4 bytes');
+        }
+
+        return $value;
     }
 
     private function readU64Le(string $bytes): int

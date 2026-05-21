@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SolanaMpp\Intent;
 
 use InvalidArgumentException;
+use SolanaMpp\Core\Json;
 
 /**
  * Represents the MPP charge intent request embedded in a challenge.
@@ -69,14 +70,13 @@ final class ChargeRequest
             throw new InvalidArgumentException('methodDetails must be an object');
         }
 
-        /** @var array<string, mixed>|null $methodDetails */
         return new self(
-            amount: (string)($value['amount'] ?? ''),
-            currency: (string)($value['currency'] ?? ''),
-            recipient: (string)($value['recipient'] ?? ''),
-            description: (string)($value['description'] ?? ''),
-            externalId: (string)($value['externalId'] ?? ''),
-            methodDetails: $methodDetails,
+            amount: Json::optionalString($value['amount'] ?? null, 'amount'),
+            currency: Json::optionalString($value['currency'] ?? null, 'currency'),
+            recipient: Json::optionalString($value['recipient'] ?? null, 'recipient'),
+            description: Json::optionalString($value['description'] ?? null, 'description'),
+            externalId: Json::optionalString($value['externalId'] ?? null, 'externalId'),
+            methodDetails: is_array($methodDetails) ? Json::object($methodDetails, 'methodDetails') : null,
         );
     }
 

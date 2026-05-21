@@ -84,10 +84,11 @@ pay curl http://localhost:4567/paid
 The PHP server checkmark means this package can issue charge challenges,
 validate `Payment` credentials, pin the echoed charge request to the protected
 route, and emit payment receipts. Native PHP transaction settlement verification
-now decodes and validates pull-mode transaction payloads before server
-co-sign/broadcast. RPC-backed broadcast, confirmation, and replay storage are
-follow-ups; the Surfpool-backed interop server still performs the final
-broadcast after PHP accepts the credential envelope.
+now decodes and validates pull-mode transaction payloads before any downstream
+settlement step. RPC-backed broadcast, confirmation, fee-payer co-signing, push
+signature lookup, and replay storage are follow-ups; the Surfpool-backed interop
+server still performs the final broadcast after PHP accepts the credential
+envelope.
 
 ## How to use the library
 
@@ -127,6 +128,8 @@ headers. Use the interop harness for the full Surfpool-backed transaction flow.
 | PHP standard library | server-side 402 helpers and HMAC challenge signing | 8.1+ |
 | `solana-php/solana-sdk` | Solana transaction decode plus SPL Token, ATA, Memo, and System program primitives | `dev-master#0bde2b0` |
 | `phpunit/phpunit` | tests and coverage gate | `^10.0 || ^11.0` |
+| `phpstan/phpstan` | static analysis at max level | `^2.1` |
+| `friendsofphp/php-cs-fixer` | PSR-12-compatible format checks | `^3.89` |
 | Ed25519 verifier | server-side voucher verification | — |
 | RFC 8785 canonical JSON | request field pre-base64url | local implementation |
 

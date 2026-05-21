@@ -88,12 +88,12 @@ final class Receipt
     public static function fromArray(array $value): self
     {
         return new self(
-            status: (string)($value['status'] ?? ''),
-            method: (string)($value['method'] ?? ''),
-            timestamp: (string)($value['timestamp'] ?? ''),
-            reference: (string)($value['reference'] ?? ''),
-            challengeId: (string)($value['challengeId'] ?? ''),
-            externalId: (string)($value['externalId'] ?? ''),
+            status: Json::optionalString($value['status'] ?? null, 'status'),
+            method: Json::optionalString($value['method'] ?? null, 'method'),
+            timestamp: Json::optionalString($value['timestamp'] ?? null, 'timestamp'),
+            reference: Json::optionalString($value['reference'] ?? null, 'reference'),
+            challengeId: Json::optionalString($value['challengeId'] ?? null, 'challengeId'),
+            externalId: Json::optionalString($value['externalId'] ?? null, 'externalId'),
         );
     }
 }

@@ -10,6 +10,7 @@ use SolanaMpp\Core\Base64Url;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
+use SolanaMpp\Core\Json;
 use SolanaMpp\Core\Receipt;
 use SolanaMpp\Intent\ChargeRequest;
 
@@ -143,7 +144,7 @@ final class ChargeServer
             unset($request['methodDetails']['recentBlockhash']);
         }
 
-        return $this->canonicalizeArray($request);
+        return Json::object($this->canonicalizeArray($request), 'request');
     }
 
     /**
