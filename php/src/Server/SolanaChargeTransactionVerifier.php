@@ -577,8 +577,22 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         if ($amount === '' || !ctype_digit($amount)) {
             throw new InvalidArgumentException($field . ' must be a base-unit integer');
         }
+        if ($this->decimalStringGreaterThan($amount, (string) PHP_INT_MAX)) {
+            throw new InvalidArgumentException($field . ' exceeds PHP integer range');
+        }
 
         return (int) $amount;
+    }
+
+    private function decimalStringGreaterThan(string $left, string $right): bool
+    {
+        $left = ltrim($left, '0');
+        $right = ltrim($right, '0');
+        if (strlen($left) !== strlen($right)) {
+            return strlen($left) > strlen($right);
+        }
+
+        return strcmp($left, $right) > 0;
     }
 
     private function readU32Le(string $bytes): int
@@ -603,6 +617,9 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
     {
         if (strlen($bytes) !== 8) {
             throw new InvalidArgumentException('expected 8 bytes');
+        }
+        if ((ord($bytes[7]) & 0x80) !== 0) {
+            throw new InvalidArgumentException('u64 value exceeds PHP integer range');
         }
 
         $value = 0;

@@ -129,7 +129,7 @@ function verify_payment(array $input): void
         expectedRequest: $expected,
     );
     if (!$result->ok) {
-        throw new InvalidArgumentException($result->reason);
+        throw new InvalidArgumentException('payment rejected: ' . $result->reason);
     }
 
     $credential = Credential::fromAuthorizationHeader(required_string($input, 'authorization'));
@@ -160,6 +160,7 @@ function verify_payment(array $input): void
 function error_code(string $message): string
 {
     return match (true) {
+        str_starts_with($message, 'payment rejected: ') => 'payment_rejected',
         str_contains($message, 'charge request mismatch') => 'charge_request_mismatch',
         str_contains($message, 'challenge realm mismatch') => 'challenge_realm_mismatch',
         str_contains($message, 'challenge verification failed') => 'challenge_verification_failed',

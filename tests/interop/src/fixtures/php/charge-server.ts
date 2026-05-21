@@ -1,5 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import {
   createKeyPairSignerFromBytes,
   getBase64Codec,
@@ -29,7 +30,7 @@ type PhpBridgeErrorPayload = {
   error: string;
 };
 
-class PhpBridgeError extends Error {
+export class PhpBridgeError extends Error {
   constructor(
     readonly code: string,
     message: string,
@@ -363,7 +364,7 @@ function isNetworkMismatch(network: string, blockhash: string | null): boolean {
   return network !== "localnet" && blockhash?.startsWith("SURFNET") === true;
 }
 
-function isPaymentRejected(error: unknown): boolean {
+export function isPaymentRejected(error: unknown): boolean {
   return (
     error instanceof PhpBridgeError &&
     [
@@ -373,8 +374,11 @@ function isPaymentRejected(error: unknown): boolean {
       "challenge_expired",
       "challenge_method_or_intent_mismatch",
       "missing_settlement_reference",
+      "payment_rejected",
     ].includes(error.code)
   );
 }
 
-void main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main();
+}

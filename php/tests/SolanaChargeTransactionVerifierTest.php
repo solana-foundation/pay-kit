@@ -135,6 +135,17 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertSame('split amounts exceed total amount', $result->reason);
     }
 
+    public function testRejectsAmountBeyondPhpIntegerRange(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, amount: '9223372036854775808');
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('amount exceeds PHP integer range', $result->reason);
+    }
+
     public function testRejectsMissingRecipient(): void
     {
         $fixture = $this->fixture();
@@ -277,6 +288,21 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('compute unit price exceeds maximum', $result->reason);
+    }
+
+    public function testRejectsComputeUnitPriceBeyondPhpIntegerRange(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [ComputeBudgetProgram::setComputeUnitPrice('9223372036854775808')],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('u64 value exceeds PHP integer range', $result->reason);
     }
 
     public function testAcceptsComputeBudgetWithinVerifierLimits(): void
