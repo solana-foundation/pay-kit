@@ -12,10 +12,23 @@ The package does not pick an Android wallet dependency yet. Android integrations
 
 `MemorySigner` uses JDK Ed25519 and is intended for tests and local development only. It is not a wallet, key-management layer, or Solana transaction builder.
 
+## Solana Mobile integration
+
+For Android applications, keep this package as the MPP protocol layer and add the official Solana Mobile dependencies in the app or adapter module:
+
+```kotlin
+implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
+implementation("com.solanamobile:web3-solana:0.2.5")
+implementation("com.solanamobile:rpc-core:0.2.7")
+implementation("io.github.funkatronics:multimult:0.2.3")
+```
+
+`mobile-wallet-adapter-clientlib-ktx` is the right boundary for connecting to MWA-compatible wallets. `web3-solana` and `rpc-core` are useful for transaction construction and RPC in an Android app. They are intentionally not runtime dependencies of the core MPP package yet so non-Android JVM users can parse challenges and build credentials without pulling in a wallet stack.
+
 ## Build
 
 ```sh
-gradle test
+gradle check
 ```
 
 ## Usage

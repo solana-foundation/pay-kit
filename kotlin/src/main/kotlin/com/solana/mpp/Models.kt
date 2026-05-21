@@ -2,6 +2,7 @@ package com.solana.mpp
 
 import kotlinx.serialization.Serializable
 
+/** Base exception hierarchy for Kotlin MPP SDK failures. */
 sealed class MppException(message: String? = null, cause: Throwable? = null) : RuntimeException(message, cause) {
     class InvalidBase64Url(cause: Throwable? = null) : MppException("invalid base64url value", cause)
     object InvalidHeader : MppException("invalid Payment header")
@@ -12,6 +13,7 @@ sealed class MppException(message: String? = null, cause: Throwable? = null) : R
         MppException("unsupported challenge: method=$method intent=$intent")
 }
 
+/** Parsed MPP `WWW-Authenticate` challenge. */
 @Serializable
 data class PaymentChallenge(
     val id: String,
@@ -23,14 +25,17 @@ data class PaymentChallenge(
     val digest: String? = null,
     val opaque: String? = null,
 ) {
+    /** Decodes this challenge's request as a Solana charge request. */
     fun chargeRequest(): ChargeRequest = MppHeaders.decodeChargeRequest(request)
 
+    /** Fails unless this challenge targets the Solana charge intent. */
     fun requireSolanaCharge() {
         if (method != "solana" || intent != "charge") {
             throw MppException.UnsupportedChallenge(method, intent)
         }
     }
 
+    /** Creates the challenge echo included in an MPP credential. */
     fun echo(): ChallengeEcho =
         ChallengeEcho(
             id = id,
@@ -44,6 +49,7 @@ data class PaymentChallenge(
         )
 }
 
+/** Challenge fields echoed inside a client credential. */
 @Serializable
 data class ChallengeEcho(
     val id: String,
@@ -56,6 +62,7 @@ data class ChallengeEcho(
     val opaque: String? = null,
 )
 
+/** Solana charge request payload encoded in the challenge `request` field. */
 @Serializable
 data class ChargeRequest(
     val amount: String,
@@ -65,6 +72,7 @@ data class ChargeRequest(
     val methodDetails: SolanaChargeMethodDetails,
 )
 
+/** Solana-specific method details for a charge request. */
 @Serializable
 data class SolanaChargeMethodDetails(
     val network: String? = null,
@@ -76,6 +84,7 @@ data class SolanaChargeMethodDetails(
     val tokenProgram: String? = null,
 )
 
+/** Split transfer target for a Solana charge request. */
 @Serializable
 data class SolanaChargeSplit(
     val recipient: String,
@@ -84,6 +93,7 @@ data class SolanaChargeSplit(
     val memo: String? = null,
 )
 
+/** MPP credential submitted in the `Authorization` header. */
 @Serializable
 data class PaymentCredential(
     val challenge: ChallengeEcho,
@@ -91,6 +101,7 @@ data class PaymentCredential(
     val source: String? = null,
 )
 
+/** Credential payload carrying either a signed transaction or signature. */
 @Serializable
 data class CredentialPayload(
     val type: String,
@@ -98,9 +109,11 @@ data class CredentialPayload(
     val signature: String? = null,
 ) {
     companion object {
+        /** Creates a transaction credential payload. */
         fun transaction(transaction: String): CredentialPayload =
             CredentialPayload(type = "transaction", transaction = transaction)
 
+        /** Creates a signature credential payload. */
         fun signature(signature: String): CredentialPayload =
             CredentialPayload(type = "signature", signature = signature)
     }

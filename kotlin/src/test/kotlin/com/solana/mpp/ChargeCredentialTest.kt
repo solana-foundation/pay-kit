@@ -8,6 +8,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import java.security.KeyPairGenerator
+import java.security.PublicKey
 
 class ChargeCredentialTest {
     @Test
@@ -102,11 +103,101 @@ class ChargeCredentialTest {
     }
 
     @Test
+    fun rejectsInvalidPaymentScheme() {
+        assertFailsWith<MppException.InvalidPaymentScheme> {
+            MppHeaders.parseWWWAuthenticate("""Bearer id="challenge-5"""")
+        }
+    }
+
+    @Test
+    fun rejectsMissingRequiredChallengeFields() {
+        assertFailsWith<MppException.MissingField> {
+            MppHeaders.parseWWWAuthenticate(
+                """Payment id="challenge-6", realm="MPP Payment", method="solana", request="${encodedRequest()}"""",
+            )
+        }
+    }
+
+    @Test
+    fun rejectsInvalidChargeRequestJson() {
+        val encoded = Base64Url.encode("not json".encodeToByteArray())
+
+        assertFailsWith<MppException.InvalidJson> {
+            MppHeaders.parseWWWAuthenticate(
+                """Payment id="challenge-7", realm="MPP Payment", method="solana", intent="charge", request="$encoded"""",
+            ).chargeRequest()
+        }
+    }
+
+    @Test
+    fun parsesOptionalChallengeFieldsAndSignaturePayload() {
+        val header = """Payment id="challenge-8", realm="MPP \"Payment\"", method="solana", intent="charge", request="${encodedRequest()}", digest="sha-256=:abc:", opaque="route-1""""
+        val challenge = MppHeaders.parseWWWAuthenticate(header)
+        val credential = PaymentCredential(
+            challenge = challenge.echo(),
+            payload = CredentialPayload.signature("sig"),
+            source = "did:pkh:solana:test",
+        )
+        val decoded = Json.decodeFromString<PaymentCredential>(
+            Base64Url.decode(MppHeaders.formatAuthorization(credential).removePrefix("Payment ")).decodeToString(),
+        )
+
+        assertEquals("""MPP "Payment"""", challenge.realm)
+        assertEquals("sha-256=:abc:", challenge.digest)
+        assertEquals("route-1", challenge.opaque)
+        assertEquals("sig", decoded.payload.signature)
+        assertEquals("did:pkh:solana:test", decoded.source)
+    }
+
+    @Test
     fun rejectsUnterminatedQuotedAuthParam() {
         assertFailsWith<MppException.InvalidHeader> {
             MppHeaders.parseWWWAuthenticate(
                 """Payment id="challenge-4", realm="MPP Payment", method="solana", intent="charge", request="${encodedRequest()}""",
             )
+        }
+    }
+
+    @Test
+    fun rejectsUnquotedAuthParam() {
+        assertFailsWith<MppException.InvalidHeader> {
+            MppHeaders.parseWWWAuthenticate(
+                """Payment id="challenge-9", realm="MPP Payment", method="solana", intent="charge", request=${encodedRequest()}""",
+            )
+        }
+    }
+
+    @Test
+    fun rejectsTrailingEscapeInQuotedAuthParam() {
+        assertFailsWith<MppException.InvalidHeader> {
+            MppHeaders.parseWWWAuthenticate(
+                """Payment id="challenge-10", realm="MPP Payment", method="solana", intent="charge", request="${encodedRequest()}\""",
+            )
+        }
+    }
+
+    @Test
+    fun rejectsNonEd25519MemorySignerPublicKey() {
+        val keyPair = KeyPairGenerator.getInstance("RSA").generateKeyPair()
+
+        assertFailsWith<IllegalArgumentException> {
+            MemorySigner.rawEd25519PublicKey(keyPair.public)
+        }
+    }
+
+    @Test
+    fun rejectsMalformedEd25519PublicKeyPrefix() {
+        val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val encoded = keyPair.public.encoded.clone()
+        encoded[0] = 0x31
+        val publicKey = object : PublicKey {
+            override fun getAlgorithm(): String = "Ed25519"
+            override fun getFormat(): String = "X.509"
+            override fun getEncoded(): ByteArray = encoded
+        }
+
+        assertFailsWith<IllegalArgumentException> {
+            MemorySigner.rawEd25519PublicKey(publicKey)
         }
     }
 

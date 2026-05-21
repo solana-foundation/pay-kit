@@ -3,7 +3,9 @@ package com.solana.mpp
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+/** Parses and formats MPP HTTP Payment headers. */
 object MppHeaders {
+    /** HTTP authentication scheme used by MPP. */
     const val PAYMENT_SCHEME = "Payment"
 
     private val json = Json {
@@ -11,6 +13,7 @@ object MppHeaders {
         explicitNulls = false
     }
 
+    /** Parses a `WWW-Authenticate: Payment ...` challenge header. */
     fun parseWWWAuthenticate(header: String): PaymentChallenge {
         val rest = paymentSchemePayload(header)
         val params = parseAuthParams(rest)
@@ -30,6 +33,7 @@ object MppHeaders {
         }
     }
 
+    /** Formats an `Authorization: Payment ...` credential header. */
     fun formatAuthorization(credential: PaymentCredential): String {
         val encoded = Base64Url.encode(json.encodeToString(credential).encodeToByteArray())
         return "$PAYMENT_SCHEME $encoded"
