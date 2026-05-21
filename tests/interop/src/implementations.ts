@@ -24,7 +24,14 @@ export const clientImplementations: ImplementationDefinition[] = [
     id: "typescript",
     label: "TypeScript HTTP client",
     role: "client",
-    command: ["pnpm", "exec", "node", "--import", "tsx", "src/fixtures/typescript/client.ts"],
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/charge-client.ts",
+    ],
     enabled: isEnabled("typescript", "MPP_INTEROP_CLIENTS", true),
   },
   {
@@ -56,7 +63,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "typescript",
     label: "TypeScript HTTP server",
     role: "server",
-    command: ["pnpm", "exec", "node", "--import", "tsx", "src/fixtures/typescript/server.ts"],
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/charge-server.ts",
+    ],
     enabled: isEnabled("typescript", "MPP_INTEROP_SERVERS", true),
   },
   {
@@ -78,7 +92,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "php",
     label: "PHP HTTP server",
     role: "server",
-    command: ["pnpm", "exec", "node", "--import", "tsx", "src/fixtures/php/server.ts"],
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/php/charge-server.ts",
+    ],
     enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
   },
 ];

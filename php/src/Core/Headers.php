@@ -6,6 +6,9 @@ namespace SolanaMpp\Core;
 
 use InvalidArgumentException;
 
+/**
+ * Formats and parses MPP HTTP authentication headers.
+ */
 final class Headers
 {
     public const PAYMENT_SCHEME = 'Payment';
@@ -13,6 +16,9 @@ final class Headers
     public const AUTHORIZATION = 'authorization';
     public const PAYMENT_RECEIPT = 'payment-receipt';
 
+    /**
+     * Format a Payment challenge as a WWW-Authenticate header.
+     */
     public static function formatWwwAuthenticate(Challenge $challenge): string
     {
         $parts = [
@@ -35,6 +41,9 @@ final class Headers
         return self::PAYMENT_SCHEME . ' ' . implode(', ', $parts);
     }
 
+    /**
+     * Parse a WWW-Authenticate header into a Payment challenge.
+     */
     public static function parseWwwAuthenticate(string $header): Challenge
     {
         $payment = self::extractPaymentChallenge($header);
@@ -63,11 +72,17 @@ final class Headers
         );
     }
 
+    /**
+     * Format a receipt as an unpadded base64url payment-receipt header.
+     */
     public static function formatReceipt(Receipt $receipt): string
     {
         return Base64Url::encodeJson($receipt->toArray());
     }
 
+    /**
+     * Parse a payment-receipt header into a receipt object.
+     */
     public static function parseReceipt(string $header): Receipt
     {
         if (strlen($header) > 16 * 1024) {

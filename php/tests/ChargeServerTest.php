@@ -159,6 +159,56 @@ final class ChargeServerTest extends TestCase
         self::assertSame('charge request mismatch', $result->reason);
     }
 
+    public function testRejectsExpectedAmountMismatch(): void
+    {
+        $this->assertExpectedRequestMismatch(
+            challengeRequest: new ChargeRequest(amount: '500', currency: 'USDC', recipient: 'recipient'),
+            expectedRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient'),
+        );
+    }
+
+    public function testRejectsExpectedCurrencyMismatch(): void
+    {
+        $this->assertExpectedRequestMismatch(
+            challengeRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient'),
+            expectedRequest: new ChargeRequest(amount: '1000', currency: 'PYUSD', recipient: 'recipient'),
+        );
+    }
+
+    public function testRejectsExpectedRecipientMismatch(): void
+    {
+        $this->assertExpectedRequestMismatch(
+            challengeRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient-a'),
+            expectedRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient-b'),
+        );
+    }
+
+    public function testRejectsExpectedExternalIdMismatch(): void
+    {
+        $this->assertExpectedRequestMismatch(
+            challengeRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient', externalId: 'order-a'),
+            expectedRequest: new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'recipient', externalId: 'order-b'),
+        );
+    }
+
+    public function testRejectsExpectedMethodDetailsMismatchExceptRecentBlockhash(): void
+    {
+        $this->assertExpectedRequestMismatch(
+            challengeRequest: new ChargeRequest(
+                amount: '1000',
+                currency: 'USDC',
+                recipient: 'recipient',
+                methodDetails: ['network' => 'localnet', 'decimals' => 6, 'recentBlockhash' => 'old'],
+            ),
+            expectedRequest: new ChargeRequest(
+                amount: '1000',
+                currency: 'USDC',
+                recipient: 'recipient',
+                methodDetails: ['network' => 'devnet', 'decimals' => 6, 'recentBlockhash' => 'new'],
+            ),
+        );
+    }
+
     public function testAcceptsMatchingExpectedChargeRequest(): void
     {
         $server = new ChargeServer(secretKey: 'secret', realm: 'api');
@@ -294,5 +344,21 @@ final class ChargeServerTest extends TestCase
                 TestCase::fail('verifier should not be called');
             }
         };
+    }
+
+    private function assertExpectedRequestMismatch(ChargeRequest $challengeRequest, ChargeRequest $expectedRequest): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($challengeRequest);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+            expectedRequest: $expectedRequest,
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('charge request mismatch', $result->reason);
     }
 }

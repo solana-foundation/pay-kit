@@ -372,6 +372,7 @@ function isPaymentRejected(error: unknown): boolean {
       "challenge_verification_failed",
       "challenge_expired",
       "challenge_method_or_intent_mismatch",
+      "missing_settlement_reference",
     ].includes(error.code)
   );
 }

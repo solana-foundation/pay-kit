@@ -7,13 +7,22 @@ namespace SolanaMpp\Core;
 use InvalidArgumentException;
 use JsonException;
 
+/**
+ * Encodes raw bytes and canonical JSON objects as unpadded base64url.
+ */
 final class Base64Url
 {
+    /**
+     * Encode raw bytes as unpadded URL-safe base64.
+     */
     public static function encode(string $bytes): string
     {
         return rtrim(strtr(base64_encode($bytes), '+/', '-_'), '=');
     }
 
+    /**
+     * Decode unpadded URL-safe base64 into raw bytes.
+     */
     public static function decode(string $value): string
     {
         if ($value === '') {
@@ -29,6 +38,8 @@ final class Base64Url
     }
 
     /**
+     * Canonicalize a JSON object and encode it as unpadded base64url.
+     *
      * @param array<string, mixed> $value
      */
     public static function encodeJson(array $value): string
@@ -41,6 +52,8 @@ final class Base64Url
     }
 
     /**
+     * Decode an unpadded base64url JSON object.
+     *
      * @return array<string, mixed>
      */
     public static function decodeJson(string $value): array

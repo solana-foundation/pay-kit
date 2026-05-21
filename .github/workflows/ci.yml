@@ -223,6 +223,9 @@ jobs:
       - name: Install dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
+      - name: Run PHP linter
+        working-directory: php
+        run: composer run lint
       - name: Run tests with coverage
         working-directory: php
         run: |
@@ -478,4 +481,4 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: php
-          MPP_INTEROP_SCENARIOS: charge-basic
+          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay

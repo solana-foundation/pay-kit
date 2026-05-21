@@ -4,8 +4,14 @@ declare(strict_types=1);
 
 namespace SolanaMpp\Core;
 
+/**
+ * Carries the challenge fields echoed inside a Payment credential.
+ */
 final class ChallengeEcho
 {
+    /**
+     * Create the challenge echo embedded in a Payment credential.
+     */
     public function __construct(
         public readonly string $id,
         public readonly string $realm,
@@ -19,6 +25,8 @@ final class ChallengeEcho
     }
 
     /**
+     * Convert the challenge echo to its credential JSON shape.
+     *
      * @return array<string, mixed>
      */
     public function toArray(): array
@@ -44,6 +52,8 @@ final class ChallengeEcho
     }
 
     /**
+     * Decode a credential challenge echo from JSON.
+     *
      * @param array<string, mixed> $value
      */
     public static function fromArray(array $value): self

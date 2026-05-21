@@ -8,8 +8,14 @@ use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
 
+/**
+ * Represents a successful payment receipt header payload.
+ */
 final class Receipt
 {
+    /**
+     * Create a verified payment receipt.
+     */
     public function __construct(
         public readonly string $status,
         public readonly string $method,
@@ -23,6 +29,9 @@ final class Receipt
         }
     }
 
+    /**
+     * Create a successful receipt with a UTC timestamp.
+     */
     public static function success(
         string $method,
         string $reference,
@@ -40,12 +49,17 @@ final class Receipt
         );
     }
 
+    /**
+     * Return true when the receipt represents a successful payment.
+     */
     public function isSuccess(): bool
     {
         return $this->status === 'success';
     }
 
     /**
+     * Convert the receipt to its JSON header payload.
+     *
      * @return array<string, mixed>
      */
     public function toArray(): array
@@ -67,6 +81,8 @@ final class Receipt
     }
 
     /**
+     * Decode a receipt from its JSON header payload.
+     *
      * @param array<string, mixed> $value
      */
     public static function fromArray(array $value): self

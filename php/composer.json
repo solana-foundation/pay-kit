@@ -20,6 +20,7 @@
     }
   },
   "scripts": {
+    "lint": "find src tests examples ../tests/interop/php-server -name '*.php' -print0 | xargs -0 -n1 php -l",
     "test": "phpunit",
     "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 90"
   },

@@ -6,9 +6,14 @@ namespace SolanaMpp\Core;
 
 use InvalidArgumentException;
 
+/**
+ * Represents the Payment authorization credential sent by a client.
+ */
 final class Credential
 {
     /**
+     * Create a credential that echoes a challenge and carries payment payload data.
+     *
      * @param array<string, mixed> $payload
      */
     public function __construct(
@@ -19,6 +24,8 @@ final class Credential
     }
 
     /**
+     * Convert the credential to its JSON wire shape.
+     *
      * @return array<string, mixed>
      */
     public function toArray(): array
@@ -34,11 +41,17 @@ final class Credential
         return $value;
     }
 
+    /**
+     * Format the credential as an Authorization header value.
+     */
     public function toAuthorizationHeader(): string
     {
         return 'Payment ' . Base64Url::encodeJson($this->toArray());
     }
 
+    /**
+     * Parse an Authorization header into a Payment credential.
+     */
     public static function fromAuthorizationHeader(string $header): self
     {
         $token = self::extractPaymentToken($header);

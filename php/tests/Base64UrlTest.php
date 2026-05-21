@@ -37,6 +37,22 @@ final class Base64UrlTest extends TestCase
         ], Base64Url::decodeJson($left));
     }
 
+    public function testCanonicalJsonEncodingMatchesPreBase64UrlVector(): void
+    {
+        $encoded = Base64Url::encodeJson([
+            'b' => 2,
+            'a' => [
+                [
+                    'b' => true,
+                    'a' => false,
+                ],
+            ],
+        ]);
+
+        self::assertSame('eyJhIjpbeyJhIjpmYWxzZSwiYiI6dHJ1ZX1dLCJiIjoyfQ', $encoded);
+        self::assertSame('{"a":[{"a":false,"b":true}],"b":2}', Base64Url::decode($encoded));
+    }
+
     public function testRejectsInvalidBase64Url(): void
     {
         $this->expectException(InvalidArgumentException::class);

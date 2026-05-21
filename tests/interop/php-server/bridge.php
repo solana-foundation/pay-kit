@@ -13,6 +13,8 @@ use SolanaMpp\Server\VerificationResult;
 require_once __DIR__ . '/../../../php/vendor/autoload.php';
 
 /**
+ * Write a JSON response to stdout for the TypeScript harness.
+ *
  * @param array<string, mixed> $value
  */
 function write_json(array $value): void
@@ -21,6 +23,8 @@ function write_json(array $value): void
 }
 
 /**
+ * Read a required bridge input field.
+ *
  * @param array<string, mixed> $input
  */
 function required(array $input, string $key): mixed
@@ -34,6 +38,8 @@ function required(array $input, string $key): mixed
 }
 
 /**
+ * Build the charge request used for both challenge issuance and replay pinning.
+ *
  * @param array<string, mixed> $input
  */
 function charge_request(array $input): ChargeRequest
@@ -65,6 +71,8 @@ function charge_request(array $input): ChargeRequest
 }
 
 /**
+ * Emit a Payment challenge for the requested charge.
+ *
  * @param array<string, mixed> $input
  */
 function challenge(array $input): void
@@ -82,16 +90,28 @@ function challenge(array $input): void
     ]);
 }
 
+/**
+ * Echoes a successful transaction or signature payload as the settlement reference.
+ */
 final class EchoVerifier implements PaymentVerifier
 {
+    /**
+     * Verify the credential payload and return the echoed settlement reference.
+     */
     public function verify(Credential $credential, Challenge $challenge): VerificationResult
     {
         $reference = $credential->payload['signature'] ?? $credential->payload['transaction'] ?? '';
+        if (!is_string($reference) || $reference === '') {
+            return VerificationResult::failure('missing settlement reference');
+        }
+
         return VerificationResult::success(reference: (string) $reference);
     }
 }
 
 /**
+ * Verify a Payment credential against an expected charge request.
+ *
  * @param array<string, mixed> $input
  */
 function verify_payment(array $input): void
@@ -132,6 +152,9 @@ function verify_payment(array $input): void
     ]);
 }
 
+/**
+ * Map verifier failures to structured bridge error codes.
+ */
 function error_code(string $message): string
 {
     return match (true) {
@@ -140,6 +163,7 @@ function error_code(string $message): string
         str_contains($message, 'challenge verification failed') => 'challenge_verification_failed',
         str_contains($message, 'challenge expired') => 'challenge_expired',
         str_contains($message, 'challenge method or intent mismatch') => 'challenge_method_or_intent_mismatch',
+        str_contains($message, 'missing settlement reference') => 'missing_settlement_reference',
         default => 'bridge_error',
     };
 }

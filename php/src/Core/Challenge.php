@@ -7,8 +7,14 @@ namespace SolanaMpp\Core;
 use DateTimeImmutable;
 use InvalidArgumentException;
 
+/**
+ * Represents a signed MPP challenge from a WWW-Authenticate header.
+ */
 final class Challenge
 {
+    /**
+     * Create a validated Payment challenge object.
+     */
     public function __construct(
         public readonly string $id,
         public readonly string $realm,
@@ -28,6 +34,8 @@ final class Challenge
     }
 
     /**
+     * Build a signed challenge from a charge request payload.
+     *
      * @param array<string, mixed> $request
      */
     public static function withSecret(
@@ -53,6 +61,9 @@ final class Challenge
         );
     }
 
+    /**
+     * Compute the HMAC-backed challenge identifier.
+     */
     public static function computeId(
         string $secretKey,
         string $realm,
@@ -67,6 +78,9 @@ final class Challenge
         return Base64Url::encode(hash_hmac('sha256', $message, $secretKey, true));
     }
 
+    /**
+     * Verify that this challenge was issued with the expected secret key.
+     */
     public function verify(string $secretKey): bool
     {
         $expected = self::computeId(
@@ -84,6 +98,8 @@ final class Challenge
     }
 
     /**
+     * Decode the embedded base64url request object.
+     *
      * @return array<string, mixed>
      */
     public function decodeRequest(): array
@@ -91,6 +107,9 @@ final class Challenge
         return Base64Url::decodeJson($this->request);
     }
 
+    /**
+     * Return true when the challenge expiry is invalid or in the past.
+     */
     public function isExpired(?DateTimeImmutable $now = null): bool
     {
         if ($this->expires === '') {
@@ -105,6 +124,9 @@ final class Challenge
         return $expiresAt <= ($now ?? new DateTimeImmutable());
     }
 
+    /**
+     * Convert the challenge into the echo shape carried by credentials.
+     */
     public function toEcho(): ChallengeEcho
     {
         return new ChallengeEcho(

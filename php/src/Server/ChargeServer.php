@@ -13,8 +13,14 @@ use SolanaMpp\Core\Headers;
 use SolanaMpp\Core\Receipt;
 use SolanaMpp\Intent\ChargeRequest;
 
+/**
+ * Issues charge challenges and verifies Payment credentials for a PHP server.
+ */
 final class ChargeServer
 {
+    /**
+     * Create a charge server for one realm and payment method.
+     */
     public function __construct(
         private readonly string $secretKey,
         private readonly string $realm,
@@ -22,6 +28,9 @@ final class ChargeServer
     ) {
     }
 
+    /**
+     * Create a signed MPP charge challenge.
+     */
     public function createChallenge(ChargeRequest $request, string $expires = '', string $digest = '', ?string $opaque = null): Challenge
     {
         return Challenge::withSecret(
@@ -36,11 +45,17 @@ final class ChargeServer
         );
     }
 
+    /**
+     * Create a WWW-Authenticate header for a signed charge challenge.
+     */
     public function createChallengeHeader(ChargeRequest $request, string $expires = '', string $digest = '', ?string $opaque = null): string
     {
         return Headers::formatWwwAuthenticate($this->createChallenge($request, $expires, $digest, $opaque));
     }
 
+    /**
+     * Verify an Authorization header and optionally pin it to an expected request.
+     */
     public function verifyAuthorizationHeader(
         string $authorizationHeader,
         PaymentVerifier $verifier,
@@ -80,6 +95,9 @@ final class ChargeServer
         return $verifier->verify($credential, $challenge);
     }
 
+    /**
+     * Create a payment-receipt header after a successful verification.
+     */
     public function createReceiptHeader(Challenge $challenge, VerificationResult $result): string
     {
         if (!$result->ok) {

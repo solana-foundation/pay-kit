@@ -6,9 +6,14 @@ namespace SolanaMpp\Intent;
 
 use InvalidArgumentException;
 
+/**
+ * Represents the MPP charge intent request embedded in a challenge.
+ */
 final class ChargeRequest
 {
     /**
+     * Create an MPP charge request using base-unit integer amounts.
+     *
      * @param array<string, mixed>|null $methodDetails
      */
     public function __construct(
@@ -26,6 +31,8 @@ final class ChargeRequest
     }
 
     /**
+     * Convert the charge request to the Payment challenge request object.
+     *
      * @return array<string, mixed>
      */
     public function toArray(): array
@@ -51,6 +58,8 @@ final class ChargeRequest
     }
 
     /**
+     * Decode a Payment challenge request object.
+     *
      * @param array<string, mixed> $value
      */
     public static function fromArray(array $value): self
