@@ -395,7 +395,7 @@ function canonicalizeJson(value: unknown): unknown {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([key, nested]) => [key, canonicalizeJson(nested)]),
     );
   }
@@ -426,7 +426,6 @@ export function isPaymentRejected(error: unknown): boolean {
       "challenge_verification_failed",
       "challenge_expired",
       "challenge_method_or_intent_mismatch",
-      "missing_settlement_reference",
       "payment_rejected",
     ].includes(error.code)
   );

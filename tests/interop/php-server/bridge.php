@@ -156,7 +156,6 @@ function error_code(string $message): string
         str_contains($message, 'challenge verification failed') => 'challenge_verification_failed',
         str_contains($message, 'challenge expired') => 'challenge_expired',
         str_contains($message, 'challenge method or intent mismatch') => 'challenge_method_or_intent_mismatch',
-        str_contains($message, 'missing settlement reference') => 'missing_settlement_reference',
         default => 'bridge_error',
     };
 }
