@@ -52,6 +52,23 @@ final class ChallengeEcho
     }
 
     /**
+     * Convert the echoed credential fields back into a challenge object.
+     */
+    public function toChallenge(): Challenge
+    {
+        return new Challenge(
+            id: $this->id,
+            realm: $this->realm,
+            method: $this->method,
+            intent: $this->intent,
+            request: $this->request,
+            expires: $this->expires,
+            digest: $this->digest,
+            opaque: $this->opaque,
+        );
+    }
+
+    /**
      * Decode a credential challenge echo from JSON.
      *
      * @param array<string, mixed> $value

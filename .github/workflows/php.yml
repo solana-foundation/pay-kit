@@ -1,0 +1,94 @@
+name: PHP
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test-php:
+    name: PHP tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          coverage: pcov
+      - name: Install dependencies
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Run PHP linter
+        working-directory: php
+        run: composer run lint
+      - name: Run tests with coverage
+        working-directory: php
+        run: |
+          mkdir -p build/coverage
+          composer run test:coverage
+      - name: Upload PHP coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: php-coverage
+          path: php/build/coverage/clover.xml
+
+  interop-php:
+    name: PHP interop
+    needs: test-php
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-php-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-php-interop-
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust interop client
+        working-directory: rust
+        run: cargo build --bin interop_client
+      - name: Install interop harness
+        working-directory: tests/interop
+        run: pnpm install --frozen-lockfile
+      - name: Install PHP interop dependencies
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Typecheck interop harness
+        working-directory: tests/interop
+        run: pnpm typecheck
+      - name: Run PHP server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: php
+          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
+      - name: Run Rust client PHP server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: php
+          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata

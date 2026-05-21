@@ -114,12 +114,17 @@ composer install
 php -S 127.0.0.1:4567 examples/charge-server.php
 
 # In another terminal:
+brew install pay
+
+# payment required
 curl -i http://127.0.0.1:4567/paid
+
+# payment successful
+pay curl http://127.0.0.1:4567/paid
 ```
 
-The example serves one protected endpoint at `/paid`. It demonstrates challenge
-issuance, expected-request pinning, verification failure handling, and receipt
-headers. Use the interop harness for the full Surfpool-backed transaction flow.
+The example spins up one protected endpoint at `/paid`. Use the interop harness
+for the full Surfpool-backed transaction flow.
 
 ## Solana dependencies
 

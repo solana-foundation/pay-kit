@@ -87,18 +87,8 @@ if (!$result->ok) {
 }
 
 $credential = Credential::fromAuthorizationHeader($authorization);
-$challenge = new Challenge(
-    id: $credential->challenge->id,
-    realm: $credential->challenge->realm,
-    method: $credential->challenge->method,
-    intent: $credential->challenge->intent,
-    request: $credential->challenge->request,
-    expires: $credential->challenge->expires,
-    digest: $credential->challenge->digest,
-    opaque: $credential->challenge->opaque,
-);
 
 http_response_code(200);
 header('content-type: application/json');
-header('payment-receipt: ' . $server->createReceiptHeader($challenge, $result));
+header('payment-receipt: ' . $server->createReceiptHeader($credential->challenge->toChallenge(), $result));
 echo json_encode(['ok' => true, 'paid' => true], JSON_THROW_ON_ERROR);

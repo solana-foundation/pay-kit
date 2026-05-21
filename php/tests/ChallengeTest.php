@@ -76,6 +76,32 @@ final class ChallengeTest extends TestCase
         self::assertSame($challenge->request, $echo['request']);
     }
 
+    public function testChallengeEchoConvertsBackToChallenge(): void
+    {
+        $challenge = Challenge::withSecret(
+            secretKey: 'secret',
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: ['amount' => '1', 'currency' => 'USDC'],
+            expires: '2099-01-01T00:00:00+00:00',
+            digest: 'sha-256=:digest:',
+            opaque: 'opaque',
+        );
+
+        $verified = $challenge->toEcho()->toChallenge();
+
+        self::assertSame($challenge->id, $verified->id);
+        self::assertSame($challenge->realm, $verified->realm);
+        self::assertSame($challenge->method, $verified->method);
+        self::assertSame($challenge->intent, $verified->intent);
+        self::assertSame($challenge->request, $verified->request);
+        self::assertSame($challenge->expires, $verified->expires);
+        self::assertSame($challenge->digest, $verified->digest);
+        self::assertSame($challenge->opaque, $verified->opaque);
+        self::assertTrue($verified->verify('secret'));
+    }
+
     public function testObjectRequestEchoIsJsonOrderIndependent(): void
     {
         $challenge = Challenge::withSecret(

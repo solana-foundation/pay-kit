@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
-use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
@@ -133,21 +132,10 @@ function verify_payment(array $input): void
     }
 
     $credential = Credential::fromAuthorizationHeader(required_string($input, 'authorization'));
-    $echo = $credential->challenge;
-    $challenge = new Challenge(
-        id: $echo->id,
-        realm: $echo->realm,
-        method: $echo->method,
-        intent: $echo->intent,
-        request: $echo->request,
-        expires: $echo->expires,
-        digest: $echo->digest,
-        opaque: $echo->opaque,
-    );
 
     write_json([
         'type' => 'verified',
-        'receipt' => $server->createReceiptHeader($challenge, $result),
+        'receipt' => $server->createReceiptHeader($credential->challenge->toChallenge(), $result),
         'reference' => $result->reference,
         'transaction' => $credential->payload['transaction'] ?? null,
         'signature' => $credential->payload['signature'] ?? null,

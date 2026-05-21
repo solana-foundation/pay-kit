@@ -211,33 +211,6 @@ jobs:
           name: go-coverage
           path: go/coverage.out
 
-  test-php:
-    name: PHP tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.3"
-          coverage: pcov
-      - name: Install dependencies
-        working-directory: php
-        run: composer install --no-interaction --no-progress
-      - name: Run PHP linter
-        working-directory: php
-        run: composer run lint
-      - name: Run tests with coverage
-        working-directory: php
-        run: |
-          mkdir -p build/coverage
-          composer run test:coverage
-      - name: Upload PHP coverage
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: php-coverage
-          path: php/build/coverage/clover.xml
-
   integration:
     name: Integration tests
     needs: build-html
@@ -432,9 +405,6 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.3"
       - name: Download HTML assets
         uses: actions/download-artifact@v7
         with:
@@ -451,9 +421,6 @@ jobs:
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
-      - name: Install PHP interop dependencies
-        working-directory: php
-        run: composer install --no-interaction --no-progress
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck
@@ -475,17 +442,3 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: rust
-      - name: Run PHP server interop smoke
-        working-directory: tests/interop
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
-        env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: php
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
-      - name: Run Rust client PHP server interop smoke
-        working-directory: tests/interop
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
-        env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: php
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata
