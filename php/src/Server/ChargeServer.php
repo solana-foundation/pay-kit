@@ -97,7 +97,7 @@ final class ChargeServer
     }
 
     /**
-     * Create a payment-receipt header after a successful verification.
+     * Create a payment-receipt header from a verifier that already settled.
      */
     public function createReceiptHeader(Challenge $challenge, VerificationResult $result): string
     {
@@ -105,11 +105,27 @@ final class ChargeServer
             throw new InvalidArgumentException('Cannot create a receipt for a failed verification');
         }
 
+        return $this->createReceiptHeaderForReference(
+            challenge: $challenge,
+            reference: $result->reference,
+            externalId: $result->externalId,
+        );
+    }
+
+    /**
+     * Create a payment-receipt header after an external settlement step.
+     */
+    public function createReceiptHeaderForReference(Challenge $challenge, string $reference, string $externalId = ''): string
+    {
+        if ($reference === '') {
+            throw new InvalidArgumentException('Cannot create a receipt without a settlement reference');
+        }
+
         return Headers::formatReceipt(Receipt::success(
             method: $challenge->method,
-            reference: $result->reference,
+            reference: $reference,
             challengeId: $challenge->id,
-            externalId: $result->externalId,
+            externalId: $externalId,
         ));
     }
 

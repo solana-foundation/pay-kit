@@ -336,6 +336,33 @@ final class ChargeServerTest extends TestCase
         $server->createReceiptHeader($challenge, VerificationResult::failure('missing transaction payload'));
     }
 
+    public function testCreatesReceiptHeaderForExternalSettlementReference(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDC'));
+
+        $receipt = Headers::parseReceipt($server->createReceiptHeaderForReference(
+            $challenge,
+            'settled-signature',
+            externalId: 'order-1',
+        ));
+
+        self::assertSame('settled-signature', $receipt->reference);
+        self::assertSame($challenge->id, $receipt->challengeId);
+        self::assertSame('order-1', $receipt->externalId);
+    }
+
+    public function testRejectsReceiptWithoutSettlementReference(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDC'));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Cannot create a receipt without a settlement reference');
+
+        $server->createReceiptHeader($challenge, VerificationResult::success(reference: ''));
+    }
+
     private function unusedVerifier(): PaymentVerifier
     {
         return new class () implements PaymentVerifier {

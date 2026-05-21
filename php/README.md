@@ -90,10 +90,12 @@ The PHP server checkmark means this package can issue charge challenges,
 validate `Payment` credentials, pin the echoed charge request to the protected
 route, and emit payment receipts. Native PHP transaction settlement verification
 now decodes and validates pull-mode transaction payloads before any downstream
-settlement step. RPC-backed broadcast, confirmation, fee-payer co-signing, push
-signature lookup, and replay storage are follow-ups; the Surfpool-backed interop
-server still performs the final broadcast after PHP accepts the credential
-envelope.
+settlement step. Because the Solana verifier runs before broadcast, use
+`createReceiptHeaderForReference()` with the final on-chain signature after
+settlement. RPC-backed broadcast, confirmation, fee-payer co-signing, push
+signature lookup, and replay storage are follow-ups; the Surfpool-backed
+interop server still performs the final broadcast after PHP accepts the
+credential envelope.
 
 ## How to use the library
 

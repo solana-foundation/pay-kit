@@ -20,6 +20,10 @@ use SolanaPhpSdk\Transaction\VersionedTransaction;
 
 /**
  * Verifies Solana charge transaction payloads before server co-sign/broadcast.
+ *
+ * Successful results intentionally do not carry a receipt reference. Broadcast
+ * the co-signed transaction first, then create the receipt from the settled
+ * on-chain signature with ChargeServer::createReceiptHeaderForReference().
  */
 final class SolanaChargeTransactionVerifier implements PaymentVerifier
 {
