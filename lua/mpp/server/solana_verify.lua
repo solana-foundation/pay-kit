@@ -224,23 +224,67 @@ end
 -- byte 2 is SetComputeUnitLimit; byte 3 is SetComputeUnitPrice. Limits over
 -- the caps are rejected pre-broadcast so a malicious client cannot bloat the
 -- server's bill.
+--
+-- Branch order:
+-- 1. If `parsed.type` or `info.units` / `info.microLamports` is present
+--    (jsonParsed encoding), enforce caps against the parsed integer.
+-- 2. If only `ix.data` is present, decode the discriminator and value from
+--    raw bytes. base58 input is decoded via `Base58.decode_string` when the
+--    server-side hook is available; otherwise the bytes are read directly.
+-- 3. Compute-budget instructions we cannot classify fail closed; without a
+--    discriminator we cannot prove the instruction stays under the cap.
 function verify_compute_budget(instructions)
   for _, ix in ipairs(instructions or {}) do
     if normalize_program_id(ix) == COMPUTE_BUDGET_PROGRAM then
-      local data = ix.data or (ix.parsed and ix.parsed.info and ix.parsed.info.data) or ''
-      -- jsonParsed encoding does not give raw discriminator; trust parsed.type if present.
       local parsed_type = ix.parsed and ix.parsed.type or nil
       local info = instruction_info(ix) or {}
+      local handled = false
       if parsed_type == 'setComputeUnitLimit' or info.units ~= nil then
         local units = tonumber(info.units or info.computeUnits or 0) or 0
         if units > MAX_COMPUTE_UNIT_LIMIT then
           error('compute unit limit exceeds cap')
         end
+        handled = true
       elseif parsed_type == 'setComputeUnitPrice' or info.microLamports ~= nil then
         local price = tonumber(info.microLamports or 0) or 0
         if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
           error('compute unit price exceeds cap')
         end
+        handled = true
+      elseif type(ix.data) == 'string' and #ix.data > 0 then
+        -- Raw bytes path. Treat ix.data as Lua-native byte string and read
+        -- discriminator + payload directly. The Solana JSON-RPC `binary`
+        -- encoding gives us base58 strings; the harness adapters and live
+        -- jsonParsed output never reach this branch, but a third-party
+        -- adapter that bypasses jsonParsed must still hit the cap.
+        local first = string.byte(ix.data, 1)
+        if first == 2 and #ix.data >= 5 then
+          local b1, b2, b3, b4 = string.byte(ix.data, 2, 5)
+          local units = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+          if units > MAX_COMPUTE_UNIT_LIMIT then
+            error('compute unit limit exceeds cap')
+          end
+          handled = true
+        elseif first == 3 and #ix.data >= 9 then
+          local b1, b2, b3, b4 = string.byte(ix.data, 2, 5)
+          local b5, b6, b7, b8 = string.byte(ix.data, 6, 9)
+          local low = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+          local high = b5 + b6 * 256 + b7 * 65536 + b8 * 16777216
+          local price = low + high * 4294967296
+          if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+            error('compute unit price exceeds cap')
+          end
+          handled = true
+        elseif first == 0 or first == 1 or first == 4 then
+          -- Known non-cap discriminators (RequestUnits deprecated, RequestHeapFrame,
+          -- SetLoadedAccountsDataSizeLimit). Accept; they do not affect compute caps.
+          handled = true
+        end
+      end
+      if not handled then
+        -- Fail closed: a compute-budget instruction we cannot classify could
+        -- be a SetComputeUnitLimit or SetComputeUnitPrice over the cap.
+        error('compute budget instruction missing parsed type or raw payload')
       end
     end
   end

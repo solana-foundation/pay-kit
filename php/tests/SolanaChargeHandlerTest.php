@@ -116,6 +116,47 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertNotEmpty($result->headers['payment-receipt']);
     }
 
+    public function testRejectsSignatureReplayAfterSuccessfulSettlement(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalLegacyTransactionBase64()],
+        );
+
+        $statusEntry = [
+            'result' => [
+                'value' => [[
+                    'slot' => 1,
+                    'confirmationStatus' => 'confirmed',
+                    'err' => null,
+                ]],
+            ],
+        ];
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [
+                ['result' => 'ReplayProtectionFixtureSig'],
+                ['result' => 'ReplayProtectionFixtureSig'],
+            ],
+            'getSignatureStatuses' => [$statusEntry, $statusEntry],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+        );
+
+        $first = $handler->handle($credential->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(ChargeSettlement::class, $first);
+        self::assertSame('ReplayProtectionFixtureSig', $first->signature);
+
+        $second = $handler->handle($credential->toAuthorizationHeader(), $request);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $second);
+        self::assertStringContainsString('already consumed', $second->body['detail']);
+    }
+
     public function testReturns402WhenSurfpoolBlockhashOnNonLocalnet(): void
     {
         $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');

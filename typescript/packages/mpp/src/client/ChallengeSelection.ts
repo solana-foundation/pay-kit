@@ -1,7 +1,7 @@
 import type { z } from 'mppx';
 import { Challenge } from 'mppx';
 
-import { resolveStablecoinMint } from '../constants.js';
+import { normalizeNetwork, resolveStablecoinMint } from '../constants.js';
 import { charge as chargeMethod, session as sessionMethod } from '../Methods.js';
 import type { SessionMode } from './Session.js';
 
@@ -172,7 +172,10 @@ function matchesNetwork(challenge: SolanaChargeChallenge, network: string | unde
     if (!network) {
         return true;
     }
-    return (challenge.request.methodDetails.network ?? 'mainnet-beta') === network;
+    return (
+        normalizeNetwork(challenge.request.methodDetails.network ?? 'mainnet') ===
+        normalizeNetwork(network)
+    );
 }
 
 function matchesCurrency(challenge: SolanaChargeChallenge, currency: string | readonly string[] | undefined): boolean {
@@ -204,7 +207,10 @@ function matchesSessionNetwork(challenge: SolanaSessionChallenge, network: strin
     if (!network) {
         return true;
     }
-    return (challenge.request.network ?? 'mainnet-beta') === network;
+    return (
+        normalizeNetwork(challenge.request.network ?? 'mainnet') ===
+        normalizeNetwork(network)
+    );
 }
 
 function matchesSessionCurrency(
