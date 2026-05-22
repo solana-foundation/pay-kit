@@ -28,6 +28,22 @@ function tokenProgramAddress(
   return variant === "TOKEN_2022_PROGRAM" ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM;
 }
 
+// The on-chain mint pubkey for a scenario. In pubkey mode this is just
+// `scenario.asset`. In symbol mode the harness sends a stablecoin symbol
+// to adapters and the on-chain mint is `scenario.expectedMint` (the
+// pubkey each SDK's resolver is expected to return).
+function onChainMintFor(scenario: InteropScenario): string {
+  if (scenario.currencyMode === "symbol") {
+    if (!scenario.expectedMint) {
+      throw new Error(
+        `Scenario ${scenario.id} uses symbol mode but does not set expectedMint`,
+      );
+    }
+    return scenario.expectedMint;
+  }
+  return scenario.asset;
+}
+
 const runningServers: RunningServer[] = [];
 
 let surfnet: Surfnet | undefined;
@@ -109,23 +125,25 @@ beforeAll(async () => {
 
   // Deploy every mint referenced by an active scenario under the right token
   // program. Without this, Token-2022 scenarios would have to share the legacy
-  // mint owner and the verifier would reject every transfer.
+  // mint owner and the verifier would reject every transfer. Symbol-mode
+  // scenarios deploy at `expectedMint`, not at the literal asset string.
   const uniqueMints = new Map<string, "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM">();
   for (const scenario of activeScenarios) {
     const variant = scenario.tokenProgram ?? "TOKEN_PROGRAM";
-    const existing = uniqueMints.get(scenario.asset);
+    const mintPubkey = onChainMintFor(scenario);
+    const existing = uniqueMints.get(mintPubkey);
     if (existing && existing !== variant) {
       throw new Error(
-        `Conflicting tokenProgram for asset ${scenario.asset}: ${existing} vs ${variant} (scenario ${scenario.id})`,
+        `Conflicting tokenProgram for mint ${mintPubkey}: ${existing} vs ${variant} (scenario ${scenario.id})`,
       );
     }
-    uniqueMints.set(scenario.asset, variant);
+    uniqueMints.set(mintPubkey, variant);
   }
-  for (const [asset, variant] of uniqueMints) {
+  for (const [mintPubkey, variant] of uniqueMints) {
     const programAddress = tokenProgramAddress(variant);
-    surfnet.setAccount(asset, 1_461_600, createSplMintAccountData(6), programAddress);
-    surfnet.fundToken(client.publicKey, asset, 100_000, programAddress);
-    surfnet.fundToken(payTo.publicKey, asset, 1, programAddress);
+    surfnet.setAccount(mintPubkey, 1_461_600, createSplMintAccountData(6), programAddress);
+    surfnet.fundToken(client.publicKey, mintPubkey, 100_000, programAddress);
+    surfnet.fundToken(payTo.publicKey, mintPubkey, 1, programAddress);
   }
 
   splitRecipients = {
@@ -187,16 +205,20 @@ describe("mpp interop", () => {
 
             const scenarioEnv = environmentForScenario(interopEnv, scenario);
             const scenarioTokenProgram = tokenProgramAddress(scenario.tokenProgram);
+            // On-chain mint pubkey (resolved expectedMint in symbol mode,
+            // literal asset in pubkey mode). The literal in scenarioEnv goes
+            // to the adapter so the SDK's resolver is exercised end-to-end.
+            const onChainMint = onChainMintFor(scenario);
             const initialBalance = await getTokenBalance(
               surfnet,
               scenarioEnv.MPP_INTEROP_PAY_TO,
-              scenarioEnv.MPP_INTEROP_MINT,
+              onChainMint,
               scenarioTokenProgram,
             );
             const initialSplitBalances = await splitBalances(
               surfnet,
               scenario,
-              scenarioEnv.MPP_INTEROP_MINT,
+              onChainMint,
               scenarioTokenProgram,
               true,
             );
@@ -214,13 +236,13 @@ describe("mpp interop", () => {
             const finalBalance = await getTokenBalance(
               surfnet,
               scenarioEnv.MPP_INTEROP_PAY_TO,
-              scenarioEnv.MPP_INTEROP_MINT,
+              onChainMint,
               scenarioTokenProgram,
             );
             const finalSplitBalances = await splitBalances(
               surfnet,
               scenario,
-              scenarioEnv.MPP_INTEROP_MINT,
+              onChainMint,
               scenarioTokenProgram,
               false,
             );
@@ -316,15 +338,16 @@ async function expectSettledTransactionShape(
   const expectedTransferCount = 1 + (scenario.splits?.length ?? 0);
   const primaryAmount = primaryDelta(scenario);
   const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
+  const onChainMint = onChainMintFor(scenario);
   expectSplTransferChecked(
     message,
     {
       destination: surfnet.getAta(
         scenarioEnv.MPP_INTEROP_PAY_TO,
-        scenarioEnv.MPP_INTEROP_MINT,
+        onChainMint,
         tokenProgram,
       ),
-      mint: scenarioEnv.MPP_INTEROP_MINT,
+      mint: onChainMint,
       amount: primaryAmount,
       decimals: 6,
       tokenProgram,
@@ -336,14 +359,14 @@ async function expectSettledTransactionShape(
     const recipient = splitRecipients[split.recipientKey];
     const destination = surfnet.getAta(
       recipient,
-      scenarioEnv.MPP_INTEROP_MINT,
+      onChainMint,
       tokenProgram,
     );
     expectSplTransferChecked(
       message,
       {
         destination,
-        mint: scenarioEnv.MPP_INTEROP_MINT,
+        mint: onChainMint,
         amount: BigInt(split.amount),
         decimals: 6,
         tokenProgram,
@@ -355,7 +378,7 @@ async function expectSettledTransactionShape(
       expectIdempotentAtaCreation(message, {
         ata: destination,
         owner: recipient,
-        mint: scenarioEnv.MPP_INTEROP_MINT,
+        mint: onChainMint,
         tokenProgram,
       });
     }
@@ -367,7 +390,7 @@ async function expectSettledTransactionShape(
 
   expectTransferCheckedCount(
     message,
-    scenarioEnv.MPP_INTEROP_MINT,
+    onChainMint,
     expectedTransferCount,
     tokenProgram,
   );
