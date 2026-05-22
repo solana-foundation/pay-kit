@@ -151,6 +151,43 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertNotEmpty($result->headers['payment-receipt']);
     }
 
+    public function testPullSettlementCanCoSignWithServerFeePayer(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $feePayer = Keypair::generate();
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalUnsignedLegacyTransactionBase64($feePayer)],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [['result' => 'ServerFeePayerSig']],
+            'getSignatureStatuses' => [[
+                'result' => [
+                    'value' => [[
+                        'slot' => 1,
+                        'confirmationStatus' => 'confirmed',
+                        'err' => null,
+                    ]],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            feePayer: $feePayer,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $result);
+        self::assertSame('ServerFeePayerSig', $result->signature);
+        self::assertSame($feePayer->getPublicKey()->toBase58(), $handler->feePayerPubkey());
+    }
+
     public function testReturnsChargeSettlementAfterSuccessfulPushSignatureVerification(): void
     {
         $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
@@ -618,6 +655,20 @@ final class SolanaChargeHandlerTest extends TestCase
         $tx = new Transaction($message);
         $tx->partialSign($signer);
         return base64_encode($tx->serialize());
+    }
+
+    private function minimalUnsignedLegacyTransactionBase64(Keypair $requiredSigner): string
+    {
+        $message = new Message(
+            numRequiredSignatures: 1,
+            numReadonlySignedAccounts: 0,
+            numReadonlyUnsignedAccounts: 0,
+            accountKeys: [$requiredSigner->getPublicKey()],
+            recentBlockhash: str_repeat("\x00", 32),
+            instructions: [],
+        );
+        $tx = new Transaction($message);
+        return base64_encode($tx->serialize(verifySignatures: false));
     }
 
     private function chargeRequest(string $amount = '1000'): ChargeRequest

@@ -488,6 +488,25 @@ final class ChargeServerTest extends TestCase
         self::assertSame('localnet', $methodDetails['network']);
     }
 
+    public function testEmptyBlockhashProviderResultIsBestEffort(): void
+    {
+        $server = new ChargeServer(
+            secretKey: 'secret',
+            realm: 'api',
+            blockhashProvider: fn (): string => '',
+        );
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: ['network' => 'localnet'],
+        );
+
+        $methodDetails = $this->decodedMethodDetails($server->createChallenge($request));
+
+        self::assertArrayNotHasKey('recentBlockhash', $methodDetails);
+        self::assertSame('localnet', $methodDetails['network']);
+    }
+
     /** @return array<string, mixed> */
     private function decodedMethodDetails(Challenge $challenge): array
     {

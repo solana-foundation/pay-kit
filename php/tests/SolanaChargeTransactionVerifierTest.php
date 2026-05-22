@@ -164,6 +164,48 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertTrue($result->ok, $result->reason);
     }
 
+    public function testRejectsNativeSolTransferWithWrongAmount(): void
+    {
+        $fixture = $this->fixture();
+        $request = new ChargeRequest(
+            amount: '2000',
+            currency: 'SOL',
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'feePayer' => true,
+                'feePayerKey' => $fixture['feePayer']->toBase58(),
+            ],
+        );
+        $transaction = $this->solTransactionPayload($fixture);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('No matching SOL transfer', $result->reason);
+    }
+
+    public function testRejectsNativeSolTransferWithWrongRecipient(): void
+    {
+        $fixture = $this->fixture();
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'SOL',
+            recipient: PublicKey::fromBytes(str_repeat("\x07", 32))->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'feePayer' => true,
+                'feePayerKey' => $fixture['feePayer']->toBase58(),
+            ],
+        );
+        $transaction = $this->solTransactionPayload($fixture);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('No matching SOL transfer', $result->reason);
+    }
+
     public function testRejectsNativeSolAtaCreation(): void
     {
         $fixture = $this->fixture();
@@ -340,6 +382,37 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('fee payer token account cannot fund the SPL payment transfer', $result->reason);
+    }
+
+    public function testRejectsSplTransferWithWrongDecimals(): void
+    {
+        $fixture = $this->fixture();
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: $fixture['mint']->toBase58(),
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 9,
+                'tokenProgram' => TokenProgram::PROGRAM_ID,
+                'feePayer' => true,
+                'feePayerKey' => $fixture['feePayer']->toBase58(),
+                'splits' => [
+                    [
+                        'recipient' => $fixture['splitRecipient']->toBase58(),
+                        'amount' => '250',
+                        'ataCreationRequired' => true,
+                        'memo' => 'split memo',
+                    ],
+                ],
+            ],
+        );
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('No matching SPL transferChecked', $result->reason);
     }
 
     public function testRejectsMissingExternalIdMemo(): void
