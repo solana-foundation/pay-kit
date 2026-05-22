@@ -54,11 +54,25 @@ local CONSUMED_PREFIX = 'solana-charge:consumed:'
 local Handler = {}
 Handler.__index = Handler
 
+local function monotonic_seconds()
+  -- Wall-clock seconds. `os.clock` measures CPU time consumed by the
+  -- process, which advances much slower than real time when the LuaJIT VM
+  -- yields inside an OpenResty / Nginx worker, so a CPU-time busy-wait
+  -- sleep becomes too short. Prefer `socket.gettime` from luasocket when
+  -- available; fall back to `os.time` (1s resolution) otherwise.
+  local ok, socket = pcall(require, 'socket')
+  if ok and socket and type(socket.gettime) == 'function' then
+    return socket.gettime()
+  end
+  return os.time()
+end
+
 local function default_sleep(seconds)
-  -- Busy-loop is acceptable in tests; production callers can pass their own
-  -- sleep via the constructor (e.g. `require('socket').sleep` from lua-socket).
-  local target = os.clock() + (seconds or 0)
-  while os.clock() < target do end
+  -- Busy-loop on wall-clock time. Production callers should inject their
+  -- own sleep through the constructor (e.g. `require('socket').sleep` or
+  -- the OpenResty `ngx.sleep`); the busy-wait is a last-resort default.
+  local target = monotonic_seconds() + (seconds or 0)
+  while monotonic_seconds() < target do end
 end
 
 local function verifier_error(message)
@@ -172,19 +186,19 @@ function Handler:settle_pull(transaction_base64, request)
   end
 
   -- Stage 4: simulate with bounded retries. A program-level error fails
-  -- the request immediately; a transport-level error is retried.
+  -- the request immediately (no retry, because the result is deterministic
+  -- and the next attempt would just consume another RPC round-trip to get
+  -- the same error). A transport-level error (pcall returned false) is
+  -- retried up to `simulation_max_attempts` times.
   local simulation, simulate_err
   for attempt = 1, self.simulation_max_attempts do
     local sim_ok, sim_result = pcall(self.rpc.simulate_transaction, self.rpc, signed_base64)
     if sim_ok then
       simulation = sim_result
       simulate_err = nil
-      if simulation.err == nil then
-        break
-      end
-    else
-      simulate_err = sim_result
+      break
     end
+    simulate_err = sim_result
     if attempt < self.simulation_max_attempts then
       self.sleep(self.simulation_retry_delay_seconds)
     end
@@ -254,22 +268,22 @@ end
 --- Build a `verify_payment` callback compatible with `mpp.server.new`. The
 -- callback consumes the replay store inside the handler, so the server's
 -- own `put_if_absent` call in `_finalize_verification` is a no-op for the
--- same reference. Callers that prefer the server-level consume must pass
--- `manage_replay = false` and run the consume themselves; otherwise the
--- handler owns it.
+-- same reference. `options.replay_key_prefix` controls the prefix the
+-- server-level consume uses; the suffix is always the on-chain signature
+-- so each settlement still gets a distinct server-level key.
 function Handler:as_callback(options)
   options = options or {}
+  local prefix = options.replay_key_prefix or 'solana-charge:server-noop:'
   local handler = self
   return function(context)
     local signature = handler:settle(context.payload, context.request)
     return {
       reference = signature,
-      -- Override the server's replay_key so the server-level consume in
-      -- `_finalize_verification` runs against a no-op key while the
-      -- handler-internal consume protects the real signature. This keeps
-      -- the public API unchanged while avoiding a double-consume.
-      replay_key = options.replay_key_prefix or
-        ('solana-charge:server-noop:' .. signature),
+      -- Build the server-level replay_key as prefix + signature so the
+      -- key is unique per settlement. The handler already consumed the
+      -- real signature in the replay store; this server-level key only
+      -- needs to be distinct from earlier settlements.
+      replay_key = prefix .. signature,
     }
   end
 end

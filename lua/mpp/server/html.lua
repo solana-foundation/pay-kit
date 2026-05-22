@@ -51,7 +51,7 @@ function M.challenge_to_html(challenge, rpc_url)
 
   -- Decode the base64url request field to extract network from methodDetails.
   local network = 'mainnet-beta'
-  local decoded_payload, decode_err = base64url.decode(plain.request)
+  local decoded_payload, _decode_err = base64url.decode(plain.request)
   if decoded_payload then
     local ok, request_data = pcall(json.decode, decoded_payload)
     if ok and type(request_data) == 'table' then
