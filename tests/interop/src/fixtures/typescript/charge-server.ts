@@ -42,11 +42,13 @@ async function main() {
   const isSolNative = environment.assetKind === "sol";
   const currency = isSolNative ? "sol" : environment.mint;
   // G28a. `solana.charge({ splits })` validates split count at
-  // construction time and throws on > 8 entries. The harness treats
-  // a construct-time rejection as the correct 402-class outcome: the
-  // server refuses to issue a challenge. We capture the error and
-  // serve 402 on every protected request below, mirroring the
-  // "challenge_unavailable" failure mode end-to-end.
+  // construction time and throws on > 8 entries. That one specific
+  // construct-time rejection is the correct 402-class outcome and
+  // gets surfaced as `challenge_unavailable` on protected requests.
+  // Other Mppx.create failures (bad signer, unsupported currency,
+  // env regressions) must crash the fixture so the harness sees a
+  // real error instead of a misleading 402 (Codex review of this
+  // PR). We allowlist by error message text rather than catching all.
   // The exact return type of Mppx.create depends on the inferred
   // methods tuple, which Typescript widens here. `unknown` plus a
   // narrow cast at the call site is sufficient for the fixture.
@@ -68,7 +70,11 @@ async function main() {
       ],
     });
   } catch (error) {
-    constructError = error instanceof Error ? error : new Error(String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/splits cannot exceed/i.test(message)) {
+      throw error;
+    }
+    constructError = error instanceof Error ? error : new Error(message);
   }
 
   const server = http.createServer(async (request, response) => {
