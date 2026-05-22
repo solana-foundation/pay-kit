@@ -16,10 +16,10 @@ require_relative "../../lib/mpp/sinatra"
 class RubyMppSinatraExample < Sinatra::Base
   helpers Mpp::Sinatra::Helpers
 
-  set :bind,            SinatraExample::Config.host
-  set :port,            SinatraExample::Config.port
+  set :bind, SinatraExample::Config.host
+  set :port, SinatraExample::Config.port
   set :show_exceptions, false
-  set :mpp_server,      SinatraExample.server
+  set :mpp_server, SinatraExample.server
 
   get "/health" do
     content_type :json

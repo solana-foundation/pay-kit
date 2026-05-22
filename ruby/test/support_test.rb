@@ -22,7 +22,7 @@ class SupportTest < Minitest::Test
 
   def test_stablecoin_resolution_and_token_programs
     assert_nil Mpp::Methods::Solana::Mints.resolve("SOL", "localnet")
-    assert_equal "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", Mpp::Methods::Solana::Mints.resolve("USDC", "localnet")
+    assert_equal "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Mpp::Methods::Solana::Mints.resolve("USDC", "localnet")
     assert_equal "SomeMint111111111111111111111111111111111", Mpp::Methods::Solana::Mints.resolve("SomeMint111111111111111111111111111111111", "localnet")
     assert_equal Mpp::Methods::Solana::Mints::TOKEN_2022_PROGRAM, Mpp::Methods::Solana::Mints.token_program_for("PYUSD", "devnet")
     assert_equal Mpp::Methods::Solana::Mints::TOKEN_PROGRAM, Mpp::Methods::Solana::Mints.token_program_for("USDC", "localnet")

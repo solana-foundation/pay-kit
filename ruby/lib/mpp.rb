@@ -37,16 +37,16 @@ module Mpp
   # a realm string for WWW-Authenticate, and an optional replay store.
   #
   #   server = Mpp.create(
-  #     method:     Mpp::Methods::Solana.charge(recipient: "...", mint: "USDC", rpc: "..."),
+  #     method:     Mpp::Methods::Solana.charge(recipient: "...", currency: "USDC", rpc: "..."),
   #     secret_key: "secret",
   #     realm:      "My App",
   #   )
   def self.create(method:, secret_key:, realm: DEFAULT_REALM, replay_store: MemoryStore.new, settlement_header: Internal::Handler::DEFAULT_SETTLEMENT_HEADER)
     Server::Instance.new(
-      method:            method,
-      secret_key:        secret_key,
-      realm:             realm,
-      replay_store:      replay_store,
+      method: method,
+      secret_key: secret_key,
+      realm: realm,
+      replay_store: replay_store,
       settlement_header: settlement_header
     )
   end

@@ -5,8 +5,8 @@ require "webrick"
 require_relative "../../lib/mpp"
 
 DEFAULT_RPC_URL = "https://402.surfnet.dev:8899"
-DEFAULT_MINT    = "USDC"
-DEFAULT_PAY_TO  = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+DEFAULT_CURRENCY = "USDC"
+DEFAULT_PAY_TO = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
 # Optional server-side fee payer, loaded from a JSON-array secret key.
 def fee_payer_from_env
@@ -16,24 +16,23 @@ def fee_payer_from_env
   Mpp::Methods::Solana::Account.from_json_array(secret)
 end
 
-# Configure the Solana charge method (recipient, mint, network, RPC, fee payer)
+# Configure the Solana charge method (recipient, currency, network, RPC, fee payer)
 # and build the MPP server. The method bundles every static knob; per-request
 # only amount + description are passed to server.charge.
 method = Mpp::Methods::Solana.charge(
   recipient: ENV.fetch("MPP_PAY_TO", DEFAULT_PAY_TO),
-  mint:      ENV.fetch("MPP_MINT", DEFAULT_MINT),
-  network:   ENV.fetch("MPP_NETWORK", "localnet"),
-  rpc:       ENV.fetch("MPP_RPC_URL", DEFAULT_RPC_URL),
-  fee_payer: fee_payer_from_env,
-  decimals:  Integer(ENV.fetch("MPP_DECIMALS", "6"))
+  currency: ENV.fetch("MPP_CURRENCY", DEFAULT_CURRENCY),
+  network: ENV.fetch("MPP_NETWORK", "localnet"),
+  rpc: ENV.fetch("MPP_RPC_URL", DEFAULT_RPC_URL),
+  fee_payer: fee_payer_from_env
 )
 server = Mpp.create(method: method, secret_key: ENV.fetch("MPP_SECRET_KEY", "ruby-mpp-dev-secret"), realm: "Ruby MPP Example")
 
 http = WEBrick::HTTPServer.new(
   BindAddress: "127.0.0.1",
-  Port:        Integer(ENV.fetch("PORT", "4567")),
-  AccessLog:   [],
-  Logger:      WEBrick::Log.new($stderr, WEBrick::Log::INFO)
+  Port: Integer(ENV.fetch("PORT", "4567")),
+  AccessLog: [],
+  Logger: WEBrick::Log.new($stderr, WEBrick::Log::INFO)
 )
 
 http.mount_proc "/health" do |_req, res|
@@ -43,7 +42,7 @@ http.mount_proc "/health" do |_req, res|
 end
 
 http.mount_proc "/paid" do |req, res|
-  result = server.charge(req["authorization"], amount: ENV.fetch("MPP_AMOUNT", "1000"), description: "Ruby protected endpoint")
+  result = server.charge(req["authorization"], amount: "1000", description: "Ruby protected endpoint")
 
   case result
   when Mpp::Challenge
@@ -55,10 +54,10 @@ http.mount_proc "/paid" do |req, res|
     res.status = result.status
     result.headers.each { |name, value| res[name] = value }
     res["content-type"] = "application/json"
-    res.body = JSON.generate(ok: true, paid: true, signature: result.signature)
+    res.body = JSON.generate(ok: true, paid: true)
   end
 end
 
-trap("INT")  { http.shutdown }
+trap("INT") { http.shutdown }
 trap("TERM") { http.shutdown }
 http.start

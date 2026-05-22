@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    solana-mpp (0.1.0)
+    solana-pay-kit (0.1.0)
       base64 (~> 0.3)
       ed25519 (~> 1.4)
       json (~> 2.9)
@@ -113,7 +113,7 @@ DEPENDENCIES
   minitest (~> 5.25)
   rake (~> 13.2)
   simplecov (~> 0.22)
-  solana-mpp!
+  solana-pay-kit!
   standard (~> 1.43)
 
 CHECKSUMS
@@ -150,7 +150,7 @@ CHECKSUMS
   simplecov-html (0.13.2) sha256=bd0b8e54e7c2d7685927e8d6286466359b6f16b18cb0df47b508e8d73c777246
   simplecov_json_formatter (0.1.4) sha256=529418fbe8de1713ac2b2d612aa3daa56d316975d307244399fa4838c601b428
   sinatra (4.2.1) sha256=b7aeb9b11d046b552972ade834f1f9be98b185fa8444480688e3627625377080
-  solana-mpp (0.1.0)
+  solana-pay-kit (0.1.0)
   standard (1.54.0) sha256=7a4b08f83d9893083c8f03bc486f0feeb6a84d48233b40829c03ef4767ea0100
   standard-custom (1.0.2) sha256=424adc84179a074f1a2a309bb9cf7cd6bfdb2b6541f20c6bf9436c0ba22a652b
   standard-performance (1.9.0) sha256=49483d31be448292951d80e5e67cdcb576c2502103c7b40aec6f1b6e9c88e3f2

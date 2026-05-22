@@ -7,16 +7,15 @@ module SinatraExample
   # in-memory replay store and the cached blockhash are shared across requests.
   def self.server
     @server ||= ::Mpp.create(
-      method:     ::Mpp::Methods::Solana.charge(
+      method: ::Mpp::Methods::Solana.charge(
         recipient: Config.pay_to,
-        mint:      Config.mint,
-        network:   Config.network,
-        rpc:       Config.rpc_url,
-        fee_payer: Config.fee_payer,
-        decimals:  Config.decimals
+        currency: Config.currency,
+        network: Config.network,
+        rpc: Config.rpc_url,
+        fee_payer: Config.fee_payer
       ),
       secret_key: Config.secret_key,
-      realm:      Config::REALM
+      realm: Config::REALM
     )
   end
 end

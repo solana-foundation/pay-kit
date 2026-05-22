@@ -9,7 +9,7 @@ install:
 
 # Validate the Ruby gemspec.
 build:
-    bundle exec ruby -e "Gem::Specification.load('solana-mpp.gemspec').validate"
+    bundle exec ruby -e "Gem::Specification.load('solana-pay-kit.gemspec').validate"
 
 # Run the Ruby unit test suite.
 test:

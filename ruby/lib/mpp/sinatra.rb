@@ -29,7 +29,7 @@ module Mpp
 
         result = server.charge(
           request.env["HTTP_AUTHORIZATION"],
-          amount:      amount,
+          amount: amount,
           description: description,
           external_id: external_id
         )

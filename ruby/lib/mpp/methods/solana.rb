@@ -4,23 +4,26 @@ module Mpp
   module Methods
     module Solana
       # Build a Solana charge method bundling all static config (recipient,
-      # mint, network, RPC, optional fee payer, decimals). Pass the result
+      # currency, network, RPC, optional fee payer, decimals). Pass the result
       # to Mpp.create(method:, ...).
+      #
+      # `currency` accepts a symbol like "USDC" or "SOL" (looked up against
+      # the built-in stablecoin table) or a raw 32-byte mint address.
       #
       #   method = Mpp::Methods::Solana.charge(
       #     recipient: "CXhr...",
-      #     mint:      "USDC",
+      #     currency:  "USDC",
       #     network:   "mainnet",
       #     rpc:       "https://api.mainnet-beta.solana.com",
       #   )
-      def self.charge(recipient:, mint:, rpc:, network: "mainnet", fee_payer: nil, decimals: 6)
+      def self.charge(recipient:, currency:, rpc:, network: "mainnet", fee_payer: nil, decimals: nil)
         ChargeMethod.new(
           recipient: recipient,
-          mint:      mint,
-          network:   network,
-          rpc:       rpc.is_a?(String) ? Rpc.new(rpc) : rpc,
+          currency: currency,
+          network: network,
+          rpc: rpc.is_a?(String) ? Rpc.new(rpc) : rpc,
           fee_payer: fee_payer,
-          decimals:  decimals
+          decimals: decimals || Mints.decimals_for(currency, network)
         )
       end
 
@@ -29,16 +32,16 @@ module Mpp
       class ChargeMethod
         BLOCKHASH_TTL_SECONDS = 2.0
 
-        attr_reader :recipient, :mint, :network, :rpc, :fee_payer, :decimals, :verifier
+        attr_reader :recipient, :currency, :network, :rpc, :fee_payer, :decimals, :verifier
 
-        def initialize(recipient:, mint:, network:, rpc:, fee_payer:, decimals:)
+        def initialize(recipient:, currency:, network:, rpc:, fee_payer:, decimals:)
           @recipient = recipient
-          @mint      = mint
-          @network   = network
-          @rpc       = rpc
+          @currency = currency
+          @network = network
+          @rpc = rpc
           @fee_payer = fee_payer
-          @decimals  = decimals
-          @verifier  = Verifier.new
+          @decimals = decimals
+          @verifier = Verifier.new
           @blockhash = nil
           @blockhash_at = 0.0
         end
@@ -48,9 +51,9 @@ module Mpp
           fee_payer&.public_key&.to_s
         end
 
-        # Default SPL token program for this method's mint+network pair.
+        # Default SPL token program for this method's currency+network pair.
         def token_program
-          Mints.token_program_for(mint, network)
+          Mints.token_program_for(currency, network)
         end
 
         # Short-window blockhash cache: every protected request would otherwise
@@ -67,15 +70,18 @@ module Mpp
         end
 
         # Build the wire-level method_details hash for a charge request.
-        def method_details
+        # Pass `currency:` to override the method's default — useful when one
+        # endpoint accepts multiple currencies (USDC, USDT, ...) and selects
+        # one per request.
+        def method_details(currency: self.currency)
           details = {
-            "network"         => network,
-            "decimals"        => decimals,
-            "tokenProgram"    => token_program,
+            "network" => network,
+            "decimals" => (currency == self.currency) ? decimals : Mints.decimals_for(currency, network),
+            "tokenProgram" => Mints.token_program_for(currency, network),
             "recentBlockhash" => latest_blockhash
           }
           if fee_payer
-            details["feePayer"]    = true
+            details["feePayer"] = true
             details["feePayerKey"] = fee_payer_pubkey
           end
           details

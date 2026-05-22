@@ -19,7 +19,7 @@ jobs:
           working-directory: ruby
       - name: Validate gemspec
         working-directory: ruby
-        run: bundle exec ruby -e "Gem::Specification.load('solana-mpp.gemspec').validate"
+        run: bundle exec ruby -e "Gem::Specification.load('solana-pay-kit.gemspec').validate"
       - name: Lint
         working-directory: ruby
         run: bundle exec standardrb

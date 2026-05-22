@@ -23,12 +23,12 @@ module Mpp
           realm: realm
         )
         @handler = Internal::Handler.new(
-          challenges:        @challenge_store,
-          rpc:               method.rpc,
-          replay_store:      replay_store,
-          fee_payer:         method.fee_payer,
-          network:           method.network,
-          verifier:          method.verifier,
+          challenges: @challenge_store,
+          rpc: method.rpc,
+          replay_store: replay_store,
+          fee_payer: method.fee_payer,
+          network: method.network,
+          verifier: method.verifier,
           settlement_header: settlement_header
         )
       end
@@ -36,16 +36,21 @@ module Mpp
       # Handle one HTTP charge request. Returns either a payment-required
       # response (caller should emit 402) or a settlement (caller renders 200
       # and forwards the settlement headers).
-      def charge(authorization, amount:, description: nil, external_id: nil, splits: nil)
-        details = method.method_details
+      #
+      # Pass `currency:` to charge in a currency other than the method's
+      # default (e.g. an endpoint that accepts USDC by default but lets the
+      # caller pay in USDT for this specific request).
+      def charge(authorization, amount:, description: nil, external_id: nil, splits: nil, currency: nil)
+        currency ||= method.currency
+        details = method.method_details(currency: currency)
         details = details.merge("splits" => splits) if splits && !splits.empty?
 
         request = Intent::ChargeRequest.new(
-          amount:         amount.to_s,
-          currency:       method.mint,
-          recipient:      method.recipient,
-          description:    description,
-          external_id:    external_id,
+          amount: amount.to_s,
+          currency: currency,
+          recipient: method.recipient,
+          description: description,
+          external_id: external_id,
           method_details: details
         )
         @handler.handle(authorization, request)

@@ -15,7 +15,6 @@ module Mpp
         MINTS = {
           "USDC" => {
             "devnet" => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-            "localnet" => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "mainnet" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
           },
           "USDT" => {
@@ -36,6 +35,18 @@ module Mpp
 
         TOKEN_2022_SYMBOLS = ["PYUSD", "USDG", "CASH"].freeze
 
+        # Known token decimals. Every USD stablecoin in MINTS is 6; SOL is 9
+        # (the native lamport precision). Unknown SPL tokens fall back to 6.
+        DECIMALS = {
+          "USDC" => 6,
+          "USDT" => 6,
+          "USDG" => 6,
+          "PYUSD" => 6,
+          "CASH" => 6,
+          "SOL" => 9
+        }.freeze
+        DEFAULT_DECIMALS = 6
+
         module_function
 
         # Resolve a currency symbol or mint into a mint address.
@@ -55,13 +66,19 @@ module Mpp
 
         def symbol_for(currency, network)
           upper = currency.to_s.upcase
-          return upper if MINTS.key?(upper)
+          return upper if MINTS.key?(upper) || upper == "SOL"
 
           resolved = resolve(currency, network)
           MINTS.each do |symbol, entries|
             return symbol if entries.value?(resolved)
           end
           nil
+        end
+
+        # Look up the decimals for a known mint symbol or address. Falls back
+        # to 6 (the common SPL stablecoin precision) for unknown tokens.
+        def decimals_for(currency, network)
+          DECIMALS[symbol_for(currency, network)] || DEFAULT_DECIMALS
         end
       end
     end

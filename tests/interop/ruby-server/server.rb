@@ -44,11 +44,10 @@ end
 server = Mpp.create(
   method: Mpp::Methods::Solana.charge(
     recipient: pay_to,
-    mint:      mint,
+    currency:  mint,
     network:   network,
     rpc:       rpc_url,
-    fee_payer: account_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY"),
-    decimals:  6
+    fee_payer: account_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
   ),
   secret_key:        secret_key,
   realm:             "MPP Interop",

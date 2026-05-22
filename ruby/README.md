@@ -2,13 +2,16 @@
   <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
-# solana-mpp
+# solana-pay-kit
 
-Solana payment method for the [Machine Payments Protocol](https://mpp.dev),
-for Ruby.
+Charge stablecoins (USDC, USDT, PYUSD, …) for any HTTP endpoint, in Ruby.
+Implements the Solana payment method for the
+[Machine Payments Protocol](https://mpp.dev).
 
 **MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow.
+any HTTP API accept payments using the `402 Payment Required` flow. You
+don't need to know anything about Solana to use this library — pick a
+currency, give it your wallet address, and gate a route in two lines.
 
 [![Ruby](https://img.shields.io/badge/ruby-3.2%2B-red)]()
 [![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)]()
@@ -35,12 +38,12 @@ require "mpp"
 server = Mpp.create(
   method: Mpp::Methods::Solana.charge(
     recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-    mint:      "USDC",
-    network:   "localnet",
-    rpc:       "https://402.surfnet.dev:8899"
+    currency: "USDC",
+    network: "localnet",
+    rpc: "https://402.surfnet.dev:8899"
   ),
   secret_key: "local-dev-secret",
-  realm:      "Ruby MPP Example"
+  realm: "Ruby MPP Example"
 )
 
 # In your request handler (WEBrick, Sinatra, Rails, Rack, etc.):
@@ -57,11 +60,21 @@ when Mpp::Settlement
 end
 ```
 
-The method object owns every static knob (recipient, mint, network, RPC,
-optional fee payer, decimals). Per-request you only pass `amount` and
-`description` to `server.charge`. The blockhash is fetched lazily and cached
-for 2 seconds inside the method so a busy endpoint doesn't pay an RPC round-trip
-on every protected request.
+`currency` accepts a symbol like `"USDC"`, `"USDT"`, `"USDG"`, `"PYUSD"`, or `"CASH"` —
+the SDK looks up the mint address, token program, and decimals from a built-in
+table. You can also pass a raw mint pubkey for tokens not in the table.
+
+For an endpoint that accepts a different currency per request, pass `currency:`
+to `server.charge`:
+
+```ruby
+result = server.charge(auth, amount: "1000", description: "...", currency: "USDT")
+```
+
+The method object owns every static knob (recipient, default currency, network,
+RPC, optional fee payer). Per-request you only pass `amount` and `description`.
+The blockhash is fetched lazily and cached for 2 seconds inside the method so a
+busy endpoint doesn't pay an RPC round-trip on every protected request.
 
 ### Rack middleware
 
@@ -124,7 +137,7 @@ pay curl http://localhost:4567/paid   # pays and succeeds
 ```
 
 The simple server defaults to Surfpool localnet (`https://402.surfnet.dev:8899`),
-`USDC`, and a local example recipient. Override `MPP_RPC_URL`, `MPP_MINT`,
+`USDC`, and a local example recipient. Override `MPP_RPC_URL`, `MPP_CURRENCY`,
 `MPP_PAY_TO`, `MPP_AMOUNT`, or `MPP_FEE_PAYER_SECRET_KEY` for a different
 localnet fixture.
 
@@ -175,17 +188,6 @@ The direct Ruby interop server at
 [`tests/interop/ruby-server/server.rb`](../tests/interop/ruby-server/server.rb)
 exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
 clients.
-
-## Roadmap
-
-- **Ruby client.** This PR is intentionally server-only. A future client pass
-  should construct credentials from a challenge, sign transactions, and run the
-  inverse interop direction against Rust and TypeScript servers.
-- **Framework integrations.** The current framework example is Sinatra. Future
-  examples can add Rails or Rack-native middleware adapters once the server API
-  is stable.
-- **Other intents.** `x402/*`, `mpp/session`, and `mpp/subscription` are not
-  scoped on the Ruby side.
 
 ## Examples
 

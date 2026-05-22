@@ -40,7 +40,7 @@ module Mpp
         consume_signature(signature)
         receipt = @challenges.create_receipt_header(challenge: result.challenge, reference: signature, external_id: request.external_id)
         Settlement.new(
-          signature:      signature,
+          signature: signature,
           receipt_header: receipt,
           headers: {
             Core::Headers::PAYMENT_RECEIPT => receipt,

@@ -1,12 +1,11 @@
 # frozen_string_literal: true
 
 Gem::Specification.new do |spec|
-  spec.name = "solana-mpp"
+  spec.name = "solana-pay-kit"
   spec.version = "0.1.0"
   spec.summary = "Solana charge server for the Machine Payments Protocol"
-  spec.description = "Ruby server-side MPP charge support for Solana pull and push settlement."
+  spec.description = "Let your APIs charge agents using x402 and MPP protocols"
   spec.authors = ["Solana Foundation"]
-  spec.email = ["opensource@solana.org"]
   spec.homepage = "https://github.com/solana-foundation/mpp-sdk"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
