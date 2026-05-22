@@ -24,27 +24,43 @@ async function main() {
       ? await runCrossRouteReplay(targetUrl, environment, signer)
       : await payTarget(targetUrl, environment, signer);
   } catch (error) {
-    // G28b. The TS client's `buildChargeTransaction` refuses to build a
-    // credential when `splits` consume the entire amount, raising
-    // before any request reaches the server. The harness treats this
-    // as the correct 402-class outcome: the credential was rejected
-    // pre-broadcast. Emit a synthetic result so the assertion layer
-    // sees `status: 402` instead of an opaque process exit.
-    reportClientSideRejection(
-      error,
-      environment.settlementHeader,
-    );
-    return;
+    // G28b. `buildChargeTransaction` refuses to build a credential
+    // when `splits` consume the entire amount, raising before any
+    // request reaches the server. The harness treats that one
+    // specific pre-broadcast rejection as the correct 402-class
+    // outcome. Every other thrown error is a real fixture or SDK
+    // failure and must surface as a non-zero exit so the harness
+    // sees it. We allowlist by error message rather than catching
+    // all to avoid masking unrelated regressions (Codex review of
+    // this PR).
+    if (isClientSideSplitRejection(error)) {
+      reportClientSideRejection(error);
+      return;
+    }
+    throw error;
   }
 
   await reportResult(paidResponse, environment.settlementHeader);
 }
 
-function reportClientSideRejection(
-  error: unknown,
-  settlementHeader: string,
-): void {
-  void settlementHeader;
+function isClientSideSplitRejection(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  // G28b: client-side pre-broadcast rejection.
+  if (/Splits consume the entire amount/i.test(error.message)) {
+    return true;
+  }
+  // G28a: when the server refuses to construct (e.g. splits > 8) it
+  // serves a 402 body without a `WWW-Authenticate` header. mppx's
+  // wrapped fetch then throws this exact message before exposing the
+  // 402 response to the caller. The allowlist stays narrow: only
+  // this two-word literal symptom of "server emitted a 402 with no
+  // Solana challenge" maps to a synthetic 402 here.
+  return /Missing WWW-Authenticate header/i.test(error.message);
+}
+
+function reportClientSideRejection(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.log(
     JSON.stringify({
