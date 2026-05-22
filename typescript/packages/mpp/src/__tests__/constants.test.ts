@@ -118,4 +118,17 @@ describe('DEFAULT_RPC_URLS', () => {
     test('has localnet URL', () => {
         expect(DEFAULT_RPC_URLS.localnet).toBe('http://localhost:8899');
     });
+
+    // Canonical slug is `mainnet`; `mainnet-beta` is a backward-compat
+    // alias. This test catches alias drift: if a future commit changes
+    // the URL for one spelling but forgets the other, downstream consumers
+    // doing raw bracket access on either key get inconsistent results.
+    test('mainnet-beta alias matches mainnet', () => {
+        expect(DEFAULT_RPC_URLS['mainnet-beta']).toBe(DEFAULT_RPC_URLS.mainnet);
+        expect(USDC['mainnet-beta']).toBe(USDC.mainnet);
+        expect(USDT['mainnet-beta']).toBe(USDT.mainnet);
+        expect(USDG['mainnet-beta']).toBe(USDG.mainnet);
+        expect(PYUSD['mainnet-beta']).toBe(PYUSD.mainnet);
+        expect(CASH['mainnet-beta']).toBe(CASH.mainnet);
+    });
 });
