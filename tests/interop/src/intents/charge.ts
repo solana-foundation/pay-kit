@@ -84,4 +84,28 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     clientIds: ["typescript"],
   },
+  {
+    // PYUSD mainnet mint, which every SDK (Ruby, PHP, Rust, TypeScript)
+    // already classifies as Token-2022 via the built-in TOKEN_2022_SYMBOLS
+    // list, so no SDK API change is required. The harness deploys this mint
+    // under the Token-2022 program in beforeAll.
+    id: "charge-token2022-split-ata",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+    resourcePath: "/protected/token2022-split-ata",
+    settlementHeader: "x-fixture-settlement",
+    tokenProgram: "TOKEN_2022_PROGRAM",
+    splits: [
+      {
+        recipientKey: "platform",
+        amount: "250",
+        ataCreationRequired: true,
+        memo: "interop token2022 split",
+      },
+    ],
+    expectedStatus: 200,
+  },
 ] as const;
