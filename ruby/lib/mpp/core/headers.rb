@@ -27,8 +27,14 @@ module Mpp
       end
 
       # Parse all `Payment` challenges across one or more `WWW-Authenticate` values (RFC 7235 sec 4.1).
+      # Returns an array of successfully-parsed Challenge objects; malformed individual challenges are skipped.
+      # Mirrors the Rust spine which exposes Vec<Result<PaymentChallenge, Error>> and filters at the call site.
       def parse_www_authenticate_all(headers)
-        Array(headers).flat_map { |header| split_payment_challenge_values(header) }.map { |chunk| parse_www_authenticate(chunk) }
+        Array(headers).flat_map { |header| split_payment_challenge_values(header) }.filter_map do |chunk|
+          parse_www_authenticate(chunk)
+        rescue ArgumentError
+          nil
+        end
       end
 
       # Split a WWW-Authenticate header value into individual Payment challenges (quote-aware).

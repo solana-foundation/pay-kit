@@ -108,9 +108,9 @@ final class Challenge
     }
 
     /**
-     * Strict RFC 3339 date-time grammar (sec 5.6); lowercase t/z accepted on parse, year 4 digits.
+     * Strict RFC 3339 date-time grammar (sec 5.6); accepts lowercase t/z on parse, year 4 digits.
      */
-    private const RFC3339_PATTERN = '/^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:\d{2})$/';
+    private const RFC3339_PATTERN = '/^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|z|([+-])(\d{2}):(\d{2}))$/';
 
     /**
      * Return true when the challenge expiry is invalid or in the past (fail-closed).
@@ -130,16 +130,30 @@ final class Challenge
         $hour = (int)$m[4];
         $minute = (int)$m[5];
         $second = (int)$m[6];
+        $offsetTag = $m[8];
         if ($month < 1 || $month > 12 || $day < 1 || $day > 31 || $hour > 23 || $minute > 59 || $second > 59) {
             return true;
         }
         if ($year > 9999 || !checkdate($month, $day, $year)) {
             return true;
         }
+        if ($offsetTag !== 'Z' && $offsetTag !== 'z') {
+            $offHour = isset($m[10]) ? (int)$m[10] : 0;
+            $offMin = isset($m[11]) ? (int)$m[11] : 0;
+            if ($offHour > 23 || $offMin > 59) {
+                return true;
+            }
+        }
 
-        $expiresAt = DateTimeImmutable::createFromFormat(DATE_ATOM, $this->expires)
-            ?: DateTimeImmutable::createFromFormat('Y-m-d\TH:i:sp', $this->expires)
-            ?: DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.up', $this->expires);
+        // Normalize lowercase t/z to uppercase before delegating to DateTimeImmutable (DATE_ATOM is strict).
+        $normalized = strtr($this->expires, ['t' => 'T', 'z' => 'Z']);
+        $expiresAt = DateTimeImmutable::createFromFormat(DATE_ATOM, $normalized);
+        if ($expiresAt === false) {
+            $expiresAt = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.up', $normalized);
+        }
+        if ($expiresAt === false) {
+            $expiresAt = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $normalized);
+        }
         if ($expiresAt === false) {
             return true;
         }

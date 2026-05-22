@@ -170,6 +170,17 @@ final class HeadersTest extends TestCase
         self::assertSame('b', $results[1]->id);
     }
 
+    public function testParseWwwAuthenticateAllPartialSuccess(): void
+    {
+        $header = 'Payment id="bad", realm="r", method="BAD", intent="charge", request="e30", '
+                . 'Payment id="ok", realm="r", method="solana", intent="charge", request="e30"';
+
+        $results = Headers::parseWwwAuthenticateAll($header);
+
+        self::assertCount(1, $results);
+        self::assertSame('ok', $results[0]->id);
+    }
+
     public function testParseWwwAuthenticateAllIgnoresPaymentInsideQuotedValue(): void
     {
         $header = 'Payment id="a", realm="api, Payment realm", method="solana", intent="charge", request="e30", '

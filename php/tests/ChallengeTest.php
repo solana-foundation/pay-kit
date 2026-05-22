@@ -62,6 +62,11 @@ final class ChallengeTest extends TestCase
         self::assertTrue($mk('2099-02-30T00:00:00Z')->isExpired($now));
         self::assertTrue($mk('2099-13-01T00:00:00Z')->isExpired($now));
         self::assertTrue($mk('2099-01-01T24:00:00Z')->isExpired($now));
+        // Offset hours/minutes out of range rejected.
+        self::assertTrue($mk('2099-01-01T00:00:00+24:00')->isExpired($now));
+        self::assertTrue($mk('2099-01-01T00:00:00+00:60')->isExpired($now));
+        // Lowercase t/z accepted on parse.
+        self::assertFalse($mk('2099-01-01t00:00:00z')->isExpired($now));
     }
 
     public function testRejectsMissingRequiredChallengeFields(): void

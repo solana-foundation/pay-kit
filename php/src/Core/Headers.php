@@ -44,6 +44,9 @@ final class Headers
     /**
      * Parse all Payment challenges across one or more WWW-Authenticate header values (RFC 7235 sec 4.1).
      *
+     * Returns successfully-parsed challenges; malformed individual challenges are skipped, mirroring the
+     * Rust spine which exposes Vec<Result<PaymentChallenge, Error>> and filters at the call site.
+     *
      * @param iterable<string>|string $headers
      * @return array<int, Challenge>
      */
@@ -53,7 +56,11 @@ final class Headers
         $challenges = [];
         foreach ($list as $header) {
             foreach (self::splitPaymentChallengeValues($header) as $chunk) {
-                $challenges[] = self::parseWwwAuthenticate($chunk);
+                try {
+                    $challenges[] = self::parseWwwAuthenticate($chunk);
+                } catch (InvalidArgumentException) {
+                    // skip malformed challenge, keep parsing siblings
+                }
             }
         }
 

@@ -154,12 +154,18 @@ function M.extract_payment_scheme(header)
   return chunks[1]
 end
 
+-- Parse all `Payment` challenges across one or more WWW-Authenticate values (RFC 7235 sec 4.1).
+-- Returns only successfully-parsed challenges; malformed individual challenges are skipped, mirroring
+-- the Rust spine which exposes Vec<Result<PaymentChallenge, Error>> and filters at the call site.
 function M.parse_www_authenticate_all(headers)
   local list = type(headers) == 'string' and { headers } or headers
   local results = {}
   for _, h in ipairs(list) do
     for _, chunk in ipairs(split_payment_challenge_values(h)) do
-      results[#results + 1] = M.parse_www_authenticate(chunk)
+      local ok, value = pcall(M.parse_www_authenticate, chunk)
+      if ok then
+        results[#results + 1] = value
+      end
     end
   end
   return results

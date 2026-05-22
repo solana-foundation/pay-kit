@@ -122,3 +122,20 @@ t.test('expires parser is strict RFC 3339', function()
   t.assert_true(expires.parse_rfc3339('2099-13-01T00:00:00Z') == nil)
   t.assert_true(expires.parse_rfc3339('2099-01-01T24:00:00Z') == nil)
 end)
+
+t.test('parse_www_authenticate_all skips malformed challenge and returns valid siblings', function()
+  -- First challenge has invalid base64url in request; second is valid. Should yield one challenge.
+  local header = 'Payment id="bad", realm="r", method="solana", intent="charge", request="!!!", '
+              .. 'Payment id="ok", realm="r", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(header)
+  t.assert_equal(#results, 1)
+  t.assert_equal(results[1].id, 'ok')
+end)
+
+t.test('canonical JSON ES6 ToString boundary cases', function()
+  local json = require('mpp.util.json')
+  t.assert_equal(json.encode(1e-6), '0.000001')
+  t.assert_equal(json.encode(1e-7), '1e-7')
+  t.assert_equal(json.encode(1e20), '100000000000000000000')
+  t.assert_equal(json.encode(0.1 + 0.2), '0.30000000000000004')
+end)
