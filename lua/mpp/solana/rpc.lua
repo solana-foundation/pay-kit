@@ -80,7 +80,15 @@ function Rpc:call(method, params)
     params = params or {},
   })
 
-  local response_body, err = self.transport(self.url, body)
+  -- Run the transport under pcall so a raising HTTP client surfaces as a
+  -- typed transport-error instead of leaking the raw Lua error to callers,
+  -- mirroring Ruby's `rescue *NETWORK_ERRORS`/`Timeout::Error` wrapping.
+  local pcall_ok, response_body, err = pcall(self.transport, self.url, body)
+  if not pcall_ok then
+    local raised = response_body
+    local message = type(raised) == 'table' and raised.message or tostring(raised)
+    transport_error(method .. ': ' .. message)
+  end
   if response_body == nil then
     transport_error(method .. ': ' .. tostring(err or 'transport returned nil body'))
   end

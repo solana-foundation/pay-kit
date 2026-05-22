@@ -40,6 +40,7 @@ this handler either by passing `verify_payment = handler:as_callback()` to
 expected request.
 ]]
 
+local json = require('mpp.util.json')
 local network_check = require('mpp.server.network_check')
 
 local M = {}
@@ -301,7 +302,14 @@ end
 function Handler:fetch_settled_transaction(signature)
   for attempt = 1, self.confirmation_attempts do
     local response = self.rpc:transaction(signature)
-    if type(response) == 'table' then
+    -- The RPC client returns the raw decoded `result`. JSON null for a
+    -- not-yet-observed transaction decodes as `json.null`, a table sentinel.
+    -- Treat both the sentinel and a plain `nil` as "retry later" so the
+    -- handler does not fall into the meta-check branch and fail with a
+    -- spurious "missing metadata" error. Matches the Ruby reference's
+    -- `response.nil?` branch in `ruby/lib/mpp/internal/handler.rb`.
+    local observed = response ~= nil and response ~= json.null
+    if observed and type(response) == 'table' then
       local meta = response.meta
       if type(meta) ~= 'table' then
         verifier_error('getTransaction response is missing transaction metadata')

@@ -72,6 +72,31 @@ t.test('rpc call surfaces transport nil-body errors with transport-error code', 
   t.assert_true(err.message:find('ECONNREFUSED', 1, true) ~= nil)
 end)
 
+t.test('rpc call wraps raising transport as transport-error', function()
+  -- Mirrors Ruby's `rescue *NETWORK_ERRORS`: a transport that raises must
+  -- surface as the typed transport-error so callers do not need to know
+  -- the underlying HTTP client error class.
+  local client = rpc.new({
+    url = 'http://example',
+    transport = function() error('boom from socket layer') end,
+  })
+  local ok, err = pcall(function() client:call('m', {}) end)
+  t.assert_true(not ok, 'expected error')
+  t.assert_equal(err.code, 'transport-error')
+  t.assert_true(err.message:find('boom from socket', 1, true) ~= nil)
+end)
+
+t.test('rpc call wraps raising transport that raises a typed error table', function()
+  local client = rpc.new({
+    url = 'http://example',
+    transport = function() error({ code = 'timeout', message = 'read timeout' }) end,
+  })
+  local ok, err = pcall(function() client:call('m', {}) end)
+  t.assert_true(not ok)
+  t.assert_equal(err.code, 'transport-error')
+  t.assert_true(err.message:find('read timeout', 1, true) ~= nil)
+end)
+
 t.test('rpc call rejects empty response body', function()
   local fake = fake_transport({ '' })
   local client = rpc.new({ url = 'http://example', transport = fake.fn })

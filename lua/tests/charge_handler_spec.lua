@@ -320,6 +320,28 @@ t.test('settle_push retries until transaction is observed', function()
   t.assert_equal(gt_calls, 3)
 end)
 
+t.test('settle_push treats json.null transaction result as "not yet observed"', function()
+  -- Regression test for codex review P1: getTransaction returning JSON null
+  -- (the wire encoding for an unobserved signature) must drive the retry
+  -- loop, not fall into the meta-check branch and fail with
+  -- "missing transaction metadata".
+  local json = require('mpp.util.json')
+  local handler, rpc = new_handler({
+    confirmation_attempts = 3,
+    rpc = fake_rpc({
+      getTransaction = {
+        { result = json.null },
+        { result = json.null },
+        { result = { meta = { err = nil }, transaction = { 'tx-b64', 'base64' } } },
+      },
+    }),
+  })
+  t.assert_equal(handler:settle_push('sig', {}), 'sig')
+  local gt_calls = 0
+  for _, c in ipairs(rpc.calls) do if c.method == 'getTransaction' then gt_calls = gt_calls + 1 end end
+  t.assert_equal(gt_calls, 3)
+end)
+
 t.test('settle_push surfaces on-chain err from meta', function()
   local handler = new_handler({
     rpc = fake_rpc({
