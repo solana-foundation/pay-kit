@@ -12,7 +12,10 @@ use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\ChargeSettlement;
 use SolanaMpp\Server\PaymentRequiredResponse;
 use SolanaMpp\Server\PaymentVerifier;
+use SolanaMpp\Server\MemoryReplayStore;
+use SolanaMpp\Server\ReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
+use SolanaMpp\Server\TransactionPayloadVerifier;
 use SolanaMpp\Server\VerificationResult;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -20,6 +23,7 @@ use SolanaPhpSdk\Rpc\Http\HttpClient;
 use SolanaPhpSdk\Rpc\RpcClient;
 use SolanaPhpSdk\Transaction\Message;
 use SolanaPhpSdk\Transaction\Transaction;
+use SolanaPhpSdk\Util\Base58;
 
 final class SolanaChargeHandlerTest extends TestCase
 {
@@ -58,7 +62,38 @@ final class SolanaChargeHandlerTest extends TestCase
         $result = $handler->handle($credential->toAuthorizationHeader(), $request);
 
         self::assertInstanceOf(PaymentRequiredResponse::class, $result);
-        self::assertSame('missing transaction payload', $result->body['detail']);
+        self::assertSame('missing transaction or signature payload', $result->body['detail']);
+    }
+
+    public function testReturns402WhenAcceptedCredentialHasNoSettleablePayload(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $server->createChallenge($request);
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: []);
+        $handler = $this->handler(challenges: $server, verifier: new AlwaysAcceptVerifier());
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('missing transaction or signature payload', $result->body['detail']);
+    }
+
+    public function testReturns402WhenAcceptedPullPayloadIsNotBase64Transaction(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $server->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => 'not-base64'],
+        );
+        $handler = $this->handler(challenges: $server, verifier: new AlwaysAcceptVerifier(), network: 'devnet');
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('invalid transaction payload', $result->body['detail']);
     }
 
     public function testReturns402WhenChallengeMismatchesExpectedRequest(): void
@@ -116,6 +151,305 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertNotEmpty($result->headers['payment-receipt']);
     }
 
+    public function testReturnsChargeSettlementAfterSuccessfulPushSignatureVerification(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $signature = $this->validSignature();
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $signature],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [[
+                'result' => [
+                    'slot' => 1,
+                    'meta' => ['err' => null],
+                    'transaction' => [$this->minimalLegacyTransactionBase64(), 'base64'],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $result);
+        self::assertSame(200, $result->status);
+        self::assertSame($signature, $result->signature);
+        self::assertSame($signature, $result->headers['x-payment-settlement-signature']);
+        self::assertNotEmpty($result->headers['payment-receipt']);
+    }
+
+    public function testReturns402WhenPushTransactionFetchReportsOnChainFailure(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $signature = $this->validSignature();
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $signature],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [[
+                'result' => [
+                    'slot' => 1,
+                    'meta' => ['err' => ['InstructionError' => [0, 'Custom']]],
+                    'transaction' => [$this->minimalLegacyTransactionBase64(), 'base64'],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertStringContainsString('Transaction ' . $signature . ' failed', $result->body['detail']);
+    }
+
+    public function testReturns402WhenPushSignatureIsReplayed(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $signature = $this->validSignature();
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $signature],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [
+                [
+                    'result' => [
+                        'slot' => 1,
+                        'meta' => ['err' => null],
+                        'transaction' => [$this->minimalLegacyTransactionBase64(), 'base64'],
+                    ],
+                ],
+                [
+                    'result' => [
+                        'slot' => 2,
+                        'meta' => ['err' => null],
+                        'transaction' => [$this->minimalLegacyTransactionBase64(), 'base64'],
+                    ],
+                ],
+            ],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $first = $handler->handle($credential->toAuthorizationHeader(), $request);
+        $second = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $first);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $second);
+        self::assertSame('Transaction signature already consumed', $second->body['detail']);
+    }
+
+    public function testReturns402WhenPushTransactionIsNotFound(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $signature = $this->validSignature();
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $signature],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [['result' => null]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+            confirmationAttempts: 1,
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame("Timed out waiting for transaction $signature", $result->body['detail']);
+    }
+
+    public function testReturns402WhenPushTransactionResponseIsMalformed(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [['result' => ['meta' => ['err' => null], 'transaction' => []]]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('getTransaction response is missing base64 transaction data', $result->body['detail']);
+    }
+
+    public function testReturns402WhenPushTransactionResponseIsNotObject(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [['result' => 'not-an-object']],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('Invalid getTransaction response', $result->body['detail']);
+    }
+
+    public function testReturns402WhenFetchedPushTransactionFailsStructuralVerification(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [[
+                'result' => [
+                    'slot' => 1,
+                    'meta' => ['err' => null],
+                    'transaction' => $this->minimalLegacyTransactionBase64(),
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new RejectingTransactionPayloadVerifier('wrong recipient'),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('wrong recipient', $result->body['detail']);
+    }
+
+    public function testReturns402WhenPullSignatureIsReplayed(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalLegacyTransactionBase64()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [
+                ['result' => 'BroadcastSig'],
+                ['result' => 'BroadcastSig'],
+            ],
+            'getSignatureStatuses' => [
+                [
+                    'result' => [
+                        'value' => [[
+                            'slot' => 1,
+                            'confirmationStatus' => 'confirmed',
+                            'err' => null,
+                        ]],
+                    ],
+                ],
+                [
+                    'result' => [
+                        'value' => [[
+                            'slot' => 2,
+                            'confirmationStatus' => 'confirmed',
+                            'err' => null,
+                        ]],
+                    ],
+                ],
+            ],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+        );
+
+        $first = $handler->handle($credential->toAuthorizationHeader(), $request);
+        $second = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $first);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $second);
+        self::assertSame('Transaction signature already consumed', $second->body['detail']);
+    }
+
+    public function testReturns402WhenPullConfirmationTimesOut(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalLegacyTransactionBase64()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [['result' => 'SlowSig']],
+            'getSignatureStatuses' => [[
+                'result' => [
+                    'value' => [null],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+            confirmationAttempts: 1,
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('Timed out waiting for transaction SlowSig', $result->body['detail']);
+    }
+
     public function testReturns402WhenSurfpoolBlockhashOnNonLocalnet(): void
     {
         $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
@@ -137,6 +471,41 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertInstanceOf(PaymentRequiredResponse::class, $result);
         self::assertStringContainsString('Surfpool localnet blockhash', $result->body['detail']);
         self::assertStringContainsString('devnet', $result->body['detail']);
+    }
+
+    public function testLocalnetAllowsSurfpoolBlockhashBeforeBroadcast(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->surfpoolSignedTransactionBase64()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [['result' => 'LocalnetSig']],
+            'getSignatureStatuses' => [[
+                'result' => [
+                    'value' => [[
+                        'slot' => 1,
+                        'confirmationStatus' => 'confirmed',
+                        'err' => null,
+                    ]],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+            network: 'localnet',
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $result);
+        self::assertSame('LocalnetSig', $result->signature);
     }
 
     public function testReturns402WhenBroadcastReportsOnChainFailure(): void
@@ -190,6 +559,9 @@ final class SolanaChargeHandlerTest extends TestCase
         string $network = 'mainnet-beta',
         ?RpcClient $rpc = null,
         ?PaymentVerifier $verifier = null,
+        ?TransactionPayloadVerifier $transactionVerifier = null,
+        ?ReplayStore $replayStore = null,
+        int $confirmationAttempts = 40,
     ): SolanaChargeHandler {
         return new SolanaChargeHandler(
             challenges: $challenges ?? new ChargeServer(secretKey: 'secret', realm: 'api'),
@@ -197,6 +569,9 @@ final class SolanaChargeHandlerTest extends TestCase
             feePayer: $feePayer,
             network: $network,
             verifier: $verifier,
+            transactionVerifier: $transactionVerifier,
+            replayStore: $replayStore,
+            confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: 0,
         );
     }
@@ -253,6 +628,11 @@ final class SolanaChargeHandlerTest extends TestCase
             recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
             methodDetails: ['network' => 'localnet', 'decimals' => 6],
         );
+    }
+
+    private function validSignature(): string
+    {
+        return Base58::encode(str_repeat("\x01", 64));
     }
 }
 
@@ -311,5 +691,31 @@ final class AlwaysAcceptVerifier implements PaymentVerifier
     public function verify(Credential $credential, Challenge $challenge): VerificationResult
     {
         return VerificationResult::success(reference: '');
+    }
+}
+
+/**
+ * TransactionPayloadVerifier stub that approves fetched push-mode transactions.
+ */
+final class AlwaysAcceptTransactionPayloadVerifier implements TransactionPayloadVerifier
+{
+    public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
+    {
+        return VerificationResult::success(reference: '');
+    }
+}
+
+/**
+ * TransactionPayloadVerifier stub that rejects fetched push-mode transactions.
+ */
+final class RejectingTransactionPayloadVerifier implements TransactionPayloadVerifier
+{
+    public function __construct(private readonly string $reason)
+    {
+    }
+
+    public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
+    {
+        return VerificationResult::failure($this->reason);
     }
 }

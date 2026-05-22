@@ -64,7 +64,55 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
 
         self::assertFalse($result->ok);
-        self::assertSame('missing transaction payload', $result->reason);
+        self::assertSame('missing transaction or signature payload', $result->reason);
+    }
+
+    public function testAcceptsValidSignaturePayloadForPushMode(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => \SolanaPhpSdk\Util\Base58::encode(str_repeat("\x01", 64))],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertTrue($result->ok, $result->reason);
+        self::assertSame($credential->payload['signature'], $result->reference);
+    }
+
+    public function testRejectsInvalidSignaturePayloadForPushMode(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => 'short'],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('invalid signature length', $result->reason);
+    }
+
+    public function testRejectsBase58SignatureWithWrongDecodedLength(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => str_repeat('1', 87)],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('invalid signature length', $result->reason);
     }
 
     public function testRejectsInvalidTransactionPayload(): void
@@ -74,6 +122,27 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('invalid transaction payload', $result->reason);
+    }
+
+    public function testRejectsTransactionPayloadWhenChallengeRequestIsMalformed(): void
+    {
+        $fixture = $this->fixture();
+        $challenge = new \SolanaMpp\Core\Challenge(
+            id: 'malformed-request',
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: 'not-base64url-json',
+        );
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->transactionPayload($fixture, includeSplitAta: true)],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertNotSame('', $result->reason);
     }
 
     public function testRejectsMalformedBinaryTransactionPayload(): void
@@ -154,6 +223,20 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('amount exceeds PHP integer range', $result->reason);
+    }
+
+    public function testRejectsNonIntegerAmount(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture, splits: [[
+            'recipient' => $fixture['splitRecipient']->toBase58(),
+            'amount' => '10.00',
+        ]]);
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('split amount must be a base-unit integer', $result->reason);
     }
 
     public function testRejectsMissingRecipient(): void
@@ -332,6 +415,27 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertTrue($result->ok, $result->reason);
     }
 
+    public function testRejectsUnsupportedComputeBudgetInstruction(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                new TransactionInstruction(
+                    ComputeBudgetProgram::programId(),
+                    [],
+                    "\x01",
+                ),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('unsupported compute budget instruction', $result->reason);
+    }
+
     public function testRejectsComputeBudgetInstructionWithAccounts(): void
     {
         $fixture = $this->fixture();
@@ -370,6 +474,50 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertStringContainsString('Unexpected program instruction in payment transaction', $result->reason);
     }
 
+    public function testRejectsAllowedButUnmatchedPaymentInstruction(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                SystemProgram::transfer($fixture['payer'], $fixture['recipient'], 1),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('Unexpected payment instruction in transaction', $result->reason);
+    }
+
+    public function testAcceptsClientPaidSplTransferWithOptionalAtaCreation(): void
+    {
+        $fixture = $this->fixture();
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: $fixture['mint']->toBase58(),
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 6,
+                'tokenProgram' => TokenProgram::PROGRAM_ID,
+                'splits' => [
+                    [
+                        'recipient' => $fixture['splitRecipient']->toBase58(),
+                        'amount' => '250',
+                        'memo' => 'split memo',
+                    ],
+                ],
+            ],
+        );
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertTrue($result->ok, $result->reason);
+    }
+
     public function testRejectsNonIdempotentAtaCreation(): void
     {
         $fixture = $this->fixture();
@@ -379,6 +527,102 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         self::assertFalse($result->ok);
         self::assertSame('Only idempotent ATA creation is allowed', $result->reason);
+    }
+
+    public function testRejectsMalformedAtaCreationAccountLayout(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                new TransactionInstruction(
+                    AssociatedTokenProgram::programId(),
+                    [],
+                    "\x01",
+                ),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('Unexpected ATA creation account layout', $result->reason);
+    }
+
+    public function testRejectsAtaCreationWrongPayer(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            splitAtaPayer: $fixture['payer'],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA payer must match the transaction fee payer', $result->reason);
+    }
+
+    public function testRejectsAtaCreationWrongMint(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            splitAtaMint: PublicKey::fromBytes(str_repeat("\x08", 32)),
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA creation mint does not match the charge currency', $result->reason);
+    }
+
+    public function testRejectsAtaCreationWrongTokenProgram(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            splitAtaTokenProgram: new PublicKey(TokenProgram::TOKEN_2022_PROGRAM_ID),
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA creation token program does not match methodDetails.tokenProgram', $result->reason);
+    }
+
+    public function testRejectsAtaCreationWrongOwner(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            splitAtaOwner: $fixture['payer'],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA creation owner is not authorized by the challenge', $result->reason);
+    }
+
+    public function testRejectsAtaCreationWrongAddress(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            splitAtaAddress: PublicKey::fromBytes(str_repeat("\x09", 32)),
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA creation address does not match owner/mint/token program', $result->reason);
     }
 
     /**
@@ -455,18 +699,27 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         bool $includeExternalIdMemo = true,
         bool $idempotentAta = true,
         array $extraInstructions = [],
+        ?PublicKey $splitAtaPayer = null,
+        ?PublicKey $splitAtaOwner = null,
+        ?PublicKey $splitAtaMint = null,
+        ?PublicKey $splitAtaTokenProgram = null,
+        ?PublicKey $splitAtaAddress = null,
     ): string {
         $tokenProgram = TokenProgram::programId();
+        $ataTokenProgram = $splitAtaTokenProgram ?? $tokenProgram;
+        $ataOwner = $splitAtaOwner ?? $fixture['splitRecipient'];
+        $ataMint = $splitAtaMint ?? $fixture['mint'];
         $recipientAta = AssociatedTokenProgram::findAssociatedTokenAddress(
             $fixture['recipient'],
             $fixture['mint'],
             $tokenProgram,
         )[0];
-        $splitAta = AssociatedTokenProgram::findAssociatedTokenAddress(
+        $transferSplitAta = AssociatedTokenProgram::findAssociatedTokenAddress(
             $fixture['splitRecipient'],
             $fixture['mint'],
             $tokenProgram,
         )[0];
+        $creationSplitAta = $splitAtaAddress ?? AssociatedTokenProgram::findAssociatedTokenAddress($ataOwner, $ataMint, $ataTokenProgram)[0];
 
         $instructions = [];
         $instructions[] = TokenProgram::transferChecked(
@@ -481,24 +734,24 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         if ($includeSplitAta) {
             $instructions[] = $idempotentAta
                 ? AssociatedTokenProgram::createIdempotent(
-                    $fixture['feePayer'],
-                    $splitAta,
-                    $fixture['splitRecipient'],
-                    $fixture['mint'],
-                    $tokenProgram,
+                    $splitAtaPayer ?? $fixture['feePayer'],
+                    $creationSplitAta,
+                    $ataOwner,
+                    $ataMint,
+                    $ataTokenProgram,
                 )
                 : AssociatedTokenProgram::create(
-                    $fixture['feePayer'],
-                    $splitAta,
-                    $fixture['splitRecipient'],
-                    $fixture['mint'],
-                    $tokenProgram,
+                    $splitAtaPayer ?? $fixture['feePayer'],
+                    $creationSplitAta,
+                    $ataOwner,
+                    $ataMint,
+                    $ataTokenProgram,
                 );
         }
         $instructions[] = TokenProgram::transferChecked(
             $sourceTokenAccount ?? $fixture['sourceTokenAccount'],
             $fixture['mint'],
-            $splitAta,
+            $transferSplitAta,
             $authority ?? $fixture['payer'],
             250,
             6,
