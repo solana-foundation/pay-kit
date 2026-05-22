@@ -102,7 +102,13 @@ module Mpp
       end
 
       def escape(value)
-        value.to_s.gsub("\\", "\\\\\\").gsub("\"", "\\\"")
+        # RFC 9110 section 5.5 forbids CR and LF in header field values.
+        # Silent strip would let malformed inputs round-trip and would let a
+        # caller-controlled realm inject extra HTTP headers. Reject with an
+        # explicit error so the problem surfaces at emission time.
+        string = value.to_s
+        raise ArgumentError, "control character in header parameter value" if string.match?(/[\r\n]/)
+        string.gsub("\\", "\\\\\\").gsub("\"", "\\\"")
       end
     end
   end
