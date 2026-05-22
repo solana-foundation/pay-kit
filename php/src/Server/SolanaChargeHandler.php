@@ -7,6 +7,7 @@ namespace SolanaMpp\Server;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
+use SolanaMpp\Core\Credential;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
@@ -30,6 +31,8 @@ use SolanaPhpSdk\Util\Base58;
 final class SolanaChargeHandler
 {
     private readonly PaymentVerifier $verifier;
+    private readonly TransactionPayloadVerifier $transactionVerifier;
+    private readonly ReplayStore $replayStore;
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -47,6 +50,11 @@ final class SolanaChargeHandler
      *        `x-payment-settlement-signature`.
      * @param ?PaymentVerifier $verifier Override the default transaction
      *        verifier. Defaults to {@see SolanaChargeTransactionVerifier}.
+     * @param ?TransactionPayloadVerifier $transactionVerifier Override the
+     *        raw transaction verifier used after fetching push-mode
+     *        transactions by signature.
+     * @param ?ReplayStore $replayStore Replay store keyed by
+     *        `solana-charge:consumed:<signature>`.
      * @param int $confirmationAttempts How many times to poll
      *        `getSignatureStatuses` before giving up. 40 attempts at the
      *        default delay = 10 seconds.
@@ -59,10 +67,15 @@ final class SolanaChargeHandler
         private readonly string $network = 'mainnet-beta',
         private readonly string $settlementHeader = 'x-payment-settlement-signature',
         ?PaymentVerifier $verifier = null,
+        ?TransactionPayloadVerifier $transactionVerifier = null,
+        ?ReplayStore $replayStore = null,
         private readonly int $confirmationAttempts = 40,
         private readonly int $confirmationDelayMicros = 250_000,
     ) {
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
+        $this->transactionVerifier = $transactionVerifier
+            ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier());
+        $this->replayStore = $replayStore ?? new MemoryReplayStore();
     }
 
     /**
@@ -103,20 +116,9 @@ final class SolanaChargeHandler
             return $this->challenges->paymentRequiredResponse($request, 'verified result is missing credential or challenge');
         }
 
-        $transaction = $credential->payload['transaction'] ?? null;
-        if (!is_string($transaction) || $transaction === '') {
-            return $this->challenges->paymentRequiredResponse($request, 'missing transaction payload');
-        }
-
-        if ($this->isSurfpoolMismatch($transaction)) {
-            return $this->challenges->paymentRequiredResponse(
-                $request,
-                "Signed with a Surfpool localnet blockhash but the server expects {$this->network}.",
-            );
-        }
-
         try {
-            $signature = $this->settle($transaction);
+            $signature = $this->settleCredentialPayload($credential, $request);
+            $this->consumeSignature($signature);
         } catch (Throwable $error) {
             return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
         }
@@ -138,6 +140,34 @@ final class SolanaChargeHandler
             signature: $signature,
             receiptHeader: $receipt,
         );
+    }
+
+    /**
+     * Settle pull-mode transactions or verify push-mode transaction signatures.
+     */
+    private function settleCredentialPayload(Credential $credential, ChargeRequest $request): string
+    {
+        $transaction = $credential->payload['transaction'] ?? null;
+        if (is_string($transaction) && $transaction !== '') {
+            if ($this->isSurfpoolMismatch($transaction)) {
+                throw new RuntimeException("Signed with a Surfpool localnet blockhash but the server expects {$this->network}.");
+            }
+
+            return $this->settle($transaction);
+        }
+
+        $signature = $credential->payload['signature'] ?? null;
+        if (!is_string($signature) || $signature === '') {
+            throw new InvalidArgumentException('missing transaction or signature payload');
+        }
+
+        $transactionBase64 = $this->fetchSettledTransaction($signature);
+        $result = $this->transactionVerifier->verifyTransactionPayload($transactionBase64, $request);
+        if (!$result->ok) {
+            throw new RuntimeException($result->reason);
+        }
+
+        return $signature;
     }
 
     /**
@@ -192,6 +222,53 @@ final class SolanaChargeHandler
             usleep($this->confirmationDelayMicros);
         }
         throw new RuntimeException("Timed out waiting for transaction $signature");
+    }
+
+    /**
+     * Fetch a confirmed transaction by signature and return its base64 wire form.
+     */
+    private function fetchSettledTransaction(string $signature): string
+    {
+        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
+            /** @var mixed $transaction */
+            $transaction = $this->rpc->call('getTransaction', [
+                $signature,
+                [
+                    'encoding' => 'base64',
+                    'commitment' => 'confirmed',
+                    'maxSupportedTransactionVersion' => 0,
+                ],
+            ]);
+            if ($transaction === null) {
+                usleep($this->confirmationDelayMicros);
+                continue;
+            }
+            if (!is_array($transaction)) {
+                throw new RuntimeException('Invalid getTransaction response');
+            }
+            $meta = $transaction['meta'] ?? null;
+            if (is_array($meta) && ($meta['err'] ?? null) !== null) {
+                throw new RuntimeException('Transaction ' . $signature . ' failed: ' . json_encode($meta['err'], JSON_THROW_ON_ERROR));
+            }
+            $wire = $transaction['transaction'] ?? null;
+            if (is_array($wire) && isset($wire[0]) && is_string($wire[0]) && $wire[0] !== '') {
+                return $wire[0];
+            }
+            if (is_string($wire) && $wire !== '') {
+                return $wire;
+            }
+            throw new RuntimeException('getTransaction response is missing base64 transaction data');
+        }
+
+        throw new RuntimeException("Timed out waiting for transaction $signature");
+    }
+
+    private function consumeSignature(string $signature): void
+    {
+        $key = "solana-charge:consumed:$signature";
+        if (!$this->replayStore->consume($key)) {
+            throw new RuntimeException('Transaction signature already consumed');
+        }
     }
 
     /**
