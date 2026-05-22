@@ -130,4 +130,138 @@ export const chargeScenarios: readonly InteropScenario[] = [
     ],
     expectedStatus: 200,
   },
+  {
+    // G07. 9-decimal SPL mint. Harness deploys the mint with data[44]=9,
+    // adapters receive MPP_INTEROP_DECIMALS=9 and must build the
+    // challenge with `decimals: 9`. Assertion helper checks
+    // transferChecked data[9] equals 9.
+    id: "charge-decimals-9",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "KTHzp63RATgvE5RoRRqVbY7hMWntARQ6dPQhMtfY9oA",
+    resourcePath: "/protected/decimals-9",
+    settlementHeader: "x-fixture-settlement",
+    decimals: 9,
+    // The Rust interop server fixture computes amount as
+    // `price * 10^decimals`, which diverges from the TS fixture's
+    // env-driven amount. Restricting to the TS server keeps the
+    // assertion's primary delta aligned with the on-wire amount.
+    // The Rust SDK itself is exercised via the client adapter against
+    // the TS server in this scenario.
+    serverIds: ["typescript"],
+    expectedStatus: 200,
+  },
+  {
+    // G13. Idempotent ATA create instruction must still pass when the
+    // platform recipient's ATA already exists. Harness pre-creates the
+    // ATA with a zero balance via `surfnet.fundToken(platform, mint, 0,
+    // programAddress)` before the test runs. Assertions otherwise
+    // identical to charge-split-ata.
+    id: "charge-split-ata-idempotent",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/split-ata-idempotent",
+    settlementHeader: "x-fixture-settlement",
+    preCreatePlatformAta: true,
+    splits: [
+      {
+        recipientKey: "platform",
+        amount: "250",
+        ataCreationRequired: true,
+        memo: "interop split idempotent",
+      },
+    ],
+    expectedStatus: 200,
+  },
+  {
+    // G14. TypeScript client injects an over-cap compute budget
+    // (limit 200_001, over the 200_000 server cap). Server must reject
+    // with the compute-budget allowlist error. Rust/Ruby/PHP clients
+    // cannot inject custom compute budget through the env-driven
+    // harness path, so this scenario is TypeScript-client only. Every
+    // active server is expected to enforce the cap.
+    id: "charge-compute-budget-over-cap",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/compute-budget-over-cap",
+    settlementHeader: "x-fixture-settlement",
+    clientIds: ["typescript"],
+    clientComputeUnitLimit: 200_001,
+    expectedStatus: 402,
+  },
+  {
+    // G27. Native SOL transfer path. Currency is the lowercase string
+    // `sol`, decimals 9, asset kind sol, no SPL mint deploy. The
+    // settled transaction must contain a System Program transfer
+    // (discriminator u32 LE = 2) instead of an SPL transferChecked.
+    // The harness funds the client with lamports via `surfnet.fundSol`.
+    id: "charge-sol-native",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000000",
+    asset: "sol",
+    resourcePath: "/protected/sol-native",
+    settlementHeader: "x-fixture-settlement",
+    assetKind: "sol",
+    decimals: 9,
+    // Only the TS server fixture currently threads currency="sol"
+    // through the env. Rust/Ruby/PHP server fixtures default decimals
+    // to 6 and pass MPP_INTEROP_MINT straight to the SDK, so for now
+    // this scenario runs against the TS server only.
+    serverIds: ["typescript"],
+    expectedStatus: 200,
+  },
+  {
+    // G28a. Splits > 8. Server (every SDK) must reject before
+    // emitting a challenge. The TypeScript client is the only one that
+    // can drive a 9-split request through the env-only path, so this
+    // is typescript-client only. Splits are intentionally tiny so the
+    // sum stays well under amount.
+    id: "charge-splits-too-many",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/splits-too-many",
+    settlementHeader: "x-fixture-settlement",
+    clientIds: ["typescript"],
+    splits: [
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+      { recipientKey: "platform", amount: "1" },
+    ],
+    expectedStatus: 402,
+  },
+  {
+    // G28b. Single split whose amount equals total amount, so the
+    // primary recipient delta is zero. Server (every SDK) must reject
+    // because the primary amount must be strictly positive.
+    id: "charge-splits-sum-equals-amount",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/splits-sum-equals-amount",
+    settlementHeader: "x-fixture-settlement",
+    clientIds: ["typescript"],
+    splits: [{ recipientKey: "platform", amount: "1000" }],
+    expectedStatus: 402,
+  },
 ] as const;
