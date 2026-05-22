@@ -204,14 +204,18 @@ without changing the handler.
 
 ## Coding convention
 
-This SDK follows `luacheck + LuaJIT 2.1` plus the conventions in
-`skills/pay-sdk-implementation/references/coding-conventions.md`. The
-[lua-users wiki style guide](http://lua-users.org/wiki/LuaStyleGuide)
-and the
-[OpenResty Lua coding style guide](https://github.com/openresty/openresty/blob/master/lua-coding-style.md)
-were the language-specific best-practice sources used during this PR;
-OpenResty / Kong is the target deployment runtime so its conventions
-matter for the production hot path.
+This SDK follows `luacheck + LuaJIT 2.1` and the
+[`skills.sh/mindrally/skills/lua`](https://www.skills.sh/mindrally/skills/lua)
+best-practice skill selected for this PR. The implementation pass
+focuses on idiomatic Lua: local variables over globals for the LuaJIT
+trace recorder, tables as the primary data structure, `pcall` / `xpcall`
+for error boundaries (no try / catch ports), metatables for OO shapes
+(`Handler.__index = Handler`), and 1-based indexing throughout.
+
+The [OpenResty Lua coding style guide](https://github.com/openresty/openresty/blob/master/lua-coding-style.md)
+is the secondary source because OpenResty / Kong is the target
+deployment runtime; the `ngx_*` API surface and shared-dict storage
+shape what production callers see.
 
 - `snake_case` for functions, `PascalCase` for types, `SCREAMING_SNAKE`
   for constants.
