@@ -6,7 +6,9 @@ language fit), add formatter + linter steps, gate coverage at ≥ 90 %.
 
 ## Required jobs per SDK
 
-A new-language SDK needs **all** of the following jobs in `ci.yml`:
+A new-language SDK needs **all** of the following jobs. Put them in
+`ci.yml` or a dedicated language workflow if the repo already uses that
+shape for the language:
 
 1. **`test-<lang>`** — unit tests + coverage upload + format/lint check.
 2. **`integration`** (existing) — already runs against Surfnet; once the
@@ -98,6 +100,10 @@ If the language's coverage tool cannot enforce a gate, write a small
 script in `<lang>/scripts/check_coverage.<sh|py>` modeled on
 `go/scripts/check_coverage.sh`.
 
+The local command and CI command must be the same path where possible.
+Prefer `cd <lang> && just test-cover` in CI over duplicating long
+coverage commands in YAML.
+
 ## Linting and formatting
 
 Every public SDK has **format check + lint** running in CI. Failures
@@ -168,3 +174,11 @@ the new language:
 - **Job names matter** — `report.yml` aggregates per-job coverage by
   artifact name. Use `<lang>-coverage` and
   `surfpool-reports-<lang>` exactly.
+- **Manual DX is not replaced by CI.** CI proves repeatability; it does
+  not prove the README path is runnable. Before marking a server SDK PR
+  ready, run the language's simple-server example locally and verify
+  unpaid `curl` returns 402 while `pay curl` returns 200.
+- **Server examples should be exercised in tests.** Add unit or
+  integration coverage that imports the simple-server / middleware
+  wiring where the language allows it. Do not leave example code as an
+  untested copy of the README.

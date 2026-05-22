@@ -64,6 +64,12 @@ signature } => self.verify_push(...) }` at `rust/src/server/charge.rs:541`):
 7. **Receipt.** Same as pull mode — `Receipt::success(method="solana",
    reference=signature, challengeId=challenge.id)`.
 
+Push-mode server support should reuse the same structural verifier,
+expected-request pinning, replay store, and receipt path as pull mode.
+Only the settlement source changes: pull receives a transaction to
+broadcast, push receives a signature and fetches the settled
+transaction from RPC.
+
 ## Client obligations
 
 The push client builds the transaction the same way as pull, then
@@ -113,6 +119,10 @@ see the service worker pattern in
 - **Signature length / encoding.** Solana signatures are 64 bytes; the
   base58 encoding length is 87-88 chars. Reject anything outside that
   range up-front.
+- **Duplicate settlement behavior must match pull.** A signature seen
+  once is consumed for both modes. Add a regression test that verifies a
+  consumed pull signature cannot be re-used through push and a consumed
+  push signature cannot be re-used through pull.
 
 ## Test plan
 

@@ -47,13 +47,15 @@ the directory skeleton and CI from earlier ones.
    matrix cells are in scope this pass, (c) the package name. Use
    `AskUserQuestion` if any of these are unclear.
 2. **Lay out the repo.** Read `references/repo-layout.md` and create the
-   directory tree, package manifest, and `justfile` recipes. Do this
-   before writing any protocol code — the layout drives the import paths
-   the intents docs assume.
+   directory tree, package manifest, language-local `justfile`, examples,
+   and interop adapter skeleton. Do this before writing any protocol code
+   — the layout drives the import paths the intents docs assume.
 3. **Pick conventions.** Read `references/coding-conventions.md` and lock
    in the formatter, linter, type-checker, error type, and async runtime
-   for the language. This file also lists the per-language style guides
-   (PSR-12 for PHP, Standard Ruby, etc.) the SDK must follow.
+   for the language. Also identify and read a current language
+   best-practice skill or equivalent source (for example PHP PSR-12 +
+   strict-types guidance, Standard Ruby + Rack guidance) and document the
+   selected source in the SDK README.
 4. **Wire CI before code.** Read `references/ci-quality-coverage.md` and
    add a GitHub Actions job that mirrors `test-rust`/`test-python` in
    `.github/workflows/ci.yml`, with a ≥90 % coverage gate, formatter and
@@ -67,9 +69,11 @@ the directory skeleton and CI from earlier ones.
    Rust file paths cited in the leaf to disambiguate anything that's
    under-specified.
 6. **Add the interop adapter.** Read `references/interop-harness.md`,
-   create `tests/interop/<lang>-client/` (and a `bin/interop_server` if
-   you're shipping a server), and register it in
-   `tests/interop/src/implementations.ts`. Run the focused matrix
+   create `tests/interop/<lang>-client/` (and a direct language
+   `bin/interop_server` if you're shipping a server), and register it in
+   `tests/interop/src/implementations.ts`. The language runtime must own
+   the payment lifecycle it claims; do not hide missing settlement logic
+   behind a TypeScript proxy. Run the focused matrix
    (`MPP_INTEROP_CLIENTS=<lang> MPP_INTEROP_SERVERS=rust pnpm test` and
    the inverse) before flipping `enabled: true`.
 7. **Write the README last.** Read `references/readme-template.md` and
@@ -77,6 +81,11 @@ the directory skeleton and CI from earlier ones.
    client and server matrices (with the seven rows above), example
    walkthrough, Solana dependency list, and links to spec. The matrix
    must use the exact row order shown above so it's diffable across SDKs.
+8. **Prove local readiness.** Read `references/pr-readiness-gate.md` and
+   record a local verification transcript before saying the PR is ready:
+   source files read, unit-test count, coverage percent, static checks,
+   focused interop pairs, manual `curl` / `pay curl` example result,
+   framework example startup, and known limitations.
 
 ## Hard rules
 
@@ -104,6 +113,14 @@ the directory skeleton and CI from earlier ones.
   signatures, or `claude.ai/code` URLs anywhere in committed artifacts.
 - **Interop is the truth.** A unit-test green SDK that fails interop
   against Rust is a bug. Run the harness before declaring a cell done.
+- **Examples are executable contracts.** A server-side SDK is not ready
+  until its simple-server and framework middleware examples start
+  locally, unpaid `curl` returns 402, and `pay curl` returns 200.
+- **Server support includes settlement.** For `mpp/charge`, claiming
+  server support means the SDK issues the challenge, verifies the
+  credential, performs or verifies settlement, records replay state, and
+  returns a receipt. If it only verifies headers, mark it explicitly as
+  verification-only and keep the README matrix at `—`.
 
 ## When the user asks for something this skill does not cover
 

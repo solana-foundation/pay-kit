@@ -41,6 +41,9 @@ The server must:
 
 - Expose the shared resource path from `interopScenario.resourcePath`
 - Protect it with the MPP `charge` flow
+- Use the target language SDK for challenge issuance, credential
+  verification, settlement / settlement verification, replay state, and
+  receipt generation
 - Return a successful JSON body after payment
 - Include the `interopScenario.settlementHeader` header on success
 
@@ -184,3 +187,11 @@ in that file are the pattern.
   `rust/examples/payment_link_server.rs:160-186` for the pattern.
 - **Don't pin a parallel Solana SDK** in the interop adapter. Path-
   depend on your main package and reuse its primitives.
+- **Interop is not a wrapper acceptance test.** A language server that
+  shells out to TypeScript for settlement has not proven server support.
+  The adapter may reuse shared fixtures, but the protected endpoint must
+  execute the target SDK's server path.
+- **Add one intent file per role.** Keep test vectors consolidated by
+  intent: one server intent file and one client intent file per intent
+  in the harness. This keeps future `session` / `subscription` vectors
+  from becoming mixed with `charge`.

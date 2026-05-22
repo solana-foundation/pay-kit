@@ -33,7 +33,7 @@ any HTTP API accept payments using the `402 Payment Required` flow.
 ├── src/protocol/        # Wire format (challenge, headers, intents)
 ├── src/server/          # 402 challenge issuance + credential verification
 ├── src/client/          # Build credentials from a challenge
-├── examples/            # Minimal protected endpoint
+├── examples/            # Simple server + framework middleware examples
 └── tests/               # Unit + Surfpool-backed integration
 `​``
 
@@ -91,15 +91,37 @@ tripping to source.
 ## How to use the example
 
 `​``bash
-cd <dir>/examples
-<run-payment-link-server-cmd>
-# In another terminal:
-curl -i http://localhost:3001/fortune
+cd <dir>
+just example-simple
+
+# In another terminal: payment required
+curl -i http://localhost:3001/paid
+
+# payment successful
+pay curl http://localhost:3001/paid
 `​``
 
-The example serves one protected endpoint that returns a fortune cookie
-after a paid 402 challenge succeeds. Run against
-[Surfpool](https://surfpool.run) on `:8899` for the localnet flow.
+The simple server serves one protected endpoint and exercises the same
+SDK server path used by interop. Server-side SDKs also include a
+framework middleware example (`Laravel`, `Rack`, or the idiomatic
+equivalent) that can be started with `just example-framework`.
+
+Run against [Surfpool](https://surfpool.run) on `:8899` for the
+localnet flow.
+
+## Local verification
+
+`​``bash
+just test
+just lint
+just test-cover
+just example-simple
+curl -i http://localhost:3001/paid
+pay curl http://localhost:3001/paid
+`​``
+
+Before a PR is marked ready, include the test count, coverage percent,
+interop pairs, and manual example result in the PR body.
 
 ## Solana dependencies
 
@@ -158,5 +180,9 @@ MIT
   run end-to-end against the example server on `:3001`. If the
   language has a REPL, the snippet should be REPL-pastable. Don't
   invent placeholders like `... rest of imports`.
+- **Examples are part of the SDK contract.** The simple-server and
+  framework middleware examples must use SDK APIs, not hand-written
+  protocol shortcuts. They should be imported or executed by tests when
+  the language tooling makes that practical.
 - **Solana dependency table** is the single source of truth for the
   versions a consumer pins. Keep it in sync with the manifest.

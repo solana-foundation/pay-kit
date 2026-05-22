@@ -89,6 +89,8 @@ Implement these steps in `server::charge::verify` (mirror
 5. **Network blockhash gate.** Before broadcasting, call
    `check_network_blockhash(network, tx.message.recent_blockhash())`
    to reject mainnet keys pointed at a sandbox server (and vice versa).
+   Server challenges must include a fresh `methodDetails.recentBlockhash`
+   when the server expects to co-sign or broadcast.
 6. **Pre-broadcast verifier.** Decode the transaction (accept legacy
    bincode `Transaction`, then fall back to `VersionedTransaction`);
    walk the instructions; verify:
@@ -108,6 +110,10 @@ Implement these steps in `server::charge::verify` (mirror
    on-chain settlement so a failed broadcast doesn't burn the signature.
 10. **Receipt.** Return `Receipt::success(method="solana",
     reference=signature, challengeId=challenge.id)`.
+
+Server support is not complete until the SDK owns this full lifecycle.
+Verification-only helpers are useful, but they do not justify a
+server-side README checkmark.
 
 ## Client obligations
 
@@ -173,6 +179,13 @@ adapter at `rust/src/bin/interop_client.rs`:
 - **Network gate first.** Calling `check_network_blockhash` before
   decoding instructions is cheaper than letting broadcast fail with a
   generic blockhash error.
+- **Stablecoin mint helper belongs in the SDK.** Expose the same
+  `resolve_stablecoin_mint` / token-program behavior as Rust so
+  examples, interop, and applications do not each open-code mint
+  resolution.
+- **Manual example verification is mandatory.** Run the simple-server
+  locally and prove unpaid `curl` returns 402 while `pay curl` returns
+  200 before marking pull-mode server support ready.
 
 ## Test plan
 
@@ -200,6 +213,7 @@ Integration test:
   `rust/tests/charge_integration.rs`. Cover SOL transfer, SPL transfer,
   splits with ATA creation, fee-payer mode.
 
-Interop scenario: `charge-basic` and `charge-split-ata` in
-`tests/interop/src/contracts.ts`. Both must pass against the Rust
-server before the new SDK is enabled by default.
+Interop scenario: `charge-basic`, `charge-split-ata`,
+`charge-network-mismatch`, and `charge-cross-route-replay` in
+`tests/interop/src/contracts.ts`. These must pass in every relevant
+focused pair before the new SDK is enabled by default.

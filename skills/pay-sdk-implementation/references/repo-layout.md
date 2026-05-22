@@ -26,6 +26,7 @@ in the intent leaves translate directly:
 <new-lang>/
 ├── <manifest>                       ← language-native manifest (Cargo.toml,
 │                                      pyproject.toml, package.json, composer.json…)
+├── justfile                         ← language-local install/build/test/lint/coverage recipes
 ├── src/                             ← or `lib/`, `pkg/`, `<package>/` per idiom
 │   ├── error.<ext>                  ← Error enum + Result alias
 │   ├── expires.<ext>                ← RFC 3339 helpers (`expires::minutes(5)`)
@@ -53,7 +54,8 @@ in the intent leaves translate directly:
 │       ├── interop_client.<ext>
 │       └── interop_server.<ext>
 ├── examples/
-│   └── payment_link_server.<ext>    ← One protected endpoint on :3001-ish
+│   ├── simple-server/               ← One protected endpoint on :3001-ish
+│   └── <framework>-middleware/      ← Laravel for PHP, Rack for Ruby, etc.
 └── tests/
     ├── charge_integration.<ext>     ← Surfpool-backed end-to-end
     └── ...                          ← Unit tests per module (or `src/.../*_test.<ext>` per idiom)
@@ -106,8 +108,9 @@ prefix:
 
 ## `justfile` recipes
 
-Add one section per language, matching the existing pattern in
-`mpp-sdk/justfile`. The required recipes are:
+Add a language-local `justfile` first, then add root wrappers in
+`mpp-sdk/justfile` that delegate to it. The local recipes are the
+developer contract for CI, manual verification, and PR review:
 
 ```just
 # ── <Language> ──
@@ -135,6 +138,14 @@ Add one section per language, matching the existing pattern in
 # Coverage with ≥90% gate
 <l>-test-cover:
     cd <dir> && <coverage-cmd-with-fail-under-90>
+
+# Start the simple protected endpoint used by the README
+<l>-example-simple:
+    cd <dir> && <run-simple-server-cmd>
+
+# Start the framework middleware example, if the SDK ships server support
+<l>-example-framework:
+    cd <dir> && <run-framework-example-cmd>
 ```
 
 Then add the new `<l>-test` to the `test` target, `<l>-fmt` to the
@@ -158,3 +169,17 @@ If the target language has no canonical Solana SDK, open-code the
 small set of constants you need from `protocol/solana.<ext>` and the
 two or three transaction/instruction structures used in charge. Do
 **not** pull in a heavy chain client just for one helper.
+
+## Example and interop ownership
+
+Server-side SDKs must own their examples and interop server in the
+target language:
+
+- The simple-server example is the smallest complete paid endpoint.
+- The framework middleware example demonstrates idiomatic integration
+  without hiding protocol logic in the app layer.
+- `bin/interop_server` (or the language idiom) must use the SDK's own
+  challenge, settlement, replay, and receipt code.
+
+A TypeScript helper may start infrastructure, but it must not stand in
+for the language SDK's server lifecycle.

@@ -4,6 +4,12 @@ The SDK reads as idiomatic in its target language. The Rust crate is the
 reference for **wire format and module structure**, not for code style.
 Use the language's canonical style guide and tooling.
 
+For each language PR, also select and read one current language
+best-practice skill or credible source before implementation. Document
+that source in the SDK README and use it during the local readiness
+pass. Examples: PHP strict types + PSR-12, Ruby Standard/Rack
+conventions, Swift API Design Guidelines, Kotlin Coding Conventions.
+
 ## Per-language style guides
 
 | Language | Style | Formatter | Linter | Type-checker | Test runner |
