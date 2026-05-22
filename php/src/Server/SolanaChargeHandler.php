@@ -181,10 +181,11 @@ final class SolanaChargeHandler
             $statuses = $this->rpc->getSignatureStatuses([$signature]);
             $status = $statuses[0] ?? null;
             if (is_array($status)) {
-                if ($status['err'] !== null) {
+                if (($status['err'] ?? null) !== null) {
                     throw new RuntimeException("Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR));
                 }
-                if ($status['confirmationStatus'] === 'confirmed' || $status['confirmationStatus'] === 'finalized') {
+                $confirmationStatus = $status['confirmationStatus'] ?? null;
+                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
                     return;
                 }
             }
