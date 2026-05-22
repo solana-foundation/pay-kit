@@ -21,19 +21,157 @@ local function is_array(value)
   return max == count
 end
 
+-- Decode a UTF-8 byte string into a list of codepoints.
+-- Returns nil and error message for invalid UTF-8 or lone surrogates.
+local function utf8_codepoints(value)
+  local out = {}
+  local i = 1
+  local len = #value
+  while i <= len do
+    local b1 = value:byte(i)
+    local cp
+    local advance
+    if b1 < 0x80 then
+      cp = b1
+      advance = 1
+    elseif b1 < 0xC2 then
+      return nil, 'invalid UTF-8 lead byte'
+    elseif b1 < 0xE0 then
+      if i + 1 > len then return nil, 'truncated UTF-8' end
+      local b2 = value:byte(i + 1)
+      if b2 < 0x80 or b2 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
+      cp = (b1 - 0xC0) * 64 + (b2 - 0x80)
+      advance = 2
+    elseif b1 < 0xF0 then
+      if i + 2 > len then return nil, 'truncated UTF-8' end
+      local b2, b3 = value:byte(i + 1), value:byte(i + 2)
+      if b2 < 0x80 or b2 >= 0xC0 or b3 < 0x80 or b3 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
+      cp = (b1 - 0xE0) * 4096 + (b2 - 0x80) * 64 + (b3 - 0x80)
+      if cp >= 0xD800 and cp <= 0xDFFF then return nil, 'lone surrogate' end
+    advance = 3
+    elseif b1 < 0xF5 then
+      if i + 3 > len then return nil, 'truncated UTF-8' end
+      local b2, b3, b4 = value:byte(i + 1), value:byte(i + 2), value:byte(i + 3)
+      if b2 < 0x80 or b2 >= 0xC0 or b3 < 0x80 or b3 >= 0xC0 or b4 < 0x80 or b4 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
+      cp = (b1 - 0xF0) * 262144 + (b2 - 0x80) * 4096 + (b3 - 0x80) * 64 + (b4 - 0x80)
+      advance = 4
+    else
+      return nil, 'invalid UTF-8 lead byte'
+    end
+    out[#out + 1] = cp
+    i = i + advance
+  end
+  return out
+end
+
 local function encode_string(value)
-  local replacements = {
-    ['\\'] = '\\\\',
-    ['"'] = '\\"',
-    ['\b'] = '\\b',
-    ['\f'] = '\\f',
-    ['\n'] = '\\n',
-    ['\r'] = '\\r',
-    ['\t'] = '\\t',
-  }
-  return '"' .. value:gsub('[%z\1-\31\\"]', function(ch)
-    return replacements[ch] or string.format('\\u%04x', ch:byte())
-  end) .. '"'
+  local cps, err = utf8_codepoints(value)
+  if not cps then
+    error('cannot encode string: ' .. err)
+  end
+  local buf = { '"' }
+  for _, cp in ipairs(cps) do
+    if cp == 0x5C then
+      buf[#buf + 1] = '\\\\'
+    elseif cp == 0x22 then
+      buf[#buf + 1] = '\\"'
+    elseif cp == 0x08 then
+      buf[#buf + 1] = '\\b'
+    elseif cp == 0x09 then
+      buf[#buf + 1] = '\\t'
+    elseif cp == 0x0A then
+      buf[#buf + 1] = '\\n'
+    elseif cp == 0x0C then
+      buf[#buf + 1] = '\\f'
+    elseif cp == 0x0D then
+      buf[#buf + 1] = '\\r'
+    elseif cp < 0x20 then
+      buf[#buf + 1] = string.format('\\u%04x', cp)
+    elseif cp < 0x80 then
+      buf[#buf + 1] = string.char(cp)
+    elseif cp < 0x800 then
+      buf[#buf + 1] = string.char(0xC0 + math.floor(cp / 64), 0x80 + (cp % 64))
+    elseif cp < 0x10000 then
+      buf[#buf + 1] = string.char(
+        0xE0 + math.floor(cp / 4096),
+        0x80 + math.floor(cp / 64) % 64,
+        0x80 + (cp % 64)
+      )
+    else
+      buf[#buf + 1] = string.char(
+        0xF0 + math.floor(cp / 262144),
+        0x80 + math.floor(cp / 4096) % 64,
+        0x80 + math.floor(cp / 64) % 64,
+        0x80 + (cp % 64)
+      )
+    end
+  end
+  buf[#buf + 1] = '"'
+  return table.concat(buf)
+end
+
+-- UTF-16 code-unit comparison for JCS key ordering (RFC 8785 sec 3.2.3).
+local function utf16_units(value)
+  local cps, err = utf8_codepoints(value)
+  if not cps then
+    error('cannot order key: ' .. err)
+  end
+  local units = {}
+  for _, cp in ipairs(cps) do
+    if cp < 0x10000 then
+      units[#units + 1] = cp
+    else
+      local off = cp - 0x10000
+      units[#units + 1] = 0xD800 + math.floor(off / 1024)
+      units[#units + 1] = 0xDC00 + (off % 1024)
+    end
+  end
+  return units
+end
+
+local function compare_utf16(a, b)
+  local au = utf16_units(a)
+  local bu = utf16_units(b)
+  local n = math.min(#au, #bu)
+  for i = 1, n do
+    if au[i] ~= bu[i] then
+      return au[i] < bu[i]
+    end
+  end
+  return #au < #bu
+end
+
+-- ES6 ToString number serialization (ECMA-262 7.1.12.1) for JCS (RFC 8785 sec 3.2.2.3).
+local function encode_number(value)
+  if value ~= value or value == math.huge or value == -math.huge then
+    error('cannot encode non-finite number')
+  end
+  if value == 0 then
+    return '0'
+  end
+  if value == math.floor(value) and math.abs(value) < 1e21 then
+    return string.format('%d', value)
+  end
+  -- Use %.17g for round-trip precision then strip trailing zeros and normalize exponent.
+  local repr = string.format('%.17g', value)
+  -- Try shorter %.15g first if it round-trips; this mirrors most ES6 ToString outputs.
+  local short = string.format('%.15g', value)
+  if tonumber(short) == value then
+    repr = short
+  end
+  local e_idx = repr:find('[eE]')
+  if e_idx then
+    local mantissa = repr:sub(1, e_idx - 1)
+    local exp_str = repr:sub(e_idx + 1)
+    mantissa = mantissa:gsub('0+$', ''):gsub('%.$', '')
+    if mantissa == '' or mantissa == '-' then
+      mantissa = mantissa .. '0'
+    end
+    local exp_int = tonumber(exp_str)
+    local sign = exp_int >= 0 and '+' or '-'
+    return mantissa .. 'e' .. sign .. math.abs(exp_int)
+  end
+  return repr
 end
 
 local function encode_value(value)
@@ -45,11 +183,7 @@ local function encode_value(value)
   elseif kind == 'boolean' then
     return value and 'true' or 'false'
   elseif kind == 'number' then
-    if value ~= value or value == math.huge or value == -math.huge then
-      error('cannot encode non-finite number')
-    end
-    local formatted = string.format('%.14g', value)
-    return formatted
+    return encode_number(value)
   elseif kind == 'string' then
     return encode_string(value)
   elseif kind == 'table' then
@@ -64,7 +198,7 @@ local function encode_value(value)
     for key, _ in pairs(value) do
       keys[#keys + 1] = key
     end
-    table.sort(keys)
+    table.sort(keys, compare_utf16)
     local parts = {}
     for i = 1, #keys do
       local key = keys[i]

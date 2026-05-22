@@ -69,3 +69,56 @@ t.test('extract payment scheme ignores other auth parts', function()
   local scheme = mpp.ExtractPaymentScheme('Bearer abc, Payment xyz')
   t.assert_equal(scheme, 'Payment xyz')
 end)
+
+t.test('parse_www_authenticate_all parses multi-challenge header (RFC 7235 sec 4.1)', function()
+  local header = 'Payment id="a", realm="r1", method="solana", intent="charge", request="e30", '
+              .. 'Payment id="b", realm="r2", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(header)
+  t.assert_equal(#results, 2)
+  t.assert_equal(results[1].id, 'a')
+  t.assert_equal(results[2].id, 'b')
+end)
+
+t.test('parse_www_authenticate_all ignores Payment inside quoted realm', function()
+  local header = 'Payment id="a", realm="api, Payment realm", method="solana", intent="charge", request="e30", '
+              .. 'Payment id="b", realm="r2", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(header)
+  t.assert_equal(#results, 2)
+  t.assert_equal(results[1].realm, 'api, Payment realm')
+  t.assert_equal(results[2].id, 'b')
+end)
+
+t.test('canonical JSON sorts keys by UTF-16 code units (RFC 8785 sec 3.2.3)', function()
+  local json = require('mpp.util.json')
+  -- 'é' (U+00E9) > 'f' (U+0066) in UTF-16 code-unit order, so 'f' sorts first.
+  local encoded = json.encode({ ['é'] = 1, f = 2 })
+  t.assert_equal(encoded, '{"f":2,"\xC3\xA9":1}')
+end)
+
+t.test('canonical JSON serializes numbers per ES6 ToString', function()
+  local json = require('mpp.util.json')
+  t.assert_equal(json.encode(1e21), '1e+21')
+  t.assert_equal(json.encode(0.1), '0.1')
+  t.assert_equal(json.encode(-0.0), '0')
+  t.assert_equal(json.encode(42), '42')
+end)
+
+t.test('canonical JSON rejects lone surrogates', function()
+  local json = require('mpp.util.json')
+  local lone = string.char(0xED, 0xA0, 0xB4)
+  local ok = pcall(json.encode, { k = lone })
+  t.assert_true(not ok)
+end)
+
+t.test('expires parser is strict RFC 3339', function()
+  local expires = require('mpp.expires')
+  t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00Z') ~= nil)
+  t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00+00:00') ~= nil)
+  t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00.123Z') ~= nil)
+  t.assert_true(expires.parse_rfc3339('2099-01-01t00:00:00z') ~= nil)
+  t.assert_true(expires.parse_rfc3339('tomorrow') == nil)
+  t.assert_true(expires.parse_rfc3339('10000-01-01T00:00:00Z') == nil)
+  t.assert_true(expires.parse_rfc3339('2099-02-30T00:00:00Z') == nil)
+  t.assert_true(expires.parse_rfc3339('2099-13-01T00:00:00Z') == nil)
+  t.assert_true(expires.parse_rfc3339('2099-01-01T24:00:00Z') == nil)
+end)
