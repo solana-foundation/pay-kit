@@ -22,7 +22,7 @@ const HEALTH_PATH: &str = "/health";
 const DEFAULT_PRICE: &str = "0.001";
 const DEFAULT_SECRET_KEY: &str = "mpp-interop-secret-key";
 const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
-const TOKEN_DECIMALS: u8 = 6;
+const DEFAULT_TOKEN_DECIMALS: u8 = 6;
 
 #[derive(Clone)]
 struct InteropState {
@@ -95,13 +95,17 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
     };
     let secret_key =
         env::var("MPP_INTEROP_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
+    let decimals = match env::var("MPP_INTEROP_DECIMALS") {
+        Ok(raw) if !raw.is_empty() => raw.parse::<u8>()?,
+        _ => DEFAULT_TOKEN_DECIMALS,
+    };
     let splits = read_splits()?;
 
     Ok(InteropState {
         mpp: Mpp::new(Config {
             recipient: pay_to,
             currency: mint,
-            decimals: TOKEN_DECIMALS,
+            decimals,
             network,
             rpc_url: Some(rpc_url),
             secret_key: Some(secret_key),
