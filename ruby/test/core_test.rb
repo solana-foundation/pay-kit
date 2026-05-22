@@ -17,7 +17,161 @@ class CoreTest < Minitest::Test
     assert_raises(ArgumentError) { Mpp::Core::Json.parse("{") }
     assert_equal "hello", Mpp::Core::Base64Url.decode(Base64.strict_encode64("hello"))
     assert_raises(ArgumentError) { Mpp::Core::Headers.parse_www_authenticate("Bearer token") }
-    assert_raises(ArgumentError) { Mpp::Core::Headers.parse_auth_params("id=unquoted") }
+    # Token-form values are valid per RFC 7235 sec 2.1.
+    assert_equal({"id" => "abc"}, Mpp::Core::Headers.parse_auth_params("id=abc"))
+    assert_raises(ArgumentError) { Mpp::Core::Headers.parse_auth_params("=value") }
+    assert_raises(ArgumentError) { Mpp::Core::Headers.parse_auth_params("id=a, id=b") }
+  end
+
+  def test_parse_auth_params_token_form_values
+    params = Mpp::Core::Headers.parse_auth_params("id=abc, realm=api, method=solana, intent=charge, request=e30")
+    assert_equal "abc", params.fetch("id")
+    assert_equal "api", params.fetch("realm")
+    assert_equal "solana", params.fetch("method")
+    assert_equal "e30", params.fetch("request")
+  end
+
+  def test_parse_www_authenticate_all_multi_challenge
+    h = 'Payment id="a", realm="r1", method="solana", intent="charge", request="e30", Payment id="b", realm="r2", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 2, results.length
+    assert_equal "a", results[0].id
+    assert_equal "b", results[1].id
+  end
+
+  def test_parse_www_authenticate_all_ignores_payment_inside_quoted_value
+    h = 'Payment id="a", realm="api, Payment realm", method="solana", intent="charge", request="e30", Payment id="b", realm="r2", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 2, results.length
+    assert_equal "api, Payment realm", results[0].realm
+    assert_equal "b", results[1].id
+  end
+
+  def test_canonical_json_utf16_key_order
+    # 'é' (U+00E9) > 'f' (U+0066) in UTF-16 code units, so 'f' sorts first.
+    value = {"é" => 1, "f" => 2}
+    assert_equal '{"f":2,"é":1}', Mpp::Core::Json.canonical_generate(value)
+  end
+
+  def test_canonical_json_es6_number_serialization
+    assert_equal "1e+21", Mpp::Core::Json.canonical_generate(1e21)
+    assert_equal "0.1", Mpp::Core::Json.canonical_generate(0.1)
+    assert_equal "0", Mpp::Core::Json.canonical_generate(-0.0)
+    assert_equal "0", Mpp::Core::Json.canonical_generate(0)
+  end
+
+  def test_canonical_json_rejects_lone_surrogates
+    # Build a UTF-8 byte sequence containing a lone high surrogate (U+D834) via raw bytes.
+    lone = [0xED, 0xA0, 0xB4].pack("C*").force_encoding(Encoding::UTF_8)
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({"k" => lone}) }
+  end
+
+  def test_canonical_json_covers_branches
+    assert_equal "true", Mpp::Core::Json.canonical_generate(true)
+    assert_equal "false", Mpp::Core::Json.canonical_generate(false)
+    assert_equal "null", Mpp::Core::Json.canonical_generate(nil)
+    assert_equal "[1,2,3]", Mpp::Core::Json.canonical_generate([1, 2, 3])
+    assert_equal '"\\u0001"', Mpp::Core::Json.canonical_generate("\x01")
+    assert_equal '"\\n"', Mpp::Core::Json.canonical_generate("\n")
+    assert_equal '{"a":1}', Mpp::Core::Json.canonical_generate({a: 1})
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({1 => 2}) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate(Float::NAN) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate(Float::INFINITY) }
+    assert_equal "1e-7", Mpp::Core::Json.canonical_generate(1e-7)
+  end
+
+  def test_split_payment_challenge_values_edges
+    # Header that does not contain Payment scheme yields empty.
+    assert_empty Mpp::Core::Headers.parse_www_authenticate_all(["Bearer xyz"])
+    # Tab after Payment.
+    h = "Payment\tid=\"x\", realm=\"api\", method=\"solana\", intent=\"charge\", request=\"e30\""
+    parsed = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 1, parsed.length
+  end
+
+  def test_expires_strict_rfc3339_extra
+    # Month 13 rejected.
+    c = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-13-01T00:00:00Z")
+    assert c.expired?
+    # Minute 60 rejected.
+    c2 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:60:00Z")
+    assert c2.expired?
+    # Day 0 rejected.
+    c3 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-00T00:00:00Z")
+    assert c3.expired?
+  end
+
+  def test_parse_www_authenticate_all_string_input
+    # String (not array) is wrapped via Array().
+    h = 'Payment id="a", realm="r1", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all(h)
+    assert_equal 1, results.length
+  end
+
+  def test_payment_scheme_start_negatives
+    # "Paymentx" without whitespace is not a scheme start; should yield empty.
+    assert_empty Mpp::Core::Headers.parse_www_authenticate_all(["Paymentid=x"])
+    # Payment preceded by non-comma is not a scheme start.
+    assert_empty Mpp::Core::Headers.parse_www_authenticate_all(["X Payment id=x"])
+  end
+
+  def test_canonical_json_branches_extra
+    # Symbol keys converted.
+    assert_equal '{"a":1,"b":2}', Mpp::Core::Json.canonical_generate({a: 1, b: 2})
+    # Integer.
+    assert_equal "42", Mpp::Core::Json.canonical_generate(42)
+    # Negative number.
+    assert_equal "-3.14", Mpp::Core::Json.canonical_generate(-3.14)
+    # Backslash and quote escapes.
+    assert_equal '"a\\\\b"', Mpp::Core::Json.canonical_generate("a\\b")
+    assert_equal '"a\\"b"', Mpp::Core::Json.canonical_generate("a\"b")
+    # Empty array, empty object.
+    assert_equal "[]", Mpp::Core::Json.canonical_generate([])
+    assert_equal "{}", Mpp::Core::Json.canonical_generate({})
+    # Tab and backspace control chars.
+    assert_equal '"\\t"', Mpp::Core::Json.canonical_generate("\t")
+    assert_equal '"\\b"', Mpp::Core::Json.canonical_generate("\b")
+    assert_equal '"\\f"', Mpp::Core::Json.canonical_generate("\f")
+    assert_equal '"\\r"', Mpp::Core::Json.canonical_generate("\r")
+  end
+
+  def test_expires_strict_rfc3339_branches
+    # Lowercase t accepted.
+    c1 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01t00:00:00Z")
+    refute c1.expired?
+    # Fractional seconds accepted.
+    c2 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:00.123Z")
+    refute c2.expired?
+    # Numeric offset accepted.
+    c3 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:00+00:00")
+    refute c3.expired?
+    # Invalid calendar date rejected (Feb 30).
+    c4 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-02-30T00:00:00Z")
+    assert c4.expired?
+    # Hour 24 rejected.
+    c5 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T24:00:00Z")
+    assert c5.expired?
+  end
+
+  def test_parse_auth_params_branches
+    # BWS around `=`.
+    params = Mpp::Core::Headers.parse_auth_params('id ="x" , realm="api"')
+    assert_equal "x", params.fetch("id")
+    assert_equal "api", params.fetch("realm")
+    # Multi-challenge empty header.
+    assert_empty Mpp::Core::Headers.parse_www_authenticate_all([])
+    # Single-value challenge through all helper.
+    h = 'Payment id="x", realm="api", method="solana", intent="charge", request="e30"'
+    assert_equal 1, Mpp::Core::Headers.parse_www_authenticate_all([h]).length
+  end
+
+  def test_expires_strict_rfc3339
+    chal = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:00Z")
+    refute chal.expired?
+    chal2 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "tomorrow")
+    assert chal2.expired?, "non-RFC-3339 expires must fail closed"
+    chal3 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "10000-01-01T00:00:00Z")
+    assert chal3.expired?, "5-digit year must fail closed"
   end
 
   def test_header_parser_unescapes_quoted_values
