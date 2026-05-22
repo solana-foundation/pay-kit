@@ -52,6 +52,29 @@ export type InteropScenario = {
   // is expected to resolve to under `network`. Harness deploys the mint
   // here and asserts settled transferChecked uses this mint.
   expectedMint?: string;
+  // Optional. Defaults to 6. Drives both the mint account `data[44]`
+  // byte at deploy time and the assertion `decimals` byte at `data[9]`
+  // of every transferChecked instruction. Adapters that accept a
+  // configurable decimals value read `MPP_INTEROP_DECIMALS` from env.
+  decimals?: number;
+  // Optional. When set the harness pre-creates the platform recipient's
+  // ATA for the scenario mint with a zero balance before the test
+  // starts, so the idempotent ATA-create instruction in the settled
+  // transaction is exercised against an already-existing account.
+  preCreatePlatformAta?: boolean;
+  // Optional. When set the TypeScript client passes the override to
+  // `solana.charge({ computeUnitLimit, computeUnitPrice })`. Used by
+  // G14 (compute budget over-cap) to force the server-side allowlist
+  // cap to reject. Ignored by clients other than `typescript`.
+  clientComputeUnitLimit?: number;
+  clientComputeUnitPrice?: string;
+  // Optional. When set to `"SOL"` the scenario exercises the native
+  // SOL transfer path (System Program transfer, lamports, decimals 9,
+  // no SPL token program). The harness funds the client wallet with
+  // lamports via `surfnet.fundSol`, skips the SPL mint deploy, and the
+  // assertion helpers expect a System Program transfer instruction
+  // (discriminator 2) instead of an SPL transferChecked.
+  assetKind?: "spl" | "sol";
 };
 
 export type ReadyMessage = {

@@ -22,6 +22,15 @@ export type InteropEnvironment = {
   }>;
   clientSecretKey: Uint8Array;
   feePayerSecretKey: Uint8Array;
+  decimals: number;
+  // SOL-native scenarios pass `MPP_INTEROP_ASSET_KIND=sol` and the
+  // server fixture must build the charge with `currency: "sol"` and
+  // skip the SPL token-program path. SPL scenarios pass the literal
+  // `MPP_INTEROP_MINT` through to the SDK so the resolver is
+  // exercised.
+  assetKind: "spl" | "sol";
+  computeUnitLimit?: number;
+  computeUnitPrice?: bigint;
 };
 
 function readRequiredEnv(name: string): string {
@@ -67,7 +76,33 @@ export function readInteropEnvironment(): InteropEnvironment {
     ) as InteropEnvironment["splits"],
     clientSecretKey: parseSecretKey("MPP_INTEROP_CLIENT_SECRET_KEY"),
     feePayerSecretKey: parseSecretKey("MPP_INTEROP_FEE_PAYER_SECRET_KEY"),
+    decimals: parseDecimals(process.env.MPP_INTEROP_DECIMALS),
+    assetKind:
+      (process.env.MPP_INTEROP_ASSET_KIND ?? "spl").toLowerCase() === "sol"
+        ? "sol"
+        : "spl",
+    computeUnitLimit:
+      process.env.MPP_INTEROP_COMPUTE_UNIT_LIMIT &&
+      process.env.MPP_INTEROP_COMPUTE_UNIT_LIMIT.trim() !== ""
+        ? Number(process.env.MPP_INTEROP_COMPUTE_UNIT_LIMIT)
+        : undefined,
+    computeUnitPrice:
+      process.env.MPP_INTEROP_COMPUTE_UNIT_PRICE &&
+      process.env.MPP_INTEROP_COMPUTE_UNIT_PRICE.trim() !== ""
+        ? BigInt(process.env.MPP_INTEROP_COMPUTE_UNIT_PRICE)
+        : undefined,
   };
+}
+
+function parseDecimals(raw: string | undefined): number {
+  if (!raw || raw.trim() === "") {
+    return 6;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 9) {
+    throw new Error(`Invalid MPP_INTEROP_DECIMALS: ${raw}`);
+  }
+  return value;
 }
 
 export const fixtureSettlementHeader = interopScenario.settlementHeader;
