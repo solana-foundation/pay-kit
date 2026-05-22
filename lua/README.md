@@ -108,19 +108,39 @@ it inside your framework of choice.
 
 ## Running the examples
 
-Runnable example servers (`lua/examples/simple-server.lua` and
-`lua/examples/openresty/`) ship in the follow-up Lua PR B, alongside the
-interop adapter at `tests/interop/lua-server/server.lua`. PR B will also
-clear the manual DX gate via:
+Two runnable examples ship in this PR. Both exercise the 402
+challenge-issuance path; on-chain settlement (the `pay curl` 200
+response) ships in the follow-up Lua PR B which adds the heavy
+Solana stack (base58, transaction bincode codec, Ed25519 signer,
+ATA derive) and the interop adapter at `tests/interop/lua-server/`.
+
+### Bare LuaJIT simple-server
 
 ```bash
-brew install pay
-curl http://localhost:4569/paid       # 402 payment required
-pay curl http://localhost:4569/paid   # pays and succeeds
+cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
+luajit examples/simple-server.lua          # listens on 127.0.0.1:4569
 ```
 
-In the meantime, the foundation (this PR) ships the full settlement
-lifecycle and is exercised by the unit suite and `just lua-test-cover`.
+```bash
+curl -i http://127.0.0.1:4569/health        # 200 OK
+curl -i http://127.0.0.1:4569/paid          # 402 Payment Required with
+                                            # signed WWW-Authenticate header
+```
+
+### OpenResty / nginx middleware
+
+```bash
+cd lua/examples/nginx
+openresty -p . -c nginx.conf                # listens on 127.0.0.1:4570
+```
+
+The Lua middleware (`access.lua`) runs in nginx's access phase and
+either returns 402 with a signed challenge or lets the upstream
+content phase render the protected payload. The shared dict
+`mpp_replay` is wired in `nginx.conf` for future replay-store use.
+
+Both examples accept the same env overrides: `PORT`, `MPP_PAY_TO`,
+`MPP_CURRENCY`, `MPP_NETWORK`, `MPP_SECRET_KEY`, `MPP_AMOUNT`.
 
 ## Client compatibility matrix
 
@@ -174,14 +194,17 @@ ships in PR B; this PR ships the foundation exercised by the unit suite.
 
 ## Examples
 
-Listed here once PR B lands them. Planned:
+Two examples ship with this package:
 
-- `lua/examples/simple-server.lua` — bare LuaJIT TCP loop calling
-  `server:handle_request` directly, mirrors the Ruby simple-server.
-- `lua/examples/openresty/` — `access_by_lua_block` example with the
-  shared-dict replay store.
+- [`examples/simple-server.lua`](examples/simple-server.lua) — bare
+  LuaJIT TCP accept loop that calls `mpp.server` directly. Mirrors
+  the Ruby `examples/simple-server/app.rb` shape.
+- [`examples/nginx/`](examples/nginx) — OpenResty / nginx config
+  with `access_by_lua_file` loading a Lua middleware in the access
+  phase. The canonical Kong / OpenResty deployment shape.
 
-Both will expose `/health` (free) and `/paid` (gated).
+Both expose `/health` (free) and `/paid` (gated). Use the interop
+harness in PR B for the full Surfpool-backed settlement flow.
 
 ## Solana dependencies
 
@@ -204,18 +227,26 @@ without changing the handler.
 
 ## Coding convention
 
-This SDK follows `luacheck + LuaJIT 2.1` and the
-[`skills.sh/mindrally/skills/lua`](https://www.skills.sh/mindrally/skills/lua)
-best-practice skill selected for this PR. The implementation pass
-focuses on idiomatic Lua: local variables over globals for the LuaJIT
-trace recorder, tables as the primary data structure, `pcall` / `xpcall`
-for error boundaries (no try / catch ports), metatables for OO shapes
-(`Handler.__index = Handler`), and 1-based indexing throughout.
+This SDK follows `luacheck + LuaJIT 2.1` and the best-practice skills
+selected for this PR:
 
-The [OpenResty Lua coding style guide](https://github.com/openresty/openresty/blob/master/lua-coding-style.md)
-is the secondary source because OpenResty / Kong is the target
-deployment runtime; the `ngx_*` API surface and shared-dict storage
-shape what production callers see.
+- [`skills.sh/mindrally/skills/lua`](https://www.skills.sh/mindrally/skills/lua)
+  for idiomatic Lua (local-over-global for the LuaJIT trace recorder,
+  tables as the primary data structure, `pcall` / `xpcall` for error
+  boundaries instead of try / catch ports, metatables for OO shapes,
+  1-based indexing throughout).
+- [`skills.sh/germanfndez/fiveai-skills/lua-basics`](https://www.skills.sh/germanfndez/fiveai-skills/lua-basics)
+  for the embedded-Lua performance and code-quality patterns that apply
+  on hot paths (cached upvalue references for `table.concat` and other
+  library functions, numeric `for` loops over `pairs` / `ipairs` where
+  the data is array-shaped, defensive `tonumber`, no global function
+  definitions, constants in `SCREAMING_SNAKE`).
+
+OpenResty / Kong is the target deployment runtime; the `ngx_*` API
+surface and shared-dict storage shape what production callers see, so
+hot-path code stays allocation-free and avoids string concatenation
+inside loops (`table.concat` is used everywhere a buffer accumulates,
+see the WWW-Authenticate formatter in `mpp/protocol/core/headers.lua`).
 
 - `snake_case` for functions, `PascalCase` for types, `SCREAMING_SNAKE`
   for constants.

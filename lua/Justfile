@@ -15,6 +15,7 @@ install:
     test -f .luarocks/config-5.1.lua || luarocks --lua-version=5.1 --lua-dir=/opt/homebrew/opt/luajit init --lua-versions 5.1
     luarocks --lua-version=5.1 install --tree lua_modules luacheck
     luarocks --lua-version=5.1 install --tree lua_modules luacov
+    luarocks --lua-version=5.1 install --tree lua_modules luasocket
 
 # Run the Lua unit test suite under LuaJIT.
 test:

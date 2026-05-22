@@ -39,3 +39,11 @@ files["mpp/server/html.lua"] = {
 files["mpp/server/html_assets/gen.lua"] = {
   ignore = { "631" }, -- line-too-long
 }
+
+-- The OpenResty example exposes the `ngx` global at runtime. luacheck does
+-- not know about it by default; declare it as a writable global because the
+-- access-phase middleware assigns `ngx.status` and `ngx.header[name]`.
+-- This lints cleanly without requiring OpenResty's own luacheck plugin.
+files["examples/nginx/access.lua"] = {
+  globals = { "ngx" },
+}
