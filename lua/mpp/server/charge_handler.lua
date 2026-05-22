@@ -210,7 +210,11 @@ function Handler:settle_pull(transaction_base64, request)
   if simulation == nil then
     verifier_error('Simulation failed: empty simulation result')
   end
-  if simulation.err ~= nil then
+  -- `mpp.util.json` decodes JSON `null` as `json.null` (a table sentinel),
+  -- not Lua `nil`. Solana JSON-RPC returns `"err": null` on success, so
+  -- comparing against both nil and the sentinel is required to recognize
+  -- a successful simulation.
+  if simulation.err ~= nil and simulation.err ~= json.null then
     verifier_error('Simulation failed: ' .. tostring(simulation.err))
   end
 
@@ -295,7 +299,9 @@ function Handler:await_confirmation(signature)
     local statuses = self.rpc:signature_statuses({ signature })
     local status = statuses and statuses[1]
     if type(status) == 'table' then
-      if status.err ~= nil then
+      -- Solana JSON-RPC returns `"err": null` on success; mpp.util.json
+      -- decodes that as `json.null`, not Lua `nil`. Treat both as success.
+      if status.err ~= nil and status.err ~= json.null then
         verifier_error('Transaction ' .. signature .. ' failed: ' .. tostring(status.err))
       end
       local confirmation_status = status.confirmationStatus
@@ -328,7 +334,8 @@ function Handler:fetch_settled_transaction(signature)
       if type(meta) ~= 'table' then
         verifier_error('getTransaction response is missing transaction metadata')
       end
-      if meta.err ~= nil then
+      -- Same json.null sentinel handling as simulate and await_confirmation.
+      if meta.err ~= nil and meta.err ~= json.null then
         verifier_error('Transaction ' .. signature .. ' failed: ' .. tostring(meta.err))
       end
       local wire = response.transaction

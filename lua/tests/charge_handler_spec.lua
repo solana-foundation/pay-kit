@@ -110,6 +110,32 @@ t.test('settle_pull happy path: verify → simulate → send → consume → awa
   t.assert_equal(methods[3], 'getSignatureStatuses')
 end)
 
+t.test('settle_pull accepts json.null err sentinels through full lifecycle', function()
+  -- Regression for the JSON null sentinel handling. mpp.util.json decodes
+  -- JSON `null` as `json.null` (a table), not Lua `nil`. Solana JSON-RPC
+  -- returns `"err": null` on success in simulateTransaction,
+  -- getSignatureStatuses, and getTransaction. The previous code compared
+  -- `simulation.err ~= nil` / `status.err ~= nil` / `meta.err ~= nil`,
+  -- which is `true` against `json.null` and would raise a spurious
+  -- "Simulation failed" / "Transaction failed" on every successful round
+  -- trip in production. fake_rpc usually hands back Lua tables directly
+  -- (bypassing the JSON codec), so this test forces the sentinel values
+  -- the production codec would actually produce.
+  local json = require('mpp.util.json')
+  local handler, rpc = new_handler({
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = json.null, logs = { 'ok' } } } },
+      sendTransaction = { { result = 'sig-json-null' } },
+      getSignatureStatuses = {
+        { result = { { confirmationStatus = 'confirmed', err = json.null } } },
+      },
+    }),
+  })
+  local signature = handler:settle_pull('tx-b64', { amount = '1' })
+  t.assert_equal(signature, 'sig-json-null')
+  t.assert_equal(#rpc.calls, 3)
+end)
+
 t.test('settle_pull rejects empty transaction payload', function()
   local handler = new_handler()
   t.assert_error(function() handler:settle_pull('', {}) end, 'missing or empty transaction')
