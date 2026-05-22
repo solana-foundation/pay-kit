@@ -85,6 +85,28 @@ export const chargeScenarios: readonly InteropScenario[] = [
     clientIds: ["typescript"],
   },
   {
+    // Symbol mode: harness sends the literal string "USDC" as currency,
+    // adapters must call their `Mints.resolve` (or equivalent) to get a
+    // mint pubkey. The Ruby `MINTS["USDC"]["localnet"] = devnet mint` bug
+    // would have surfaced here. The harness deploys the mint at the
+    // expected pubkey so the resolved address must match for the
+    // transferChecked assertion to pass.
+    id: "charge-symbol-usdc-localnet",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "USDC",
+    currencyMode: "symbol",
+    // Surfpool localnet mirrors mainnet, so USDC on localnet resolves to
+    // the mainnet USDC mint (EPjFWdd5...). Every SDK with a stablecoin
+    // table must agree on this.
+    expectedMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    resourcePath: "/protected/symbol-usdc",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 200,
+  },
+  {
     // PYUSD mainnet mint, which every SDK (Ruby, PHP, Rust, TypeScript)
     // already classifies as Token-2022 via the built-in TOKEN_2022_SYMBOLS
     // list, so no SDK API change is required. The harness deploys this mint

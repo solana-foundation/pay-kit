@@ -172,10 +172,7 @@ function matchesNetwork(challenge: SolanaChargeChallenge, network: string | unde
     if (!network) {
         return true;
     }
-    return (
-        normalizeNetwork(challenge.request.methodDetails.network ?? 'mainnet') ===
-        normalizeNetwork(network)
-    );
+    return normalizeNetwork(challenge.request.methodDetails.network ?? 'mainnet') === normalizeNetwork(network);
 }
 
 function matchesCurrency(challenge: SolanaChargeChallenge, currency: string | readonly string[] | undefined): boolean {
@@ -207,10 +204,7 @@ function matchesSessionNetwork(challenge: SolanaSessionChallenge, network: strin
     if (!network) {
         return true;
     }
-    return (
-        normalizeNetwork(challenge.request.network ?? 'mainnet') ===
-        normalizeNetwork(network)
-    );
+    return normalizeNetwork(challenge.request.network ?? 'mainnet') === normalizeNetwork(network);
 }
 
 function matchesSessionCurrency(
