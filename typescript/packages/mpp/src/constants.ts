@@ -52,10 +52,13 @@ export const DEFAULT_RPC_URLS: Record<string, string> = {
     mainnet: 'https://api.mainnet-beta.solana.com',
 };
 
-// Maintainer canonical for the mainnet slug is `mainnet`. The legacy
-// `mainnet-beta` spelling is accepted as a backward-compatible alias and
-// normalized to `mainnet`. Other networks pass through unchanged.
-function normalizeNetwork(network: string): string {
+/**
+ * Maintainer canonical for the mainnet slug is `mainnet`. The legacy
+ * `mainnet-beta` spelling is accepted as a backward-compatible alias
+ * and normalized to `mainnet`. Other networks pass through unchanged.
+ * Exposed so client helpers can compare and look up consistently.
+ */
+export function normalizeNetwork(network: string): string {
     const lower = network.toLowerCase();
     if (lower === 'mainnet' || lower === 'mainnet-beta') {
         return 'mainnet';

@@ -32,6 +32,7 @@ import {
     ASSOCIATED_TOKEN_PROGRAM,
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
+    normalizeNetwork,
     resolveStablecoinMint,
     SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
@@ -86,12 +87,14 @@ export function charge(parameters: charge.Parameters) {
                 request: challenge.request,
                 rpcUrl:
                     parameters.rpcUrl ??
-                    DEFAULT_RPC_URLS[network || 'mainnet-beta'] ??
-                    DEFAULT_RPC_URLS['mainnet-beta'],
+                    DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ??
+                    DEFAULT_RPC_URLS.mainnet,
                 signer,
             });
             const rpc = createSolanaRpc(
-                parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'],
+                parameters.rpcUrl ??
+                    DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ??
+                    DEFAULT_RPC_URLS.mainnet,
             );
 
             if (broadcast) {
@@ -156,7 +159,10 @@ export async function buildChargeTransaction(
     // currency is "sol" for native, or the mint address for SPL tokens.
     const mint = resolveStablecoinMint(currency, network);
 
-    const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const rpcUrl =
+        parameters.rpcUrl ??
+        DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ??
+        DEFAULT_RPC_URLS.mainnet;
     const rpc = createSolanaRpc(rpcUrl);
     onProgress?.({
         amount,

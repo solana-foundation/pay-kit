@@ -32,6 +32,7 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     DEFAULT_RPC_URLS,
+    normalizeNetwork,
     resolveStablecoinMint,
     SYSTEM_PROGRAM,
     TOKEN_PROGRAM,
@@ -109,7 +110,7 @@ export async function buildOpenPaymentChannelTransaction(
         ...parameters,
         payer: signer.address,
     });
-    const network = request.network ?? 'mainnet-beta';
+    const network = normalizeNetwork(request.network ?? 'mainnet');
     const programAddress = open.programAddress;
     const tokenProgram = open.tokenProgram;
     const payer = address(open.payer);
@@ -154,7 +155,7 @@ export async function buildOpenPaymentChannelTransaction(
               lastValidBlockHeight: 0n,
           }
         : (
-              await createSolanaRpc(parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'])
+              await createSolanaRpc(parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS.mainnet)
                   .getLatestBlockhash()
                   .send()
           ).value;
@@ -402,7 +403,7 @@ async function preparePaymentChannelOpen(
     parameters: derivePaymentChannelOpen.Parameters,
 ): Promise<PreparedPaymentChannelOpen> {
     const { request } = parameters;
-    const network = request.network ?? 'mainnet-beta';
+    const network = normalizeNetwork(request.network ?? 'mainnet');
     const mint = resolveStablecoinMint(request.currency, network);
     if (!mint) {
         throw new Error('payment-channel sessions require an SPL token currency');
