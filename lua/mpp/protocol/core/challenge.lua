@@ -38,7 +38,7 @@ local function challenge_mt(challenge)
           self.digest,
           opaque_raw(self.opaque)
         )
-        return expected == self.id
+        return crypto.constant_eq(expected, self.id)
       end,
       is_expired = function(self, now_epoch)
         return expires.is_expired(self.expires, now_epoch)
