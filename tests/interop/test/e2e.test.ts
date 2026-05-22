@@ -17,9 +17,16 @@ import { runClient, startServer, stopServer } from "../src/process";
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const MINT_ACCOUNT_SIZE = 82;
+
+function tokenProgramAddress(
+  variant: "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM" | undefined,
+): string {
+  return variant === "TOKEN_2022_PROGRAM" ? TOKEN_2022_PROGRAM : TOKEN_PROGRAM;
+}
 
 const runningServers: RunningServer[] = [];
 
@@ -53,10 +60,11 @@ async function getTokenBalance(
   surfnet: Surfnet,
   owner: string,
   mint: string,
+  tokenProgram: string,
   missingAsZero = false,
 ): Promise<bigint> {
   const rpc = createSolanaRpc(surfnet.rpcUrl);
-  const ata = surfnet.getAta(owner, mint);
+  const ata = surfnet.getAta(owner, mint, tokenProgram);
   try {
     const response = await rpc.getTokenAccountBalance(ata as never).send();
     return BigInt(response.value.amount);
@@ -99,14 +107,26 @@ beforeAll(async () => {
   const payTo = Surfnet.newKeypair();
   const platform = Surfnet.newKeypair();
 
-  surfnet.setAccount(
-    baseScenario.asset,
-    1_461_600,
-    createSplMintAccountData(6),
-    TOKEN_PROGRAM,
-  );
-  surfnet.fundToken(client.publicKey, baseScenario.asset, 100_000);
-  surfnet.fundToken(payTo.publicKey, baseScenario.asset, 1);
+  // Deploy every mint referenced by an active scenario under the right token
+  // program. Without this, Token-2022 scenarios would have to share the legacy
+  // mint owner and the verifier would reject every transfer.
+  const uniqueMints = new Map<string, "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM">();
+  for (const scenario of activeScenarios) {
+    const variant = scenario.tokenProgram ?? "TOKEN_PROGRAM";
+    const existing = uniqueMints.get(scenario.asset);
+    if (existing && existing !== variant) {
+      throw new Error(
+        `Conflicting tokenProgram for asset ${scenario.asset}: ${existing} vs ${variant} (scenario ${scenario.id})`,
+      );
+    }
+    uniqueMints.set(scenario.asset, variant);
+  }
+  for (const [asset, variant] of uniqueMints) {
+    const programAddress = tokenProgramAddress(variant);
+    surfnet.setAccount(asset, 1_461_600, createSplMintAccountData(6), programAddress);
+    surfnet.fundToken(client.publicKey, asset, 100_000, programAddress);
+    surfnet.fundToken(payTo.publicKey, asset, 1, programAddress);
+  }
 
   splitRecipients = {
     platform: platform.publicKey,
@@ -166,15 +186,18 @@ describe("mpp interop", () => {
             }
 
             const scenarioEnv = environmentForScenario(interopEnv, scenario);
+            const scenarioTokenProgram = tokenProgramAddress(scenario.tokenProgram);
             const initialBalance = await getTokenBalance(
               surfnet,
               scenarioEnv.MPP_INTEROP_PAY_TO,
               scenarioEnv.MPP_INTEROP_MINT,
+              scenarioTokenProgram,
             );
             const initialSplitBalances = await splitBalances(
               surfnet,
               scenario,
               scenarioEnv.MPP_INTEROP_MINT,
+              scenarioTokenProgram,
               true,
             );
 
@@ -192,11 +215,13 @@ describe("mpp interop", () => {
               surfnet,
               scenarioEnv.MPP_INTEROP_PAY_TO,
               scenarioEnv.MPP_INTEROP_MINT,
+              scenarioTokenProgram,
             );
             const finalSplitBalances = await splitBalances(
               surfnet,
               scenario,
               scenarioEnv.MPP_INTEROP_MINT,
+              scenarioTokenProgram,
               false,
             );
 
@@ -245,6 +270,7 @@ function environmentForScenario(
   return {
     ...baseEnv,
     MPP_INTEROP_AMOUNT: scenario.amount,
+    MPP_INTEROP_MINT: scenario.asset,
     MPP_INTEROP_NETWORK: scenario.network,
     MPP_INTEROP_PRICE: scenario.price,
     MPP_INTEROP_RESOURCE_PATH: scenario.resourcePath,
@@ -289,23 +315,30 @@ async function expectSettledTransactionShape(
   const matchedInstructions = new Set<number>();
   const expectedTransferCount = 1 + (scenario.splits?.length ?? 0);
   const primaryAmount = primaryDelta(scenario);
+  const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
   expectSplTransferChecked(
     message,
     {
       destination: surfnet.getAta(
         scenarioEnv.MPP_INTEROP_PAY_TO,
         scenarioEnv.MPP_INTEROP_MINT,
+        tokenProgram,
       ),
       mint: scenarioEnv.MPP_INTEROP_MINT,
       amount: primaryAmount,
       decimals: 6,
+      tokenProgram,
     },
     matchedInstructions,
   );
 
   for (const split of scenario.splits ?? []) {
     const recipient = splitRecipients[split.recipientKey];
-    const destination = surfnet.getAta(recipient, scenarioEnv.MPP_INTEROP_MINT);
+    const destination = surfnet.getAta(
+      recipient,
+      scenarioEnv.MPP_INTEROP_MINT,
+      tokenProgram,
+    );
     expectSplTransferChecked(
       message,
       {
@@ -313,6 +346,7 @@ async function expectSettledTransactionShape(
         mint: scenarioEnv.MPP_INTEROP_MINT,
         amount: BigInt(split.amount),
         decimals: 6,
+        tokenProgram,
       },
       matchedInstructions,
     );
@@ -322,6 +356,7 @@ async function expectSettledTransactionShape(
         ata: destination,
         owner: recipient,
         mint: scenarioEnv.MPP_INTEROP_MINT,
+        tokenProgram,
       });
     }
 
@@ -330,7 +365,12 @@ async function expectSettledTransactionShape(
     }
   }
 
-  expectTransferCheckedCount(message, scenarioEnv.MPP_INTEROP_MINT, expectedTransferCount);
+  expectTransferCheckedCount(
+    message,
+    scenarioEnv.MPP_INTEROP_MINT,
+    expectedTransferCount,
+    tokenProgram,
+  );
 }
 
 async function fetchTransactionBase64(
@@ -390,6 +430,7 @@ function expectSplTransferChecked(
     mint: string;
     amount: bigint;
     decimals: number;
+    tokenProgram: string;
   },
   matchedInstructions: Set<number>,
 ): void {
@@ -397,7 +438,9 @@ function expectSplTransferChecked(
     if (matchedInstructions.has(index)) {
       return false;
     }
-    if (accountAt(message, instruction.programAddressIndex) !== TOKEN_PROGRAM) {
+    if (
+      accountAt(message, instruction.programAddressIndex) !== expected.tokenProgram
+    ) {
       return false;
     }
     if (instruction.data[0] !== 12) {
@@ -430,6 +473,7 @@ function expectIdempotentAtaCreation(
     ata: string;
     owner: string;
     mint: string;
+    tokenProgram: string;
   },
 ): void {
   const match = message.instructions.find((instruction) => {
@@ -444,7 +488,7 @@ function expectIdempotentAtaCreation(
       accountAt(message, instruction.accountIndices[2]) === expected.owner &&
       accountAt(message, instruction.accountIndices[3]) === expected.mint &&
       accountAt(message, instruction.accountIndices[4]) === SYSTEM_PROGRAM &&
-      accountAt(message, instruction.accountIndices[5]) === TOKEN_PROGRAM
+      accountAt(message, instruction.accountIndices[5]) === expected.tokenProgram
     );
   });
 
@@ -458,9 +502,10 @@ function expectTransferCheckedCount(
   message: CompiledMessage,
   mint: string,
   expectedCount: number,
+  tokenProgram: string,
 ): void {
   const transfers = message.instructions.filter((instruction) => {
-    if (accountAt(message, instruction.programAddressIndex) !== TOKEN_PROGRAM) {
+    if (accountAt(message, instruction.programAddressIndex) !== tokenProgram) {
       return false;
     }
     if (instruction.data[0] !== 12 || instruction.accountIndices.length < 4) {
@@ -508,6 +553,7 @@ async function splitBalances(
   surfnet: Surfnet,
   scenario: InteropScenario,
   mint: string,
+  tokenProgram: string,
   missingAsZero: boolean,
 ): Promise<Record<string, bigint>> {
   const balances: Record<string, bigint> = {};
@@ -517,6 +563,7 @@ async function splitBalances(
       surfnet,
       recipient,
       mint,
+      tokenProgram,
       missingAsZero,
     );
   }
