@@ -18,32 +18,41 @@ use SolanaPhpSdk\Programs\TokenProgram;
  */
 final class StablecoinMints
 {
+    // The canonical mainnet slug is `mainnet`. The legacy `mainnet-beta`
+    // spelling is kept as an aliased key so consumer code that does
+    // `StablecoinMints::USDC['mainnet-beta']` keeps working through the
+    // transition. Internal lookups go through normalizeNetwork() below.
     /** @var array<string, string> */
     public const USDC = [
         'devnet' => '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
         'mainnet' => 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        'mainnet-beta' => 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     ];
 
     /** @var array<string, string> */
     public const USDT = [
         'mainnet' => 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+        'mainnet-beta' => 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
     ];
 
     /** @var array<string, string> */
     public const USDG = [
         'devnet' => '4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7',
         'mainnet' => '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
+        'mainnet-beta' => '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
     ];
 
     /** @var array<string, string> */
     public const PYUSD = [
         'devnet' => 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM',
         'mainnet' => '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+        'mainnet-beta' => '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
     ];
 
     /** @var array<string, string> */
     public const CASH = [
         'mainnet' => 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
+        'mainnet-beta' => 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
     ];
 
     /** @var array<string, array<string, string>> */
