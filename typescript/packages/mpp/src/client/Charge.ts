@@ -160,9 +160,7 @@ export async function buildChargeTransaction(
     const mint = resolveStablecoinMint(currency, network);
 
     const rpcUrl =
-        parameters.rpcUrl ??
-        DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ??
-        DEFAULT_RPC_URLS.mainnet;
+        parameters.rpcUrl ?? DEFAULT_RPC_URLS[normalizeNetwork(network || 'mainnet')] ?? DEFAULT_RPC_URLS.mainnet;
     const rpc = createSolanaRpc(rpcUrl);
     onProgress?.({
         amount,

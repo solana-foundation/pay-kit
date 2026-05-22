@@ -13,12 +13,19 @@ export type InteropScenarioSplit = {
 
 export type TokenProgramVariant = "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM";
 
+export type CurrencyMode = "pubkey" | "symbol";
+
 export type InteropScenario = {
   id: string;
   intent: InteropIntent;
   network: string;
   price: string;
   amount: string;
+  // The literal value the harness sends to each adapter as
+  // `MPP_INTEROP_MINT`. In `pubkey` mode (default) this is a 32+ char
+  // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol
+  // (e.g. "USDC") and the harness deploys the mint at the pubkey each
+  // SDK's `Mints.resolve(symbol, network)` returns.
   asset: string;
   resourcePath: string;
   settlementHeader: string;
@@ -35,6 +42,16 @@ export type InteropScenario = {
   // "TOKEN_2022_PROGRAM" for scenarios that exercise Token-2022. The harness
   // uses this to deploy the scenario mint under the right program owner.
   tokenProgram?: TokenProgramVariant;
+  // Optional. Defaults to "pubkey". Set to "symbol" to exercise the
+  // SDK-side `Mints.resolve(currency, network)` path that the manual DX
+  // path (pay sandbox + example servers) actually hits. The harness uses
+  // `expectedMint` below to know which on-chain mint to deploy and to
+  // assert balances against.
+  currencyMode?: CurrencyMode;
+  // Required when `currencyMode === "symbol"`. The pubkey the symbol
+  // is expected to resolve to under `network`. Harness deploys the mint
+  // here and asserts settled transferChecked uses this mint.
+  expectedMint?: string;
 };
 
 export type ReadyMessage = {
