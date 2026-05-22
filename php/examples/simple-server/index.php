@@ -2,57 +2,43 @@
 
 declare(strict_types=1);
 
-use SolanaMpp\Core\Challenge;
-use SolanaMpp\Core\Credential;
+// solana-php's CurlHttpClient still calls the no-op-since-PHP-8.0 curl_close()
+// which raises E_DEPRECATED on PHP 8.5+. Route deprecations to stderr so they
+// don't pollute the HTTP response body.
+error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+ini_set('display_errors', 'stderr');
+
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\PaymentVerifier;
-use SolanaMpp\Server\VerificationResult;
+use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
 $rpc = new RpcClient('https://402.surfnet.dev:8899');
-$server = new ChargeServer(
-    secretKey: 'local-dev-secret',
-    realm: 'PHP example',
-    blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+$handler = new SolanaChargeHandler(
+    challenges: new ChargeServer(
+        secretKey: 'local-dev-secret',
+        realm: 'PHP example',
+        blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+    ),
+    rpc: $rpc,
+    network: 'localnet',
 );
 $request = new ChargeRequest(
     amount: '1000',
     currency: 'USDC',
     recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-    methodDetails: ['network' => 'localnet'],
+    methodDetails: ['network' => 'localnet', 'decimals' => 6],
 );
 
-$verifier = new class () implements PaymentVerifier {
-    public function verify(Credential $credential, Challenge $challenge): VerificationResult
-    {
-        $reference = $credential->payload['signature'] ?? $credential->payload['transaction'] ?? '';
-        return is_string($reference) && $reference !== ''
-            ? VerificationResult::success(reference: $reference)
-            : VerificationResult::failure('missing payment reference');
-    }
-};
+$rawAuth = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
+$result = $handler->handle(is_string($rawAuth) ? $rawAuth : null, $request);
 
-$rawAuthorization = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-$authorization = is_string($rawAuthorization) ? $rawAuthorization : '';
-$result = $authorization === ''
-    ? VerificationResult::failure('Payment is required.')
-    : $server->verifyAuthorizationHeader($authorization, $verifier, expectedRequest: $request);
-
-if (!$result->ok) {
-    $problem = $server->paymentRequiredResponse($request, $result->reason);
-    http_response_code($problem->status);
-    foreach ($problem->headers as $name => $value) {
-        // Pinning the status on every header() call avoids PHP's built-in CLI
-        // server rewriting 402 to 401 when WWW-Authenticate is present.
-        header($name . ': ' . $value, true, $problem->status);
-    }
-    echo json_encode($problem->body, JSON_THROW_ON_ERROR);
-    return;
+http_response_code($result->status);
+foreach ($result->headers as $name => $value) {
+    // Pin the status on every header() call so PHP's built-in CLI server
+    // doesn't rewrite 402 to 401 when WWW-Authenticate is present.
+    header($name . ': ' . $value, true, $result->status);
 }
-
-header('content-type: application/json');
-header('payment-receipt: ' . $server->createReceiptHeader($result));
-echo json_encode(['ok' => true, 'paid' => true], JSON_THROW_ON_ERROR);
+echo json_encode($result->body, JSON_THROW_ON_ERROR);

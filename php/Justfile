@@ -1,0 +1,38 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Install PHP SDK dependencies
+install:
+    composer install
+
+# Validate composer.json (cheap "build" — PHP has no compile step)
+build:
+    composer validate
+
+# Run PHP unit tests
+test:
+    composer test
+
+# Format the PHP SDK in place
+fmt:
+    vendor/bin/php-cs-fixer fix --using-cache=no
+
+# Run the full PHP lint pipeline (syntax + format check + PHPStan)
+lint:
+    composer run lint
+
+# Run PHP coverage with the 90% gate, then refresh the README badge in place
+test-cover:
+    mkdir -p build/coverage
+    composer run test:coverage
+    php scripts/update_coverage_badge.php build/coverage/clover.xml README.md
+
+# Boot the example simple-server (charge protected endpoint at /paid)
+serve-example port="4567":
+    php -S 127.0.0.1:{{port}} -t examples/simple-server
+
+# Boot the Laravel example (assumes `cp .env.example .env` already run)
+serve-laravel port="4567":
+    cd examples/laravel && php -S 127.0.0.1:{{port}} -t public

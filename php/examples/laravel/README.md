@@ -6,7 +6,7 @@ A minimal Laravel 12 app that gates a route behind MPP using `App\Http\Middlewar
 
 ```text
 examples/laravel/
-├── app/Http/Middleware/MppCharge.php   # Wraps ChargeServer; issues 402, verifies, attaches receipt
+├── app/Http/Middleware/MppCharge.php   # Thin wrapper around SolanaChargeHandler
 ├── bootstrap/app.php                   # Registers the `mpp.charge` middleware alias
 ├── public/index.php                    # Laravel front controller
 ├── routes/api.php                      # Route protected by `mpp.charge`
@@ -36,12 +36,30 @@ pay curl http://127.0.0.1:4567/paid
 
 ## How the middleware works
 
-`MppCharge::handle()`:
+`MppCharge` delegates the full MPP charge lifecycle to the SDK's
+`SolanaChargeHandler`:
 
-1. Builds the `ChargeRequest` once in the constructor (amount, currency, recipient — sourced from `.env`).
-2. If `Authorization` is missing → returns 402 with a signed `www-authenticate` challenge.
-3. If present → verifies via `ChargeServer::verifyAuthorizationHeader()`, pinning the echoed challenge to the expected request. The bundled `ExampleVerifier` accepts any non-empty `signature`/`transaction` reference — swap it for `SolanaChargeTransactionVerifier` or your own implementation before going live.
-4. On success → forwards to the route, then attaches `payment-receipt` to the outgoing response.
+1. Constructor builds the `ChargeRequest` (amount / currency / recipient
+   from `.env`) and configures `SolanaChargeHandler` with an `RpcClient`
+   pointing at the Solana RPC endpoint.
+2. `handle()` passes the `Authorization` header to the handler. The handler
+   verifies HMAC + expiry, pins the challenge against the expected request,
+   decodes and validates the client-signed transaction
+   (`SolanaChargeTransactionVerifier`), rejects Surfpool-signed transactions
+   on non-localnet networks, broadcasts via `sendTransaction`, and polls
+   until `confirmed`/`finalized`.
+3. On 402 (missing or invalid credential) the middleware short-circuits with
+   the SDK-built `application/problem+json` response and the
+   `www-authenticate` challenge header.
+4. On success (`ChargeSettlement`) the middleware forwards to the route via
+   `$next($request)` and attaches `payment-receipt` plus the on-chain
+   signature header to the route's response. The route keeps full control of
+   its own body.
+
+To use a fee-payer signer (so the client doesn't have to hold SOL), pass a
+`Keypair` to `SolanaChargeHandler`'s `feePayer:` parameter and set
+`methodDetails.feePayer = true` / `methodDetails.feePayerKey = $handler->feePayerPubkey()`
+on the `ChargeRequest`.
 
 ## Apply the middleware to other routes
 

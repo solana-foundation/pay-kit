@@ -92,14 +92,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "php",
     label: "PHP HTTP server",
     role: "server",
-    command: [
-      "pnpm",
-      "exec",
-      "node",
-      "--import",
-      "tsx",
-      "src/fixtures/php/charge-server.ts",
-    ],
+    command: ["php", "php-server/server.php"],
     enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
   },
 ];

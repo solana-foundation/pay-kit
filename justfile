@@ -113,31 +113,33 @@ py-typecheck:
     cd python && pyright
 
 # ── PHP ──
+# Recipes live in php/Justfile. The wrappers below delegate so the
+# orchestration targets ("build", "test", "test-all", "fmt", "pre-commit")
+# keep working without root-level knowledge of PHP commands.
 
-# Install PHP SDK dependencies
+# Install PHP SDK dependencies (delegates to php/Justfile)
 php-install:
-    cd php && composer install
+    cd php && just install
 
-# Build PHP package metadata
+# Validate PHP composer.json (delegates to php/Justfile)
 php-build:
-    cd php && composer validate
+    cd php && just build
 
-# Test PHP SDK
+# Run PHP unit tests (delegates to php/Justfile)
 php-test:
-    cd php && composer test
+    cd php && just test
 
-# Format PHP SDK
+# Format PHP SDK (delegates to php/Justfile)
 php-fmt:
-    cd php && vendor/bin/php-cs-fixer fix --using-cache=no
+    cd php && just fmt
 
-# Lint PHP SDK
+# Lint PHP SDK (delegates to php/Justfile)
 php-lint:
-    cd php && composer run lint
+    cd php && just lint
 
-# Run PHP coverage with a minimum threshold of 90%
+# Run PHP coverage with the 90% gate (delegates to php/Justfile)
 php-test-cover:
-    cd php && mkdir -p build/coverage
-    cd php && composer run test:coverage
+    cd php && just test-cover
 
 # ── HTML Payment Links ──
 

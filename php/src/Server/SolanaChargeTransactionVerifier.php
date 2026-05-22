@@ -7,6 +7,7 @@ namespace SolanaMpp\Server;
 use InvalidArgumentException;
 use Throwable;
 use SolanaMpp\Core\Challenge;
+use SolanaMpp\Common\StablecoinMints;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
@@ -44,10 +45,12 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
         try {
             $request = ChargeRequest::fromArray($challenge->decodeRequest());
             $this->verifyTransaction($transaction, $request);
-        } catch (InvalidArgumentException $error) {
+        } catch (Throwable $error) {
+            // Surface the message from any failure (the SDK's own
+            // InvalidArgumentException, an upstream solana-php SolanaException
+            // for malformed pubkeys/transactions, etc.) — they all describe a
+            // protocol-level reason the credential should be rejected.
             return VerificationResult::failure($error->getMessage());
-        } catch (Throwable) {
-            return VerificationResult::failure('invalid transaction payload');
         }
 
         return VerificationResult::success(reference: '');
@@ -113,11 +116,14 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             return;
         }
 
-        $mint = new PublicKey($request->currency);
-        $tokenProgram = new PublicKey(Json::optionalString($methodDetails['tokenProgram'] ?? null, 'methodDetails.tokenProgram', TokenProgram::PROGRAM_ID));
+        $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet-beta');
+        $resolvedMint = StablecoinMints::resolve($request->currency, $network) ?? $request->currency;
+        $mint = new PublicKey($resolvedMint);
+        $defaultTokenProgram = StablecoinMints::tokenProgramFor($request->currency, $network);
+        $tokenProgram = new PublicKey(Json::optionalString($methodDetails['tokenProgram'] ?? null, 'methodDetails.tokenProgram', $defaultTokenProgram));
         $decimals = Json::optionalInt($methodDetails['decimals'] ?? null, 'methodDetails.decimals');
         $allowedAtaOwners = $this->allowedAtaOwners($splits, $feePayer);
-        if ($requiredAtaOwners !== [] && $request->currency !== $mint->toBase58()) {
+        if ($requiredAtaOwners !== [] && $resolvedMint !== $mint->toBase58()) {
             throw new InvalidArgumentException('ataCreationRequired requires currency to be an SPL token mint address');
         }
 

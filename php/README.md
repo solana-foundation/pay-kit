@@ -11,7 +11,7 @@ for PHP.
 any HTTP API accept payments using the `402 Payment Required` flow.
 
 [![PHP](https://img.shields.io/badge/PHP-8.1%2B-blue)]()
-[![Coverage](https://img.shields.io/badge/coverage-90%25-green)]()
+[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)]()
 
 ## Repo layout
 
@@ -29,18 +29,38 @@ php/
 ```php
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
+use SolanaMpp\Server\SolanaChargeHandler;
+use SolanaPhpSdk\Rpc\RpcClient;
 
-$server = new ChargeServer(secretKey: 'local-dev-secret', realm: 'api');
+$rpc = new RpcClient('https://402.surfnet.dev:8899');
+$handler = new SolanaChargeHandler(
+    challenges: new ChargeServer(
+        secretKey: 'local-dev-secret',
+        realm: 'api',
+        blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+    ),
+    rpc: $rpc,
+    network: 'localnet',
+);
 $request = new ChargeRequest(
     amount: '1000',
     currency: 'USDC',
-    recipient: 'ExampleRecipient1111111111111111111111111111111',
-    methodDetails: ['network' => 'localnet'],
+    recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
+    methodDetails: ['network' => 'localnet', 'decimals' => 6],
 );
 
-header('www-authenticate: ' . $server->createChallengeHeader($request));
-http_response_code(402);
+$result = $handler->handle($_SERVER['HTTP_AUTHORIZATION'] ?? null, $request);
+http_response_code($result->status);
+foreach ($result->headers as $name => $value) {
+    header("$name: $value", true, $result->status);
+}
+echo json_encode($result->body, JSON_THROW_ON_ERROR);
 ```
+
+`SolanaChargeHandler::handle()` returns either a `PaymentRequiredResponse`
+(402, missing/invalid credential) or a `ChargeSettlement` (200, with the
+on-chain signature). Both expose the same `status` / `headers` / `body`
+properties so the HTTP layer can project either path uniformly.
 
 ## Quick start
 
@@ -85,26 +105,45 @@ PHP is server-side only for the current MPP roadmap.
 
 ## Server compatibility matrix
 
-| Intent | Status |
-|---|:---:|
-| `x402/exact` | — |
-| `x402/upto` | — |
-| `x402/batch-settlement` | — |
-| `mpp/charge/pull` | ✅ |
-| `mpp/charge/push` | — |
-| `mpp/session` | — |
-| `mpp/subscription` | — |
+Split into two columns because the work an MPP server does breaks into two
+phases: **Verification** (protocol-level — parse the credential, validate the
+challenge, decode and check the embedded transaction structure) and
+**Settlement** (chain-level — fee-payer co-sign, broadcast, confirm).
 
-The PHP server checkmark means this package can issue charge challenges,
-validate `Payment` credentials, pin the echoed charge request to the protected
-route, and emit payment receipts. Native PHP transaction settlement verification
-now decodes and validates pull-mode transaction payloads before any downstream
-settlement step. Because the Solana verifier runs before broadcast, use
-`createReceiptHeaderForReference()` with the final on-chain signature after
-settlement. RPC-backed broadcast, confirmation, fee-payer co-signing, push
-signature lookup, and replay storage are follow-ups; the Surfpool-backed
-interop server still performs the final broadcast after PHP accepts the
-credential envelope.
+| Intent | Verification | Settlement |
+|---|:---:|:---:|
+| `x402/exact` | — | — |
+| `x402/upto` | — | — |
+| `x402/batch-settlement` | — | — |
+| `mpp/charge/pull` | ✅ | ✅ |
+| `mpp/charge/push` | — | — |
+| `mpp/session` | — | — |
+| `mpp/subscription` | — | — |
+
+For `mpp/charge/pull`: `SolanaChargeHandler` owns the full lifecycle — issue
+signed challenges with a pre-fetched `recentBlockhash`, parse/validate the
+`Authorization: Payment` credential, pin the echoed `ChargeRequest`, decode
+the client-signed transaction and check
+recipient/amount/mint/splits/ATA/memos/compute budget, reject Surfpool-signed
+transactions on non-localnet networks, fee-payer co-sign (when configured),
+broadcast via `sendTransaction`, poll `getSignatureStatuses` to
+`confirmed`/`finalized`, and emit `payment-receipt` with the on-chain
+signature. The pure-PHP interop server at
+[`tests/interop/php-server/server.php`](../tests/interop/php-server/server.php)
+exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
+clients.
+
+## Roadmap
+
+- **Push-mode signature verifier.** A `PaymentVerifier` that handles
+  `payload['signature']`: fetch the transaction by signature, run the same
+  structural checks as `SolanaChargeTransactionVerifier`, and reject if the
+  on-chain state doesn't match the challenge. Unblocks `mpp/charge/push`.
+- **Replay storage.** A pluggable store keyed by challenge id (or signature)
+  so a credential can only settle once. The TS and Rust SDKs already define
+  this interface; PHP needs an equivalent contract plus an in-memory default.
+- **Other intents.** `x402/*`, `mpp/session`, `mpp/subscription` aren't yet
+  scoped on the PHP side.
 
 ## How to use the library
 

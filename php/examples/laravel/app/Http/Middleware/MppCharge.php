@@ -6,35 +6,40 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use SolanaMpp\Core\Challenge;
-use SolanaMpp\Core\Credential;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\PaymentVerifier;
-use SolanaMpp\Server\VerificationResult;
+use SolanaMpp\Server\ChargeSettlement;
+use SolanaMpp\Server\PaymentRequiredResponse;
+use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Gates a Laravel route behind an MPP charge challenge.
+ * Gates a Laravel route behind an MPP charge.
  *
- * Returns 402 with a signed `www-authenticate` challenge when no credential is
- * presented or verification fails. On success the request reaches the route
- * handler and the response gains a `payment-receipt` header.
+ * 402 + `www-authenticate` when the credential is missing or fails
+ * verification. On success the payment has already been broadcast and
+ * confirmed by `SolanaChargeHandler`; the middleware forwards the request to
+ * the route handler and attaches `payment-receipt` plus the on-chain
+ * signature to whatever response the route returns, so the route still owns
+ * the response body.
  */
 final class MppCharge
 {
-    private readonly ChargeServer $server;
+    private readonly SolanaChargeHandler $handler;
     private readonly ChargeRequest $request;
-    private readonly PaymentVerifier $verifier;
 
     public function __construct()
     {
         $rpc = new RpcClient((string) env('MPP_RPC_URL', 'https://402.surfnet.dev:8899'));
-        $this->server = new ChargeServer(
-            secretKey: (string) env('MPP_SECRET', 'local-dev-secret'),
-            realm: (string) env('MPP_REALM', 'PHP Laravel example'),
-            blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+        $this->handler = new SolanaChargeHandler(
+            challenges: new ChargeServer(
+                secretKey: (string) env('MPP_SECRET', 'local-dev-secret'),
+                realm: (string) env('MPP_REALM', 'PHP Laravel example'),
+                blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+            ),
+            rpc: $rpc,
+            network: (string) env('MPP_NETWORK', 'localnet'),
         );
         $this->request = new ChargeRequest(
             amount: (string) env('MPP_AMOUNT', '1000'),
@@ -43,47 +48,29 @@ final class MppCharge
             description: 'Laravel protected endpoint',
             methodDetails: [
                 'network' => (string) env('MPP_NETWORK', 'localnet'),
+                'decimals' => 6,
             ],
         );
-        $this->verifier = new ExampleVerifier();
     }
 
     public function handle(Request $request, Closure $next): Response
     {
         $authorization = (string) $request->header('Authorization', '');
-        $result = $authorization === ''
-            ? VerificationResult::failure('Payment is required.')
-            : $this->server->verifyAuthorizationHeader($authorization, $this->verifier, expectedRequest: $this->request);
+        $result = $this->handler->handle($authorization === '' ? null : $authorization, $this->request);
 
-        if (!$result->ok) {
-            $problem = $this->server->paymentRequiredResponse($this->request, $result->reason);
-            return response()->json($problem->body, $problem->status, $problem->headers);
+        if ($result instanceof PaymentRequiredResponse) {
+            return response()->json($result->body, $result->status, $result->headers);
         }
 
+        /** @var ChargeSettlement $result */
         /** @var Response $response */
         $response = $next($request);
-        $response->headers->set('payment-receipt', $this->server->createReceiptHeader($result));
-        return $response;
-    }
-}
-
-/**
- * Demo verifier that accepts any non-empty signature/transaction reference.
- *
- * Replace with a real on-chain verifier — e.g. SolanaChargeTransactionVerifier
- * — before pointing this at a production network.
- */
-final class ExampleVerifier implements PaymentVerifier
-{
-    public function verify(Credential $credential, Challenge $challenge): VerificationResult
-    {
-        $reference = $credential->payload['signature']
-            ?? $credential->payload['transaction']
-            ?? '';
-        if (!is_string($reference) || $reference === '') {
-            return VerificationResult::failure('missing payment reference');
+        foreach ($result->headers as $name => $value) {
+            if (strtolower($name) === 'content-type') {
+                continue; // let the route own its own content type
+            }
+            $response->headers->set($name, $value);
         }
-
-        return VerificationResult::success(reference: $reference);
+        return $response;
     }
 }
