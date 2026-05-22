@@ -46,4 +46,5 @@ return {
   ParseReceipt = headers.parse_receipt,
   ParseUnits = intents.parse_units,
   ParseWWWAuthenticate = headers.parse_www_authenticate,
+  ParseWWWAuthenticateAll = headers.parse_www_authenticate_all,
 }

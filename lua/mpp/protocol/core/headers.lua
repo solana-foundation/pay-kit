@@ -85,14 +85,84 @@ local function parse_auth_params(input)
   return params
 end
 
-function M.extract_payment_scheme(header)
-  for part in header:gmatch('[^,]+') do
-    local trimmed = part:gsub('^%s+', ''):gsub('%s+$', '')
-    if trimmed:sub(1, #M.PAYMENT_SCHEME + 1):lower() == string.lower(M.PAYMENT_SCHEME) .. ' ' then
-      return trimmed
+-- Quote-aware split of a WWW-Authenticate header value into individual `Payment` chunks (RFC 7235 sec 4.1).
+local function split_payment_challenge_values(header)
+  local len = #header
+  local starts = {}
+  local in_quote = false
+  local escaped = false
+  local i = 1
+  local scheme = M.PAYMENT_SCHEME
+  local slen = #scheme
+
+  local function is_scheme_start(pos)
+    if pos + slen > len then return false end
+    if header:sub(pos, pos + slen - 1):lower() ~= scheme:lower() then return false end
+    local nxt = header:sub(pos + slen, pos + slen)
+    if nxt ~= ' ' and nxt ~= '\t' then return false end
+    local prev = pos - 1
+    while prev >= 1 and (header:sub(prev, prev) == ' ' or header:sub(prev, prev) == '\t') do
+      prev = prev - 1
+    end
+    return prev < 1 or header:sub(prev, prev) == ','
+  end
+
+  while i <= len do
+    local ch = header:sub(i, i)
+    if in_quote then
+      if escaped then
+        escaped = false
+      elseif ch == '\\' then
+        escaped = true
+      elseif ch == '"' then
+        in_quote = false
+      end
+      i = i + 1
+    elseif ch == '"' then
+      in_quote = true
+      i = i + 1
+    elseif is_scheme_start(i) then
+      starts[#starts + 1] = i
+      i = i + slen
+    else
+      i = i + 1
     end
   end
-  return nil
+
+  if #starts == 0 then
+    return {}
+  end
+
+  local chunks = {}
+  for idx, start in ipairs(starts) do
+    local finish = starts[idx + 1] and (starts[idx + 1] - 1) or len
+    local chunk = header:sub(start, finish):gsub('^%s+', ''):gsub('%s+$', '')
+    chunk = chunk:gsub(',%s*$', '')
+    if chunk ~= '' then
+      chunks[#chunks + 1] = chunk
+    end
+  end
+  return chunks
+end
+
+function M.split_payment_challenge_values(header)
+  return split_payment_challenge_values(header)
+end
+
+function M.extract_payment_scheme(header)
+  local chunks = split_payment_challenge_values(header)
+  return chunks[1]
+end
+
+function M.parse_www_authenticate_all(headers)
+  local list = type(headers) == 'string' and { headers } or headers
+  local results = {}
+  for _, h in ipairs(list) do
+    for _, chunk in ipairs(split_payment_challenge_values(h)) do
+      results[#results + 1] = M.parse_www_authenticate(chunk)
+    end
+  end
+  return results
 end
 
 function M.parse_www_authenticate(header)
