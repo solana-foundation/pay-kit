@@ -48,7 +48,7 @@ local function utf8_codepoints(value)
       if b2 < 0x80 or b2 >= 0xC0 or b3 < 0x80 or b3 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
       cp = (b1 - 0xE0) * 4096 + (b2 - 0x80) * 64 + (b3 - 0x80)
       if cp >= 0xD800 and cp <= 0xDFFF then return nil, 'lone surrogate' end
-    advance = 3
+      advance = 3
     elseif b1 < 0xF5 then
       if i + 3 > len then return nil, 'truncated UTF-8' end
       local b2, b3, b4 = value:byte(i + 1), value:byte(i + 2), value:byte(i + 3)

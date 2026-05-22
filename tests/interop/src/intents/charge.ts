@@ -54,7 +54,11 @@ export const chargeCanonicalJsonVectors: readonly CanonicalJsonVector[] = [
 
 /**
  * Vectors that every JCS implementation must reject (RFC 8785 sec 3.2.2).
- * Lone high surrogate U+D834 outside a surrogate pair.
+ * Reserved for a future cross-SDK harness loop that asserts each
+ * implementation's encoder rejects these inputs; today the per-language
+ * rejection coverage lives inline in each SDK's own unit suite plus the
+ * reference encoder check in `tests/interop/test/canonical-json.test.ts`.
+ * Kept here so the spec-mandated reject set has a single source of truth.
  */
 export const chargeCanonicalJsonRejectVectors: readonly { id: string; reason: string }[] = [
   { id: "lone-surrogate", reason: "lone surrogate" },
