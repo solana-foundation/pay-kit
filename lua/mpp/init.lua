@@ -7,6 +7,10 @@ local types = require('mpp.protocol.core.types')
 
 return {
   server = require('mpp.server'),
+  charge_handler = require('mpp.server.charge_handler'),
+  solana = {
+    rpc = require('mpp.solana.rpc'),
+  },
   store = store,
   protocol = {
     core = {
