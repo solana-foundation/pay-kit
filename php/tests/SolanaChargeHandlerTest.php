@@ -256,6 +256,36 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('Transaction ' . $signature . ' failed', $result->body['detail']);
     }
 
+    public function testReturns402WhenPushTransactionFetchOmitsMetadata(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'getTransaction' => [[
+                'result' => [
+                    'slot' => 1,
+                    'transaction' => [$this->minimalLegacyTransactionBase64(), 'base64'],
+                ],
+            ]],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame('getTransaction response is missing transaction metadata', $result->body['detail']);
+    }
+
     public function testReturns402WhenPushSignatureIsReplayed(): void
     {
         $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');

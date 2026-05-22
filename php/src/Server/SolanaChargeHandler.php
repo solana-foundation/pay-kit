@@ -250,7 +250,10 @@ final class SolanaChargeHandler
                 throw new RuntimeException('Invalid getTransaction response');
             }
             $meta = $transaction['meta'] ?? null;
-            if (is_array($meta) && ($meta['err'] ?? null) !== null) {
+            if (!is_array($meta)) {
+                throw new RuntimeException('getTransaction response is missing transaction metadata');
+            }
+            if (($meta['err'] ?? null) !== null) {
                 throw new RuntimeException('Transaction ' . $signature . ' failed: ' . json_encode($meta['err'], JSON_THROW_ON_ERROR));
             }
             $wire = $transaction['transaction'] ?? null;
