@@ -5,10 +5,19 @@ local M = {}
 
 local TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 local TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+local SYSTEM_PROGRAM = '11111111111111111111111111111111'
+local ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+local COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
 local MEMO_PROGRAM = protocol.MEMO_PROGRAM
+-- Compute budget caps mirror the Rust spine (server/charge.rs).
+-- Caps exist so a malicious client cannot price-out a server's transactions.
+local MAX_COMPUTE_UNIT_LIMIT = 200000
+local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
 local verify_sol_transfers
 local verify_spl_transfers
 local verify_memo_instructions
+local verify_instruction_allowlist
+local verify_compute_budget
 
 local function is_native_sol(currency)
   return string.lower(currency or '') == 'sol'
@@ -121,6 +130,8 @@ local function verify_confirmed_transaction(reference, tx, request, method_detai
     verify_spl_transfers(instructions, request, method_details, hooks)
   end
   verify_memo_instructions(instructions, request, method_details)
+  verify_compute_budget(instructions)
+  verify_instruction_allowlist(instructions, request, method_details)
 
   return {
     reference = reference,
@@ -205,6 +216,75 @@ function verify_memo_instructions(instructions, request, method_details)
   for index, ix in ipairs(instructions or {}) do
     if not matched[index] and parsed_program_id(ix) == MEMO_PROGRAM then
       error('unexpected Memo Program instruction in payment transaction')
+    end
+  end
+end
+
+-- Compute budget caps mirror the Rust spine. The instruction discriminator
+-- byte 2 is SetComputeUnitLimit; byte 3 is SetComputeUnitPrice. Limits over
+-- the caps are rejected pre-broadcast so a malicious client cannot bloat the
+-- server's bill.
+function verify_compute_budget(instructions)
+  for _, ix in ipairs(instructions or {}) do
+    if normalize_program_id(ix) == COMPUTE_BUDGET_PROGRAM then
+      local data = ix.data or (ix.parsed and ix.parsed.info and ix.parsed.info.data) or ''
+      -- jsonParsed encoding does not give raw discriminator; trust parsed.type if present.
+      local parsed_type = ix.parsed and ix.parsed.type or nil
+      local info = instruction_info(ix) or {}
+      if parsed_type == 'setComputeUnitLimit' or info.units ~= nil then
+        local units = tonumber(info.units or info.computeUnits or 0) or 0
+        if units > MAX_COMPUTE_UNIT_LIMIT then
+          error('compute unit limit exceeds cap')
+        end
+      elseif parsed_type == 'setComputeUnitPrice' or info.microLamports ~= nil then
+        local price = tonumber(info.microLamports or 0) or 0
+        if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+          error('compute unit price exceeds cap')
+        end
+      end
+    end
+  end
+end
+
+-- Reject any instruction whose program is not on the allowlist. Mirrors the
+-- Rust spine (server/charge.rs validate_allowlist). Without this, a malicious
+-- client could append arbitrary CPI calls to a payment transaction the server
+-- is asked to broadcast (or fee-pay).
+local PROGRAM_ALIAS = {
+  system = SYSTEM_PROGRAM,
+  ['spl-memo'] = MEMO_PROGRAM,
+  ['spl-token'] = TOKEN_PROGRAM,
+  ['spl-token-2022'] = TOKEN_2022_PROGRAM,
+  ['spl-associated-token-account'] = ASSOCIATED_TOKEN_PROGRAM,
+  ['compute-budget'] = COMPUTE_BUDGET_PROGRAM,
+  computeBudget = COMPUTE_BUDGET_PROGRAM,
+}
+
+local function resolve_program(ix)
+  local program = normalize_program_id(ix)
+  if program ~= '' then
+    return program
+  end
+  local alias = normalize_program(ix)
+  if PROGRAM_ALIAS[alias] then
+    return PROGRAM_ALIAS[alias]
+  end
+  return ''
+end
+
+function verify_instruction_allowlist(instructions, request, method_details)
+  local allowed = {
+    [SYSTEM_PROGRAM] = true,
+    [TOKEN_PROGRAM] = true,
+    [TOKEN_2022_PROGRAM] = true,
+    [ASSOCIATED_TOKEN_PROGRAM] = true,
+    [MEMO_PROGRAM] = true,
+    [COMPUTE_BUDGET_PROGRAM] = true,
+  }
+  for _, ix in ipairs(instructions or {}) do
+    local program = resolve_program(ix)
+    if not allowed[program] then
+      error('Unexpected program instruction in payment transaction: ' .. tostring(program))
     end
   end
 end
