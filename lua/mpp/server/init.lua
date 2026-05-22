@@ -36,12 +36,16 @@ function M.new(config)
   if secret_key == nil or secret_key == '' then
     error('missing secret key')
   end
+  local currency = config.currency or 'USDC'
+  -- Default decimals: SOL uses 9, every SPL stablecoin in our table uses 6.
+  -- Caller can still override explicitly.
+  local default_decimals = is_native_sol(currency) and 9 or 6
   local instance = {
     secret_key = secret_key,
     realm = config.realm or DEFAULT_REALM,
     recipient = config.recipient,
-    currency = config.currency or 'USDC',
-    decimals = config.decimals or 6,
+    currency = currency,
+    decimals = config.decimals or default_decimals,
     network = config.network or 'mainnet-beta',
     rpc_url = config.rpc_url or protocol.default_rpc_url(config.network or 'mainnet-beta'),
     fee_payer = bool_or_nil(config.fee_payer),
