@@ -116,7 +116,7 @@ challenge, decode and check the embedded transaction structure) and
 | `x402/upto` | — |
 | `x402/batch-settlement` | — |
 | `mpp/charge/pull` | ✅ |
-| `mpp/charge/push` | — |
+| `mpp/charge/push` | ✅ |
 | `mpp/session` | — |
 | `mpp/subscription` | — |
 
@@ -133,15 +133,16 @@ signature. The pure-PHP interop server at
 exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
 clients.
 
+For `mpp/charge/push`: `SolanaChargeHandler` accepts
+`payload['signature']`, fetches the confirmed transaction with Solana RPC
+`getTransaction` using base64 encoding, rejects failed on-chain transactions,
+runs the same structural checks as pull mode, consumes the same
+`solana-charge:consumed:<signature>` replay key, and emits the receipt using
+the submitted signature. The interop harness includes a TypeScript
+broadcasting client against the PHP server for this flow.
+
 ## Roadmap
 
-- **Push-mode signature verifier.** A `PaymentVerifier` that handles
-  `payload['signature']`: fetch the transaction by signature, run the same
-  structural checks as `SolanaChargeTransactionVerifier`, and reject if the
-  on-chain state doesn't match the challenge. Unblocks `mpp/charge/push`.
-- **Replay storage.** A pluggable store keyed by challenge id (or signature)
-  so a credential can only settle once. The TS and Rust SDKs already define
-  this interface; PHP needs an equivalent contract plus an in-memory default.
 - **Other intents.** `x402/*`, `mpp/session`, `mpp/subscription` aren't yet
   scoped on the PHP side.
 

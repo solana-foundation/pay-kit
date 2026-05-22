@@ -6,6 +6,7 @@
 /storage/framework/views/*
 /storage/logs/*
 /bootstrap/cache/*
+!/bootstrap/cache/.gitkeep
 .env
 .phpunit.result.cache
 composer.lock
