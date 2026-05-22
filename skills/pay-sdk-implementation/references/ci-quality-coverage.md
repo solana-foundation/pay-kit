@@ -104,6 +104,24 @@ The local command and CI command must be the same path where possible.
 Prefer `cd <lang> && just test-cover` in CI over duplicating long
 coverage commands in YAML.
 
+## Coverage quality
+
+Do not treat the coverage percentage as the whole signal for payment
+verifier/server code. The report should drive targeted tests over the
+actual control flow:
+
+- function / method coverage for public API and verifier helpers
+- line / statement coverage as the numeric CI gate
+- branch / decision coverage for success/failure protocol paths
+- condition coverage for fail-closed guards
+- path coverage for lifecycle flows such as issue challenge -> verify
+  credential -> settle/fetch -> replay consume -> receipt
+
+Prefer adding tests that cover protocol decisions over tests that only
+raise the percentage. Examples: malformed-vs-valid payloads, pull-vs-push
+settlement, replay hit/miss, on-chain error/not-found/timeout, split/ATA
+validation, network mismatch, and cross-route replay.
+
 ## Linting and formatting
 
 Every public SDK has **format check + lint** running in CI. Failures

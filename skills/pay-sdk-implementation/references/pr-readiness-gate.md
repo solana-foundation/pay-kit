@@ -25,10 +25,30 @@ Record:
 - Number of tests run.
 - Coverage percent and the gate used.
 - New tests added for every new behavior.
+- Critical branch/condition/path decisions covered, not just the line
+  percentage.
 
 The default coverage gate for new SDKs is 90 percent. If a legacy SDK has
 a lower gate, keep the lower gate only if the PR explicitly explains why
 raising it is out of scope.
+
+For payment verifier/server code, line coverage is only the floor. Before
+marking a PR ready, list the decision table you exercised:
+
+- pull vs push credential payloads
+- valid vs malformed credentials
+- request/challenge match vs cross-route mismatch
+- network match vs network mismatch
+- on-chain ok vs on-chain error vs not-found/timeout
+- replay miss vs replay hit
+- primary payment vs split payment
+- ATA required vs optional vs malformed ATA
+- allowed instruction vs allowed-but-unmatched vs disallowed program
+- client-paid fees vs server fee-payer
+
+Formal MC/DC measurement is not required unless the language tooling makes
+it cheap, but security-critical boolean guards should have tests showing
+that each meaningful condition can change the outcome.
 
 ## Static checks
 
