@@ -405,7 +405,6 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             TokenProgram::TOKEN_2022_PROGRAM_ID,
             AssociatedTokenProgram::PROGRAM_ID,
             MemoProgram::PROGRAM_ID_V2,
-            MemoProgram::PROGRAM_ID_V1,
         ];
         foreach ($decoded['instructions'] as $index => $instruction) {
             $programId = $this->programId($decoded, $instruction);
@@ -593,7 +592,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
     private function isMemoInstruction(array $decoded, array $instruction): bool
     {
         $programId = $this->programId($decoded, $instruction);
-        return $programId === MemoProgram::PROGRAM_ID_V2 || $programId === MemoProgram::PROGRAM_ID_V1;
+        return $programId === MemoProgram::PROGRAM_ID_V2;
     }
 
     private function parseAmount(string $amount, string $field): int
