@@ -22,6 +22,44 @@ export const chargeCanonicalJsonVectors: readonly CanonicalJsonVector[] = [
     canonicalJson: '{"a":[{"a":false,"b":true}],"b":2}',
     base64Url: "eyJhIjpbeyJhIjpmYWxzZSwiYiI6dHJ1ZX1dLCJiIjoyfQ",
   },
+  {
+    // RFC 8785 sec 3.2.3: UTF-16 code-unit ordering. 'f' (0x66) < 'é' (0xE9) < 'ƒ' (0x192).
+    id: "utf16-key-ordering",
+    value: { "é": 1, f: 2, "ƒ": 3 },
+    canonicalJson: '{"f":2,"é":1,"ƒ":3}',
+    base64Url: "eyJmIjoyLCLDqSI6MSwixpIiOjN9",
+  },
+  {
+    // RFC 8785 sec 3.2.2.3: ES6 ToString. 1e21 must canonicalize as "1e+21".
+    id: "number-1e21",
+    value: { n: 1e21 },
+    canonicalJson: '{"n":1e+21}',
+    base64Url: "eyJuIjoxZSsyMX0",
+  },
+  {
+    // 0.1 round-trips as "0.1" under ES6 ToString.
+    id: "number-0_1",
+    value: { n: 0.1 },
+    canonicalJson: '{"n":0.1}',
+    base64Url: "eyJuIjowLjF9",
+  },
+  {
+    // Negative zero collapses to "0".
+    id: "number-negative-zero",
+    value: { n: -0 },
+    canonicalJson: '{"n":0}',
+    base64Url: "eyJuIjowfQ",
+  },
+];
+
+/**
+ * Vectors that every JCS implementation must reject (RFC 8785 sec 3.2.2).
+ * Lone high surrogate U+D834 outside a surrogate pair.
+ */
+export const chargeCanonicalJsonRejectVectors: readonly { id: string; reason: string }[] = [
+  { id: "lone-surrogate", reason: "lone surrogate" },
+  { id: "nan", reason: "NaN" },
+  { id: "infinity", reason: "Infinity" },
 ];
 
 export const chargeScenarios: readonly InteropScenario[] = [
