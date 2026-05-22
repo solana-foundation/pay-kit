@@ -10,10 +10,10 @@ module Mpp
       #   method = Mpp::Methods::Solana.charge(
       #     recipient: "CXhr...",
       #     mint:      "USDC",
-      #     network:   "mainnet-beta",
+      #     network:   "mainnet",
       #     rpc:       "https://api.mainnet-beta.solana.com",
       #   )
-      def self.charge(recipient:, mint:, rpc:, network: "mainnet-beta", fee_payer: nil, decimals: 6)
+      def self.charge(recipient:, mint:, rpc:, network: "mainnet", fee_payer: nil, decimals: 6)
         ChargeMethod.new(
           recipient: recipient,
           mint:      mint,

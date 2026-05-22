@@ -16,21 +16,21 @@ module Mpp
           "USDC" => {
             "devnet" => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "localnet" => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-            "mainnet-beta" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            "mainnet" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
           },
           "USDT" => {
-            "mainnet-beta" => "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+            "mainnet" => "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
           },
           "USDG" => {
             "devnet" => "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
-            "mainnet-beta" => "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+            "mainnet" => "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
           },
           "PYUSD" => {
             "devnet" => "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
-            "mainnet-beta" => "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+            "mainnet" => "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
           },
           "CASH" => {
-            "mainnet-beta" => "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
+            "mainnet" => "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
           }
         }.freeze
 
@@ -44,7 +44,7 @@ module Mpp
           return currency if currency.to_s.length >= 32
 
           entries = MINTS[currency.to_s.upcase]
-          entries&.[](network) || entries&.[]("mainnet-beta") || currency
+          entries&.[](network) || entries&.[]("mainnet") || currency
         end
 
         # Return the default SPL token program for a currency.

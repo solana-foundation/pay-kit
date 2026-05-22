@@ -65,7 +65,7 @@ module Mpp
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: nil, expected_token_program: nil, fee_payer: fee_payer, splits: splits)
           else
-            network = details["network"] || "mainnet-beta"
+            network = details["network"] || "mainnet"
             mint = Mints.resolve(request.currency, network)
             token_program = details["tokenProgram"] || Mints.token_program_for(request.currency, network)
             if splits.any? { |split| split["ataCreationRequired"] == true } && mint != request.currency

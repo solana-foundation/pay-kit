@@ -2,7 +2,7 @@
 
 require "json"
 require "webrick"
-require_relative "../lib/mpp"
+require_relative "../../lib/mpp"
 
 DEFAULT_RPC_URL = "https://402.surfnet.dev:8899"
 DEFAULT_MINT    = "USDC"

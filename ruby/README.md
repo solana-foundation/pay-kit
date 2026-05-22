@@ -109,7 +109,7 @@ cd ruby
 bundle install
 
 # Bare WEBrick server, manual case/when on Challenge/Settlement
-bundle exec ruby examples/simple-server.rb
+bundle exec ruby examples/simple-server/app.rb
 
 # Sinatra app using mpp_charge!
 PORT=4568 bundle exec ruby examples/sinatra/app.rb
@@ -191,7 +191,7 @@ clients.
 
 Two examples ship with this package:
 
-- [`examples/simple-server.rb`](examples/simple-server.rb) — bare WEBrick
+- [`examples/simple-server/`](examples/simple-server) — bare WEBrick
   server that calls `server.charge` directly and renders the
   `Mpp::Challenge` / `Mpp::Settlement` tagged union by hand.
 - [`examples/sinatra/`](examples/sinatra) — Sinatra app using the

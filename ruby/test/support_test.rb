@@ -27,7 +27,7 @@ class SupportTest < Minitest::Test
     assert_equal Mpp::Methods::Solana::Mints::TOKEN_2022_PROGRAM, Mpp::Methods::Solana::Mints.token_program_for("PYUSD", "devnet")
     assert_equal Mpp::Methods::Solana::Mints::TOKEN_PROGRAM, Mpp::Methods::Solana::Mints.token_program_for("USDC", "localnet")
     assert_equal "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", Mpp::Methods::Solana::Mints.resolve("USDC", "unknown")
-    assert_equal "USDC", Mpp::Methods::Solana::Mints.symbol_for("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "mainnet-beta")
+    assert_equal "USDC", Mpp::Methods::Solana::Mints.symbol_for("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "mainnet")
     assert_nil Mpp::Methods::Solana::Mints.symbol_for("unknown", "localnet")
   end
 

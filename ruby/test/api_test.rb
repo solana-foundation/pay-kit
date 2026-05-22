@@ -27,14 +27,14 @@ class MethodsSolanaChargeTest < Minitest::Test
     method = Mpp::Methods::Solana.charge(
       recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
       mint:      "USDC",
-      network:   "mainnet-beta",
+      network:   "mainnet",
       rpc:       rpc,
       decimals:  6
     )
 
     assert_instance_of Mpp::Methods::Solana::ChargeMethod, method
     assert_equal "USDC", method.mint
-    assert_equal "mainnet-beta", method.network
+    assert_equal "mainnet", method.network
     assert_equal Mpp::Methods::Solana::Mints::TOKEN_PROGRAM, method.token_program
     assert_nil method.fee_payer_pubkey
   end

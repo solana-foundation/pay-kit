@@ -12,7 +12,7 @@ module Mpp
 
       attr_reader :fee_payer, :network, :settlement_header
 
-      def initialize(challenges:, rpc:, replay_store:, fee_payer: nil, network: "mainnet-beta", settlement_header: DEFAULT_SETTLEMENT_HEADER, verifier: Methods::Solana::Verifier.new, confirmation_attempts: 40, confirmation_delay: 0.25)
+      def initialize(challenges:, rpc:, replay_store:, fee_payer: nil, network: "mainnet", settlement_header: DEFAULT_SETTLEMENT_HEADER, verifier: Methods::Solana::Verifier.new, confirmation_attempts: 40, confirmation_delay: 0.25)
         @challenges = challenges
         @rpc = rpc
         @replay_store = replay_store
