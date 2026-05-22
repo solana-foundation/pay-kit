@@ -116,36 +116,75 @@ developer contract for CI, manual verification, and PR review:
 # ── <Language> ──
 
 # Install <language> deps
+install:
+    <install-cmd>
+
+# Build <language> package
+build:
+    <build-cmd>
+
+# Test
+test:
+    <test-cmd>
+
+# Format
+fmt:
+    <fmt-cmd>
+
+# Lint
+lint:
+    <lint-cmd>
+
+# Coverage with ≥90% gate
+test-cover:
+    <coverage-cmd-with-fail-under-90>
+
+# Start the simple protected endpoint used by the README
+example-simple:
+    <run-simple-server-cmd>
+
+# Start the framework middleware example, if the SDK ships server support
+example-framework:
+    <run-framework-example-cmd>
+```
+
+Root wrappers in `mpp-sdk/justfile` should delegate to those local
+recipes:
+
+```just
+# ── <Language> root wrappers ──
+
+# Install <language> deps
 <l>-install:
-    cd <dir> && <install-cmd>
+    cd <dir> && just install
 
 # Build <language> package
 <l>-build:
-    cd <dir> && <build-cmd>
+    cd <dir> && just build
 
 # Test
 <l>-test:
-    cd <dir> && <test-cmd>
+    cd <dir> && just test
 
 # Format
 <l>-fmt:
-    cd <dir> && <fmt-cmd>
+    cd <dir> && just fmt
 
 # Lint
 <l>-lint:
-    cd <dir> && <lint-cmd>
+    cd <dir> && just lint
 
 # Coverage with ≥90% gate
 <l>-test-cover:
-    cd <dir> && <coverage-cmd-with-fail-under-90>
+    cd <dir> && just test-cover
 
 # Start the simple protected endpoint used by the README
 <l>-example-simple:
-    cd <dir> && <run-simple-server-cmd>
+    cd <dir> && just example-simple
 
 # Start the framework middleware example, if the SDK ships server support
 <l>-example-framework:
-    cd <dir> && <run-framework-example-cmd>
+    cd <dir> && just example-framework
 ```
 
 Then add the new `<l>-test` to the `test` target, `<l>-fmt` to the

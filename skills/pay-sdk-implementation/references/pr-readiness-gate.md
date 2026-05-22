@@ -84,6 +84,10 @@ Before review, manually run the documented examples:
 - Confirm `pay curl` returns 200.
 - Start the framework middleware example (Laravel for PHP, Rack for
   Ruby, or the idiomatic equivalent).
+- Confirm the framework middleware example returns the same unpaid `curl`
+  402 and paid `pay curl` 200 as the simple server, unless the PR body
+  explicitly explains why that framework path is CI-only or externally
+  blocked.
 
 If manual verification needs Surfpool or another service, document the
 exact command and whether it was run locally or left as a CI-only check.
