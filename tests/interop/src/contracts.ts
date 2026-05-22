@@ -11,6 +11,8 @@ export type InteropScenarioSplit = {
   memo?: string;
 };
 
+export type TokenProgramVariant = "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM";
+
 export type InteropScenario = {
   id: string;
   intent: InteropIntent;
@@ -29,6 +31,10 @@ export type InteropScenario = {
   expectedStatus: 200 | 402;
   clientIds?: string[];
   serverIds?: string[];
+  // Optional. Defaults to "TOKEN_PROGRAM" (legacy SPL). Set to
+  // "TOKEN_2022_PROGRAM" for scenarios that exercise Token-2022. The harness
+  // uses this to deploy the scenario mint under the right program owner.
+  tokenProgram?: TokenProgramVariant;
 };
 
 export type ReadyMessage = {
