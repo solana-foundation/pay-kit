@@ -10,6 +10,7 @@ use RuntimeException;
 use SolanaMpp\Core\Challenge;
 use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
+use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\PaymentVerifier;
@@ -42,7 +43,12 @@ final class ChargeServerTest extends TestCase
 
         self::assertTrue($result->ok);
         self::assertSame('tx-signature', $result->reference);
-        $receipt = Headers::parseReceipt($server->createReceiptHeader($challenge, $result));
+        self::assertInstanceOf(Challenge::class, $result->challenge);
+        self::assertSame($challenge->id, $result->challenge->id);
+        self::assertInstanceOf(Credential::class, $result->credential);
+        self::assertSame('sig', $result->credential->payload['signature']);
+
+        $receipt = Headers::parseReceipt($server->createReceiptHeader($result));
         self::assertSame($challenge->id, $receipt->challengeId);
         self::assertSame('order-001', $receipt->externalId);
     }
@@ -351,12 +357,21 @@ final class ChargeServerTest extends TestCase
     public function testRejectsReceiptForFailedVerification(): void
     {
         $server = new ChargeServer(secretKey: 'secret', realm: 'api');
-        $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDC'));
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Cannot create a receipt for a failed verification');
 
-        $server->createReceiptHeader($challenge, VerificationResult::failure('missing transaction payload'));
+        $server->createReceiptHeader(VerificationResult::failure('missing transaction payload'));
+    }
+
+    public function testRejectsReceiptForResultWithoutChallenge(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Verification result is missing a challenge');
+
+        $server->createReceiptHeader(VerificationResult::success(reference: 'tx-signature'));
     }
 
     public function testCreatesReceiptHeaderForExternalSettlementReference(): void
@@ -379,11 +394,106 @@ final class ChargeServerTest extends TestCase
     {
         $server = new ChargeServer(secretKey: 'secret', realm: 'api');
         $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDC'));
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: []);
+        $result = VerificationResult::success(reference: '')->withVerified($challenge, $credential);
 
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Cannot create a receipt without a settlement reference');
 
-        $server->createReceiptHeader($challenge, VerificationResult::success(reference: ''));
+        $server->createReceiptHeader($result);
+    }
+
+    public function testPaymentRequiredResponseShape(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = new ChargeRequest(amount: '1000', currency: 'USDC');
+
+        $response = $server->paymentRequiredResponse($request);
+
+        self::assertSame(402, $response->status);
+        self::assertSame('no-store', $response->headers['cache-control']);
+        self::assertSame('application/problem+json', $response->headers['content-type']);
+        self::assertStringStartsWith('Payment ', $response->headers['www-authenticate']);
+        self::assertSame('Payment is required.', $response->body['detail']);
+        self::assertSame(402, $response->body['status']);
+        self::assertSame('Payment Required', $response->body['title']);
+        self::assertSame('https://paymentauth.org/problems/payment-required', $response->body['type']);
+    }
+
+    public function testPaymentRequiredResponseUsesCustomReason(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = new ChargeRequest(amount: '1000', currency: 'USDC');
+
+        $response = $server->paymentRequiredResponse($request, 'charge request mismatch');
+
+        self::assertSame('charge request mismatch', $response->body['detail']);
+    }
+
+    public function testBlockhashProviderInjectsRecentBlockhashIntoChallenge(): void
+    {
+        $server = new ChargeServer(
+            secretKey: 'secret',
+            realm: 'api',
+            blockhashProvider: fn (): string => 'BlockhashFromRpc111111111111111111111111111',
+        );
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: ['network' => 'localnet'],
+        );
+
+        $methodDetails = $this->decodedMethodDetails($server->createChallenge($request));
+
+        self::assertSame('BlockhashFromRpc111111111111111111111111111', $methodDetails['recentBlockhash']);
+        self::assertSame('localnet', $methodDetails['network']);
+    }
+
+    public function testBlockhashProviderDoesNotOverrideExistingValue(): void
+    {
+        $server = new ChargeServer(
+            secretKey: 'secret',
+            realm: 'api',
+            blockhashProvider: fn (): string => 'FromRpc11111111111111111111111111111111111',
+        );
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: ['network' => 'localnet', 'recentBlockhash' => 'CallerProvided111111111111111111111111111111'],
+        );
+
+        $methodDetails = $this->decodedMethodDetails($server->createChallenge($request));
+
+        self::assertSame('CallerProvided111111111111111111111111111111', $methodDetails['recentBlockhash']);
+    }
+
+    public function testBlockhashProviderFailureIsBestEffort(): void
+    {
+        $server = new ChargeServer(
+            secretKey: 'secret',
+            realm: 'api',
+            blockhashProvider: function (): string {
+                throw new RuntimeException('rpc unreachable');
+            },
+        );
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            methodDetails: ['network' => 'localnet'],
+        );
+
+        $methodDetails = $this->decodedMethodDetails($server->createChallenge($request));
+
+        self::assertArrayNotHasKey('recentBlockhash', $methodDetails);
+        self::assertSame('localnet', $methodDetails['network']);
+    }
+
+    /** @return array<string, mixed> */
+    private function decodedMethodDetails(Challenge $challenge): array
+    {
+        $details = $challenge->decodeRequest()['methodDetails'] ?? [];
+        self::assertIsArray($details);
+        return Json::object($details, 'methodDetails');
     }
 
     private function unusedVerifier(): PaymentVerifier

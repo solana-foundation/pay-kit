@@ -44,14 +44,14 @@ http_response_code(402);
 
 ## Quick start
 
-Launch server from `./example`:
+Launch the bare PHP server from `examples/simple-server/`:
 
 ```bash
 # Install dependencies
 composer install
 
 # Launch server
-php -S 127.0.0.1:4567 examples/charge-server.php
+php -S 127.0.0.1:4567 -t examples/simple-server
 ```
 
 In another terminal, send requests using `curl` and  `pay`:
@@ -65,6 +65,9 @@ curl http://localhost:4567/paid
 # payment successful
 pay curl http://localhost:4567/paid
 ```
+
+For a Laravel integration that wires the SDK in as a middleware, see
+[`examples/laravel/`](examples/laravel/README.md).
 
 ## Client compatibility matrix
 
@@ -119,12 +122,21 @@ Public surface is documented inline; every public type/function carries a
 summary so PHPStan/IDE hover can show intent, inputs, and outputs without
 round-tripping to source.
 
-## How to use the example
+## How to use the examples
+
+Two examples ship with this package:
+
+- [`examples/simple-server/`](examples/simple-server/index.php) — a single-file
+  PHP script demonstrating the raw protocol on top of the SDK helpers.
+- [`examples/laravel/`](examples/laravel/README.md) — a Laravel 12 app that
+  registers `MppCharge` as a route middleware (`->middleware('mpp.charge')`).
+
+### Simple PHP server
 
 ```bash
 cd php
 composer install
-php -S 127.0.0.1:4567 examples/charge-server.php
+php -S 127.0.0.1:4567 -t examples/simple-server
 
 # In another terminal:
 brew install pay
@@ -136,7 +148,21 @@ curl -i http://127.0.0.1:4567/paid
 pay curl http://127.0.0.1:4567/paid
 ```
 
-The example spins up one protected endpoint at `/paid`. Use the interop harness
+### Laravel server with MPP middleware
+
+```bash
+cd php/examples/laravel
+composer install
+cp .env.example .env
+php -S 127.0.0.1:4567 -t public
+
+# Same curl / pay flow as above.
+```
+
+See [`examples/laravel/README.md`](examples/laravel/README.md) for how the
+middleware is wired and how to apply it to your own routes.
+
+Both examples expose one protected endpoint at `/paid`. Use the interop harness
 for the full Surfpool-backed transaction flow.
 
 ## Solana dependencies

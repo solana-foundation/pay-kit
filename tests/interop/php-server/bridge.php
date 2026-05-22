@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use SolanaMpp\Core\Credential;
 use SolanaMpp\Core\Headers;
 use SolanaMpp\Core\Json;
 use SolanaMpp\Intent\ChargeRequest;
@@ -131,13 +130,14 @@ function verify_payment(array $input): void
         throw new InvalidArgumentException('payment rejected: ' . $result->reason);
     }
 
-    $credential = Credential::fromAuthorizationHeader(required_string($input, 'authorization'));
+    $challenge = $result->challenge ?? throw new InvalidArgumentException('verified result is missing a challenge');
+    $credential = $result->credential ?? throw new InvalidArgumentException('verified result is missing a credential');
 
     write_json([
         'type' => 'verified',
         'challenge' => [
-            'id' => $credential->challenge->id,
-            'request' => $credential->challenge->toChallenge()->decodeRequest(),
+            'id' => $challenge->id,
+            'request' => $challenge->decodeRequest(),
         ],
         'transaction' => $credential->payload['transaction'] ?? null,
         'signature' => $credential->payload['signature'] ?? null,

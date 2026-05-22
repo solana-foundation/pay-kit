@@ -20,6 +20,7 @@ return (new Config())
                 __DIR__ . '/examples',
                 __DIR__ . '/../tests/interop/php-server',
             ])
+            ->exclude(['laravel'])
             ->ignoreVCS(true)
     )
 ;

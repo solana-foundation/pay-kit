@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SolanaMpp\Server;
 
+use Closure;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Throwable;
@@ -22,11 +23,19 @@ final class ChargeServer
 {
     /**
      * Create a charge server for one realm and payment method.
+     *
+     * `$blockhashProvider` is an optional `Closure(): string` invoked when
+     * issuing a charge challenge. When provided, the returned blockhash is
+     * embedded as `methodDetails.recentBlockhash` so the client does not need
+     * an extra RPC round-trip. Throwing or returning an empty string is
+     * treated as best-effort failure — the challenge is still issued without
+     * a pre-fetched blockhash, and the client falls back to fetching its own.
      */
     public function __construct(
         private readonly string $secretKey,
         private readonly string $realm,
         private readonly string $method = 'solana',
+        private readonly ?Closure $blockhashProvider = null,
     ) {
     }
 
@@ -40,10 +49,43 @@ final class ChargeServer
             realm: $this->realm,
             method: $this->method,
             intent: 'charge',
-            request: $request->toArray(),
+            request: $this->injectRecentBlockhash($request)->toArray(),
             expires: $expires,
             digest: $digest,
             opaque: $opaque,
+        );
+    }
+
+    /**
+     * Pre-fetch a recent blockhash and merge it into the request's method
+     * details. Best-effort: a missing provider, a provider exception, or an
+     * empty value all leave the request untouched.
+     */
+    private function injectRecentBlockhash(ChargeRequest $request): ChargeRequest
+    {
+        if ($this->blockhashProvider === null) {
+            return $request;
+        }
+        $methodDetails = $request->methodDetails ?? [];
+        if (isset($methodDetails['recentBlockhash']) && $methodDetails['recentBlockhash'] !== '') {
+            return $request;
+        }
+        try {
+            $blockhash = ($this->blockhashProvider)();
+        } catch (Throwable) {
+            return $request;
+        }
+        if (!is_string($blockhash) || $blockhash === '') {
+            return $request;
+        }
+
+        return new ChargeRequest(
+            amount: $request->amount,
+            currency: $request->currency,
+            recipient: $request->recipient,
+            description: $request->description,
+            externalId: $request->externalId,
+            methodDetails: [...$methodDetails, 'recentBlockhash' => $blockhash],
         );
     }
 
@@ -99,25 +141,62 @@ final class ChargeServer
         }
 
         try {
-            return $verifier->verify($credential, $challenge);
+            $verifierResult = $verifier->verify($credential, $challenge);
         } catch (InvalidArgumentException $error) {
             return VerificationResult::failure($error->getMessage());
         } catch (Throwable) {
             return VerificationResult::failure('payment verification failed');
         }
+
+        return $verifierResult->ok
+            ? $verifierResult->withVerified($challenge, $credential)
+            : $verifierResult;
     }
 
     /**
-     * Create a payment-receipt header from a verifier that already settled.
+     * Build the canonical 402 Payment Required response payload.
+     *
+     * Composes the protocol-defined headers (`cache-control`, `content-type`,
+     * `www-authenticate`) and `application/problem+json` body so callers do
+     * not have to reconstruct them at every protected endpoint.
      */
-    public function createReceiptHeader(Challenge $challenge, VerificationResult $result): string
+    public function paymentRequiredResponse(ChargeRequest $request, string $reason = 'Payment is required.', string $expires = '', string $digest = '', ?string $opaque = null): PaymentRequiredResponse
+    {
+        return new PaymentRequiredResponse(
+            status: 402,
+            headers: [
+                'cache-control' => 'no-store',
+                'content-type' => 'application/problem+json',
+                'www-authenticate' => $this->createChallengeHeader($request, $expires, $digest, $opaque),
+            ],
+            body: [
+                'detail' => $reason !== '' ? $reason : 'Payment is required.',
+                'status' => 402,
+                'title' => 'Payment Required',
+                'type' => 'https://paymentauth.org/problems/payment-required',
+            ],
+        );
+    }
+
+    /**
+     * Create a payment-receipt header from a verified result.
+     *
+     * Requires the result to be a successful one produced by
+     * {@see verifyAuthorizationHeader()} — i.e. carrying the verified
+     * challenge. For external settlement flows (where the on-chain signature
+     * is only known after broadcast), use {@see createReceiptHeaderForReference()}.
+     */
+    public function createReceiptHeader(VerificationResult $result): string
     {
         if (!$result->ok) {
             throw new InvalidArgumentException('Cannot create a receipt for a failed verification');
         }
+        if ($result->challenge === null) {
+            throw new InvalidArgumentException('Verification result is missing a challenge; use createReceiptHeaderForReference()');
+        }
 
         return $this->createReceiptHeaderForReference(
-            challenge: $challenge,
+            challenge: $result->challenge,
             reference: $result->reference,
             externalId: $result->externalId,
         );
