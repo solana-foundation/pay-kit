@@ -13,7 +13,7 @@ class ExampleTest < Minitest::Test
       "MPP_PAY_TO" => pubkey(2),
       "PORT" => "4568"
     ) do
-      require_relative "../examples/sinatra-app"
+      require_relative "../examples/sinatra/app"
 
       response = Rack::MockRequest.new(RubyMppSinatraExample).get("/health")
 

@@ -2,7 +2,7 @@
 
 require "json"
 require "socket"
-require_relative "../../../ruby/lib/solana_mpp"
+require_relative "../../../ruby/lib/mpp"
 
 # Read a required environment variable for the interop adapter.
 def require_env(name)
@@ -22,7 +22,7 @@ end
 
 # Build a Solana keypair from the harness byte-array format.
 def keypair_from_env(name)
-  SolanaMpp::Solana::Keypair.from_json_array(require_env(name))
+  Mpp::Solana::Keypair.from_json_array(require_env(name))
 end
 
 rpc_url = require_env("MPP_INTEROP_RPC_URL")
@@ -41,15 +41,15 @@ unless splits.is_a?(Array)
   exit 2
 end
 
-rpc = SolanaMpp::Solana::RpcClient.new(rpc_url)
+rpc = Mpp::Solana::RpcClient.new(rpc_url)
 fee_payer = keypair_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-handler = SolanaMpp::Server::ChargeHandler.new(
-  challenges: SolanaMpp::Server::ChargeServer.new(
+handler = Mpp::Server::ChargeHandler.new(
+  challenges: Mpp::Server::ChargeServer.new(
     secret_key: secret_key,
     realm: "MPP Interop"
   ),
   rpc: rpc,
-  replay_store: SolanaMpp::MemoryStore.new,
+  replay_store: Mpp::MemoryStore.new,
   fee_payer: fee_payer,
   network: network,
   settlement_header: settlement_header
@@ -65,7 +65,7 @@ def build_charge_request(rpc, amount, mint, pay_to, network, fee_payer_key, spli
     "recentBlockhash" => rpc.latest_blockhash
   }
   method_details["splits"] = splits unless splits.empty?
-  SolanaMpp::Intent::ChargeRequest.new(
+  Mpp::Intent::ChargeRequest.new(
     amount: amount,
     currency: mint,
     recipient: pay_to,

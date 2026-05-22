@@ -18,10 +18,10 @@ any HTTP API accept payments using the `402 Payment Required` flow.
 
 ```text
 ruby/
-├── lib/solana_mpp/core/       # Payment headers, credentials, receipts, base64url JSON
-├── lib/solana_mpp/intent/     # Charge intent request model
-├── lib/solana_mpp/server/     # 402 challenge issuance, verification, settlement
-├── lib/solana_mpp/solana/     # Minimal Solana parser, signer, RPC, ATA helpers
+├── lib/mpp/core/       # Payment headers, credentials, receipts, base64url JSON
+├── lib/mpp/intent/     # Charge intent request model
+├── lib/mpp/server/     # 402 challenge issuance, verification, settlement
+├── lib/mpp/solana/     # Minimal Solana parser, signer, RPC, ATA helpers
 ├── examples/                  # Simple server and Sinatra app examples
 └── test/                      # Minitest suite with line and branch coverage gates
 ```
@@ -30,27 +30,27 @@ ruby/
 
 ```ruby
 require "json"
-require "solana_mpp"
+require "mpp"
 
-rpc = SolanaMpp::Solana::RpcClient.new("https://402.surfnet.dev:8899")
-challenges = SolanaMpp::Server::ChargeServer.new(
+rpc = Mpp::Solana::RpcClient.new("https://402.surfnet.dev:8899")
+challenges = Mpp::Server::ChargeServer.new(
   secret_key: "local-dev-secret",
   realm: "Ruby MPP Example"
 )
-handler = SolanaMpp::Server::ChargeHandler.new(
+handler = Mpp::Server::ChargeHandler.new(
   challenges: challenges,
   rpc: rpc,
-  replay_store: SolanaMpp::MemoryStore.new,
+  replay_store: Mpp::MemoryStore.new,
   network: "localnet"
 )
-request = SolanaMpp::Intent::ChargeRequest.new(
+request = Mpp::Intent::ChargeRequest.new(
   amount: "1000",
   currency: "USDC",
   recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
   method_details: {
     "network" => "localnet",
     "decimals" => 6,
-    "tokenProgram" => SolanaMpp::Common::StablecoinMints.token_program_for("USDC", "localnet"),
+    "tokenProgram" => Mpp::Common::StablecoinMints.token_program_for("USDC", "localnet"),
     "recentBlockhash" => rpc.latest_blockhash
   }
 )
@@ -60,7 +60,7 @@ puts result.status
 puts JSON.generate(result.body)
 ```
 
-`SolanaMpp::Server::ChargeHandler#handle` returns either a
+`Mpp::Server::ChargeHandler#handle` returns either a
 `PaymentRequiredResponse` (402, missing/invalid credential) or a
 `ChargeSettlement` (200, with the on-chain signature). Both expose the same
 `status` / `headers` / `body` shape so the HTTP layer can project either path
@@ -91,7 +91,7 @@ pay curl http://localhost:4567/paid
 ```
 
 For a Sinatra integration that wires the same SDK handler into a web app, see
-[`examples/sinatra-app.rb`](examples/sinatra-app.rb).
+[`examples/sinatra/`](examples/sinatra).
 
 ## Client compatibility matrix
 
@@ -160,7 +160,7 @@ bundle install
 ```
 
 ```ruby
-require "solana_mpp"
+require "mpp"
 ```
 
 Public surface is documented inline; every public type/function carries a
@@ -173,8 +173,9 @@ Two examples ship with this package:
 
 - [`examples/simple-server.rb`](examples/simple-server.rb) — a single-file Ruby
   server demonstrating the raw protocol on top of the SDK helpers.
-- [`examples/sinatra-app.rb`](examples/sinatra-app.rb) — a Sinatra app with one
-  protected route using the same `ChargeHandler`.
+- [`examples/sinatra/`](examples/sinatra) — a Sinatra app with one protected
+  route, split into `config.rb` (env defaults), `mpp.rb` (handler + charge
+  request factory), and `app.rb` (Sinatra routes + Rack middleware wiring).
 
 ### Simple Ruby server
 
@@ -203,7 +204,7 @@ different localnet fixture.
 ```bash
 cd ruby
 bundle install
-PORT=4568 bundle exec ruby examples/sinatra-app.rb
+PORT=4568 bundle exec ruby examples/sinatra/app.rb
 
 # Same curl / pay flow as above on port 4568.
 ```
