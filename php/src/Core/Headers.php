@@ -42,6 +42,101 @@ final class Headers
     }
 
     /**
+     * Parse all Payment challenges across one or more WWW-Authenticate header values (RFC 7235 sec 4.1).
+     *
+     * @param iterable<string>|string $headers
+     * @return array<int, Challenge>
+     */
+    public static function parseWwwAuthenticateAll(iterable|string $headers): array
+    {
+        $list = is_string($headers) ? [$headers] : $headers;
+        $challenges = [];
+        foreach ($list as $header) {
+            foreach (self::splitPaymentChallengeValues($header) as $chunk) {
+                $challenges[] = self::parseWwwAuthenticate($chunk);
+            }
+        }
+
+        return $challenges;
+    }
+
+    /**
+     * Split a header value into individual `Payment` challenge chunks (quote-aware).
+     *
+     * @return array<int, string>
+     */
+    private static function splitPaymentChallengeValues(string $header): array
+    {
+        $length = strlen($header);
+        $starts = [];
+        $inQuote = false;
+        $escaped = false;
+        $i = 0;
+        $scheme = self::PAYMENT_SCHEME;
+        $sLen = strlen($scheme);
+
+        while ($i < $length) {
+            $ch = $header[$i];
+            if ($inQuote) {
+                if ($escaped) {
+                    $escaped = false;
+                } elseif ($ch === '\\') {
+                    $escaped = true;
+                } elseif ($ch === '"') {
+                    $inQuote = false;
+                }
+                $i++;
+                continue;
+            }
+            if ($ch === '"') {
+                $inQuote = true;
+                $i++;
+                continue;
+            }
+            if (self::isPaymentSchemeStart($header, $i, $scheme, $sLen, $length)) {
+                $starts[] = $i;
+                $i += $sLen;
+                continue;
+            }
+            $i++;
+        }
+
+        if ($starts === []) {
+            return [];
+        }
+
+        $chunks = [];
+        foreach ($starts as $index => $start) {
+            $end = $starts[$index + 1] ?? $length;
+            $chunk = trim(substr($header, $start, $end - $start));
+            $chunk = rtrim($chunk, ', ');
+            if ($chunk !== '') {
+                $chunks[] = $chunk;
+            }
+        }
+        return $chunks;
+    }
+
+    private static function isPaymentSchemeStart(string $header, int $index, string $scheme, int $sLen, int $length): bool
+    {
+        if ($index + $sLen >= $length) {
+            return false;
+        }
+        if (strcasecmp(substr($header, $index, $sLen), $scheme) !== 0) {
+            return false;
+        }
+        $next = $header[$index + $sLen];
+        if ($next !== ' ' && $next !== "\t") {
+            return false;
+        }
+        $prev = $index - 1;
+        while ($prev >= 0 && ($header[$prev] === ' ' || $header[$prev] === "\t")) {
+            $prev--;
+        }
+        return $prev < 0 || $header[$prev] === ',';
+    }
+
+    /**
      * Parse a WWW-Authenticate header into a Payment challenge.
      */
     public static function parseWwwAuthenticate(string $header): Challenge

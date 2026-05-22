@@ -49,6 +49,21 @@ final class ChallengeTest extends TestCase
         self::assertTrue($challenge->isExpired(new DateTimeImmutable('2026-01-01T00:00:00+00:00')));
     }
 
+    public function testIsExpiredStrictRfc3339(): void
+    {
+        $now = new DateTimeImmutable('2026-01-01T00:00:00+00:00');
+        $mk = fn (string $exp) => Challenge::withSecret('s', 'api', 'solana', 'charge', ['x' => '1'], expires: $exp);
+
+        self::assertFalse($mk('2099-01-01T00:00:00Z')->isExpired($now));
+        self::assertFalse($mk('2099-01-01T00:00:00.123Z')->isExpired($now));
+        self::assertFalse($mk('2099-01-01T00:00:00+00:00')->isExpired($now));
+        self::assertTrue($mk('tomorrow')->isExpired($now));
+        self::assertTrue($mk('10000-01-01T00:00:00Z')->isExpired($now));
+        self::assertTrue($mk('2099-02-30T00:00:00Z')->isExpired($now));
+        self::assertTrue($mk('2099-13-01T00:00:00Z')->isExpired($now));
+        self::assertTrue($mk('2099-01-01T24:00:00Z')->isExpired($now));
+    }
+
     public function testRejectsMissingRequiredChallengeFields(): void
     {
         $this->expectException(\InvalidArgumentException::class);

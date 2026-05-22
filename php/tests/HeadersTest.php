@@ -158,6 +158,30 @@ final class HeadersTest extends TestCase
         Headers::parseReceipt('not-base64url!');
     }
 
+    public function testParseWwwAuthenticateAllMultiChallenge(): void
+    {
+        $header = 'Payment id="a", realm="r1", method="solana", intent="charge", request="e30", '
+                . 'Payment id="b", realm="r2", method="solana", intent="charge", request="e30"';
+
+        $results = Headers::parseWwwAuthenticateAll($header);
+
+        self::assertCount(2, $results);
+        self::assertSame('a', $results[0]->id);
+        self::assertSame('b', $results[1]->id);
+    }
+
+    public function testParseWwwAuthenticateAllIgnoresPaymentInsideQuotedValue(): void
+    {
+        $header = 'Payment id="a", realm="api, Payment realm", method="solana", intent="charge", request="e30", '
+                . 'Payment id="b", realm="r2", method="solana", intent="charge", request="e30"';
+
+        $results = Headers::parseWwwAuthenticateAll($header);
+
+        self::assertCount(2, $results);
+        self::assertSame('api, Payment realm', $results[0]->realm);
+        self::assertSame('b', $results[1]->id);
+    }
+
     public function testReceiptHeaderRoundTrip(): void
     {
         $receipt = Receipt::success(
