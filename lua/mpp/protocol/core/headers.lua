@@ -13,7 +13,13 @@ local max_token_len = 16 * 1024
 
 local function escape_quoted(value)
   value = tostring(value)
-  value = value:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\r', ''):gsub('\n', '')
+  -- RFC 9110 section 5.5 forbids CR and LF in header field values. Silent
+  -- strip is non-conformant and lets malformed inputs round-trip; reject
+  -- so the caller sees the problem at emission time.
+  if value:find('[\r\n]') then
+    error('control character in header parameter value')
+  end
+  value = value:gsub('\\', '\\\\'):gsub('"', '\\"')
   return value
 end
 
