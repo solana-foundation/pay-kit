@@ -41,7 +41,8 @@ pay curl http://127.0.0.1:4567/paid
 
 1. Constructor builds the `ChargeRequest` (amount / currency / recipient
    from `.env`) and configures `SolanaChargeHandler` with an `RpcClient`
-   pointing at the Solana RPC endpoint.
+   pointing at the Solana RPC endpoint plus a shared `FileReplayStore` under
+   `storage/framework/mpp-replay`.
 2. `handle()` passes the `Authorization` header to the handler. The handler
    verifies HMAC + expiry, pins the challenge against the expected request,
    decodes and validates the client-signed transaction
@@ -60,6 +61,9 @@ To use a fee-payer signer (so the client doesn't have to hold SOL), pass a
 `Keypair` to `SolanaChargeHandler`'s `feePayer:` parameter and set
 `methodDetails.feePayer = true` / `methodDetails.feePayerKey = $handler->feePayerPubkey()`
 on the `ChargeRequest`.
+
+For production deployments, replace the example `FileReplayStore` with Redis,
+SQL, or another shared atomic store if the app runs across multiple hosts.
 
 ## Apply the middleware to other routes
 

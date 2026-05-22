@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace SolanaMpp\Server;
 
 /**
- * In-memory replay store for local development and tests.
+ * In-memory replay store for single-process tests only.
+ *
+ * Do not use this as a per-request default in PHP-FPM or other multi-worker
+ * deployments. Use FileReplayStore, Redis, SQL, or another shared atomic store
+ * for real server handling.
  */
 final class MemoryReplayStore implements ReplayStore
 {

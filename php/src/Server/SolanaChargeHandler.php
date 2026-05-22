@@ -39,6 +39,11 @@ final class SolanaChargeHandler
      *        parsing (created with a `blockhashProvider` if you want
      *        `recentBlockhash` pre-fetched into every 402).
      * @param RpcClient $rpc RPC endpoint used for broadcast and confirmation.
+     * @param ReplayStore $replayStore Replay store keyed by
+     *        `solana-charge:consumed:<signature>`. Production deployments
+     *        should use a shared atomic store such as Redis, SQL, or
+     *        {@see FileReplayStore}; do not create a fresh in-memory store per
+     *        request.
      * @param ?Keypair $feePayer When set, the handler adds the server's
      *        signature to the fee-payer slot before broadcast. Required for
      *        charge requests that advertise `methodDetails.feePayer = true`.
@@ -53,8 +58,6 @@ final class SolanaChargeHandler
      * @param ?TransactionPayloadVerifier $transactionVerifier Override the
      *        raw transaction verifier used after fetching push-mode
      *        transactions by signature.
-     * @param ?ReplayStore $replayStore Replay store keyed by
-     *        `solana-charge:consumed:<signature>`.
      * @param int $confirmationAttempts How many times to poll
      *        `getSignatureStatuses` before giving up. 40 attempts at the
      *        default delay = 10 seconds.
@@ -63,19 +66,19 @@ final class SolanaChargeHandler
     public function __construct(
         private readonly ChargeServer $challenges,
         private readonly RpcClient $rpc,
+        ReplayStore $replayStore,
         private readonly ?Keypair $feePayer = null,
         private readonly string $network = 'mainnet-beta',
         private readonly string $settlementHeader = 'x-payment-settlement-signature',
         ?PaymentVerifier $verifier = null,
         ?TransactionPayloadVerifier $transactionVerifier = null,
-        ?ReplayStore $replayStore = null,
         private readonly int $confirmationAttempts = 40,
         private readonly int $confirmationDelayMicros = 250_000,
     ) {
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier());
-        $this->replayStore = $replayStore ?? new MemoryReplayStore();
+        $this->replayStore = $replayStore;
     }
 
     /**

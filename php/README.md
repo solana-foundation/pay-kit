@@ -29,6 +29,7 @@ php/
 ```php
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
@@ -40,6 +41,7 @@ $handler = new SolanaChargeHandler(
         blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
     ),
     rpc: $rpc,
+    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-replay'),
     network: 'localnet',
 );
 $request = new ChargeRequest(
@@ -61,6 +63,11 @@ echo json_encode($result->body, JSON_THROW_ON_ERROR);
 (402, missing/invalid credential) or a `ChargeSettlement` (200, with the
 on-chain signature). Both expose the same `status` / `headers` / `body`
 properties so the HTTP layer can project either path uniformly.
+
+Replay protection is explicit. Pass a shared atomic `ReplayStore` to the
+handler; `FileReplayStore` is useful for local examples and single-host
+setups, while production deployments should use Redis, SQL, or another shared
+cross-worker store. `MemoryReplayStore` is for single-process tests only.
 
 ## Quick start
 
@@ -140,6 +147,10 @@ runs the same structural checks as pull mode, consumes the same
 `solana-charge:consumed:<signature>` replay key, and emits the receipt using
 the submitted signature. The interop harness includes a TypeScript
 broadcasting client against the PHP server for this flow.
+
+Replay state is not implicit: applications must pass a shared atomic
+`ReplayStore` into `SolanaChargeHandler`. This is especially important for
+push mode, where a settled on-chain signature is the replay key.
 
 ## Roadmap
 

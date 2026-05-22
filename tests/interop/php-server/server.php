@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
@@ -96,6 +97,7 @@ $handler = new SolanaChargeHandler(
         blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
     ),
     rpc: $rpc,
+    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-interop-replay-' . getmypid()),
     feePayer: $feePayer,
     network: $network,
     settlementHeader: $settlementHeader,

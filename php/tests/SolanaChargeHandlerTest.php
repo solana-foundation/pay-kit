@@ -10,6 +10,7 @@ use SolanaMpp\Core\Credential;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\ChargeSettlement;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\PaymentRequiredResponse;
 use SolanaMpp\Server\PaymentVerifier;
 use SolanaMpp\Server\MemoryReplayStore;
@@ -590,6 +591,17 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertNull($without->feePayerPubkey());
     }
 
+    public function testFileReplayStoreRejectsDuplicateKeysAcrossInstances(): void
+    {
+        $directory = sys_get_temp_dir() . '/mpp-file-replay-' . bin2hex(random_bytes(6));
+        $first = new FileReplayStore($directory);
+        $second = new FileReplayStore($directory);
+
+        self::assertTrue($first->consume('solana-charge:consumed:testsig'));
+        self::assertFalse($second->consume('solana-charge:consumed:testsig'));
+        self::assertTrue($second->consume('solana-charge:consumed:other'));
+    }
+
     private function handler(
         ?ChargeServer $challenges = null,
         ?Keypair $feePayer = null,
@@ -603,11 +615,11 @@ final class SolanaChargeHandlerTest extends TestCase
         return new SolanaChargeHandler(
             challenges: $challenges ?? new ChargeServer(secretKey: 'secret', realm: 'api'),
             rpc: $rpc ?? new RpcClient('http://unused.invalid', new NullHttpClient()),
+            replayStore: $replayStore ?? new MemoryReplayStore(),
             feePayer: $feePayer,
             network: $network,
             verifier: $verifier,
             transactionVerifier: $transactionVerifier,
-            replayStore: $replayStore,
             confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: 0,
         );

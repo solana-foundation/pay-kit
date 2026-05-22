@@ -10,6 +10,7 @@ ini_set('display_errors', 'stderr');
 
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
@@ -23,6 +24,7 @@ $handler = new SolanaChargeHandler(
         blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
     ),
     rpc: $rpc,
+    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-simple-server-replay'),
     network: 'localnet',
 );
 $request = new ChargeRequest(

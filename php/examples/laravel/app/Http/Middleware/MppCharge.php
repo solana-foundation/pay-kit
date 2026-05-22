@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\ChargeSettlement;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\PaymentRequiredResponse;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
@@ -39,6 +40,7 @@ final class MppCharge
                 blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
             ),
             rpc: $rpc,
+            replayStore: new FileReplayStore(storage_path('framework/mpp-replay')),
             network: (string) env('MPP_NETWORK', 'localnet'),
         );
         $this->request = new ChargeRequest(
