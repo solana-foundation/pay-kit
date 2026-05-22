@@ -30,6 +30,13 @@ module Mpp
       end
 
       # Process one HTTP request and return a response object.
+      #
+      # The settlement order is: broadcast (pull) or fetch (push), then
+      # consume_signature, then await_confirmation (pull only). The consume
+      # call sits between broadcast and confirmation polling on purpose so
+      # that a confirmation timeout or server crash after the transaction has
+      # already landed on chain cannot be replayed against the same
+      # credential. See PR #85 Greptile P1 and audit gap G05.
       def handle(authorization, request)
         return @challenges.payment_required_response(request) if authorization.nil? || authorization.empty?
 
@@ -38,6 +45,7 @@ module Mpp
 
         signature = settle_payload(result.credential, request)
         consume_signature(signature)
+        await_settlement(result.credential, signature)
         receipt = @challenges.create_receipt_header(challenge: result.challenge, reference: signature, external_id: request.external_id)
         Settlement.new(
           signature: signature,
@@ -75,9 +83,16 @@ module Mpp
         simulation = simulate_transaction_with_retry(signed_base64)
         raise VerificationError, "Simulation failed: #{simulation["err"].inspect}" unless simulation["err"].nil?
 
-        signature = @rpc.send_raw_transaction(signed_base64)
+        @rpc.send_raw_transaction(signed_base64)
+      end
+
+      # await_confirmation only runs on the pull path; push mode already
+      # fetched a confirmed transaction in settle_payload.
+      def await_settlement(credential, signature)
+        transaction = credential.payload["transaction"]
+        return unless transaction.is_a?(String) && !transaction.empty?
+
         await_confirmation(signature)
-        signature
       end
 
       def fetch_settled_transaction(signature)
