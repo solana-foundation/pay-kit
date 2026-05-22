@@ -1,12 +1,20 @@
+-- LuaCov configuration for the Lua MPP SDK.
+--
+-- The harness is invoked from the `lua/` working directory, so source file
+-- paths reported by luacov are relative to that directory (e.g. `mpp/foo`).
+-- Include the SDK source tree, exclude test specs and the auto-generated
+-- HTML asset bundle, and emit the report one level up so the coverage gate
+-- script can read it consistently.
 return {
   statsfile = "../luacov.stats.out",
   reportfile = "../luacov.report.out",
   include = {
-    "lua/mpp$",
-    "lua/mpp%/.+",
+    "mpp$",
+    "mpp/.+",
   },
   exclude = {
-    "lua/tests%/.+",
+    "tests/.+",
+    "mpp/server/html_assets/gen$",
   },
   includeuntestedfiles = {
     "mpp",
