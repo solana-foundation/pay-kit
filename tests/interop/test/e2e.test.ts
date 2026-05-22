@@ -381,9 +381,12 @@ describe("mpp interop", () => {
               ).toEqual(expectedSplitDeltas(scenario));
             } else {
               expect(result.ok, JSON.stringify(result, null, 2)).toBe(false);
-              if (!isSolNative(scenario)) {
-                expect(finalBalance - initialBalance).toBe(0n);
-              }
+              // Lamport balances are always accessible (unlike SPL token
+              // accounts, which can be missing when a 402 fires before
+              // any ATA creation), so assert zero delta for SOL-native
+              // 402s too. Catches a future SOL-native scenario that
+              // accidentally triggers a transfer despite returning 402.
+              expect(finalBalance - initialBalance).toBe(0n);
               expect(
                 splitDeltas(initialSplitBalances, finalSplitBalances),
               ).toEqual(expectedZeroSplitDeltas(scenario));
