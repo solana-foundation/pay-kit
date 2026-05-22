@@ -539,7 +539,9 @@ impl Mpp {
         // audit gap G05.
         let signature_str = match payload {
             CredentialPayload::Transaction { ref transaction } => {
-                let signature = self.broadcast_pull(transaction, request, &method_details).await?;
+                let signature = self
+                    .broadcast_pull(transaction, request, &method_details)
+                    .await?;
                 self.consume_signature(&signature).await?;
                 self.await_pull_confirmation(&signature)?;
                 signature

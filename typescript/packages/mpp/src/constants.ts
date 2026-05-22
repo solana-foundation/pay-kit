@@ -5,27 +5,36 @@ export const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 export const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 export const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
+// The canonical mainnet slug is `mainnet`. The legacy `mainnet-beta`
+// spelling is kept as an aliased key so direct bracket access from
+// consumer code (e.g. USDC['mainnet-beta']) keeps working through the
+// transition. Internal lookups go through normalizeNetwork below.
 export const USDC: Record<string, string> = {
     devnet: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
     mainnet: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    'mainnet-beta': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
 };
 
 export const USDT: Record<string, string> = {
     mainnet: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    'mainnet-beta': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
 };
 
 export const USDG: Record<string, string> = {
     devnet: '4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7',
     mainnet: '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
+    'mainnet-beta': '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
 };
 
 export const PYUSD: Record<string, string> = {
     devnet: 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM',
     mainnet: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+    'mainnet-beta': '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
 };
 
 export const CASH: Record<string, string> = {
     mainnet: 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
+    'mainnet-beta': 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
 };
 
 export const STABLECOIN_MINTS = {
@@ -50,6 +59,7 @@ export const DEFAULT_RPC_URLS: Record<string, string> = {
     devnet: 'https://api.devnet.solana.com',
     localnet: 'http://localhost:8899',
     mainnet: 'https://api.mainnet-beta.solana.com',
+    'mainnet-beta': 'https://api.mainnet-beta.solana.com',
 };
 
 /**
