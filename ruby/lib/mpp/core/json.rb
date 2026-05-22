@@ -73,7 +73,7 @@ module Mpp
         # ES6 ToString (ECMA-262 7.1.12.1) number serialization for JCS (RFC 8785 sec 3.2.2.3).
         #
         # Mirrors V8/JavaScriptCore semantics: plain decimal notation when the shortest
-        # round-trip representation has decimal exponent k with -6 < k <= 21, exponential
+        # round-trip representation has decimal exponent k with -6 < k <= 20, exponential
         # form ("Ne+EE") otherwise.
         def encode_number(value)
           raise ArgumentError, "cannot encode NaN" if value.nan?
