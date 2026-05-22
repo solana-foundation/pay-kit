@@ -45,8 +45,9 @@ final class SolanaChargeHandler
      *        signature to the fee-payer slot before broadcast. Required for
      *        charge requests that advertise `methodDetails.feePayer = true`.
      * @param string $network Network identifier used for the Surfpool
-     *        blockhash sanity check. Defaults to `mainnet-beta`; set to
-     *        `localnet` when running against a Surfpool sandbox.
+     *        blockhash sanity check. Defaults to `mainnet`; the legacy
+     *        `mainnet-beta` spelling is also accepted. Set to `localnet`
+     *        when running against a Surfpool sandbox.
      * @param string $settlementHeader Name of the response header carrying
      *        the on-chain signature. The convention is
      *        `x-payment-settlement-signature`.
@@ -65,7 +66,7 @@ final class SolanaChargeHandler
         private readonly ChargeServer $challenges,
         private readonly RpcClient $rpc,
         private readonly ?Keypair $feePayer = null,
-        private readonly string $network = 'mainnet-beta',
+        private readonly string $network = 'mainnet',
         private readonly string $settlementHeader = 'x-payment-settlement-signature',
         ?PaymentVerifier $verifier = null,
         private readonly int $confirmationAttempts = 40,

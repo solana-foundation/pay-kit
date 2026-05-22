@@ -56,11 +56,11 @@ describe('selectSolanaChargeChallenge', () => {
     test('honors client currency preference order over server challenge order', () => {
         const selected = selectSolanaChargeChallenge(
             [
-                challenge('mainnet-usdc', { currency: USDC['mainnet-beta'], network: 'mainnet-beta' }),
+                challenge('mainnet-usdc', { currency: USDC.mainnet, network: 'mainnet-beta' }),
                 challenge('devnet-usdc', { currency: USDC.devnet, network: 'devnet' }),
             ],
             {
-                currency: [USDC.devnet, USDC['mainnet-beta']],
+                currency: [USDC.devnet, USDC.mainnet],
             },
         );
 
@@ -71,7 +71,7 @@ describe('selectSolanaChargeChallenge', () => {
         const selected = selectSolanaChargeChallenge(
             [
                 challenge('stripe', { method: 'stripe' }),
-                challenge('usdc-mainnet', { currency: USDC['mainnet-beta'], network: 'mainnet-beta' }),
+                challenge('usdc-mainnet', { currency: USDC.mainnet, network: 'mainnet-beta' }),
             ],
             { currency: 'USDC', network: 'devnet' },
         );
@@ -106,7 +106,7 @@ describe('selectSolanaChargeChallengeFromResponse', () => {
                 'WWW-Authenticate': [
                     Challenge.serialize(
                         challenge('usdc-mainnet', {
-                            currency: USDC['mainnet-beta'],
+                            currency: USDC.mainnet,
                             network: 'mainnet-beta',
                         }),
                     ),

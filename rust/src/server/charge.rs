@@ -97,7 +97,7 @@ impl Default for Config {
             recipient: String::new(),
             currency: "USDC".to_string(),
             decimals: 6,
-            network: "mainnet-beta".to_string(),
+            network: "mainnet".to_string(),
             rpc_url: None,
             secret_key: None,
             realm: None,

@@ -21,29 +21,29 @@ final class StablecoinMints
     /** @var array<string, string> */
     public const USDC = [
         'devnet' => '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
-        'mainnet-beta' => 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        'mainnet' => 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     ];
 
     /** @var array<string, string> */
     public const USDT = [
-        'mainnet-beta' => 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+        'mainnet' => 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
     ];
 
     /** @var array<string, string> */
     public const USDG = [
         'devnet' => '4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7',
-        'mainnet-beta' => '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
+        'mainnet' => '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
     ];
 
     /** @var array<string, string> */
     public const PYUSD = [
         'devnet' => 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM',
-        'mainnet-beta' => '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+        'mainnet' => '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
     ];
 
     /** @var array<string, string> */
     public const CASH = [
-        'mainnet-beta' => 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
+        'mainnet' => 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
     ];
 
     /** @var array<string, array<string, string>> */
@@ -73,7 +73,7 @@ final class StablecoinMints
      * - Anything else is returned unchanged so the caller's existing string
      *   propagates through verification (and surfaces a clear error if invalid).
      */
-    public static function resolve(string $currency, string $network = 'mainnet-beta'): ?string
+    public static function resolve(string $currency, string $network = 'mainnet'): ?string
     {
         if (strtoupper($currency) === 'SOL') {
             return null;
@@ -85,7 +85,22 @@ final class StablecoinMints
         if ($entry === null) {
             return $currency;
         }
-        return $entry[$network] ?? $entry['mainnet-beta'];
+        $normalized = self::normalizeNetwork($network);
+        return $entry[$normalized] ?? $entry['mainnet'];
+    }
+
+    /**
+     * Maintainer canonical for the mainnet slug is `mainnet`. Accept
+     * `mainnet-beta` (Solana CLI default), `mainnet`, and any equivalent
+     * casing as aliases for the same network when looking up stablecoin
+     * mappings. Other networks pass through unchanged.
+     */
+    private static function normalizeNetwork(string $network): string
+    {
+        return match (strtolower($network)) {
+            'mainnet', 'mainnet-beta' => 'mainnet',
+            default => $network,
+        };
     }
 
     /**
@@ -94,7 +109,7 @@ final class StablecoinMints
      * Token-2022 (PYUSD, USDG, CASH); `TokenProgram::PROGRAM_ID` for everything
      * else (including unknown / direct-mint inputs).
      */
-    public static function tokenProgramFor(string $currency, string $network = 'mainnet-beta'): string
+    public static function tokenProgramFor(string $currency, string $network = 'mainnet'): string
     {
         $symbol = self::symbolFor($currency, $network);
         return $symbol !== null && in_array($symbol, self::TOKEN_2022_SYMBOLS, true)
@@ -106,7 +121,7 @@ final class StablecoinMints
      * Reverse lookup: given a currency (symbol or mint), return the matching
      * symbol, or `null` if unknown.
      */
-    public static function symbolFor(string $currency, string $network = 'mainnet-beta'): ?string
+    public static function symbolFor(string $currency, string $network = 'mainnet'): ?string
     {
         $upper = strtoupper($currency);
         if (isset(self::MAP[$upper])) {

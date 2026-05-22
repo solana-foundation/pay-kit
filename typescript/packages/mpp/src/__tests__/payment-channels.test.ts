@@ -48,7 +48,7 @@ test('buildOpenPaymentChannelTransaction creates a single partially signed open 
 
     expect(open.deposit).toBe(request.cap);
     expect(open.gracePeriod).toBe(900);
-    expect(open.mint).toBe(USDC['mainnet-beta']);
+    expect(open.mint).toBe(USDC.mainnet);
     expect(open.payee).toBe(payee.address);
     expect(open.payer).toBe(payer.address);
     expect(open.salt).toBe('42');
@@ -99,7 +99,7 @@ test('createPaymentChannelSessionOpener emits a pull client-voucher payment-chan
         action: 'open',
         deposit: '1000000',
         gracePeriod: 60,
-        mint: USDC['mainnet-beta'],
+        mint: USDC.mainnet,
         mode: 'pull',
         payee: payee.address,
         payer: payer.address,
@@ -145,7 +145,7 @@ test('createServerOpenedPaymentChannelSessionOpener emits channel fields without
         action: 'open',
         channelId: open.channelId,
         deposit: request.cap,
-        mint: USDC['mainnet-beta'],
+        mint: USDC.mainnet,
         mode: 'pull',
         payee: payee.address,
         payer: operator.address,
@@ -186,7 +186,7 @@ function sessionRequest(
 ): SessionRequest {
     return {
         cap: '1000000',
-        currency: USDC['mainnet-beta'],
+        currency: USDC.mainnet,
         decimals: 6,
         modes: ['pull'],
         network: 'localnet',

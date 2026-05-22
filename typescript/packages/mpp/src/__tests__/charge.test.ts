@@ -2452,9 +2452,9 @@ test('request() defaults Token-2022 stablecoins to Token-2022', async () => {
         expect(request.methodDetails.tokenProgram).toBe(TOKEN_2022_PROGRAM);
     }
 
-    expect(CASH['mainnet-beta']).toBe('CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH');
-    expect(PYUSD['mainnet-beta']).toBe('2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo');
-    expect(USDG['mainnet-beta']).toBe('2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH');
+    expect(CASH.mainnet).toBe('CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH');
+    expect(PYUSD.mainnet).toBe('2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo');
+    expect(USDG.mainnet).toBe('2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH');
 });
 
 test('splits: SOL verification passes with valid primary + split transfers', async () => {
