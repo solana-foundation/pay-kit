@@ -1,12 +1,12 @@
 {
-  "name": "solana-foundation/mpp-sdk-php-laravel-example",
+  "name": "solana/pay-sdk-laravel-example",
   "description": "Laravel example using the MPP charge middleware.",
   "type": "project",
   "license": "MIT",
   "require": {
     "php": "^8.2",
     "laravel/framework": "^11.0 || ^12.0",
-    "solana-foundation/mpp-sdk-php": "@dev"
+    "solana/pay-sdk": "@dev"
   },
   "repositories": [
     {

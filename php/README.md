@@ -2,7 +2,7 @@
   <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
-# solana-foundation/mpp-sdk-php
+# solana/pay-sdk
 
 Solana payment method for the [Machine Payments Protocol](https://mpp.dev),
 for PHP.
@@ -110,15 +110,15 @@ phases: **Verification** (protocol-level — parse the credential, validate the
 challenge, decode and check the embedded transaction structure) and
 **Settlement** (chain-level — fee-payer co-sign, broadcast, confirm).
 
-| Intent | Verification | Settlement |
-|---|:---:|:---:|
-| `x402/exact` | — | — |
-| `x402/upto` | — | — |
-| `x402/batch-settlement` | — | — |
-| `mpp/charge/pull` | ✅ | ✅ |
-| `mpp/charge/push` | — | — |
-| `mpp/session` | — | — |
-| `mpp/subscription` | — | — |
+| Intent | Status |
+|---|:---:|
+| `x402/exact` | — |
+| `x402/upto` | — |
+| `x402/batch-settlement` | — |
+| `mpp/charge/pull` | ✅ |
+| `mpp/charge/push` | — |
+| `mpp/session` | — |
+| `mpp/subscription` | — |
 
 For `mpp/charge/pull`: `SolanaChargeHandler` owns the full lifecycle — issue
 signed challenges with a pre-fetched `recentBlockhash`, parse/validate the

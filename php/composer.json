@@ -1,5 +1,5 @@
 {
-  "name": "solana-foundation/mpp-sdk-php",
+  "name": "solana/pay-sdk",
   "description": "Server-side PHP helpers for the MPP protocol.",
   "type": "library",
   "license": "MIT",
