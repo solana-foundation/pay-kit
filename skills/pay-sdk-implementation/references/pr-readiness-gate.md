@@ -58,6 +58,8 @@ Record the language-local commands for:
 - Lint.
 - Type/static analysis when the language has a standard tool.
 - Dependency audit.
+- Dedicated language workflow path, usually
+  `.github/workflows/<lang>.yml`.
 
 These commands should be available through the language-local `justfile`
 and, where useful, mirrored by root justfile recipes.

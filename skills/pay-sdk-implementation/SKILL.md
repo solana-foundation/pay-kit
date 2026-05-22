@@ -57,11 +57,13 @@ the directory skeleton and CI from earlier ones.
    strict-types guidance, Standard Ruby + Rack guidance) and document the
    selected source in the SDK README.
 4. **Wire CI before code.** Read `references/ci-quality-coverage.md` and
-   add a GitHub Actions job that mirrors `test-rust`/`test-python` in
-   `.github/workflows/ci.yml`, with a ≥90 % coverage gate, formatter and
-   linter steps, and the `html-assets` download. Push CI green on an
-   empty skeleton before adding intent code so regressions are caught
-   immediately.
+   add a language-specific GitHub Actions workflow
+   (`.github/workflows/<lang>.yml`) unless the maintainer explicitly asks
+   for a shared workflow job. The workflow must mirror the reference test
+   jobs with a ≥90 % coverage gate, formatter and linter steps, dependency
+   audit, and `html-assets` download when the SDK ships server-side payment
+   links. Push CI green on an empty skeleton before adding intent code so
+   regressions are caught immediately.
 5. **Implement intent code.** For **each** matrix cell the user enabled,
    read the matching file under `references/intents/`. Each leaf is
    self-contained: wire format, server obligations, client obligations,

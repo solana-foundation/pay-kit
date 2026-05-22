@@ -1,14 +1,18 @@
 # CI, quality, coverage
 
-The reference CI is `mpp-sdk/.github/workflows/ci.yml`. Copy the
-shape of `test-rust` (or `test-python`/`test-go` for the closest
-language fit), add formatter + linter steps, gate coverage at ≥ 90 %.
+The reference CI shape lives in the existing language workflows under
+`mpp-sdk/.github/workflows/`. New SDKs should normally get a dedicated
+language workflow file such as `.github/workflows/ruby.yml` or
+`.github/workflows/php.yml`; keep `.github/workflows/ci.yml` focused on
+the shared TypeScript/Rust/Go/root jobs unless the maintainer explicitly
+asks for the language job to live there.
 
 ## Required jobs per SDK
 
-A new-language SDK needs **all** of the following jobs. Put them in
-`ci.yml` or a dedicated language workflow if the repo already uses that
-shape for the language:
+A new-language SDK needs **all** of the following jobs. Put the
+language-owned jobs in `.github/workflows/<lang>.yml`; keep shared
+cross-language harness jobs in `ci.yml` unless the repo already has a
+more specific workflow for that harness:
 
 1. **`test-<lang>`** — unit tests + coverage upload + format/lint check.
 2. **`integration`** (existing) — already runs against Surfnet; once the
@@ -17,6 +21,24 @@ shape for the language:
    the way `Run Rust client interop smoke` is set up (one line for
    `<lang> client × ts server`, one for `ts client × <lang> server`,
    one self-pair).
+
+## Template — `.github/workflows/<lang>.yml`
+
+Each new SDK should start with a dedicated workflow file:
+
+```yaml
+name: <Language>
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+```
+
+Then add the language test job below.
 
 ## Template — `test-<lang>` job
 
@@ -192,6 +214,10 @@ the new language:
 - **Job names matter** — `report.yml` aggregates per-job coverage by
   artifact name. Use `<lang>-coverage` and
   `surfpool-reports-<lang>` exactly.
+- **Workflow ownership matters** — do not add every new language's unit
+  test job to `.github/workflows/ci.yml`. A dedicated workflow file keeps
+  maintainer review, reruns, and future language-specific CI changes
+  isolated.
 - **Manual DX is not replaced by CI.** CI proves repeatability; it does
   not prove the README path is runnable. Before marking a server SDK PR
   ready, run the language's simple-server example locally and verify
