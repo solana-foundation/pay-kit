@@ -1,0 +1,74 @@
+name: Lua
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test-lua:
+    name: Lua tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LuaJIT 2.1 and LuaRocks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks
+          luajit -v
+          luarocks --version
+
+      - name: Cache rocks tree
+        id: cache-rocks
+        uses: actions/cache@v4
+        with:
+          path: lua/lua_modules
+          key: ${{ runner.os }}-luarocks-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-
+
+      - name: Install dev rocks (luacheck + luacov)
+        if: steps.cache-rocks.outputs.cache-hit != 'true'
+        working-directory: lua
+        run: |
+          mkdir -p lua_modules
+          luarocks --lua-version=5.1 init --lua-versions 5.1 || true
+          luarocks --lua-version=5.1 install --tree lua_modules luacheck
+          luarocks --lua-version=5.1 install --tree lua_modules luacov
+
+      - name: Validate rockspec
+        working-directory: lua
+        run: luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
+
+      - name: Lint
+        working-directory: lua
+        run: |
+          eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
+          luacheck mpp/ tests/
+
+      - name: Run tests with coverage
+        working-directory: lua
+        env:
+          SURFPOOL_REPORT: "1"
+        run: |
+          rm -f ../luacov.stats.out ../luacov.report.out
+          eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
+          luajit -lluacov tests/run.lua
+          luacov
+          ./scripts/check_coverage.sh ../luacov.report.out 90
+
+      - name: Upload Lua coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lua-coverage
+          path: luacov.report.out
+
+      - name: Upload Lua surfpool report data
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surfpool-reports-lua
+          path: lua/target/surfpool-reports/
+          if-no-files-found: ignore

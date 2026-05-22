@@ -1,0 +1,48 @@
+# Lua MPP SDK local task runner.
+#
+# Mirrors the PHP and Ruby Justfile conventions (atomic recipes, no root
+# Justfile coupling). Recipes assume LuaJIT 2.1 and a project-local rocks
+# tree at `lua/lua_modules/` populated by `just install`.
+#
+# LuaJIT is ABI-compatible with Lua 5.1 so luarocks is invoked with
+# `--lua-version=5.1`. Running outside this directory will not find
+# `lua_modules/`; use `just <recipe>` from the `lua/` directory or wire a
+# delegate in the root justfile (see `lua-*` targets there).
+
+# Bootstrap a project-local rocks tree for LuaJIT and install the lint /
+# coverage / runtime dev dependencies.
+install:
+    test -f .luarocks/config-5.1.lua || luarocks --lua-version=5.1 --lua-dir=/opt/homebrew/opt/luajit init --lua-versions 5.1
+    luarocks --lua-version=5.1 install --tree lua_modules luacheck
+    luarocks --lua-version=5.1 install --tree lua_modules luacov
+
+# Run the Lua unit test suite under LuaJIT.
+test:
+    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit tests/run.lua
+
+# Lint the SDK source tree. Pre-existing tech debt in `mpp/server/html.lua`
+# and `mpp/server/init.lua` raises 5 warnings; the recipe fails only on
+# errors, not warnings, until those are tracked separately.
+lint:
+    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luacheck mpp/ tests/
+
+# Run the suite under luacov and enforce the >=90% line-coverage gate.
+test-cover:
+    rm -f ../luacov.stats.out ../luacov.report.out
+    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit -lluacov tests/run.lua
+    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luacov
+    ./scripts/check_coverage.sh ../luacov.report.out 90
+
+# Audit-equivalent: run luarocks lint over the rockspec. This is the closest
+# analogue to `bundle audit` / `composer audit` in the Lua ecosystem.
+audit:
+    luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
+
+# Format check (no auto-fix; luacheck doubles as a lightweight style gate
+# until a Lua formatter is selected).
+fmt:
+    @echo "Lua does not ship a canonical formatter; lint covers style checks"
+
+# Convenience: blow away the rocks tree if anything goes wrong with bootstrap.
+clean:
+    rm -rf lua_modules .luarocks ../luacov.stats.out ../luacov.report.out

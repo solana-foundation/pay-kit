@@ -75,16 +75,25 @@ go-test-cover:
 
 # ── Lua ──
 
-# Run Lua SDK tests
-lua-test:
-    cd lua && lua tests/run.lua
+# Install Lua SDK dependencies into a project-local rocks tree
+lua-install:
+    cd lua && just install
 
-# Run Lua SDK coverage with a minimum threshold of 70%
+# Run Lua SDK tests under LuaJIT
+lua-test:
+    cd lua && just test
+
+# Lint the Lua SDK
+lua-lint:
+    cd lua && just lint
+
+# Audit the Lua rockspec
+lua-audit:
+    cd lua && just audit
+
+# Run Lua SDK coverage with a minimum threshold of 90%
 lua-test-cover:
-    cd lua && rm -f ../luacov.stats.out ../luacov.report.out
-    cd lua && eval "$(luarocks path)" && lua -lluacov tests/run.lua
-    cd lua && eval "$(luarocks path)" && luacov
-    cd lua && ./scripts/check_coverage.sh ../luacov.report.out 70
+    cd lua && just test-cover
 
 # ── Python ──
 
@@ -206,4 +215,4 @@ test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-te
 fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt rb-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-lint lua-test-cover lua-audit py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover
