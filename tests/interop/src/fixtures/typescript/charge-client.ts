@@ -33,6 +33,7 @@ async function payTarget(
   const client = Mppx.create({
     methods: [
       solana.charge({
+        broadcast: environment.paymentMode === "push",
         signer,
         rpcUrl: environment.rpcUrl,
       }),

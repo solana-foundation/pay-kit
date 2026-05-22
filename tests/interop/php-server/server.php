@@ -68,6 +68,7 @@ $rpcUrl = require_env('MPP_INTEROP_RPC_URL');
 $network = optional_env('MPP_INTEROP_NETWORK', 'localnet');
 $mint = require_env('MPP_INTEROP_MINT');
 $amount = require_env('MPP_INTEROP_AMOUNT');
+$paymentMode = optional_env('MPP_INTEROP_PAYMENT_MODE', 'pull');
 $payTo = require_env('MPP_INTEROP_PAY_TO');
 $secretKey = optional_env('MPP_INTEROP_SECRET_KEY', 'mpp-interop-secret-key');
 $resourcePath = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid');
@@ -103,14 +104,16 @@ $handler = new SolanaChargeHandler(
 /**
  * @param array<int, array<string, mixed>> $splits
  */
-function build_charge_request(string $amount, string $mint, string $payTo, string $network, ?string $feePayerKey, array $splits): ChargeRequest
+function build_charge_request(string $amount, string $mint, string $payTo, string $network, string $paymentMode, ?string $feePayerKey, array $splits): ChargeRequest
 {
     $methodDetails = [
         'network' => $network,
         'decimals' => 6,
-        'feePayer' => true,
-        'feePayerKey' => $feePayerKey,
     ];
+    if ($paymentMode !== 'push') {
+        $methodDetails['feePayer'] = true;
+        $methodDetails['feePayerKey'] = $feePayerKey;
+    }
     if ($splits !== []) {
         $methodDetails['splits'] = $splits;
     }
@@ -257,7 +260,7 @@ while (is_resource($listener)) {
             continue;
         }
 
-        $request = build_charge_request($protectedAmount, $mint, $payTo, $network, $handler->feePayerPubkey(), $splits);
+        $request = build_charge_request($protectedAmount, $mint, $payTo, $network, $paymentMode, $handler->feePayerPubkey(), $splits);
         $authorization = $req['headers']['authorization'] ?? null;
         $result = $handler->handle($authorization, $request);
 
