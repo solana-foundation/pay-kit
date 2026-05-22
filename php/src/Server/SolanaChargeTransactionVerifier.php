@@ -116,7 +116,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier
             return;
         }
 
-        $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet-beta');
+        $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet');
         $resolvedMint = StablecoinMints::resolve($request->currency, $network) ?? $request->currency;
         $mint = new PublicKey($resolvedMint);
         $defaultTokenProgram = StablecoinMints::tokenProgramFor($request->currency, $network);

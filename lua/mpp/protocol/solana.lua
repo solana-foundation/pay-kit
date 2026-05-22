@@ -10,23 +10,23 @@ local KNOWN_MINTS = {
   USDC = {
     devnet = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
     testnet = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
-    ['mainnet-beta'] = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    mainnet = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
   },
   USDT = {
-    ['mainnet-beta'] = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    mainnet = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
   },
   USDG = {
     devnet = '4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7',
     testnet = '4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7',
-    ['mainnet-beta'] = '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
+    mainnet = '2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH',
   },
   PYUSD = {
     devnet = 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM',
     testnet = 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM',
-    ['mainnet-beta'] = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+    mainnet = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
   },
   CASH = {
-    ['mainnet-beta'] = 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
+    mainnet = 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH',
   },
 }
 
@@ -47,6 +47,17 @@ function M.default_rpc_url(network)
   return 'https://api.mainnet-beta.solana.com'
 end
 
+-- Maintainer canonical for the mainnet slug is `mainnet`. The legacy
+-- `mainnet-beta` spelling is accepted as a backward-compatible alias and
+-- normalized to `mainnet`. Other networks pass through unchanged.
+local function normalize_network(network)
+  local lower = string.lower(network or '')
+  if lower == 'mainnet' or lower == 'mainnet-beta' then
+    return 'mainnet'
+  end
+  return network
+end
+
 function M.resolve_mint(currency, network)
   local normalized = string.upper(currency or '')
   if normalized == 'SOL' then
@@ -55,7 +66,7 @@ function M.resolve_mint(currency, network)
 
   local known = KNOWN_MINTS[normalized]
   if known then
-    return known[network] or known['mainnet-beta']
+    return known[normalize_network(network)] or known.mainnet
   end
 
   return currency
