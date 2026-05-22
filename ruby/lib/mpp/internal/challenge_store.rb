@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 module Mpp
-  module Server
+  module Internal
     # Low-level charge challenge issuer and credential verifier.
-    class ChargeServer
+    # Not part of the public API.
+    class ChallengeStore
       attr_reader :secret_key, :realm, :blockhash_provider
 
       def initialize(secret_key:, realm: "MPP Payment", blockhash_provider: nil)
@@ -34,7 +35,7 @@ module Mpp
       def payment_required_response(request, reason: nil)
         header = create_challenge_header(request, description: request.description)
         body = reason.nil? ? {"error" => "payment_required"} : {"error" => "payment_invalid", "message" => reason}
-        PaymentRequiredResponse.new(headers: {Core::Headers::WWW_AUTHENTICATE => header}, body: body)
+        Challenge.new(www_authenticate: header, body: body, reason: reason)
       end
 
       # Verify a Payment authorization header.
@@ -51,8 +52,8 @@ module Mpp
           opaque: credential.challenge.opaque
         )
 
-        return VerificationResult.failure("challenge verification failed") unless challenge.verify?(secret_key)
-        return VerificationResult.failure("challenge expired") if challenge.expired?(now: now)
+        return Methods::Solana::VerificationResult.failure("challenge verification failed") unless challenge.verify?(secret_key)
+        return Methods::Solana::VerificationResult.failure("challenge expired") if challenge.expired?(now: now)
 
         result = verify_pinned_fields(challenge, expected_request)
         return result unless result.ok?
@@ -64,9 +65,9 @@ module Mpp
         result = verifier.verify(credential, challenge, expected_request: expected_request)
         return result unless result.ok?
 
-        VerificationResult.success(reference: result.reference, credential: credential, challenge: challenge)
+        Methods::Solana::VerificationResult.success(reference: result.reference, credential: credential, challenge: challenge)
       rescue KeyError, ArgumentError, Error => error
-        VerificationResult.failure(error.message)
+        Methods::Solana::VerificationResult.failure(error.message)
       end
 
       # Create a receipt header for a settled on-chain signature.
@@ -83,22 +84,22 @@ module Mpp
       private
 
       def verify_pinned_fields(challenge, expected)
-        return VerificationResult.failure("Credential method does not match this server") unless challenge.method == "solana"
-        return VerificationResult.failure("Credential intent is not a charge") unless challenge.intent.casecmp("charge").zero?
-        return VerificationResult.failure("Credential realm does not match this server") unless challenge.realm == realm
-        return VerificationResult.failure("Endpoint currency is required") if expected.currency.to_s.empty?
-        return VerificationResult.failure("Credential recipient does not match this server") if expected.recipient.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential method does not match this server") unless challenge.method == "solana"
+        return Methods::Solana::VerificationResult.failure("Credential intent is not a charge") unless challenge.intent.casecmp("charge").zero?
+        return Methods::Solana::VerificationResult.failure("Credential realm does not match this server") unless challenge.realm == realm
+        return Methods::Solana::VerificationResult.failure("Endpoint currency is required") if expected.currency.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential recipient does not match this server") if expected.recipient.to_s.empty?
 
-        VerificationResult.success
+        Methods::Solana::VerificationResult.success
       end
 
       def verify_expected(decoded, expected)
-        return VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}") unless decoded.amount == expected.amount
-        return VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}") unless decoded.currency == expected.currency
-        return VerificationResult.failure("Recipient mismatch") unless decoded.recipient == expected.recipient
-        return VerificationResult.failure("Method details mismatch") unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
+        return Methods::Solana::VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}") unless decoded.amount == expected.amount
+        return Methods::Solana::VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}") unless decoded.currency == expected.currency
+        return Methods::Solana::VerificationResult.failure("Recipient mismatch") unless decoded.recipient == expected.recipient
+        return Methods::Solana::VerificationResult.failure("Method details mismatch") unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
 
-        VerificationResult.success
+        Methods::Solana::VerificationResult.success
       end
 
       def request_payload(request)

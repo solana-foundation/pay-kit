@@ -26,7 +26,7 @@ module SinatraExample
       secret = ENV["MPP_FEE_PAYER_SECRET_KEY"]
       return nil if secret.nil? || secret.empty?
 
-      Mpp::Solana::Keypair.from_json_array(secret)
+      Mpp::Methods::Solana::Account.from_json_array(secret)
     end
   end
 end

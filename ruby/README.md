@@ -18,80 +18,115 @@ any HTTP API accept payments using the `402 Payment Required` flow.
 
 ```text
 ruby/
-├── lib/mpp/core/       # Payment headers, credentials, receipts, base64url JSON
-├── lib/mpp/intent/     # Charge intent request model
-├── lib/mpp/server/     # 402 challenge issuance, verification, settlement
-├── lib/mpp/solana/     # Minimal Solana parser, signer, RPC, ATA helpers
-├── examples/                  # Simple server and Sinatra app examples
-└── test/                      # Minitest suite with line and branch coverage gates
+├── lib/mpp.rb                # Top-level Mpp.create factory
+├── lib/mpp/methods/solana/   # Solana charge method (RPC, account, verifier, mints)
+├── lib/mpp/server/           # Server::Instance, Middleware, Decorator
+├── lib/mpp/sinatra.rb        # Optional Sinatra helper (mpp_charge!)
+├── lib/mpp/core/             # Payment headers, credentials, receipts, base64url JSON
+├── examples/                 # Simple server and Sinatra app examples
+└── test/                     # Minitest suite with line and branch coverage gates
 ```
 
-## Quick start — server (charge)
+## Quick start — server
 
 ```ruby
-require "json"
 require "mpp"
 
-rpc = Mpp::Solana::RpcClient.new("https://402.surfnet.dev:8899")
-challenges = Mpp::Server::ChargeServer.new(
+server = Mpp.create(
+  method: Mpp::Methods::Solana.charge(
+    recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+    mint:      "USDC",
+    network:   "localnet",
+    rpc:       "https://402.surfnet.dev:8899"
+  ),
   secret_key: "local-dev-secret",
-  realm: "Ruby MPP Example"
-)
-handler = Mpp::Server::ChargeHandler.new(
-  challenges: challenges,
-  rpc: rpc,
-  replay_store: Mpp::MemoryStore.new,
-  network: "localnet"
-)
-request = Mpp::Intent::ChargeRequest.new(
-  amount: "1000",
-  currency: "USDC",
-  recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-  method_details: {
-    "network" => "localnet",
-    "decimals" => 6,
-    "tokenProgram" => Mpp::Common::StablecoinMints.token_program_for("USDC", "localnet"),
-    "recentBlockhash" => rpc.latest_blockhash
-  }
+  realm:      "Ruby MPP Example"
 )
 
-result = handler.handle(ENV["HTTP_AUTHORIZATION"], request)
-puts result.status
-puts JSON.generate(result.body)
+# In your request handler (WEBrick, Sinatra, Rails, Rack, etc.):
+result = server.charge(authorization_header, amount: "1000", description: "Paid endpoint")
+
+case result
+when Mpp::Challenge
+  status, headers, body = Mpp::Server::Decorator.make_challenge_response(result, server.realm)
+  # render 402
+when Mpp::Settlement
+  # result.signature       — on-chain transaction signature
+  # result.receipt_header  — Payment-Receipt header value
+  # result.headers         — merge these into your 200 response
+end
 ```
 
-`Mpp::Server::ChargeHandler#handle` returns either a
-`PaymentRequiredResponse` (402, missing/invalid credential) or a
-`ChargeSettlement` (200, with the on-chain signature). Both expose the same
-`status` / `headers` / `body` shape so the HTTP layer can project either path
-uniformly.
+The method object owns every static knob (recipient, mint, network, RPC,
+optional fee payer, decimals). Per-request you only pass `amount` and
+`description` to `server.charge`. The blockhash is fetched lazily and cached
+for 2 seconds inside the method so a busy endpoint doesn't pay an RPC round-trip
+on every protected request.
 
-## Quick start
+### Rack middleware
 
-Launch the bare Ruby server from `examples/simple-server.rb`:
+```ruby
+use Mpp::Server::Middleware, handler: server
+
+get "/paid" do
+  env["mpp.charge"] = { amount: "1000", description: "Paid endpoint" }
+  content_type :json
+  JSON.generate(ok: true)
+end
+```
+
+The middleware lets routes declare their own price by setting `env["mpp.charge"]`
+before returning. If the request hasn't paid, the middleware replaces the
+response with a 402 challenge; if it has paid, the middleware settles on-chain
+and injects the receipt and signature headers into the route's response.
+
+### Sinatra helper
+
+For expensive routes that shouldn't run before payment is verified, use the
+`mpp_charge!` helper, which halts with 402 immediately on a missing/invalid
+credential:
+
+```ruby
+require "mpp/sinatra"
+
+class App < Sinatra::Base
+  helpers Mpp::Sinatra::Helpers
+  set :mpp_server, server
+
+  get "/paid" do
+    mpp_charge!(amount: "1000", description: "Paid endpoint")
+    # only reached on successful payment; receipt header auto-injected
+    content_type :json
+    JSON.generate(ok: true)
+  end
+end
+```
+
+## Running the examples
 
 ```bash
-# Install dependencies
+cd ruby
 bundle install
 
-# Launch server
+# Bare WEBrick server, manual case/when on Challenge/Settlement
 bundle exec ruby examples/simple-server.rb
+
+# Sinatra app using mpp_charge!
+PORT=4568 bundle exec ruby examples/sinatra/app.rb
 ```
 
-In another terminal, send requests using `curl` and `pay`:
+In another terminal:
 
 ```bash
 brew install pay
-
-# payment required
-curl http://localhost:4567/paid
-
-# payment successful
-pay curl http://localhost:4567/paid
+curl http://localhost:4567/paid       # 402 payment required
+pay curl http://localhost:4567/paid   # pays and succeeds
 ```
 
-For a Sinatra integration that wires the same SDK handler into a web app, see
-[`examples/sinatra/`](examples/sinatra).
+The simple server defaults to Surfpool localnet (`https://402.surfnet.dev:8899`),
+`USDC`, and a local example recipient. Override `MPP_RPC_URL`, `MPP_MINT`,
+`MPP_PAY_TO`, `MPP_AMOUNT`, or `MPP_FEE_PAYER_SECRET_KEY` for a different
+localnet fixture.
 
 ## Client compatibility matrix
 
@@ -122,16 +157,16 @@ then settles or confirms the payment on-chain.
 | `mpp/session` | — |
 | `mpp/subscription` | — |
 
-For `mpp/charge/pull`: `ChargeHandler` owns the full lifecycle — issue signed
+For `mpp/charge/pull`: the server owns the full lifecycle — issue signed
 challenges with a fresh `recentBlockhash`, parse and validate the
-`Authorization: Payment` credential, pin the echoed `ChargeRequest`, decode the
+`Authorization: Payment` credential, pin the echoed charge request, decode the
 client-signed transaction and check recipient/amount/mint/splits/ATA/memos/
 compute budget, reject Surfpool-signed transactions on non-localnet networks,
 optionally fee-payer co-sign, broadcast via `sendTransaction`, poll
 `getSignatureStatuses` to `confirmed`/`finalized`, and emit `payment-receipt`
 with the on-chain signature.
 
-For `mpp/charge/push`: the handler fetches the transaction by signature with
+For `mpp/charge/push`: the server fetches the transaction by signature with
 `getTransaction`, rejects failed or missing metadata, reuses the same structural
 transaction verifier as pull mode, consumes the signature through replay
 storage, and emits the same receipt shape.
@@ -152,65 +187,19 @@ clients.
 - **Other intents.** `x402/*`, `mpp/session`, and `mpp/subscription` are not
   scoped on the Ruby side.
 
-## How to use the library
-
-```bash
-cd ruby
-bundle install
-```
-
-```ruby
-require "mpp"
-```
-
-Public surface is documented inline; every public type/function carries a
-summary so Ruby LSP hover can show intent, inputs, and outputs without
-round-tripping to source.
-
-## How to use the examples
+## Examples
 
 Two examples ship with this package:
 
-- [`examples/simple-server.rb`](examples/simple-server.rb) — a single-file Ruby
-  server demonstrating the raw protocol on top of the SDK helpers.
-- [`examples/sinatra/`](examples/sinatra) — a Sinatra app with one protected
-  route, split into `config.rb` (env defaults), `mpp.rb` (handler + charge
-  request factory), and `app.rb` (Sinatra routes + Rack middleware wiring).
+- [`examples/simple-server.rb`](examples/simple-server.rb) — bare WEBrick
+  server that calls `server.charge` directly and renders the
+  `Mpp::Challenge` / `Mpp::Settlement` tagged union by hand.
+- [`examples/sinatra/`](examples/sinatra) — Sinatra app using the
+  `mpp_charge!` helper, split into `config.rb` (env defaults), `server.rb`
+  (the `Mpp.create` factory call), and `app.rb` (Sinatra routes).
 
-### Simple Ruby server
-
-```bash
-cd ruby
-bundle install
-bundle exec ruby examples/simple-server.rb
-
-# In another terminal:
-brew install pay
-
-# payment required
-curl -i http://127.0.0.1:4567/paid
-
-# payment successful
-pay curl http://127.0.0.1:4567/paid
-```
-
-The simple server defaults to Surfpool localnet (`https://402.surfnet.dev:8899`),
-`USDC`, and a local example recipient. Override `MPP_RPC_URL`, `MPP_MINT`,
-`MPP_PAY_TO`, `MPP_AMOUNT`, or `MPP_FEE_PAYER_SECRET_KEY` when you need a
-different localnet fixture.
-
-### Sinatra server
-
-```bash
-cd ruby
-bundle install
-PORT=4568 bundle exec ruby examples/sinatra/app.rb
-
-# Same curl / pay flow as above on port 4568.
-```
-
-Both examples expose one protected endpoint at `/paid`. Use the interop harness
-for the full Surfpool-backed transaction flow.
+Both expose `/health` (free) and `/paid` (gated). Use the interop harness for
+the full Surfpool-backed transaction flow.
 
 ## Solana dependencies
 

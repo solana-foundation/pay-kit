@@ -48,7 +48,7 @@ class ChargeServerTest < Minitest::Test
   include RubyMppTestHelpers
 
   def setup
-    @server = Mpp::Server::ChargeServer.new(secret_key: "secret", realm: "api")
+    @server = Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def test_creates_and_verifies_expected_credential
@@ -58,7 +58,7 @@ class ChargeServerTest < Minitest::Test
       challenge: challenge.to_echo,
       payload: {"signature" => valid_signature}
     )
-    verifier = Mpp::Server::TransactionVerifier.new
+    verifier = Mpp::Methods::Solana::Verifier.new
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
@@ -72,7 +72,7 @@ class ChargeServerTest < Minitest::Test
 
   def test_blockhash_provider_injects_recent_blockhash_without_mutating_request
     request = charge_request
-    server = Mpp::Server::ChargeServer.new(
+    server = Mpp::Internal::ChallengeStore.new(
       secret_key: "secret",
       realm: "api",
       blockhash_provider: -> { "recent-blockhash" }
@@ -93,7 +93,7 @@ class ChargeServerTest < Minitest::Test
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Server::TransactionVerifier.new,
+      verifier: Mpp::Methods::Solana::Verifier.new,
       expected_request: expensive
     )
 
@@ -109,7 +109,7 @@ class ChargeServerTest < Minitest::Test
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Server::TransactionVerifier.new,
+      verifier: Mpp::Methods::Solana::Verifier.new,
       expected_request: expensive
     )
 
@@ -124,7 +124,7 @@ class ChargeServerTest < Minitest::Test
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Server::TransactionVerifier.new,
+      verifier: Mpp::Methods::Solana::Verifier.new,
       expected_request: request
     )
 
@@ -134,16 +134,16 @@ class ChargeServerTest < Minitest::Test
 
   def test_rejects_wrong_secret_and_wrong_realm
     request = charge_request
-    issuer = Mpp::Server::ChargeServer.new(secret_key: "other", realm: "api")
+    issuer = Mpp::Internal::ChallengeStore.new(secret_key: "other", realm: "api")
     credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
 
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/challenge verification failed/, result.reason)
 
-    issuer = Mpp::Server::ChargeServer.new(secret_key: "secret", realm: "other")
+    issuer = Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "other")
     credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/does not match this server|challenge verification failed/, result.reason)
   end
@@ -159,7 +159,7 @@ class ChargeServerTest < Minitest::Test
     )
     credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
 
     refute result.ok?
     assert_match(/method/, result.reason)
@@ -169,19 +169,19 @@ class ChargeServerTest < Minitest::Test
     request = charge_request
     challenge = Mpp::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "session", request: request.to_h)
     credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/intent/, result.reason)
 
     challenge = @server.create_challenge(charge_request(currency: "USDC"))
     credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/Currency mismatch/, result.reason)
 
     challenge = @server.create_challenge(charge_request(recipient: pubkey(3)))
     credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Server::TransactionVerifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/Recipient mismatch/, result.reason)
   end
@@ -189,34 +189,7 @@ class ChargeServerTest < Minitest::Test
   private
 
   def valid_signature
-    Mpp::Solana::Base58.encode(("a" * 64).b)
-  end
-end
-
-class RackMiddlewareTest < Minitest::Test
-  def test_accepts_callable_request_for_fresh_challenge_data
-    handler = Object.new
-    calls = 0
-    handled_request = nil
-    request_factory = lambda do |_env|
-      calls += 1
-      Mpp::Intent::ChargeRequest.new(amount: calls.to_s, currency: "SOL", recipient: "recipient")
-    end
-    payment = Mpp::Server::PaymentRequiredResponse.new(headers: {"x-test" => "ok"}, body: {"error" => "payment_required"})
-    handler.define_singleton_method(:handle) do |_authorization, request|
-      handled_request = request
-      payment
-    end
-    app = ->(_env) { [404, {}, ["not_found"]] }
-    middleware = Mpp::Server::RackMiddleware.new(app, handler: handler, request: request_factory, path: "/paid")
-
-    status, headers, body = middleware.call({"PATH_INFO" => "/paid"})
-
-    assert_equal 402, status
-    assert_equal "ok", headers["x-test"]
-    assert_equal [{"error" => "payment_required"}], body.map { |chunk| JSON.parse(chunk) }
-    assert_equal 1, calls
-    assert_equal "1", handled_request.amount
+    Mpp::Methods::Solana::Base58.encode(("a" * 64).b)
   end
 end
 
@@ -224,7 +197,7 @@ class TransactionVerifierTest < Minitest::Test
   include RubyMppTestHelpers
 
   def setup
-    @verifier = Mpp::Server::TransactionVerifier.new
+    @verifier = Mpp::Methods::Solana::Verifier.new
   end
 
   def test_verifies_sol_transfer_and_memo
@@ -382,8 +355,8 @@ class TransactionVerifierTest < Minitest::Test
     owner = pubkey(1)
     recipient = pubkey(2)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM],
       instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
@@ -400,9 +373,9 @@ class TransactionVerifierTest < Minitest::Test
     recipient = pubkey(2)
     split_owner = pubkey(3)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, PROGRAMS::ASSOCIATED_TOKEN_PROGRAM, split_owner, split_ata, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [
@@ -433,9 +406,9 @@ class TransactionVerifierTest < Minitest::Test
     recipient = pubkey(2)
     split_owner = pubkey(3)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, split_ata],
       instructions: [
@@ -472,10 +445,10 @@ class TransactionVerifierTest < Minitest::Test
     wrong_program = pubkey(8)
     unsupported_token_program = pubkey(9)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    unauthorized_ata = Mpp::Solana::AssociatedToken.derive(owner: unauthorized_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    unauthorized_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: unauthorized_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     keys = [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, PROGRAMS::ASSOCIATED_TOKEN_PROGRAM, split_owner, split_ata, PROGRAMS::SYSTEM_PROGRAM, wrong_payer, wrong_ata, wrong_mint, wrong_program, unsupported_token_program, PROGRAMS::TOKEN_2022_PROGRAM, unauthorized_owner, unauthorized_ata]
     base_request = charge_request(
       amount: "1000",
@@ -597,8 +570,8 @@ class TransactionVerifierTest < Minitest::Test
     owner = pubkey(1)
     recipient = pubkey(2)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    wrong_dest = Mpp::Solana::AssociatedToken.derive(owner: pubkey(3), mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    wrong_dest = Mpp::Methods::Solana::AssociatedToken.derive(owner: pubkey(3), mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, wrong_dest, PROGRAMS::TOKEN_PROGRAM],
       instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
@@ -635,8 +608,8 @@ class ChargeHandlerTest < Minitest::Test
   end
 
   def test_fee_payer_pubkey_and_missing_payload_response
-    keypair = Mpp::Solana::Keypair.new(Array.new(64, 1))
-    handler = Mpp::Server::ChargeHandler.new(
+    keypair = Mpp::Methods::Solana::Account.new(Array.new(64, 1))
+    handler = Mpp::Internal::Handler.new(
       challenges: handler_challenges,
       rpc: FakeRpc.new,
       replay_store: Mpp::MemoryStore.new,
@@ -729,11 +702,11 @@ class ChargeHandlerTest < Minitest::Test
   private
 
   def handler_challenges
-    @handler_challenges ||= Mpp::Server::ChargeServer.new(secret_key: "secret", realm: "api")
+    @handler_challenges ||= Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def handler_with(rpc, store: Mpp::MemoryStore.new, attempts: 40)
-    Mpp::Server::ChargeHandler.new(
+    Mpp::Internal::Handler.new(
       challenges: handler_challenges,
       rpc: rpc,
       replay_store: store,
@@ -744,7 +717,7 @@ class ChargeHandlerTest < Minitest::Test
   end
 
   def valid_signature
-    Mpp::Solana::Base58.encode(("a" * 64).b)
+    Mpp::Methods::Solana::Base58.encode(("a" * 64).b)
   end
 
   def transaction_response

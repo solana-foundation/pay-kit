@@ -45,7 +45,7 @@ class HandlerPathsTest < Minitest::Test
     handler = handler_with(FakeRpc.new, network: "devnet")
 
     error = assert_raises(Mpp::VerificationError) do
-      handler.send(:check_network_blockhash, Mpp::Server::ChargeHandler::SURFPOOL_BLOCKHASH_PREFIX + "abc")
+      handler.send(:check_network_blockhash, Mpp::Internal::Handler::SURFPOOL_BLOCKHASH_PREFIX + "abc")
     end
     assert_match(/Signed against localnet/, error.message)
   end
@@ -81,29 +81,14 @@ class HandlerPathsTest < Minitest::Test
     assert_match(/missing base64 transaction/, response.body["message"])
   end
 
-  def test_rack_middleware_protects_only_configured_path
-    request = charge_request
-    handler = handler_with(FakeRpc.new)
-    app = ->(_env) { [200, {"content-type" => "text/plain"}, ["open"]] }
-    middleware = Mpp::Server::RackMiddleware.new(app, handler: handler, request: request, path: "/paid")
-
-    status, _headers, body = middleware.call("PATH_INFO" => "/open")
-    assert_equal 200, status
-    assert_equal ["open"], body
-
-    status, headers, _body = middleware.call("PATH_INFO" => "/paid")
-    assert_equal 402, status
-    assert headers.key?(Mpp::Core::Headers::WWW_AUTHENTICATE)
-  end
-
   private
 
   def challenges
-    @challenges ||= Mpp::Server::ChargeServer.new(secret_key: "secret", realm: "api")
+    @challenges ||= Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def handler_with(rpc, network: "localnet", attempts: 40)
-    Mpp::Server::ChargeHandler.new(
+    Mpp::Internal::Handler.new(
       challenges: challenges,
       rpc: rpc,
       replay_store: Mpp::MemoryStore.new,
@@ -114,6 +99,6 @@ class HandlerPathsTest < Minitest::Test
   end
 
   def valid_signature
-    Mpp::Solana::Base58.encode(("b" * 64).b)
+    Mpp::Methods::Solana::Base58.encode(("b" * 64).b)
   end
 end

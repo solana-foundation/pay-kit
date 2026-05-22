@@ -20,59 +20,40 @@ def optional_env(name, default)
   value.nil? || value.empty? ? default : value
 end
 
-# Build a Solana keypair from the harness byte-array format.
-def keypair_from_env(name)
-  Mpp::Solana::Keypair.from_json_array(require_env(name))
+# Build a Solana account from the harness byte-array format.
+def account_from_env(name)
+  Mpp::Methods::Solana::Account.from_json_array(require_env(name))
 end
 
-rpc_url = require_env("MPP_INTEROP_RPC_URL")
-network = optional_env("MPP_INTEROP_NETWORK", "localnet")
-mint = require_env("MPP_INTEROP_MINT")
-amount = require_env("MPP_INTEROP_AMOUNT")
-pay_to = require_env("MPP_INTEROP_PAY_TO")
-secret_key = optional_env("MPP_INTEROP_SECRET_KEY", "mpp-interop-secret-key")
-resource_path = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
+rpc_url           = require_env("MPP_INTEROP_RPC_URL")
+network           = optional_env("MPP_INTEROP_NETWORK", "localnet")
+mint              = require_env("MPP_INTEROP_MINT")
+amount            = require_env("MPP_INTEROP_AMOUNT")
+pay_to            = require_env("MPP_INTEROP_PAY_TO")
+secret_key        = optional_env("MPP_INTEROP_SECRET_KEY", "mpp-interop-secret-key")
+resource_path     = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
 settlement_header = optional_env("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature")
-replay_path = ENV["MPP_INTEROP_REPLAY_SOURCE_PATH"]
-replay_amount = ENV["MPP_INTEROP_REPLAY_SOURCE_AMOUNT"]
-splits = JSON.parse(optional_env("MPP_INTEROP_SPLITS", "[]"))
+replay_path       = ENV["MPP_INTEROP_REPLAY_SOURCE_PATH"]
+replay_amount     = ENV["MPP_INTEROP_REPLAY_SOURCE_AMOUNT"]
+splits            = JSON.parse(optional_env("MPP_INTEROP_SPLITS", "[]"))
 unless splits.is_a?(Array)
   warn "MPP_INTEROP_SPLITS must decode to an array"
   exit 2
 end
 
-rpc = Mpp::Solana::RpcClient.new(rpc_url)
-fee_payer = keypair_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-handler = Mpp::Server::ChargeHandler.new(
-  challenges: Mpp::Server::ChargeServer.new(
-    secret_key: secret_key,
-    realm: "MPP Interop"
+server = Mpp.create(
+  method: Mpp::Methods::Solana.charge(
+    recipient: pay_to,
+    mint:      mint,
+    network:   network,
+    rpc:       rpc_url,
+    fee_payer: account_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY"),
+    decimals:  6
   ),
-  rpc: rpc,
-  replay_store: Mpp::MemoryStore.new,
-  fee_payer: fee_payer,
-  network: network,
+  secret_key:        secret_key,
+  realm:             "MPP Interop",
   settlement_header: settlement_header
 )
-
-# Build one request object for the selected route amount.
-def build_charge_request(rpc, amount, mint, pay_to, network, fee_payer_key, splits)
-  method_details = {
-    "network" => network,
-    "decimals" => 6,
-    "feePayer" => true,
-    "feePayerKey" => fee_payer_key,
-    "recentBlockhash" => rpc.latest_blockhash
-  }
-  method_details["splits"] = splits unless splits.empty?
-  Mpp::Intent::ChargeRequest.new(
-    amount: amount,
-    currency: mint,
-    recipient: pay_to,
-    description: "Ruby interop protected content",
-    method_details: method_details
-  )
-end
 
 # Read one HTTP request from a socket.
 def read_request(conn)
@@ -153,9 +134,19 @@ loop do
       next
     end
 
-    request = build_charge_request(rpc, protected_amount, mint, pay_to, network, handler.fee_payer_pubkey, splits)
-    response = handler.handle(req[:headers]["authorization"], request)
-    write_response(conn, response.status, response.headers, response.body)
+    result = server.charge(
+      req[:headers]["authorization"],
+      amount:      protected_amount,
+      description: "Ruby interop protected content",
+      splits:      splits.empty? ? nil : splits
+    )
+
+    case result
+    when Mpp::Challenge
+      write_response(conn, result.status, result.headers.merge("content-type" => "application/json"), result.body)
+    when Mpp::Settlement
+      write_response(conn, result.status, result.headers.merge("content-type" => "application/json"), {"ok" => true, "paid" => true})
+    end
     conn.close
   rescue StandardError => e
     warn "interop ruby server error: #{e.message}"

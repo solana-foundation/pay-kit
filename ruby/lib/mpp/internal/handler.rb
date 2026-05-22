@@ -3,15 +3,16 @@
 require "base64"
 
 module Mpp
-  module Server
-    # High-level Solana charge server: verify, settle, consume, receipt.
-    class ChargeHandler
+  module Internal
+    # High-level Solana charge orchestrator: verify, settle, consume, receipt.
+    # Not part of the public API — drive this through Mpp.create + Server#charge.
+    class Handler
       SURFPOOL_BLOCKHASH_PREFIX = "SURFNETxSAFEHASH"
       DEFAULT_SETTLEMENT_HEADER = "x-payment-settlement-signature"
 
       attr_reader :fee_payer, :network, :settlement_header
 
-      def initialize(challenges:, rpc:, replay_store:, fee_payer: nil, network: "mainnet-beta", settlement_header: DEFAULT_SETTLEMENT_HEADER, verifier: TransactionVerifier.new, confirmation_attempts: 40, confirmation_delay: 0.25)
+      def initialize(challenges:, rpc:, replay_store:, fee_payer: nil, network: "mainnet-beta", settlement_header: DEFAULT_SETTLEMENT_HEADER, verifier: Methods::Solana::Verifier.new, confirmation_attempts: 40, confirmation_delay: 0.25)
         @challenges = challenges
         @rpc = rpc
         @replay_store = replay_store
@@ -38,15 +39,13 @@ module Mpp
         signature = settle_payload(result.credential, request)
         consume_signature(signature)
         receipt = @challenges.create_receipt_header(challenge: result.challenge, reference: signature, external_id: request.external_id)
-        ChargeSettlement.new(
+        Settlement.new(
+          signature:      signature,
+          receipt_header: receipt,
           headers: {
-            "content-type" => "application/json",
             Core::Headers::PAYMENT_RECEIPT => receipt,
             settlement_header => signature
-          },
-          body: {"ok" => true, "paid" => true},
-          signature: signature,
-          receipt_header: receipt
+          }
         )
       rescue ArgumentError, Error => error
         @challenges.payment_required_response(request, reason: error.message)
@@ -69,7 +68,7 @@ module Mpp
       end
 
       def settle_pull(transaction_base64)
-        transaction = Solana::Transaction.from_base64(transaction_base64)
+        transaction = Methods::Solana::Transaction.from_base64(transaction_base64)
         check_network_blockhash(transaction.message.recent_blockhash)
         transaction.sign_with(fee_payer) if fee_payer
         signed_base64 = transaction.to_base64
