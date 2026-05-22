@@ -72,7 +72,7 @@ final class Base64UrlTest extends TestCase
     public function testRejectsNonJsonValuesDuringCanonicalization(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('JSON value must be a scalar, object, or list');
+        $this->expectExceptionMessage('unsupported JSON value');
 
         Base64Url::encodeJson(['object' => (object)['not' => 'json']]);
     }

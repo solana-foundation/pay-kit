@@ -44,11 +44,7 @@ final class Base64Url
      */
     public static function encodeJson(array $value): string
     {
-        try {
-            return self::encode(json_encode(self::canonicalizeJson($value), JSON_THROW_ON_ERROR));
-        } catch (JsonException $error) {
-            throw new InvalidArgumentException('Invalid JSON value', previous: $error);
-        }
+        return self::encode(Json::canonicalize($value));
     }
 
     /**
@@ -69,52 +65,6 @@ final class Base64Url
         }
 
         return Json::object($decoded, 'JSON value');
-    }
-
-    /**
-     * @param array<array-key, mixed>|bool|float|int|string|null $value
-     * @return array<array-key, mixed>|bool|float|int|string|null
-     */
-    private static function canonicalizeJson(array|bool|float|int|string|null $value): array|bool|float|int|string|null
-    {
-        if (!is_array($value)) {
-            return self::canonicalizeScalar($value);
-        }
-
-        if (array_is_list($value)) {
-            $items = [];
-            foreach ($value as $nested) {
-                $items[] = is_array($nested) ? self::canonicalizeJson($nested) : self::canonicalizeScalar($nested);
-            }
-
-            return $items;
-        }
-
-        ksort($value, SORT_STRING);
-        foreach ($value as $key => $nested) {
-            unset($value[$key]);
-            $value[(string)$key] = is_array($nested) ? self::canonicalizeJson($nested) : self::canonicalizeScalar($nested);
-        }
-
-        return $value;
-    }
-
-    /**
-     * @return bool|float|int|string|null
-     */
-    private static function canonicalizeScalar(mixed $value): bool|float|int|string|null
-    {
-        if (
-            $value === null ||
-            is_bool($value) ||
-            is_float($value) ||
-            is_int($value) ||
-            is_string($value)
-        ) {
-            return $value;
-        }
-
-        throw new InvalidArgumentException('JSON value must be a scalar, object, or list');
     }
 
     private static function pad(string $value): string

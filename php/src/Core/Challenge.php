@@ -108,7 +108,12 @@ final class Challenge
     }
 
     /**
-     * Return true when the challenge expiry is invalid or in the past.
+     * Strict RFC 3339 date-time grammar (sec 5.6); lowercase t/z accepted on parse, year 4 digits.
+     */
+    private const RFC3339_PATTERN = '/^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:\d{2})$/';
+
+    /**
+     * Return true when the challenge expiry is invalid or in the past (fail-closed).
      */
     public function isExpired(?DateTimeImmutable $now = null): bool
     {
@@ -116,7 +121,25 @@ final class Challenge
             return false;
         }
 
-        $expiresAt = DateTimeImmutable::createFromFormat(DATE_ATOM, $this->expires);
+        if (preg_match(self::RFC3339_PATTERN, $this->expires, $m) !== 1) {
+            return true;
+        }
+        $year = (int)$m[1];
+        $month = (int)$m[2];
+        $day = (int)$m[3];
+        $hour = (int)$m[4];
+        $minute = (int)$m[5];
+        $second = (int)$m[6];
+        if ($month < 1 || $month > 12 || $day < 1 || $day > 31 || $hour > 23 || $minute > 59 || $second > 59) {
+            return true;
+        }
+        if ($year > 9999 || !checkdate($month, $day, $year)) {
+            return true;
+        }
+
+        $expiresAt = DateTimeImmutable::createFromFormat(DATE_ATOM, $this->expires)
+            ?: DateTimeImmutable::createFromFormat('Y-m-d\TH:i:sp', $this->expires)
+            ?: DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.up', $this->expires);
         if ($expiresAt === false) {
             return true;
         }
