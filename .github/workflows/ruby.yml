@@ -1,0 +1,46 @@
+name: Ruby
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test-ruby:
+    name: Ruby tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - name: Validate gemspec
+        working-directory: ruby
+        run: bundle exec ruby -e "Gem::Specification.load('solana-mpp.gemspec').validate"
+      - name: Lint
+        working-directory: ruby
+        run: bundle exec standardrb
+      - name: Audit dependencies
+        working-directory: ruby
+        run: bundle exec bundle-audit check --update
+      - name: Run tests with coverage
+        working-directory: ruby
+        env:
+          SURFPOOL_REPORT: "1"
+        run: COVERAGE=1 bundle exec ruby -Itest test/run.rb
+      - name: Upload Ruby coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ruby-coverage
+          path: ruby/coverage/.resultset.json
+      - name: Upload Ruby surfpool report data
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: surfpool-reports-ruby
+          path: ruby/target/surfpool-reports/
+          if-no-files-found: ignore

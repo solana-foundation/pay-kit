@@ -27,7 +27,16 @@ Required fields:
 - `role`: `"server"`
 - `port`: local TCP port where the protected resource is served
 
-The server must expose the shared scenario resource path from `interopScenario.resourcePath` and protect it with the MPP `charge` flow. It should return a successful JSON response after payment and include the settlement header named by `interopScenario.settlementHeader`.
+The server must expose the shared scenario resource path from
+`interopScenario.resourcePath` and protect it with the MPP `charge` flow. It
+should return a successful JSON response after payment and include the
+settlement header named by `interopScenario.settlementHeader`.
+
+Server adapters should stay thin: read the harness environment, spin up the
+expected endpoint, route requests through the language SDK server, and return
+HTTP responses. Do not duplicate scenario expectations in each server adapter.
+The Vitest harness is responsible for asserting status, response body,
+recipient/split balance deltas, and the settled transaction shape in Surfpool.
 
 ### Client adapters
 
@@ -118,12 +127,17 @@ The current scenario set covers only the `charge` intent. It includes a basic
 payment, a split payment that requires the server fee payer to create the split
 recipient ATA, a negative network-mismatch payment, and a cross-route replay
 attempt where a credential issued for a cheaper route is replayed against a
-more expensive route. Scenarios can restrict the clients or servers they run
-against when an adapter does not yet report a structured failure for that
-negative case. Selecting `session` or `subscription` currently fails fast with a
-clear unsupported-intent error. Future coverage for those intents should add
-explicit scenarios behind the same selector instead of widening the default CI
-matrix implicitly.
+more expensive route. For successful charge scenarios, the harness fetches the
+settlement signature from Surfpool and centrally asserts the resulting
+transaction includes the expected SPL `transferChecked` instructions, split
+amounts, required idempotent ATA creation instructions, and memos. It also
+fails when the transaction contains unexpected extra `transferChecked`
+instructions for the scenario mint. Scenarios can restrict the clients or
+servers they run against when an adapter does not yet report a structured
+failure for that negative case. Selecting `session` or `subscription` currently
+fails fast with a clear unsupported-intent error. Future coverage for those
+intents should add explicit scenarios behind the same selector instead of
+widening the default CI matrix implicitly.
 
 ## Running
 
@@ -151,4 +165,7 @@ pnpm test
 `tests/interop` needs to install after the TypeScript package has produced its
 `dist` files.
 
-The harness starts Surfpool through `start-surfnet-proxy.mjs`, funds the test accounts, starts each enabled server adapter, runs each enabled client adapter against it, and verifies the recipient balance delta.
+The harness starts Surfpool through `start-surfnet-proxy.mjs`, funds the test
+accounts, starts each enabled server adapter, runs each enabled client adapter
+against it, verifies recipient/split balance deltas, and verifies the settled
+transaction shape for successful charge scenarios.

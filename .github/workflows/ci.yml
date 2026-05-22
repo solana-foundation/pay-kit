@@ -421,6 +421,11 @@ jobs:
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck
@@ -442,3 +447,15 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: rust
+      - name: Run Ruby server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: ruby
+      - name: Run Rust client to Ruby server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: ruby

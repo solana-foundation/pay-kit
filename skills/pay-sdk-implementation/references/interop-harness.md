@@ -44,6 +44,13 @@ The server must:
 - Return a successful JSON body after payment
 - Include the `interopScenario.settlementHeader` header on success
 
+Keep server adapters thin. A new server adapter should only spin up the
+expected endpoint, translate environment variables into the language SDK's
+server configuration, and return HTTP responses. It should not duplicate
+scenario expectations. The canonical TypeScript/Vitest harness owns the
+assertions: status, response body, recipient/split balance deltas, and the
+settled Surfpool transaction shape.
+
 ### Client `result` message
 
 ```json
@@ -182,5 +189,12 @@ in that file are the pattern.
   token account before serving — see
   `rust/src/bin/interop_server.rs` and
   `rust/examples/payment_link_server.rs:160-186` for the pattern.
+- **Expectations are centralized.** For successful charge scenarios,
+  the harness fetches the settlement signature from Surfpool and
+  verifies the resulting transaction includes expected SPL
+  `transferChecked` instructions, split amounts, required idempotent
+  ATA creation instructions, and memos. It also fails on unexpected
+  extra `transferChecked` instructions for the scenario mint. Do not
+  re-implement those checks in every language adapter.
 - **Don't pin a parallel Solana SDK** in the interop adapter. Path-
   depend on your main package and reuse its primitives.

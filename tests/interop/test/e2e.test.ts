@@ -1,6 +1,11 @@
 import net from "node:net";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createSolanaRpc } from "@solana/kit";
+import {
+  createSolanaRpc,
+  getBase64Codec,
+  getCompiledTransactionMessageDecoder,
+  getTransactionDecoder,
+} from "@solana/kit";
 import { Surfnet } from "surfpool-sdk";
 import { InteropScenario, selectInteropScenarios } from "../src/contracts";
 import {
@@ -12,6 +17,8 @@ import { runClient, startServer, stopServer } from "../src/process";
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const MINT_ACCOUNT_SIZE = 82;
 
 const runningServers: RunningServer[] = [];
@@ -19,6 +26,18 @@ const runningServers: RunningServer[] = [];
 let surfnet: Surfnet | undefined;
 let interopEnv: Record<string, string> | undefined;
 let splitRecipients: Record<string, string> = {};
+
+type CompiledInstruction = {
+  accountIndices: readonly number[];
+  data: Uint8Array;
+  programAddressIndex: number;
+};
+
+type CompiledMessage = {
+  addressTableLookups?: readonly unknown[];
+  instructions: readonly CompiledInstruction[];
+  staticAccounts: readonly unknown[];
+};
 
 async function canBindLocalSocket(): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
@@ -193,6 +212,12 @@ describe("mpp interop", () => {
               });
               expect(typeof result.settlement).toBe("string");
               expect(result.settlement).not.toHaveLength(0);
+              await expectSettledTransactionShape(
+                surfnet,
+                scenario,
+                scenarioEnv,
+                result.settlement,
+              );
               expect(finalBalance - initialBalance).toBe(
                 primaryDelta(scenario),
               );
@@ -242,6 +267,241 @@ function environmentForScenario(
       })),
     ),
   };
+}
+
+async function expectSettledTransactionShape(
+  surfnet: Surfnet,
+  scenario: InteropScenario,
+  scenarioEnv: Record<string, string>,
+  settlement: unknown,
+): Promise<void> {
+  if (typeof settlement !== "string" || settlement.length === 0) {
+    throw new Error(`Scenario ${scenario.id} did not return a settlement signature`);
+  }
+
+  const transaction = await fetchTransactionBase64(
+    scenarioEnv.MPP_INTEROP_RPC_URL,
+    settlement,
+  );
+  const message = decodeTransactionMessage(transaction);
+  expect(message.addressTableLookups ?? []).toHaveLength(0);
+
+  const matchedInstructions = new Set<number>();
+  const expectedTransferCount = 1 + (scenario.splits?.length ?? 0);
+  const primaryAmount = primaryDelta(scenario);
+  expectSplTransferChecked(
+    message,
+    {
+      destination: surfnet.getAta(
+        scenarioEnv.MPP_INTEROP_PAY_TO,
+        scenarioEnv.MPP_INTEROP_MINT,
+      ),
+      mint: scenarioEnv.MPP_INTEROP_MINT,
+      amount: primaryAmount,
+      decimals: 6,
+    },
+    matchedInstructions,
+  );
+
+  for (const split of scenario.splits ?? []) {
+    const recipient = splitRecipients[split.recipientKey];
+    const destination = surfnet.getAta(recipient, scenarioEnv.MPP_INTEROP_MINT);
+    expectSplTransferChecked(
+      message,
+      {
+        destination,
+        mint: scenarioEnv.MPP_INTEROP_MINT,
+        amount: BigInt(split.amount),
+        decimals: 6,
+      },
+      matchedInstructions,
+    );
+
+    if (split.ataCreationRequired === true) {
+      expectIdempotentAtaCreation(message, {
+        ata: destination,
+        owner: recipient,
+        mint: scenarioEnv.MPP_INTEROP_MINT,
+      });
+    }
+
+    if (split.memo) {
+      expectMemo(message, split.memo);
+    }
+  }
+
+  expectTransferCheckedCount(message, scenarioEnv.MPP_INTEROP_MINT, expectedTransferCount);
+}
+
+async function fetchTransactionBase64(
+  rpcUrl: string,
+  signature: string,
+): Promise<string> {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTransaction",
+      params: [
+        signature,
+        {
+          commitment: "confirmed",
+          encoding: "base64",
+          maxSupportedTransactionVersion: 0,
+        },
+      ],
+    }),
+  });
+  const payload = (await response.json()) as {
+    error?: { message?: string };
+    result?: {
+      meta?: { err?: unknown };
+      transaction?: [string, string];
+    } | null;
+  };
+  if (payload.error) {
+    throw new Error(payload.error.message ?? "getTransaction failed");
+  }
+  if (!payload.result) {
+    throw new Error(`getTransaction returned no result for ${signature}`);
+  }
+  expect(payload.result.meta?.err ?? null).toBeNull();
+  const transaction = payload.result.transaction?.[0];
+  if (!transaction) {
+    throw new Error(`getTransaction returned no base64 transaction for ${signature}`);
+  }
+  return transaction;
+}
+
+function decodeTransactionMessage(transactionBase64: string): CompiledMessage {
+  const txBytes = getBase64Codec().encode(transactionBase64);
+  const decoded = getTransactionDecoder().decode(txBytes);
+  return getCompiledTransactionMessageDecoder().decode(
+    decoded.messageBytes,
+  ) as unknown as CompiledMessage;
+}
+
+function expectSplTransferChecked(
+  message: CompiledMessage,
+  expected: {
+    destination: string;
+    mint: string;
+    amount: bigint;
+    decimals: number;
+  },
+  matchedInstructions: Set<number>,
+): void {
+  const match = message.instructions.findIndex((instruction, index) => {
+    if (matchedInstructions.has(index)) {
+      return false;
+    }
+    if (accountAt(message, instruction.programAddressIndex) !== TOKEN_PROGRAM) {
+      return false;
+    }
+    if (instruction.data[0] !== 12) {
+      return false;
+    }
+    if (instruction.accountIndices.length < 4) {
+      return false;
+    }
+
+    const amount = readU64Le(instruction.data, 1);
+    const decimals = instruction.data[9];
+    return (
+      accountAt(message, instruction.accountIndices[1]) === expected.mint &&
+      accountAt(message, instruction.accountIndices[2]) === expected.destination &&
+      amount === expected.amount &&
+      decimals === expected.decimals
+    );
+  });
+
+  expect(
+    match,
+    `missing transferChecked mint=${expected.mint} destination=${expected.destination} amount=${expected.amount}`,
+  ).not.toBe(-1);
+  matchedInstructions.add(match);
+}
+
+function expectIdempotentAtaCreation(
+  message: CompiledMessage,
+  expected: {
+    ata: string;
+    owner: string;
+    mint: string;
+  },
+): void {
+  const match = message.instructions.find((instruction) => {
+    if (accountAt(message, instruction.programAddressIndex) !== ASSOCIATED_TOKEN_PROGRAM) {
+      return false;
+    }
+    if (instruction.data[0] !== 1) {
+      return false;
+    }
+    return (
+      accountAt(message, instruction.accountIndices[1]) === expected.ata &&
+      accountAt(message, instruction.accountIndices[2]) === expected.owner &&
+      accountAt(message, instruction.accountIndices[3]) === expected.mint &&
+      accountAt(message, instruction.accountIndices[4]) === SYSTEM_PROGRAM &&
+      accountAt(message, instruction.accountIndices[5]) === TOKEN_PROGRAM
+    );
+  });
+
+  expect(
+    match,
+    `missing idempotent ATA creation ata=${expected.ata} owner=${expected.owner} mint=${expected.mint}`,
+  ).toBeDefined();
+}
+
+function expectTransferCheckedCount(
+  message: CompiledMessage,
+  mint: string,
+  expectedCount: number,
+): void {
+  const transfers = message.instructions.filter((instruction) => {
+    if (accountAt(message, instruction.programAddressIndex) !== TOKEN_PROGRAM) {
+      return false;
+    }
+    if (instruction.data[0] !== 12 || instruction.accountIndices.length < 4) {
+      return false;
+    }
+    return accountAt(message, instruction.accountIndices[1]) === mint;
+  });
+
+  expect(
+    transfers,
+    `unexpected transferChecked instruction count for mint=${mint}`,
+  ).toHaveLength(expectedCount);
+}
+
+function expectMemo(message: CompiledMessage, memo: string): void {
+  const encoder = new TextEncoder();
+  const expected = encoder.encode(memo);
+  const match = message.instructions.find((instruction) => {
+    if (accountAt(message, instruction.programAddressIndex) !== "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr") {
+      return false;
+    }
+    return bytesEqual(instruction.data, expected);
+  });
+
+  expect(match, `missing memo instruction ${memo}`).toBeDefined();
+}
+
+function accountAt(message: CompiledMessage, index: number): string {
+  return String(message.staticAccounts[index]);
+}
+
+function readU64Le(bytes: Uint8Array, offset: number): bigint {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getBigUint64(offset, true);
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
 }
 
 async function splitBalances(

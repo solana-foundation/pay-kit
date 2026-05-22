@@ -1,0 +1,36 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Install Ruby dependencies.
+install:
+    bundle install
+
+# Validate the Ruby gemspec.
+build:
+    bundle exec ruby -e "Gem::Specification.load('solana-mpp.gemspec').validate"
+
+# Run the Ruby unit test suite.
+test:
+    bundle exec ruby -Itest test/run.rb
+
+# Run Standard Ruby in fix mode.
+fmt:
+    bundle exec standardrb --fix
+
+# Run Standard Ruby without modifying files.
+lint:
+    bundle exec standardrb
+
+# Run Bundler Audit.
+audit:
+    bundle exec bundle-audit check --update
+
+# Run tests with line and branch coverage gates, then refresh README badges.
+test-cover:
+    COVERAGE=1 bundle exec ruby -Itest test/run.rb
+    bundle exec ruby scripts/update_coverage_badge.rb coverage/.resultset.json README.md
+
+# Run all local Ruby gates.
+check: build lint audit test-cover

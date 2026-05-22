@@ -10,20 +10,20 @@ Solana payment method for the [Machine Payments Protocol](https://mpp.dev).
 
 ## SDK Implementations
 
-The Solana MPP SDK is available in 5 languages. Every implementation follows the same protocol and is tested for cross-language interoperability.
+The Solana MPP SDK is available in 6 languages. Every implementation follows the same protocol and is tested for cross-language interoperability.
 
-| | TypeScript | Rust | Go | Python | Lua |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **Package** | [@solana/mpp](https://www.npmjs.com/package/@solana/mpp) | — | — | — | — |
-| **Server (charge)** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Client (auto-402)** | ✅ | ✅ | ✅ | ✅ | — |
-| **Payment links** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Fee sponsorship** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Split payments** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **SPL tokens** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Token-2022** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Replay protection** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Session (pay-as-you-go)** | — | — | — | — | — |
+| | TypeScript | Rust | Go | Python | Lua | Ruby |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Package** | [@solana/mpp](https://www.npmjs.com/package/@solana/mpp) | — | — | — | — | — |
+| **Server (charge)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Client (auto-402)** | ✅ | ✅ | ✅ | ✅ | — | — |
+| **Payment links** | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| **Fee sponsorship** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Split payments** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **SPL tokens** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Token-2022** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Replay protection** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Session (pay-as-you-go)** | — | — | — | — | — | — |
 
 ### Testing
 
@@ -43,6 +43,7 @@ The interop harness can run a full client/server cross-product, but CI keeps the
    │  Go            │──────┼──────▶│  Go         :3002   │
    │  Python        │──────┤       │  Lua        :3003   │
    └────────────────┘      │       │  Python     :3004   │
+                           │       │  Ruby       :3005   │
                            │       └─────────┬──────────┘
                            │                 │
                            │          ┌──────┴───────┐
@@ -60,6 +61,7 @@ The interop harness can run a full client/server cross-product, but CI keeps the
 | Go | ![Go](https://img.shields.io/badge/coverage-84%25-green) | `just go-test` |
 | Python | ![Python](https://img.shields.io/badge/coverage-87%25-green) | `just py-test` |
 | Lua | ![Lua](https://img.shields.io/badge/coverage-41_tests-blue) | `just lua-test` |
+| Ruby | ![Ruby](https://img.shields.io/badge/coverage-98%25-green) | `just rb-test-cover` |
 | Interop | ![Interop](https://img.shields.io/badge/interop-TypeScript_harness-brightgreen) | `cd tests/interop && pnpm test` |
 
 See [`tests/interop/README.md`](tests/interop/README.md) for the process adapter contract used by the Surfpool-backed client/server matrix.
@@ -78,6 +80,9 @@ go get github.com/solana-foundation/mpp-sdk/go
 
 # Python
 pip install solana-mpp
+
+# Ruby
+cd ruby && bundle install
 ```
 
 ## Quick Start
@@ -223,7 +228,7 @@ See [demo/README.md](demo/README.md) for full details.
 ## Development
 
 ```bash
-just build            # Build all SDKs (html → ts → rust → go)
+just build            # Build all SDKs (html → ts → rust → go → ruby)
 just test             # Test all SDKs
 just pre-commit       # Full pre-commit checks
 
@@ -233,6 +238,7 @@ just rs-test          # Rust tests
 just go-test          # Go tests
 just py-test          # Python tests
 just lua-test         # Lua tests
+just rb-test-cover    # Ruby tests with line and branch coverage
 
 # Integration
 just html-build       # Build payment link assets

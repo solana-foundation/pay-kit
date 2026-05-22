@@ -141,6 +141,38 @@ php-lint:
 php-test-cover:
     cd php && just test-cover
 
+# ── Ruby ──
+# Recipes live in ruby/Justfile. The wrappers below keep root orchestration
+# aligned with the language-local gate.
+
+# Install Ruby SDK dependencies
+rb-install:
+    cd ruby && just install
+
+# Validate Ruby gemspec
+rb-build:
+    cd ruby && just build
+
+# Run Ruby unit tests
+rb-test:
+    cd ruby && just test
+
+# Format Ruby SDK
+rb-fmt:
+    cd ruby && just fmt
+
+# Lint Ruby SDK
+rb-lint:
+    cd ruby && just lint
+
+# Audit Ruby SDK dependencies
+rb-audit:
+    cd ruby && just audit
+
+# Run Ruby line and branch coverage gates
+rb-test-cover:
+    cd ruby && just test-cover
+
 # ── HTML Payment Links ──
 
 # Install HTML payment link dependencies
@@ -162,16 +194,16 @@ html-test-e2e:
 # ── Orchestration ──
 
 # Build compiled SDKs
-build: html-build ts-build rs-build go-build php-build
+build: html-build ts-build rs-build go-build php-build rb-build
 
 # Run all unit tests
-test: ts-test rs-test go-test lua-test py-test php-test
+test: ts-test rs-test go-test lua-test py-test php-test rb-test
 
 # Run all tests including integration + coverage gates
-test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover php-test-cover
+test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover php-test-cover rb-test-cover
 
 # Format everything
-fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt
+fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt rb-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover php-lint php-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover

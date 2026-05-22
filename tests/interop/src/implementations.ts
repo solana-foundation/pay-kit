@@ -95,4 +95,15 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: ["php", "php-server/server.php"],
     enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
   },
+  {
+    id: "ruby",
+    label: "Ruby HTTP server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "cd ../../ruby && bundle exec ruby ../tests/interop/ruby-server/server.rb",
+    ],
+    enabled: isEnabled("ruby", "MPP_INTEROP_SERVERS", false),
+  },
 ];

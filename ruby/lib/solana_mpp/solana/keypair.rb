@@ -1,0 +1,34 @@
+# frozen_string_literal: true
+
+require "ed25519"
+require "json"
+
+module SolanaMpp
+  module Solana
+    # In-memory Solana Ed25519 keypair loaded from canonical JSON bytes.
+    class Keypair
+      attr_reader :secret_key, :public_key
+
+      def initialize(bytes)
+        raise ArgumentError, "keypair must have 64 bytes" unless bytes.length == 64
+
+        @secret_key = bytes
+        @signing_key = Ed25519::SigningKey.new(bytes[0, 32].pack("C*"))
+        @public_key = PublicKey.new(bytes[32, 32].pack("C*"))
+      end
+
+      # Build a keypair from a JSON array string.
+      def self.from_json_array(raw)
+        bytes = JSON.parse(raw)
+        raise ArgumentError, "secret key must be a JSON array" unless bytes.is_a?(Array)
+
+        new(bytes.map { |byte| Integer(byte) })
+      end
+
+      # Sign Solana message bytes.
+      def sign(message)
+        @signing_key.sign(message)
+      end
+    end
+  end
+end
