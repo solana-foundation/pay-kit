@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use SolanaMpp\Intent\ChargeRequest;
+use SolanaMpp\Store\MemoryStore;
+use SolanaMpp\Store\Store;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
 use SolanaPhpSdk\Transaction\Transaction;
@@ -29,7 +31,10 @@ use SolanaPhpSdk\Util\Base58;
  */
 final class SolanaChargeHandler
 {
+    private const REPLAY_KEY_PREFIX = 'solana-charge:consumed:';
+
     private readonly PaymentVerifier $verifier;
+    private readonly Store $replayStore;
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
@@ -51,6 +56,10 @@ final class SolanaChargeHandler
      *        `getSignatureStatuses` before giving up. 40 attempts at the
      *        default delay = 10 seconds.
      * @param int $confirmationDelayMicros Sleep between polls in microseconds.
+     * @param ?Store $replayStore Replay-protection store. Defaults to an
+     *        in-process {@see MemoryStore}; production deployments should
+     *        inject a shared atomic store (Redis, Postgres) so replay
+     *        protection survives restarts and worker pools.
      */
     public function __construct(
         private readonly ChargeServer $challenges,
@@ -61,8 +70,10 @@ final class SolanaChargeHandler
         ?PaymentVerifier $verifier = null,
         private readonly int $confirmationAttempts = 40,
         private readonly int $confirmationDelayMicros = 250_000,
+        ?Store $replayStore = null,
     ) {
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
+        $this->replayStore = $replayStore ?? new MemoryStore();
     }
 
     /**
@@ -141,8 +152,15 @@ final class SolanaChargeHandler
     }
 
     /**
-     * Co-sign (if a fee-payer is configured), broadcast, and wait for
-     * confirmation. Returns the on-chain signature.
+     * Co-sign (if a fee-payer is configured), broadcast, claim the signature
+     * in the replay store, then wait for confirmation. Returns the on-chain
+     * signature.
+     *
+     * `consumeSignature` is called between broadcast and confirmation
+     * polling on purpose. If the server crashes or the polling times out
+     * after `sendRawTransaction` accepted the transaction, the signature
+     * has already landed and must not be re-settled by a retry of the same
+     * credential. See PR #85 Greptile P1 and audit gap G05.
      */
     private function settle(string $transactionBase64): string
     {
@@ -171,8 +189,20 @@ final class SolanaChargeHandler
             'preflightCommitment' => 'confirmed',
         ]);
 
+        $this->consumeSignature($signature);
         $this->awaitConfirmation($signature);
         return $signature;
+    }
+
+    /**
+     * Reserve the signature in the replay store. Throws on replay attempts.
+     */
+    private function consumeSignature(string $signature): void
+    {
+        $key = self::REPLAY_KEY_PREFIX . $signature;
+        if (!$this->replayStore->putIfAbsent($key, true)) {
+            throw new RuntimeException("Transaction signature already consumed: $signature");
+        }
     }
 
     private function awaitConfirmation(string $signature): void
