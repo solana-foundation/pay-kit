@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "date"
 require "openssl"
 require "time"
 
@@ -74,11 +75,34 @@ module Mpp
         secure_compare(expected, id)
       end
 
-      # Return true if the challenge is expired or has an invalid timestamp.
+      # Strict RFC 3339 date-time (sec 5.6) without leap-second support.
+      # Year is exactly 4 digits, T literal accepted upper or lower (per parse SHOULD), fractional seconds 1..9 digits.
+      RFC3339_REGEX = /\A
+        (\d{4})-(\d{2})-(\d{2})         # full-date
+        [Tt]
+        (\d{2}):(\d{2}):(\d{2})         # partial-time
+        (?:\.(\d{1,9}))?                # time-secfrac
+        (Z|z|[+-]\d{2}:\d{2})           # time-offset
+        \z/x
+      private_constant :RFC3339_REGEX
+
+      # Return true if the challenge is expired or has an invalid timestamp (fail-closed).
       def expired?(now: Time.now.utc)
         return false if expires.nil?
 
-        Time.iso8601(expires) <= now
+        match = RFC3339_REGEX.match(expires)
+        return true unless match
+
+        year, month, day = match[1].to_i, match[2].to_i, match[3].to_i
+        hour, minute, second = match[4].to_i, match[5].to_i, match[6].to_i
+        return true if month < 1 || month > 12
+        return true if day < 1 || day > 31
+        return true if hour > 23 || minute > 59 || second > 59
+        return true if year > 9999
+        return true unless Date.valid_date?(year, month, day)
+
+        parsed = Time.iso8601(expires)
+        parsed <= now
       rescue ArgumentError
         true
       end
