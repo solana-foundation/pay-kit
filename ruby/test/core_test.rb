@@ -47,6 +47,25 @@ class CoreTest < Minitest::Test
     assert_equal "b", results[1].id
   end
 
+  def test_parse_www_authenticate_all_partial_success
+    # First challenge has an invalid method; second is valid. Should yield one challenge.
+    h = 'Payment id="bad", realm="r", method="BAD", intent="charge", request="e30", ' \
+        'Payment id="ok", realm="r", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all(h)
+    assert_equal 1, results.length
+    assert_equal "ok", results[0].id
+  end
+
+  def test_canonical_json_es6_extra
+    # ES6 ToString: 1e-6 plain notation, 1e-7 exponential.
+    assert_equal "0.000001", Mpp::Core::Json.canonical_generate(1e-6)
+    assert_equal "1e-7", Mpp::Core::Json.canonical_generate(1e-7)
+    # 1e20 plain notation (still fits in plain form).
+    assert_equal "100000000000000000000", Mpp::Core::Json.canonical_generate(1e20)
+    # 0.1 + 0.2 round-trip preserves precision.
+    assert_equal "0.30000000000000004", Mpp::Core::Json.canonical_generate(0.1 + 0.2)
+  end
+
   def test_canonical_json_utf16_key_order
     # 'é' (U+00E9) > 'f' (U+0066) in UTF-16 code units, so 'f' sorts first.
     value = {"é" => 1, "f" => 2}

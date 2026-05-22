@@ -71,25 +71,61 @@ module Mpp
         end
 
         # ES6 ToString (ECMA-262 7.1.12.1) number serialization for JCS (RFC 8785 sec 3.2.2.3).
+        #
+        # Mirrors V8/JavaScriptCore semantics: plain decimal notation when the shortest
+        # round-trip representation has decimal exponent k with -6 < k <= 21, exponential
+        # form ("Ne+EE") otherwise.
         def encode_number(value)
           raise ArgumentError, "cannot encode NaN" if value.nan?
           raise ArgumentError, "cannot encode Infinity" if value.infinite?
           return "0" if value.zero? # collapses -0 to "0"
-          return value.to_i.to_s if value.finite? && value == value.to_i && value.abs < 1e21
 
-          # Use Ruby's shortest-round-trip formatter (Float#to_s is shortest-round-trip since 2.0).
-          # Then normalize to ES6 form: drop ".0" trailing on integers, use lowercase e, e+NN with sign.
-          ruby_repr = value.to_s
-          # Ruby Float#to_s emits "1.0e+21" for 1e21 and "1.0e-7" for 1e-7. ES6 ToString uses "1e+21" / "1e-7".
-          if ruby_repr.include?("e")
-            mantissa, exp = ruby_repr.split("e")
-            mantissa = mantissa.sub(/\.0\z/, "")
-            exp_int = exp.to_i
-            sign = (exp_int >= 0) ? "+" : "-"
-            "#{mantissa}e#{sign}#{exp_int.abs}"
+          sign = value.negative? ? "-" : ""
+          digits, k = shortest_digits_and_exponent(value.abs)
+          format_es6_number(sign, digits, k)
+        end
+
+        # Return [digits, k] where digits is the shortest decimal mantissa and k is the
+        # decimal exponent of the leading digit, so that value = 0.<digits> * 10^(k+1).
+        def shortest_digits_and_exponent(abs_value)
+          repr = abs_value.to_s # Ruby Float#to_s is shortest-round-trip.
+          if repr.include?("e")
+            mantissa, exp_str = repr.split("e")
+            exp_int = exp_str.to_i
           else
-            ruby_repr.sub(/\.0\z/, "")
+            mantissa = repr
+            exp_int = 0
           end
+          int_part, frac_part = mantissa.split(".")
+          frac_part ||= ""
+          combined = int_part + frac_part
+          # k_repr: the exponent of the leading digit if we treat 'combined' as 0.<combined> * 10^(int_part.length + exp_int).
+          # i.e. value = combined * 10^(exp_int - frac_part.length).
+          # decimal_exponent_of_leading_nonzero = (exp_int + int_part.length) - (number of leading zeros stripped) - 1.
+          stripped = combined.sub(/\A0+/, "")
+          leading_zeros = combined.length - stripped.length
+          digits = stripped.sub(/0+\z/, "")
+          digits = "0" if digits.empty?
+          decimal_exponent = exp_int + int_part.length - 1 - leading_zeros
+          [digits, decimal_exponent]
+        end
+
+        # Render digits + decimal exponent k as ES6 ToString.
+        # Uses plain decimal when -6 < k <= 20, otherwise exponential.
+        def format_es6_number(sign, digits, k)
+          n = digits.length
+          if k.between?(0, 20)
+            if n <= k + 1
+              return sign + digits + ("0" * (k + 1 - n))
+            end
+            return sign + digits[0, k + 1] + "." + digits[(k + 1)..]
+          end
+          if k < 0 && k > -7
+            return sign + "0." + ("0" * (-k - 1)) + digits
+          end
+          mantissa = (n == 1) ? digits : (digits[0] + "." + digits[1..])
+          exp_sign = (k >= 0) ? "+" : "-"
+          sign + mantissa + "e" + exp_sign + k.abs.to_s
         end
 
         ESCAPE_TABLE = {

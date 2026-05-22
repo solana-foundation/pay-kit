@@ -94,7 +94,10 @@ final class Json
     }
 
     /**
-     * ES6 ToString number serialization for JCS (RFC 8785 sec 3.2.2.3).
+     * ES6 ToString (ECMA-262 7.1.12.1) number serialization for JCS (RFC 8785 sec 3.2.2.3).
+     *
+     * Plain decimal notation when the shortest round-trip representation has decimal exponent k
+     * with -6 < k <= 20, exponential form otherwise.
      */
     private static function encodeNumber(float $value): string
     {
@@ -104,30 +107,73 @@ final class Json
         if (is_infinite($value)) {
             throw new InvalidArgumentException('cannot encode Infinity');
         }
-        if ($value === 0.0 || $value === -0.0) {
+        if ($value === 0.0) {
             return '0';
         }
-        if ($value === floor($value) && abs($value) < 1e21) {
-            return (string)(int)$value;
+        $sign = $value < 0 ? '-' : '';
+        [$digits, $k] = self::shortestDigitsAndExponent(abs($value));
+        return self::formatEs6Number($sign, $digits, $k);
+    }
+
+    /**
+     * @return array{0: string, 1: int}
+     */
+    private static function shortestDigitsAndExponent(float $absValue): array
+    {
+        // PHP's (string) cast respects serialize_precision but is not always shortest round-trip
+        // for edge values like 0.30000000000000004. Use sprintf with the explicit shortest-trip
+        // %.17g and the shorter %.15g fallback if it round-trips.
+        $short = sprintf('%.15g', $absValue);
+        if ((float)$short === $absValue) {
+            $repr = $short;
+        } else {
+            $repr = sprintf('%.17g', $absValue);
         }
-        // Use round-trip-precision serialization (PHP 7.1+ defaults to 17 with serialize_precision=-1).
-        $repr = (string)$value;
-        // PHP may emit "1.0E+21" or "1.0e+21"; normalize to ES6 form.
         if (stripos($repr, 'e') !== false) {
             $parts = preg_split('/[eE]/', $repr);
-            if ($parts === false || count($parts) !== 2) {
-                return $repr;
+            if (!is_array($parts) || count($parts) !== 2) {
+                return [$repr, 0];
             }
-            [$mantissa, $exp] = $parts;
-            $mantissa = rtrim(rtrim($mantissa, '0'), '.');
-            if ($mantissa === '' || $mantissa === '-') {
-                $mantissa .= '0';
-            }
-            $expInt = (int)$exp;
-            $sign = $expInt >= 0 ? '+' : '-';
-            return $mantissa . 'e' . $sign . abs($expInt);
+            $mantissa = $parts[0];
+            $expInt = (int)$parts[1];
+        } else {
+            $mantissa = $repr;
+            $expInt = 0;
         }
-        return $repr;
+        $dotPos = strpos($mantissa, '.');
+        if ($dotPos === false) {
+            $intPart = $mantissa;
+            $fracPart = '';
+        } else {
+            $intPart = substr($mantissa, 0, $dotPos);
+            $fracPart = substr($mantissa, $dotPos + 1);
+        }
+        $combined = $intPart . $fracPart;
+        $stripped = ltrim($combined, '0');
+        $leadingZeros = strlen($combined) - strlen($stripped);
+        $digits = rtrim($stripped, '0');
+        if ($digits === '') {
+            $digits = '0';
+        }
+        $decimalExponent = $expInt + strlen($intPart) - 1 - $leadingZeros;
+        return [$digits, $decimalExponent];
+    }
+
+    private static function formatEs6Number(string $sign, string $digits, int $k): string
+    {
+        $n = strlen($digits);
+        if ($k >= 0 && $k <= 20) {
+            if ($n <= $k + 1) {
+                return $sign . $digits . str_repeat('0', $k + 1 - $n);
+            }
+            return $sign . substr($digits, 0, $k + 1) . '.' . substr($digits, $k + 1);
+        }
+        if ($k < 0 && $k > -7) {
+            return $sign . '0.' . str_repeat('0', -$k - 1) . $digits;
+        }
+        $mantissa = $n === 1 ? $digits : ($digits[0] . '.' . substr($digits, 1));
+        $expSign = $k >= 0 ? '+' : '-';
+        return $sign . $mantissa . 'e' . $expSign . abs($k);
     }
 
     /**

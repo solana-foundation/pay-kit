@@ -141,6 +141,57 @@ local function compare_utf16(a, b)
   return #au < #bu
 end
 
+-- Render digits + decimal exponent k as ES6 ToString (ECMA-262 7.1.12.1).
+local function format_es6_number(sign, digits, k)
+  local n = #digits
+  if k >= 0 and k <= 20 then
+    if n <= k + 1 then
+      return sign .. digits .. string.rep('0', k + 1 - n)
+    end
+    return sign .. digits:sub(1, k + 1) .. '.' .. digits:sub(k + 2)
+  end
+  if k < 0 and k > -7 then
+    return sign .. '0.' .. string.rep('0', -k - 1) .. digits
+  end
+  local mantissa = n == 1 and digits or (digits:sub(1, 1) .. '.' .. digits:sub(2))
+  local exp_sign = k >= 0 and '+' or '-'
+  return sign .. mantissa .. 'e' .. exp_sign .. math.abs(k)
+end
+
+-- Return digits, k (decimal exponent of leading digit) for the shortest round-trip decimal of abs(value).
+local function shortest_digits_and_exponent(abs_value)
+  local short = string.format('%.15g', abs_value)
+  local repr = (tonumber(short) == abs_value) and short or string.format('%.17g', abs_value)
+  local mantissa, exp_str
+  local e_idx = repr:find('[eE]')
+  if e_idx then
+    mantissa = repr:sub(1, e_idx - 1)
+    exp_str = repr:sub(e_idx + 1)
+  else
+    mantissa = repr
+    exp_str = '0'
+  end
+  local exp_int = tonumber(exp_str)
+  local dot_pos = mantissa:find('%.', 1, false)
+  local int_part, frac_part
+  if dot_pos then
+    int_part = mantissa:sub(1, dot_pos - 1)
+    frac_part = mantissa:sub(dot_pos + 1)
+  else
+    int_part = mantissa
+    frac_part = ''
+  end
+  local combined = int_part .. frac_part
+  local stripped = combined:gsub('^0+', '')
+  local leading_zeros = #combined - #stripped
+  local digits = stripped:gsub('0+$', '')
+  if digits == '' then
+    digits = '0'
+  end
+  local decimal_exponent = exp_int + #int_part - 1 - leading_zeros
+  return digits, decimal_exponent
+end
+
 -- ES6 ToString number serialization (ECMA-262 7.1.12.1) for JCS (RFC 8785 sec 3.2.2.3).
 local function encode_number(value)
   if value ~= value or value == math.huge or value == -math.huge then
@@ -149,29 +200,9 @@ local function encode_number(value)
   if value == 0 then
     return '0'
   end
-  if value == math.floor(value) and math.abs(value) < 1e21 then
-    return string.format('%d', value)
-  end
-  -- Use %.17g for round-trip precision then strip trailing zeros and normalize exponent.
-  local repr = string.format('%.17g', value)
-  -- Try shorter %.15g first if it round-trips; this mirrors most ES6 ToString outputs.
-  local short = string.format('%.15g', value)
-  if tonumber(short) == value then
-    repr = short
-  end
-  local e_idx = repr:find('[eE]')
-  if e_idx then
-    local mantissa = repr:sub(1, e_idx - 1)
-    local exp_str = repr:sub(e_idx + 1)
-    mantissa = mantissa:gsub('0+$', ''):gsub('%.$', '')
-    if mantissa == '' or mantissa == '-' then
-      mantissa = mantissa .. '0'
-    end
-    local exp_int = tonumber(exp_str)
-    local sign = exp_int >= 0 and '+' or '-'
-    return mantissa .. 'e' .. sign .. math.abs(exp_int)
-  end
-  return repr
+  local sign = value < 0 and '-' or ''
+  local digits, k = shortest_digits_and_exponent(math.abs(value))
+  return format_es6_number(sign, digits, k)
 end
 
 local function encode_value(value)
