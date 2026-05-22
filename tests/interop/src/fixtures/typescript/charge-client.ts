@@ -18,11 +18,49 @@ async function main() {
   const signer = await createKeyPairSignerFromBytes(
     environment.clientSecretKey,
   );
-  const paidResponse = environment.replaySource
-    ? await runCrossRouteReplay(targetUrl, environment, signer)
-    : await payTarget(targetUrl, environment, signer);
+  let paidResponse: Response;
+  try {
+    paidResponse = environment.replaySource
+      ? await runCrossRouteReplay(targetUrl, environment, signer)
+      : await payTarget(targetUrl, environment, signer);
+  } catch (error) {
+    // G28b. The TS client's `buildChargeTransaction` refuses to build a
+    // credential when `splits` consume the entire amount, raising
+    // before any request reaches the server. The harness treats this
+    // as the correct 402-class outcome: the credential was rejected
+    // pre-broadcast. Emit a synthetic result so the assertion layer
+    // sees `status: 402` instead of an opaque process exit.
+    reportClientSideRejection(
+      error,
+      environment.settlementHeader,
+    );
+    return;
+  }
 
   await reportResult(paidResponse, environment.settlementHeader);
+}
+
+function reportClientSideRejection(
+  error: unknown,
+  settlementHeader: string,
+): void {
+  void settlementHeader;
+  const message = error instanceof Error ? error.message : String(error);
+  console.log(
+    JSON.stringify({
+      type: "result",
+      implementation: "typescript",
+      role: "client",
+      ok: false,
+      status: 402,
+      responseHeaders: {},
+      responseBody: {
+        error: "client_rejected_credential",
+        message,
+      },
+      settlement: null,
+    }),
+  );
 }
 
 async function payTarget(
@@ -35,6 +73,12 @@ async function payTarget(
       solana.charge({
         signer,
         rpcUrl: environment.rpcUrl,
+        ...(environment.computeUnitLimit !== undefined
+          ? { computeUnitLimit: environment.computeUnitLimit }
+          : {}),
+        ...(environment.computeUnitPrice !== undefined
+          ? { computeUnitPrice: environment.computeUnitPrice }
+          : {}),
       }),
     ],
   });

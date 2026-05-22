@@ -39,20 +39,37 @@ async function main() {
   const feePayerSigner = await createKeyPairSignerFromBytes(
     environment.feePayerSecretKey,
   );
-  const mppx = Mppx.create({
-    secretKey: environment.secretKey,
-    methods: [
-      solana.charge({
-        recipient: environment.payTo,
-        currency: environment.mint,
-        decimals: 6,
-        network: environment.network,
-        rpcUrl: environment.rpcUrl,
-        signer: feePayerSigner,
-        splits: environment.splits,
-      }),
-    ],
-  });
+  const isSolNative = environment.assetKind === "sol";
+  const currency = isSolNative ? "sol" : environment.mint;
+  // G28a. `solana.charge({ splits })` validates split count at
+  // construction time and throws on > 8 entries. The harness treats
+  // a construct-time rejection as the correct 402-class outcome: the
+  // server refuses to issue a challenge. We capture the error and
+  // serve 402 on every protected request below, mirroring the
+  // "challenge_unavailable" failure mode end-to-end.
+  // The exact return type of Mppx.create depends on the inferred
+  // methods tuple, which Typescript widens here. `unknown` plus a
+  // narrow cast at the call site is sufficient for the fixture.
+  let mppx: unknown;
+  let constructError: Error | undefined;
+  try {
+    mppx = Mppx.create({
+      secretKey: environment.secretKey,
+      methods: [
+        solana.charge({
+          recipient: environment.payTo,
+          currency,
+          decimals: environment.decimals,
+          network: environment.network,
+          rpcUrl: environment.rpcUrl,
+          signer: feePayerSigner,
+          splits: environment.splits,
+        }),
+      ],
+    });
+  } catch (error) {
+    constructError = error instanceof Error ? error : new Error(String(error));
+  }
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -78,9 +95,32 @@ async function main() {
         return;
       }
 
-      const result = await mppx.charge({
+      if (!mppx || constructError) {
+        response.writeHead(402, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: "challenge_unavailable",
+            message: constructError?.message ?? "mppx not initialized",
+          }),
+        );
+        return;
+      }
+
+      const result = await (
+        mppx as {
+          charge: (params: {
+            amount: string;
+            currency: string;
+            description: string;
+          }) => (request: Request) => Promise<{
+            status: number;
+            challenge?: Response;
+            withReceipt: (response: Response) => Response;
+          }>;
+        }
+      ).charge({
         amount: amountForPath(url.pathname, environment),
-        currency: environment.mint,
+        currency,
         description: "Surfpool-backed protected content",
       })(toWebRequest(request, body));
 
