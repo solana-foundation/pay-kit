@@ -51,12 +51,18 @@ function isClientSideSplitRejection(error: unknown): boolean {
   if (/Splits consume the entire amount/i.test(error.message)) {
     return true;
   }
-  // G28a: when the server refuses to construct (e.g. splits > 8) it
-  // serves a 402 body without a `WWW-Authenticate` header. mppx's
-  // wrapped fetch then throws this exact message before exposing the
-  // 402 response to the caller. The allowlist stays narrow: only
-  // this two-word literal symptom of "server emitted a 402 with no
-  // Solana challenge" maps to a synthetic 402 here.
+  // Server-side rejection symptom: the server emits a 402 body with no
+  // `WWW-Authenticate` header (mppx's wrapped fetch throws this exact
+  // message before exposing the underlying 402 response to the caller).
+  // Today this branch covers two distinct cases that both fail at the
+  // server's request construction stage:
+  //   - G28a splits > 8.
+  //   - G14 compute budget over-cap (limit > 200_000 or price > 5_000_000).
+  // Both have expectedStatus 402 so the test result is correct. The
+  // allowlist stays narrow to this one two-word literal so it does not
+  // accidentally absorb unrelated client-side regressions; if mppx ever
+  // changes the message both scenarios surface together and the failure
+  // is easy to diagnose.
   return /Missing WWW-Authenticate header/i.test(error.message);
 }
 
