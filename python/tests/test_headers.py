@@ -366,3 +366,60 @@ class TestAuthParamTokenForm:
         parsed = parse_www_authenticate(header)
         assert parsed.id == "abc"
         assert parsed.realm == "api"
+
+
+class TestMultiChallenge:
+    """F5 lock: parse_www_authenticate_all MUST split multi-challenge
+    WWW-Authenticate headers with quote awareness per RFC 7235 section 4.1.
+
+    A server can emit two Payment challenges in one header value (the spec
+    permits this for negotiation across schemes). Naive comma-splitting
+    corrupts the value when a realm or other quoted-string parameter
+    contains a literal comma. Python's _find_challenge_starts uses a
+    quote-aware walker.
+    """
+
+    def _build_challenge_header(self, realm: str, request_b64: str) -> str:
+        return f'Payment id="abc", realm="{realm}", method="solana", intent="charge", request="{request_b64}"'
+
+    def test_two_challenges_in_one_header(self):
+        request_b64 = encode_json({"amount": "1"})
+        first = self._build_challenge_header("api-one", request_b64)
+        second = self._build_challenge_header("api-two", request_b64)
+        challenges = parse_www_authenticate_all([f"{first}, {second}"])
+        assert len(challenges) == 2
+        assert {c.realm for c in challenges} == {"api-one", "api-two"}
+
+    def test_two_headers_each_with_one_challenge(self):
+        request_b64 = encode_json({"amount": "1"})
+        first = self._build_challenge_header("api-one", request_b64)
+        second = self._build_challenge_header("api-two", request_b64)
+        challenges = parse_www_authenticate_all([first, second])
+        assert len(challenges) == 2
+
+    def test_quoted_comma_in_realm_does_not_split(self):
+        """Naive comma splitting on the inter-challenge separator would
+        truncate a realm containing a literal comma. The quote-aware
+        walker must treat the comma as part of the value."""
+        request_b64 = encode_json({"amount": "1"})
+        # Realm literally contains a comma; serialize manually to bypass
+        # _escape_quoted_value behavior so the comma stays raw inside quotes.
+        header = (
+            f'Payment id="abc", realm="api, with, commas", '
+            f'method="solana", intent="charge", request="{request_b64}"'
+        )
+        challenges = parse_www_authenticate_all([header])
+        assert len(challenges) == 1
+        assert challenges[0].realm == "api, with, commas"
+
+    def test_ignores_non_payment_schemes(self):
+        request_b64 = encode_json({"amount": "1"})
+        payment = self._build_challenge_header("api", request_b64)
+        header = f'Bearer realm="x", {payment}'
+        challenges = parse_www_authenticate_all([header])
+        assert len(challenges) == 1
+        assert challenges[0].realm == "api"
+
+    def test_empty_input_returns_empty(self):
+        assert parse_www_authenticate_all([]) == []
+        assert parse_www_authenticate_all([""]) == []
