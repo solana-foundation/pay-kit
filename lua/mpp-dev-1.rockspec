@@ -19,6 +19,8 @@ dependencies = {
   "lua >= 5.1, < 5.5",
   "luasocket >= 3.0",
   "luasodium >= 2.0",
+  -- Required by mpp.solana.rpc_transport for the documented HTTPS RPC URLs.
+  "luasec >= 1.3",
 }
 build = {
   type = "builtin",
@@ -43,6 +45,7 @@ build = {
     ["mpp.server.html_assets.gen"] = "mpp/server/html_assets/gen.lua",
     ["mpp.server.network_check"] = "mpp/server/network_check.lua",
     ["mpp.server.solana_verify"] = "mpp/server/solana_verify.lua",
+    ["mpp.server.store_shared_dict"] = "mpp/server/store_shared_dict.lua",
     ["mpp.solana.rpc"] = "mpp/solana/rpc.lua",
     ["mpp.solana.rpc_transport"] = "mpp/solana/rpc_transport.lua",
     ["mpp.store"] = "mpp/store.lua",
