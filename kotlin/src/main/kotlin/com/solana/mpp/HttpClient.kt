@@ -47,9 +47,17 @@ class MppHttpClient(
         if (initial.code != 402) {
             return initial
         }
-        val wwwAuthenticate = initial.header(WWW_AUTHENTICATE_HEADER)
-            ?: throw MppException.InvalidPaymentScheme
-        initial.close()
+        // The 402 response is consumed here regardless of whether the
+        // server actually returned a WWW-Authenticate header. The previous
+        // implementation read the header and threw on the missing-header
+        // branch without closing the body, which leaked the underlying
+        // OkHttp connection on every malformed 402 (see Greptile comment
+        // 3293054077). The Response.use { ... } block guarantees the body
+        // is closed deterministically on both branches.
+        val wwwAuthenticate = initial.use { response ->
+            response.header(WWW_AUTHENTICATE_HEADER)
+                ?: throw MppException.InvalidPaymentScheme
+        }
         val challenge = MppHeaders.parseWWWAuthenticate(wwwAuthenticate)
         val authorization = Charge.buildCredentialHeader(
             signer = signer,
