@@ -13,7 +13,16 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    // BouncyCastle gives a deterministic Ed25519 signer that takes the raw
+    // 32 byte seed format Solana keypair files (and the MPP interop
+    // harness) ship in. The JDK Ed25519 provider does not expose that
+    // wire-level seed import path on every JVM.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    // OkHttp is the canonical Kotlin/JVM HTTP client. Used by MppHttpClient
+    // for 402-triggered credential build and retry.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation(kotlin("test"))
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 tasks.test {
