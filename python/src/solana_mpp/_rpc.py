@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 from typing import Any
 
 import httpx
@@ -38,19 +39,18 @@ class SolanaRpc:
         self._endpoint = endpoint
         self._timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
-        self._id = 0
-        self._id_lock = asyncio.Lock()
+        # ``itertools.count`` returns unique integers atomically at the C
+        # level under the GIL, so concurrent ``_call`` invocations on
+        # different event loops never collide on the same JSON-RPC id.
+        # An ``asyncio.Lock`` would not work here because each loop holds
+        # its own lock state; the GIL-backed counter is loop-agnostic.
+        self._id_counter = itertools.count(1)
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _next_id(self) -> int:
-        async with self._id_lock:
-            self._id += 1
-            return self._id
-
     async def _call(self, method: str, params: list[Any]) -> Any:
-        rpc_id = await self._next_id()
+        rpc_id = next(self._id_counter)
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         response = await self._client.post(self._endpoint, json=body)
         response.raise_for_status()
