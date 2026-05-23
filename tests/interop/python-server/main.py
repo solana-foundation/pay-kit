@@ -119,15 +119,17 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
 
     fee_payer = Keypair.from_bytes(fee_payer_bytes)
 
-    # Greptile P1: do NOT share a SolanaRpc / httpx.AsyncClient across
-    # per-request asyncio.run() loops. Each BaseHTTPRequestHandler.do_GET
-    # call creates a fresh event loop and tears it down at the end;
-    # reusing one client across multiple loops anchors httpx
-    # connection-pool primitives to the first loop and relies on httpx's
-    # undocumented reconnection behavior. The Mpp handler is built once,
-    # but we swap a fresh SolanaRpc into ``handler._rpc`` inside each
-    # request below.
-    rpc = SolanaRpc(rpc_url)
+    # Greptile P1 (follow-up): do NOT construct a SolanaRpc /
+    # httpx.AsyncClient at adapter boot. Each ``BaseHTTPRequestHandler``
+    # request runs inside its own ``asyncio.run()`` event loop, and
+    # ``httpx.AsyncClient`` anchors its connection-pool primitives to
+    # the loop it is first used in. A boot-time client created on the
+    # main thread (no running loop) and then handed off to multiple
+    # per-request loops relies on httpx's undocumented reconnection
+    # behavior. We construct a fresh ``SolanaRpc`` inside every
+    # ``do_GET`` instead and ``aclose()`` it immediately after the
+    # verify call returns; the Mpp handler boots with ``rpc=None`` and
+    # the per-request client is plugged in just-in-time.
     config = Config(
         recipient=pay_to,
         currency=mint,
@@ -138,7 +140,7 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
         realm=optional_env("MPP_INTEROP_REALM", "MPP Interop"),
         fee_payer_signer=fee_payer,
         store=MemoryStore(),
-        rpc=rpc,
+        rpc=None,
     )
     handler = Mpp(config)
 

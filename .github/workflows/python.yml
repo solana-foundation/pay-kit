@@ -57,40 +57,58 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.14.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: tests/interop/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-python-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-python-interop-
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Install Python SDK
         working-directory: python
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - name: Install interop deps
-        working-directory: tests/interop
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript MPP package
+      # Critical order: install + build the TypeScript workspace BEFORE
+      # installing the interop harness. tests/interop has
+      # ``"@solana/mpp": "file:../../typescript/packages/mpp"`` which
+      # pnpm copies into node_modules at install time. If the typescript
+      # package has no dist/ at that moment, the TS interop client crashes
+      # with ``Cannot find module '@solana/mpp/dist/client/index.js''`` on
+      # boot and the harness reports "Adapter exited before signaling
+      # readiness/result (code 1)". html-assets.gen.ts is committed in
+      # the repo so no separate build-html step is needed.
+      - name: Install TypeScript workspace
         working-directory: typescript
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm -r build
-      - name: Pre-build Rust interop binaries
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust interop adapters
         working-directory: rust
         run: cargo build --bin interop_client --bin interop_server
+      - name: Install interop harness
+        working-directory: tests/interop
+        run: pnpm install --frozen-lockfile
       - name: Focused TS-to-Python interop
         working-directory: tests/interop
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: python
-        run: pnpm test
+        run: pnpm exec vitest run test/e2e.test.ts
       - name: Focused Rust-to-Python interop
         working-directory: tests/interop
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: python
-        run: pnpm test
+        run: pnpm exec vitest run test/e2e.test.ts
