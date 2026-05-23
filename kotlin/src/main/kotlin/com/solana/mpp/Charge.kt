@@ -109,9 +109,18 @@ object Charge {
                     "ataCreationRequired requires an SPL token charge",
                 )
             }
-            if (mint != request.currency) {
+            // The previous `mint != request.currency` guard rejected
+            // every well-known symbol (USDC/USDT/USDG/PYUSD/CASH)
+            // because resolveStablecoinMint maps those symbols to the
+            // mint address, so `mint` and `request.currency` necessarily
+            // differ. Match the Rust/Swift/Lua spine: accept either
+            // (a) a symbol that resolved to a different mint, or
+            // (b) a base58 mint address passed through verbatim.
+            val isSymbol = mint != request.currency
+            val isPassThrough = mint == request.currency && isLikelyBase58MintAddress(mint)
+            if (!isSymbol && !isPassThrough) {
                 throw MppException.InvalidTransaction(
-                    "ataCreationRequired requires currency to be an SPL token mint address",
+                    "ataCreationRequired requires currency to be an SPL token mint address or known symbol",
                 )
             }
         }
@@ -257,6 +266,17 @@ object Charge {
         }
         "CASH" -> Mints.CASH_MAINNET
         else -> currency
+    }
+
+    /**
+     * Cheap structural check for a base58 Solana pubkey (length 32-44,
+     * base58 alphabet). Lets the ataCreationRequired guard accept a
+     * pass-through mint address without doing a full PublicKey decode.
+     */
+    private fun isLikelyBase58MintAddress(value: String): Boolean {
+        if (value.length < 32 || value.length > 44) return false
+        val alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        return value.all { it in alphabet }
     }
 
     private fun buildSolInstructions(
