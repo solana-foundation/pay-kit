@@ -315,19 +315,15 @@ function M.verify_transaction(tx, request)
     local network = method_details.network or 'mainnet'
     local mint = protocol.resolve_mint(request.currency, network) or request.currency
     local token_program = method_details.tokenProgram or protocol.default_token_program_for_currency(request.currency, network)
+    -- ataCreationRequired only makes sense when the challenge fixed an
+    -- explicit mint, not when a symbol lookup expanded the currency to a
+    -- mainnet default. Mirrors `ruby/lib/mpp/methods/solana/verifier.rb`
+    -- (`mint != request.currency`): any symbol that protocol.resolve_mint
+    -- rewrote into a different mint address has to be rejected here, not
+    -- just the five hardcoded stablecoin symbols an earlier draft listed.
     for i = 1, #splits do
       if splits[i].ataCreationRequired == true and mint ~= request.currency then
-        -- Same constraint the Ruby reference enforces: ataCreationRequired
-        -- only makes sense when the challenge fixed an explicit mint, not
-        -- when the symbol lookup expanded to a mainnet default.
-        if string.upper(request.currency or '') == 'USDC'
-          or string.upper(request.currency or '') == 'USDT'
-          or string.upper(request.currency or '') == 'USDG'
-          or string.upper(request.currency or '') == 'PYUSD'
-          or string.upper(request.currency or '') == 'CASH'
-        then
-          verifier_error('ataCreationRequired requires currency to be an SPL token mint address')
-        end
+        verifier_error('ataCreationRequired requires currency to be an SPL token mint address')
       end
     end
     match_spl_transfer(tx, request.recipient, mint, token_program, primary, method_details.decimals, fee_payer, matched)

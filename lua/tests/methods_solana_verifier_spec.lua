@@ -358,6 +358,51 @@ helper.test('verifier new_blockhash_extractor returns the parsed blockhash', fun
   helper.assert_equal(extractor(b64), base58.encode(blockhash_bytes))
 end)
 
+helper.test('verifier rejects ataCreationRequired for any symbol resolving to a different mint', function()
+  -- Earlier draft only rejected when the credential currency was one of
+  -- five hardcoded stablecoin symbols (USDC, USDT, USDG, PYUSD, CASH).
+  -- Any other symbol that protocol.resolve_mint expanded to a known mint
+  -- silently bypassed the guard. The fix removes the whitelist and
+  -- mirrors `ruby/lib/mpp/methods/solana/verifier.rb`: reject whenever
+  -- the resolved mint differs from request.currency.
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local payer_bytes = string.rep('\x01', 32)
+  local message = build_message({ payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES },
+    string.rep('\xc3', 32), {}, 1)
+  local tx = tx_from(message, 1)
+
+  -- Lowercase 'usdc' resolves to the canonical USDC mint, which differs
+  -- from the credential's 'usdc' string. Must reject.
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000', currency = 'usdc', recipient = recipient_pub,
+      methodDetails = {
+        decimals = 6,
+        tokenProgram = instructions.TOKEN_PROGRAM,
+        network = 'mainnet-beta',
+        splits = { { recipient = recipient_pub, amount = '100', ataCreationRequired = true } },
+      },
+    })
+  end, 'ataCreationRequired requires currency to be an SPL token mint address')
+
+  -- Stablecoin alias paths. USDG resolves via the Token-2022 symbol table;
+  -- the old whitelist happened to list it, but a future Token-2022 alias
+  -- added to KNOWN_MINTS without updating the whitelist would slip past.
+  -- The new guard rejects unconditionally on mint mismatch.
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000', currency = 'USDG', recipient = recipient_pub,
+      methodDetails = {
+        decimals = 6,
+        tokenProgram = instructions.TOKEN_2022_PROGRAM,
+        network = 'mainnet-beta',
+        splits = { { recipient = recipient_pub, amount = '100', ataCreationRequired = true } },
+      },
+    })
+  end, 'ataCreationRequired requires currency to be an SPL token mint address')
+end)
+
 helper.test('verifier rejects compute-budget over the unit limit cap', function()
   local payer_bytes = string.rep('\x01', 32)
   local recipient_bytes = string.rep('\x03', 32)
