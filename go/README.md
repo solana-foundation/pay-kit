@@ -96,6 +96,35 @@ resp, err := httpClient.Get("https://api.example/paid")
 credential. Use `client.BuildCredentialHeader` directly if you want to
 own the retry yourself.
 
+## Running the examples
+
+A single runnable example ships at
+[`examples/simple-server/`](examples/simple-server). It mirrors the
+Ruby [`examples/simple-server/app.rb`](../ruby/examples/simple-server/app.rb)
+shape: read env vars, construct an `mpp/server` handler with the
+Solana charge method, expose `/health` (free) and `/paid` (gated), and
+render the `Mpp::Challenge` / `Mpp::Settlement` tagged union by hand
+with the SDK's lower-level primitives.
+
+```bash
+cd go/examples/simple-server
+PORT=4572 go run .
+```
+
+In another terminal:
+
+```bash
+brew install pay
+curl -i http://127.0.0.1:4572/paid          # 402 with WWW-Authenticate
+pay curl http://127.0.0.1:4572/paid         # 200 with Payment-Receipt
+```
+
+The example defaults to Surfpool localnet (`https://402.surfnet.dev:8899`),
+`USDC`, and a local example recipient. Override `MPP_RPC_URL`,
+`MPP_CURRENCY`, `MPP_NETWORK`, `MPP_PAY_TO`, `MPP_SECRET_KEY`, or
+`MPP_FEE_PAYER_SECRET_KEY` (a 64-byte JSON array) for a different
+localnet fixture.
+
 ## Running the interop adapters
 
 ```bash
@@ -120,10 +149,6 @@ The interop adapters read `MPP_INTEROP_RPC_URL`, `MPP_INTEROP_MINT`,
 `MPP_INTEROP_SETTLEMENT_HEADER`, `MPP_INTEROP_SECRET_KEY`,
 `MPP_INTEROP_REPLAY_SOURCE_PATH` + `MPP_INTEROP_REPLAY_SOURCE_PRICE`,
 and `MPP_INTEROP_SPLITS` (JSON array).
-
-There is no `go/examples/simple-server` on `main` yet. The interop
-adapter doubles as the runnable example until a dedicated example lands
-in a follow-up.
 
 ## Client compatibility matrix
 
