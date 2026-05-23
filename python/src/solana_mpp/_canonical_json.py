@@ -41,7 +41,9 @@ def _encode(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, str):
         return _encode_string(value)
-    if isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, int):
+        # ``bool`` is a subclass of ``int`` in Python, but the bool branch
+        # above already returned, so by this point ``value`` is a plain int.
         return str(value)
     if isinstance(value, float):
         return _encode_number(value)
