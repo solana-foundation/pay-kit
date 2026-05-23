@@ -18,6 +18,7 @@ from solana_mpp._errors import (
 from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.protocol.intents import ChargeRequest, parse_units
 from solana_mpp.protocol.solana import (
+    ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
@@ -563,6 +564,343 @@ def _assert_signature_slot(idx: int, num_required: int) -> None:
         )
 
 
+def _expected_split_recipients(request: ChargeRequest, details: MethodDetails) -> set[str]:
+    """Return the union of the primary recipient and every split recipient.
+
+    Used by the strict instruction allowlist to decide which ATA owners
+    may legally appear in an ``AssociatedToken create_idempotent``
+    instruction. Mirrors the ``allowed_ata_owners`` set on the canonical
+    Rust path in ``validate_instruction_allowlist``.
+    """
+    owners: set[str] = {request.recipient}
+    for split in details.splits:
+        owners.add(split.recipient)
+    return owners
+
+
+def _validate_ata_create_idempotent(
+    instruction: Any,
+    account_keys: list[str],
+    expected_mint: str | None,
+    allowed_ata_owners: set[str],
+    expected_token_program: str | None,
+    expected_payer: str,
+) -> None:
+    """Validate an AssociatedTokenAccount create-idempotent instruction.
+
+    Mirrors ``validate_create_ata_idempotent_instruction`` in
+    ``rust/src/server/charge.rs``. The only ATA program instruction the
+    fee-payer co-sign path may include is the idempotent create variant
+    (discriminator byte ``0x01``) and only for an ATA whose payer is the
+    transaction fee payer, whose owner is a recipient declared by the
+    charge, whose mint matches the challenge currency, and whose token
+    program is the one the challenge selected. Any deviation is rejected
+    so an attacker cannot trick the server into co-signing an ATA create
+    that funds an attacker-controlled mint or owner with fee-payer SOL.
+    """
+    if expected_mint is None:
+        raise PaymentError(
+            "ATA creation is not allowed for native SOL payments",
+            code="invalid-payload",
+        )
+    data = bytes(instruction.data)
+    if data != b"\x01":
+        raise PaymentError(
+            "only idempotent ATA creation is allowed",
+            code="invalid-payload",
+        )
+    accounts = list(instruction.accounts)
+    if len(accounts) != 6:
+        raise PaymentError(
+            "unexpected ATA creation account layout",
+            code="invalid-payload",
+        )
+    try:
+        payer = account_keys[int(accounts[0])]
+        ata = account_keys[int(accounts[1])]
+        owner = account_keys[int(accounts[2])]
+        mint = account_keys[int(accounts[3])]
+        sys_program = account_keys[int(accounts[4])]
+        token_program = account_keys[int(accounts[5])]
+    except IndexError as exc:
+        raise PaymentError(
+            "ATA creation references an unknown account index",
+            code="invalid-payload",
+        ) from exc
+
+    if payer != expected_payer:
+        raise PaymentError(
+            "ATA payer must match the transaction fee payer",
+            code="invalid-payload",
+        )
+    if mint != expected_mint:
+        raise PaymentError(
+            "ATA creation mint does not match the charge currency",
+            code="invalid-payload",
+        )
+    if owner not in allowed_ata_owners:
+        raise PaymentError(
+            "ATA creation owner is not authorized by the challenge",
+            code="invalid-payload",
+        )
+    if sys_program != _SYSTEM_PROGRAM:
+        raise PaymentError(
+            "ATA creation must reference the System Program",
+            code="invalid-payload",
+        )
+    if token_program not in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
+        raise PaymentError(
+            "ATA creation uses an unsupported token program",
+            code="invalid-payload",
+        )
+    if expected_token_program is not None and token_program != expected_token_program:
+        raise PaymentError(
+            "ATA creation token program does not match methodDetails.tokenProgram",
+            code="invalid-payload",
+        )
+    # Verify the derived ATA matches owner/mint/token_program so a caller
+    # cannot funnel the create to an attacker-controlled address.
+    try:
+        from solders.pubkey import Pubkey
+
+        owner_pk = Pubkey.from_string(owner)
+        mint_pk = Pubkey.from_string(mint)
+        tp_pk = Pubkey.from_string(token_program)
+        ata_program = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
+        derived, _ = Pubkey.find_program_address(
+            [bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)],
+            ata_program,
+        )
+        if str(derived) != ata:
+            raise PaymentError(
+                "ATA creation address does not match owner/mint/token program",
+                code="invalid-payload",
+            )
+    except PaymentError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PaymentError(
+            f"could not validate ATA creation address: {exc}",
+            code="invalid-payload",
+        ) from exc
+
+
+def _validate_instruction_allowlist(
+    transaction_b64: str,
+    request: ChargeRequest,
+    details: MethodDetails,
+) -> None:
+    """Reject any instruction not on the strict fee-payer co-sign allowlist.
+
+    SECURITY: this is the no-leftovers check that protects the server's
+    fee-payer keypair from being co-opted into signing attacker-supplied
+    transfers. The lossy parsed-instruction verifier
+    (``_verify_parsed_sol_transfers`` /
+    ``_verify_parsed_spl_transfers`` / ``_verify_parsed_memo_instructions``)
+    only checks that the required transfers / memos are present; it does
+    not reject extra instructions. Without this allowlist a malicious
+    client could include the expected payment plus a System Program
+    transfer from the fee payer to the attacker, and the server would
+    co-sign the entire transaction.
+
+    The allowlist mirrors ``validate_instruction_allowlist`` in
+    ``rust/src/server/charge.rs``: only ComputeBudget (validated),
+    Memo v2 (must match an expected memo), System Program transfer (must
+    match an expected payment transfer), SPL Token / Token-2022
+    transferChecked (must match an expected payment transfer), and
+    AssociatedTokenAccount create-idempotent (validated) are accepted.
+    Anything else (including SOL transfers that do not match a required
+    transfer, SPL transfers to unrelated mints, raw token approve /
+    burn, BPF program calls, sysvar reads, etc.) is rejected before
+    broadcast with a ``payment-invalid`` canonical code.
+    """
+    from solders.transaction import Transaction, VersionedTransaction
+
+    raw = base64.b64decode(transaction_b64)
+    message: Any
+    try:
+        tx = Transaction.from_bytes(raw)
+        message = tx.message
+        message_instructions = list(tx.message.instructions)
+    except Exception:
+        try:
+            vtx = VersionedTransaction.from_bytes(raw)
+        except Exception as exc:
+            raise PaymentError(
+                "unsupported transaction shape for instruction allowlist",
+                code="invalid-payload-type",
+            ) from exc
+        if getattr(vtx.message, "address_table_lookups", None):
+            raise PaymentError(
+                "v0 transactions with address lookup tables are not supported",
+                code="invalid-payload",
+            )
+        message = vtx.message
+        message_instructions = list(vtx.message.instructions)
+
+    account_keys = [str(key) for key in message.account_keys]
+    if not account_keys:
+        raise PaymentError("transaction has no accounts", code="invalid-payload")
+    fee_payer_account = account_keys[0]
+
+    expected_transfers = _build_expected_transfers(request, details)
+    native = is_native_sol(request.currency)
+    expected_mint = None if native else resolve_mint(request.currency, details.network)
+    expected_token_program: str | None = None
+    if not native:
+        expected_token_program = (
+            details.token_program
+            or default_token_program_for_currency(request.currency, details.network)
+        )
+    allowed_ata_owners = _expected_split_recipients(request, details)
+    expected_memos = {memo for _label, memo in _expected_memos(request, details)}
+
+    # Track which required transfers / memos have been satisfied so each
+    # required entry can only be matched once; an attacker cannot replay
+    # a single transfer to cover two required legs.
+    remaining_transfers: list[tuple[str, int]] = list(expected_transfers)
+    remaining_memos: set[str] = set(expected_memos)
+
+    for instruction in message_instructions:
+        try:
+            program_id = account_keys[int(instruction.program_id_index)]
+        except IndexError as exc:
+            raise PaymentError(
+                "instruction references an unknown program index",
+                code="invalid-payload",
+            ) from exc
+        data = bytes(instruction.data)
+        accounts = list(instruction.accounts)
+
+        if program_id == _COMPUTE_BUDGET_PROGRAM:
+            _validate_compute_budget_instruction(data, len(accounts))
+            continue
+
+        if program_id == MEMO_PROGRAM:
+            try:
+                memo_text = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PaymentError(
+                    "memo instruction is not valid UTF-8",
+                    code="invalid-payload",
+                ) from exc
+            if memo_text not in remaining_memos:
+                raise PaymentError(
+                    "unexpected Memo Program instruction in payment transaction",
+                    code="invalid-payload",
+                )
+            remaining_memos.discard(memo_text)
+            continue
+
+        if program_id == _MEMO_V1_PROGRAM:
+            raise PaymentError(
+                "memo v1 program is not supported (use Memo v2)",
+                code="invalid-payload",
+            )
+
+        if program_id == _SYSTEM_PROGRAM:
+            if not native:
+                raise PaymentError(
+                    "unexpected System Program instruction in token payment transaction",
+                    code="invalid-payload",
+                )
+            if len(data) < 12 or len(accounts) < 2:
+                raise PaymentError(
+                    "unexpected System Program instruction in payment transaction",
+                    code="invalid-payload",
+                )
+            kind = int.from_bytes(data[:4], "little")
+            if kind != _SYSTEM_TRANSFER_INSTRUCTION:
+                raise PaymentError(
+                    "unexpected System Program instruction in payment transaction",
+                    code="invalid-payload",
+                )
+            try:
+                destination = account_keys[int(accounts[1])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "transfer references an unknown account",
+                    code="invalid-payload",
+                ) from exc
+            lamports = int.from_bytes(data[4:12], "little")
+            match_idx = next(
+                (i for i, (rcpt, amt) in enumerate(remaining_transfers)
+                 if rcpt == destination and amt == lamports),
+                -1,
+            )
+            if match_idx == -1:
+                raise PaymentError(
+                    "unexpected System Program transfer in payment transaction",
+                    code="invalid-payload",
+                )
+            remaining_transfers.pop(match_idx)
+            continue
+
+        if program_id in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
+            if native:
+                raise PaymentError(
+                    "unexpected Token Program instruction in native SOL payment",
+                    code="invalid-payload",
+                )
+            if expected_token_program is not None and program_id != expected_token_program:
+                raise PaymentError(
+                    "token program does not match methodDetails.tokenProgram",
+                    code="invalid-payload",
+                )
+            if len(data) < 10 or len(accounts) < 3:
+                raise PaymentError(
+                    "unexpected Token Program instruction in payment transaction",
+                    code="invalid-payload",
+                )
+            if data[0] != _TOKEN_TRANSFER_CHECKED_INSTRUCTION:
+                raise PaymentError(
+                    "unexpected Token Program instruction in payment transaction",
+                    code="invalid-payload",
+                )
+            try:
+                mint = account_keys[int(accounts[1])]
+                destination = account_keys[int(accounts[2])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "token transfer references an unknown account",
+                    code="invalid-payload",
+                ) from exc
+            if expected_mint is not None and mint != expected_mint:
+                raise PaymentError(
+                    "token transfer mint does not match the charge currency",
+                    code="invalid-payload",
+                )
+            amount = int.from_bytes(data[1:9], "little")
+            match_idx = next(
+                (i for i, (rcpt, amt) in enumerate(remaining_transfers)
+                 if amt == amount and _verify_ata_owner(destination, rcpt, mint, program_id)),
+                -1,
+            )
+            if match_idx == -1:
+                raise PaymentError(
+                    "unexpected Token Program transfer in payment transaction",
+                    code="invalid-payload",
+                )
+            remaining_transfers.pop(match_idx)
+            continue
+
+        if program_id == ASSOCIATED_TOKEN_PROGRAM:
+            _validate_ata_create_idempotent(
+                instruction,
+                account_keys,
+                expected_mint,
+                allowed_ata_owners,
+                expected_token_program,
+                fee_payer_account,
+            )
+            continue
+
+        raise PaymentError(
+            f"unexpected program instruction in payment transaction: {program_id}",
+            code="invalid-payload",
+        )
+
+
 def _verify_local_transaction_intent(
     transaction_b64: str,
     request: ChargeRequest,
@@ -575,6 +913,13 @@ def _verify_local_transaction_intent(
     else:
         _verify_parsed_spl_transfers(instructions, request, details)
     _verify_parsed_memo_instructions(instructions, request, details)
+    # SECURITY: strict no-leftovers allowlist. Runs after the parsed
+    # verifiers so a missing-required-transfer fails with the canonical
+    # ``no-transfer`` code; this final pass rejects ANY extra instruction
+    # (especially System Program transfers from the fee payer) so the
+    # fee-payer co-sign path cannot be tricked into draining the
+    # server's SOL.
+    _validate_instruction_allowlist(transaction_b64, request, details)
 
 
 @dataclass

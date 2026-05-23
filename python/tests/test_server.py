@@ -1321,3 +1321,270 @@ class TestSplitsCountGuard:
         from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
 
         assert canonical_code("too-many-splits") == CODE_PAYMENT_INVALID
+
+
+class TestInstructionAllowlist:
+    """SECURITY: strict no-leftovers allowlist for the fee-payer co-sign path.
+
+    The verifier MUST reject any instruction that is not on the canonical
+    allowlist (ComputeBudget, Memo v2 matching an expected memo, System
+    Program transfer matching an expected payment transfer, SPL
+    transferChecked matching an expected payment transfer, ATA idempotent
+    create for a charge-recipient owner). Without this guard a malicious
+    client could include the valid payment plus an extra System Program
+    transfer FROM the fee payer account TO an attacker, and the server
+    would co-sign the entire transaction and DRAIN fee-payer SOL.
+    Mirrors ``validate_instruction_allowlist`` in
+    ``rust/src/server/charge.rs``.
+    """
+
+    AMOUNT_LAMPORTS = 1000
+    ATTACKER = "11111111111111111111111111111113"
+
+    def _request_and_details(self) -> tuple[ChargeRequest, MethodDetails]:
+        request = ChargeRequest(
+            amount=str(self.AMOUNT_LAMPORTS),
+            currency="SOL",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(network="devnet")
+        return request, details
+
+    def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([fee_payer], blockhash)
+        import base64
+
+        return base64.b64encode(bytes(transaction)).decode("ascii")
+
+    def test_valid_payment_with_compute_budget_is_accepted(self):
+        """Positive control: a charge transaction with a permitted
+        ComputeBudget SetComputeUnitLimit alongside the required transfer
+        must pass the allowlist."""
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request, details = self._request_and_details()
+        compute_budget = Instruction(
+            Pubkey.from_string("ComputeBudget111111111111111111111111111111"),
+            bytes([2]) + (50_000).to_bytes(4, "little"),
+            [],
+        )
+        payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=self.AMOUNT_LAMPORTS,
+            )
+        )
+        tx_b64 = self._build_tx([compute_budget, payment], fee_payer)
+        # Must not raise.
+        _verify_local_transaction_intent(tx_b64, request, details)
+
+    def test_valid_payment_with_extra_system_transfer_to_attacker_is_rejected(self):
+        """SECURITY: an attacker tacks an extra System Program transfer
+        onto the valid payment. The transfer pulls fee-payer SOL to an
+        attacker address. Without the allowlist this would be co-signed
+        and broadcast, draining the fee payer. MUST be rejected with
+        the canonical ``payment_invalid`` code before co-sign."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request, details = self._request_and_details()
+        payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=self.AMOUNT_LAMPORTS,
+            )
+        )
+        drain = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(self.ATTACKER),
+                lamports=999_999_999,
+            )
+        )
+        tx_b64 = self._build_tx([payment, drain], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "unexpected" in str(exc.value).lower()
+
+    def test_valid_payment_with_extra_spl_transfer_is_rejected(self):
+        """SECURITY: an attacker includes the valid SOL payment plus an
+        SPL Token transfer instruction. The native-SOL allowlist must
+        reject any Token Program instruction since a native-SOL charge
+        never legitimately carries one."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request, details = self._request_and_details()
+        payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=self.AMOUNT_LAMPORTS,
+            )
+        )
+        # Crafted SPL transferChecked targeting an attacker mint.
+        attacker_mint = Pubkey.new_unique()
+        attacker_dest = Pubkey.new_unique()
+        spl_drain = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            bytes([12]) + (1).to_bytes(8, "little") + bytes([6]),
+            [
+                AccountMeta(Pubkey.new_unique(), False, True),
+                AccountMeta(attacker_mint, False, False),
+                AccountMeta(attacker_dest, False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        tx_b64 = self._build_tx([payment, spl_drain], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+
+    def test_valid_payment_with_unknown_program_is_rejected(self):
+        """SECURITY: an arbitrary BPF program invocation alongside the
+        valid payment is not on the allowlist and must be rejected."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request, details = self._request_and_details()
+        payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=self.AMOUNT_LAMPORTS,
+            )
+        )
+        unknown = Instruction(Pubkey.new_unique(), b"\x00", [])
+        tx_b64 = self._build_tx([payment, unknown], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "unexpected" in str(exc.value).lower()
+
+    def test_valid_payment_with_memo_v1_is_rejected(self):
+        """L2 lock parity: memo v1 is rejected even when the v2 verifier
+        would otherwise let extra memos slip past as unmatched."""
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request, details = self._request_and_details()
+        payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=self.AMOUNT_LAMPORTS,
+            )
+        )
+        memo_v1 = Instruction(
+            Pubkey.from_string("Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"),
+            b"hi",
+            [],
+        )
+        tx_b64 = self._build_tx([payment, memo_v1], fee_payer)
+        with pytest.raises(PaymentError, match="memo v1"):
+            _verify_local_transaction_intent(tx_b64, request, details)
+
+    def test_valid_spl_payment_with_ata_create_for_recipient_is_accepted(self):
+        """Positive control: SPL payment can legitimately include an
+        idempotent ATA create for the recipient ahead of the transfer."""
+        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request = ChargeRequest(
+            amount="1000000",
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(network="devnet", token_program=TOKEN_PROGRAM, decimals=6)
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        # Idempotent ATA create: data == [1], 6 accounts in canonical order
+        # (payer, ata, owner, mint, system, token_program).
+        ata_create = Instruction(
+            Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
+            b"\x01",
+            [
+                AccountMeta(fee_payer.pubkey(), True, True),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(Pubkey.from_string(TEST_RECIPIENT), False, False),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string("11111111111111111111111111111111"), False, False),
+                AccountMeta(Pubkey.from_string(TOKEN_PROGRAM), False, False),
+            ],
+        )
+        # Build SPL transfer matching the recipient ATA.
+        source = Pubkey.new_unique()
+        spl_data = bytes([12]) + (1_000_000).to_bytes(8, "little") + bytes([6])
+        spl_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            spl_data,
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        tx_b64 = self._build_tx([ata_create, spl_transfer], fee_payer)
+        # Must not raise.
+        _verify_local_transaction_intent(tx_b64, request, details)
+
+    def test_ata_create_for_attacker_owner_is_rejected(self):
+        """SECURITY: an ATA create for an owner that is NOT a charge
+        recipient must be rejected so the attacker cannot get the fee
+        payer to fund an arbitrary ATA rent."""
+        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request = ChargeRequest(
+            amount="1000000",
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(network="devnet", token_program=TOKEN_PROGRAM, decimals=6)
+        mint = USDC_DEVNET
+        # ATA create for attacker owner.
+        attacker_ata = _derive_ata(self.ATTACKER, mint, TOKEN_PROGRAM)
+        ata_create = Instruction(
+            Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
+            b"\x01",
+            [
+                AccountMeta(fee_payer.pubkey(), True, True),
+                AccountMeta(Pubkey.from_string(attacker_ata), False, True),
+                AccountMeta(Pubkey.from_string(self.ATTACKER), False, False),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string("11111111111111111111111111111111"), False, False),
+                AccountMeta(Pubkey.from_string(TOKEN_PROGRAM), False, False),
+            ],
+        )
+        # Required transfer to actual recipient.
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        source = Pubkey.new_unique()
+        spl_data = bytes([12]) + (1_000_000).to_bytes(8, "little") + bytes([6])
+        spl_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            spl_data,
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        tx_b64 = self._build_tx([ata_create, spl_transfer], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
