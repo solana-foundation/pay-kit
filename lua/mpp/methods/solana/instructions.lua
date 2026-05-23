@@ -16,6 +16,8 @@ double-precision number type (which only carries 53 significant bits
 and would silently truncate large u64 lamport values).
 ]]
 
+local uint = require('mpp.util.uint')
+
 local M = {}
 
 local TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
@@ -157,9 +159,14 @@ function M.parse_compute_budget(ix)
     if #data ~= 5 then
       error('Unsupported compute budget instruction')
     end
+    -- Compare decimal strings via mpp.util.uint so u32 / u64 values above
+    -- 2^53 (Lua double mantissa boundary) still compare exactly. The u32
+    -- compute-unit-limit field never exceeds 2^32 so the precision risk is
+    -- nil here, but keeping the comparison string-based aligns with the
+    -- u64 price path below and survives a future cap raise without a
+    -- silent precision drop.
     local limit_str = decode_le_uint(data, 2, 4)
-    local limit = tonumber(limit_str)
-    if limit == nil or limit > MAX_COMPUTE_UNIT_LIMIT then
+    if uint.compare(limit_str, tostring(MAX_COMPUTE_UNIT_LIMIT)) > 0 then
       error('Compute unit limit ' .. limit_str .. ' exceeds maximum ' .. MAX_COMPUTE_UNIT_LIMIT)
     end
     return { kind = 'compute_budget_set_limit', limit = limit_str }
@@ -168,9 +175,14 @@ function M.parse_compute_budget(ix)
     if #data ~= 9 then
       error('Unsupported compute budget instruction')
     end
+    -- u64 price values above 2^53 cannot be compared safely via tonumber:
+    -- Lua doubles only carry 53 significant bits, so the cast collapses
+    -- distinct u64 values to the same float and the cap check would fire
+    -- on the wrong side of the boundary. Compare the exact decimal strings
+    -- through mpp.util.uint so a future cap raise above 2^53 still rejects
+    -- genuinely over-cap transactions.
     local price_str = decode_le_uint(data, 2, 8)
-    local price = tonumber(price_str)
-    if price == nil or price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+    if uint.compare(price_str, tostring(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) > 0 then
       error('Compute unit price ' .. price_str .. ' exceeds maximum ' .. MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)
     end
     return { kind = 'compute_budget_set_price', price = price_str }

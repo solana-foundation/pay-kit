@@ -98,6 +98,53 @@ helper.test('decode_le_uint round-trips a 2^63 value as a decimal string', funct
   helper.assert_equal(instructions.decode_le_uint(high, 1, 8), '9223372036854775808')
 end)
 
+helper.test('parse_compute_budget compares u64 prices through uint.compare, not tonumber', function()
+  -- Earlier draft used tonumber(price_str) before comparing against the
+  -- cap. Lua doubles only carry 53 significant bits, so a u64 price above
+  -- 2^53 collapses to the nearest representable float and the cap check
+  -- fires on the wrong side of the boundary. Regression test:
+  --
+  -- (a) A value one above 2^53 must compare strictly greater than the
+  --     current cap of 5_000_000. Confirms the string-comparison path is
+  --     live (the float comparison would say 2^53+1 == 2^53 and could
+  --     drop below the cap when the cap is also coerced to float).
+  -- (b) A value one above the cap (5_000_001) must reject.
+  -- (c) A value exactly at the cap (5_000_000) must accept.
+
+  local function build_price(value_decimal_string)
+    -- Convert a decimal string into 8 little-endian bytes for the price
+    -- payload. Operates on the digits directly so values above 2^53 stay
+    -- exact (the same reason the parser itself avoids tonumber).
+    local digits = { 0, 0, 0, 0, 0, 0, 0, 0 }
+    for i = 1, #value_decimal_string do
+      local carry = tonumber(value_decimal_string:sub(i, i))
+      for j = 1, 8 do
+        local v = digits[j] * 10 + carry
+        digits[j] = v % 256
+        carry = math.floor(v / 256)
+      end
+    end
+    local out = {}
+    for j = 1, 8 do out[j] = string.char(digits[j]) end
+    return table.concat(out)
+  end
+
+  -- (a) 2^53 + 1 over the u64 cap must reject through the string path.
+  helper.assert_error(function()
+    instructions.parse_compute_budget(build_ix(string.char(3) .. build_price('9007199254740993'), {}))
+  end, 'exceeds maximum')
+
+  -- (b) cap + 1 rejects.
+  helper.assert_error(function()
+    instructions.parse_compute_budget(build_ix(string.char(3) .. build_price('5000001'), {}))
+  end, 'exceeds maximum')
+
+  -- (c) cap itself is allowed.
+  local at_cap = instructions.parse_compute_budget(build_ix(string.char(3) .. build_price('5000000'), {}))
+  helper.assert_equal(at_cap.kind, 'compute_budget_set_price')
+  helper.assert_equal(at_cap.price, '5000000')
+end)
+
 helper.test('program_id_for resolves the program-id index against the account keys', function()
   local tx = {
     message = {
