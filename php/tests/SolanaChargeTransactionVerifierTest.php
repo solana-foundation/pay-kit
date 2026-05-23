@@ -18,6 +18,7 @@ use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Transaction\AccountMeta;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\TransactionInstruction;
+use SolanaPhpSdk\Util\Base58;
 
 final class SolanaChargeTransactionVerifierTest extends TestCase
 {
@@ -64,7 +65,56 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
 
         self::assertFalse($result->ok);
-        self::assertSame('missing transaction payload', $result->reason);
+        self::assertSame('missing transaction or signature payload', $result->reason);
+    }
+
+    public function testAcceptsValidSignaturePayloadForPushMode(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $signature = Base58::encode(str_repeat("\x01", 64));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $signature],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertTrue($result->ok, $result->reason);
+        self::assertSame($signature, $result->reference);
+    }
+
+    public function testRejectsShortSignaturePayloadForPushMode(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => 'short'],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('invalid signature length', $result->reason);
+    }
+
+    public function testRejectsBase58SignatureWithWrongDecodedLength(): void
+    {
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => str_repeat('1', 87)],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('invalid signature length', $result->reason);
     }
 
     public function testRejectsInvalidTransactionPayload(): void

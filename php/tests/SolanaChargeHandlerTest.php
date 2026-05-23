@@ -60,7 +60,7 @@ final class SolanaChargeHandlerTest extends TestCase
         $result = $handler->handle($credential->toAuthorizationHeader(), $request);
 
         self::assertInstanceOf(PaymentRequiredResponse::class, $result);
-        self::assertSame('missing transaction payload', $result->body['detail']);
+        self::assertSame('missing transaction or signature payload', $result->body['detail']);
     }
 
     public function testReturns402WhenChallengeMismatchesExpectedRequest(): void

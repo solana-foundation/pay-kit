@@ -18,6 +18,7 @@ use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\VersionedTransaction;
+use SolanaPhpSdk\Util\Base58;
 
 /**
  * Verifies Solana charge transaction payloads before server co-sign/broadcast.
@@ -26,34 +27,72 @@ use SolanaPhpSdk\Transaction\VersionedTransaction;
  * the co-signed transaction first, then create the receipt from the settled
  * on-chain signature with ChargeServer::createReceiptHeaderForReference().
  */
-final class SolanaChargeTransactionVerifier implements PaymentVerifier
+final class SolanaChargeTransactionVerifier implements PaymentVerifier, TransactionPayloadVerifier
 {
     private const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
     private const MAX_COMPUTE_UNIT_LIMIT = 200_000;
     private const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000;
 
     /**
-     * Verify a pull-mode transaction credential against its charge request.
+     * Verify a pull-mode transaction credential or a push-mode signature
+     * credential against its challenge.
+     *
+     * Pull mode runs the full structural decoder up front. Push mode only
+     * sanity-checks the signature shape here; the actual on-chain transaction
+     * is fetched and re-verified by {@see SolanaChargeHandler} using
+     * {@see verifyTransactionPayload()}.
      */
     public function verify(Credential $credential, Challenge $challenge): VerificationResult
     {
         $transaction = $credential->payload['transaction'] ?? null;
-        if (!is_string($transaction) || $transaction === '') {
-            return VerificationResult::failure('missing transaction payload');
+        if (is_string($transaction) && $transaction !== '') {
+            try {
+                $request = ChargeRequest::fromArray($challenge->decodeRequest());
+                return $this->verifyTransactionPayload($transaction, $request);
+            } catch (Throwable $error) {
+                // Surface the message from any failure (the SDK's own
+                // InvalidArgumentException, an upstream solana-php
+                // SolanaException for malformed pubkeys/transactions, etc.)
+                // they all describe a protocol-level reason the credential
+                // should be rejected.
+                return VerificationResult::failure($error->getMessage());
+            }
         }
 
+        $signature = $credential->payload['signature'] ?? null;
+        if (is_string($signature) && $signature !== '') {
+            try {
+                $this->validateSignature($signature);
+            } catch (Throwable $error) {
+                return VerificationResult::failure($error->getMessage());
+            }
+
+            return VerificationResult::success(reference: $signature);
+        }
+
+        return VerificationResult::failure('missing transaction or signature payload');
+    }
+
+    public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
+    {
         try {
-            $request = ChargeRequest::fromArray($challenge->decodeRequest());
-            $this->verifyTransaction($transaction, $request);
+            $this->verifyTransaction($transactionBase64, $request);
         } catch (Throwable $error) {
-            // Surface the message from any failure (the SDK's own
-            // InvalidArgumentException, an upstream solana-php SolanaException
-            // for malformed pubkeys/transactions, etc.) — they all describe a
-            // protocol-level reason the credential should be rejected.
             return VerificationResult::failure($error->getMessage());
         }
 
         return VerificationResult::success(reference: '');
+    }
+
+    private function validateSignature(string $signature): void
+    {
+        if (strlen($signature) < 87 || strlen($signature) > 88) {
+            throw new InvalidArgumentException('invalid signature length');
+        }
+        $decoded = Base58::decode($signature);
+        if (strlen($decoded) !== 64) {
+            throw new InvalidArgumentException('invalid signature length');
+        }
     }
 
     private function verifyTransaction(string $transactionBase64, ChargeRequest $request): void
