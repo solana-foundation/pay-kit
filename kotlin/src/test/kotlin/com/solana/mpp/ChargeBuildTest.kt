@@ -126,6 +126,34 @@ class ChargeBuildTest {
     }
 
     @Test
+    fun rejectsNegativeSplitAmountWithStructuredError() {
+        // Regression: `toLongOrNull` parses "-100" into -100L, so
+        // splitsTotal could go negative and `primaryAmount =
+        // totalAmount - (-100)` would clear the <= 0 guard. The
+        // negative value would then reach transferChecked and trip
+        // an unchecked IllegalArgumentException from inside the wire
+        // encoder. Callers catch MppException.InvalidTransaction,
+        // so the guard must reject negative splits up front.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "USDC",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "mainnet",
+                splits = listOf(
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = "-100",
+                    ),
+                ),
+            ),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
     fun acceptsKnownSymbolCurrencyWithAtaCreationSplit() {
         // Regression: the prior guard rejected every known stablecoin
         // symbol (USDC/USDT/USDG/PYUSD/CASH) combined with

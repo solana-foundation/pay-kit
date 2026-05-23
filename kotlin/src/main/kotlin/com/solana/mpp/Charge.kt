@@ -76,13 +76,29 @@ object Charge {
     ): String {
         val totalAmount = request.amount.toLongOrNull()
             ?: throw MppException.InvalidTransaction("Invalid amount: ${request.amount}")
+        if (totalAmount <= 0L) {
+            throw MppException.InvalidTransaction("Amount must be positive: ${request.amount}")
+        }
         val splits = request.methodDetails.splits ?: emptyList()
         if (splits.size > MAX_SPLITS) {
             throw MppException.InvalidTransaction("Too many splits (got ${splits.size}, max $MAX_SPLITS)")
         }
-        val splitsTotal = splits.sumOf {
-            it.amount.toLongOrNull()
-                ?: throw MppException.InvalidTransaction("Invalid split amount: ${it.amount}")
+        // Reject negative split amounts up front so they cannot slip past
+        // the `splitsTotal <= 0` arithmetic and reach the wire encoder as
+        // a negative lamport count. `toLongOrNull` happily parses "-100"
+        // into -100L, which would make splitsTotal negative and let
+        // primaryAmount = totalAmount - (-100) clear the <= 0 guard; the
+        // downstream `Instructions.transferChecked` / `systemTransfer`
+        // require(lamports >= 0) would then throw an unchecked
+        // IllegalArgumentException from deep in the stack instead of the
+        // structured MppException.InvalidTransaction callers expect.
+        val splitsTotal = splits.sumOf { split ->
+            val v = split.amount.toLongOrNull()
+                ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
+            if (v < 0L) {
+                throw MppException.InvalidTransaction("Split amount cannot be negative: ${split.amount}")
+            }
+            v
         }
         val primaryAmount = totalAmount - splitsTotal
         if (primaryAmount <= 0L) {
