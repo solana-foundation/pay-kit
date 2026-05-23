@@ -120,9 +120,17 @@ jobs:
       - name: Install workspace deps
         run: pnpm install
 
+      - name: Install TypeScript SDK deps
+        working-directory: typescript
+        run: pnpm install
+
       - name: Build TypeScript SDK
         working-directory: typescript
         run: pnpm -r build
+
+      - name: Install interop harness deps
+        working-directory: tests/interop
+        run: pnpm install
 
       - name: TS-to-Lua focused matrix
         working-directory: tests/interop
