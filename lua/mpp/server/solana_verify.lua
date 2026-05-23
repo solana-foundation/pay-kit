@@ -511,4 +511,34 @@ function M.new_signature_verifier(hooks)
   end
 end
 
+--- Build a real (non-hooks) verifier that decodes the wire transaction
+--- through the Lua Solana codec landed in this PR. Mirrors what the Ruby
+--- and Rust spines do: parse the credential's base64 transaction, walk
+--- every instruction, and reject on a single failed assertion.
+---
+--- @param opts table (optional)
+---   pull_signer       optional Signer for the cosign path. When set, the
+---                     returned verifier exposes a `cosign(base64)`
+---                     companion the charge handler wires as
+---                     `pull_transaction_signer`.
+---
+--- The returned table carries:
+---   transaction_verifier    function(base64, request) -> ok | raises
+---   pull_blockhash_extractor function(base64) -> blockhash_b58
+---   pull_transaction_signer  function(base64) -> signed_b64 (when opts.pull_signer set)
+function M.new_real_verifier(opts)
+  opts = opts or {}
+  local real = require('mpp.methods.solana.verifier')
+  local out = {
+    transaction_verifier = real.new_callback(),
+    pull_blockhash_extractor = real.new_blockhash_extractor(),
+  }
+  if opts.pull_signer then
+    out.pull_transaction_signer = function(transaction_base64)
+      return opts.pull_signer:cosign_base64(transaction_base64)
+    end
+  end
+  return out
+end
+
 return M
