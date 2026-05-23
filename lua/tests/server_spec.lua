@@ -176,3 +176,77 @@ t.test('verify credential accepts transaction payload when lua verifier hooks ar
   local receipt = server:verify_credential(credential, 1770000000)
   t.assert_equal(receipt.reference, 'sig-transaction')
 end)
+
+-- ─── charge_with_options Tier-0 splits guards ────────────────────────────
+-- These mirror the cross-SDK fault matrix's G28 scenarios. The verifier
+-- already rejects an on-chain transaction whose splits consume the full
+-- amount, but rejecting at challenge issuance lets the harness see the
+-- canonical 402 + payment_invalid pair without having to broadcast first.
+
+t.test('charge_with_options rejects splits whose sum equals the amount', function()
+  local server = new_server()
+  local ok, err = pcall(function()
+    server:charge_with_options('0.001', {
+      splits = {
+        { recipient = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', amount = '1000' },
+      },
+    })
+  end)
+  t.assert_true(not ok, 'expected splits-sum-equals-amount to raise')
+  t.assert_equal(type(err) == 'table' and err.code, 'payment_invalid')
+  t.assert_true(tostring(err.message):match('split amounts exceed total amount') ~= nil)
+end)
+
+t.test('charge_with_options rejects splits whose sum exceeds the amount', function()
+  local server = new_server()
+  local ok, err = pcall(function()
+    server:charge_with_options('0.001', {
+      splits = {
+        { recipient = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', amount = '999' },
+        { recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h', amount = '2' },
+      },
+    })
+  end)
+  t.assert_true(not ok, 'expected splits-over-amount to raise')
+  t.assert_equal(type(err) == 'table' and err.code, 'payment_invalid')
+end)
+
+t.test('charge_with_options rejects more than 8 splits at issuance', function()
+  local server = new_server()
+  local splits = {}
+  for _ = 1, 9 do
+    splits[#splits + 1] = { recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h', amount = '1' }
+  end
+  local ok, err = pcall(function()
+    server:charge_with_options('0.001', { splits = splits })
+  end)
+  t.assert_true(not ok, 'expected too-many-splits to raise')
+  t.assert_equal(type(err) == 'table' and err.code, 'payment_invalid')
+  t.assert_true(tostring(err.message):match('too many splits') ~= nil)
+end)
+
+t.test('charge_with_options accepts splits whose sum is strictly under the amount', function()
+  local server = new_server()
+  local challenge = server:charge_with_options('0.001', {
+    splits = {
+      { recipient = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', amount = '250' },
+    },
+  })
+  local request = challenge.request:decode()
+  t.assert_equal(request.amount, '1000')
+  t.assert_equal(request.methodDetails.splits[1].amount, '250')
+end)
+
+t.test('charge_with_options threads explicit token_program override into methodDetails', function()
+  -- Token-2022 scenarios that use an arbitrary mint pubkey (not in the
+  -- KNOWN_MINTS table) need a way to tell the SDK which token program
+  -- owns the mint without modifying the stablecoin allowlist. Mirrors the
+  -- TOKEN_2022_PROGRAM threading path the lua interop adapter takes when
+  -- MPP_INTEROP_TOKEN_PROGRAM is set.
+  local server = new_server()
+  local challenge = server:charge_with_options('0.001', {
+    token_program = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+  })
+  local request = challenge.request:decode()
+  t.assert_equal(request.methodDetails.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+end)

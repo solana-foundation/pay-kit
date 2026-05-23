@@ -6,6 +6,7 @@ local protocol = require('mpp.protocol.solana')
 local solana_verify = require('mpp.server.solana_verify')
 local store = require('mpp.store')
 local types = require('mpp.protocol.core.types')
+local uint = require('mpp.util.uint')
 
 local M = {}
 
@@ -69,6 +70,31 @@ end
 function Server:charge_with_options(amount, options)
   options = options or {}
   local base_units = intents.parse_units(amount, self.decimals)
+  -- Tier-0 splits guard. The on-chain primary delta is `amount - sum(splits)`
+  -- and the verifier rejects any settled transaction where this drops to
+  -- zero or below. Rejecting at challenge issuance time mirrors the Rust /
+  -- TypeScript server fixtures and surfaces a canonical 402 with code
+  -- `payment_invalid` before any HMAC is computed, so a misconfigured route
+  -- (or an interop scenario whose splits sum to the full amount) gets the
+  -- same machine-readable code from every SDK.
+  if type(options.splits) == 'table' and #options.splits > 0 then
+    if #options.splits > 8 then
+      error_codes.raise(error_codes.PAYMENT_INVALID, 'too many splits')
+    end
+    local split_total = '0'
+    for i = 1, #options.splits do
+      local split_amount = options.splits[i] and options.splits[i].amount
+      if type(split_amount) ~= 'string' or not split_amount:match('^%d+$') then
+        error_codes.raise(error_codes.PAYMENT_INVALID,
+          'split.amount must be an integer string')
+      end
+      split_total = uint.add(split_total, split_amount)
+    end
+    if uint.compare(base_units, split_total) <= 0 then
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'split amounts exceed total amount')
+    end
+  end
   local method_details = {
     network = self.network,
   }
