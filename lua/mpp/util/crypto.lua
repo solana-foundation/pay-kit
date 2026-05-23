@@ -174,16 +174,18 @@ function M.constant_eq(a, b)
   end
   local len_a = #a
   local len_b = #b
-  -- XOR-fold a fixed-length reference so the loop runs regardless of length;
-  -- the length mismatch contributes to the diff but does not short-circuit.
-  local reference = len_a == 0 and b or a
-  local ref_len = #reference
-  local diff = bit.bxor(len_a, len_b)
-  if ref_len == 0 then
-    return diff == 0
+  -- XOR-fold over the expected (server-side) length so the loop count is
+  -- always controlled by the known reference, not by attacker-supplied
+  -- input. Fail-fast when the expected value is empty: two empty strings
+  -- are equal, anything else is not. This removes the timing leak that
+  -- would otherwise let an empty `a` make the loop depend on `len_b`.
+  if len_a == 0 then
+    return len_b == 0
   end
+  local ref_len = len_a
+  local diff = bit.bxor(len_a, len_b)
   for i = 1, ref_len do
-    local ai = a:byte(((i - 1) % math.max(len_a, 1)) + 1) or 0
+    local ai = a:byte(i) or 0
     local bi = b:byte(((i - 1) % math.max(len_b, 1)) + 1) or 0
     diff = bit.bor(diff, bit.bxor(ai, bi))
   end

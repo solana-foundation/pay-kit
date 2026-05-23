@@ -18,6 +18,7 @@ local verify_spl_transfers
 local verify_memo_instructions
 local verify_instruction_allowlist
 local verify_compute_budget
+local resolve_program
 
 local function is_native_sol(currency)
   return string.lower(currency or '') == 'sol'
@@ -235,7 +236,12 @@ end
 --    discriminator we cannot prove the instruction stays under the cap.
 function verify_compute_budget(instructions)
   for _, ix in ipairs(instructions or {}) do
-    if normalize_program_id(ix) == COMPUTE_BUDGET_PROGRAM then
+    -- Use resolve_program (forward-declared above) so an instruction
+    -- that ships only the `computeBudget` alias still passes through
+    -- the cap. Standard jsonParsed adapters populate `programId`, but a
+    -- third-party adapter that ships only the alias would otherwise
+    -- skip the cap while still passing the allowlist downstream.
+    if resolve_program(ix) == COMPUTE_BUDGET_PROGRAM then
       local parsed_type = ix.parsed and ix.parsed.type or nil
       local info = instruction_info(ix) or {}
       local handled = false
@@ -304,7 +310,7 @@ local PROGRAM_ALIAS = {
   computeBudget = COMPUTE_BUDGET_PROGRAM,
 }
 
-local function resolve_program(ix)
+function resolve_program(ix)
   local program = normalize_program_id(ix)
   if program ~= '' then
     return program
