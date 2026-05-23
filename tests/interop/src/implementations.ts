@@ -138,4 +138,13 @@ export const serverImplementations: ImplementationDefinition[] = [
     // Codex PR #103 review (P2).
     enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
   },
+  {
+    id: "python",
+    label: "Python HTTP server",
+    role: "server",
+    command: ["python3", "python-server/main.py"],
+    // Default off until the focused TS-to-Python and Rust-to-Python
+    // matrices pass locally. Flip on in the M1g closure commit.
+    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
+  },
 ];
