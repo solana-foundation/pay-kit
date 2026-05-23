@@ -92,6 +92,19 @@ class TestCanonicalCodes:
         assert canonical_code("challenge-mismatch") == "challenge_verification_failed"
         assert canonical_code("invalid-payload") == "payment_invalid"
 
+    def test_route_mismatch_distinguished_from_hmac_failure(self):
+        # L6 lock: a credential with a valid HMAC but pinned to a different
+        # route/realm/method/intent/currency MUST surface as
+        # ``challenge_route_mismatch``, not as ``challenge_verification_failed``.
+        # Codex P2 fix.
+        from solana_mpp._errors import canonical_code
+
+        assert canonical_code("challenge-mismatch") == "challenge_verification_failed"
+        assert canonical_code("currency-mismatch") == "challenge_route_mismatch"
+        assert canonical_code("method-mismatch") == "challenge_route_mismatch"
+        assert canonical_code("intent-mismatch") == "challenge_route_mismatch"
+        assert canonical_code("realm-mismatch") == "challenge_route_mismatch"
+
     def test_canonical_code_falls_back_to_payment_invalid(self):
         from solana_mpp._errors import canonical_code
 

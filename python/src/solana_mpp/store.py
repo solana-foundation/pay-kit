@@ -96,12 +96,21 @@ class FileReplayStore:
             return {}
         try:
             value = json.loads(raw)
-        except json.JSONDecodeError:
-            # Fail closed on a corrupted store: treat as empty so a fresh
-            # write overwrites it on the next put. A future audit can choose
-            # to raise instead.
-            return {}
-        return value if isinstance(value, dict) else {}
+        except json.JSONDecodeError as exc:
+            # L4 lock: fail closed by raising. Silently overwriting a
+            # corrupted store would drop every consumed-signature marker
+            # and let previously settled credentials replay across the
+            # next restart. The operator must repair or remove the file
+            # before the server can resume verification.
+            raise RuntimeError(
+                f"FileReplayStore at {self._path} is corrupted; refusing to start "
+                f"with empty replay evidence: {exc}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise RuntimeError(
+                f"FileReplayStore at {self._path} is not a JSON object; refusing to start"
+            )
+        return value
 
     def _flush(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

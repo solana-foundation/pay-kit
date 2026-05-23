@@ -101,6 +101,21 @@ class TestFileReplayStore:
         FileReplayStore(path)
         assert not path.parent.exists()
 
+    def test_corrupted_json_refuses_to_start(self, tmp_path: Path):
+        # L4 lock: a corrupted on-disk store must fail closed at boot so a
+        # restart cannot silently let previously settled credentials replay.
+        # Codex P2 fix.
+        path = tmp_path / "replay.json"
+        path.write_text("not json {", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="corrupted"):
+            FileReplayStore(path)
+
+    def test_non_object_json_refuses_to_start(self, tmp_path: Path):
+        path = tmp_path / "replay.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="not a JSON object"):
+            FileReplayStore(path)
+
 
 class TestMppRequiresExplicitStore:
     """L4 lock: ``Mpp.__init__`` MUST refuse to start without an explicit store."""

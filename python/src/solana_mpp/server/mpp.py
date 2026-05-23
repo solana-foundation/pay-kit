@@ -638,7 +638,7 @@ class Mpp:
         if cred_request.currency != expected.currency:
             raise PaymentError(
                 f"currency mismatch: credential has {cred_request.currency} but endpoint expects {expected.currency}",
-                code="challenge-mismatch",
+                code="currency-mismatch",
             )
         if cred_request.recipient != expected.recipient:
             raise PaymentError(
@@ -692,29 +692,35 @@ class Mpp:
         return request, details, payload
 
     def _verify_pinned_fields(self, credential: PaymentCredential, request: ChargeRequest) -> None:
+        # L6 lock: pinned-field mismatches are route mismatches, NOT HMAC
+        # verification failures. A validly signed credential for a different
+        # route or with a tampered echoed field reaches this path. Emitting
+        # ``challenge_route_mismatch`` lets clients distinguish a bad HMAC
+        # (``challenge_verification_failed``) from a signed credential
+        # replayed against the wrong endpoint.
         method_name = "solana"
         if credential.challenge.method != method_name:
             raise PaymentError(
                 f"credential method '{credential.challenge.method}' does not match this server (expected '{method_name}')",
-                code="challenge-mismatch",
+                code="method-mismatch",
             )
         # IntentName equivalent: case-insensitive "charge" comparison.
         if credential.challenge.intent.lower() != "charge":
             raise PaymentError(
                 f"credential intent '{credential.challenge.intent}' is not a charge",
-                code="challenge-mismatch",
+                code="intent-mismatch",
             )
         # The HMAC ID is computed using the server's own realm (not the echoed
         # one), so a tampered echoed realm passes HMAC unless re-signed. Pin it.
         if credential.challenge.realm != self._realm:
             raise PaymentError(
                 f"credential realm '{credential.challenge.realm}' does not match this server (expected '{self._realm}')",
-                code="challenge-mismatch",
+                code="realm-mismatch",
             )
         if request.currency != self._currency:
             raise PaymentError(
                 f"credential currency '{request.currency}' does not match this server (expected '{self._currency}')",
-                code="challenge-mismatch",
+                code="currency-mismatch",
             )
         if request.recipient != self._recipient:
             raise PaymentError(

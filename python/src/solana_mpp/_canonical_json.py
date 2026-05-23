@@ -110,8 +110,15 @@ def _encode_number(value: float) -> str:
     """ES6 ``ToString(Number)`` per ECMA-262 section 7.1.12.1.
 
     Forbids NaN and Infinity per RFC 8785 section 3.2.2.3. Renders integer
-    floats without a fractional part (``1.0`` → ``"1"``). Negative zero is
+    floats without a fractional part (``1.0`` -> ``"1"``). Negative zero is
     rendered as ``"0"`` (ES6 step 2 of ToString collapses signed zero).
+
+    ES6 ToString uses fixed-form for numbers whose decimal exponent ``k``
+    satisfies ``-6 <= k - n < n`` where ``n`` is the number of significant
+    digits, and exponential form otherwise. Python's ``repr`` chooses the
+    shortest round-trip representation but uses different boundaries for
+    fixed vs exponential form. We compute the digits via ``repr`` then
+    rewrite the form to match ES6 when the magnitudes diverge.
     """
     if math.isnan(value):
         raise ValueError("NaN is not a valid canonical JSON number")
@@ -126,22 +133,66 @@ def _encode_number(value: float) -> str:
     if value.is_integer() and abs(value) < 1e21:
         return str(int(value))
 
-    # Python's ``repr`` already implements a shortest-round-trip representation
-    # that matches ES6 ToString for the common cases. For very large or very
-    # small magnitudes, ES6 uses exponential notation with ``e+`` / ``e-`` and
-    # a base-10 exponent; Python's repr matches this format. Normalize the
-    # capital ``E`` Python sometimes emits to lowercase per ES6.
-    rendered = repr(value)
-    if "e" in rendered or "E" in rendered:
-        mantissa, _, exp = rendered.replace("E", "e").partition("e")
-        # Drop a trailing ``.0`` on the mantissa per ES6: e.g. ``1.0e+21`` becomes ``1e+21``.
-        if mantissa.endswith(".0"):
-            mantissa = mantissa[:-2]
-        # ES6 prepends ``+`` for non-negative exponents.
-        if not exp.startswith("-") and not exp.startswith("+"):
-            exp = "+" + exp
-        # Strip leading zeros from the exponent (ES6 has none).
-        sign = exp[0]
-        digits = exp[1:].lstrip("0") or "0"
-        rendered = f"{mantissa}e{sign}{digits}"
-    return rendered
+    # Get the shortest round-trip digits via repr, then normalize to ES6 form.
+    rendered = repr(value).replace("E", "e")
+    sign = ""
+    if rendered.startswith("-"):
+        sign = "-"
+        rendered = rendered[1:]
+
+    if "e" in rendered:
+        mantissa, _, exp_str = rendered.partition("e")
+        exp = int(exp_str)
+    else:
+        mantissa = rendered
+        exp = 0
+
+    # Split mantissa into digits + the position of the decimal point.
+    if "." in mantissa:
+        int_part, frac_part = mantissa.split(".")
+        digits = int_part + frac_part
+        # Decimal position relative to the start of ``digits``: number of
+        # digits before the decimal point at the original mantissa.
+        decimal_pos = len(int_part)
+    else:
+        digits = mantissa
+        decimal_pos = len(mantissa)
+    # Strip leading zeros from digits, adjusting decimal_pos.
+    stripped = digits.lstrip("0")
+    leading_zeros = len(digits) - len(stripped)
+    if not stripped:
+        return "0"
+    digits = stripped
+    decimal_pos -= leading_zeros
+    # Strip trailing zeros from digits (they do not affect the value).
+    digits = digits.rstrip("0") or "0"
+    # ``k`` is the decimal exponent of the most significant digit.
+    n = len(digits)
+    k = decimal_pos + exp  # number of digits to the left of decimal point
+
+    # ES6 ToString: use fixed form when the result has between 1 and 21
+    # significant digits AND the decimal-exponent range is in [-6, 21).
+    # Specifically:
+    #   if 0 < k <= 21 and k >= n: rendered as digits + "0" * (k - n)
+    #   if 0 < k <= 21 and k < n:  digits[:k] + "." + digits[k:]
+    #   if -6 < k <= 0:            "0." + "0" * -k + digits
+    #   else:                      d "." d... "e+/- (k-1)"
+    if 0 < k <= 21 and k >= n:
+        body = digits + "0" * (k - n)
+    elif 0 < k <= 21 and k < n:
+        body = digits[:k] + "." + digits[k:]
+    elif -6 < k <= 0:
+        body = "0." + "0" * (-k) + digits
+    else:
+        if n == 1:
+            body = digits + f"e{k - 1:+d}".replace("+0", "+").replace("-0", "-")
+        else:
+            body = digits[0] + "." + digits[1:] + f"e{k - 1:+d}".replace("+0", "+").replace("-0", "-")
+        # Normalize exponent: ES6 has no leading zeros in the exponent and
+        # always uses an explicit sign.
+        mantissa_part, _, exp_part = body.partition("e")
+        exp_sign = exp_part[0] if exp_part[0] in {"+", "-"} else "+"
+        exp_digits = exp_part.lstrip("+-").lstrip("0") or "0"
+        body = f"{mantissa_part}e{exp_sign}{exp_digits}"
+
+    return sign + body

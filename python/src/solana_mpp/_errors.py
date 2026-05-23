@@ -47,13 +47,26 @@ CANONICAL_CODES = frozenset(
 )
 
 # Map legacy kebab-case codes to canonical snake_case codes.
+#
+# Distinguishing ``challenge-mismatch`` (HMAC verification failed; the
+# credential id does not match what the server would compute) from
+# ``challenge-route-mismatch`` (HMAC valid but the credential was issued
+# for a different route on the same secret key) is the explicit L6
+# requirement. The former maps to ``challenge_verification_failed``, the
+# latter to ``challenge_route_mismatch``. Verifier call sites in
+# ``server/mpp.py`` use the route-specific codes for the pinned-field path.
 _LEGACY_TO_CANONICAL = {
     "challenge-expired": CODE_CHALLENGE_EXPIRED,
     "challenge-mismatch": CODE_CHALLENGE_VERIFICATION_FAILED,
+    "challenge-route-mismatch": CODE_CHALLENGE_ROUTE_MISMATCH,
     "signature-consumed": CODE_SIGNATURE_CONSUMED,
     "wrong-network": CODE_WRONG_NETWORK,
     "amount-mismatch": CODE_CHARGE_REQUEST_MISMATCH,
     "recipient-mismatch": CODE_CHARGE_REQUEST_MISMATCH,
+    "currency-mismatch": CODE_CHALLENGE_ROUTE_MISMATCH,
+    "method-mismatch": CODE_CHALLENGE_ROUTE_MISMATCH,
+    "intent-mismatch": CODE_CHALLENGE_ROUTE_MISMATCH,
+    "realm-mismatch": CODE_CHALLENGE_ROUTE_MISMATCH,
     "splits-exceed-amount": CODE_CHARGE_REQUEST_MISMATCH,
     "invalid-payload": CODE_PAYMENT_INVALID,
     "invalid-payload-type": CODE_PAYMENT_INVALID,

@@ -65,6 +65,22 @@ class TestNumberSerialization:
     def test_one_e_minus_seven(self):
         assert encode_canonical(1e-7) == b"1e-7"
 
+    def test_one_e_minus_six_uses_fixed_form(self):
+        # ES6 ToString uses fixed-form notation for ``k > -6``. 0.000001
+        # (1e-6) renders as ``"0.000001"`` not ``"1e-6"``. Codex P2 fix.
+        assert encode_canonical(1e-6) == b"0.000001"
+        assert encode_canonical(0.000001) == b"0.000001"
+
+    def test_decimal_below_one(self):
+        # 0.5 must render in fixed form, not exponential.
+        assert encode_canonical(0.5) == b"0.5"
+
+    def test_negative_decimal(self):
+        assert encode_canonical(-0.5) == b"-0.5"
+
+    def test_large_integer_float(self):
+        assert encode_canonical(100.0) == b"100"
+
     def test_integer_valued_float(self):
         # ES6 ToString drops the fractional part for integer-valued numbers.
         assert encode_canonical(1.0) == b"1"
