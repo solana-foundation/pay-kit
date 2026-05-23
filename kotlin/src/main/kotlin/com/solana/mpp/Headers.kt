@@ -1,7 +1,7 @@
 package com.solana.mpp
 
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.encodeToJsonElement
 
 /** Parses and formats MPP HTTP Payment headers. */
 object MppHeaders {
@@ -33,9 +33,21 @@ object MppHeaders {
         }
     }
 
-    /** Formats an `Authorization: Payment ...` credential header. */
+    /**
+     * Formats an `Authorization: Payment ...` credential header.
+     *
+     * Credentials are serialized through the RFC 8785 JSON
+     * Canonicalization Scheme before base64url encoding so the wire
+     * bytes match the Rust client (`serde_json_canonicalizer`) and any
+     * verifier that signs or digests the credential serialization
+     * rather than only decoding the JSON. Using kotlinx.serialization's
+     * declaration order would otherwise produce a different token for
+     * the same credential, breaking byte-for-byte conformance.
+     */
     fun formatAuthorization(credential: PaymentCredential): String {
-        val encoded = Base64Url.encode(json.encodeToString(credential).encodeToByteArray())
+        val tree = json.encodeToJsonElement(PaymentCredential.serializer(), credential)
+        val canonical = CanonicalJson.encode(tree)
+        val encoded = Base64Url.encode(canonical.encodeToByteArray())
         return "$PAYMENT_SCHEME $encoded"
     }
 
