@@ -2,12 +2,46 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from solana_mpp._base64url import decode_json, encode_json
 from solana_mpp._challenge import compute_challenge_id, constant_time_equal
+
+# RFC 3339 section 5.6 ``date-time`` grammar. The capture groups are
+# year-month-day-T-hh-mm-ss[.frac][offset]. ``T`` and ``Z`` may appear in
+# upper or lower case (per RFC 3339 §4.2 note that lowercase is permitted).
+# Offset is either ``Z``/``z`` or ``+HH:MM`` / ``-HH:MM``.
+_RFC3339_RE = re.compile(
+    r"^"
+    r"(\d{4})-(\d{2})-(\d{2})"          # full-date
+    r"[Tt]"                              # time separator
+    r"(\d{2}):(\d{2}):(\d{2})"          # partial-time hh:mm:ss
+    r"(\.\d+)?"                          # optional time-secfrac
+    r"(?:[Zz]|([+-])(\d{2}):(\d{2}))"   # time-offset
+    r"$"
+)
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    """Parse a strict RFC 3339 timestamp.
+
+    Raises :class:`ValueError` on anything looser than RFC 3339 (e.g. a space
+    instead of ``T``, a missing offset, or an invalid month/day combination).
+    Mirrors the F6 lock that landed on Ruby + PHP + Lua in PR #99 / #102.
+    """
+    match = _RFC3339_RE.match(value)
+    if match is None:
+        raise ValueError(f"not a valid RFC 3339 timestamp: {value!r}")
+    # Delegate the calendar arithmetic to datetime.fromisoformat after we have
+    # confirmed the lexical grammar. Normalize the case of the T/Z markers so
+    # fromisoformat (Python 3.11+) accepts the value.
+    normalized = value.replace("t", "T").replace("z", "Z")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    return datetime.fromisoformat(normalized)
 
 
 @dataclass
@@ -74,16 +108,22 @@ class PaymentChallenge:
         return constant_time_equal(self.id, expected_id)
 
     def is_expired(self, now: datetime | None = None) -> bool:
-        """Return True if the challenge has expired."""
+        """Return True if the challenge has expired.
+
+        Uses strict RFC 3339 parsing (F6 lock). A malformed ``expires`` value
+        fails closed (treated as expired) rather than silently falling back
+        to an epoch timestamp. This matches the cross-SDK behavior that
+        landed on Ruby + PHP + Lua in PR #99 / #102 and prevents a tampered
+        ``expires="tomorrow"`` from extending a challenge indefinitely.
+        """
         if not self.expires:
             return False
         try:
-            ts_str = self.expires.replace("Z", "+00:00")
-            expires_at = datetime.fromisoformat(ts_str)
-            ref = now if now is not None else datetime.now(UTC)
-            return expires_at <= ref
+            expires_at = _parse_rfc3339(self.expires)
         except (ValueError, TypeError):
-            return True  # fail-closed
+            return True  # fail-closed on invalid RFC 3339
+        ref = now if now is not None else datetime.now(UTC)
+        return expires_at <= ref
 
     def to_echo(self) -> ChallengeEcho:
         """Create a challenge echo for use in credentials."""
