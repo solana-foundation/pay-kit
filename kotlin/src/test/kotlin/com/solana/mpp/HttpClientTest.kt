@@ -91,6 +91,80 @@ class HttpClientTest {
     }
 
     @Test
+    fun selectsSolanaChargeChallengeAmongMultipleHeaders() {
+        // Server advertises Basic AND Payment as two distinct
+        // WWW-Authenticate headers (RFC 9110 form). The Kotlin
+        // client used to read only the first header and abort on
+        // the non-Payment one; this regression locks in the
+        // multi-header selection fix.
+        val requestB64 = Base64Url.encode(
+            """{"amount":"1000","currency":"SOL","recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY","methodDetails":{"network":"localnet","recentBlockhash":"11111111111111111111111111111111"}}""".encodeToByteArray(),
+        )
+        val challenge =
+            """Payment id="abc", realm="MPP Payment", method="solana", intent="charge", request="$requestB64""""
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(402)
+                .addHeader("WWW-Authenticate", """Basic realm="example"""")
+                .addHeader("WWW-Authenticate", challenge),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .addHeader("Payment-Receipt", "settled-signature")
+                .setBody("""{"fortune":"multi challenge"}"""),
+        )
+
+        val client = MppHttpClient(signer, blockhashProvider)
+        val response = client.mppGet(server.url("/paid-multi-header").toString())
+        try {
+            assertEquals(200, response.code)
+        } finally {
+            response.close()
+        }
+
+        assertEquals(2, server.requestCount)
+        server.takeRequest()
+        val retry = server.takeRequest()
+        val authorization = retry.getHeader("Authorization")
+            ?: throw AssertionError("retry missing Authorization header")
+        assertTrue(authorization.startsWith("Payment "))
+    }
+
+    @Test
+    fun selectsSolanaChargeChallengeAmongCommaJoinedSchemes() {
+        // Some intermediaries collapse multiple WWW-Authenticate
+        // headers into one comma-joined value. The client must split
+        // those back out and pick the Solana charge challenge.
+        val requestB64 = Base64Url.encode(
+            """{"amount":"1000","currency":"SOL","recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY","methodDetails":{"network":"localnet","recentBlockhash":"11111111111111111111111111111111"}}""".encodeToByteArray(),
+        )
+        val joined =
+            """Bearer realm="api", Payment id="abc", realm="MPP Payment", method="solana", intent="charge", request="$requestB64""""
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(402)
+                .addHeader("WWW-Authenticate", joined),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("ok"),
+        )
+
+        val client = MppHttpClient(signer, blockhashProvider)
+        val response = client.mppGet(server.url("/paid-joined").toString())
+        try {
+            assertEquals(200, response.code)
+        } finally {
+            response.close()
+        }
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
     fun raisesWhenChallengeHeaderMissing() {
         server.enqueue(MockResponse().setResponseCode(402))
         val client = MppHttpClient(signer, blockhashProvider)

@@ -13,6 +13,97 @@ object MppHeaders {
         explicitNulls = false
     }
 
+    /**
+     * Splits a single `WWW-Authenticate` header value into the
+     * individual challenges it advertises. RFC 9110 lets a server
+     * comma-join multiple challenges into one header line, so we
+     * cannot assume one header value carries exactly one challenge.
+     *
+     * The split walks the value character by character and treats a
+     * comma as a separator only when it is outside a quoted string and
+     * the next non-space token looks like a scheme name followed by a
+     * space (RFC 7235 challenge grammar). That keeps comma-bearing
+     * auth-param values such as the base64url request payload or
+     * quoted realm strings intact while still recovering each scheme
+     * the server actually advertised.
+     */
+    fun splitChallenges(header: String): List<String> {
+        val commaPositions = mutableListOf<Int>()
+        var inQuotes = false
+        var escaped = false
+        for ((index, char) in header.withIndex()) {
+            when {
+                escaped -> escaped = false
+                char == '\\' && inQuotes -> escaped = true
+                char == '"' -> inQuotes = !inQuotes
+                char == ',' && !inQuotes -> commaPositions.add(index)
+            }
+        }
+
+        val boundaries = mutableListOf(0)
+        for (pos in commaPositions) {
+            var cursor = pos + 1
+            while (cursor < header.length && header[cursor].isWhitespace()) {
+                cursor += 1
+            }
+            val schemeStart = cursor
+            while (cursor < header.length && isTokenChar(header[cursor])) {
+                cursor += 1
+            }
+            // A real new challenge requires a token followed by at
+            // least one space; if the next token is followed by `=`
+            // we are still inside the previous challenge's
+            // auth-param list.
+            if (cursor > schemeStart && cursor < header.length && header[cursor] == ' ') {
+                boundaries.add(pos + 1)
+            }
+        }
+        boundaries.add(header.length + 1)
+
+        val results = mutableListOf<String>()
+        for (i in 0 until boundaries.size - 1) {
+            val start = boundaries[i]
+            val end = (boundaries[i + 1] - 1).coerceAtMost(header.length)
+            val slice = header.substring(start, end).trim().trimEnd(',').trim()
+            if (slice.isNotEmpty()) {
+                results.add(slice)
+            }
+        }
+        return results
+    }
+
+    private fun isTokenChar(char: Char): Boolean {
+        if (char.isLetterOrDigit()) return true
+        return char in "!#$%&'*+-.^_`|~"
+    }
+
+    /**
+     * Selects the Solana charge Payment challenge from a set of
+     * `WWW-Authenticate` header values, transparently handling both
+     * the multi-header and comma-joined forms. Returns null when no
+     * advertised challenge targets `method="solana"` /
+     * `intent="charge"`.
+     */
+    fun selectSolanaChargeChallenge(headers: List<String>): PaymentChallenge? {
+        for (header in headers) {
+            for (raw in splitChallenges(header)) {
+                val trimmed = raw.trim()
+                if (!trimmed.startsWith(PAYMENT_SCHEME, ignoreCase = true)) {
+                    continue
+                }
+                val challenge = try {
+                    parseWWWAuthenticate(trimmed)
+                } catch (_: MppException) {
+                    continue
+                }
+                if (challenge.method == "solana" && challenge.intent == "charge") {
+                    return challenge
+                }
+            }
+        }
+        return null
+    }
+
     /** Parses a `WWW-Authenticate: Payment ...` challenge header. */
     fun parseWWWAuthenticate(header: String): PaymentChallenge {
         val rest = paymentSchemePayload(header)
