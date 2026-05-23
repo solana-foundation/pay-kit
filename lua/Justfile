@@ -16,6 +16,8 @@ install:
     luarocks --lua-version=5.1 install --tree lua_modules luacheck
     luarocks --lua-version=5.1 install --tree lua_modules luacov
     luarocks --lua-version=5.1 install --tree lua_modules luasocket
+    luarocks --lua-version=5.1 install --tree lua_modules luasodium
+    luarocks --lua-version=5.1 install --tree lua_modules luasec
 
 # Run the Lua unit test suite under LuaJIT.
 test:

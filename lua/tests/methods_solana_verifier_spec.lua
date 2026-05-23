@@ -201,6 +201,163 @@ helper.test('verifier rejects a memo over 566 bytes', function()
   end, 'memo cannot exceed 566 bytes')
 end)
 
+helper.test('verifier rejects an SPL transfer with the wrong decimals byte', function()
+  local payer_bytes = string.rep('\x01', 32)
+  local source_ata_bytes = string.rep('\x02', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local recipient_ata_bytes = base58.decode(ata.derive(recipient_pub, USDC, instructions.TOKEN_PROGRAM))
+  local account_keys = {
+    payer_bytes, source_ata_bytes, recipient_ata_bytes, recipient_bytes,
+    USDC_BYTES, TOKEN_PROGRAM_BYTES,
+  }
+  local data = string.char(12) .. le_u64(1000000) .. string.char(9) -- wrong decimals
+  local ix = encode_instruction(5, { 1, 4, 2, 0 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local tx = tx_from(message, 1)
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000000', currency = USDC, recipient = recipient_pub,
+      methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM },
+    })
+  end, 'No matching SPL transferChecked')
+end)
+
+helper.test('verifier rejects when fee_payer authority equals the signer', function()
+  -- feePayer=true with the fee_payer matching the transferChecked authority
+  -- must reject (the fee payer is not allowed to be the source of the payment).
+  local fee_payer_bytes = string.rep('\x01', 32)
+  local fee_payer_pub = base58.encode(fee_payer_bytes)
+  local source_ata_bytes = string.rep('\x02', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local recipient_ata_bytes = base58.decode(ata.derive(recipient_pub, USDC, instructions.TOKEN_PROGRAM))
+  local account_keys = {
+    fee_payer_bytes, source_ata_bytes, recipient_ata_bytes, recipient_bytes,
+    USDC_BYTES, TOKEN_PROGRAM_BYTES,
+  }
+  local data = string.char(12) .. le_u64(1000000) .. string.char(6)
+  -- authority is account_keys[1] = fee_payer_bytes; the verifier rejects.
+  local ix = encode_instruction(5, { 1, 4, 2, 0 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local tx = tx_from(message, 1)
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000000', currency = USDC, recipient = recipient_pub,
+      methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM,
+        feePayer = true, feePayerKey = fee_payer_pub, network = 'mainnet-beta' },
+    })
+  end, 'fee payer cannot authorize')
+end)
+
+helper.test('verifier rejects feePayer=true without feePayerKey', function()
+  local payer_bytes = string.rep('\x01', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local account_keys = { payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES }
+  local data = string.char(2, 0, 0, 0) .. le_u64(1)
+  local ix = encode_instruction(2, { 0, 1 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local tx = tx_from(message, 1)
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1', currency = 'SOL', recipient = recipient_pub,
+      methodDetails = { feePayer = true },
+    })
+  end, 'feePayer=true requires feePayerKey')
+end)
+
+helper.test('verifier rejects too many splits', function()
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local payer_bytes = string.rep('\x01', 32)
+  local message = build_message({ payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES },
+    string.rep('\xc3', 32), {}, 1)
+  local tx = tx_from(message, 1)
+  local many = {}
+  for i = 1, 9 do
+    many[#many + 1] = { recipient = recipient_pub, amount = '1' }
+  end
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '100', currency = 'SOL', recipient = recipient_pub,
+      methodDetails = { splits = many },
+    })
+  end, 'too many splits')
+end)
+
+helper.test('verifier rejects an SPL transfer where source_ata equals the fee-payer ATA', function()
+  local fee_payer_bytes = string.rep('\x01', 32)
+  local fee_payer_pub = base58.encode(fee_payer_bytes)
+  local fee_payer_ata_bytes = base58.decode(ata.derive(fee_payer_pub, USDC, instructions.TOKEN_PROGRAM))
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local recipient_ata_bytes = base58.decode(ata.derive(recipient_pub, USDC, instructions.TOKEN_PROGRAM))
+  -- Place a separate authority pubkey so the "authority == fee payer" branch
+  -- is bypassed and the test exercises the source_ata == fee_payer_ata branch.
+  local separate_authority_bytes = string.rep('\x44', 32)
+  local account_keys = {
+    fee_payer_bytes, fee_payer_ata_bytes, recipient_ata_bytes, separate_authority_bytes,
+    USDC_BYTES, TOKEN_PROGRAM_BYTES,
+  }
+  local data = string.char(12) .. le_u64(1000) .. string.char(6)
+  local ix = encode_instruction(5, { 1, 4, 2, 3 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local tx = tx_from(message, 1)
+  helper.assert_error(function()
+    verifier.verify_transaction(tx, {
+      amount = '1000', currency = USDC, recipient = recipient_pub,
+      methodDetails = { decimals = 6, tokenProgram = instructions.TOKEN_PROGRAM,
+        feePayer = true, feePayerKey = fee_payer_pub, network = 'mainnet-beta' },
+    })
+  end, 'fee payer token account cannot fund')
+end)
+
+helper.test('verifier verify_transaction_base64 round-trips a wire payload', function()
+  local payer_bytes = string.rep('\x01', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local account_keys = { payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES }
+  local data = string.char(2, 0, 0, 0) .. le_u64(7)
+  local ix = encode_instruction(2, { 0, 1 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
+  local b64 = require('mpp.util.base64_std').encode(raw)
+  verifier.verify_transaction_base64(b64, {
+    amount = '7', currency = 'SOL', recipient = recipient_pub,
+    methodDetails = {},
+  })
+end)
+
+helper.test('verifier new_callback wraps verify_transaction_base64 with a request', function()
+  local payer_bytes = string.rep('\x01', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local recipient_pub = base58.encode(recipient_bytes)
+  local account_keys = { payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES }
+  local data = string.char(2, 0, 0, 0) .. le_u64(11)
+  local ix = encode_instruction(2, { 0, 1 }, data)
+  local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
+  local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
+  local b64 = require('mpp.util.base64_std').encode(raw)
+  local callback = verifier.new_callback()
+  callback(b64, {
+    amount = '11', currency = 'SOL', recipient = recipient_pub,
+    methodDetails = {},
+  })
+end)
+
+helper.test('verifier new_blockhash_extractor returns the parsed blockhash', function()
+  local payer_bytes = string.rep('\x01', 32)
+  local recipient_bytes = string.rep('\x03', 32)
+  local blockhash_bytes = string.rep('\xc3', 32)
+  local account_keys = { payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES }
+  local message = build_message(account_keys, blockhash_bytes, {}, 1)
+  local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
+  local b64 = require('mpp.util.base64_std').encode(raw)
+  local extractor = verifier.new_blockhash_extractor()
+  helper.assert_equal(extractor(b64), base58.encode(blockhash_bytes))
+end)
+
 helper.test('verifier rejects compute-budget over the unit limit cap', function()
   local payer_bytes = string.rep('\x01', 32)
   local recipient_bytes = string.rep('\x03', 32)

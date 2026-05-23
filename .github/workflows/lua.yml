@@ -28,7 +28,7 @@ jobs:
           key: ${{ runner.os }}-luarocks-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
           restore-keys: ${{ runner.os }}-luarocks-
 
-      - name: Install dev rocks (luacheck + luacov)
+      - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec)
         if: steps.cache-rocks.outputs.cache-hit != 'true'
         working-directory: lua
         run: |
@@ -36,6 +36,9 @@ jobs:
           luarocks --lua-version=5.1 init --lua-versions 5.1 || true
           luarocks --lua-version=5.1 install --tree lua_modules luacheck
           luarocks --lua-version=5.1 install --tree lua_modules luacov
+          luarocks --lua-version=5.1 install --tree lua_modules luasocket
+          luarocks --lua-version=5.1 install --tree lua_modules luasodium
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
 
       - name: Validate rockspec
         working-directory: lua
@@ -72,3 +75,65 @@ jobs:
           name: surfpool-reports-lua
           path: lua/target/surfpool-reports/
           if-no-files-found: ignore
+
+  interop-lua:
+    name: Lua interop focused matrix
+    needs: test-lua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+          luajit -v
+
+      - name: Cache rocks tree
+        id: cache-rocks
+        uses: actions/cache@v4
+        with:
+          path: lua/lua_modules
+          key: ${{ runner.os }}-luarocks-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-
+
+      - name: Install runtime rocks
+        if: steps.cache-rocks.outputs.cache-hit != 'true'
+        working-directory: lua
+        run: |
+          mkdir -p lua_modules
+          luarocks --lua-version=5.1 init --lua-versions 5.1 || true
+          luarocks --lua-version=5.1 install --tree lua_modules luasocket
+          luarocks --lua-version=5.1 install --tree lua_modules luasodium
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install workspace deps
+        run: pnpm install
+
+      - name: Build TypeScript SDK
+        working-directory: typescript
+        run: pnpm -r build
+
+      - name: TS-to-Lua focused matrix
+        working-directory: tests/interop
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: lua
+        run: pnpm exec vitest run test/e2e.test.ts
+
+      - name: Rust-to-Lua focused matrix
+        working-directory: tests/interop
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: lua
+        run: pnpm exec vitest run test/e2e.test.ts

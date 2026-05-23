@@ -29,7 +29,7 @@ lua/
 │   ├── network_check.lua   # Rejects Surfpool-signed transactions on mainnet
 │   └── html.lua            # Optional 402 payment-link HTML render
 ├── mpp/solana/rpc.lua    # Transport-agnostic JSON-RPC client
-├── mpp/store.lua         # Replay store (in-memory; OpenResty shared-dict adapter in PR B)
+├── mpp/store.lua         # Replay store (in-memory; production callers plug an OpenResty shared-dict adapter)
 ├── mpp/util/             # base64url, canonical JSON, HMAC primitives
 ├── tests/                # Unit tests, ≥90% line coverage gate via luacov
 ├── mpp-dev-1.rockspec    # LuaJIT 2.1 pinned rockspec
@@ -45,7 +45,7 @@ local rpc = require('mpp.solana.rpc').new({
   url = 'https://402.surfnet.dev:8899',
   transport = function(url, body)
     -- Plug any HTTP transport that POSTs the body and returns the response
-    -- string. PR B ships an OpenResty `ngx.location.capture` transport.
+    -- string. mpp.solana.rpc_transport ships a luasocket+luasec implementation; OpenResty deployments can swap in ngx.location.capture.
     return your_http_post(url, body)
   end,
 })
@@ -103,28 +103,27 @@ it inside your framework of choice.
   `server:handle_request(...)` from an `access_by_lua_block` and let
   the upstream serve only on a 200 result.
 - **Bare LuaJIT (development, tests)**: drive it from a raw
-  `socket.tcp()` accept loop. The PR B `lua/examples/simple-server.lua`
-  ships a 60-line reference implementation.
+  `socket.tcp()` accept loop. `lua/examples/simple-server.lua` ships a
+  reference implementation wired to the real Solana settlement
+  lifecycle (cosign + simulate + broadcast + await).
 
 ## Running the examples
 
-Two runnable examples ship in this PR. Both exercise the 402
-challenge-issuance path; on-chain settlement (the `pay curl` 200
-response) ships in the follow-up Lua PR B which adds the heavy
-Solana stack (base58, transaction bincode codec, Ed25519 signer,
-ATA derive) and the interop adapter at `tests/interop/lua-server/`.
+Three runnable examples ship in this package. All exercise the full
+402-then-settlement flow against Surfpool localnet.
 
 ### Bare LuaJIT simple-server
 
 ```bash
 cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
-luajit examples/simple-server.lua          # listens on 127.0.0.1:4569
+MPP_FEE_PAYER_SECRET_KEY='[...]' luajit examples/simple-server.lua
+# listens on 127.0.0.1:4569
 ```
 
 ```bash
-curl -i http://127.0.0.1:4569/health        # 200 OK
-curl -i http://127.0.0.1:4569/paid          # 402 Payment Required with
-                                            # signed WWW-Authenticate header
+brew install pay
+curl -i http://127.0.0.1:4569/paid          # 402 with WWW-Authenticate
+pay curl http://127.0.0.1:4569/paid         # 200 with Payment-Receipt
 ```
 
 ### OpenResty / nginx middleware
@@ -137,10 +136,23 @@ openresty -p . -c nginx.conf                # listens on 127.0.0.1:4570
 The Lua middleware (`access.lua`) runs in nginx's access phase and
 either returns 402 with a signed challenge or lets the upstream
 content phase render the protected payload. The shared dict
-`mpp_replay` is wired in `nginx.conf` for future replay-store use.
+`mpp_replay` is wired in `nginx.conf` for replay-store use.
 
-Both examples accept the same env overrides: `PORT`, `MPP_PAY_TO`,
-`MPP_CURRENCY`, `MPP_NETWORK`, `MPP_SECRET_KEY`, `MPP_AMOUNT`.
+### Kong custom plugin
+
+```
+lua/examples/openresty/kong-plugin/kong/plugins/mpp-charge/{handler,schema}.lua
+```
+
+The canonical production shape. Install the plugin into Kong's
+plugin path, add `mpp-charge` to `plugins =` in `kong.conf`, and
+register it per-service via the Kong admin API. See
+`lua/examples/openresty/kong-plugin/README.md` for the full
+deployment walkthrough.
+
+All examples accept the same env overrides: `PORT`, `MPP_PAY_TO`,
+`MPP_CURRENCY`, `MPP_NETWORK`, `MPP_SECRET_KEY`, `MPP_AMOUNT`,
+`MPP_RPC_URL`, `MPP_FEE_PAYER_SECRET_KEY`.
 
 ## Client compatibility matrix
 
@@ -190,21 +202,24 @@ signature through replay storage, and emits the same receipt shape.
 
 The direct Lua interop server at
 [`tests/interop/lua-server/server.lua`](../tests/interop/lua-server/server.lua)
-ships in PR B; this PR ships the foundation exercised by the unit suite.
+exercises this end-to-end through Surfpool in CI.
 
 ## Examples
 
-Two examples ship with this package:
+Three examples ship with this package:
 
 - [`examples/simple-server.lua`](examples/simple-server.lua) — bare
   LuaJIT TCP accept loop that calls `mpp.server` directly. Mirrors
-  the Ruby `examples/simple-server/app.rb` shape.
+  the Ruby `examples/simple-server/app.rb` shape and exercises the
+  full Solana settlement lifecycle.
 - [`examples/nginx/`](examples/nginx) — OpenResty / nginx config
   with `access_by_lua_file` loading a Lua middleware in the access
-  phase. The canonical Kong / OpenResty deployment shape.
+  phase.
+- [`examples/openresty/kong-plugin/`](examples/openresty/kong-plugin)
+  — Kong custom plugin (`handler.lua` + `schema.lua`). The canonical
+  production deployment shape.
 
-Both expose `/health` (free) and `/paid` (gated). Use the interop
-harness in PR B for the full Surfpool-backed settlement flow.
+All three expose `/health` (free) and `/paid` (gated).
 
 ## Solana dependencies
 
@@ -214,7 +229,12 @@ harness in PR B for the full Surfpool-backed settlement flow.
 | `luarocks` | rocks tree bootstrap (`luarocks --lua-version=5.1 init`) | 3.x |
 | `luacheck` | lint (per repo coding-conventions) | 1.2 |
 | `luacov` | line coverage measurement, ≥90% gate | 0.17 |
-| internal Base58 helper | account / signature encoding (PR B) | in package |
+| `mpp.util.base58` | account / signature encoding | in package |
+| `mpp.methods.solana.{transaction,instructions,ata,verifier}` | wire-format codec, instruction parsers, ATA derivation, verifier | in package |
+| `mpp.methods.solana.signer` | luasodium-backed Ed25519 cosign | in package (requires libsodium-dev) |
+| `luasodium` | libsodium binding for Ed25519 sign/verify | >= 2.0 |
+| `luasocket` | TCP transport for examples and interop | >= 3.0 |
+| `luasec` | HTTPS transport for the RPC client | >= 1.3 |
 | internal HMAC-SHA256 | constant-time challenge id compare | in package |
 | internal canonical JSON helper | RFC 8785-style sorted JSON before base64url | in package |
 
@@ -282,14 +302,24 @@ replay rejection, transaction failures, missing metadata, timeouts.
 
 ## Interop
 
-The Lua interop adapter ships in PR B (depends on the Solana stack:
-base58, transaction bincode codec, ed25519 signer, ATA PDA derivation).
-Once landed, the focused harness commands will be:
+The Lua interop server at
+[`tests/interop/lua-server/server.lua`](../tests/interop/lua-server/server.lua)
+participates in the cross-language harness. Focused commands:
 
 ```bash
 cd tests/interop
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=lua pnpm test
-MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=lua pnpm test
+MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=lua pnpm exec vitest run test/e2e.test.ts
+MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=lua pnpm exec vitest run test/e2e.test.ts
+```
+
+For a local DX run that mirrors the harness's Surfpool fixture:
+
+```bash
+cd tests/interop && node lua-server/dx-gate.mjs        # one terminal
+cd lua && <copy env from dx-gate>                      # second terminal
+       eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
+       luajit examples/simple-server.lua
+pay curl -i http://127.0.0.1:4569/paid                 # third terminal
 ```
 
 ## Spec
