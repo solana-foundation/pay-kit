@@ -24,6 +24,12 @@ const (
 	defaultRealm    = "MPP Payment"
 	secretKeyEnvVar = "MPP_SECRET_KEY"
 	consumedPrefix  = "solana-charge:consumed:"
+
+	// maxSplits caps the number of secondary recipients per charge.
+	// Matches the limit enforced by every other server SDK (see the
+	// rust reference in rust/src/server/charge.rs and the typescript
+	// fixture in typescript/packages/mpp/src/server/Charge.ts).
+	maxSplits = 8
 )
 
 // Config controls server-side challenge generation and credential verification.
@@ -365,6 +371,9 @@ func (m *Mpp) verifyTransaction(
 	if payload.Transaction == "" {
 		return mpp.Receipt{}, mpp.NewError(mpp.ErrCodeMissingTransaction, "missing transaction data in credential payload")
 	}
+	if err := validateSplitsCount(details.Splits); err != nil {
+		return mpp.Receipt{}, err
+	}
 	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		return mpp.Receipt{}, err
@@ -681,4 +690,17 @@ func successReceipt(reference, challengeID, externalID string) mpp.Receipt {
 
 func isNativeSOL(currency string) bool {
 	return strings.EqualFold(currency, "sol")
+}
+
+// validateSplitsCount enforces the cross-SDK cap of 8 secondary recipients
+// per charge. Mirrors the rust/typescript/python/ruby/php server checks so
+// a client cannot smuggle a fanned-out fee schedule past the Go SDK.
+func validateSplitsCount(splits []protocol.Split) error {
+	if len(splits) > maxSplits {
+		return mpp.NewError(
+			mpp.ErrCodeTooManySplits,
+			fmt.Sprintf("too many splits: %d (maximum %d)", len(splits), maxSplits),
+		)
+	}
+	return nil
 }
