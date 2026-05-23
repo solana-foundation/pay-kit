@@ -142,9 +142,18 @@ public enum Charge {
             guard let mintStr = mint else {
                 throw MppError.invalidTransaction("ataCreationRequired requires an SPL token charge")
             }
-            guard mintStr == request.currency else {
+            // Accept any input that resolves to a usable SPL mint: either
+            // the request currency is a known symbol (USDC, USDT, USDG,
+            // PYUSD, CASH) that maps to a real mint, or it is already a
+            // base58 mint address that resolveStablecoinMint passed
+            // through. The literal `mintStr == request.currency` check
+            // wrongly rejected the symbol form because resolution
+            // returns the mint address, not the symbol.
+            let isSymbol = mintStr != request.currency
+            let isPassThrough = mintStr == request.currency && isLikelyBase58MintAddress(mintStr)
+            guard isSymbol || isPassThrough else {
                 throw MppError.invalidTransaction(
-                    "ataCreationRequired requires currency to be an SPL token mint address"
+                    "ataCreationRequired requires currency to be an SPL token mint address or known symbol"
                 )
             }
         }
@@ -381,5 +390,15 @@ public enum Charge {
             throw MppError.invalidTransaction("\(field) \"\(value)\" is not a u64")
         }
         return parsed
+    }
+
+    /// Heuristic check that a string is plausibly a base58-encoded
+    /// 32-byte Solana mint address. Avoids round-tripping through
+    /// `Base58.decode` for hot paths but is strict enough to reject
+    /// short symbols like "USDC" or empty strings that
+    /// `resolveStablecoinMint` would have passed through unchanged.
+    private static func isLikelyBase58MintAddress(_ value: String) -> Bool {
+        guard (32...44).contains(value.count) else { return false }
+        return (try? Pubkey(base58: value)) != nil
     }
 }

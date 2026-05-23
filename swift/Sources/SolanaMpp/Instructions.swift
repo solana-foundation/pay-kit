@@ -94,32 +94,6 @@ public enum Instructions {
         )
     }
 
-    /// Same as createAssociatedTokenAccount but the payer is a
-    /// non-signer (used in fee-payer mode where the server adds its
-    /// signature later, before broadcasting).
-    public static func createAssociatedTokenAccountWithFeePayerSponsor(
-        payer: Pubkey,
-        ata: Pubkey,
-        owner: Pubkey,
-        mint: Pubkey,
-        tokenProgram: Pubkey,
-        idempotent: Bool
-    ) -> SolanaInstruction {
-        let discriminator: UInt8 = idempotent ? 1 : 0
-        return SolanaInstruction(
-            programId: .associatedTokenProgram,
-            accounts: [
-                .writableSigner(payer),
-                .writable(ata),
-                .readonly(owner),
-                .readonly(mint),
-                .readonly(.systemProgram),
-                .readonly(tokenProgram),
-            ],
-            data: Data([discriminator])
-        )
-    }
-
     // MARK: Compute Budget
 
     /// SetComputeUnitLimit. Discriminator 2, u32 units (little-endian).
