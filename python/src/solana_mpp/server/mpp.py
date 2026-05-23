@@ -383,7 +383,7 @@ class Config:
     recipient: str = ""
     currency: str = "USDC"
     decimals: int = 6
-    network: str = "mainnet-beta"
+    network: str = "mainnet"
     rpc_url: str = ""
     secret_key: str = ""
     realm: str = ""
@@ -414,7 +414,9 @@ class Mpp:
         self._recipient = config.recipient
         self._currency = config.currency or "USDC"
         self._decimals = config.decimals or 6
-        self._network = config.network or "mainnet-beta"
+        from solana_mpp.protocol.solana import _canonical_network as _canonical_net
+
+        self._network = _canonical_net(config.network or "mainnet")
         self._rpc_url = config.rpc_url or default_rpc_url(self._network)
         self._html = config.html
         self._fee_payer_signer = config.fee_payer_signer

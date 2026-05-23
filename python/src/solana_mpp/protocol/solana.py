@@ -12,29 +12,43 @@ MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 
 
 # Mint addresses keyed by currency symbol, then by network.
+#
+# Canonical network slug is ``mainnet`` (mirrors Ruby and the L1 lock from PR
+# #96 / #102 across Rust, PHP, Lua). ``mainnet-beta`` is accepted as a
+# backward compatible alias via :func:`_canonical_network`.
 KNOWN_MINTS: dict[str, dict[str, str]] = {
     "USDC": {
-        "mainnet-beta": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "mainnet": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "devnet": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         "testnet": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     },
     "USDT": {
-        "mainnet-beta": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        "mainnet": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
     },
     "USDG": {
-        "mainnet-beta": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+        "mainnet": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
         "devnet": "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
         "testnet": "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
     },
     "PYUSD": {
-        "mainnet-beta": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "mainnet": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
         "devnet": "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
         "testnet": "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
     },
     "CASH": {
-        "mainnet-beta": "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+        "mainnet": "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
     },
 }
+
+
+def _canonical_network(network: str) -> str:
+    """Normalize ``mainnet-beta`` to the canonical ``mainnet`` slug.
+
+    L1 lock from PR #96 / #102 picked ``mainnet`` as the canonical network slug
+    across every SDK. ``mainnet-beta`` is accepted as a backward compatible
+    alias so credentials issued against either spelling round-trip cleanly.
+    """
+    return "mainnet" if network == "mainnet-beta" else network
 
 STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
     "USDC": TOKEN_PROGRAM,
@@ -47,10 +61,13 @@ STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
 
 def default_rpc_url(network: str) -> str:
     """Return the default RPC endpoint for a Solana network."""
-    if network == "devnet":
+    canonical = _canonical_network(network)
+    if canonical == "devnet":
         return "https://api.devnet.solana.com"
-    if network == "localnet":
+    if canonical == "localnet":
         return "http://localhost:8899"
+    # Solana Labs still publishes RPC under the ``mainnet-beta`` host even
+    # though the canonical SDK slug is ``mainnet``; mirror Rust and Ruby.
     return "https://api.mainnet-beta.solana.com"
 
 
@@ -65,7 +82,8 @@ def resolve_mint(currency: str, network: str) -> str:
         return ""
     if upper in KNOWN_MINTS:
         networks = KNOWN_MINTS[upper]
-        return networks.get(network, networks.get("mainnet-beta", currency))
+        canonical = _canonical_network(network)
+        return networks.get(canonical, networks.get("mainnet", currency))
     return currency
 
 
@@ -97,7 +115,7 @@ def is_native_sol(currency: str) -> bool:
 class MethodDetails:
     """Solana-specific challenge method details."""
 
-    network: str = "mainnet-beta"
+    network: str = "mainnet"
     decimals: int | None = None
     token_program: str | None = None
     fee_payer: bool = False
@@ -129,7 +147,7 @@ class MethodDetails:
         """Deserialize from a JSON-compatible dict."""
         splits = [Split.from_dict(s) for s in data.get("splits", [])]
         return cls(
-            network=data.get("network", "mainnet-beta"),
+            network=_canonical_network(data.get("network", "mainnet")),
             decimals=data.get("decimals"),
             token_program=data.get("tokenProgram"),
             fee_payer=data.get("feePayer", False),

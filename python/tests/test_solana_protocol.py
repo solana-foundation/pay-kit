@@ -20,9 +20,14 @@ from solana_mpp.protocol.solana import (
 
 
 class TestDefaultRpcUrl:
-    def test_mainnet(self):
-        url = default_rpc_url("mainnet-beta")
+    def test_mainnet_canonical(self):
+        url = default_rpc_url("mainnet")
         assert "mainnet" in url
+
+    def test_mainnet_beta_alias(self):
+        # Backward compat: callers passing the legacy ``mainnet-beta`` slug
+        # must resolve to the same RPC host.
+        assert default_rpc_url("mainnet-beta") == default_rpc_url("mainnet")
 
     def test_devnet(self):
         url = default_rpc_url("devnet")
@@ -39,19 +44,23 @@ class TestDefaultRpcUrl:
 
 class TestResolveMint:
     def test_sol_returns_empty(self):
-        assert resolve_mint("SOL", "mainnet-beta") == ""
-        assert resolve_mint("sol", "mainnet-beta") == ""
+        assert resolve_mint("SOL", "mainnet") == ""
+        assert resolve_mint("sol", "mainnet") == ""
 
-    def test_usdc_mainnet(self):
-        mint = resolve_mint("USDC", "mainnet-beta")
+    def test_usdc_mainnet_canonical(self):
+        mint = resolve_mint("USDC", "mainnet")
         assert mint.startswith("EPjFWdd5")
+
+    def test_usdc_mainnet_beta_alias(self):
+        # ``mainnet-beta`` callers (TS / Rust pre-L1) must resolve identically.
+        assert resolve_mint("USDC", "mainnet-beta") == resolve_mint("USDC", "mainnet")
 
     def test_usdc_devnet(self):
         mint = resolve_mint("USDC", "devnet")
         assert mint.startswith("4zMMC9")
 
     def test_usdt_mainnet(self):
-        mint = resolve_mint("USDT", "mainnet-beta")
+        mint = resolve_mint("USDT", "mainnet")
         assert mint.startswith("Es9vMF")
 
     def test_usdg_devnet(self):
@@ -59,15 +68,26 @@ class TestResolveMint:
         assert mint.startswith("4F6PM9")
 
     def test_pyusd_mainnet(self):
-        mint = resolve_mint("PYUSD", "mainnet-beta")
+        mint = resolve_mint("PYUSD", "mainnet")
         assert mint.startswith("2b1kV6")
 
     def test_cash_mainnet(self):
-        mint = resolve_mint("CASH", "mainnet-beta")
+        mint = resolve_mint("CASH", "mainnet")
         assert mint.startswith("CASHx9")
 
     def test_unknown_returns_raw(self):
-        assert resolve_mint("SomeCustomMint123", "mainnet-beta") == "SomeCustomMint123"
+        assert resolve_mint("SomeCustomMint123", "mainnet") == "SomeCustomMint123"
+
+    def test_no_mainnet_beta_keys(self):
+        # L1 lock invariant: ``mainnet-beta`` must not appear as a direct key
+        # inside KNOWN_MINTS. Drift here would make a Ruby-mainnet credential
+        # resolve to a different mint than its Python-mainnet-beta echo.
+        from solana_mpp.protocol.solana import KNOWN_MINTS
+
+        for symbol, networks in KNOWN_MINTS.items():
+            assert "mainnet-beta" not in networks, (
+                f"{symbol} still keys by mainnet-beta; should canonicalize to mainnet"
+            )
 
 
 class TestStablecoinPrograms:
@@ -77,10 +97,14 @@ class TestStablecoinPrograms:
         assert stablecoin_symbol("SomeCustomMint123") is None
 
     def test_token_program_defaults(self):
-        assert default_token_program_for_currency("USDC", "mainnet-beta") == TOKEN_PROGRAM
-        assert default_token_program_for_currency("USDT", "mainnet-beta") == TOKEN_PROGRAM
+        assert default_token_program_for_currency("USDC", "mainnet") == TOKEN_PROGRAM
+        assert default_token_program_for_currency("USDT", "mainnet") == TOKEN_PROGRAM
         assert default_token_program_for_currency("PYUSD", "devnet") == TOKEN_2022_PROGRAM
         assert default_token_program_for_currency("USDG", "devnet") == TOKEN_2022_PROGRAM
+        assert default_token_program_for_currency("CASH", "mainnet") == TOKEN_2022_PROGRAM
+
+    def test_token_program_mainnet_beta_alias(self):
+        assert default_token_program_for_currency("USDC", "mainnet-beta") == TOKEN_PROGRAM
         assert default_token_program_for_currency("CASH", "mainnet-beta") == TOKEN_2022_PROGRAM
 
 
@@ -98,7 +122,13 @@ class TestIsNativeSol:
 class TestMethodDetails:
     def test_to_dict_minimal(self):
         d = MethodDetails().to_dict()
-        assert d["network"] == "mainnet-beta"
+        assert d["network"] == "mainnet"
+
+    def test_from_dict_mainnet_beta_alias_normalized(self):
+        # L1 lock: ``mainnet-beta`` on the wire is normalized to ``mainnet``
+        # inside the SDK so cross-language credentials compare equal.
+        details = MethodDetails.from_dict({"network": "mainnet-beta"})
+        assert details.network == "mainnet"
 
     def test_to_dict_full(self):
         details = MethodDetails(
