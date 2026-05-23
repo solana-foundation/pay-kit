@@ -211,6 +211,63 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
+  test-go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Run tests with coverage
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: |
+          # Narrow `go test` to library packages so coverage measures SDK
+          # surface area only (cmd/ + internal/testutil hold fixtures and
+          # are excluded; mirrors the per-package narrowing pattern from
+          # PR #101). Gate set to the cross-SDK baseline of 90; library
+          # packages currently aggregate at ~85% because client,
+          # internal/solanautil, and server have known coverage gaps.
+          # The threshold WILL fail until gap-fill PRs land; surfaced as
+          # an explicit finding per PR #102 review thread rather than
+          # lowering the gate.
+          go test ./ ./client ./internal/solanautil ./protocol ./protocol/core ./protocol/intents ./server -coverprofile=coverage.out -covermode=atomic
+          ./scripts/check_coverage.sh coverage.out 90
+      - name: Upload Go coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-coverage
+          path: go/coverage.out
+
+  test-kotlin:
+    name: Kotlin tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - name: Run tests with coverage
+        working-directory: kotlin
+        run: gradle test jacocoTestReport
+      - name: Upload Kotlin coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kotlin-coverage
+          path: |
+            kotlin/build/reports/jacoco/test/jacocoTestReport.xml
+            kotlin/build/reports/jacoco/test/html/
+          if-no-files-found: ignore
+
   integration:
     name: Integration tests
     needs: build-html
