@@ -99,15 +99,36 @@ $stdout.write(JSON.generate({
 }) + "\n")
 $stdout.flush
 
+# Graceful shutdown: signal traps cannot safely take the same Mutex the
+# accept loop is parked on (Ruby raises `recursive locking (ThreadError)`
+# or `deadlock; recursive locking` when SIGTERM lands while `TCPServer#accept`
+# is blocked). Instead, flip an atomic flag from the trap context and close
+# the listener from a separate thread so `accept` returns with `IOError`
+# which the main loop treats as a clean exit. No `exit` from inside trap.
+shutting_down = false
 shutdown = proc do
-  listener.close unless listener.closed?
-  exit 0
+  next if shutting_down
+  shutting_down = true
+  Thread.new do
+    begin
+      listener.close unless listener.closed?
+    rescue StandardError
+      # Listener already torn down; nothing to do.
+    end
+  end
 end
 Signal.trap("TERM", &shutdown)
 Signal.trap("INT", &shutdown)
 
 loop do
-  conn = listener.accept
+  begin
+    conn = listener.accept
+  rescue IOError, Errno::EBADF
+    # Listener was closed by the shutdown trap; exit the accept loop cleanly.
+    break
+  end
+  break if shutting_down && conn.nil?
+
   begin
     req = read_request(conn)
     if req.nil?
@@ -158,3 +179,5 @@ loop do
     end
   end
 end
+
+exit 0
