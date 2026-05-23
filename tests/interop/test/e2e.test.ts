@@ -105,6 +105,15 @@ beforeAll(async () => {
     createSplMintAccountData(6),
     TOKEN_PROGRAM,
   );
+  // Push-mode scenarios require the client to pay its own transaction fee
+  // because the challenge does not advertise a server fee payer. Fund the
+  // client wallet with SOL so push tests can broadcast directly.
+  surfnet.setAccount(
+    client.publicKey,
+    2_000_000_000,
+    new Uint8Array(),
+    "11111111111111111111111111111111",
+  );
   surfnet.fundToken(client.publicKey, baseScenario.asset, 100_000);
   surfnet.fundToken(payTo.publicKey, baseScenario.asset, 1);
 
@@ -246,6 +255,7 @@ function environmentForScenario(
     ...baseEnv,
     MPP_INTEROP_AMOUNT: scenario.amount,
     MPP_INTEROP_NETWORK: scenario.network,
+    MPP_INTEROP_PAYMENT_MODE: scenario.paymentMode ?? "pull",
     MPP_INTEROP_PRICE: scenario.price,
     MPP_INTEROP_RESOURCE_PATH: scenario.resourcePath,
     ...(scenario.replaySource

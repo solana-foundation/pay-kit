@@ -26,6 +26,7 @@ describe("interop scenario selection", () => {
     ).toEqual([
       "charge-basic",
       "charge-split-ata",
+      "charge-push",
       "charge-network-mismatch",
       "charge-cross-route-replay",
     ]);

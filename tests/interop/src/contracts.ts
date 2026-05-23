@@ -14,6 +14,7 @@ export type InteropScenarioSplit = {
 export type InteropScenario = {
   id: string;
   intent: InteropIntent;
+  paymentMode?: "pull" | "push";
   network: string;
   price: string;
   amount: string;
