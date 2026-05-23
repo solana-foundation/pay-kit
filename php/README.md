@@ -29,6 +29,7 @@ php/
 ```php
 use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
+use SolanaMpp\Server\FileReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
@@ -40,6 +41,7 @@ $handler = new SolanaChargeHandler(
         blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
     ),
     rpc: $rpc,
+    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-replay'),
     network: 'localnet',
 );
 $request = new ChargeRequest(
@@ -61,6 +63,12 @@ echo json_encode($result->body, JSON_THROW_ON_ERROR);
 (402, missing/invalid credential) or a `ChargeSettlement` (200, with the
 on-chain signature). Both expose the same `status` / `headers` / `body`
 properties so the HTTP layer can project either path uniformly.
+
+Replay protection is explicit. Pass a shared atomic `ReplayStore` to the
+handler. `FileReplayStore` covers examples and single-host PHP-FPM setups
+via atomic exclusive file creation; production multi-host deployments
+should use Redis, SQL, or another shared store. `MemoryReplayStore` is
+strictly for single-process tests.
 
 ## Quick start
 
@@ -116,7 +124,7 @@ challenge, decode and check the embedded transaction structure) and
 | `x402/upto` | — |
 | `x402/batch-settlement` | — |
 | `mpp/charge/pull` | ✅ |
-| `mpp/charge/push` | — |
+| `mpp/charge/push` | ✅ |
 | `mpp/session` | — |
 | `mpp/subscription` | — |
 
@@ -133,15 +141,23 @@ signature. The pure-PHP interop server at
 exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
 clients.
 
+For `mpp/charge/push`: `SolanaChargeHandler` accepts a `payload['signature']`
+credential, fetches the confirmed transaction with `getTransaction` using
+base64 encoding and `confirmed` commitment, rejects failed on-chain
+transactions, runs the same structural checks as pull mode against the
+fetched wire bytes, consumes the same `solana-charge:consumed:<signature>`
+replay key, and emits the receipt using the submitted signature. The
+handler rejects push-mode credentials on `methodDetails.feePayer=true`
+challenges per spec rule B34, because the server never co-signed the
+fetched transaction and cannot vouch for it. The interop harness includes
+a TypeScript broadcasting client against the PHP server for the push flow.
+
+Replay state is not implicit. Applications must pass a shared atomic
+`ReplayStore` into `SolanaChargeHandler`. This is especially important for
+push mode, where a settled on-chain signature is the replay key.
+
 ## Roadmap
 
-- **Push-mode signature verifier.** A `PaymentVerifier` that handles
-  `payload['signature']`: fetch the transaction by signature, run the same
-  structural checks as `SolanaChargeTransactionVerifier`, and reject if the
-  on-chain state doesn't match the challenge. Unblocks `mpp/charge/push`.
-- **Replay storage.** A pluggable store keyed by challenge id (or signature)
-  so a credential can only settle once. The TS and Rust SDKs already define
-  this interface; PHP needs an equivalent contract plus an in-memory default.
 - **Other intents.** `x402/*`, `mpp/session`, `mpp/subscription` aren't yet
   scoped on the PHP side.
 
