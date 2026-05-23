@@ -42,7 +42,7 @@ def _encode(value: Any) -> str:
     if isinstance(value, str):
         return _encode_string(value)
     if isinstance(value, int) and not isinstance(value, bool):
-        return _encode_number(float(value)) if isinstance(value, bool) else str(value)
+        return str(value)
     if isinstance(value, float):
         return _encode_number(value)
     if isinstance(value, list):

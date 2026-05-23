@@ -39,13 +39,19 @@ class SolanaRpc:
         self._timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
         self._id = 0
+        self._id_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _next_id(self) -> int:
+        async with self._id_lock:
+            self._id += 1
+            return self._id
+
     async def _call(self, method: str, params: list[Any]) -> Any:
-        self._id += 1
-        body = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
+        rpc_id = await self._next_id()
+        body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         response = await self._client.post(self._endpoint, json=body)
         response.raise_for_status()
         data = response.json()

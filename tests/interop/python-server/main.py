@@ -119,6 +119,14 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
 
     fee_payer = Keypair.from_bytes(fee_payer_bytes)
 
+    # Greptile P1: do NOT share a SolanaRpc / httpx.AsyncClient across
+    # per-request asyncio.run() loops. Each BaseHTTPRequestHandler.do_GET
+    # call creates a fresh event loop and tears it down at the end;
+    # reusing one client across multiple loops anchors httpx
+    # connection-pool primitives to the first loop and relies on httpx's
+    # undocumented reconnection behavior. The Mpp handler is built once,
+    # but we swap a fresh SolanaRpc into ``handler._rpc`` inside each
+    # request below.
     rpc = SolanaRpc(rpc_url)
     config = Config(
         recipient=pay_to,
@@ -147,6 +155,7 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
         "routes": routes,
         "settlement_header": settlement_header.lower(),
         "splits": splits,
+        "rpc_url": rpc_url,
     }
 
 
@@ -213,9 +222,21 @@ class InteropHandler(BaseHTTPRequestHandler):
         try:
             challenge = self.mpp.charge_with_options(protected_amount, options)
             expected = ChargeRequest.from_dict(challenge.decode_request())
-            receipt = asyncio.run(
-                self.mpp.verify_credential_with_expected(credential, expected)
-            )
+            # Build a per-request SolanaRpc tied to this request's event loop
+            # (Greptile P1). The httpx.AsyncClient inside SolanaRpc anchors
+            # its connection-pool primitives to the loop it is first used
+            # in; reusing one across multiple ``asyncio.run`` calls is
+            # fragile. We close the request-scoped client immediately
+            # after the verify call returns.
+            async def _verify_with_fresh_rpc():
+                fresh_rpc = SolanaRpc(self.cfg["rpc_url"])
+                self.mpp._rpc = fresh_rpc  # noqa: SLF001 (intentional override)
+                try:
+                    return await self.mpp.verify_credential_with_expected(credential, expected)
+                finally:
+                    await fresh_rpc.aclose()
+
+            receipt = asyncio.run(_verify_with_fresh_rpc())
         except PaymentError as err:
             self._issue_challenge(
                 protected_amount, options, message=str(err) or "verification failed", code=err.code
