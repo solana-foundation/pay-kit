@@ -126,6 +126,35 @@ class ChargeBuildTest {
     }
 
     @Test
+    fun acceptsKnownSymbolCurrencyWithAtaCreationSplit() {
+        // Regression: the prior guard rejected every known stablecoin
+        // symbol (USDC/USDT/USDG/PYUSD/CASH) combined with
+        // ataCreationRequired because resolveStablecoinMint maps the
+        // symbol to its mint address, so `mint != request.currency`
+        // was always true and the inverse check fired. Parity with
+        // the Rust/Swift/Lua spine.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "USDC",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "mainnet",
+                splits = listOf(
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = "100",
+                        ataCreationRequired = true,
+                    ),
+                ),
+            ),
+        )
+        // Should not throw. The actual byte parity is covered by the
+        // golden-vector tests; here we just assert the policy accepts
+        // the symbol path.
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    @Test
     fun feePayerModeUsesProvidedFeePayer() {
         val feePayer = "5xX4f7yqg3DV8oQiTpkH5dyP5kBTb6oC7B4FmCe3wYMK"
         val request = ChargeRequest(
