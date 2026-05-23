@@ -111,20 +111,35 @@ final class SolanaChargeHandler
             expectedRequest: $request,
         );
         if (!$result->ok) {
-            return $this->challenges->paymentRequiredResponse($request, $result->reason);
+            // The verifier may attach an explicit code (e.g. PAYMENT_INVALID
+            // for structural rejection); otherwise classify the reason as a
+            // credential-or-challenge-class failure via the auth mapper.
+            return $this->challenges->paymentRequiredResponse(
+                $request,
+                $result->reason,
+                code: $result->code ?? ErrorCodes::fromAuthVerificationReason($result->reason),
+            );
         }
 
         $credential = $result->credential;
         $challenge = $result->challenge;
         if ($credential === null || $challenge === null) {
-            return $this->challenges->paymentRequiredResponse($request, 'verified result is missing credential or challenge');
+            return $this->challenges->paymentRequiredResponse(
+                $request,
+                'verified result is missing credential or challenge',
+                code: ErrorCodes::PAYMENT_INVALID,
+            );
         }
 
         try {
             $signature = $this->settleCredentialPayload($credential, $request);
             $this->consumeSignature($signature);
         } catch (Throwable $error) {
-            return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
+            return $this->challenges->paymentRequiredResponse(
+                $request,
+                $error->getMessage(),
+                code: ErrorCodes::fromReason($error->getMessage()),
+            );
         }
 
         $receipt = $this->challenges->createReceiptHeaderForReference(

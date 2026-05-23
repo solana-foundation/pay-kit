@@ -26,6 +26,7 @@ final class VerificationResult
         public readonly string $externalId = '',
         public readonly ?Challenge $challenge = null,
         public readonly ?Credential $credential = null,
+        public readonly ?string $code = null,
     ) {
     }
 
@@ -38,11 +39,13 @@ final class VerificationResult
     }
 
     /**
-     * Return a failed verification result with a developer-readable reason.
+     * Return a failed verification result with a developer-readable reason
+     * and an optional canonical {@see ErrorCodes} code. When `$code` is
+     * null, callers fall back to the auth-verification mapper.
      */
-    public static function failure(string $reason): self
+    public static function failure(string $reason, ?string $code = null): self
     {
-        return new self(ok: false, reason: $reason);
+        return new self(ok: false, reason: $reason, code: $code);
     }
 
     /**
@@ -61,6 +64,7 @@ final class VerificationResult
             externalId: $this->externalId,
             challenge: $challenge,
             credential: $credential,
+            code: $this->code,
         );
     }
 }

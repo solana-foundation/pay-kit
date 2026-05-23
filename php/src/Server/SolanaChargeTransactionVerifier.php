@@ -55,7 +55,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 // SolanaException for malformed pubkeys/transactions, etc.)
                 // they all describe a protocol-level reason the credential
                 // should be rejected.
-                return VerificationResult::failure($error->getMessage());
+                return VerificationResult::failure($error->getMessage(), code: ErrorCodes::PAYMENT_INVALID);
             }
         }
 
@@ -64,13 +64,13 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             try {
                 $this->validateSignature($signature);
             } catch (Throwable $error) {
-                return VerificationResult::failure($error->getMessage());
+                return VerificationResult::failure($error->getMessage(), code: ErrorCodes::PAYMENT_INVALID);
             }
 
             return VerificationResult::success(reference: $signature);
         }
 
-        return VerificationResult::failure('missing transaction or signature payload');
+        return VerificationResult::failure('missing transaction or signature payload', code: ErrorCodes::PAYMENT_INVALID);
     }
 
     public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
@@ -78,7 +78,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         try {
             $this->verifyTransaction($transactionBase64, $request);
         } catch (Throwable $error) {
-            return VerificationResult::failure($error->getMessage());
+            return VerificationResult::failure($error->getMessage(), code: ErrorCodes::PAYMENT_INVALID);
         }
 
         return VerificationResult::success(reference: '');

@@ -160,8 +160,19 @@ final class ChargeServer
      * `www-authenticate`) and `application/problem+json` body so callers do
      * not have to reconstruct them at every protected endpoint.
      */
-    public function paymentRequiredResponse(ChargeRequest $request, string $reason = 'Payment is required.', string $expires = '', string $digest = '', ?string $opaque = null): PaymentRequiredResponse
-    {
+    public function paymentRequiredResponse(
+        ChargeRequest $request,
+        string $reason = 'Payment is required.',
+        string $expires = '',
+        string $digest = '',
+        ?string $opaque = null,
+        ?string $code = null,
+    ): PaymentRequiredResponse {
+        $detail = $reason !== '' ? $reason : 'Payment is required.';
+        $resolvedCode = $code ?? ErrorCodes::fromReason($detail);
+
+        // Body keys are alphabetically ordered to match the cross-SDK
+        // canonical JSON shape (Python ships keys sorted via L6).
         return new PaymentRequiredResponse(
             status: 402,
             headers: [
@@ -170,11 +181,13 @@ final class ChargeServer
                 'www-authenticate' => $this->createChallengeHeader($request, $expires, $digest, $opaque),
             ],
             body: [
-                'detail' => $reason !== '' ? $reason : 'Payment is required.',
+                'code' => $resolvedCode,
+                'detail' => $detail,
                 'status' => 402,
                 'title' => 'Payment Required',
                 'type' => 'https://paymentauth.org/problems/payment-required',
             ],
+            code: $resolvedCode,
         );
     }
 
