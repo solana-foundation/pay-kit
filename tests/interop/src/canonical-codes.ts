@@ -66,7 +66,9 @@ const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[]
   { pattern: /splits consume the entire amount/i, code: "charge_request_mismatch" },
   { pattern: /too many splits/i, code: "charge_request_mismatch" },
   { pattern: /push-mode credentials are not allowed/i, code: "charge_request_mismatch" },
-  { pattern: /compute.*budget|compute unit/i, code: "charge_request_mismatch" },
+  // Compute-budget allowlist violations are a server policy rejection, not a
+  // tx-shape mismatch; classify as `payment_invalid` to match Rust/Go/Python
+  // server parity (see rust/src/bin/interop_server.rs::classify_canonical_code).
   { pattern: /unexpected program instruction/i, code: "charge_request_mismatch" },
   { pattern: /credential method does not match/i, code: "challenge_route_mismatch" },
   { pattern: /credential intent is not a charge/i, code: "challenge_route_mismatch" },

@@ -396,11 +396,16 @@ fn classify_canonical_code(message: &str) -> &'static str {
         || lower.contains("splits cannot exceed")
         || lower.contains("too many splits")
         || lower.contains("push-mode credentials are not allowed")
-        || lower.contains("compute unit")
         || lower.contains("unexpected program instruction")
     {
         return "charge_request_mismatch";
     }
+    // Compute-budget allowlist violations fall through to `payment_invalid`
+    // rather than `charge_request_mismatch`. The message already names the
+    // observed value and the configured cap (see
+    // `validate_compute_budget_instruction` in `server/charge.rs`), so the
+    // harness can assert cross-SDK agreement on the canonical code without
+    // conflating tx-shape mismatch with a server policy rejection.
     if lower.contains("credential method does not match")
         || lower.contains("credential intent is not a charge")
         || lower.contains("credential realm does not match")
