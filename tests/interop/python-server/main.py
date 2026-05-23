@@ -28,12 +28,11 @@ _python_src = _repo_root / "python" / "src"
 if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
 
-from solana.rpc.async_api import AsyncClient  # noqa: E402
-
 from solana_mpp._errors import (  # noqa: E402
     PaymentError,
     canonical_code,
 )
+from solana_mpp._rpc import SolanaRpc  # noqa: E402
 from solana_mpp._headers import (  # noqa: E402
     format_www_authenticate,
     parse_authorization,
@@ -72,6 +71,26 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _base_units_to_human(base_units: str, decimals: int) -> str:
+    """Convert a base-units string back into a fixed-decimal human string.
+
+    The harness passes amounts in base units (e.g. ``"1000"`` for 0.001
+    USDC at 6 decimals). The SDK's ``charge_with_options`` re-applies
+    ``parse_units`` on the value, so we must hand it a human-readable
+    decimal string to round-trip back to the same base units.
+    """
+    if decimals <= 0:
+        return str(int(base_units))
+    units = int(base_units)
+    sign = "-" if units < 0 else ""
+    units = abs(units)
+    quotient, remainder = divmod(units, 10 ** decimals)
+    fraction = f"{remainder:0{decimals}d}".rstrip("0")
+    if not fraction:
+        return f"{sign}{quotient}"
+    return f"{sign}{quotient}.{fraction}"
+
+
 def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
     """Construct the MPP server handler from the harness environment.
 
@@ -100,7 +119,7 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
 
     fee_payer = Keypair.from_bytes(fee_payer_bytes)
 
-    rpc = AsyncClient(rpc_url)
+    rpc = SolanaRpc(rpc_url)
     config = Config(
         recipient=pay_to,
         currency=mint,
@@ -115,14 +134,14 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
     )
     handler = Mpp(config)
 
+    decimals = int(optional_env("MPP_INTEROP_DECIMALS", "6"))
     routes = {
-        resource_path: amount,
+        resource_path: _base_units_to_human(amount, decimals),
     }
     replay_path = os.environ.get("MPP_INTEROP_REPLAY_SOURCE_PATH") or ""
     if replay_path:
-        routes[replay_path] = (
-            os.environ.get("MPP_INTEROP_REPLAY_SOURCE_AMOUNT") or amount
-        )
+        replay_amount = os.environ.get("MPP_INTEROP_REPLAY_SOURCE_AMOUNT") or amount
+        routes[replay_path] = _base_units_to_human(replay_amount, decimals)
 
     return handler, {
         "routes": routes,
@@ -300,12 +319,12 @@ def main() -> None:
     server.mpp = handler  # type: ignore[attr-defined]
     server.cfg = cfg  # type: ignore[attr-defined]
 
-    if os.environ.get("MPP_INTEROP_NETWORK", "localnet") == "localnet":
-        _fund_recipient_via_surfpool(
-            require_env("MPP_INTEROP_RPC_URL"),
-            require_env("MPP_INTEROP_PAY_TO"),
-            require_env("MPP_INTEROP_MINT"),
-        )
+    # NOTE: do NOT pre-seed recipient ATA via surfnet_setTokenAccount in the
+    # interop harness. The harness funds payTo via Surfnet.fundToken before
+    # starting the adapter and captures ``initialBalance``; an unconditional
+    # reset would zero that balance and break the post-settlement delta
+    # assertion. The standalone example server still seeds because it is
+    # not under harness control.
 
     ready = {
         "type": "ready",

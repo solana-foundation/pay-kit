@@ -10,7 +10,7 @@ import os
 import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from solana.rpc.async_api import AsyncClient
+from solana_mpp._rpc import SolanaRpc
 
 from solana_mpp._headers import format_www_authenticate, parse_authorization
 from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
@@ -36,13 +36,13 @@ FORTUNES = [
 mpp = Mpp(Config(
     recipient=RECIPIENT,
     secret_key=SECRET,
-    currency=USDC_MINT,
+    currency="USDC",
     decimals=6,
     network="localnet",
     rpc_url=RPC_URL,
     html=True,
     store=MemoryStore(),
-    rpc=AsyncClient(RPC_URL),
+    rpc=SolanaRpc(RPC_URL),
 ))
 
 # Fund recipient at startup

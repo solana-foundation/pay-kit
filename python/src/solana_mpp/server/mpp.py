@@ -275,21 +275,44 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
 
 
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
-    """Decode local transfer and memo instructions from a legacy transaction."""
-    from solders.transaction import Transaction
+    """Decode local transfer and memo instructions from a legacy or v0 transaction.
+
+    Accepts both legacy ``Transaction`` and ``VersionedTransaction``. For v0
+    we only inspect the static account keys; address lookup tables are
+    rejected up-front (a v0 tx with a non-empty ALT list would let an
+    instruction reference accounts the verifier cannot see). Mirrors the
+    Rust spine's ``verify_versioned_transaction_pre_broadcast`` policy.
+    """
+    from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
+    message: Any
     try:
         tx = Transaction.from_bytes(raw)
-    except Exception as exc:
-        raise PaymentError(
-            "unsupported transaction shape for pre-broadcast verification",
-            code="invalid-payload-type",
-        ) from exc
+        message = tx.message
+        message_instructions = list(tx.message.instructions)
+    except Exception:
+        try:
+            vtx = VersionedTransaction.from_bytes(raw)
+        except Exception as exc:
+            raise PaymentError(
+                "unsupported transaction shape for pre-broadcast verification",
+                code="invalid-payload-type",
+            ) from exc
+        # Reject v0 transactions that reference address lookup tables; the
+        # pre-broadcast verifier only sees static account keys.
+        lookups = getattr(vtx.message, "address_table_lookups", None)
+        if lookups:
+            raise PaymentError(
+                "v0 transactions with address lookup tables are not supported",
+                code="invalid-payload",
+            )
+        message = vtx.message
+        message_instructions = list(vtx.message.instructions)
 
-    account_keys = [str(key) for key in tx.message.account_keys]
+    account_keys = [str(key) for key in message.account_keys]
     instructions: list[dict[str, Any]] = []
-    for instruction in tx.message.instructions:
+    for instruction in message_instructions:
         try:
             program_id = account_keys[int(instruction.program_id_index)]
         except IndexError as exc:
@@ -364,6 +387,74 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             )
 
     return instructions
+
+
+def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
+    """Co-sign a client transaction with the server's fee payer keypair.
+
+    The fee payer occupies the first signer slot in Solana transactions. We
+    serialize the message in the correct shape for its version (legacy uses
+    ``bytes(msg)``; v0 uses ``to_bytes_versioned(msg)`` which prepends the
+    ``0x80`` version tag), sign with the fee-payer private key, and splice
+    the resulting signature into the signature array at the slot matching
+    the fee-payer pubkey.
+
+    Mirrors the cosign step in rust/src/server/charge.rs verify_pull.
+    """
+    from solders.message import to_bytes_versioned
+    from solders.signature import Signature
+    from solders.transaction import Transaction, VersionedTransaction
+
+    raw = base64.b64decode(transaction_b64)
+    fee_payer_pubkey = fee_payer.pubkey()
+
+    # Try legacy transaction first (the common path); fall back to versioned.
+    try:
+        tx = Transaction.from_bytes(raw)
+    except Exception:
+        try:
+            vtx = VersionedTransaction.from_bytes(raw)
+        except Exception as exc:
+            raise PaymentError(
+                f"could not decode transaction for fee payer co-sign: {exc}",
+                code="invalid-payload-type",
+            ) from exc
+        account_keys = list(vtx.message.account_keys)
+        try:
+            idx = account_keys.index(fee_payer_pubkey)
+        except ValueError as exc:
+            raise PaymentError(
+                "fee payer pubkey not present in transaction accounts",
+                code="invalid-payload",
+            ) from exc
+        # v0 messages are signed over ``to_bytes_versioned(msg)`` which
+        # prepends the 0x80 version byte.
+        message_bytes = bytes(to_bytes_versioned(vtx.message))
+        sig_bytes = bytes(fee_payer.sign_message(message_bytes))
+        # Manual splice in the on-wire bytes preserves the rest of the
+        # transaction exactly. Wire format: [num_sigs (compact-u16)] [sigs]
+        # [message...]. num_sigs < 128 so it is a 1-byte prefix.
+        serialized = bytearray(raw)
+        sig_start = 1 + idx * 64
+        serialized[sig_start : sig_start + 64] = sig_bytes
+        return base64.b64encode(bytes(serialized)).decode("ascii")
+
+    account_keys = list(tx.message.account_keys)
+    try:
+        idx = account_keys.index(fee_payer_pubkey)
+    except ValueError as exc:
+        raise PaymentError(
+            "fee payer pubkey not present in transaction accounts",
+            code="invalid-payload",
+        ) from exc
+
+    # Legacy Transaction: sign ``bytes(msg)`` directly.
+    message_bytes = bytes(tx.message)
+    sig_bytes = bytes(fee_payer.sign_message(message_bytes))
+    serialized = bytearray(raw)
+    sig_start = 1 + idx * 64
+    serialized[sig_start : sig_start + 64] = sig_bytes
+    return base64.b64encode(bytes(serialized)).decode("ascii")
 
 
 def _verify_local_transaction_intent(
@@ -662,10 +753,10 @@ class Mpp:
             raise PaymentError("missing transaction data in credential payload", code="missing-transaction")
         if self._rpc is None:
             raise PaymentError("rpc client is required for transaction verification", code="invalid-config")
-        if details.fee_payer:
+        if details.fee_payer and self._fee_payer_signer is None:
             raise PaymentError(
-                'type="transaction" with fee sponsorship is not yet supported in python',
-                code="invalid-payload-type",
+                "challenge advertises feePayer=true but server has no fee payer configured",
+                code="invalid-config",
             )
 
         # Reject up-front if the client signed against the wrong network
@@ -683,6 +774,15 @@ class Mpp:
         check_network_blockhash(self._network, blockhash_b58)
         _verify_local_transaction_intent(payload.transaction, request, details)
 
+        # If the challenge advertises a server-side fee payer, co-sign the
+        # client's transaction now (after pre-broadcast verification, before
+        # broadcast). Mirrors rust/src/server/charge.rs verify_pull cosign
+        # step. The fee payer signature occupies the slot for the fee-payer
+        # account in the wire transaction.
+        signed_b64 = payload.transaction
+        if details.fee_payer:
+            signed_b64 = _co_sign_with_fee_payer(payload.transaction, self._fee_payer_signer)
+
         # L8 lock: broadcast first, then consume_signature, then await
         # confirmation. The previous order (consume → broadcast → await,
         # with a rollback in the except block) had a fatal flaw: a
@@ -696,7 +796,7 @@ class Mpp:
         # spine; closing it here brings Python into parity.
         from solders.signature import Signature
 
-        raw_tx = base64.b64decode(payload.transaction)
+        raw_tx = base64.b64decode(signed_b64)
         send_resp = await self._rpc.send_raw_transaction(raw_tx)
         signature = str(_rpc_value(send_resp))
 
