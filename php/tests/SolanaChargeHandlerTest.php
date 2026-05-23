@@ -365,6 +365,44 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertSame('wrong recipient', $result->body['detail']);
     }
 
+    public function testReturns402WhenPushCredentialUsedWithFeePayerChallenge(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $feePayer = Keypair::generate();
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: 'USDC',
+            recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 6,
+                'feePayer' => true,
+                'feePayerKey' => $feePayer->getPublicKey()->toBase58(),
+            ],
+        );
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => $this->validSignature()],
+        );
+
+        // The handler must reject this combination before touching the RPC.
+        $handler = $this->handler(
+            challenges: $challenges,
+            feePayer: $feePayer,
+            rpc: new RpcClient('http://unused.invalid', new NullHttpClient()),
+            transactionVerifier: new AlwaysAcceptTransactionPayloadVerifier(),
+        );
+
+        $result = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(PaymentRequiredResponse::class, $result);
+        self::assertSame(
+            'push-mode signature credentials are not allowed when methodDetails.feePayer is true',
+            $result->body['detail'],
+        );
+    }
+
     public function testReturns402WhenPullSignatureIsReplayed(): void
     {
         $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');

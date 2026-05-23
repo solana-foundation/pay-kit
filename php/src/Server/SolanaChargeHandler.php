@@ -168,6 +168,16 @@ final class SolanaChargeHandler
             throw new InvalidArgumentException('missing transaction or signature payload');
         }
 
+        // Spec B34: push-mode credentials cannot ride on a fee-payer challenge.
+        // The server cannot have co-signed a transaction it never saw, so any
+        // \`type=signature\` credential against a \`feePayer=true\` challenge is
+        // either a client mistake or an exfiltration attempt. Reject before
+        // touching the RPC.
+        $methodDetails = $request->methodDetails ?? [];
+        if (($methodDetails['feePayer'] ?? false) === true) {
+            throw new RuntimeException('push-mode signature credentials are not allowed when methodDetails.feePayer is true');
+        }
+
         $transactionBase64 = $this->fetchSettledTransaction($signature);
         $result = $this->transactionVerifier->verifyTransactionPayload($transactionBase64, $request);
         if (!$result->ok) {
