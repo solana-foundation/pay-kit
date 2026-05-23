@@ -544,22 +544,35 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
 
 
 def _assert_signature_slot(idx: int, num_required: int) -> None:
-    """Validate that ``idx`` falls inside the required-signers block.
+    """Validate that the fee payer occupies the canonical slot 0.
 
-    The Solana wire format reserves one 64-byte slot per required signer at
-    the head of the transaction; account keys outside the
-    ``num_required_signatures`` block live in the readonly-signed or
-    unsigned regions and have no signature slot. Splicing into ``1 + idx *
-    64`` for an out-of-range ``idx`` overwrites message bytes and produces
-    a corrupted transaction that the cluster would reject opaquely. We
-    reject the credential here with a clear ``payment_invalid`` so the
-    client sees a deterministic failure.
+    The Solana protocol requires the fee payer to be ``account_keys[0]``:
+    the runtime debits the first required signer for transaction fees. If
+    we accepted a fee-payer pubkey at any slot inside the required-signers
+    block, a client could craft a transaction that includes a benign
+    payment transfer plus an extra instruction that *also* needs the
+    server's key as a required signer (for example, at slot 1). The
+    pre-broadcast decoder would still accept the transfer half, and the
+    server would happily produce its signature, letting the client
+    co-opt the server's private key to authorize arbitrary on-chain
+    intents. Enforcing ``idx == 0`` matches the Rust spine's
+    ``expected_fee_payer`` invariant (``account_keys.first() == fee_payer``)
+    and closes that escalation path before any sign call is made.
     """
     if idx < 0 or idx >= num_required:
         raise PaymentError(
             f"fee payer pubkey at account index {idx} is outside the "
             f"required-signers block (num_required_signatures={num_required}); "
             "a client must place the fee payer inside the signer header",
+            code="invalid-payload",
+        )
+    if idx != 0:
+        raise PaymentError(
+            "fee payer pubkey must occupy account index 0 (the transaction "
+            f"fee-payer slot); found at index {idx}. The Solana runtime "
+            "always debits the first required signer for fees, so any other "
+            "placement would cause the server's key to sign for an "
+            "instruction outside the fee-payment role.",
             code="invalid-payload",
         )
 

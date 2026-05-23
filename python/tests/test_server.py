@@ -1189,6 +1189,53 @@ class TestCoSignSplitBounds:
         # fee-payer signature slot.
         assert signed_bytes[1:65] != b"\x00" * 64
 
+    def test_fee_payer_at_non_zero_signer_slot_is_rejected(self):
+        """Greptile follow-up: the fee payer must occupy ``account_keys[0]``.
+
+        A client that places the server's fee-payer pubkey at any other
+        required-signer slot (e.g. slot 1) could trick the server into
+        producing a signature usable for an unrelated instruction that
+        also requires that key. Mirrors the Rust spine's
+        ``expected_fee_payer`` invariant.
+        """
+        from solders.hash import Hash
+        from solders.keypair import Keypair
+        from solders.message import Message
+        from solders.pubkey import Pubkey
+        from solders.system_program import TransferParams, transfer
+        from solders.transaction import Transaction
+
+        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+
+        # Put a different real signer at slot 0 (the actual fee payer),
+        # and reference the server's would-be fee-payer pubkey as the
+        # transfer source so it lands in the required-signers block at
+        # slot 1.
+        real_signer = Keypair()
+        rogue_fee_payer = Keypair()
+        recipient = Pubkey.from_string(TEST_RECIPIENT)
+
+        ix = transfer(
+            TransferParams(
+                from_pubkey=rogue_fee_payer.pubkey(),
+                to_pubkey=recipient,
+                lamports=1000,
+            )
+        )
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        # payer=real_signer keeps account_keys[0] = real_signer; the
+        # transfer source becomes a second required signer at slot 1.
+        message = Message.new_with_blockhash([ix], real_signer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([real_signer, rogue_fee_payer], blockhash)
+
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+
+        with pytest.raises(PaymentError, match="must occupy account index 0"):
+            _co_sign_with_fee_payer(tx_b64, rogue_fee_payer)
+
 
 class TestComputeBudgetGuard:
     """Compute-budget allowlist parity with Rust / PHP / Ruby.
