@@ -36,6 +36,7 @@ describe("interop scenario selection", () => {
       "charge-sol-native",
       "charge-splits-too-many",
       "charge-splits-sum-equals-amount",
+      "charge-cross-server-portability",
     ]);
   });
 

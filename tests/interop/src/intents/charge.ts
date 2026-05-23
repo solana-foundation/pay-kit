@@ -330,4 +330,33 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // server is never reached so no server code is available. The
     // synthetic client_rejected_credential body is fixture-internal.
   },
+  {
+    // M1 cross-server credential portability. The client pays server A
+    // and captures the Authorization header from the successful charge.
+    // The same Authorization is then submitted to server B (different
+    // language, different HMAC secret). Server B must reject because
+    // the HMAC over the challenge id does not verify against B's
+    // secret, surfacing as canonical `challenge_verification_failed`.
+    // Only TS client is wired because the manual capture/re-submit
+    // flow lives in the TS adapter. PHP/Ruby/Go servers are not in
+    // any pair yet because their interop fixtures don't reject HMAC
+    // mismatches with the canonical code; this is a tracked gap.
+    id: "charge-cross-server-portability",
+    intent: "charge",
+    kind: "cross-server-portability",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 402,
+    expectedCode: "challenge_verification_failed",
+    clientIds: ["typescript"],
+    serverIds: ["typescript", "rust"],
+    crossServerPairs: [
+      ["typescript", "rust"],
+      ["rust", "typescript"],
+    ],
+  },
 ] as const;
