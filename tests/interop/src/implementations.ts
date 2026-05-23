@@ -56,6 +56,17 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: ["sh", "-c", "cd go-client && go run ."],
     enabled: isEnabled("go", "MPP_INTEROP_CLIENTS", false),
   },
+  {
+    id: "swift",
+    label: "Swift HTTP client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd swift-client && swift run --quiet SwiftInteropClient",
+    ],
+    enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", false),
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
