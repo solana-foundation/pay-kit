@@ -76,6 +76,26 @@ local replay_path       = os.getenv('MPP_INTEROP_REPLAY_SOURCE_PATH')
 local replay_amount     = os.getenv('MPP_INTEROP_REPLAY_SOURCE_AMOUNT')
 local splits_raw        = optional_env('MPP_INTEROP_SPLITS', '[]')
 
+-- Scenario-configurable decimals. Defaults to 6 (the SPL stablecoin
+-- baseline). The harness drives the value through `MPP_INTEROP_DECIMALS`
+-- for scenarios that deploy mints under a different decimal count
+-- (e.g. the 9-decimal native mints under G07). Adapters that ignore this
+-- env emit transferChecked instructions whose `data[9]` byte mismatches
+-- the deploy-time mint state and the harness rejects the settlement.
+local decimals          = tonumber(optional_env('MPP_INTEROP_DECIMALS', '6'))
+if decimals == nil or decimals < 0 or decimals > 18 or decimals % 1 ~= 0 then
+  log('MPP_INTEROP_DECIMALS must be an integer 0..18, got ' .. tostring(os.getenv('MPP_INTEROP_DECIMALS')))
+  os.exit(2)
+end
+
+-- Optional token program override. The harness sets this for Token-2022
+-- scenarios where the SDK's built-in symbol table cannot disambiguate the
+-- mint (e.g. arbitrary mints deployed in tests). When unset the server
+-- falls back to the SDK's per-currency default which uses the stablecoin
+-- table in `mpp.protocol.solana`.
+local token_program     = os.getenv('MPP_INTEROP_TOKEN_PROGRAM')
+if token_program == '' then token_program = nil end
+
 local splits_decoded, splits_err = json.decode(splits_raw)
 if type(splits_decoded) ~= 'table' then
   log('MPP_INTEROP_SPLITS must decode to an array: ' .. tostring(splits_err))
@@ -99,7 +119,7 @@ local handler = charge_handler.new({
 local server = mpp.server.new({
   recipient = pay_to,
   currency = mint,
-  decimals = 6,
+  decimals = decimals,
   network = network,
   rpc_url = rpc_url,
   secret_key = secret_key,
@@ -131,6 +151,22 @@ local STATUS_REASONS = {
   [500] = 'Server Error',
 }
 
+-- conn:send returns nil + error string on broken pipe / closed peer rather
+-- than raising, but a subsequent send on the same closed socket short-cuts
+-- straight back. Bail out of the response write on the first failure so
+-- we do not log spurious failures for every line in the response, and so
+-- the surrounding pcall in serve_one observes the partial write cleanly.
+local function safe_send(conn, chunk)
+  local ok, sent_or_err = pcall(conn.send, conn, chunk)
+  if not ok then
+    return nil, tostring(sent_or_err)
+  end
+  if sent_or_err == nil then
+    return nil, 'send returned nil'
+  end
+  return true
+end
+
 local function write_response(conn, status, hdrs, body)
   local reason = STATUS_REASONS[status] or 'Server Error'
   local payload
@@ -142,28 +178,35 @@ local function write_response(conn, status, hdrs, body)
   hdrs = hdrs or {}
   hdrs['connection'] = 'close'
   hdrs['content-length'] = tostring(#payload)
-  conn:send('HTTP/1.1 ' .. status .. ' ' .. reason .. '\r\n')
+  local lines = { 'HTTP/1.1 ' .. status .. ' ' .. reason .. '\r\n' }
   for name, value in pairs(hdrs) do
-    conn:send(name .. ': ' .. value .. '\r\n')
+    lines[#lines + 1] = name .. ': ' .. value .. '\r\n'
   end
-  conn:send('\r\n')
-  conn:send(payload)
+  lines[#lines + 1] = '\r\n'
+  lines[#lines + 1] = payload
+  for i = 1, #lines do
+    local ok, err = safe_send(conn, lines[i])
+    if not ok then
+      log('response write aborted: ' .. tostring(err))
+      return
+    end
+  end
 end
 
 -- Convert a base-unit amount (the harness env-var format) into the display
 -- string the SDK's parse_units expects. The harness sends raw u64 base units
 -- but Server:charge_with_options runs parse_units(amount, decimals); without
 -- a conversion the displayed amount would be multiplied by 10^decimals twice.
-local function base_units_to_display(value, decimals)
-  if decimals == 0 then
+local function base_units_to_display(value, dec)
+  if dec == 0 then
     return value
   end
   local s = tostring(value)
-  if #s <= decimals then
-    s = string.rep('0', decimals - #s + 1) .. s
+  if #s <= dec then
+    s = string.rep('0', dec - #s + 1) .. s
   end
-  local whole = s:sub(1, #s - decimals)
-  local fractional = s:sub(#s - decimals + 1)
+  local whole = s:sub(1, #s - dec)
+  local fractional = s:sub(#s - dec + 1)
   fractional = fractional:gsub('0+$', '')
   if fractional == '' then
     return whole
@@ -178,7 +221,10 @@ local function build_charge_options(request_amount)
   if #splits_decoded > 0 then
     options.splits = splits_decoded
   end
-  return base_units_to_display(request_amount, 6), options
+  if token_program then
+    options.token_program = token_program
+  end
+  return base_units_to_display(request_amount, decimals), options
 end
 
 local function handle_charge(conn, authorization, expected_amount)
@@ -189,9 +235,17 @@ local function handle_charge(conn, authorization, expected_amount)
       return server:charge_with_options(display_amount, charge_options)
     end)
     if not ok then
-      log('charge issuance error: ' .. tostring(challenge_value))
-      write_response(conn, 500, { ['content-type'] = 'application/json' },
-        { error = tostring(challenge_value) })
+      -- Pre-issuance rejections (e.g. Tier-0 splits guard, malformed
+      -- amount) raise the same canonical {code, message} table the
+      -- verifier raises later. Surface them as a 402 with the structured
+      -- code rather than a 500 so the harness's status assertion holds
+      -- and the cross-SDK fault matrix sees the same `payment_invalid`
+      -- code every other server emits. Bare-string errors fall through
+      -- to `error_codes.to_response` which tags them with
+      -- `challenge_verification_failed` per the helper's contract.
+      local response = error_codes.to_response(challenge_value)
+      log('charge issuance error: ' .. tostring(response.message) .. ' (' .. tostring(response.code) .. ')')
+      write_response(conn, 402, { ['content-type'] = 'application/json' }, response)
       return
     end
     write_response(conn, 402, {
@@ -300,9 +354,17 @@ local function serve_one()
   conn:close()
 end
 
+-- Avoid a 100 % CPU spin between accept timeouts. The 0.2 s accept
+-- timeout pairs with a tiny socket.select sleep so the lua interop server
+-- yields when idle, which matters when multiple language adapters are
+-- spawned back-to-back by the matrix harness on the same host. Without
+-- the yield the OS scheduler can starve neighbouring adapters during
+-- their startup window and surface as `connect ECONNREFUSED` on what
+-- looks like a freshly-bound socket.
 while true do
   local ok, err = pcall(serve_one)
   if not ok then
     log('serve error: ' .. tostring(err))
   end
+  socket.select(nil, nil, 0.005)
 end
