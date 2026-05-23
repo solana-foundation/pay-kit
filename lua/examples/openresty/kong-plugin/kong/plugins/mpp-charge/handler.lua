@@ -37,6 +37,7 @@ local signer_module = require('mpp.methods.solana.signer')
 local store_module = require('mpp.store')
 local store_shared_dict = require('mpp.server.store_shared_dict')
 local error_codes = require('mpp.protocol.core.error_codes')
+local intents = require('mpp.protocol.intents.charge')
 local json = require('mpp.util.json')
 
 local plugin = {
@@ -98,7 +99,18 @@ local function get_server(conf)
     fee_payer_key = fee_payer and fee_payer.public_key or nil,
     verify_payment = handler:as_callback(),
   })
-  cache[conf] = { server = server, amount = conf.amount }
+  -- `conf.amount` is the human display form (e.g. "1.50" or "1000"). The
+  -- server stores the challenge in base units after parse_units, so the
+  -- verifier-side `expected.amount` must also be in base units; otherwise
+  -- every settlement returns `charge_request_mismatch`. Convert once at
+  -- cache time using the configured decimals.
+  local decimals = conf.decimals or 6
+  local expected_base_units = intents.parse_units(conf.amount, decimals)
+  cache[conf] = {
+    server = server,
+    display_amount = conf.amount,
+    expected_amount = expected_base_units,
+  }
   return cache[conf]
 end
 
@@ -125,16 +137,16 @@ function plugin:access(conf)
   local handle = get_server(conf)
   local authorization = ngx.req.get_headers()['authorization']
   if authorization == nil or authorization == '' then
-    return send_challenge(handle.server, handle.amount)
+    return send_challenge(handle.server, handle.display_amount)
   end
   local credential, parse_err = headers.parse_authorization(authorization)
   if not credential then
     ngx.log(ngx.ERR, 'mpp-charge: failed to parse authorization: ', tostring(parse_err))
-    return send_challenge(handle.server, handle.amount, parse_err)
+    return send_challenge(handle.server, handle.display_amount, parse_err)
   end
   local ok, settlement = pcall(function()
     return handle.server:verify_credential_with_expected(credential, {
-      amount = handle.amount,
+      amount = handle.expected_amount,
       currency = conf.currency,
       recipient = conf.recipient,
     })
@@ -143,7 +155,7 @@ function plugin:access(conf)
     local response = error_codes.to_response(settlement)
     ngx.log(ngx.ERR, 'mpp-charge: settlement failed: ', tostring(response.message),
       ' (', tostring(response.code), ')')
-    return send_challenge(handle.server, handle.amount, settlement)
+    return send_challenge(handle.server, handle.display_amount, settlement)
   end
   if settlement and settlement.reference then
     ngx.header[mpp.PaymentReceiptHeader] = headers.format_receipt(settlement)
