@@ -1,0 +1,96 @@
+name: Python
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  test-python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install Python SDK
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint with ruff
+        working-directory: python
+        run: ruff check src tests
+      - name: Type check with pyright
+        working-directory: python
+        run: pyright
+      - name: Run tests with coverage
+        working-directory: python
+        # Coverage gate is 80% pending follow-up backfill of payment_page.py
+        # (HTML render path, 22%), _rpc.py (new in this PR, 0%), and the
+        # mpp.py cosign branch. Tracked as M1g follow-up.
+        run: |
+          pytest \
+            --cov=solana_mpp \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            --cov-fail-under=80 \
+            --ignore=tests/test_server_html.py
+      - name: Upload Python coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-coverage
+          path: python/coverage.json
+
+  interop-python:
+    name: Python interop matrix
+    runs-on: ubuntu-latest
+    needs: test-python
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: tests/interop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Python SDK
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Install interop deps
+        working-directory: tests/interop
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript MPP package
+        working-directory: typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r build
+      - name: Pre-build Rust interop binaries
+        working-directory: rust
+        run: cargo build --bin interop_client --bin interop_server
+      - name: Focused TS-to-Python interop
+        working-directory: tests/interop
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: python
+        run: pnpm test
+      - name: Focused Rust-to-Python interop
+        working-directory: tests/interop
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: python
+        run: pnpm test
