@@ -225,7 +225,11 @@ jobs:
           gradle-version: "9.5.1"
       - name: Run tests with coverage
         working-directory: kotlin
-        run: gradle test jacocoTestReport
+        # `gradle check` runs test + jacocoTestReport +
+        # jacocoTestCoverageVerification so the 90 percent line-coverage
+        # gate is enforced in CI (previous `gradle test jacocoTestReport`
+        # generated the report without enforcing the gate).
+        run: gradle check
       - name: Upload Kotlin coverage
         if: always()
         uses: actions/upload-artifact@v7

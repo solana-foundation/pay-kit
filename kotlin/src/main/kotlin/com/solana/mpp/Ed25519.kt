@@ -198,27 +198,71 @@ object Pda {
 /**
  * On-curve check used by program-derived address derivation.
  *
- * Reuses BouncyCastle's `validatePublicKeyPartial(byte[], int)` via
- * reflection because the BC Ed25519 class is not on the BC public API
- * surface in older releases. The validation matches the reference
- * Solana SDK's `Pubkey::is_on_curve` semantics: a 32 byte value is on
- * the curve when it decompresses to a valid (x, y) point on Ed25519.
+ * Implements the RFC 8032 §5.1.3 point-decoding test directly against
+ * the Ed25519 field arithmetic. A 32 byte encoding decodes to a valid
+ * (x, y) curve point iff `v * x^2 = u (mod p)` (or `v * x^2 = -u`)
+ * has a solution for `x`, where `u = y^2 - 1`, `v = d * y^2 + 1`,
+ * `p = 2^255 - 19`, and `d = -121665/121666 (mod p)`. Matches Solana
+ * SDK's `Pubkey::is_on_curve` semantics.
+ *
+ * Implemented inline (rather than via the JDK 15+ EdECPublicKeySpec
+ * round trip or a private BouncyCastle reflection hop) because:
+ *
+ * - JDK's KeyFactory.generatePublic does not actually enforce the
+ *   on-curve check for EdECPublicKeySpec; arbitrary 32 byte y values
+ *   round-trip cleanly without raising InvalidKeySpecException.
+ * - The BouncyCastle private method that does enforce the check is
+ *   gated by JDK 17+ strong encapsulation and breaks under
+ *   `--illegal-access=deny` / module-system defaults.
+ *
+ * The math here is pure java.math.BigInteger, no JNI, no reflection.
  */
 internal object OnCurveCheck {
-    private val method = run {
-        val clazz = Class.forName("org.bouncycastle.math.ec.rfc8032.Ed25519")
-        val m = clazz.getDeclaredMethod(
-            "validatePublicKeyPartial",
-            ByteArray::class.java,
-            Int::class.javaPrimitiveType,
-        )
-        m.isAccessible = true
-        m
-    }
+    // RFC 8032 §5.1.3 constants.
+    private val P = java.math.BigInteger.valueOf(2).pow(255)
+        .subtract(java.math.BigInteger.valueOf(19))
+    private val D = java.math.BigInteger("-121665")
+        .multiply(java.math.BigInteger.valueOf(121666).modInverse(P))
+        .mod(P)
+    private val SQRT_MINUS_ONE = java.math.BigInteger.valueOf(2)
+        .modPow(P.subtract(java.math.BigInteger.ONE).shiftRight(2), P)
+    private val EXPONENT = P.subtract(java.math.BigInteger.valueOf(5)).shiftRight(3)
 
     fun validate(bytes: ByteArray): Boolean {
         if (bytes.size != 32) return false
-        val result = method.invoke(null, bytes, 0)
-        return result as Boolean
+        // RFC 8032 stores y little-endian with the sign of x in the high
+        // bit of the last byte. Reverse to big-endian for BigInteger.
+        val yLittle = bytes.copyOf()
+        yLittle[31] = (yLittle[31].toInt() and 0x7f).toByte()
+        val yBig = ByteArray(32)
+        for (i in 0..31) yBig[i] = yLittle[31 - i]
+        val y = java.math.BigInteger(1, yBig)
+        if (y >= P) return false
+
+        // Compute u = y^2 - 1, v = d * y^2 + 1 (mod p).
+        val ySquared = y.multiply(y).mod(P)
+        val u = ySquared.subtract(java.math.BigInteger.ONE).mod(P)
+        val v = D.multiply(ySquared).add(java.math.BigInteger.ONE).mod(P)
+        if (v == java.math.BigInteger.ZERO) return false
+
+        // Candidate x = u * v^3 * (u * v^7)^((p-5)/8) per RFC 8032 §5.1.3.
+        val vSquared = v.multiply(v).mod(P)
+        val vCubed = vSquared.multiply(v).mod(P)
+        val vSeventh = vCubed.multiply(vCubed).multiply(v).mod(P)
+        val uvSeventh = u.multiply(vSeventh).mod(P)
+        var x = u.multiply(vCubed).multiply(uvSeventh.modPow(EXPONENT, P)).mod(P)
+
+        // Verify v * x^2 = +-u (mod p); pick the right root.
+        val vxSquared = v.multiply(x.multiply(x).mod(P)).mod(P)
+        if (vxSquared == u) {
+            return true
+        }
+        val negU = P.subtract(u).mod(P)
+        if (vxSquared == negU) {
+            x = x.multiply(SQRT_MINUS_ONE).mod(P)
+            val recheck = v.multiply(x.multiply(x).mod(P)).mod(P)
+            return recheck == u
+        }
+        return false
     }
 }

@@ -9,6 +9,11 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 kotlin {
