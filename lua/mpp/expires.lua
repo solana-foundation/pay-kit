@@ -50,7 +50,11 @@ function M.parse_rfc3339(value)
   if month < 1 or month > 12 then
     return nil, 'invalid RFC3339 month'
   end
-  if hour > 23 or min > 59 or sec > 59 then
+  -- RFC 3339 §5.7 allows sec = 60 for positive leap seconds. The
+  -- broader RFC requires that a leap second be inserted only at
+  -- 23:59:60 UTC; we accept the value at the parser level and let
+  -- downstream consumers reject the rare time-of-day combinations.
+  if hour > 23 or min > 59 or sec > 60 then
     return nil, 'invalid RFC3339 time-of-day'
   end
   if day < 1 or day > days_in_month(year, month) then
