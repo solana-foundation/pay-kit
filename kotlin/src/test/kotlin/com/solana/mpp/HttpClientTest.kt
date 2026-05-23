@@ -6,9 +6,22 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
+/**
+ * MppHttpClient unit tests.
+ *
+ * Regression fixture for Greptile P1 comment 3293054077:
+ * doesNotLeakConnectionOnMissingChallengeHeader exercises the
+ * malformed-server branch where a 402 lands without a WWW-Authenticate
+ * header. Before the use {} fix in HttpClient.kt:52 the OkHttp Response
+ * body was read once and dropped on the floor without being closed, which
+ * leaked the underlying connection. The regression test asserts a
+ * follow-up request on the same client succeeds, which would surface a
+ * "stream already closed" or socket reset if the bug recurred.
+ */
 class HttpClientTest {
     private lateinit var server: MockWebServer
 
@@ -84,6 +97,47 @@ class HttpClientTest {
         assertFailsWith<MppException.InvalidPaymentScheme> {
             client.mppGet(server.url("/paid").toString()).close()
         }
+    }
+
+    @Test
+    fun doesNotLeakConnectionOnMissingChallengeHeader() {
+        // Regression for Greptile comment 3293054077. A 402 without a
+        // WWW-Authenticate header used to read the body once and throw
+        // without closing it, leaking the OkHttp connection.
+        //
+        // OkHttp's EventListener fires connectionReleased exactly once
+        // per connection when the call releases it back to the pool
+        // (or closes it). If mppGet throws on the missing-header branch
+        // without closing the response, the connection is never
+        // released; the listener count stays at zero, which the
+        // assertion catches directly. The 402 body is non-empty so
+        // OkHttp must close it explicitly rather than treating it as a
+        // zero-byte natural completion.
+        val connectionsReleased = java.util.concurrent.atomic.AtomicInteger(0)
+        val listener = object : okhttp3.EventListener() {
+            override fun connectionReleased(call: okhttp3.Call, connection: okhttp3.Connection) {
+                connectionsReleased.incrementAndGet()
+            }
+        }
+        val okHttp = OkHttpClient.Builder()
+            .eventListener(listener)
+            .build()
+        val client = MppHttpClient(signer, blockhashProvider, okHttp)
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(402)
+                .setBody("malformed 402 body without WWW-Authenticate"),
+        )
+        assertFailsWith<MppException.InvalidPaymentScheme> {
+            client.mppGet(server.url("/paid").toString()).close()
+        }
+
+        assertEquals(
+            1,
+            connectionsReleased.get(),
+            "Connection must be released even when WWW-Authenticate is missing",
+        )
     }
 
     @Test
