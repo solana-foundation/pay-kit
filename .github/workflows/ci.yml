@@ -491,9 +491,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.5.1"
+      - name: Pre-warm Gradle for the Kotlin interop client
+        working-directory: tests/interop/kotlin-client
+        run: gradle installDist --no-daemon
       - name: Run Kotlin client interop smoke
         working-directory: tests/interop
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server"
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
         env:
           MPP_INTEROP_CLIENTS: kotlin
           MPP_INTEROP_SERVERS: typescript
