@@ -47,7 +47,11 @@ class TestPayDecorator:
             headers = {}
             url = "http://localhost/test"
 
-        result = await handler(FakeRequest())
+        # The @pay decorator wraps the inner (request, credential, receipt)
+        # signature so the external caller passes only the request; pyright
+        # does not infer the wrapper's reduced signature, so silence the
+        # missing-args report on the call site.
+        result = await handler(FakeRequest())  # pyright: ignore[reportCallIssue]
         # Should return a challenge (402-like response)
         assert result is not None
 
@@ -69,7 +73,7 @@ class TestPayDecorator:
             headers = {}
             url = "http://localhost/test"
 
-        result = await handler(FakeRequest())
+        result = await handler(FakeRequest())  # pyright: ignore[reportCallIssue]
         request = result["challenge"].decode_request()
 
         assert request["methodDetails"]["splits"] == splits
@@ -84,5 +88,5 @@ class TestPayDecorator:
             headers = {"authorization": "Payment invalid-credential"}
             url = "http://localhost/test"
 
-        result = await handler(FakeRequest())
+        result = await handler(FakeRequest())  # pyright: ignore[reportCallIssue]
         assert result is not None
