@@ -24,6 +24,7 @@ local mpp = require('mpp')
 local json = require('mpp.util.json')
 local headers = require('mpp.protocol.core.headers')
 local intents = require('mpp.protocol.intents.charge')
+local error_codes = require('mpp.protocol.core.error_codes')
 local solana_verify = require('mpp.server.solana_verify')
 local charge_handler = require('mpp.server.charge_handler')
 local rpc_module = require('mpp.solana.rpc')
@@ -114,17 +115,28 @@ local function payment_required(conn)
   write_response(conn, 402, {
     ['content-type'] = 'application/json',
     ['www-authenticate'] = headers.format_www_authenticate(challenge_value),
-  }, json.encode({ error = 'payment required' }))
+  }, json.encode({
+    error = 'payment required',
+    message = 'payment required',
+    code = error_codes.CHALLENGE_VERIFICATION_FAILED,
+  }))
 end
 
 -- 200 / 402 settlement attempt: only reached when an Authorization header is
 -- present. The real verifier walks the wire transaction; on success the
 -- receipt header carries the on-chain signature for the client to confirm.
+-- On failure the response carries a canonical L6 error code so consumers
+-- can distinguish charge-request mismatches, network mismatches, and
+-- replay rejections without parsing the human message.
 local function attempt_settlement(conn, authorization)
   local credential, parse_err = headers.parse_authorization(authorization)
   if not credential then
     write_response(conn, 402, { ['content-type'] = 'application/json' },
-      json.encode({ error = 'invalid authorization', detail = parse_err }))
+      json.encode({
+        error = 'invalid authorization',
+        message = tostring(parse_err or 'invalid authorization'),
+        code = error_codes.CHALLENGE_VERIFICATION_FAILED,
+      }))
     return
   end
   local expected_base_units = intents.parse_units(AMOUNT, 6)
@@ -147,12 +159,12 @@ local function attempt_settlement(conn, authorization)
     end
     write_response(conn, 200, hdrs, json.encode({ ok = true, paid = true }))
   else
-    local detail = type(settlement) == 'table' and settlement.message
-      or tostring(settlement)
-    io.stderr:write('settlement failed: ' .. tostring(detail) .. '\n')
+    local response = error_codes.to_response(settlement)
+    io.stderr:write('settlement failed: ' .. tostring(response.message)
+      .. ' (' .. tostring(response.code) .. ')\n')
     io.stderr:flush()
     write_response(conn, 402, { ['content-type'] = 'application/json' },
-      json.encode({ error = 'verification failed', detail = detail }))
+      json.encode(response))
   end
 end
 

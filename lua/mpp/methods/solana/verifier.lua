@@ -22,6 +22,7 @@ local transaction = require('mpp.methods.solana.transaction')
 local instructions = require('mpp.methods.solana.instructions')
 local ata = require('mpp.methods.solana.ata')
 local protocol = require('mpp.protocol.solana')
+local error_codes = require('mpp.protocol.core.error_codes')
 
 local M = {}
 
@@ -32,8 +33,13 @@ local ASSOCIATED_TOKEN_PROGRAM = instructions.ASSOCIATED_TOKEN_PROGRAM
 local MEMO_PROGRAM = instructions.MEMO_PROGRAM
 local COMPUTE_BUDGET_PROGRAM = instructions.COMPUTE_BUDGET_PROGRAM
 
+-- Every shape-rejection in this module is a `payment_invalid`: the on-chain
+-- transaction failed one of the verifier's structural checks (mint, amount,
+-- ATA, memo, fee payer, compute budget). The challenge itself already
+-- verified upstream in `mpp.server.init.lua`. Network mismatches and
+-- consume conflicts are tagged separately in `mpp.server.charge_handler`.
 local function verifier_error(message)
-  error({ code = 'verification-error', message = message })
+  error({ code = error_codes.PAYMENT_INVALID, message = message })
 end
 
 local function is_native_sol(currency)

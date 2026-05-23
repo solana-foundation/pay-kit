@@ -42,7 +42,9 @@ end)
 t.test('network_check: mainnet rejects surfpool hash with explicit context', function()
   local err = nc.check_network_blockhash('mainnet', 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxx1892bcad')
   t.assert_true(err ~= nil, 'expected error table, got nil')
-  t.assert_equal(err.code, 'wrong-network')
+  -- Canonical L6 code (underscore form). Matches the audit-row code set
+  -- shared with Python and the cross-SDK fault matrix.
+  t.assert_equal(err.code, 'wrong_network')
   t.assert_true(err.message:find('Signed against localnet', 1, true) ~= nil, 'missing received-side: ' .. err.message)
   t.assert_true(err.message:find('server expects mainnet', 1, true) ~= nil, 'missing expected-side: ' .. err.message)
   t.assert_true(err.message:find('re%-sign') ~= nil, 'missing actionable hint: ' .. err.message)

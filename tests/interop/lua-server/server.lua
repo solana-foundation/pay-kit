@@ -34,6 +34,7 @@ local solana_verify = require('mpp.server.solana_verify')
 local charge_handler = require('mpp.server.charge_handler')
 local rpc_module = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
+local error_codes = require('mpp.protocol.core.error_codes')
 local signer_module = require('mpp.methods.solana.signer')
 local store_module = require('mpp.store')
 
@@ -196,7 +197,11 @@ local function handle_charge(conn, authorization, expected_amount)
     write_response(conn, 402, {
       ['content-type'] = 'application/json',
       ['www-authenticate'] = headers.format_www_authenticate(challenge_value),
-    }, { error = 'payment required' })
+    }, {
+      error = 'payment required',
+      message = 'payment required',
+      code = error_codes.CHALLENGE_VERIFICATION_FAILED,
+    })
     return
   end
 
@@ -204,8 +209,11 @@ local function handle_charge(conn, authorization, expected_amount)
   local credential, parse_err = headers.parse_authorization(authorization)
   if not credential then
     log('authorization parse error: ' .. tostring(parse_err))
-    write_response(conn, 402, { ['content-type'] = 'application/json' },
-      { error = 'invalid authorization' })
+    write_response(conn, 402, { ['content-type'] = 'application/json' }, {
+      error = 'invalid authorization',
+      message = tostring(parse_err or 'invalid authorization'),
+      code = error_codes.CHALLENGE_VERIFICATION_FAILED,
+    })
     return
   end
 
@@ -220,10 +228,9 @@ local function handle_charge(conn, authorization, expected_amount)
     })
   end)
   if not ok then
-    local detail = type(settlement) == 'table' and settlement.message or tostring(settlement)
-    log('settlement error: ' .. tostring(detail))
-    write_response(conn, 402, { ['content-type'] = 'application/json' },
-      { error = 'verification failed', detail = detail })
+    local response = error_codes.to_response(settlement)
+    log('settlement error: ' .. tostring(response.message) .. ' (' .. tostring(response.code) .. ')')
+    write_response(conn, 402, { ['content-type'] = 'application/json' }, response)
     return
   end
 

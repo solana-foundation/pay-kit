@@ -1,5 +1,6 @@
 local uint = require('mpp.util.uint')
 local protocol = require('mpp.protocol.solana')
+local error_codes = require('mpp.protocol.core.error_codes')
 
 local M = {}
 
@@ -40,7 +41,7 @@ end
 local function primary_amount(amount, splits)
   local total_splits = sum_split_amounts(splits)
   if uint.compare(amount, total_splits) <= 0 then
-    error('splits consume the entire amount')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'splits consume the entire amount')
   end
   return uint.sub(amount, total_splits)
 end
@@ -120,10 +121,10 @@ end
 
 local function verify_confirmed_transaction(reference, tx, request, method_details, hooks)
   if not tx then
-    error('transaction not found or not yet confirmed')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'transaction not found or not yet confirmed')
   end
   if tx.meta and tx.meta.err ~= nil then
-    error('transaction failed on-chain')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'transaction failed on-chain')
   end
 
   local instructions = tx.transaction and tx.transaction.message and tx.transaction.message.instructions or {}
@@ -131,6 +132,8 @@ local function verify_confirmed_transaction(reference, tx, request, method_detai
     verify_sol_transfers(instructions, request)
   else
     if not hooks.fetch_token_account then
+      -- Callback contract violation: not a protocol rejection, so keep
+      -- this as a developer-side error rather than a 402 surface.
       error('fetch_token_account callback is required for token verification')
     end
     verify_spl_transfers(instructions, request, method_details, hooks)
@@ -163,7 +166,8 @@ function verify_sol_transfers(instructions, request)
       end
     end
     if not found then
-      error('no matching SOL transfer for ' .. want.recipient)
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'no matching SOL transfer for ' .. want.recipient)
     end
   end
 end
@@ -173,7 +177,7 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
   local program_id = method_details.tokenProgram or protocol.default_token_program_for_currency(request.currency, method_details.network)
   local mint = protocol.resolve_mint(request.currency, method_details.network)
   if program_id ~= TOKEN_PROGRAM and program_id ~= TOKEN_2022_PROGRAM then
-    error('unsupported token program: ' .. tostring(program_id))
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'unsupported token program: ' .. tostring(program_id))
   end
   local transfers = {}
   for _, ix in ipairs(instructions or {}) do
@@ -195,7 +199,8 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
       end
     end
     if not found then
-      error('no matching token transfer for ' .. want.recipient)
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'no matching token transfer for ' .. want.recipient)
     end
   end
 end
@@ -204,7 +209,7 @@ function verify_memo_instructions(instructions, request, method_details)
   local matched = {}
   for _, want in ipairs(expected_memos(request, method_details)) do
     if #want.value > 566 then
-      error('memo cannot exceed 566 bytes')
+      error_codes.raise(error_codes.PAYMENT_INVALID, 'memo cannot exceed 566 bytes')
     end
     local found = false
     for index, ix in ipairs(instructions or {}) do
@@ -215,13 +220,15 @@ function verify_memo_instructions(instructions, request, method_details)
       end
     end
     if not found then
-      error('No memo instruction found for ' .. want.label .. ' memo "' .. want.value .. '"')
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'No memo instruction found for ' .. want.label .. ' memo "' .. want.value .. '"')
     end
   end
 
   for index, ix in ipairs(instructions or {}) do
     if not matched[index] and parsed_program_id(ix) == MEMO_PROGRAM then
-      error('unexpected Memo Program instruction in payment transaction')
+      error_codes.raise(error_codes.PAYMENT_INVALID,
+        'unexpected Memo Program instruction in payment transaction')
     end
   end
 end
@@ -390,7 +397,7 @@ function M.verify_signature(context, hooks)
   local method_details = context.method_details or request.methodDetails or {}
 
   if payload.signature == nil or payload.signature == '' then
-    error('missing signature in credential payload')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'missing signature in credential payload')
   end
 
   -- B34: reject push-mode (type=signature) credentials when the challenge
@@ -404,6 +411,7 @@ function M.verify_signature(context, hooks)
   end
 
   if not hooks or type(hooks.fetch_transaction) ~= 'function' then
+    -- Hooks contract violation: developer-side, not a 402 surface.
     error('fetch_transaction callback is required')
   end
 
@@ -417,8 +425,10 @@ function M.verify_transaction(context, hooks)
   local method_details = context.method_details or request.methodDetails or {}
 
   if payload.transaction == nil or payload.transaction == '' then
-    error('missing transaction in credential payload')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'missing transaction in credential payload')
   end
+  -- Hooks contract violations stay developer-side; only protocol-level
+  -- rejections carry an error code through the 402 surface.
   if not hooks or type(hooks.send_transaction) ~= 'function' then
     error('send_transaction callback is required')
   end
@@ -465,7 +475,7 @@ function M.verify_transaction(context, hooks)
 
   local signature = hooks.send_transaction(payload.transaction)
   if signature == nil or signature == '' then
-    error('send_transaction returned an empty signature')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'send_transaction returned an empty signature')
   end
   -- L8 broadcast-then-consume-then-await ordering. Mirrors the Rust /
   -- Ruby / PHP / Python spine: the durable replay marker MUST be

@@ -35,6 +35,8 @@ local rpc_module = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
 local signer_module = require('mpp.methods.solana.signer')
 local store_module = require('mpp.store')
+local error_codes = require('mpp.protocol.core.error_codes')
+local json = require('mpp.util.json')
 
 local plugin = {
   PRIORITY = 1000,
@@ -80,12 +82,22 @@ local function get_server(conf)
   return cache[conf]
 end
 
-local function send_challenge(server, amount)
+local function send_challenge(server, amount, err_value)
   local challenge = server:charge(amount)
   ngx.status = 402
   ngx.header['content-type'] = 'application/json'
   ngx.header['www-authenticate'] = headers.format_www_authenticate(challenge)
-  ngx.say('{"error":"payment required"}')
+  local response
+  if err_value ~= nil then
+    response = error_codes.to_response(err_value)
+  else
+    response = {
+      error = 'payment required',
+      message = 'payment required',
+      code = error_codes.CHALLENGE_VERIFICATION_FAILED,
+    }
+  end
+  ngx.say(json.encode(response))
   return ngx.exit(402)
 end
 
@@ -98,7 +110,7 @@ function plugin:access(conf)
   local credential, parse_err = headers.parse_authorization(authorization)
   if not credential then
     ngx.log(ngx.ERR, 'mpp-charge: failed to parse authorization: ', tostring(parse_err))
-    return send_challenge(handle.server, handle.amount)
+    return send_challenge(handle.server, handle.amount, parse_err)
   end
   local ok, settlement = pcall(function()
     return handle.server:verify_credential_with_expected(credential, {
@@ -108,9 +120,10 @@ function plugin:access(conf)
     })
   end)
   if not ok then
-    local detail = type(settlement) == 'table' and settlement.message or tostring(settlement)
-    ngx.log(ngx.ERR, 'mpp-charge: settlement failed: ', tostring(detail))
-    return send_challenge(handle.server, handle.amount)
+    local response = error_codes.to_response(settlement)
+    ngx.log(ngx.ERR, 'mpp-charge: settlement failed: ', tostring(response.message),
+      ' (', tostring(response.code), ')')
+    return send_challenge(handle.server, handle.amount, settlement)
   end
   if settlement and settlement.reference then
     ngx.header[mpp.PaymentReceiptHeader] = headers.format_receipt(settlement)

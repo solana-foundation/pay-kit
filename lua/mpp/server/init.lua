@@ -1,4 +1,5 @@
 local challenge = require('mpp.protocol.core.challenge')
+local error_codes = require('mpp.protocol.core.error_codes')
 local html_module = require('mpp.server.html')
 local intents = require('mpp.protocol.intents.charge')
 local protocol = require('mpp.protocol.solana')
@@ -141,20 +142,25 @@ function Server:verify_credential_with_expected(credential_value, expected, now_
   end
   local cred_request, _method_details, payload = self:_verify_challenge_and_decode(credential_value, now_epoch)
 
+  -- The three pinned fields are the route's contract with the client:
+  -- the same credential issued for a cheaper / different route must not
+  -- settle here, even if its HMAC verifies. All three rejections share
+  -- the canonical `charge_request_mismatch` code.
   if cred_request.amount ~= expected.amount then
-    error(string.format(
+    error_codes.raise(error_codes.CHARGE_REQUEST_MISMATCH, string.format(
       'amount mismatch: credential has %s but endpoint expects %s',
       tostring(cred_request.amount), tostring(expected.amount)
     ))
   end
   if cred_request.currency ~= expected.currency then
-    error(string.format(
+    error_codes.raise(error_codes.CHARGE_REQUEST_MISMATCH, string.format(
       'currency mismatch: credential has %s but endpoint expects %s',
       tostring(cred_request.currency), tostring(expected.currency)
     ))
   end
   if cred_request.recipient ~= expected.recipient then
-    error('recipient mismatch: credential was issued for a different recipient')
+    error_codes.raise(error_codes.CHARGE_REQUEST_MISMATCH,
+      'recipient mismatch: credential was issued for a different recipient')
   end
 
   -- Settlement runs against a hybrid request: the pinned route fields
@@ -192,15 +198,16 @@ function Server:_verify_challenge_and_decode(credential_value, now_epoch)
   })
 
   if not challenge_value:verify(self.secret_key) then
-    error('challenge ID mismatch')
+    error_codes.raise(error_codes.CHALLENGE_VERIFICATION_FAILED, 'challenge ID mismatch')
   end
   if challenge_value:is_expired(now_epoch or os.time()) then
-    error('challenge expired at ' .. tostring(challenge_value.expires))
+    error_codes.raise(error_codes.CHALLENGE_EXPIRED,
+      'challenge expired at ' .. tostring(challenge_value.expires))
   end
 
   local request, decode_err = challenge_value.request:decode()
   if not request then
-    error(decode_err)
+    error_codes.raise(error_codes.CHALLENGE_VERIFICATION_FAILED, tostring(decode_err))
   end
 
   -- Tier-2: pinned-field backstop.
@@ -210,7 +217,7 @@ function Server:_verify_challenge_and_decode(credential_value, now_epoch)
   local payload = challenge.payload_as(credential_value) or {}
   local payload_type = payload.type
   if payload_type ~= 'transaction' and payload_type ~= 'signature' then
-    error('missing or invalid payload type')
+    error_codes.raise(error_codes.PAYMENT_INVALID, 'missing or invalid payload type')
   end
   if payload_type == 'signature' and method_details.feePayer then
     -- B34: keep this message byte-identical to the verifier-layer B34
@@ -225,32 +232,40 @@ function Server:_verify_challenge_and_decode(credential_value, now_epoch)
 end
 
 function Server:_verify_pinned_fields(echoed, request)
+  -- Tier-2 cross-route checks. method/intent/realm mismatches are
+  -- canonically `challenge_route_mismatch` (the credential was issued
+  -- under a different routing identity). currency/recipient mismatches
+  -- here are also a route-level rejection (same realm but the server's
+  -- configured currency or recipient differs); they share the same code
+  -- because the route is what changed, not the credential's contents.
   local method_name = 'solana'
   if echoed.method ~= method_name then
-    error(string.format(
+    error_codes.raise(error_codes.CHALLENGE_ROUTE_MISMATCH, string.format(
       "credential method '%s' does not match this server (expected '%s')",
       tostring(echoed.method), method_name
     ))
   end
   if not types.is_charge_intent(echoed.intent) then
-    error(string.format("credential intent '%s' is not a charge", tostring(echoed.intent)))
+    error_codes.raise(error_codes.CHALLENGE_ROUTE_MISMATCH,
+      string.format("credential intent '%s' is not a charge", tostring(echoed.intent)))
   end
   -- HMAC ID is computed using the server's own realm (not the echoed one),
   -- so a tampered echoed realm passes HMAC unless re-signed. Pin it here.
   if echoed.realm ~= self.realm then
-    error(string.format(
+    error_codes.raise(error_codes.CHALLENGE_ROUTE_MISMATCH, string.format(
       "credential realm '%s' does not match this server (expected '%s')",
       tostring(echoed.realm), tostring(self.realm)
     ))
   end
   if request.currency ~= self.currency then
-    error(string.format(
+    error_codes.raise(error_codes.CHALLENGE_ROUTE_MISMATCH, string.format(
       "credential currency '%s' does not match this server (expected '%s')",
       tostring(request.currency), tostring(self.currency)
     ))
   end
   if request.recipient ~= self.recipient then
-    error('credential recipient does not match this server')
+    error_codes.raise(error_codes.CHALLENGE_ROUTE_MISMATCH,
+      'credential recipient does not match this server')
   end
 end
 
@@ -271,7 +286,8 @@ function Server:_finalize_verification(credential_value, request, payload)
 
   local reference = result.reference or payload.signature or payload.transaction
   if reference == nil or reference == '' then
-    error('verification result must include a reference')
+    error_codes.raise(error_codes.PAYMENT_INVALID,
+      'verification result must include a reference')
   end
 
   local replay_key = result.replay_key or (CONSUMED_PREFIX .. reference)
@@ -285,7 +301,7 @@ function Server:_finalize_verification(credential_value, request, payload)
   if result.consumed ~= true then
     local inserted = self.store:put_if_absent(replay_key, true)
     if not inserted then
-      error('payment already consumed')
+      error_codes.raise(error_codes.SIGNATURE_CONSUMED, 'payment already consumed')
     end
   end
 

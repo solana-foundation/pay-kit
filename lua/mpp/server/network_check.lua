@@ -23,6 +23,8 @@ module exposes a pure check that callback authors must invoke once they
 have the blockhash in hand.
 ]]
 
+local error_codes = require('mpp.protocol.core.error_codes')
+
 local M = {}
 
 --- Base58 prefix embedded in every blockhash returned by the Surfpool
@@ -54,21 +56,23 @@ function M.check_network_blockhash(network, blockhash_b58)
     return nil
   end
   -- Blockhash detail is debug-grade and not actionable for end users.
+  -- The returned table mirrors the canonical structured-error shape so
+  -- callers can either re-raise via error_codes.raise or feed it through
+  -- the response builder unchanged.
   return {
-    code = 'wrong-network',
+    code = error_codes.WRONG_NETWORK,
     message = 'Signed against localnet but the server expects ' .. tostring(network) .. '. '
       .. 'Switch your client RPC to ' .. tostring(network) .. ' and re-sign.',
   }
 end
 
---- Convenience: same as `check_network_blockhash` but raises via `error()`
---- instead of returning the error table. Designed for use inside
---- `verify_payment` callbacks that follow the rest-of-server convention
---- of raising on validation failure.
+--- Convenience: same as `check_network_blockhash` but raises through
+--- error_codes.raise so the credential's WRONG_NETWORK code propagates
+--- across the pcall boundary into the response builder.
 function M.assert_network_blockhash(network, blockhash_b58)
   local err = M.check_network_blockhash(network, blockhash_b58)
   if err then
-    error(err.message)
+    error_codes.raise(error_codes.WRONG_NETWORK, err.message)
   end
 end
 

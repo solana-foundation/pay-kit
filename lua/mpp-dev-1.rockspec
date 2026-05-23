@@ -32,6 +32,7 @@ build = {
     ["mpp.methods.solana.transaction"] = "mpp/methods/solana/transaction.lua",
     ["mpp.methods.solana.verifier"] = "mpp/methods/solana/verifier.lua",
     ["mpp.protocol.core.challenge"] = "mpp/protocol/core/challenge.lua",
+    ["mpp.protocol.core.error_codes"] = "mpp/protocol/core/error_codes.lua",
     ["mpp.protocol.core.headers"] = "mpp/protocol/core/headers.lua",
     ["mpp.protocol.core.types"] = "mpp/protocol/core/types.lua",
     ["mpp.protocol.intents.charge"] = "mpp/protocol/intents/charge.lua",
