@@ -119,10 +119,11 @@ type MethodDetails struct {
 
 // Split is an additional transfer in the same asset.
 type Split struct {
-	Recipient string `json:"recipient"`
-	Amount    string `json:"amount"`
-	Label     string `json:"label,omitempty"`
-	Memo      string `json:"memo,omitempty"`
+	Recipient           string `json:"recipient"`
+	Amount              string `json:"amount"`
+	Label               string `json:"label,omitempty"`
+	Memo                string `json:"memo,omitempty"`
+	AtaCreationRequired *bool  `json:"ataCreationRequired,omitempty"`
 }
 
 // CredentialPayload is sent by clients in the payment credential payload.
