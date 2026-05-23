@@ -159,6 +159,6 @@ export const serverImplementations: ImplementationDefinition[] = [
     label: "Go HTTP server",
     role: "server",
     command: ["sh", "-c", "cd go-server && go run ."],
-    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
   },
 ];
