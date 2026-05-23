@@ -1,0 +1,24 @@
+plugins {
+    kotlin("jvm") version "2.3.21"
+    application
+}
+
+dependencies {
+    // Path-included build, see settings.gradle.kts.
+    implementation("com.solana.mpp:solana-mpp-kotlin")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+application {
+    mainClass.set("com.solana.mpp.interop.MainKt")
+}
+
+tasks.named<JavaExec>("run") {
+    standardInput = System.`in`
+}

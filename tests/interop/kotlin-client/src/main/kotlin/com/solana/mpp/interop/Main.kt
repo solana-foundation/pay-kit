@@ -1,0 +1,145 @@
+package com.solana.mpp.interop
+
+import com.solana.mpp.Charge
+import com.solana.mpp.JsonRpcClient
+import com.solana.mpp.MemorySigner
+import com.solana.mpp.MppHeaders
+import com.solana.mpp.MppHttpClient
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import okhttp3.OkHttpClient
+
+/**
+ * Interop adapter for the MPP Kotlin client.
+ *
+ * Reads the env-var contract documented at
+ * tests/interop/README.md and skills/pay-sdk-implementation/references/interop-harness.md,
+ * pays the target URL, and emits exactly one `result` JSON line on
+ * stdout. Anything else (BouncyCastle init chatter, OkHttp HTTP2
+ * complaints, JVM warnings) must go to stderr so the harness parses a
+ * single clean JSON line.
+ */
+fun main() {
+    // Force any unexpected logs to stderr by default; the standard
+    // System.err is already off the message channel.
+    try {
+        runAdapter()
+    } catch (error: Throwable) {
+        System.err.println("kotlin interop adapter error: ${error.message}")
+        error.printStackTrace(System.err)
+        // Emit a structured failure result so the harness fails the
+        // scenario cleanly instead of timing out on missing stdout.
+        val failure = buildJsonObject {
+            put("type", "result")
+            put("implementation", "kotlin")
+            put("role", "client")
+            put("ok", false)
+            put("status", 0)
+            put("responseHeaders", buildJsonObject {})
+            put("responseBody", JsonPrimitive(error.message ?: "unknown error"))
+        }
+        println(Json.encodeToString(JsonObject.serializer(), failure))
+        kotlin.system.exitProcess(1)
+    }
+}
+
+private fun runAdapter() {
+    val targetUrl = requireEnv("MPP_INTEROP_TARGET_URL")
+    val rpcUrl = requireEnv("MPP_INTEROP_RPC_URL")
+    val secretKey = parseSecretKey(requireEnv("MPP_INTEROP_CLIENT_SECRET_KEY"))
+    val settlementHeader = System.getenv("MPP_INTEROP_SETTLEMENT_HEADER")
+        ?: "x-fixture-settlement"
+
+    val signer = MemorySigner.fromSecretKey(secretKey)
+    val okHttp = OkHttpClient()
+    val rpc = JsonRpcClient(rpcUrl, okHttp)
+    val client = MppHttpClient(
+        signer = signer,
+        blockhashProvider = rpc,
+        okHttp = okHttp,
+    )
+
+    val response = client.mppGet(targetUrl)
+    try {
+        val status = response.code
+        val responseHeaders = response.headers
+        val headerObject = buildJsonObject {
+            for (name in responseHeaders.names()) {
+                val lower = name.lowercase()
+                // Headers with multiple values are joined with ', ' per RFC 7230.
+                val joined = responseHeaders.values(name).joinToString(", ")
+                put(lower, joined)
+            }
+        }
+        val rawBody = response.body?.string() ?: ""
+        val parsedBody = try {
+            Json.parseToJsonElement(rawBody)
+        } catch (_: Throwable) {
+            JsonPrimitive(rawBody)
+        }
+        val settlement = headerObject[settlementHeader.lowercase()]?.jsonPrimitive?.content
+
+        val result = buildJsonObject {
+            put("type", "result")
+            put("implementation", "kotlin")
+            put("role", "client")
+            put("ok", status in 200..299)
+            put("status", status)
+            put("responseHeaders", headerObject)
+            put("responseBody", parsedBody)
+            if (settlement != null) {
+                put("settlement", settlement)
+            } else {
+                put("settlement", JsonPrimitive(null as String?))
+            }
+        }
+        // The single result message; stdout discipline.
+        println(Json.encodeToString(JsonObject.serializer(), result))
+    } finally {
+        response.close()
+    }
+}
+
+private fun requireEnv(name: String): String =
+    System.getenv(name) ?: error("$name is required")
+
+/**
+ * Parses the JSON-array-of-bytes form Solana keypair files use and the
+ * MPP interop harness ships in MPP_INTEROP_CLIENT_SECRET_KEY.
+ */
+private fun parseSecretKey(raw: String): ByteArray {
+    val element = Json.parseToJsonElement(raw)
+    if (element !is JsonArray) {
+        error("MPP_INTEROP_CLIENT_SECRET_KEY must be a JSON array of bytes")
+    }
+    val bytes = ByteArray(element.size)
+    for ((index, value) in element.withIndex()) {
+        val int = value.jsonPrimitive.intOrNull
+            ?: value.jsonPrimitive.longOrNull?.toInt()
+            ?: error("non-integer byte at index $index in secret key")
+        bytes[index] = int.toByte()
+    }
+    // Sanity check the size before handing off to MemorySigner.
+    if (bytes.size != 32 && bytes.size != 64) {
+        error("MPP_INTEROP_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
+    }
+    return bytes
+}
+
+// Suppress unused import warnings while keeping the public surface for
+// future extensions (signed-request body, header echo, debug logging).
+@Suppress("unused")
+private fun unusedReferences() {
+    val _h: MppHeaders = MppHeaders
+    val _c: Charge = Charge
+    val _b: Boolean = JsonPrimitive(true).jsonPrimitive.boolean
+}

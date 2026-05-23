@@ -56,6 +56,17 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: ["sh", "-c", "cd go-client && go run ."],
     enabled: isEnabled("go", "MPP_INTEROP_CLIENTS", false),
   },
+  {
+    id: "kotlin",
+    label: "Kotlin HTTP client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd kotlin-client && gradle --quiet run --no-daemon",
+    ],
+    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", false),
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
