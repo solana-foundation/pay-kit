@@ -120,6 +120,6 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../tests/interop/lua-server/server.lua",
     ],
-    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", true),
   },
 ];

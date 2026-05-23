@@ -42,10 +42,34 @@ local SKIP = {
   ['challenge_to_html escapes HTML in description'] = true,
 }
 
+-- Heavy tests that exercise the pure-Lua bignum (ATA derivation, verifier
+-- spec scenarios that internally derive ATAs) are too slow to run under
+-- luacov instrumentation because the LuaJIT trace recorder is disabled.
+-- The same code paths run unprofiled in `just lua-test`; coverage is
+-- captured for the underlying helpers via lighter-weight specs.
+local SLOW_UNDER_COVER = {
+  ['ata.derive matches the Ruby reference for the USDC SPL Token ATA'] = true,
+  ['ata.derive matches the Ruby reference for the USDC Token-2022 ATA'] = true,
+  ['verifier accepts a basic SPL transferChecked of the requested amount'] = true,
+  ['verifier rejects an amount mismatch'] = true,
+  ['verifier rejects an unauthorized program after the transfer matches'] = true,
+  ['verifier rejects an SPL transfer with the wrong decimals byte'] = true,
+  ['verifier rejects when fee_payer authority equals the signer'] = true,
+  ['verifier rejects an SPL transfer where source_ata equals the fee-payer ATA'] = true,
+}
+if package.loaded['luacov'] then
+  for name, _ in pairs(SLOW_UNDER_COVER) do
+    SKIP[name] = true
+  end
+end
+
 function M.run()
   local passed = 0
   local failed = 0
   local skipped = 0
+  -- Force unbuffered stdout so the test runner's progress shows up
+  -- immediately under luacov or when output is captured to a file.
+  io.stdout:setvbuf('no')
   for i = 1, #M.tests do
     local entry = M.tests[i]
     if SKIP[entry.name] then

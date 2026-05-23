@@ -145,6 +145,27 @@ local function write_response(conn, status, hdrs, body)
   conn:send(payload)
 end
 
+-- Convert a base-unit amount (the harness env-var format) into the display
+-- string the SDK's parse_units expects. The harness sends raw u64 base units
+-- but Server:charge_with_options runs parse_units(amount, decimals); without
+-- a conversion the displayed amount would be multiplied by 10^decimals twice.
+local function base_units_to_display(value, decimals)
+  if decimals == 0 then
+    return value
+  end
+  local s = tostring(value)
+  if #s <= decimals then
+    s = string.rep('0', decimals - #s + 1) .. s
+  end
+  local whole = s:sub(1, #s - decimals)
+  local fractional = s:sub(#s - decimals + 1)
+  fractional = fractional:gsub('0+$', '')
+  if fractional == '' then
+    return whole
+  end
+  return whole .. '.' .. fractional
+end
+
 local function build_charge_options(request_amount)
   local options = {
     description = 'Lua interop protected content',
@@ -152,15 +173,15 @@ local function build_charge_options(request_amount)
   if #splits_decoded > 0 then
     options.splits = splits_decoded
   end
-  return request_amount, options
+  return base_units_to_display(request_amount, 6), options
 end
 
 local function handle_charge(conn, authorization, expected_amount)
   if authorization == nil or authorization == '' then
     -- Issue a fresh signed challenge.
-    local _amt, charge_options = build_charge_options(expected_amount)
+    local display_amount, charge_options = build_charge_options(expected_amount)
     local ok, challenge_value = pcall(function()
-      return server:charge_with_options(expected_amount, charge_options)
+      return server:charge_with_options(display_amount, charge_options)
     end)
     if not ok then
       log('charge issuance error: ' .. tostring(challenge_value))
@@ -184,6 +205,9 @@ local function handle_charge(conn, authorization, expected_amount)
     return
   end
 
+  -- The credential carries the amount in base units (already parsed by the
+  -- challenge issuance pipeline), so the expected-amount comparison must
+  -- also be in base units (not the display form the harness env var uses).
   local ok, settlement = pcall(function()
     return server:verify_credential_with_expected(credential, {
       amount = expected_amount,

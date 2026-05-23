@@ -157,7 +157,21 @@ function Server:verify_credential_with_expected(credential_value, expected, now_
     error('recipient mismatch: credential was issued for a different recipient')
   end
 
-  return self:_finalize_verification(credential_value, expected, payload)
+  -- Settlement runs against a hybrid request: the pinned route fields
+  -- come from `expected` (so a credential issued for a cheaper route
+  -- cannot settle here), but the on-chain shape parameters
+  -- (`methodDetails`: splits, feePayer, decimals, tokenProgram, etc.) and
+  -- the externalId come from the credential. The credential's HMAC and
+  -- pinned-field checks above already authenticate those secondary fields.
+  local settlement_request = {
+    amount = expected.amount,
+    currency = expected.currency,
+    recipient = expected.recipient,
+    methodDetails = cred_request.methodDetails,
+    externalId = cred_request.externalId,
+    description = cred_request.description,
+  }
+  return self:_finalize_verification(credential_value, settlement_request, payload)
 end
 
 --- Tier-1 (HMAC + expiry) and Tier-2 (pinned-field) checks.
