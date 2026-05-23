@@ -516,3 +516,16 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: ruby
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - name: Run Kotlin client interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server"
+        env:
+          MPP_INTEROP_CLIENTS: kotlin
+          MPP_INTEROP_SERVERS: typescript

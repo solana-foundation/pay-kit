@@ -78,7 +78,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-c",
       "cd kotlin-client && gradle --quiet run --no-daemon",
     ],
-    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", false),
+    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", true),
   },
 ];
 
