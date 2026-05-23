@@ -118,7 +118,18 @@ class SolanaRpc:
         delay_seconds: float = 0.25,
     ) -> None:
         """Poll getSignatureStatuses until the signature reaches at least
-        confirmed. Raises PaymentError on on-chain failure or timeout."""
+        confirmed. Raises PaymentError with discriminated codes:
+
+        - ``transaction-failed`` when the cluster reports a non-null
+          ``err`` (the transaction was included in a block but reverted).
+        - ``transaction-not-found`` when the status never reaches the
+          confirmed/finalized threshold inside the polling window.
+
+        Discriminating these two cases lets the caller surface accurate
+        diagnostics; the canonical code mapping in ``_errors`` collapses
+        both to the same client-facing 402 body, so no client behaviour
+        changes.
+        """
         for _ in range(attempts):
             statuses = await self.get_signature_statuses([signature])
             status = statuses[0] if statuses else None
@@ -126,13 +137,13 @@ class SolanaRpc:
                 err = status.get("err")
                 if err is not None:
                     raise PaymentError(
-                        f"transaction {signature} failed: {err}",
-                        code="payment_invalid",
+                        f"transaction {signature} failed on-chain: {err}",
+                        code="transaction-failed",
                     )
                 if status.get("confirmationStatus") in {"confirmed", "finalized"}:
                     return
             await asyncio.sleep(delay_seconds)
         raise PaymentError(
             f"timed out awaiting confirmation for {signature}",
-            code="payment_invalid",
+            code="transaction-not-found",
         )

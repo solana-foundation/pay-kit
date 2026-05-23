@@ -128,6 +128,19 @@ class FakeRPC:
     async def confirm_transaction(self, *_args, **_kwargs):
         return FakeResponse(self.statuses)
 
+    async def await_confirmation(self, *_args, **_kwargs):
+        """Mirror the discriminated-error behaviour of the real RPC client
+        so tests that drive the post-L8 settlement path see the same
+        success / failure / timeout signals as production."""
+        status = (self.statuses or [{}])[0]
+        err = status.get("err") if isinstance(status, dict) else None
+        if err is not None:
+            from solana_mpp._errors import PaymentError
+            raise PaymentError(
+                f"transaction failed on-chain: {err}",
+                code="transaction-failed",
+            )
+
 
 @pytest.fixture
 def mpp() -> Mpp:
@@ -918,6 +931,17 @@ class TestL8SettlementOrdering:
             self._ordering.append("confirm_transaction")
             return FakeResponse(self._confirm_value)
 
+        async def await_confirmation(self, *_args, **_kwargs):
+            self._ordering.append("await_confirmation")
+            status = (self._confirm_value or [{}])[0]
+            err = status.get("err") if isinstance(status, dict) else None
+            if err is not None:
+                from solana_mpp._errors import PaymentError
+                raise PaymentError(
+                    f"transaction failed on-chain: {err}",
+                    code="transaction-failed",
+                )
+
         async def get_transaction(self, *_args, **_kwargs):
             self._ordering.append("get_transaction")
             return FakeResponse(self.tx)
@@ -982,7 +1006,10 @@ class TestL8SettlementOrdering:
         # the relative order holds.
         broadcast_idx = ordering.index("send_raw_transaction")
         consume_idx = ordering.index("store.put_if_absent")
-        confirm_idx = ordering.index("confirm_transaction")
+        # The handler now uses ``await_confirmation`` (discriminated
+        # error codes) instead of ``confirm_transaction``; assert against
+        # the new step name.
+        confirm_idx = ordering.index("await_confirmation")
         assert broadcast_idx < consume_idx, f"L8 violation: broadcast must precede consume; saw {ordering}"
         assert consume_idx < confirm_idx, f"L8 violation: consume must precede await; saw {ordering}"
 
@@ -1043,6 +1070,9 @@ class TestL8SettlementOrdering:
             async def confirm_transaction(self, *_a, **_kw):
                 ordering.append("confirm_transaction")
                 return FakeResponse(None)
+
+            async def await_confirmation(self, *_a, **_kw):
+                ordering.append("await_confirmation")
 
         rpc = _NoRPC()
         from solana_mpp.store import MemoryStore

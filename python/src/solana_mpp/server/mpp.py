@@ -1298,10 +1298,14 @@ class Mpp:
 
         # AWAIT confirmation. A timeout here MUST NOT roll back the consume:
         # the signature is on the wire and may finalize asynchronously.
+        # Use ``await_confirmation`` (not ``confirm_transaction``) so an
+        # on-chain failure surfaces as ``transaction-failed`` while a
+        # polling timeout surfaces as ``transaction-not-found``; the
+        # canonical code mapping in ``_errors`` collapses both to the
+        # same client-facing 402 body, so the discrimination is purely
+        # diagnostic.
         sig = Signature.from_string(signature)
-        status_resp = await self._rpc.confirm_transaction(sig)
-        if not _status_ok(status_resp):
-            raise PaymentError("transaction not confirmed", code="transaction-not-found")
+        await self._rpc.await_confirmation(signature)
 
         tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
         tx = _transaction_dict(tx_resp)
