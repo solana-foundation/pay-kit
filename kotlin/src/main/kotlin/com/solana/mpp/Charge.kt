@@ -122,6 +122,8 @@ object Charge {
                 signerKey = signerKey,
                 recipientKey = recipientKey,
                 mint = mint,
+                currency = request.currency,
+                network = md.network,
                 methodDetails = md,
                 primaryAmount = primaryAmount,
                 externalId = request.externalId,
@@ -207,6 +209,29 @@ object Charge {
     }
 
     /**
+     * Resolves the default SPL token program for a currency / network.
+     *
+     * Token-2022 mints (PYUSD, USDG, CASH) live under the Token-2022
+     * program and need a different ATA derivation than legacy SPL. The
+     * challenge methodDetails.tokenProgram override always wins; this
+     * helper is the fallback when the server does not pin one.
+     *
+     * Mirrors `rust/src/protocol/solana.rs::default_token_program_for_currency`.
+     */
+    fun defaultTokenProgramFor(currency: String, network: String?): String {
+        val mint = resolveStablecoinMint(currency, network)
+            ?: return Programs.TOKEN_PROGRAM
+        return when (mint) {
+            Mints.PYUSD_MAINNET,
+            Mints.PYUSD_DEVNET,
+            Mints.USDG_MAINNET,
+            Mints.USDG_DEVNET,
+            Mints.CASH_MAINNET -> Programs.TOKEN_2022_PROGRAM
+            else -> Programs.TOKEN_PROGRAM
+        }
+    }
+
+    /**
      * Resolves a currency identifier (symbol or mint) to a mint address.
      * Returns null for native SOL.
      *
@@ -262,6 +287,8 @@ object Charge {
         signerKey: PublicKey,
         recipientKey: PublicKey,
         mint: String,
+        currency: String,
+        network: String?,
         methodDetails: SolanaChargeMethodDetails,
         primaryAmount: Long,
         externalId: String?,
@@ -270,7 +297,7 @@ object Charge {
     ) {
         val mintKey = PublicKey.fromBase58(mint)
         val tokenProgram = PublicKey.fromBase58(
-            methodDetails.tokenProgram ?: Programs.TOKEN_PROGRAM,
+            methodDetails.tokenProgram ?: defaultTokenProgramFor(currency, network),
         )
         val decimals = methodDetails.decimals ?: 6
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgram)

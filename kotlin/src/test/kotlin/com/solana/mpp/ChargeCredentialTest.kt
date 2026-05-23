@@ -76,13 +76,14 @@ class ChargeCredentialTest {
     }
 
     @Test
-    fun memorySignerFromKeyPairAcceptsJdkEd25519() {
+    fun memorySignerFromKeyPairRejectsJdkEd25519() {
         val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-        val signer = MemorySigner.fromKeyPair(keyPair)
-
-        assertEquals(32, signer.publicKeyBytes.size)
-        assertEquals(signer.publicKey, Base64Url.encode(signer.publicKeyBytes))
-        assertEquals(signer.address, Base58.encode(signer.publicKeyBytes))
+        // The JDK does not expose the raw 32 byte seed, so the helper
+        // must refuse rather than silently fabricate a different signer.
+        val error = assertFailsWith<IllegalArgumentException> {
+            MemorySigner.fromKeyPair(keyPair)
+        }
+        assertTrue((error.message ?: "").contains("fromSeed") || (error.message ?: "").contains("fromSecretKey"))
     }
 
     @Test
