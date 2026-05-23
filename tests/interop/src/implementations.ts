@@ -142,9 +142,9 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "python",
     label: "Python HTTP server",
     role: "server",
+    // Default on after the focused TS-to-Python and Rust-to-Python
+    // matrices passed locally (11 + 9 + 13 tests green).
     command: ["python3", "python-server/main.py"],
-    // Default off until the focused TS-to-Python and Rust-to-Python
-    // matrices pass locally. Flip on in the M1g closure commit.
-    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", true),
   },
 ];
