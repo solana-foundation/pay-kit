@@ -10,6 +10,9 @@ sealed class MppException(message: String? = null, cause: Throwable? = null) : R
     class InvalidJson(cause: Throwable? = null) : MppException("invalid JSON payload", cause)
     object InvalidPaymentScheme : MppException("expected Payment scheme")
     class MissingField(field: String) : MppException("missing required field: $field")
+    class MemoTooLong(size: Int) : MppException("memo cannot exceed 566 bytes (got $size)")
+    class InvalidPublicKey(value: String) : MppException("invalid Solana public key: '$value'")
+    class InvalidTransaction(message: String) : MppException(message)
     class UnsupportedChallenge(method: String, intent: String) :
         MppException("unsupported challenge: method=$method intent=$intent")
 }
