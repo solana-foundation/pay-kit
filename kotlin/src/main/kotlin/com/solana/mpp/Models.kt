@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 /** Base exception hierarchy for Kotlin MPP SDK failures. */
 sealed class MppException(message: String? = null, cause: Throwable? = null) : RuntimeException(message, cause) {
     class InvalidBase64Url(cause: Throwable? = null) : MppException("invalid base64url value", cause)
+    class InvalidBase58(character: Char) : MppException("invalid base58 character: '$character'")
     object InvalidHeader : MppException("invalid Payment header")
     class InvalidJson(cause: Throwable? = null) : MppException("invalid JSON payload", cause)
     object InvalidPaymentScheme : MppException("expected Payment scheme")
