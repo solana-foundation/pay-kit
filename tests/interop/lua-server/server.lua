@@ -64,7 +64,11 @@ local network           = optional_env('MPP_INTEROP_NETWORK', 'localnet')
 local mint              = require_env('MPP_INTEROP_MINT')
 local amount            = require_env('MPP_INTEROP_AMOUNT')
 local pay_to            = require_env('MPP_INTEROP_PAY_TO')
-local secret_key        = optional_env('MPP_INTEROP_SECRET_KEY', 'mpp-interop-secret-key')
+-- The HMAC secret gates challenge-signature validity, so an attacker who
+-- knows the default literal could craft a syntactically valid Payment
+-- credential off-line. The interop fixture insists on an explicit value
+-- and fails fast at boot if it is missing.
+local secret_key        = require_env('MPP_INTEROP_SECRET_KEY')
 local resource_path     = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid')
 local settlement_header = optional_env('MPP_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature')
 local replay_path       = os.getenv('MPP_INTEROP_REPLAY_SOURCE_PATH')
