@@ -54,11 +54,22 @@ class MppHttpClient(
         // OkHttp connection on every malformed 402 (see Greptile comment
         // 3293054077). The Response.use { ... } block guarantees the body
         // is closed deterministically on both branches.
-        val wwwAuthenticate = initial.use { response ->
-            response.header(WWW_AUTHENTICATE_HEADER)
-                ?: throw MppException.InvalidPaymentScheme
+        //
+        // Per RFC 9110 a 402 may advertise multiple `WWW-Authenticate`
+        // challenges, either as several separate header lines or as a
+        // single comma-joined header value, and Payment can appear
+        // alongside other schemes such as Basic, Bearer, or x402. We
+        // walk every advertised challenge and select the first Solana
+        // charge Payment challenge so the client never aborts when a
+        // non-Solana scheme happens to come first in the response.
+        val advertised = initial.use { response ->
+            response.headers(WWW_AUTHENTICATE_HEADER)
         }
-        val challenge = MppHeaders.parseWWWAuthenticate(wwwAuthenticate)
+        if (advertised.isEmpty()) {
+            throw MppException.InvalidPaymentScheme
+        }
+        val challenge = MppHeaders.selectSolanaChargeChallenge(advertised)
+            ?: throw MppException.InvalidPaymentScheme
         val authorization = Charge.buildCredentialHeader(
             signer = signer,
             challenge = challenge,
