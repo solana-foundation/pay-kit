@@ -136,15 +136,29 @@ func serveProtected(
 		FeePayer:    true,
 		Splits:      environment.Splits,
 	}
-	challenge, err := handler.ChargeWithOptions(request.Context(), price, options)
-	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+
+	// Inspect Authorization before building any challenge so the
+	// unauthenticated 402 branch is the only path that pays the
+	// getLatestBlockhash RPC round-trip when the caller never intends
+	// to pay. Authenticated requests still build a fresh challenge so
+	// VerifyCredentialWithExpected pins the credential against the
+	// route's live expected request (this is what enforces the
+	// cross-route replay rejection; the credential's own echo cannot
+	// be trusted for that pin).
+	authorization := request.Header.Get(mpp.AuthorizationHeader)
+	if authorization == "" {
+		challenge, err := handler.ChargeWithOptions(request.Context(), price, options)
+		if err != nil {
+			writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writePaymentRequired(response, challenge, "Payment is required (Go interop server).")
 		return
 	}
 
-	authorization := request.Header.Get(mpp.AuthorizationHeader)
-	if authorization == "" {
-		writePaymentRequired(response, challenge, "Payment is required (Go interop server).")
+	challenge, err := handler.ChargeWithOptions(request.Context(), price, options)
+	if err != nil {
+		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 
