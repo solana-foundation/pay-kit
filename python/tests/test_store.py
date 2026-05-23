@@ -116,6 +116,49 @@ class TestFileReplayStore:
         with pytest.raises(RuntimeError, match="not a JSON object"):
             FileReplayStore(path)
 
+    async def test_flush_failure_rolls_back_in_memory_state(self, tmp_path: Path):
+        """Greptile P1 follow-up: a flush IO error MUST NOT leave the
+        in-memory state holding a key that was never persisted to disk.
+        Otherwise a ``get`` after a failed ``put_if_absent`` would report
+        a stored marker and silently skip the replay-store fence on a
+        subsequent retry."""
+        path = tmp_path / "replay.json"
+        store = FileReplayStore(path)
+
+        # Inject a flush failure by replacing the internal helper.
+        def _boom(_data):
+            raise OSError("simulated disk failure")
+
+        store._flush = _boom  # type: ignore[assignment]
+
+        with pytest.raises(OSError, match="simulated disk failure"):
+            await store.put_if_absent("sig-123", True)
+
+        # In-memory state must NOT contain the half-written key.
+        assert await store.get("sig-123") is None
+
+        # And a fresh instance loading from disk also must not see it.
+        store2 = FileReplayStore(path)
+        assert await store2.get("sig-123") is None
+
+    async def test_failed_put_keeps_previous_committed_state(self, tmp_path: Path):
+        path = tmp_path / "replay.json"
+        store = FileReplayStore(path)
+        await store.put("sig-old", True)
+
+        def _boom(_data):
+            raise OSError("simulated disk failure")
+
+        store._flush = _boom  # type: ignore[assignment]
+
+        with pytest.raises(OSError):
+            await store.put("sig-new", True)
+
+        # The previously committed value must survive a failed follow-up
+        # write; only the new key should be missing.
+        assert await store.get("sig-old") is True
+        assert await store.get("sig-new") is None
+
 
 class TestMppRequiresExplicitStore:
     """L4 lock: ``Mpp.__init__`` MUST refuse to start without an explicit store."""

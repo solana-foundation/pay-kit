@@ -21,6 +21,7 @@ locks that landed in PR #96 / #102.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import tempfile
@@ -109,7 +110,13 @@ class FileReplayStore:
             raise RuntimeError(f"FileReplayStore at {self._path} is not a JSON object; refusing to start")
         return value
 
-    def _flush(self) -> None:
+    def _flush(self, data: dict[str, Any]) -> None:
+        """Atomically persist ``data`` to ``self._path``.
+
+        Writes go to a temp file in the same directory, then rename. Raises
+        on any IO error so callers can roll back their in-memory state
+        before exposing the write as committed.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # NamedTemporaryFile with delete=False then explicit close + replace
         # is the atomic-rename pattern; a `with` block would close the file
@@ -123,31 +130,48 @@ class FileReplayStore:
             delete=False,
         )
         try:
-            json.dump(self._data, tmp, separators=(",", ":"), ensure_ascii=False)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-        finally:
-            tmp.close()
-        os.replace(tmp.name, self._path)
+            try:
+                json.dump(data, tmp, separators=(",", ":"), ensure_ascii=False)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            finally:
+                tmp.close()
+            os.replace(tmp.name, self._path)
+        except Exception:
+            # Best-effort cleanup of the temp file on any IO failure so a
+            # failed flush does not litter the parent directory.
+            with contextlib.suppress(OSError):
+                os.unlink(tmp.name)
+            raise
 
     async def get(self, key: str) -> Any | None:
         return self._data.get(key)
 
     async def put(self, key: str, value: Any) -> None:
+        # Greptile P1 (follow-up): flush BEFORE committing to
+        # ``self._data``. If ``_flush`` raises (disk full mid-fsync, IO
+        # error during ``os.replace``), the in-memory state would
+        # otherwise diverge from the on-disk store, so a subsequent
+        # ``get`` would report a key that was never durably persisted.
+        # We build the next dict, flush it, then swap.
         async with self._lock:
-            self._data[key] = value
-            self._flush()
+            next_data = {**self._data, key: value}
+            self._flush(next_data)
+            self._data = next_data
 
     async def delete(self, key: str) -> None:
         async with self._lock:
-            if key in self._data:
-                self._data.pop(key, None)
-                self._flush()
+            if key not in self._data:
+                return
+            next_data = {k: v for k, v in self._data.items() if k != key}
+            self._flush(next_data)
+            self._data = next_data
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
         async with self._lock:
             if key in self._data:
                 return False
-            self._data[key] = value
-            self._flush()
+            next_data = {**self._data, key: value}
+            self._flush(next_data)
+            self._data = next_data
             return True
