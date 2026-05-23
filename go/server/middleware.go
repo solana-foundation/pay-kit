@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
 )
 
 type contextKey string
@@ -65,12 +66,21 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 			}
 
 			// Check for a payment credential in the Authorization header.
+			// verificationErr captures whichever verification step failed
+			// so the 402 body can surface a canonical L6 code. A nil
+			// verificationErr on the re-challenge path means the caller
+			// never sent an Authorization header (or sent an empty one).
+			var verificationErr error
 			authHeader := r.Header.Get(mpp.AuthorizationHeader)
 			if paymentToken, ok := mpp.ExtractPaymentScheme(authHeader); ok && paymentToken != "" {
 				credential, err := mpp.ParseAuthorization(authHeader)
-				if err == nil {
+				if err != nil {
+					verificationErr = mpp.WrapError(mpp.ErrCodeInvalidPayload, "parse authorization", err)
+				} else {
 					var expected mpp.ChargeRequest
-					if decodeErr := challenge.Request.Decode(&expected); decodeErr == nil {
+					if decodeErr := challenge.Request.Decode(&expected); decodeErr != nil {
+						verificationErr = mpp.WrapError(mpp.ErrCodeInvalidPayload, "decode challenge request", decodeErr)
+					} else {
 						receipt, verifyErr := m.VerifyCredentialWithExpected(r.Context(), credential, expected)
 						if verifyErr == nil {
 							receiptHeader, fmtErr := mpp.FormatReceipt(receipt)
@@ -82,9 +92,9 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 							next.ServeHTTP(w, r.WithContext(ctx))
 							return
 						}
+						verificationErr = verifyErr
 					}
 				}
-				// Invalid credential — fall through to re-challenge.
 			}
 
 			wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
@@ -107,14 +117,20 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 				// Fall through to JSON on HTML error.
 			}
 
-			challengeJSON, err := json.Marshal(challenge)
+			code := errorcodes.PaymentInvalid
+			message := "Payment required"
+			if verificationErr != nil {
+				code = errorcodes.CanonicalFromError(verificationErr)
+				message = verificationErr.Error()
+			}
+			body, err := json.Marshal(errorcodes.NewPaymentRequiredBody(code, message))
 			if err != nil {
-				http.Error(w, "failed to marshal challenge", http.StatusInternalServerError)
+				http.Error(w, "failed to marshal challenge body", http.StatusInternalServerError)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusPaymentRequired)
-			w.Write(challengeJSON)
+			w.Write(body)
 		})
 	}
 }

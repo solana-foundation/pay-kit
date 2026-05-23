@@ -69,8 +69,8 @@ func TestMiddlewareNoAuth402(t *testing.T) {
 		t.Fatalf("expected Payment scheme in WWW-Authenticate, got %q", wwwAuth)
 	}
 	contentType := rr.Header().Get("Content-Type")
-	if !strings.Contains(contentType, "application/json") {
-		t.Fatalf("expected JSON content type, got %q", contentType)
+	if !strings.Contains(contentType, "application/problem+json") {
+		t.Fatalf("expected problem+json content type, got %q", contentType)
 	}
 	if rr.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("expected no-store cache control, got %q", rr.Header().Get("Cache-Control"))

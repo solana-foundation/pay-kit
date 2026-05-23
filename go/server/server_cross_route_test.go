@@ -289,8 +289,8 @@ func TestVerifyCredentialWithExpectedRejectsCurrencyMismatch(t *testing.T) {
 		t.Fatalf("expected currency mismatch, got: %v", err)
 	}
 	var paymentErr *mpp.Error
-	if !mppErrAs(err, &paymentErr) || paymentErr.Code != mpp.ErrCodeChallengeMismatch {
-		t.Fatalf("expected challenge-mismatch mpp error, got %T: %v", err, err)
+	if !mppErrAs(err, &paymentErr) || paymentErr.Code != mpp.ErrCodeChallengeRouteMismatch {
+		t.Fatalf("expected challenge-route-mismatch mpp error, got %T: %v", err, err)
 	}
 }
 

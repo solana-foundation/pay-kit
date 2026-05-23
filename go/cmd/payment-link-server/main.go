@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
 	"github.com/solana-foundation/pay-kit/go/protocol/core"
 	"github.com/solana-foundation/pay-kit/go/server"
 )
@@ -108,8 +109,13 @@ func main() {
 			return
 		}
 
-		// API client — JSON 402.
+		// API client — canonical L6 problem+json 402 body.
+		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusPaymentRequired)
+		_ = json.NewEncoder(w).Encode(errorcodes.NewPaymentRequiredBody(
+			errorcodes.PaymentInvalid,
+			"Payment required",
+		))
 	})
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

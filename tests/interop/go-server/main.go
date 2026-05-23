@@ -17,6 +17,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 
 	mpp "github.com/solana-foundation/mpp-sdk/go"
+	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
 	"github.com/solana-foundation/mpp-sdk/go/protocol"
 	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
 	mppserver "github.com/solana-foundation/mpp-sdk/go/server"
@@ -152,7 +153,7 @@ func serveProtected(
 			writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writePaymentRequired(response, challenge, "Payment is required (Go interop server).")
+		writePaymentRequired(response, challenge, nil)
 		return
 	}
 
@@ -164,7 +165,7 @@ func serveProtected(
 
 	credential, err := mpp.ParseAuthorization(authorization)
 	if err != nil {
-		writePaymentRequired(response, challenge, err.Error())
+		writePaymentRequired(response, challenge, mpp.WrapError(mpp.ErrCodeInvalidPayload, "parse authorization", err))
 		return
 	}
 	var expected intents.ChargeRequest
@@ -174,7 +175,7 @@ func serveProtected(
 	}
 	receipt, err := handler.VerifyCredentialWithExpected(request.Context(), credential, expected)
 	if err != nil {
-		writePaymentRequired(response, challenge, err.Error())
+		writePaymentRequired(response, challenge, err)
 		return
 	}
 	receiptHeader, err := mpp.FormatReceipt(receipt)
@@ -190,22 +191,29 @@ func serveProtected(
 	_, _ = io.WriteString(response, `{"ok":true,"paid":true}`)
 }
 
-func writePaymentRequired(response http.ResponseWriter, challenge mpp.PaymentChallenge, detail string) {
+// writePaymentRequired emits the canonical L6 problem+json body shared
+// across every MPP server SDK. A nil verificationErr means "no
+// credential was supplied"; the body carries the payment_invalid code
+// in that case. A non-nil verificationErr promotes to its canonical L6
+// code via errorcodes.CanonicalFromError.
+func writePaymentRequired(response http.ResponseWriter, challenge mpp.PaymentChallenge, verificationErr error) {
 	header, err := mpp.FormatWWWAuthenticate(challenge)
 	if err != nil {
 		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	code := errorcodes.PaymentInvalid
+	message := "Payment is required (Go interop server)."
+	if verificationErr != nil {
+		code = errorcodes.CanonicalFromError(verificationErr)
+		message = verificationErr.Error()
+	}
+	body := errorcodes.NewPaymentRequiredBody(code, message)
 	response.Header().Set("cache-control", "no-store")
 	response.Header().Set("content-type", "application/problem+json")
 	response.Header().Set(mpp.WWWAuthenticateHeader, header)
 	response.WriteHeader(http.StatusPaymentRequired)
-	_ = json.NewEncoder(response).Encode(map[string]any{
-		"detail": detail,
-		"status": http.StatusPaymentRequired,
-		"title":  "Payment Required",
-		"type":   "https://paymentauth.org/problems/payment-required",
-	})
+	_ = json.NewEncoder(response).Encode(body)
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {

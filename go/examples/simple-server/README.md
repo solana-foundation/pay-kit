@@ -56,11 +56,16 @@ just like the Ruby example's `nil` fee-payer branch.
 - `GET /health` returns `200 {"ok":true}`.
 - `GET /paid` with no `Authorization` header returns `402` with a
   signed `WWW-Authenticate: Payment` challenge and an
-  `application/json` body `{"error":"payment_required"}`, matching the
-  Ruby simple-server.
+  `application/problem+json` body carrying the canonical L6 / P1
+  structured error code shared across every MPP server SDK:
+  `{"code":"payment_invalid","error":"payment_invalid","message":"Payment required","status":402,"title":"Payment Required","type":"https://paymentauth.org/problems/payment_invalid"}`.
 - `GET /paid` with a valid `Authorization: Payment` credential returns
   `200`, sets `Payment-Receipt`, and mirrors the on-chain signature on
-  `x-payment-settlement-signature` for parity with the Ruby example.
-- Malformed credentials and verification failures re-issue a fresh
-  `402` with `{"error":"payment_invalid","message":"..."}` rather than
-  leaking server errors.
+  `x-payment-settlement-signature`.
+- Verification rejections re-issue a 402 with the canonical L6 code
+  that matches the rejection class:
+  `charge_request_mismatch` (amount, recipient, splits mismatch),
+  `challenge_route_mismatch` (currency, method, intent, realm mismatch),
+  `challenge_verification_failed` (HMAC id mismatch),
+  `challenge_expired`, `wrong_network`, `signature_consumed`, and
+  `payment_invalid` for malformed payloads or on-chain rejections.

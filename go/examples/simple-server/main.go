@@ -22,6 +22,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 
 	mpp "github.com/solana-foundation/mpp-sdk/go"
+	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
 	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
 	"github.com/solana-foundation/mpp-sdk/go/server"
 )
@@ -129,13 +130,13 @@ func paidHandler(handler *server.Mpp, useServerFeePayer bool) http.HandlerFunc {
 
 		authHeader := r.Header.Get(mpp.AuthorizationHeader)
 		if authHeader == "" {
-			writeChallenge(w, challenge, "")
+			writeChallenge(w, challenge, nil)
 			return
 		}
 
 		credential, err := mpp.ParseAuthorization(authHeader)
 		if err != nil {
-			writeChallenge(w, challenge, err.Error())
+			writeChallenge(w, challenge, mpp.WrapError(mpp.ErrCodeInvalidPayload, "parse authorization", err))
 			return
 		}
 
@@ -147,7 +148,7 @@ func paidHandler(handler *server.Mpp, useServerFeePayer bool) http.HandlerFunc {
 
 		receipt, err := handler.VerifyCredentialWithExpected(ctx, credential, expected)
 		if err != nil {
-			writeChallenge(w, challenge, err.Error())
+			writeChallenge(w, challenge, err)
 			return
 		}
 
@@ -156,23 +157,35 @@ func paidHandler(handler *server.Mpp, useServerFeePayer bool) http.HandlerFunc {
 }
 
 // writeChallenge renders the Mpp::Challenge branch: a 402 with the
-// signed WWW-Authenticate header and the same JSON body shape Ruby's
-// Mpp::Server::Decorator emits ({"error":"payment_required"} on the
-// no-credential path, {"error":"payment_invalid","message":...} when
-// a credential was supplied but failed verification).
-func writeChallenge(w http.ResponseWriter, challenge mpp.PaymentChallenge, message string) {
+// signed WWW-Authenticate header and the canonical L6 problem+json
+// body shape shared across every MPP server SDK. The body carries the
+// canonical `code`, a legacy `error` alias of the same code, a human
+// `message`, plus `status`, `title`, and `type`.
+//
+// A missing credential or a verification failure both map to
+// payment_invalid by default. Verification rejections that carry an
+// SDK *Error promote to their canonical L6 code via
+// errorcodes.CanonicalFromError (charge_request_mismatch,
+// challenge_route_mismatch, challenge_verification_failed,
+// challenge_expired, wrong_network, signature_consumed).
+func writeChallenge(w http.ResponseWriter, challenge mpp.PaymentChallenge, verificationErr error) {
 	wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	w.Header().Set("cache-control", "no-store")
-	w.Header().Set(mpp.WWWAuthenticateHeader, wwwAuth)
-	body := map[string]string{"error": "payment_required"}
-	if message != "" {
-		body = map[string]string{"error": "payment_invalid", "message": message}
+	code := errorcodes.PaymentInvalid
+	message := "Payment required"
+	if verificationErr != nil {
+		code = errorcodes.CanonicalFromError(verificationErr)
+		message = verificationErr.Error()
 	}
-	writeJSON(w, http.StatusPaymentRequired, body)
+	body := errorcodes.NewPaymentRequiredBody(code, message)
+	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("content-type", "application/problem+json")
+	w.Header().Set(mpp.WWWAuthenticateHeader, wwwAuth)
+	w.WriteHeader(http.StatusPaymentRequired)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // writeSettlement renders the Mpp::Settlement branch: a 200 with the

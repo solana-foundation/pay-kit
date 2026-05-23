@@ -224,7 +224,7 @@ func (m *Mpp) VerifyCredentialWithExpected(
 	}
 	if credRequest.Currency != expected.Currency {
 		return mpp.Receipt{}, mpp.NewError(
-			mpp.ErrCodeChallengeMismatch,
+			mpp.ErrCodeChallengeRouteMismatch,
 			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
 				credRequest.Currency, expected.Currency),
 		)
@@ -295,21 +295,21 @@ func (m *Mpp) verifyChallengeAndDecode(
 func (m *Mpp) verifyPinnedFields(credential mpp.PaymentCredential, request intents.ChargeRequest) error {
 	const methodName = "solana"
 	if string(credential.Challenge.Method) != methodName {
-		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+		return mpp.NewError(mpp.ErrCodeChallengeRouteMismatch,
 			fmt.Sprintf("credential method %q does not match this server (expected %q)",
 				credential.Challenge.Method, methodName))
 	}
 	if !credential.Challenge.Intent.IsCharge() {
-		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+		return mpp.NewError(mpp.ErrCodeChallengeRouteMismatch,
 			fmt.Sprintf("credential intent %q is not a charge", credential.Challenge.Intent))
 	}
 	if credential.Challenge.Realm != m.realm {
-		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+		return mpp.NewError(mpp.ErrCodeChallengeRouteMismatch,
 			fmt.Sprintf("credential realm %q does not match this server (expected %q)",
 				credential.Challenge.Realm, m.realm))
 	}
 	if request.Currency != m.currency {
-		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+		return mpp.NewError(mpp.ErrCodeChallengeRouteMismatch,
 			fmt.Sprintf("credential currency %q does not match this server (expected %q)",
 				request.Currency, m.currency))
 	}

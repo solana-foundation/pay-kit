@@ -21,9 +21,10 @@ const (
 	ErrCodeSplitsExceed        ErrorCode = "splits-exceed-amount"
 	ErrCodeTooManySplits       ErrorCode = "too-many-splits"
 	ErrCodeInvalidConfig       ErrorCode = "invalid-config"
-	ErrCodeChallengeExpired    ErrorCode = "challenge-expired"
-	ErrCodeChallengeMismatch   ErrorCode = "challenge-mismatch"
-	ErrCodeInvalidMethod       ErrorCode = "invalid-method"
+	ErrCodeChallengeExpired       ErrorCode = "challenge-expired"
+	ErrCodeChallengeMismatch      ErrorCode = "challenge-mismatch"
+	ErrCodeChallengeRouteMismatch ErrorCode = "challenge-route-mismatch"
+	ErrCodeInvalidMethod          ErrorCode = "invalid-method"
 	ErrCodeWrongNetwork        ErrorCode = "wrong-network"
 	ErrCodeOther               ErrorCode = "other"
 )

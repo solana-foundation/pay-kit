@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	mpp "github.com/solana-foundation/mpp-sdk/go"
+	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
 	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
 	"github.com/solana-foundation/mpp-sdk/go/server"
 )
@@ -102,26 +103,29 @@ func TestPaidReturns402WithWWWAuthenticate(t *testing.T) {
 	}
 }
 
-func TestPaidReturnsRubyStyleNoCredentialBody(t *testing.T) {
+func TestPaidReturnsCanonicalNoCredentialBody(t *testing.T) {
 	httpServer, _ := newSmokeServer(t)
 	resp, err := http.Get(httpServer.URL + "/paid")
 	if err != nil {
 		t.Fatalf("get /paid: %v", err)
 	}
 	defer resp.Body.Close()
-	if got := resp.Header.Get("content-type"); got != "application/json" {
-		t.Fatalf("expected application/json content type, got %q", got)
+	if got := resp.Header.Get("content-type"); got != "application/problem+json" {
+		t.Fatalf("expected problem+json content type, got %q", got)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if payload["error"] != "payment_required" {
-		t.Fatalf("expected payment_required error body, got %#v", payload)
+	if payload["code"] != errorcodes.PaymentInvalid {
+		t.Fatalf("expected canonical code payment_invalid, got %#v", payload)
 	}
-	if _, hasMessage := payload["message"]; hasMessage {
-		t.Fatalf("expected no message field on no-credential 402, got %#v", payload)
+	if payload["error"] != errorcodes.PaymentInvalid {
+		t.Fatalf("expected error alias to match code, got %#v", payload)
+	}
+	if payload["status"] != float64(402) {
+		t.Fatalf("expected status 402 in body, got %#v", payload["status"])
 	}
 }
 
@@ -144,14 +148,14 @@ func TestPaidRejectsMalformedAuthorizationWith402(t *testing.T) {
 		t.Fatal("expected WWW-Authenticate on re-issued challenge")
 	}
 	body, _ := io.ReadAll(resp.Body)
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if payload["error"] != "payment_invalid" {
-		t.Fatalf("expected payment_invalid error on malformed credential, got %#v", payload)
+	if payload["code"] != errorcodes.PaymentInvalid {
+		t.Fatalf("expected canonical payment_invalid code, got %#v", payload)
 	}
-	if payload["message"] == "" {
+	if msg, _ := payload["message"].(string); msg == "" {
 		t.Fatal("expected non-empty message on payment_invalid body")
 	}
 }
