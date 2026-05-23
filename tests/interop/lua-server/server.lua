@@ -257,7 +257,12 @@ io.stdout:write(json.encode({
 }) .. '\n')
 io.stdout:flush()
 
-log('lua interop server listening on 127.0.0.1:' .. tostring(port))
+log('lua interop server listening on 127.0.0.1:' .. tostring(port)
+  .. ' rpc_url=' .. tostring(rpc_url)
+  .. ' network=' .. tostring(network)
+  .. ' mint=' .. tostring(mint)
+  .. ' pay_to=' .. tostring(pay_to)
+  .. ' fee_payer=' .. tostring(fee_payer.public_key))
 
 local function serve_one()
   local conn = listener:accept()
