@@ -8,15 +8,44 @@ import type {
 } from "./contracts";
 import type { ImplementationDefinition } from "./implementations";
 
+type StderrCapture = {
+  append(chunk: Buffer | string): void;
+  snapshot(): string;
+};
+
 type RunningServer = {
   child: ChildProcess;
   ready: ReadyMessage;
 };
 
 const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+const STDERR_RING_BUFFER_BYTES = 1024;
+
+const stderrCaptures = new WeakMap<ChildProcess, StderrCapture>();
+
+function createStderrRingBuffer(): StderrCapture {
+  let buffer = "";
+  return {
+    append(chunk) {
+      buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      if (buffer.length > STDERR_RING_BUFFER_BYTES) {
+        buffer = buffer.slice(buffer.length - STDERR_RING_BUFFER_BYTES);
+      }
+    },
+    snapshot() {
+      return buffer;
+    },
+  };
+}
+
+function snapshotStderr(child: ChildProcess): string {
+  const capture = stderrCaptures.get(child);
+  return capture ? capture.snapshot() : "";
+}
 
 async function waitForJsonMessage<T extends AdapterMessage>(
   child: ChildProcess,
+  implementation: ImplementationDefinition,
   timeoutMs: number,
 ): Promise<T> {
   if (!child.stdout) {
@@ -36,18 +65,23 @@ async function waitForJsonMessage<T extends AdapterMessage>(
           try {
             resolve(JSON.parse(line) as T);
           } catch (error) {
+            const tail = snapshotStderr(child);
             reject(
               new Error(
-                `Failed to parse adapter output as JSON: ${line}\n${String(error)}`,
+                `Failed to parse adapter ${implementation.id} output as JSON: ${line}\n` +
+                  `${String(error)}` +
+                  (tail ? `\nlast stderr: ${tail}` : ""),
               ),
             );
           }
         });
 
         child.once("exit", (code) => {
+          const tail = snapshotStderr(child);
           reject(
             new Error(
-              `Adapter exited before signaling readiness/result (code ${code ?? -1})`,
+              `Adapter ${implementation.id} exited with code ${code ?? -1} before readiness;` +
+                ` last stderr: ${tail || "<empty>"}`,
             ),
           );
         });
@@ -55,7 +89,7 @@ async function waitForJsonMessage<T extends AdapterMessage>(
       delay(timeoutMs).then(() => {
         child.kill("SIGTERM");
         throw new Error(
-          `Timed out waiting for adapter output after ${timeoutMs}ms`,
+          `Timed out waiting for adapter ${implementation.id} output after ${timeoutMs}ms`,
         );
       }),
     ]);
@@ -69,14 +103,27 @@ function spawnAdapter(
   extraEnv: Record<string, string> = {},
 ): ChildProcess {
   const [command, ...args] = implementation.command;
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     cwd: process.cwd(),
     env: {
       ...process.env,
       ...extraEnv,
     },
-    stdio: ["ignore", "pipe", "inherit"],
+    // Capture stderr to a ring buffer so adapter failures can attach the
+    // last 1 KiB of stderr to the rejection. We also forward to the parent
+    // stderr so vitest output keeps its full log.
+    stdio: ["ignore", "pipe", "pipe"],
   });
+
+  const capture = createStderrRingBuffer();
+  stderrCaptures.set(child, capture);
+  if (child.stderr) {
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      capture.append(chunk);
+      process.stderr.write(chunk);
+    });
+  }
+  return child;
 }
 
 export async function startServer(
@@ -86,6 +133,7 @@ export async function startServer(
   const child = spawnAdapter(implementation, extraEnv);
   const ready = await waitForJsonMessage<ReadyMessage>(
     child,
+    implementation,
     ADAPTER_OUTPUT_TIMEOUT_MS,
   );
 
@@ -111,6 +159,7 @@ export async function runClient(
 
   const result = await waitForJsonMessage<ClientRunResult>(
     child,
+    implementation,
     ADAPTER_OUTPUT_TIMEOUT_MS,
   );
   await waitForExit(child, "Client adapter");
