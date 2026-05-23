@@ -50,6 +50,15 @@ export const chargeCanonicalJsonVectors: readonly CanonicalJsonVector[] = [
     canonicalJson: '{"n":0}',
     base64Url: "eyJuIjowfQ",
   },
+  {
+    // Codex P2 on PR #102. ES6 ToString shortest-roundtrip needs exactly 16 significant
+    // digits for this value; encoders that stop at 15 digits and fall back to 17 emit
+    // "333333333.33333331" which diverges from JS, Ruby, and Rust.
+    id: "number-16-digit-shortest",
+    value: { n: 333333333.33333329 },
+    canonicalJson: '{"n":333333333.3333333}',
+    base64Url: "eyJuIjozMzMzMzMzMzMuMzMzMzMzM30",
+  },
 ];
 
 /**

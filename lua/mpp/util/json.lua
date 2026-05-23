@@ -159,9 +159,18 @@ local function format_es6_number(sign, digits, k)
 end
 
 -- Return digits, k (decimal exponent of leading digit) for the shortest round-trip decimal of abs(value).
+-- Walks %.{p}g from p=1..17 to find the shortest representation that round-trips to the same double,
+-- per ES6 ToString (ECMA-262 7.1.12.1). Stopping at %.15g and falling back to %.17g misses values
+-- whose shortest form requires exactly 16 significant digits (e.g. 333333333.33333329).
 local function shortest_digits_and_exponent(abs_value)
-  local short = string.format('%.15g', abs_value)
-  local repr = (tonumber(short) == abs_value) and short or string.format('%.17g', abs_value)
+  local repr = string.format('%.17g', abs_value)
+  for p = 1, 17 do
+    local candidate = string.format('%.' .. p .. 'g', abs_value)
+    if tonumber(candidate) == abs_value then
+      repr = candidate
+      break
+    end
+  end
   local mantissa, exp_str
   local e_idx = repr:find('[eE]')
   if e_idx then

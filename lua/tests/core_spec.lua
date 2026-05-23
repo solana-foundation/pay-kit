@@ -139,3 +139,20 @@ t.test('canonical JSON ES6 ToString boundary cases', function()
   t.assert_equal(json.encode(1e20), '100000000000000000000')
   t.assert_equal(json.encode(0.1 + 0.2), '0.30000000000000004')
 end)
+
+t.test('canonical JSON shortest round-trip needs 16 significant digits', function()
+  -- Codex P2 on PR #102. Previously %.15g-then-%.17g returned "333333333.33333331"
+  -- because %.15g does not round-trip; the correct ES6 ToString is "333333333.3333333"
+  -- which requires exactly 16 significant digits.
+  local json = require('mpp.util.json')
+  t.assert_equal(json.encode(333333333.33333329), '333333333.3333333')
+end)
+
+t.test('expires parser rejects bare fractional dot (RFC 3339 sec 5.6)', function()
+  -- Codex P3 on PR #102. The dot must be followed by at least one digit.
+  local expires = require('mpp.expires')
+  t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.Z') == nil)
+  t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.+00:00') == nil)
+  -- A normal fractional value still parses.
+  t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.5Z') ~= nil)
+end)
