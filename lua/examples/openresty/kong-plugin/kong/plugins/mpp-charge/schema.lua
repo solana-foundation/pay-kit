@@ -26,6 +26,11 @@ return {
           { amount     = { type = 'string', required = true } },
           { rpc_url    = { type = 'string', required = true } },
           { fee_payer_secret_key = { type = 'string', required = false } },
+          -- Shared dict name backing the cross-worker replay store.
+          -- Must match a `lua_shared_dict <name> <size>` directive in
+          -- the http block. Default `mpp_replay` matches the example
+          -- nginx.conf shipped under the kong-plugin README.
+          { shared_dict_name = { type = 'string', required = false, default = 'mpp_replay' } },
         },
       },
     },

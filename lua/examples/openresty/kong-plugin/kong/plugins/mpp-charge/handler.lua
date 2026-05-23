@@ -35,6 +35,7 @@ local rpc_module = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
 local signer_module = require('mpp.methods.solana.signer')
 local store_module = require('mpp.store')
+local store_shared_dict = require('mpp.server.store_shared_dict')
 local error_codes = require('mpp.protocol.core.error_codes')
 local json = require('mpp.util.json')
 
@@ -57,11 +58,29 @@ local function get_server(conf)
     url = conf.rpc_url,
     transport = rpc_transport.new(),
   })
+  -- Cross-worker replay store. Kong's default `worker_processes auto`
+  -- spawns one Lua state per CPU core; an in-memory store would be
+  -- invisible across workers and let an attacker replay a consumed
+  -- Payment credential against a different worker. The shared-dict
+  -- store routes every put_if_absent through nginx-managed shared
+  -- memory so the consumed-signature set is one global view. The
+  -- `lua_shared_dict <name> <size>` directive must be present at the
+  -- http-block level; the example nginx.conf ships with
+  -- `lua_shared_dict mpp_replay 10m;`.
+  local dict_name = conf.shared_dict_name or 'mpp_replay'
+  local dict = ngx and ngx.shared and ngx.shared[dict_name]
+  if not dict then
+    error(
+      'mpp-charge requires lua_shared_dict ' .. dict_name ..
+      ' to be declared in the http block; see lua/examples/openresty/kong-plugin/README.md'
+    )
+  end
+  local replay_store = store_shared_dict.new(dict)
   local verifier_bundle = solana_verify.new_real_verifier({ pull_signer = fee_payer })
   local handler = charge_handler_module.new({
     rpc = rpc,
     network = conf.network,
-    replay_store = store_module.memory(),
+    replay_store = replay_store,
     transaction_verifier = verifier_bundle.transaction_verifier,
     pull_transaction_signer = verifier_bundle.pull_transaction_signer,
     pull_blockhash_extractor = verifier_bundle.pull_blockhash_extractor,
@@ -74,6 +93,7 @@ local function get_server(conf)
     rpc_url    = conf.rpc_url,
     secret_key = conf.secret_key,
     realm      = conf.realm or 'MPP',
+    store      = replay_store,
     fee_payer  = fee_payer ~= nil,
     fee_payer_key = fee_payer and fee_payer.public_key or nil,
     verify_payment = handler:as_callback(),

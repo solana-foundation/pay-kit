@@ -45,6 +45,35 @@ The `luasodium` rock requires `libsodium` at the system level
 (`apt-get install libsodium-dev` on Debian / Ubuntu,
 `brew install libsodium` on macOS).
 
+## Shared replay store (cross-worker safety)
+
+Kong's default `worker_processes auto` spawns one Lua state per CPU
+core. An in-memory replay store is per-Lua-state, so a credential
+consumed by Worker A is invisible to Workers B, C, etc., and an
+attacker who receives a valid Payment-Receipt can replay the same
+`Authorization: Payment` header against a different worker and obtain
+another 200 OK with a fresh on-chain settlement.
+
+The plugin routes replay through `ngx.shared.DICT`, which lives in
+nginx-managed shared memory and is atomic across workers. The shared
+dict must be declared at the http block level. Add this to Kong's
+`nginx_http_*` template directives or to the nginx.conf snippet Kong
+loads:
+
+```
+lua_shared_dict mpp_replay 10m;
+```
+
+Size the dict by expected QPS times challenge lifetime. 10 MB is
+enough for ~50,000 consumed-signature entries (each entry is ~200
+bytes including key + JSON payload). The `:add` primitive used for
+`put_if_absent` is atomic across workers, so duplicate detection is
+correct regardless of how many workers Kong starts.
+
+The dict name is configurable via the plugin's `shared_dict_name`
+field (default `mpp_replay`). If the dict is not declared at boot,
+the plugin raises a clear error pointing back to this README.
+
 ## Configure
 
 Per-service via the Kong admin API:
