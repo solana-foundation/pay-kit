@@ -225,17 +225,22 @@ jobs:
         env:
           GOCACHE: /tmp/go-build-cache
         run: |
-          # Narrow `go test` to library packages so coverage measures SDK
-          # surface area only (cmd/ + internal/testutil hold fixtures and
-          # are excluded; mirrors the per-package narrowing pattern from
-          # PR #101). Gate set to the cross-SDK baseline of 90; library
-          # packages currently aggregate at ~85% because client,
-          # internal/solanautil, and server have known coverage gaps.
-          # The threshold WILL fail until gap-fill PRs land; surfaced as
-          # an explicit finding per PR #102 review thread rather than
-          # lowering the gate.
-          go test ./ ./client ./internal/solanautil ./protocol ./protocol/core ./protocol/intents ./server -coverprofile=coverage.out -covermode=atomic
+          go test \
+            github.com/solana-foundation/mpp-sdk/go \
+            github.com/solana-foundation/mpp-sdk/go/client \
+            github.com/solana-foundation/mpp-sdk/go/internal/solanautil \
+            github.com/solana-foundation/mpp-sdk/go/protocol \
+            github.com/solana-foundation/mpp-sdk/go/protocol/core \
+            github.com/solana-foundation/mpp-sdk/go/protocol/intents \
+            github.com/solana-foundation/mpp-sdk/go/server \
+            -coverprofile=coverage.out \
+            -covermode=atomic
           ./scripts/check_coverage.sh coverage.out 90
+      - name: Run all Go packages
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: go test ./...
       - name: Upload Go coverage
         if: always()
         uses: actions/upload-artifact@v7
