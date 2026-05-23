@@ -238,13 +238,27 @@ public enum TransactionBuilder {
         writableSigners.insert(feePayer, at: 0)
 
         let accountKeys = writableSigners + readonlySigners + writableNonSigners + readonlyNonSigners
+        guard accountKeys.count <= 255 else {
+            throw MppError.invalidTransaction(
+                "transaction has \(accountKeys.count) accounts; the Solana wire format caps account indices at u8 (255)"
+            )
+        }
         var keyIndex: [Pubkey: UInt8] = [:]
         for (index, key) in accountKeys.enumerated() {
             keyIndex[key] = UInt8(index)
         }
 
+        let totalSigners = writableSigners.count + readonlySigners.count
+        guard totalSigners <= 255,
+              readonlySigners.count <= 255,
+              readonlyNonSigners.count <= 255
+        else {
+            throw MppError.invalidTransaction(
+                "header counts exceed u8: signers=\(totalSigners), readonlySigners=\(readonlySigners.count), readonlyNonSigners=\(readonlyNonSigners.count)"
+            )
+        }
         let header = TransactionMessage.MessageHeader(
-            numRequiredSignatures: UInt8(writableSigners.count + readonlySigners.count),
+            numRequiredSignatures: UInt8(totalSigners),
             numReadonlySignedAccounts: UInt8(readonlySigners.count),
             numReadonlyUnsignedAccounts: UInt8(readonlyNonSigners.count)
         )

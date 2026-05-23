@@ -34,7 +34,17 @@ func readKeypair(_ name: String) throws -> Data {
     else {
         throw InteropError(message: "\(name) is not a JSON array of bytes")
     }
-    return Data(bytes.map { UInt8($0 & 0xFF) })
+    var validated: [UInt8] = []
+    validated.reserveCapacity(bytes.count)
+    for value in bytes {
+        guard value >= 0, value <= 255 else {
+            throw InteropError(
+                message: "\(name) contains non-byte value \(value); expected 0...255"
+            )
+        }
+        validated.append(UInt8(value))
+    }
+    return Data(validated)
 }
 
 func emitResult(_ status: Int, ok: Bool, headers: [String: String], body: Data, settlement: String?) {

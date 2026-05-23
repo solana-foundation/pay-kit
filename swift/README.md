@@ -178,10 +178,11 @@ them as the `swift-coverage` artifact. The harness covers:
 
 The Swift interop adapter lives at
 [`tests/interop/swift-client`](../tests/interop/swift-client) and is
-registered in `tests/interop/src/implementations.ts`. Default off
-until the focused matrix is green; flip to default on in a follow-up
-commit per the roadmap's sequential-rebase rule on the
-`implementations.ts` hotspot.
+registered in `tests/interop/src/implementations.ts`. Default on after
+the focused TS-to-Swift matrix passes locally (this PR ships both the
+default-off registration and the default-on flip atop the same diff,
+per the roadmap's sequential-rebase rule on the
+`implementations.ts` hotspot).
 
 Focused matrix commands:
 

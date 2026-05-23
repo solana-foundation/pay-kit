@@ -62,21 +62,13 @@ struct Ed25519Tests {
     }
 
     @Test
-    func detectsPointOnCurve() {
-        // A valid public key is by definition on the curve.
+    func canParseAsCryptoKitPublicKeyLengthCheck() {
+        // CryptoKit accepts arbitrary 32-byte values as public keys, so
+        // the only invariant we lock here is the length precondition.
+        #expect(!Ed25519.canParseAsCryptoKitPublicKey(Data(repeating: 1, count: 16)))
         let seed = Data(repeating: 3, count: 32)
         let key = try! Ed25519.privateKey(from: seed)
-        let onCurve = key.publicKey.rawRepresentation
-        #expect(Ed25519.isOnCurve(onCurve))
-
-        // 32 zero bytes is *not* on the curve in practice; CryptoKit accepts
-        // it as a low-order identity point in some versions, so just confirm
-        // the function returns Bool without throwing rather than asserting
-        // a specific value here.
-        _ = Ed25519.isOnCurve(Data(repeating: 0, count: 32))
-
-        // Wrong-length input is not on the curve.
-        #expect(!Ed25519.isOnCurve(Data(repeating: 1, count: 16)))
+        #expect(Ed25519.canParseAsCryptoKitPublicKey(key.publicKey.rawRepresentation))
     }
 
     @Test
