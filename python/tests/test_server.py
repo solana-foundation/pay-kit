@@ -987,6 +987,62 @@ class TestL8SettlementOrdering:
             "successful broadcast even if confirmation times out"
         )
 
+    async def test_b34_signature_credential_with_fee_payer_rejected_before_rpc(self):
+        """B34 lock: signature-mode credential against a challenge that
+        carries feePayer=true MUST be rejected by the server before any
+        RPC call. The push-mode contract is that the client already
+        broadcast the transaction; if the challenge says the server is
+        the fee payer, the client could not have signed it as fee payer
+        without the server's key, so the credential is structurally
+        impossible. Mirrors the audit v2 row 34 spec gap fix.
+        """
+        ordering: list[str] = []
+
+        class _NoRPC:
+            async def get_transaction(self, *_a, **_kw):
+                ordering.append("get_transaction")
+                return FakeResponse(None)
+
+            async def send_raw_transaction(self, *_a, **_kw):
+                ordering.append("send_raw_transaction")
+                return FakeResponse(None)
+
+            async def confirm_transaction(self, *_a, **_kw):
+                ordering.append("confirm_transaction")
+                return FakeResponse(None)
+
+        rpc = _NoRPC()
+        from solana_mpp.store import MemoryStore
+
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=MemoryStore(),
+            )
+        )
+        # Build a challenge with feePayer=true via ChargeOptions.
+        challenge = handler.charge_with_options("1.00", ChargeOptions(fee_payer=True))
+        echo = challenge.to_echo()
+        credential = PaymentCredential(
+            challenge=echo,
+            payload={"type": "signature", "signature": VALID_SIGNATURE},
+        )
+
+        with pytest.raises(PaymentError, match="fee sponsorship"):
+            await handler.verify_credential(credential)
+
+        # Critical: the rejection happened BEFORE any RPC call. A signature
+        # credential under feePayer is a structural error; we never look up
+        # the transaction on chain.
+        assert ordering == [], (
+            f"B34 violation: rejection must happen before RPC; saw {ordering}"
+        )
+
     async def test_signature_keyed_consume_not_credential_keyed(self):
         """A retry of the same credential MUST collide on the on-chain
         signature, not on the credential-payload bytes. Keying by credential
