@@ -7,7 +7,8 @@ sealed class MppException(message: String? = null, cause: Throwable? = null) : R
     class InvalidBase64Url(cause: Throwable? = null) : MppException("invalid base64url value", cause)
     class InvalidBase58(character: Char) : MppException("invalid base58 character: '$character'")
     object InvalidHeader : MppException("invalid Payment header")
-    class InvalidJson(cause: Throwable? = null) : MppException("invalid JSON payload", cause)
+    class InvalidJson(cause: Throwable? = null) :
+        MppException("invalid JSON payload: ${cause?.message ?: "<no detail>"}", cause)
     object InvalidPaymentScheme : MppException("expected Payment scheme")
     class MissingField(field: String) : MppException("missing required field: $field")
     class MemoTooLong(size: Int) : MppException("memo cannot exceed 566 bytes (got $size)")
@@ -72,6 +73,7 @@ data class ChargeRequest(
     val amount: String,
     val currency: String,
     val recipient: String,
+    val description: String? = null,
     val externalId: String? = null,
     val methodDetails: SolanaChargeMethodDetails,
 )

@@ -44,6 +44,8 @@ object MppHeaders {
             json.decodeFromString<ChargeRequest>(Base64Url.decode(request).decodeToString())
         } catch (error: IllegalArgumentException) {
             throw MppException.InvalidJson(error)
+        } catch (error: kotlinx.serialization.SerializationException) {
+            throw MppException.InvalidJson(error)
         }
 
     private fun paymentSchemePayload(header: String): String {
