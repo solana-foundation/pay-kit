@@ -18,6 +18,11 @@ async function main() {
   const signer = await createKeyPairSignerFromBytes(
     environment.clientSecretKey,
   );
+  const resubmitUrl = process.env.MPP_INTEROP_RESUBMIT_URL;
+  if (resubmitUrl) {
+    await runResubmitFlow(targetUrl, resubmitUrl, environment, signer);
+    return;
+  }
   let paidResponse: Response;
   try {
     paidResponse = environment.replaySource
@@ -106,6 +111,109 @@ async function payTarget(
   });
 
   return await client.fetch(targetUrl);
+}
+
+// M1 cross-server portability + same-server idempotent resubmit. Pays
+// `targetUrl` via the manual challenge/credential flow so we can capture
+// the Authorization header, then re-sends that same header to
+// `resubmitUrl`. The harness asserts on the second (resubmit) response;
+// the first must succeed (200) for the scenario to be meaningful, so a
+// failed first hop is reported with a synthetic 402 carrying the error
+// for diagnostic.
+async function runResubmitFlow(
+  targetUrl: string,
+  resubmitUrl: string,
+  environment: ReturnType<typeof readInteropEnvironment>,
+  signer: Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>,
+): Promise<void> {
+  const challengeResponse = await fetch(targetUrl);
+  if (challengeResponse.status !== 402) {
+    emitResubmitResult({
+      firstStatus: challengeResponse.status,
+      firstBody: await safeText(challengeResponse),
+      secondStatus: 0,
+      secondHeaders: {},
+      secondBody: { error: "first_hop_not_402" },
+      settlement: null,
+      settlementHeader: environment.settlementHeader,
+    });
+    return;
+  }
+  const challenge = selectSolanaChargeChallengeFromResponse(challengeResponse, {
+    currency: environment.mint,
+  });
+  if (!challenge) {
+    throw new Error("Target did not return a Solana charge challenge");
+  }
+  const transaction = await buildChargeTransaction({
+    request: challenge.request,
+    rpcUrl: environment.rpcUrl,
+    signer,
+  });
+  const authorization = Credential.serialize({
+    challenge,
+    payload: { transaction, type: "transaction" },
+  });
+
+  const firstResponse = await fetch(targetUrl, {
+    headers: { Authorization: authorization },
+  });
+  const firstBody = await safeText(firstResponse);
+
+  const secondResponse = await fetch(resubmitUrl, {
+    headers: { Authorization: authorization },
+  });
+  const secondRawBody = await secondResponse.text();
+  let secondBody: unknown = secondRawBody;
+  try {
+    secondBody = JSON.parse(secondRawBody);
+  } catch {
+    // raw string is fine
+  }
+
+  emitResubmitResult({
+    firstStatus: firstResponse.status,
+    firstBody,
+    secondStatus: secondResponse.status,
+    secondHeaders: Object.fromEntries(secondResponse.headers.entries()),
+    secondBody,
+    settlement: secondResponse.headers.get(environment.settlementHeader),
+    settlementHeader: environment.settlementHeader,
+  });
+}
+
+async function safeText(response: Response): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function emitResubmitResult(params: {
+  firstStatus: number;
+  firstBody: unknown;
+  secondStatus: number;
+  secondHeaders: Record<string, string>;
+  secondBody: unknown;
+  settlement: string | null;
+  settlementHeader: string;
+}): void {
+  console.log(
+    JSON.stringify({
+      type: "result",
+      implementation: "typescript",
+      role: "client",
+      ok: params.secondStatus >= 200 && params.secondStatus < 300,
+      status: params.secondStatus,
+      responseHeaders: params.secondHeaders,
+      responseBody: params.secondBody,
+      settlement: params.settlement,
+      firstStatus: params.firstStatus,
+      firstBody: params.firstBody,
+    }),
+  );
 }
 
 async function runCrossRouteReplay(

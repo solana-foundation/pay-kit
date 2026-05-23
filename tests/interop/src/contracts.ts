@@ -86,6 +86,23 @@ export type InteropScenario = {
   // excluded via `serverIds` per scenario; once their L6 work lands, the
   // serverIds gate is dropped.
   expectedCode?: CanonicalErrorCode;
+  // M1 cross-server / idempotent-resubmit support. Default `standard`
+  // exercises the single-server pay-once flow. `cross-server-portability`
+  // spawns two servers (A and B) with different MPP secret keys; the
+  // client pays A, then re-submits the same Authorization to B. B must
+  // reject with `challenge_verification_failed` because B's HMAC
+  // secret differs. `idempotent-resubmit` spawns one server, client
+  // pays, then re-submits the same Authorization to the same server.
+  // The server must respond with `signature_consumed`.
+  kind?: "standard" | "cross-server-portability" | "idempotent-resubmit";
+  // For `cross-server-portability`. The id of the second server impl to
+  // spawn alongside the matrix-iterated primary. If unset for the
+  // cross-server kinds, the runner picks any other enabled server.
+  secondServerId?: string;
+  // For `cross-server-portability`. Pairs to iterate over. Each entry is
+  // [serverA, serverB]. When set, this overrides the standard
+  // matrix-iteration and runs only the listed pairs.
+  crossServerPairs?: Array<[string, string]>;
 };
 
 export type ReadyMessage = {

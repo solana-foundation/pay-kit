@@ -285,6 +285,15 @@ describe("mpp interop", () => {
   const socketAwareIt = socketSupport ? it : it.skip;
 
   for (const scenario of activeScenarios) {
+    // M1: cross-server portability and idempotent-resubmit scenarios
+    // run in a dedicated block below; skip them here so the standard
+    // pair-iteration does not try to drive them with the wrong runner.
+    if (
+      scenario.kind === "cross-server-portability" ||
+      scenario.kind === "idempotent-resubmit"
+    ) {
+      continue;
+    }
     const scenarioServers = activeServers.filter(
       (implementation) =>
         !scenario.serverIds || scenario.serverIds.includes(implementation.id),
@@ -406,6 +415,116 @@ describe("mpp interop", () => {
                   `G39: server ${serverImplementation.id} did not emit canonical code on 402 for scenario ${scenario.id}. Got body: ${JSON.stringify(result.responseBody)}`,
                 ).toBe(scenario.expectedCode);
               }
+            }
+          },
+        );
+      }
+    }
+  }
+
+  // M1 cross-server credential portability + same-server idempotent
+  // resubmit. These run outside the per-pair matrix because they
+  // either need two distinct servers (portability) or assert a 402
+  // canonical reject on a credential that was already settled
+  // (idempotent). Only the TypeScript client adapter implements the
+  // raw capture/re-submit flow today, so other clients are gated out.
+  const crossServerScenarios = activeScenarios.filter(
+    (scenario) => scenario.kind === "cross-server-portability",
+  );
+  const idempotentScenarios = activeScenarios.filter(
+    (scenario) => scenario.kind === "idempotent-resubmit",
+  );
+
+  for (const scenario of crossServerScenarios) {
+    const pairs = scenario.crossServerPairs ?? [];
+    const eligibleClients = activeClients.filter(
+      (implementation) =>
+        !scenario.clientIds || scenario.clientIds.includes(implementation.id),
+    );
+    for (const [aId, bId] of pairs) {
+      const serverA = activeServers.find((impl) => impl.id === aId);
+      const serverB = activeServers.find((impl) => impl.id === bId);
+      if (!serverA || !serverB) {
+        continue;
+      }
+      for (const clientImplementation of eligibleClients) {
+        socketAwareIt(
+          `${scenario.id}: ${clientImplementation.id} client, A=${aId} B=${bId}`,
+          async () => {
+            if (!surfnet || !interopEnv) {
+              throw new Error("Surfpool interop environment was not initialized");
+            }
+            const envA = environmentForScenario(interopEnv, scenario);
+            const envB = {
+              ...environmentForScenario(interopEnv, scenario),
+              MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key-server-b",
+            };
+            const a = await startServer(serverA, envA);
+            runningServers.push(a);
+            const b = await startServer(serverB, envB);
+            runningServers.push(b);
+            const aUrl = `http://127.0.0.1:${a.ready.port}${scenario.resourcePath}`;
+            const bUrl = `http://127.0.0.1:${b.ready.port}${scenario.resourcePath}`;
+            const result = await runClient(clientImplementation, aUrl, {
+              ...envA,
+              MPP_INTEROP_RESUBMIT_URL: bUrl,
+            });
+            const resultPayload = JSON.stringify(result, null, 2);
+            const firstStatus = (result as unknown as { firstStatus?: number })
+              .firstStatus;
+            expect(firstStatus, `first hop must succeed: ${resultPayload}`).toBe(
+              200,
+            );
+            expect(result.status, resultPayload).toBe(scenario.expectedStatus);
+            if (scenario.expectedCode) {
+              const body = result.responseBody as { code?: string } | undefined;
+              expect(
+                body?.code,
+                `server B=${bId} did not emit canonical code; body: ${JSON.stringify(result.responseBody)}`,
+              ).toBe(scenario.expectedCode);
+            }
+          },
+        );
+      }
+    }
+  }
+
+  for (const scenario of idempotentScenarios) {
+    const eligibleServers = activeServers.filter(
+      (impl) => !scenario.serverIds || scenario.serverIds.includes(impl.id),
+    );
+    const eligibleClients = activeClients.filter(
+      (impl) => !scenario.clientIds || scenario.clientIds.includes(impl.id),
+    );
+    for (const serverImplementation of eligibleServers) {
+      for (const clientImplementation of eligibleClients) {
+        socketAwareIt(
+          `${scenario.id}: ${clientImplementation.id} client pays ${serverImplementation.id} server twice`,
+          async () => {
+            if (!surfnet || !interopEnv) {
+              throw new Error("Surfpool interop environment was not initialized");
+            }
+            const env = environmentForScenario(interopEnv, scenario);
+            const server = await startServer(serverImplementation, env);
+            runningServers.push(server);
+            const url = `http://127.0.0.1:${server.ready.port}${scenario.resourcePath}`;
+            const result = await runClient(clientImplementation, url, {
+              ...env,
+              MPP_INTEROP_RESUBMIT_URL: url,
+            });
+            const resultPayload = JSON.stringify(result, null, 2);
+            const firstStatus = (result as unknown as { firstStatus?: number })
+              .firstStatus;
+            expect(firstStatus, `first pay must succeed: ${resultPayload}`).toBe(
+              200,
+            );
+            expect(result.status, resultPayload).toBe(scenario.expectedStatus);
+            if (scenario.expectedCode) {
+              const body = result.responseBody as { code?: string } | undefined;
+              expect(
+                body?.code,
+                `server ${serverImplementation.id} did not emit canonical code on resubmit; body: ${JSON.stringify(result.responseBody)}`,
+              ).toBe(scenario.expectedCode);
             }
           },
         );

@@ -50,6 +50,14 @@ const LEGACY_TO_CANONICAL: Record<string, CanonicalErrorCode> = {
 const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[] = [
   { pattern: /already consumed/i, code: "signature_consumed" },
   { pattern: /signature.*consumed/i, code: "signature_consumed" },
+  // M1: in pull mode the L4 replay-store reservation sits after the
+  // broadcast call, so a same-credential resubmit lands on the RPC's
+  // "already been processed" error before the store check fires.
+  // Treat the RPC duplicate-broadcast signal as canonically equivalent
+  // to a replay-store hit; both observably mean the same transaction
+  // signature was already consumed by an earlier settlement.
+  { pattern: /already been processed/i, code: "signature_consumed" },
+  { pattern: /transaction.*already.*processed/i, code: "signature_consumed" },
   { pattern: /challenge.*verification.*failed/i, code: "challenge_verification_failed" },
   { pattern: /challenge id mismatch/i, code: "challenge_verification_failed" },
   { pattern: /not issued by this server/i, code: "challenge_verification_failed" },
@@ -58,8 +66,11 @@ const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[]
   { pattern: /network mismatch/i, code: "wrong_network" },
   { pattern: /wrong.*network/i, code: "wrong_network" },
   { pattern: /amount mismatch/i, code: "charge_request_mismatch" },
+  { pattern: /amount does not match/i, code: "charge_request_mismatch" },
   { pattern: /currency mismatch/i, code: "charge_request_mismatch" },
+  { pattern: /currency does not match/i, code: "charge_request_mismatch" },
   { pattern: /recipient mismatch/i, code: "charge_request_mismatch" },
+  { pattern: /recipient does not match/i, code: "charge_request_mismatch" },
   { pattern: /method details mismatch/i, code: "charge_request_mismatch" },
   { pattern: /split.*exceed.*amount/i, code: "charge_request_mismatch" },
   { pattern: /splits cannot exceed/i, code: "charge_request_mismatch" },
