@@ -279,34 +279,27 @@ local function is_on_curve(bytes)
   end
   local x2 = bigint_mul_mod(u, bigint_inv_mod(v))
   -- p = 2^255 - 19, so (p+3)/8 lets us compute a tentative sqrt via x2^((p+3)/8).
+  -- Build the exponent in place: copy P, add 3 (p is congruent to 5 mod 8 so
+  -- p+3 is divisible by 8), then divide by 8.
+  --
+  -- A bignum right-shift must iterate MSB-to-LSB so each digit's high bits
+  -- become the low bits of the digit below it. An earlier draft of this
+  -- module had a forward-direction loop here that lost bits in the wrong
+  -- direction; the canonical reverse loop below is the only one that runs.
   local exponent_a = bigint_copy(P)
-  -- (p + 3) / 8: p is congruent to 5 mod 8 so p+3 is divisible by 8.
   exponent_a[1] = exponent_a[1] + 3
-  -- Divide by 8 by right-shifting 3 bits across the bignum.
-  for i = 1, BIGINT_DIGITS - 1 do
-    exponent_a[i] = exponent_a[i] + (exponent_a[i + 1] % 8) * BASE
-    exponent_a[i + 1] = math.floor(exponent_a[i + 1] / 8)
-    exponent_a[i] = math.floor(exponent_a[i] / 8) * 1 -- normalize after carry pull-down
+  -- Carry-normalize first so each digit fits in BASE before the shift.
+  local carry = 0
+  for i = 1, BIGINT_DIGITS do
+    local v_norm = exponent_a[i] + carry
+    exponent_a[i] = v_norm % BASE
+    carry = math.floor(v_norm / BASE)
   end
-  -- Repeat the same right-shift normalization properly by reconstructing.
-  do
-    local recombined = bigint_copy(P)
-    recombined[1] = recombined[1] + 3
-    -- Carry-normalize so each digit fits in BASE.
-    local carry = 0
-    for i = 1, BIGINT_DIGITS do
-      local v2 = recombined[i] + carry
-      recombined[i] = v2 % BASE
-      carry = math.floor(v2 / BASE)
-    end
-    -- Right-shift by 3 bits.
-    local borrow_bits = 0
-    for i = BIGINT_DIGITS, 1, -1 do
-      local val = recombined[i] + borrow_bits * BASE
-      recombined[i] = math.floor(val / 8)
-      borrow_bits = val % 8
-    end
-    exponent_a = recombined
+  local borrow_bits = 0
+  for i = BIGINT_DIGITS, 1, -1 do
+    local val = exponent_a[i] + borrow_bits * BASE
+    exponent_a[i] = math.floor(val / 8)
+    borrow_bits = val % 8
   end
   local root = bigint_pow_mod(x2, exponent_a)
   local root_sq = bigint_mul_mod(root, root)
@@ -316,13 +309,15 @@ local function is_on_curve(bytes)
   -- Try root * 2^((p-1)/4): this multiplies by a square root of -1.
   local exponent_b = bigint_copy(P)
   exponent_b[1] = exponent_b[1] - 1
-  -- Right-shift by 2 bits.
+  -- Right-shift by 2 bits, MSB to LSB so the high bits flow into the
+  -- digit below. Uses a separately-named borrow accumulator to keep the
+  -- scope clean against the earlier (p+3)/8 shift in the same function.
   do
-    local borrow_bits = 0
+    local sqrt_borrow = 0
     for i = BIGINT_DIGITS, 1, -1 do
-      local val = exponent_b[i] + borrow_bits * BASE
+      local val = exponent_b[i] + sqrt_borrow * BASE
       exponent_b[i] = math.floor(val / 4)
-      borrow_bits = val % 4
+      sqrt_borrow = val % 4
     end
   end
   local sqrt_neg_one = bigint_pow_mod(bigint_from_small(2), exponent_b)
@@ -373,5 +368,13 @@ function M.derive(owner, mint, token_program)
 end
 
 M.PROGRAM_DERIVED_ADDRESS_SEED = PROGRAM_DERIVED_ADDRESS_SEED
+
+-- Test-only handle on the bignum on-curve primitive. Lets the spec pin
+-- canonical fixtures (the all-zero candidate, the encoded USDC public key)
+-- without having to drive `find_program_address` through 256 hash rounds.
+M._internals = {
+  is_on_curve = is_on_curve,
+  bigint_from_bytes = bigint_from_bytes,
+}
 
 return M
