@@ -22,18 +22,17 @@ def decode(s: str) -> bytes:
 
 
 def encode_json(obj: Any) -> str:
-    """Encode a Python object as compact JSON then base64url.
+    """Encode a Python object as canonical JSON then base64url.
 
-    Object keys are sorted (RFC 8785 sec 3.2.3 key ordering); number
-    serialization is delegated to ``json.dumps``.
-
-    See:
-        - https://datatracker.ietf.org/doc/html/rfc8785 RFC 8785 JCS
-        - https://tc39.es/ecma262/multipage/abstract-operations.html#sec-numeric-types-number-tostring
-          ECMA-262 Number::toString
+    Uses the RFC 8785 canonical encoder (UTF-16 code-unit key ordering, ES6
+    ToString numbers, lone-surrogate rejection) so HMAC inputs and the
+    ``request`` field are byte-equal across SDKs. The previous
+    ``json.dumps(sort_keys=True)`` path sorted by Unicode code point, which
+    diverges from Ruby / PHP / Lua / Rust on supplementary-plane keys.
     """
-    compact = json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
-    return encode(compact.encode("utf-8"))
+    from solana_mpp._canonical_json import encode_canonical
+
+    return encode(encode_canonical(obj))
 
 
 def decode_json(s: str) -> Any:
