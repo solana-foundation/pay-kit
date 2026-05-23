@@ -1,6 +1,26 @@
-use std::{collections::HashMap, env};
+use std::{
+    collections::HashMap,
+    env,
+    io::{self, Write},
+    process,
+};
 
 use serde_json::json;
+
+/// Write a line to stdout, swallowing `BrokenPipe` (EPIPE) errors instead of
+/// panicking the way Rust's default `println!` macro would when the harness
+/// has stopped reading our pipe. Mirrors the helper in `interop_server.rs`.
+fn write_stdout_line(line: &str) {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    match writeln!(handle, "{line}") {
+        Ok(()) => {
+            let _ = handle.flush();
+        }
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => process::exit(0),
+        Err(err) => panic!("failed printing to stdout: {err}"),
+    }
+}
 use solana_mpp::client::build_credential_header;
 use solana_mpp::solana_keychain::memory::MemorySigner;
 use solana_mpp::solana_rpc_client::rpc_client::RpcClient;
@@ -46,19 +66,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response_body = serde_json::from_str::<serde_json::Value>(&raw_body)
         .unwrap_or(serde_json::Value::String(raw_body));
 
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "type": "result",
-            "implementation": "rust",
-            "role": "client",
-            "ok": status.is_success(),
-            "status": status.as_u16(),
-            "responseHeaders": paid_headers,
-            "responseBody": response_body,
-            "settlement": settlement,
-        }))?
-    );
+    write_stdout_line(&serde_json::to_string(&json!({
+        "type": "result",
+        "implementation": "rust",
+        "role": "client",
+        "ok": status.is_success(),
+        "status": status.as_u16(),
+        "responseHeaders": paid_headers,
+        "responseBody": response_body,
+        "settlement": settlement,
+    }))?);
 
     Ok(())
 }

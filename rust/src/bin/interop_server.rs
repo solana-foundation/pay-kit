@@ -1,13 +1,49 @@
 use std::{
     collections::HashMap,
     env,
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
+    process,
     sync::Arc,
     thread,
 };
 
 use serde_json::json;
+
+/// Write a line to stdout, swallowing `BrokenPipe` (EPIPE) errors instead of
+/// panicking the way Rust's default `println!` macro would when the harness
+/// has stopped reading our pipe. Any other I/O error is fatal.
+fn write_stdout_line(line: &str) {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    match writeln!(handle, "{line}") {
+        Ok(()) => {
+            let _ = handle.flush();
+        }
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+            // Harness already torn down; exit cleanly so we do not surface a
+            // panic that propagates into the vitest worker.
+            process::exit(0);
+        }
+        Err(err) => panic!("failed printing to stdout: {err}"),
+    }
+}
+
+/// Same as `write_stdout_line` but for stderr. Used by background threads so a
+/// post-teardown stderr write does not kill the process.
+fn write_stderr_line(line: &str) {
+    let stderr = io::stderr();
+    let mut handle = stderr.lock();
+    match writeln!(handle, "{line}") {
+        Ok(()) => {
+            let _ = handle.flush();
+        }
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => {
+            // Drop the line silently.
+        }
+        Err(_) => {}
+    }
+}
 use solana_mpp::protocol::intents::ChargeRequest;
 use solana_mpp::protocol::solana::Split;
 use solana_mpp::server::{ChargeOptions, Config, Mpp};
@@ -46,16 +82,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
 
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "type": "ready",
-            "implementation": "rust",
-            "role": "server",
-            "port": port,
-            "capabilities": ["charge"],
-        }))?
-    );
+    write_stdout_line(&serde_json::to_string(&json!({
+        "type": "ready",
+        "implementation": "rust",
+        "role": "server",
+        "port": port,
+        "capabilities": ["charge"],
+    }))?);
 
     for stream in listener.incoming() {
         match stream {
@@ -64,11 +97,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let runtime = Arc::clone(&runtime);
                 thread::spawn(move || {
                     if let Err(error) = handle_connection(stream, &state, &runtime) {
-                        eprintln!("interop rust server error: {error}");
+                        write_stderr_line(&format!("interop rust server error: {error}"));
                     }
                 });
             }
-            Err(error) => eprintln!("interop rust server accept error: {error}"),
+            Err(error) => {
+                write_stderr_line(&format!("interop rust server accept error: {error}"));
+            }
         }
     }
 
