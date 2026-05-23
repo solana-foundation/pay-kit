@@ -57,7 +57,7 @@ function M.parse_rfc3339(value)
     return nil, 'invalid RFC3339 calendar date'
   end
 
-  local offset_secs = 0
+  local offset_secs
   if offset == 'Z' or offset == 'z' then
     offset_secs = 0
   else
