@@ -104,6 +104,7 @@ func Canonical(code mpp.ErrorCode) string {
 		mpp.ErrCodeMissingSignature,
 		mpp.ErrCodeInvalidPayload,
 		mpp.ErrCodeInvalidConfig,
+		mpp.ErrCodeComputeBudgetExceeded,
 		mpp.ErrCodeOther:
 		return PaymentInvalid
 	}

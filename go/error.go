@@ -20,6 +20,7 @@ const (
 	ErrCodeInvalidPayload      ErrorCode = "invalid-payload-type"
 	ErrCodeSplitsExceed        ErrorCode = "splits-exceed-amount"
 	ErrCodeTooManySplits       ErrorCode = "too-many-splits"
+	ErrCodeComputeBudgetExceeded ErrorCode = "compute-budget-exceeded"
 	ErrCodeInvalidConfig       ErrorCode = "invalid-config"
 	ErrCodeChallengeExpired       ErrorCode = "challenge-expired"
 	ErrCodeChallengeMismatch      ErrorCode = "challenge-mismatch"

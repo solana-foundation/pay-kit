@@ -30,7 +30,18 @@ const (
 	// rust reference in rust/src/server/charge.rs and the typescript
 	// fixture in typescript/packages/mpp/src/server/Charge.ts).
 	maxSplits = 8
+
+	// Compute budget caps mirror the Rust reference and the TypeScript
+	// server fixture. A credential whose transaction sets a compute unit
+	// limit or microlamport price above these caps is rejected before
+	// broadcast so the on-chain settlement cannot be steered into a
+	// pathological resource footprint.
+	maxComputeUnitLimit              uint32 = 200_000
+	maxComputeUnitPriceMicroLamports uint64 = 5_000_000
 )
+
+// computeBudgetProgramID is the on-chain ID of the ComputeBudget program.
+var computeBudgetProgramID = solana.MustPublicKeyFromBase58("ComputeBudget111111111111111111111111111111")
 
 // Config controls server-side challenge generation and credential verification.
 type Config struct {
@@ -378,6 +389,9 @@ func (m *Mpp) verifyTransaction(
 	if err != nil {
 		return mpp.Receipt{}, err
 	}
+	if err := validateComputeBudgetInstructions(tx); err != nil {
+		return mpp.Receipt{}, err
+	}
 	// Reject up-front if the client signed against the wrong network
 	// (e.g. mainnet keypair pointed at a sandbox-configured server, or
 	// vice versa). Cheaper and clearer than letting the broadcast fail
@@ -690,6 +704,74 @@ func successReceipt(reference, challengeID, externalID string) mpp.Receipt {
 
 func isNativeSOL(currency string) bool {
 	return strings.EqualFold(currency, "sol")
+}
+
+// validateComputeBudgetInstructions inspects every ComputeBudget program
+// instruction in the credential transaction and rejects ones that exceed
+// the unit-limit or microlamport-price caps. The wire format follows the
+// on-chain ComputeBudget program:
+//
+//   - discriminator 2 + u32 LE => SetComputeUnitLimit
+//   - discriminator 3 + u64 LE => SetComputeUnitPrice
+//
+// Matches rust/src/server/charge.rs validate_compute_budget_instruction.
+func validateComputeBudgetInstructions(tx *solana.Transaction) error {
+	for _, ix := range tx.Message.Instructions {
+		programID := tx.Message.AccountKeys[ix.ProgramIDIndex]
+		if !programID.Equals(computeBudgetProgramID) {
+			continue
+		}
+		if len(ix.Accounts) != 0 {
+			return mpp.NewError(
+				mpp.ErrCodeComputeBudgetExceeded,
+				"compute budget instruction must not have accounts",
+			)
+		}
+		data := []byte(ix.Data)
+		if len(data) == 0 {
+			return mpp.NewError(
+				mpp.ErrCodeComputeBudgetExceeded,
+				"unsupported compute budget instruction: empty data",
+			)
+		}
+		switch data[0] {
+		case 2:
+			if len(data) != 5 {
+				return mpp.NewError(
+					mpp.ErrCodeComputeBudgetExceeded,
+					fmt.Sprintf("compute unit limit instruction has %d data bytes, expected 5", len(data)),
+				)
+			}
+			units := uint32(data[1]) | uint32(data[2])<<8 | uint32(data[3])<<16 | uint32(data[4])<<24
+			if units > maxComputeUnitLimit {
+				return mpp.NewError(
+					mpp.ErrCodeComputeBudgetExceeded,
+					fmt.Sprintf("compute unit limit %d exceeds maximum %d", units, maxComputeUnitLimit),
+				)
+			}
+		case 3:
+			if len(data) != 9 {
+				return mpp.NewError(
+					mpp.ErrCodeComputeBudgetExceeded,
+					fmt.Sprintf("compute unit price instruction has %d data bytes, expected 9", len(data)),
+				)
+			}
+			price := uint64(data[1]) | uint64(data[2])<<8 | uint64(data[3])<<16 | uint64(data[4])<<24 |
+				uint64(data[5])<<32 | uint64(data[6])<<40 | uint64(data[7])<<48 | uint64(data[8])<<56
+			if price > maxComputeUnitPriceMicroLamports {
+				return mpp.NewError(
+					mpp.ErrCodeComputeBudgetExceeded,
+					fmt.Sprintf("compute unit price %d exceeds maximum %d", price, maxComputeUnitPriceMicroLamports),
+				)
+			}
+		default:
+			return mpp.NewError(
+				mpp.ErrCodeComputeBudgetExceeded,
+				fmt.Sprintf("unsupported compute budget instruction discriminator %d", data[0]),
+			)
+		}
+	}
+	return nil
 }
 
 // validateSplitsCount enforces the cross-SDK cap of 8 secondary recipients
