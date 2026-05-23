@@ -146,7 +146,16 @@ final class Challenge
         }
 
         // Normalize lowercase t/z to uppercase before delegating to DateTimeImmutable (DATE_ATOM is strict).
+        // PHP's `u` format only accepts exactly six fractional digits; RFC 3339 permits 1..9.
+        // Truncate the regex-captured fractional component to microseconds (the regex already
+        // bounded it to 1..9 digits, so truncation is safe). Sub-microsecond precision is dropped
+        // for expiry comparison purposes which is acceptable since we only need second-level resolution.
         $normalized = strtr($this->expires, ['t' => 'T', 'z' => 'Z']);
+        $frac = $m[7];
+        if ($frac !== '') {
+            $truncated = substr($frac, 0, 6);
+            $normalized = preg_replace('/\.\d{1,9}/', '.' . $truncated, $normalized, 1) ?? $normalized;
+        }
         $expiresAt = DateTimeImmutable::createFromFormat(DATE_ATOM, $normalized);
         if ($expiresAt === false) {
             $expiresAt = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.up', $normalized);

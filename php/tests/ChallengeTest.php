@@ -67,6 +67,15 @@ final class ChallengeTest extends TestCase
         self::assertTrue($mk('2099-01-01T00:00:00+00:60')->isExpired($now));
         // Lowercase t/z accepted on parse.
         self::assertFalse($mk('2099-01-01t00:00:00z')->isExpired($now));
+
+        // 7/8/9 fractional digit (nanosecond) precision must round-trip after
+        // truncation to microseconds (codex P2 finding on PR #102; PHP's `u`
+        // format only accepts 6 digits, so the prior parser fell through to
+        // `return true` for any sub-microsecond expiry).
+        self::assertFalse($mk('2099-01-01T00:00:00.1234567Z')->isExpired($now));
+        self::assertFalse($mk('2099-01-01T00:00:00.12345678Z')->isExpired($now));
+        self::assertFalse($mk('2099-01-01T00:00:00.123456789+00:00')->isExpired($now));
+        self::assertFalse($mk('2099-01-01T00:00:00.123456789-05:00')->isExpired($now));
     }
 
     public function testRejectsMissingRequiredChallengeFields(): void
