@@ -13,10 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install LuaJIT 2.1 and LuaRocks
+      - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
         run: |
           sudo apt-get update
-          sudo apt-get install -y luajit libluajit-5.1-dev luarocks
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
           luajit -v
           luarocks --version
 

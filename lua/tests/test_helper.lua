@@ -42,20 +42,14 @@ local SKIP = {
   ['challenge_to_html escapes HTML in description'] = true,
 }
 
--- Heavy tests that exercise the pure-Lua bignum (ATA derivation, verifier
--- spec scenarios that internally derive ATAs) are too slow to run under
--- luacov instrumentation because the LuaJIT trace recorder is disabled.
--- The same code paths run unprofiled in `just lua-test`; coverage is
--- captured for the underlying helpers via lighter-weight specs.
+-- Under luacov instrumentation the LuaJIT trace recorder is disabled, so
+-- the pure-Lua modular-arithmetic on-curve check in mpp/methods/solana/ata
+-- becomes ~100x slower. Skip only the heaviest ATA spec (which derives
+-- twice). The verifier specs that internally call ata.derive still run
+-- under coverage, because letting them in gives us branch coverage for
+-- the SPL transferChecked / ATA-allowlist code paths.
 local SLOW_UNDER_COVER = {
-  ['ata.derive matches the Ruby reference for the USDC SPL Token ATA'] = true,
   ['ata.derive matches the Ruby reference for the USDC Token-2022 ATA'] = true,
-  ['verifier accepts a basic SPL transferChecked of the requested amount'] = true,
-  ['verifier rejects an amount mismatch'] = true,
-  ['verifier rejects an unauthorized program after the transfer matches'] = true,
-  ['verifier rejects an SPL transfer with the wrong decimals byte'] = true,
-  ['verifier rejects when fee_payer authority equals the signer'] = true,
-  ['verifier rejects an SPL transfer where source_ata equals the fee-payer ATA'] = true,
 }
 if package.loaded['luacov'] then
   for name, _ in pairs(SLOW_UNDER_COVER) do
