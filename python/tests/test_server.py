@@ -799,3 +799,45 @@ class TestParsedTransferVerification:
 
         with pytest.raises(PaymentError, match="No memo instruction found for split memo"):
             _verify_parsed_memo_instructions(instructions, request, details)
+
+
+class TestMemoV1Rejected:
+    """L2 lock: charge verifier MUST reject Solana memo v1 (Memo1Uhk...).
+
+    Memo v1 has a different instruction shape from memo v2 (no signer check)
+    and would let a tampered transaction slip past the v2-only matcher used in
+    _verify_parsed_memo_instructions. Mirrors PHP fde0efb + Ruby + Rust + Lua.
+    """
+
+    _MEMO_V1 = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"
+
+    def _build_tx_with_memo_v1(self) -> str:
+        signer = Keypair()
+        instructions = [
+            transfer(
+                TransferParams(
+                    from_pubkey=signer.pubkey(),
+                    to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                    lamports=1000,
+                )
+            ),
+            Instruction(
+                Pubkey.from_string(self._MEMO_V1),
+                b"hello from memo v1",
+                [],
+            ),
+        ]
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([signer], blockhash)
+        import base64
+
+        return base64.b64encode(bytes(transaction)).decode("ascii")
+
+    def test_decode_rejects_memo_v1(self):
+        from solana_mpp.server.mpp import _decode_legacy_payment_instructions
+
+        tx_b64 = self._build_tx_with_memo_v1()
+        with pytest.raises(PaymentError, match="memo v1"):
+            _decode_legacy_payment_instructions(tx_b64)

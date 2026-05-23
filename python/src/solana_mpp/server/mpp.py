@@ -41,6 +41,12 @@ _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 _SYSTEM_TRANSFER_INSTRUCTION = 2
 _TOKEN_TRANSFER_CHECKED_INSTRUCTION = 12
 
+# Legacy Solana memo program (v1). MPP charge transactions MUST use memo v2
+# (``MEMO_PROGRAM`` from :mod:`solana_mpp.protocol.solana`). v1 had a different
+# instruction shape and is rejected to match the L2 lock landed on PHP fde0efb
+# and mirrored in Ruby, Rust, Lua.
+_MEMO_V1_PROGRAM = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"
+
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
     total_amount = int(request.amount)
@@ -347,6 +353,15 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             except UnicodeDecodeError as exc:
                 raise PaymentError("memo instruction is not valid UTF-8", code="invalid-payload") from exc
             instructions.append({"programId": MEMO_PROGRAM, "parsed": memo})
+        elif program_id == _MEMO_V1_PROGRAM:
+            # L2 lock: MPP charge requires memo v2. Memo v1 has a different
+            # instruction shape (UTF-8 directly in data with no signer check)
+            # and would let a tampered transaction slip past the v2-only
+            # ``_verify_parsed_memo_instructions`` matcher.
+            raise PaymentError(
+                "memo v1 program is not supported (use Memo v2)",
+                code="invalid-payload",
+            )
 
     return instructions
 
