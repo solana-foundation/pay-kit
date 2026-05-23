@@ -38,6 +38,27 @@ public struct RpcClient: Sendable {
         return (bytes: bytes, base58: blockhashStr)
     }
 
+    /// Returns the base58-encoded owner program of an account. Used by
+    /// the charge client to resolve a mint's token program when the
+    /// server omits `methodDetails.tokenProgram`, mirroring the Rust
+    /// `client::charge::resolve_token_program` path.
+    public func getAccountOwner(pubkeyBase58: String) async throws -> String {
+        let result = try await rpcCall(
+            method: "getAccountInfo",
+            params: [pubkeyBase58, ["encoding": "base64"]]
+        )
+        guard
+            let outer = result as? [String: Any],
+            let value = outer["value"] as? [String: Any]
+        else {
+            throw MppError.rpcFailure("getAccountInfo returned malformed body for \(pubkeyBase58)")
+        }
+        guard let owner = value["owner"] as? String else {
+            throw MppError.rpcFailure("account \(pubkeyBase58) has no owner field (does it exist?)")
+        }
+        return owner
+    }
+
     /// Submits a base64-encoded signed transaction. Returns the base58
     /// signature the RPC echoes back.
     public func sendTransaction(_ base64SignedTx: String, skipPreflight: Bool = false) async throws -> String {

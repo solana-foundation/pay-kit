@@ -176,7 +176,11 @@ public enum Charge {
 
         if let mintStr = mint {
             let mintPk = try Pubkey(base58: mintStr)
-            let tokenProgram = try resolveTokenProgram(methodDetails: methodDetails, mintBase58: mintStr)
+            let tokenProgram = try await resolveTokenProgram(
+                methodDetails: methodDetails,
+                mintBase58: mintStr,
+                rpc: rpc
+            )
             let rawDecimals = methodDetails.decimals ?? 6
             guard rawDecimals >= 0, rawDecimals <= 255 else {
                 // SPL TokenChecked encodes decimals as u8; an out-of-range
@@ -329,25 +333,33 @@ public enum Charge {
 
     private static func resolveTokenProgram(
         methodDetails: SolanaChargeMethodDetails,
-        mintBase58: String
-    ) throws -> Pubkey {
+        mintBase58: String,
+        rpc: RpcClient?
+    ) async throws -> Pubkey {
         if let explicit = methodDetails.tokenProgram {
             let pk = try Pubkey(base58: explicit)
             if pk == .tokenProgram || pk == .token2022Program { return pk }
             throw MppError.invalidTransaction("unsupported tokenProgram \(explicit)")
         }
-        // No explicit token program: use the default heuristic from the
-        // spine. The interop harness always sets tokenProgram, so this
-        // path is only exercised by ad-hoc callers using a Token-2022
-        // stablecoin without specifying the program.
-        let token2022Mints: Set<String> = [
-            "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
-            "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
-            "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-            "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
-            "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
-        ]
-        return token2022Mints.contains(mintBase58) ? .token2022Program : .tokenProgram
+        // No explicit token program: mirror the Rust client and resolve
+        // the program id by reading the mint account's owner field. A
+        // hard-coded allow-list (the previous behaviour) silently
+        // mis-derives ATAs for any Token-2022 mint that is not in the
+        // set, so we either query the mint account or reject the
+        // challenge with a clean error.
+        guard let rpc = rpc else {
+            throw MppError.invalidTransaction(
+                "methodDetails.tokenProgram omitted and no RpcClient was provided to resolve mint \(mintBase58)"
+            )
+        }
+        let ownerStr = try await rpc.getAccountOwner(pubkeyBase58: mintBase58)
+        let owner = try Pubkey(base58: ownerStr)
+        guard owner == .tokenProgram || owner == .token2022Program else {
+            throw MppError.invalidTransaction(
+                "mint \(mintBase58) is owned by unsupported program \(ownerStr)"
+            )
+        }
+        return owner
     }
 
     private static func appendSplTransfer(
