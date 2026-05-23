@@ -271,3 +271,59 @@ class TestReceipt:
         bad = encode(b"not json")
         with pytest.raises(ParseError):
             parse_receipt(bad)
+
+
+class TestCRLFRejection:
+    """L11 lock: header parameter values MUST reject CR or LF.
+
+    Mirrors the Ruby fix from PR #96 (where ``escape`` silently passed CRLF
+    through, opening a response-splitting injection) and the Lua fix that
+    landed alongside Lua's adapter. Python already rejects CRLF in
+    ``_escape_quoted_value``; these tests pin the behavior so a future
+    refactor cannot silently re-introduce the vulnerability.
+    """
+
+    def test_realm_with_cr_rejected(self):
+        challenge = PaymentChallenge(
+            id="ok",
+            realm="api\rX-Injected: 1",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "1"}),
+        )
+        with pytest.raises(ParseError, match="CRLF"):
+            format_www_authenticate(challenge)
+
+    def test_realm_with_lf_rejected(self):
+        challenge = PaymentChallenge(
+            id="ok",
+            realm="api\nX-Injected: 1",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "1"}),
+        )
+        with pytest.raises(ParseError, match="CRLF"):
+            format_www_authenticate(challenge)
+
+    def test_id_with_crlf_rejected(self):
+        challenge = PaymentChallenge(
+            id="abc\r\nX: 1",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "1"}),
+        )
+        with pytest.raises(ParseError, match="CRLF"):
+            format_www_authenticate(challenge)
+
+    def test_description_safe_field_with_lf_rejected(self):
+        challenge = PaymentChallenge(
+            id="ok",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "1"}),
+            opaque="x\ny",
+        )
+        with pytest.raises(ParseError, match="CRLF"):
+            format_www_authenticate(challenge)
