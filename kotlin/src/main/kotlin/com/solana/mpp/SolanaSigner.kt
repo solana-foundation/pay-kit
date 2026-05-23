@@ -1,7 +1,6 @@
 package com.solana.mpp
 
 import java.security.KeyPair
-import java.security.KeyPairGenerator
 
 /** Signs Solana messages or transaction messages for MPP credential builders. */
 interface SolanaSigner {
@@ -61,28 +60,30 @@ class MemorySigner private constructor(
             fromSeed(Ed25519.seedFromSecretKey(secretKey))
 
         /**
-         * Creates a memory signer from a JDK Ed25519 KeyPair. Retained so
-         * applications that integrate with JDK 15+ keystores can still
-         * bootstrap an in-memory signer.
+         * Rejects JDK Ed25519 KeyPair-only inputs.
          *
-         * The JDK does not expose the raw 32 byte Ed25519 private seed via
-         * a stable API, so this path generates a new signer when the key
-         * algorithm does not match.
+         * The JDK does not expose the raw 32 byte Ed25519 seed via a
+         * stable API. Building a MemorySigner from a JDK KeyPair alone
+         * would produce a signer whose public key does not match the
+         * caller's key pair, so any transaction signed through it would
+         * advertise (and spend from) the wrong account. Callers that hold
+         * a JDK KeyPair should instead use fromSeed or fromSecretKey
+         * with the raw key material, or implement SolanaSigner directly
+         * against their wallet / keystore signing primitive.
          */
         fun fromKeyPair(keyPair: KeyPair): MemorySigner {
             val algorithm = keyPair.public.algorithm
             require(algorithm.equals("Ed25519", ignoreCase = true) || algorithm.equals("EdDSA", ignoreCase = true)) {
                 "expected Ed25519 key pair, got $algorithm"
             }
-            val derivedPublicKey = rawEd25519PublicKey(keyPair.public)
-            // The JDK private key does not expose its seed bytes. We
-            // generate a fresh deterministic seed bound to the public key
-            // bytes via SHA-256 so callers that only have a JDK key pair
-            // can still sign within a single session. Production callers
-            // should use fromSeed or fromSecretKey for deterministic keys.
-            val seed = Ed25519.sha256(derivedPublicKey).copyOfRange(0, 32)
-            val publicKey = Ed25519.publicKey(seed)
-            return MemorySigner(seed = seed, publicKeyBytes = publicKey)
+            // Validate the public key shape so legacy callers still get
+            // the same precondition errors they had before.
+            rawEd25519PublicKey(keyPair.public)
+            throw IllegalArgumentException(
+                "MemorySigner.fromKeyPair cannot recover the Ed25519 seed from a JDK PrivateKey. " +
+                    "Use MemorySigner.fromSeed(seed) or MemorySigner.fromSecretKey(secretKey) with " +
+                    "the raw key bytes, or implement SolanaSigner against your wallet's signing API.",
+            )
         }
 
         /**
@@ -100,9 +101,5 @@ class MemorySigner private constructor(
             return encoded.copyOfRange(ED25519_X509_PREFIX.size, encoded.size)
         }
 
-        /** Convenience constructor for JDK callers that hold a raw KeyPairGenerator. */
-        @JvmStatic
-        fun generateJdk(): MemorySigner =
-            fromKeyPair(KeyPairGenerator.getInstance("Ed25519").generateKeyPair())
     }
 }

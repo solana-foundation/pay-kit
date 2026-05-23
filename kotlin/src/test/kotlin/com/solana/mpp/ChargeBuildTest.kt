@@ -196,6 +196,49 @@ class ChargeBuildTest {
     }
 
     @Test
+    fun defaultTokenProgramRoutesToken2022MintsCorrectly() {
+        assertEquals(Programs.TOKEN_PROGRAM, Charge.defaultTokenProgramFor("USDC", null))
+        assertEquals(Programs.TOKEN_PROGRAM, Charge.defaultTokenProgramFor("USDT", null))
+        assertEquals(Programs.TOKEN_PROGRAM, Charge.defaultTokenProgramFor("SOL", null))
+        assertEquals(Programs.TOKEN_2022_PROGRAM, Charge.defaultTokenProgramFor("PYUSD", null))
+        assertEquals(Programs.TOKEN_2022_PROGRAM, Charge.defaultTokenProgramFor("PYUSD", "devnet"))
+        assertEquals(Programs.TOKEN_2022_PROGRAM, Charge.defaultTokenProgramFor("USDG", null))
+        assertEquals(Programs.TOKEN_2022_PROGRAM, Charge.defaultTokenProgramFor("CASH", null))
+        // Unknown mint passes through resolveStablecoinMint and ends up
+        // on the legacy SPL token program (the safe default).
+        assertEquals(Programs.TOKEN_PROGRAM, Charge.defaultTokenProgramFor("FAKEMINT", null))
+    }
+
+    @Test
+    fun token2022CurrencyWithoutExplicitTokenProgramUsesToken2022Ata() {
+        // Without an explicit methodDetails.tokenProgram, PYUSD must end
+        // up on the Token-2022 program. We can't easily inspect the
+        // compiled wire bytes here, but we can sanity check that the
+        // built transaction is well-formed and the Token-2022 program id
+        // appears in the account-keys section.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "PYUSD",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
+        )
+        val transaction = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        val raw = JBase64.getDecoder().decode(transaction)
+        // Token-2022 base58 string interpolated as a byte signature inside
+        // the wire bytes is a reasonable witness.
+        val token2022Bytes = Base58.decode(Programs.TOKEN_2022_PROGRAM)
+        val tokenLegacyBytes = Base58.decode(Programs.TOKEN_PROGRAM)
+        val containsToken2022 = (0..raw.size - token2022Bytes.size).any { idx ->
+            raw.copyOfRange(idx, idx + token2022Bytes.size).contentEquals(token2022Bytes)
+        }
+        val containsTokenLegacy = (0..raw.size - tokenLegacyBytes.size).any { idx ->
+            raw.copyOfRange(idx, idx + tokenLegacyBytes.size).contentEquals(tokenLegacyBytes)
+        }
+        assertTrue(containsToken2022, "transaction must reference the Token-2022 program for PYUSD")
+        assertTrue(!containsTokenLegacy, "transaction must not reference the legacy Token program for PYUSD")
+    }
+
+    @Test
     fun resolveStablecoinMintMatchesRustReference() {
         assertEquals(null, Charge.resolveStablecoinMint("SOL", null))
         assertEquals(null, Charge.resolveStablecoinMint("sol", "localnet"))
