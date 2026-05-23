@@ -182,13 +182,22 @@ fn handle_connection(
                     }
                     Err(error) => {
                         let challenge_header = payment_challenge_header(state, price)?;
+                        let message = error.to_string();
+                        // G39: surface a canonical L6 code on every 402 so
+                        // the harness fault matrix can assert cross-SDK
+                        // agreement on the code emitted for each failure
+                        // class. The Rust spine VerificationError carries
+                        // a kebab-case code today; classify_canonical_code
+                        // maps it to the canonical snake_case form.
+                        let code = classify_canonical_code(&message);
                         write_json_response(
                             &mut stream,
                             402,
                             &[(WWW_AUTHENTICATE_HEADER, challenge_header.as_str())],
                             &json!({
-                                "error": "payment_invalid",
-                                "message": error.to_string(),
+                                "code": code,
+                                "error": code,
+                                "message": message,
                             }),
                         )?;
                     }
@@ -318,4 +327,53 @@ fn read_memory_signer(
     let raw = read_required_env(name)?;
     let bytes: Vec<u8> = serde_json::from_str(&raw)?;
     Ok(MemorySigner::from_bytes(&bytes)?)
+}
+
+/// Classify a free-text error message into a canonical L6 structured
+/// error code. Mirrors tests/interop/src/canonical-codes.ts and the
+/// Python / Ruby SDK helpers. The G39 fault matrix asserts cross-SDK
+/// agreement on this code.
+fn classify_canonical_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("already consumed") || lower.contains("signature already consumed") {
+        return "signature_consumed";
+    }
+    if lower.contains("challenge id mismatch")
+        || lower.contains("not issued by this server")
+        || lower.contains("challenge verification failed")
+    {
+        return "challenge_verification_failed";
+    }
+    if lower.contains("challenge expired") || lower.contains("expired at") {
+        return "challenge_expired";
+    }
+    if lower.contains("signed against localnet but the server expects")
+        || lower.contains("network mismatch")
+        || lower.contains("wrong network")
+    {
+        return "wrong_network";
+    }
+    if lower.contains("amount mismatch")
+        || lower.contains("currency mismatch")
+        || lower.contains("recipient mismatch")
+        || lower.contains("method details mismatch")
+        || lower.contains("split amounts exceed")
+        || lower.contains("splits cannot exceed")
+        || lower.contains("too many splits")
+        || lower.contains("push-mode credentials are not allowed")
+        || lower.contains("compute unit")
+        || lower.contains("unexpected program instruction")
+    {
+        return "charge_request_mismatch";
+    }
+    if lower.contains("credential method does not match")
+        || lower.contains("credential intent is not a charge")
+        || lower.contains("credential realm does not match")
+        || lower.contains("intent")
+            && (lower.contains("not a charge") || lower.contains("does not match"))
+        || lower.contains("realm")
+    {
+        return "challenge_route_mismatch";
+    }
+    "payment_invalid"
 }

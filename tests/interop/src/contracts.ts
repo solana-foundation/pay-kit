@@ -75,7 +75,33 @@ export type InteropScenario = {
   // assertion helpers expect a System Program transfer instruction
   // (discriminator 2) instead of an SPL transferChecked.
   assetKind?: "spl" | "sol";
+  // Optional. When set the harness asserts `result.responseBody.code`
+  // matches the canonical L6 / P1 structured error code on a 402 result.
+  // Only meaningful for `expectedStatus: 402`. Each server adapter is
+  // expected to emit the same canonical snake_case code for the same
+  // failure class. Adapters that have not yet shipped L6 emission can be
+  // excluded via `serverIds` per scenario; once their L6 work lands, the
+  // serverIds gate is dropped.
+  expectedCode?: CanonicalErrorCode;
 };
+
+/**
+ * Canonical L6 / P1 structured error codes. Every server SDK that
+ * emits a 402 response carries one of these in the body's `code`
+ * field. The G39 fault matrix asserts cross-SDK agreement on the
+ * code for each failure class.
+ *
+ * Source of truth: python/src/solana_mpp/_errors.py CANONICAL_CODES
+ * and ruby/lib/mpp/error_codes.rb CANONICAL_CODES.
+ */
+export type CanonicalErrorCode =
+  | "charge_request_mismatch"
+  | "challenge_route_mismatch"
+  | "challenge_verification_failed"
+  | "challenge_expired"
+  | "payment_invalid"
+  | "wrong_network"
+  | "signature_consumed";
 
 export type ReadyMessage = {
   type: "ready";

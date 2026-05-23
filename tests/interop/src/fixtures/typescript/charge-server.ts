@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { Mppx, solana } from "@solana/mpp/server";
+import { injectCanonicalCode } from "../../canonical-codes";
 import { readInteropEnvironment } from "./shared";
 
 function toWebRequest(request: http.IncomingMessage, body: string): Request {
@@ -103,11 +104,16 @@ async function main() {
 
       if (!mppx || constructError) {
         response.writeHead(402, { "content-type": "application/json" });
+        // G39: surface a canonical L6 code on every 402. The harness
+        // fault matrix asserts `responseBody.code` so the server fixture
+        // must always emit one, even on construct-time rejections.
         response.end(
-          JSON.stringify({
-            error: "challenge_unavailable",
-            message: constructError?.message ?? "mppx not initialized",
-          }),
+          injectCanonicalCode(
+            JSON.stringify({
+              error: "challenge_unavailable",
+              message: constructError?.message ?? "mppx not initialized",
+            }),
+          ),
         );
         return;
       }
@@ -136,7 +142,12 @@ async function main() {
           challenge.status,
           Object.fromEntries(challenge.headers),
         );
-        response.end(await challenge.text());
+        // G39: surface a canonical L6 code on every 402. The TS SDK
+        // emits free-text messages today; the fixture classifies them
+        // into canonical codes at the response boundary so the harness
+        // fault matrix has something to assert on.
+        const challengeBody = await challenge.text();
+        response.end(injectCanonicalCode(challengeBody));
         return;
       }
 

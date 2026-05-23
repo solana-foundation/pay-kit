@@ -107,7 +107,14 @@ export const chargeScenarios: readonly InteropScenario[] = [
     resourcePath: "/protected/network-mismatch",
     settlementHeader: "x-fixture-settlement",
     expectedStatus: 402,
+    // G39: cross-SDK agreement on the canonical code for a network
+    // mismatch failure class. Gated on serverIds = ts+rust because PHP,
+    // Ruby, Lua, Go, Python interop servers have not yet wired the
+    // canonical code injection at the 402 boundary. Each L6 follow-up
+    // PR adds its server id here.
+    expectedCode: "wrong_network",
     clientIds: ["typescript"],
+    serverIds: ["typescript", "rust"],
   },
   {
     id: "charge-cross-route-replay",
@@ -124,7 +131,13 @@ export const chargeScenarios: readonly InteropScenario[] = [
       amount: "500",
     },
     expectedStatus: 402,
+    // G39: cross-route replay surfaces as a pinned-field mismatch on
+    // the credential. Canonical code is charge_request_mismatch in
+    // every shipped SDK (the credential's claimed charge does not
+    // match the route's expected charge).
+    expectedCode: "charge_request_mismatch",
     clientIds: ["typescript"],
+    serverIds: ["typescript", "rust"],
   },
   {
     // Symbol mode: harness sends the literal string "USDC" as currency,
@@ -238,6 +251,11 @@ export const chargeScenarios: readonly InteropScenario[] = [
     clientIds: ["typescript"],
     clientComputeUnitLimit: 200_001,
     expectedStatus: 402,
+    // G39 deferred: mppx (TS client) throws "Missing WWW-Authenticate
+    // header" before exposing the server's 402 body to the harness, so
+    // the synthetic client_rejected_credential body carries no server
+    // code. Restoring code propagation through the client error path is
+    // a separate follow-up; the harness still asserts the 402 status.
   },
   {
     // G27. Native SOL transfer path. Currency is the lowercase string
@@ -289,6 +307,9 @@ export const chargeScenarios: readonly InteropScenario[] = [
       { recipientKey: "platform", amount: "1" },
     ],
     expectedStatus: 402,
+    // G39 deferred: same as charge-compute-budget-over-cap above. The
+    // client throws on missing WWW-Authenticate before the server's 402
+    // body reaches the harness.
   },
   {
     // G28b. Single split whose amount equals total amount, so the
@@ -305,5 +326,8 @@ export const chargeScenarios: readonly InteropScenario[] = [
     clientIds: ["typescript"],
     splits: [{ recipientKey: "platform", amount: "1000" }],
     expectedStatus: 402,
+    // G39 deferred: G28b is a client-side pre-broadcast rejection, the
+    // server is never reached so no server code is available. The
+    // synthetic client_rejected_credential body is fixture-internal.
   },
 ] as const;

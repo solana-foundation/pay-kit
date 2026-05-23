@@ -390,6 +390,22 @@ describe("mpp interop", () => {
               expect(
                 splitDeltas(initialSplitBalances, finalSplitBalances),
               ).toEqual(expectedZeroSplitDeltas(scenario));
+              // G39 fault matrix: every server SDK must emit the same
+              // canonical L6 structured code for the same failure class.
+              // Only asserted when the scenario declares an expectedCode
+              // so adapters that have not yet shipped L6 emission do not
+              // trip the matrix. Once an adapter ships L6 emission, its
+              // server id is added to the scenario's serverIds list and
+              // the matrix locks in the cross-SDK agreement.
+              if (scenario.expectedCode) {
+                const body = result.responseBody as
+                  | { code?: string }
+                  | undefined;
+                expect(
+                  body?.code,
+                  `G39: server ${serverImplementation.id} did not emit canonical code on 402 for scenario ${scenario.id}. Got body: ${JSON.stringify(result.responseBody)}`,
+                ).toBe(scenario.expectedCode);
+              }
             }
           },
         );
