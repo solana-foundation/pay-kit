@@ -17,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 
 /**
  * Interop adapter for the MPP Kotlin client.
@@ -60,7 +61,17 @@ private fun runAdapter() {
         ?: "x-fixture-settlement"
 
     val signer = MemorySigner.fromSecretKey(secretKey)
-    val okHttp = OkHttpClient()
+    // Surfpool-backed RPCs and proxied charge servers can take >10s to
+    // respond on the first warm-up, well beyond OkHttp's default 10s read
+    // timeout. The interop harness already enforces a 180s per-scenario
+    // ceiling, so generous client-side timeouts surface real server hangs
+    // without flagging warm-up latency as a failure.
+    val okHttp = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(150, TimeUnit.SECONDS)
+        .build()
     val rpc = JsonRpcClient(rpcUrl, okHttp)
     val client = MppHttpClient(
         signer = signer,
