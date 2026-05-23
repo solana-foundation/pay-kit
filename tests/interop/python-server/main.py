@@ -112,12 +112,31 @@ def _build_mpp() -> tuple[Mpp, dict[str, Any]]:
         print("MPP_INTEROP_SPLITS must decode to a JSON array", file=sys.stderr)
         sys.exit(2)
 
-    # Fee-payer keypair is optional in the harness but always present when
-    # the scenario uses server-side fee sponsorship.
-    fee_payer_bytes = _decode_keypair_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-    from solders.keypair import Keypair
+    # Fee-payer keypair is optional in the harness. Only scenarios that
+    # exercise server-side fee sponsorship export
+    # ``MPP_INTEROP_FEE_PAYER_SECRET_KEY``; absence must not crash the
+    # adapter at startup, and the challenge must not unconditionally
+    # advertise ``feePayer=true`` when there is no fee payer to sign.
+    fee_payer = None
+    fee_payer_raw = os.environ.get("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
+    if fee_payer_raw:
+        try:
+            arr = json.loads(fee_payer_raw)
+        except json.JSONDecodeError as exc:
+            print(
+                f"MPP_INTEROP_FEE_PAYER_SECRET_KEY must be JSON: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if not isinstance(arr, list) or not all(isinstance(b, int) for b in arr):
+            print(
+                "MPP_INTEROP_FEE_PAYER_SECRET_KEY must be a JSON array of integers",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        from solders.keypair import Keypair
 
-    fee_payer = Keypair.from_bytes(fee_payer_bytes)
+        fee_payer = Keypair.from_bytes(bytes(arr))
 
     # Greptile P1 (follow-up): do NOT construct a SolanaRpc /
     # httpx.AsyncClient at adapter boot. Each ``BaseHTTPRequestHandler``
