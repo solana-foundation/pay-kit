@@ -62,10 +62,19 @@ public enum Ed25519 {
         }
     }
 
-    /// Returns true when the 32 bytes can be parsed as a valid Ed25519
-    /// public key (i.e. lie on the curve). Used by ATA PDA derivation to
-    /// reject candidate seeds whose hash lands on the curve.
-    public static func isOnCurve(_ bytes: Data) -> Bool {
+    /// Returns true when the 32 bytes parse as a valid Ed25519 public
+    /// key via `Curve25519.Signing.PublicKey(rawRepresentation:)`. This
+    /// is **not** equivalent to the curve25519-dalek
+    /// `CompressedEdwardsY::decompress` check Solana uses for PDA
+    /// validation: Apple's initializer accepts arbitrary 32-byte values
+    /// (including off-curve bytes and low-order points). For PDA work,
+    /// use `Curve25519OnCurve.isOnCurve` (in `Curve25519Field.swift`)
+    /// which implements the proper field arithmetic.
+    ///
+    /// Kept for callers that want the lenient CryptoKit behavior (e.g.
+    /// passing through user-supplied public keys before delegating to
+    /// CryptoKit verification, which would only fail at verify time).
+    public static func canParseAsCryptoKitPublicKey(_ bytes: Data) -> Bool {
         guard bytes.count == publicKeyLength else { return false }
         return (try? Curve25519.Signing.PublicKey(rawRepresentation: bytes)) != nil
     }
