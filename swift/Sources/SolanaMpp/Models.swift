@@ -2,10 +2,15 @@ import Foundation
 
 public enum MppError: Error, Equatable {
     case invalidBase64URL
+    case invalidBase58
     case invalidHeader
     case invalidJSON(String)
     case invalidPaymentScheme
+    case invalidPubkey(String)
+    case invalidTransaction(String)
     case missingField(String)
+    case rpcFailure(String)
+    case signingFailure(String)
     case unsupportedChallenge(method: String, intent: String)
 }
 
