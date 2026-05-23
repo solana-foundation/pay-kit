@@ -150,6 +150,47 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 	}
 }
 
+// TestBuildChargeTransactionTokenCreateRecipientATAFlag table-tests the
+// opt-in CreateRecipientATA flag. The default (false) matches the
+// canonical Rust/TS clients which leave primary-recipient ATA creation
+// to the server, while setting the flag prepends an idempotent
+// createAssociatedTokenAccount instruction for first-run wallets that
+// do not yet hold a token account for the selected mint.
+func TestBuildChargeTransactionTokenCreateRecipientATAFlag(t *testing.T) {
+	mint := testutil.NewPrivateKey().PublicKey()
+	cases := []struct {
+		name             string
+		createRecipient  bool
+		wantInstructions int
+	}{
+		{name: "default_skips_primary_ata", createRecipient: false, wantInstructions: 3},
+		{name: "opt_in_adds_primary_ata", createRecipient: true, wantInstructions: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rpcClient := testutil.NewFakeRPC()
+			rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
+			signer := testutil.NewPrivateKey()
+			recipient := testutil.NewPrivateKey().PublicKey().String()
+			decimals := uint8(6)
+
+			payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, protocol.MethodDetails{
+				Decimals: &decimals,
+			}, BuildOptions{CreateRecipientATA: tc.createRecipient})
+			if err != nil {
+				t.Fatalf("build failed: %v", err)
+			}
+			tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+			if err != nil {
+				t.Fatalf("decode failed: %v", err)
+			}
+			if len(tx.Message.Instructions) != tc.wantInstructions {
+				t.Fatalf("instructions = %d, want %d", len(tx.Message.Instructions), tc.wantInstructions)
+			}
+		})
+	}
+}
+
 func TestBuildChargeTransactionTokenWithExternalIDMemo(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()

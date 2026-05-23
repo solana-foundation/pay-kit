@@ -19,6 +19,14 @@ type BuildOptions struct {
 	ComputeUnitLimit uint32
 	ComputeUnitPrice uint64
 	ExternalID       string
+	// CreateRecipientATA, when true, prepends an idempotent
+	// createAssociatedTokenAccount instruction for the primary recipient on
+	// SPL token charges. Default is false to match the canonical Rust/TS
+	// client behavior (the receiver server owns its destination ATA).
+	// Enable this only when paying a fresh recipient wallet that does not
+	// yet hold a token account for the selected mint; the instruction is
+	// idempotent so it is safe when the account already exists.
+	CreateRecipientATA bool
 }
 
 // BuildChargeTransaction creates a payment credential payload from challenge fields.
@@ -144,7 +152,7 @@ func BuildChargeTransaction(
 			instructions = append(instructions, transfer)
 			return nil
 		}
-		if err := addTransfer(recipientKey, primaryAmount, false); err != nil {
+		if err := addTransfer(recipientKey, primaryAmount, options.CreateRecipientATA); err != nil {
 			return protocol.CredentialPayload{}, err
 		}
 		if options.ExternalID != "" {
