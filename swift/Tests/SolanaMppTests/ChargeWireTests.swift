@@ -130,6 +130,85 @@ struct ChargeWireTests {
     }
 
     @Test
+    func acceptsKnownSymbolCurrencyWithAtaCreationSplit() async throws {
+        // Regression for Greptile finding on PR #104: the
+        // ataCreationRequired guard previously demanded
+        // `resolvedMint == request.currency`, which always failed when
+        // the request carried a symbol like "USDC" (the resolved value
+        // is the mint address, not the symbol). The interop tests
+        // missed this because the TS server fixture emits raw mint
+        // addresses. This test exercises the symbol path end to end.
+        let seed = Data(repeating: 11, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x55, count: 32))
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "USDC",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "feePayer": false,
+            "recentBlockhash": "\(blockhash)",
+            "splits": [
+              {"recipient": "11111111111111111111111111111112", "amount": "100", "ataCreationRequired": true}
+            ],
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-symbol",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        let header = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
+        #expect(header.hasPrefix("Payment "))
+    }
+
+    @Test
+    func rejectsAtaCreationWithBogusNonMintCurrency() async throws {
+        // Sibling regression: a bogus currency string that is neither a
+        // known symbol nor a valid base58 mint address must still be
+        // rejected when ataCreationRequired is set.
+        let seed = Data(repeating: 12, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x66, count: 32))
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "not-a-mint",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "feePayer": false,
+            "recentBlockhash": "\(blockhash)",
+            "splits": [
+              {"recipient": "11111111111111111111111111111112", "amount": "100", "ataCreationRequired": true}
+            ],
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-bogus",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        await #expect(throws: MppError.self) {
+            _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
+        }
+    }
+
+    @Test
     func pickChallengeReturnsFirstSolanaCharge() throws {
         let request = Base64URL.encode(Data(#"{"amount":"1","currency":"SOL","recipient":"11111111111111111111111111111112","methodDetails":{}}"#.utf8))
         let headers = [
