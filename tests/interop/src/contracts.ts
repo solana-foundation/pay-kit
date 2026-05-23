@@ -1,4 +1,7 @@
+import type { CanonicalErrorCode } from "./canonical-codes";
 import { chargeScenarios } from "./intents/charge";
+
+export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
@@ -84,24 +87,6 @@ export type InteropScenario = {
   // serverIds gate is dropped.
   expectedCode?: CanonicalErrorCode;
 };
-
-/**
- * Canonical L6 / P1 structured error codes. Every server SDK that
- * emits a 402 response carries one of these in the body's `code`
- * field. The G39 fault matrix asserts cross-SDK agreement on the
- * code for each failure class.
- *
- * Source of truth: python/src/solana_mpp/_errors.py CANONICAL_CODES
- * and ruby/lib/mpp/error_codes.rb CANONICAL_CODES.
- */
-export type CanonicalErrorCode =
-  | "charge_request_mismatch"
-  | "challenge_route_mismatch"
-  | "challenge_verification_failed"
-  | "challenge_expired"
-  | "payment_invalid"
-  | "wrong_network"
-  | "signature_consumed";
 
 export type ReadyMessage = {
   type: "ready";

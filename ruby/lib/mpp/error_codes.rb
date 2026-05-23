@@ -84,8 +84,11 @@ module Mpp
       [/too many splits/i, CODE_CHARGE_REQUEST_MISMATCH],
       [/credential method does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH],
       [/credential intent is not a charge/i, CODE_CHALLENGE_ROUTE_MISMATCH],
-      [/credential realm does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH],
-      [/fee.?payer.*signature.*not allowed/i, CODE_CHARGE_REQUEST_MISMATCH]
+      [/credential realm does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH]
+      # B34 (push-mode credential on a fee-payer route) is always raised
+      # with an explicit CODE_CHARGE_REQUEST_MISMATCH at the verifier, so
+      # the classifier never sees its message. No fallback pattern is
+      # needed here; adding one would be dead code.
     ].freeze
 
     # Return the canonical L6 code for a code or a Ruby error message.

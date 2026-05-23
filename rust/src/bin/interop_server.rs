@@ -369,9 +369,8 @@ fn classify_canonical_code(message: &str) -> &'static str {
     if lower.contains("credential method does not match")
         || lower.contains("credential intent is not a charge")
         || lower.contains("credential realm does not match")
-        || lower.contains("intent")
-            && (lower.contains("not a charge") || lower.contains("does not match"))
-        || lower.contains("realm")
+        || (lower.contains("intent")
+            && (lower.contains("not a charge") || lower.contains("does not match")))
     {
         return "challenge_route_mismatch";
     }
