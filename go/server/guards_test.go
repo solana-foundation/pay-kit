@@ -156,6 +156,91 @@ func TestValidateComputeBudgetInstructions_NonComputeBudgetIgnored(t *testing.T)
 	}
 }
 
+// TestResolveProgramID_OutOfRangeRejected ensures that a malformed
+// credential transaction whose ProgramIDIndex points outside the
+// AccountKeys slice is rejected as a structured payment_invalid error
+// instead of triggering a slice-index panic. The pull path accepts
+// attacker-controlled transaction bytes, so this guard is what keeps a
+// malformed credential from crashing the request handler.
+func TestResolveProgramID_OutOfRangeRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		keys    []solana.PublicKey
+		index   uint16
+		wantErr bool
+	}{
+		{
+			name:    "in_range_index_zero",
+			keys:    []solana.PublicKey{computeBudgetProgramID},
+			index:   0,
+			wantErr: false,
+		},
+		{
+			name:    "out_of_range_empty_keys",
+			keys:    []solana.PublicKey{},
+			index:   0,
+			wantErr: true,
+		},
+		{
+			name:    "out_of_range_past_end",
+			keys:    []solana.PublicKey{computeBudgetProgramID},
+			index:   2,
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := &solana.Transaction{Message: solana.Message{AccountKeys: tc.keys}}
+			programID, err := resolveProgramID(tx, tc.index)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil with programID=%s", programID)
+				}
+				sdkErr, ok := err.(*mpp.Error)
+				if !ok {
+					t.Fatalf("expected *mpp.Error, got %T", err)
+				}
+				if sdkErr.Code != mpp.ErrCodeInvalidPayload {
+					t.Fatalf("code = %q, want %q", sdkErr.Code, mpp.ErrCodeInvalidPayload)
+				}
+				if !strings.Contains(sdkErr.Message, "out of range") {
+					t.Fatalf("message %q should mention out-of-range", sdkErr.Message)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateComputeBudgetInstructions_OutOfRangeProgramIndex ensures
+// the validator surfaces a payment_invalid error rather than panicking
+// when an instruction references a program slot past AccountKeys. This
+// mirrors the structured rejection used by rust/typescript servers.
+func TestValidateComputeBudgetInstructions_OutOfRangeProgramIndex(t *testing.T) {
+	tx := &solana.Transaction{
+		Message: solana.Message{
+			AccountKeys: []solana.PublicKey{computeBudgetProgramID},
+			Instructions: []solana.CompiledInstruction{
+				{ProgramIDIndex: 5, Data: solana.Base58(encodeUnitLimit(1000))},
+			},
+		},
+	}
+	err := validateComputeBudgetInstructions(tx)
+	if err == nil {
+		t.Fatal("expected error for out-of-range ProgramIDIndex")
+	}
+	sdkErr, ok := err.(*mpp.Error)
+	if !ok {
+		t.Fatalf("expected *mpp.Error, got %T", err)
+	}
+	if sdkErr.Code != mpp.ErrCodeInvalidPayload {
+		t.Fatalf("code = %q, want %q", sdkErr.Code, mpp.ErrCodeInvalidPayload)
+	}
+}
+
 // TestValidateComputeBudgetInstructions_RejectsAccounts ensures a
 // ComputeBudget instruction that smuggles account refs is rejected.
 func TestValidateComputeBudgetInstructions_RejectsAccounts(t *testing.T) {

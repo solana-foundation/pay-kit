@@ -495,7 +495,10 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 				if matched[index] {
 					continue
 				}
-				programID := tx.Message.AccountKeys[compiled.ProgramIDIndex]
+				programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+				if err != nil {
+					return err
+				}
 				if !programID.Equals(solana.SystemProgramID) {
 					continue
 				}
@@ -556,7 +559,10 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 			if matched[index] {
 				continue
 			}
-			programID := tx.Message.AccountKeys[compiled.ProgramIDIndex]
+			programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+			if err != nil {
+				return err
+			}
 			if !programID.Equals(expectedProgram) {
 				continue
 			}
@@ -636,7 +642,10 @@ func verifyMemoInstructions(tx *solana.Transaction, matched []bool, externalID s
 			if matched[index] {
 				continue
 			}
-			programID := tx.Message.AccountKeys[compiled.ProgramIDIndex]
+			programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+			if err != nil {
+				return err
+			}
 			if !programID.Equals(memoProgram) {
 				continue
 			}
@@ -655,7 +664,10 @@ func verifyMemoInstructions(tx *solana.Transaction, matched []bool, externalID s
 		if matched[index] {
 			continue
 		}
-		programID := tx.Message.AccountKeys[compiled.ProgramIDIndex]
+		programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+		if err != nil {
+			return err
+		}
 		if programID.Equals(memoProgram) {
 			return mpp.NewError(mpp.ErrCodeInvalidPayload, "unexpected Memo Program instruction in payment transaction")
 		}
@@ -706,6 +718,24 @@ func isNativeSOL(currency string) bool {
 	return strings.EqualFold(currency, "sol")
 }
 
+// resolveProgramID safely resolves the program account for a compiled
+// instruction. Attacker-controlled credential transactions on the pull
+// path may carry a ProgramIDIndex that points outside AccountKeys; the
+// raw indexing operation panics in that case, so verification helpers
+// must use this guard and surface a structured 402 payment_invalid
+// rejection instead of crashing the request handler.
+func resolveProgramID(tx *solana.Transaction, programIDIndex uint16) (solana.PublicKey, error) {
+	idx := int(programIDIndex)
+	if idx < 0 || idx >= len(tx.Message.AccountKeys) {
+		return solana.PublicKey{}, mpp.NewError(
+			mpp.ErrCodeInvalidPayload,
+			fmt.Sprintf("instruction program index %d is out of range for %d account keys",
+				programIDIndex, len(tx.Message.AccountKeys)),
+		)
+	}
+	return tx.Message.AccountKeys[idx], nil
+}
+
 // validateComputeBudgetInstructions inspects every ComputeBudget program
 // instruction in the credential transaction and rejects ones that exceed
 // the unit-limit or microlamport-price caps. The wire format follows the
@@ -717,7 +747,10 @@ func isNativeSOL(currency string) bool {
 // Matches rust/src/server/charge.rs validate_compute_budget_instruction.
 func validateComputeBudgetInstructions(tx *solana.Transaction) error {
 	for _, ix := range tx.Message.Instructions {
-		programID := tx.Message.AccountKeys[ix.ProgramIDIndex]
+		programID, err := resolveProgramID(tx, ix.ProgramIDIndex)
+		if err != nil {
+			return err
+		}
 		if !programID.Equals(computeBudgetProgramID) {
 			continue
 		}
