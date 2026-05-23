@@ -28,11 +28,23 @@ function M.parse_rfc3339(value)
   if type(value) ~= 'string' then
     return nil, 'invalid RFC3339 timestamp'
   end
-  local year, month, day, hour, min, sec, frac, offset = value:match(
-    '^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt](%d%d):(%d%d):(%d%d)%.?(%d*)([Zz%+%-][%d:]*)$'
+  -- RFC 3339 sec 5.6 grammar: optional `time-secfrac = "." 1*DIGIT`. The dot must be
+  -- accompanied by at least one digit. Match the fractional component as one optional
+  -- group so a bare dot (e.g. "2099-01-01T00:00:00.Z") fails parsing rather than being
+  -- silently accepted as zero fractional seconds (diverges from PHP/Ruby strict parsers).
+  local year, month, day, hour, min, sec, rest = value:match(
+    '^(%d%d%d%d)%-(%d%d)%-(%d%d)[Tt](%d%d):(%d%d):(%d%d)(.*)$'
   )
   if not year then
     return nil, 'invalid RFC3339 timestamp'
+  end
+  local frac, offset = rest:match('^%.(%d+)([Zz%+%-][%d:]*)$')
+  if not frac then
+    frac = ''
+    offset = rest:match('^([Zz%+%-][%d:]*)$')
+    if not offset then
+      return nil, 'invalid RFC3339 timestamp'
+    end
   end
   if #frac > 9 then
     return nil, 'fractional seconds exceed 9 digits'
