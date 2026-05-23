@@ -65,16 +65,24 @@ class ChargeCredentialTest {
     }
 
     @Test
-    fun memorySignerUsesRawEd25519PublicKeyBytes() {
-        val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
-        val signer = MemorySigner.fromKeyPair(keyPair)
+    fun memorySignerExposesPublicKeyAsBase64UrlAndBase58() {
+        val signer = MemorySigner.generate()
         val publicKey = Base64Url.decode(signer.publicKey)
-        val derPublicKey = keyPair.public.encoded
+        val address = Base58.decode(signer.address)
 
         assertEquals(32, publicKey.size)
-        assertNotEquals(Base64Url.encode(derPublicKey), signer.publicKey)
-        assertContentEquals(derPublicKey.copyOfRange(derPublicKey.size - 32, derPublicKey.size), publicKey)
-        assertEquals(signer.publicKey, signer.address)
+        assertContentEquals(publicKey, address)
+        assertContentEquals(publicKey, signer.publicKeyBytes)
+    }
+
+    @Test
+    fun memorySignerFromKeyPairAcceptsJdkEd25519() {
+        val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val signer = MemorySigner.fromKeyPair(keyPair)
+
+        assertEquals(32, signer.publicKeyBytes.size)
+        assertEquals(signer.publicKey, Base64Url.encode(signer.publicKeyBytes))
+        assertEquals(signer.address, Base58.encode(signer.publicKeyBytes))
     }
 
     @Test
