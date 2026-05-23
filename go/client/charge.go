@@ -125,23 +125,26 @@ func BuildChargeTransaction(
 				return protocol.CredentialPayload{}, err
 			}
 		}
-		addTransfer := func(owner solana.PublicKey, amount uint64) error {
+		addTransfer := func(owner solana.PublicKey, amount uint64, createTokenAccount bool) error {
 			destATA, err := solanautil.FindAssociatedTokenAddressWithProgram(owner, mint, tokenProgram)
 			if err != nil {
 				return err
 			}
-			createATA, err := solanautil.BuildCreateAssociatedTokenAccount(payer, owner, mint, tokenProgram)
-			if err != nil {
-				return err
+			if createTokenAccount {
+				createATA, err := solanautil.BuildCreateAssociatedTokenAccount(payer, owner, mint, tokenProgram)
+				if err != nil {
+					return err
+				}
+				instructions = append(instructions, createATA)
 			}
 			transfer, err := solanautil.BuildTransferChecked(amount, decimals, sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
 			if err != nil {
 				return err
 			}
-			instructions = append(instructions, createATA, transfer)
+			instructions = append(instructions, transfer)
 			return nil
 		}
-		if err := addTransfer(recipientKey, primaryAmount); err != nil {
+		if err := addTransfer(recipientKey, primaryAmount, false); err != nil {
 			return protocol.CredentialPayload{}, err
 		}
 		if options.ExternalID != "" {
@@ -160,7 +163,8 @@ func BuildChargeTransaction(
 			if err != nil {
 				return protocol.CredentialPayload{}, err
 			}
-			if err := addTransfer(splitKey, splitAmount); err != nil {
+			createTokenAccount := !useServerFeePayer || (split.AtaCreationRequired != nil && *split.AtaCreationRequired)
+			if err := addTransfer(splitKey, splitAmount, createTokenAccount); err != nil {
 				return protocol.CredentialPayload{}, err
 			}
 			if split.Memo != "" {

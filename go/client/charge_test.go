@@ -145,8 +145,8 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	if len(tx.Message.Instructions) != 4 {
-		t.Fatalf("expected 4 instructions, got %d", len(tx.Message.Instructions))
+	if len(tx.Message.Instructions) != 3 {
+		t.Fatalf("expected 3 instructions, got %d", len(tx.Message.Instructions))
 	}
 }
 
@@ -292,9 +292,9 @@ func TestBuildChargeTransactionTokenWithSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	// 2 compute budget + 2 (create ATA + transfer) for primary + 2 for split + 1 split memo = 7
-	if len(tx.Message.Instructions) != 7 {
-		t.Fatalf("expected 7 instructions, got %d", len(tx.Message.Instructions))
+	// 2 compute budget + 1 primary transfer + 2 split instructions + 1 split memo = 6
+	if len(tx.Message.Instructions) != 6 {
+		t.Fatalf("expected 6 instructions, got %d", len(tx.Message.Instructions))
 	}
 	if !hasMemoText(memoTexts(t, tx), "platform fee") {
 		t.Fatalf("expected split memo instruction")
