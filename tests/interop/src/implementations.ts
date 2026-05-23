@@ -93,7 +93,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     label: "PHP HTTP server",
     role: "server",
     command: ["php", "php-server/server.php"],
-    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", true),
   },
   {
     id: "ruby",
