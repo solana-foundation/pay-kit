@@ -49,14 +49,14 @@ local function account_key_at(tx, index)
 end
 
 local function amount_from(field, label)
-  local value = field
-  if type(value) == 'number' then
-    value = tostring(math.floor(value))
-  end
-  if type(value) ~= 'string' or not value:match('^%d+$') then
+  -- Rust models the wire amount as `String` (parsed to u64 downstream); a JSON
+  -- numeric carrier is a schema mismatch the spine rejects, and accepting one
+  -- in Lua would let a malformed challenge pass farther here than against
+  -- the Rust reference. Reject anything that is not a non-empty digit string.
+  if type(field) ~= 'string' or not field:match('^%d+$') then
     verifier_error(label .. ' must be an integer string')
   end
-  return value
+  return field
 end
 
 local function sum_splits(splits)
@@ -110,7 +110,14 @@ local function match_spl_transfer(tx, recipient, mint, token_program, amount, de
       if (program == TOKEN_PROGRAM or program == TOKEN_2022_PROGRAM) and program == token_program then
         local parsed = instructions.parse_transfer_checked(ix)
         if parsed and uint.compare(parsed.amount, amount) == 0 then
-          if decimals == nil or parsed.decimals == tonumber(decimals) then
+          -- Rust types `methodDetails.decimals` as `Option<u8>`, so a string
+          -- payload like `"6"` is a schema mismatch the spine rejects. Reject
+          -- anything that is not nil or a plain number here so the same
+          -- malformed challenge cannot settle against Lua either.
+          if decimals ~= nil and type(decimals) ~= 'number' then
+            verifier_error('methodDetails.decimals must be a number')
+          end
+          if decimals == nil or parsed.decimals == decimals then
             local mint_account = account_key_at(tx, ix.accounts[2])
             if mint_account == mint then
               local source_ata = account_key_at(tx, ix.accounts[1])
