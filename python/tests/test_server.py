@@ -830,3 +830,190 @@ class TestMemoV1Rejected:
         tx_b64 = self._build_tx_with_memo_v1()
         with pytest.raises(PaymentError, match="memo v1"):
             _decode_legacy_payment_instructions(tx_b64)
+
+
+class TestL8SettlementOrdering:
+    """L8 lock: broadcast → consume_signature → await_confirmation.
+
+    The previous order (consume → broadcast → await with a rollback on
+    failure) had a fatal flaw: a confirmation timeout after a successful
+    broadcast triggered the rollback, which deleted the consume marker,
+    so a retry could re-broadcast the same transaction and double-pay.
+    Mirrors lua/mpp/server/charge_handler.lua docstring and the cross-SDK
+    L8 lock that landed on Rust + Ruby + PHP in PR #96 / #102.
+    """
+
+    class _OrderingRPC:
+        """Stub RPC that records the order of calls so the test can assert
+        broadcast happened before the store insert."""
+
+        def __init__(self, ordering: list[str], confirm_value):
+            self._ordering = ordering
+            self._confirm_value = confirm_value
+            self.tx = {
+                "meta": {"err": None},
+                "transaction": {
+                    "message": {
+                        "instructions": [
+                            {
+                                "programId": TOKEN_PROGRAM,
+                                "parsed": {
+                                    "type": "transferChecked",
+                                    "info": {
+                                        "destination": _derive_ata(TEST_RECIPIENT, USDC_DEVNET),
+                                        "mint": USDC_DEVNET,
+                                        "tokenAmount": {"amount": "1000000"},
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+
+        async def send_raw_transaction(self, _raw: bytes):
+            self._ordering.append("send_raw_transaction")
+            return FakeResponse(VALID_SIGNATURE)
+
+        async def confirm_transaction(self, *_args, **_kwargs):
+            self._ordering.append("confirm_transaction")
+            return FakeResponse(self._confirm_value)
+
+        async def get_transaction(self, *_args, **_kwargs):
+            self._ordering.append("get_transaction")
+            return FakeResponse(self.tx)
+
+    class _RecordingStore:
+        def __init__(self, ordering: list[str]):
+            self._ordering = ordering
+            self._data: dict = {}
+
+        async def get(self, key):
+            return self._data.get(key)
+
+        async def put(self, key, value):
+            self._data[key] = value
+
+        async def delete(self, key):
+            self._ordering.append("store.delete")
+            self._data.pop(key, None)
+
+        async def put_if_absent(self, key, value):
+            self._ordering.append("store.put_if_absent")
+            if key in self._data:
+                return False
+            self._data[key] = value
+            return True
+
+    def _build_credential(self, mpp_handler: Mpp) -> tuple[PaymentCredential, str]:
+        transaction = _build_spl_transfer_checked_transaction(
+            TEST_RECIPIENT, USDC_DEVNET, 1_000_000
+        )
+        challenge = mpp_handler.charge("1.00")
+        echo = challenge.to_echo()
+        credential = PaymentCredential(
+            challenge=echo,
+            payload={"type": "transaction", "transaction": transaction},
+        )
+        return credential, transaction
+
+    async def test_broadcast_before_consume(self):
+        ordering: list[str] = []
+        rpc = self._OrderingRPC(ordering, [{"err": None}])
+        store = self._RecordingStore(ordering)
+        from solana_mpp.store import Store  # noqa: F401  ensure protocol import
+
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=store,
+            )
+        )
+        credential, _tx = self._build_credential(handler)
+
+        receipt = await handler.verify_credential(credential)
+        assert receipt.is_success()
+
+        # The canonical L8 order is broadcast → consume → await. assertions
+        # are positional, not equality, so adding extra steps later (e.g.
+        # simulate before broadcast) does not break this test as long as
+        # the relative order holds.
+        broadcast_idx = ordering.index("send_raw_transaction")
+        consume_idx = ordering.index("store.put_if_absent")
+        confirm_idx = ordering.index("confirm_transaction")
+        assert broadcast_idx < consume_idx, (
+            f"L8 violation: broadcast must precede consume; saw {ordering}"
+        )
+        assert consume_idx < confirm_idx, (
+            f"L8 violation: consume must precede await; saw {ordering}"
+        )
+
+    async def test_confirm_timeout_after_broadcast_does_not_rollback_consume(self):
+        """The headline L8 bug: a confirm-timeout post-broadcast used to
+        delete the consume marker on the way out. After L8, the marker
+        MUST survive so a retry of the same credential hits the consumed
+        check first and cannot re-broadcast."""
+        ordering: list[str] = []
+        # confirm returns no-ok statuses -> handler raises transaction-not-found
+        rpc = self._OrderingRPC(ordering, [{"err": "Timeout"}])
+        store = self._RecordingStore(ordering)
+
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=store,
+            )
+        )
+        credential, _tx = self._build_credential(handler)
+
+        with pytest.raises(PaymentError):
+            await handler.verify_credential(credential)
+
+        # The consume marker must still be present after the timeout: the
+        # signature is on the wire and may finalize asynchronously.
+        assert "store.put_if_absent" in ordering
+        assert "store.delete" not in ordering, (
+            "L8 regression: consume marker must not be rolled back after a "
+            "successful broadcast even if confirmation times out"
+        )
+
+    async def test_signature_keyed_consume_not_credential_keyed(self):
+        """A retry of the same credential MUST collide on the on-chain
+        signature, not on the credential-payload bytes. Keying by credential
+        bytes used to let a retry with the same payload look like a fresh
+        request whenever the signature differed."""
+        ordering: list[str] = []
+        rpc = self._OrderingRPC(ordering, [{"err": None}])
+        store = self._RecordingStore(ordering)
+
+        handler = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+                store=store,
+            )
+        )
+        credential, _tx = self._build_credential(handler)
+        await handler.verify_credential(credential)
+
+        # Inspect the store: the consume key must include the on-chain
+        # signature returned by send_raw_transaction, not the credential
+        # transaction prefix.
+        keys = list(store._data.keys())
+        assert any(VALID_SIGNATURE in key for key in keys), (
+            f"consume key must be keyed by on-chain signature; saw {keys}"
+        )

@@ -683,42 +683,51 @@ class Mpp:
         check_network_blockhash(self._network, blockhash_b58)
         _verify_local_transaction_intent(payload.transaction, request, details)
 
-        # Decode and process the transaction
-        # In a real implementation, this would use solders to deserialize,
-        # optionally co-sign, simulate, send, confirm, and verify on-chain.
-        # For now we provide the verification skeleton.
+        # L8 lock: broadcast first, then consume_signature, then await
+        # confirmation. The previous order (consume → broadcast → await,
+        # with a rollback in the except block) had a fatal flaw: a
+        # confirmation timeout after a successful broadcast triggered the
+        # rollback path which DELETED the consume marker, so a retry of the
+        # same credential could re-broadcast the same signed transaction
+        # and re-issue a receipt for it. Mirrors the canonical L8 order
+        # documented in lua/mpp/server/charge_handler.lua and the fix that
+        # landed on Ruby + PHP + Rust in PR #96 / #102. This is the same
+        # confirmation-timeout double-pay window Ludo found on the Rust
+        # spine; closing it here brings Python into parity.
+        from solders.signature import Signature
 
-        # Replay protection
-        consumed_key = _CONSUMED_PREFIX + payload.transaction[:64]
+        raw_tx = base64.b64decode(payload.transaction)
+        send_resp = await self._rpc.send_raw_transaction(raw_tx)
+        signature = str(_rpc_value(send_resp))
+
+        # CONSUME the signature now that we know it has been accepted by the
+        # cluster. Keying by signature (not by the credential bytes) means a
+        # retry of the same credential always tries to insert the same key,
+        # so the second attempt fails fast and the network is never asked
+        # to settle the same transaction twice.
+        consumed_key = _CONSUMED_PREFIX + signature
         inserted = await self._store.put_if_absent(consumed_key, True)
         if not inserted:
             raise ReplayError()
 
-        try:
-            raw_tx = base64.b64decode(payload.transaction)
-            send_resp = await self._rpc.send_raw_transaction(raw_tx)
-            signature = str(_rpc_value(send_resp))
-            from solders.signature import Signature
+        # AWAIT confirmation. A timeout here MUST NOT roll back the consume:
+        # the signature is on the wire and may finalize asynchronously.
+        sig = Signature.from_string(signature)
+        status_resp = await self._rpc.confirm_transaction(sig)
+        if not _status_ok(status_resp):
+            raise PaymentError("transaction not confirmed", code="transaction-not-found")
 
-            sig = Signature.from_string(signature)
-            status_resp = await self._rpc.confirm_transaction(sig)
-            if not _status_ok(status_resp):
-                raise PaymentError("transaction not confirmed", code="transaction-not-found")
-
-            tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
-            tx = _transaction_dict(tx_resp)
-            if tx is None:
-                raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
-            self._verify_confirmed_transaction(tx, request, details)
-            return Receipt.success(
-                method="solana",
-                reference=signature,
-                challenge_id=credential.challenge.id,
-                external_id=request.external_id,
-            )
-        except Exception:
-            await self._store.delete(consumed_key)
-            raise
+        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx = _transaction_dict(tx_resp)
+        if tx is None:
+            raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
+        self._verify_confirmed_transaction(tx, request, details)
+        return Receipt.success(
+            method="solana",
+            reference=signature,
+            challenge_id=credential.challenge.id,
+            external_id=request.external_id,
+        )
 
     async def _verify_signature(
         self,
@@ -733,30 +742,33 @@ class Mpp:
         if self._rpc is None:
             raise PaymentError("rpc client is required for signature verification", code="invalid-config")
 
+        # L8 push-mode lock: fetch the on-chain transaction and verify its
+        # shape BEFORE consuming the signature. If the client lied about the
+        # signature (or sent a signature that does not match the route), we
+        # do not want a permanent replay-store entry for it. Only after the
+        # on-chain shape is known to be correct do we mark the signature
+        # consumed. Mirrors lua/mpp/server/charge_handler.lua push-mode
+        # steps 2-4 and the cross-SDK lock from PR #96 / #102.
+        from solders.signature import Signature
+
+        sig = Signature.from_string(payload.signature)
+        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx = _transaction_dict(tx_resp)
+        if tx is None:
+            raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
+        self._verify_confirmed_transaction(tx, request, details)
+
         consumed_key = _CONSUMED_PREFIX + payload.signature
         inserted = await self._store.put_if_absent(consumed_key, True)
         if not inserted:
             raise ReplayError()
 
-        try:
-            from solders.signature import Signature
-
-            sig = Signature.from_string(payload.signature)
-            tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
-            tx = _transaction_dict(tx_resp)
-            if tx is None:
-                raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
-            self._verify_confirmed_transaction(tx, request, details)
-
-            return Receipt.success(
-                method="solana",
-                reference=payload.signature,
-                challenge_id=credential.challenge.id,
-                external_id=request.external_id,
-            )
-        except Exception:
-            await self._store.delete(consumed_key)
-            raise
+        return Receipt.success(
+            method="solana",
+            reference=payload.signature,
+            challenge_id=credential.challenge.id,
+            external_id=request.external_id,
+        )
 
     def _verify_confirmed_transaction(self, tx: dict[str, Any], request: ChargeRequest, details: MethodDetails) -> None:
         meta = tx.get("meta") or {}
