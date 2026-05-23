@@ -2,13 +2,13 @@
 // Builds a deterministic legacy SystemProgram transfer transaction with
 // a fixed seed and fixed blockhash, then prints the bincode-serialized
 // bytes as a hex string. The Kotlin codec must produce the same bytes.
+use ed25519_dalek::SigningKey;
+use solana_hash::Hash;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
 use solana_transaction::Transaction;
-use solana_hash::Hash;
-use ed25519_dalek::SigningKey;
 use std::str::FromStr;
 
 fn to_hex(bytes: &[u8]) -> String {
