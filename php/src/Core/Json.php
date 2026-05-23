@@ -78,19 +78,118 @@ final class Json
      */
     private static function compareUtf16(string $a, string $b): int
     {
-        $au = mb_convert_encoding($a, 'UTF-16BE', 'UTF-8');
-        $bu = mb_convert_encoding($b, 'UTF-16BE', 'UTF-8');
-        $aLen = strlen($au);
-        $bLen = strlen($bu);
+        $au = self::utf16CodeUnits($a);
+        $bu = self::utf16CodeUnits($b);
+        $aLen = count($au);
+        $bLen = count($bu);
         $n = min($aLen, $bLen);
-        for ($i = 0; $i < $n; $i += 2) {
-            $ax = (ord($au[$i]) << 8) | ord($au[$i + 1]);
-            $bx = (ord($bu[$i]) << 8) | ord($bu[$i + 1]);
-            if ($ax !== $bx) {
-                return $ax <=> $bx;
+        for ($i = 0; $i < $n; $i++) {
+            if ($au[$i] !== $bu[$i]) {
+                return $au[$i] <=> $bu[$i];
             }
         }
         return $aLen <=> $bLen;
+    }
+
+    /**
+     * Decode a UTF-8 byte string into UTF-16 code units (handles surrogate pair expansion).
+     *
+     * Pure-PHP so the package does not depend on ext-mbstring (composer.json only declares php
+     * and the Solana SDK). Throws InvalidArgumentException for malformed UTF-8 or lone surrogates.
+     *
+     * @return list<int>
+     */
+    private static function utf16CodeUnits(string $value): array
+    {
+        $units = [];
+        foreach (self::utf8Codepoints($value) as $cp) {
+            if ($cp < 0x10000) {
+                $units[] = $cp;
+            } else {
+                $offset = $cp - 0x10000;
+                $units[] = 0xD800 + ($offset >> 10);
+                $units[] = 0xDC00 + ($offset & 0x3FF);
+            }
+        }
+        return $units;
+    }
+
+    /**
+     * Decode a UTF-8 byte string into an array of Unicode codepoints.
+     *
+     * Rejects malformed UTF-8, overlong encodings, and surrogate codepoints encoded as UTF-8
+     * (RFC 3629 sec 3 and RFC 8785 sec 3.2.2 require fail-closed behavior here).
+     *
+     * @return list<int>
+     */
+    private static function utf8Codepoints(string $value): array
+    {
+        $out = [];
+        $len = strlen($value);
+        $i = 0;
+        while ($i < $len) {
+            $b1 = ord($value[$i]);
+            if ($b1 < 0x80) {
+                $out[] = $b1;
+                $i += 1;
+                continue;
+            }
+            if ($b1 < 0xC2) {
+                throw new InvalidArgumentException('invalid UTF-8 lead byte');
+            }
+            if ($b1 < 0xE0) {
+                if ($i + 1 >= $len) {
+                    throw new InvalidArgumentException('truncated UTF-8');
+                }
+                $b2 = ord($value[$i + 1]);
+                if (($b2 & 0xC0) !== 0x80) {
+                    throw new InvalidArgumentException('invalid UTF-8 continuation');
+                }
+                $out[] = (($b1 & 0x1F) << 6) | ($b2 & 0x3F);
+                $i += 2;
+                continue;
+            }
+            if ($b1 < 0xF0) {
+                if ($i + 2 >= $len) {
+                    throw new InvalidArgumentException('truncated UTF-8');
+                }
+                $b2 = ord($value[$i + 1]);
+                $b3 = ord($value[$i + 2]);
+                if (($b2 & 0xC0) !== 0x80 || ($b3 & 0xC0) !== 0x80) {
+                    throw new InvalidArgumentException('invalid UTF-8 continuation');
+                }
+                $cp = (($b1 & 0x0F) << 12) | (($b2 & 0x3F) << 6) | ($b3 & 0x3F);
+                if ($cp < 0x800) {
+                    throw new InvalidArgumentException('overlong UTF-8 sequence');
+                }
+                if ($cp >= 0xD800 && $cp <= 0xDFFF) {
+                    throw new InvalidArgumentException('lone surrogate in string');
+                }
+                $out[] = $cp;
+                $i += 3;
+                continue;
+            }
+            if ($b1 < 0xF5) {
+                if ($i + 3 >= $len) {
+                    throw new InvalidArgumentException('truncated UTF-8');
+                }
+                $b2 = ord($value[$i + 1]);
+                $b3 = ord($value[$i + 2]);
+                $b4 = ord($value[$i + 3]);
+                if (($b2 & 0xC0) !== 0x80 || ($b3 & 0xC0) !== 0x80 || ($b4 & 0xC0) !== 0x80) {
+                    throw new InvalidArgumentException('invalid UTF-8 continuation');
+                }
+                $cp = (($b1 & 0x07) << 18) | (($b2 & 0x3F) << 12) | (($b3 & 0x3F) << 6) | ($b4 & 0x3F);
+                if ($cp < 0x10000 || $cp > 0x10FFFF) {
+                    throw new InvalidArgumentException('UTF-8 codepoint out of range');
+                }
+                $out[] = $cp;
+                $i += 4;
+                continue;
+            }
+            throw new InvalidArgumentException('invalid UTF-8 lead byte');
+        }
+        return $out;
     }
 
     /**
@@ -120,14 +219,18 @@ final class Json
      */
     private static function shortestDigitsAndExponent(float $absValue): array
     {
-        // PHP's (string) cast respects serialize_precision but is not always shortest round-trip
-        // for edge values like 0.30000000000000004. Use sprintf with the explicit shortest-trip
-        // %.17g and the shorter %.15g fallback if it round-trips.
-        $short = sprintf('%.15g', $absValue);
-        if ((float)$short === $absValue) {
-            $repr = $short;
-        } else {
-            $repr = sprintf('%.17g', $absValue);
+        // ES6 ToString (ECMA-262 7.1.12.1) requires the shortest decimal representation that
+        // round-trips back to the same double. Walk %.{p}g from p=1 to 17 and pick the first
+        // that round-trips. Only checking %.15g misses values whose shortest form needs 16
+        // digits (e.g. 333333333.33333329 -> "333333333.3333333", %.16g), and jumping to
+        // %.17g for those produces a non-canonical encoder output that diverges from JS.
+        $repr = sprintf('%.17g', $absValue);
+        for ($p = 1; $p <= 17; $p++) {
+            $candidate = sprintf('%.' . $p . 'g', $absValue);
+            if ((float)$candidate === $absValue) {
+                $repr = $candidate;
+                break;
+            }
         }
         if (stripos($repr, 'e') !== false) {
             $parts = preg_split('/[eE]/', $repr);
@@ -178,31 +281,43 @@ final class Json
 
     /**
      * Emit a JCS-conformant JSON string literal (RFC 8785 sec 3.2.2.2), rejecting lone surrogates.
+     *
+     * Pure-PHP (no ext-mbstring dependency).
      */
     private static function encodeString(string $value): string
     {
-        // Validate UTF-8 then walk codepoints.
-        if (!mb_check_encoding($value, 'UTF-8')) {
-            throw new InvalidArgumentException('invalid UTF-8 in string');
-        }
-        $codepoints = mb_str_split($value, 1, 'UTF-8');
         $buf = '"';
-        foreach ($codepoints as $char) {
-            $cp = mb_ord($char, 'UTF-8');
-            if ($cp >= 0xD800 && $cp <= 0xDFFF) {
-                throw new InvalidArgumentException('lone surrogate in string');
+        foreach (self::utf8Codepoints($value) as $cp) {
+            if ($cp === 0x5C) {
+                $buf .= '\\\\';
+            } elseif ($cp === 0x22) {
+                $buf .= '\\"';
+            } elseif ($cp === 0x08) {
+                $buf .= '\\b';
+            } elseif ($cp === 0x09) {
+                $buf .= '\\t';
+            } elseif ($cp === 0x0A) {
+                $buf .= '\\n';
+            } elseif ($cp === 0x0C) {
+                $buf .= '\\f';
+            } elseif ($cp === 0x0D) {
+                $buf .= '\\r';
+            } elseif ($cp < 0x20) {
+                $buf .= sprintf('\\u%04x', $cp);
+            } elseif ($cp < 0x80) {
+                $buf .= chr($cp);
+            } elseif ($cp < 0x800) {
+                $buf .= chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
+            } elseif ($cp < 0x10000) {
+                $buf .= chr(0xE0 | ($cp >> 12))
+                    . chr(0x80 | (($cp >> 6) & 0x3F))
+                    . chr(0x80 | ($cp & 0x3F));
+            } else {
+                $buf .= chr(0xF0 | ($cp >> 18))
+                    . chr(0x80 | (($cp >> 12) & 0x3F))
+                    . chr(0x80 | (($cp >> 6) & 0x3F))
+                    . chr(0x80 | ($cp & 0x3F));
             }
-            $buf .= match (true) {
-                $char === '\\' => '\\\\',
-                $char === '"' => '\\"',
-                $char === "\b" => '\\b',
-                $char === "\t" => '\\t',
-                $char === "\n" => '\\n',
-                $char === "\f" => '\\f',
-                $char === "\r" => '\\r',
-                $cp < 0x20 => sprintf('\\u%04x', $cp),
-                default => $char,
-            };
         }
         return $buf . '"';
     }

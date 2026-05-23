@@ -60,6 +60,33 @@ final class JsonTest extends TestCase
         self::assertSame('42', Json::canonicalize(42));
     }
 
+    /**
+     * ES6 ToString edge cases. The previous %.15g-then-%.17g fallback emitted
+     * "333333333.33333331" for the first value (16-significant-digit shortest form).
+     * See codex P2 finding on PR #102.
+     *
+     * @return array<string, array{0: float, 1: string}>
+     */
+    public static function es6NumberCases(): array
+    {
+        return [
+            '16-digit-shortest' => [333333333.33333329, '333333333.3333333'],
+            'point-one-plus-point-two' => [0.1 + 0.2, '0.30000000000000004'],
+            'small-1e-7' => [1e-7, '1e-7'],
+            'small-1e-6' => [1e-6, '0.000001'],
+            'large-1e20' => [1e20, '100000000000000000000'],
+            'large-1e21' => [1e21, '1e+21'],
+        ];
+    }
+
+    /**
+     * @dataProvider es6NumberCases
+     */
+    public function testCanonicalizeEs6ShortestRoundtrip(float $input, string $expected): void
+    {
+        self::assertSame($expected, Json::canonicalize($input));
+    }
+
     public function testCanonicalizeRejectsLoneSurrogate(): void
     {
         $lone = "\xED\xA0\xB4"; // UTF-8 byte sequence for lone high surrogate U+D834
