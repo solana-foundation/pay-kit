@@ -154,4 +154,11 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: ["python3", "python-server/main.py"],
     enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
   },
+  {
+    id: "go",
+    label: "Go HTTP server",
+    role: "server",
+    command: ["sh", "-c", "cd go-server && go run ."],
+    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", false),
+  },
 ];
