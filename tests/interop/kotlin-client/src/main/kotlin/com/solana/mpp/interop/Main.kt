@@ -116,7 +116,7 @@ private fun requireEnv(name: String): String =
  * Parses the JSON-array-of-bytes form Solana keypair files use and the
  * MPP interop harness ships in MPP_INTEROP_CLIENT_SECRET_KEY.
  */
-private fun parseSecretKey(raw: String): ByteArray {
+internal fun parseSecretKey(raw: String): ByteArray {
     val element = Json.parseToJsonElement(raw)
     if (element !is JsonArray) {
         error("MPP_INTEROP_CLIENT_SECRET_KEY must be a JSON array of bytes")
@@ -126,6 +126,15 @@ private fun parseSecretKey(raw: String): ByteArray {
         val int = value.jsonPrimitive.intOrNull
             ?: value.jsonPrimitive.longOrNull?.toInt()
             ?: error("non-integer byte at index $index in secret key")
+        // Guard the 0..255 range explicitly so out-of-range values do
+        // not silently wrap through Int.toByte() (e.g. 256 becoming 0,
+        // -1 becoming 255), which would produce a different signer
+        // without any error surfacing to the caller.
+        if (int < 0 || int > 255) {
+            throw IllegalArgumentException(
+                "byte at index $index out of range 0..255: $int",
+            )
+        }
         bytes[index] = int.toByte()
     }
     // Sanity check the size before handing off to MemorySigner.
