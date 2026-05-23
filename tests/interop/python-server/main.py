@@ -23,7 +23,21 @@ from pathlib import Path
 from typing import Any
 
 # Ensure the local Python SDK is importable when run from tests/interop.
-_repo_root = Path(__file__).resolve().parents[2]
+# Walk parents looking for the repo root marker (pyproject.toml at python/
+# or .git) so the adapter stays self-contained regardless of how deep this
+# file lives inside ``tests/``. The harness invokes us from
+# ``tests/interop`` (parents[0]=python-server, parents[1]=interop,
+# parents[2]=tests, parents[3]=repo root); the previous ``parents[2]``
+# resolved to ``<repo>/tests`` and silently fell through to a global
+# ``solana-mpp`` install, hiding local SDK regressions.
+def _find_repo_root(start: Path) -> Path:
+    for candidate in [start, *start.parents]:
+        if (candidate / ".git").exists() or (candidate / "python" / "pyproject.toml").is_file():
+            return candidate
+    return start.parents[-1]
+
+
+_repo_root = _find_repo_root(Path(__file__).resolve())
 _python_src = _repo_root / "python" / "src"
 if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
