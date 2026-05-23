@@ -348,6 +348,16 @@ function M.verify_signature(context, hooks)
     error('missing signature in credential payload')
   end
 
+  -- B34: reject push-mode (type=signature) credentials when the challenge
+  -- requires a server-side fee payer. A signature-only credential
+  -- references an already-landed transaction that the client paid the fee
+  -- for, defeating the server-funded charge. Reject before any RPC call
+  -- so a partially-validated push credential never touches the network.
+  -- Mirrors Rust spine and Ruby / PHP #100 / Python #106.
+  if method_details.feePayer == true then
+    error('Push-mode credentials are not allowed when the route uses a server-side fee payer')
+  end
+
   if not hooks or type(hooks.fetch_transaction) ~= 'function' then
     error('fetch_transaction callback is required')
   end

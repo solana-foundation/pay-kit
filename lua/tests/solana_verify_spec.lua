@@ -746,3 +746,40 @@ t.test('server can wire verifier hooks automatically', function()
   local receipt = server:verify_credential(credential, 1770000000)
   t.assert_equal(receipt.reference, 'sig-123')
 end)
+
+-- B34: push-mode credentials must be rejected on fee-payer routes. A
+-- signature-only credential references an already-landed transaction the
+-- client paid the fee for, defeating the server-funded charge. Reject
+-- before any RPC call. Mirrors Rust spine and Ruby / PHP #100 / Python #106.
+
+t.test('B34: rejects signature credential when method_details.feePayer is true', function()
+  local fetch_called = false
+  t.assert_error(function()
+    verify.verify_signature(signature_context({
+      method_details = { feePayer = true, feePayerKey = 'fee-payer-1' },
+    }), {
+      fetch_transaction = function()
+        fetch_called = true
+        return nil
+      end,
+    })
+  end, 'Push%-mode credentials are not allowed')
+  t.assert_equal(fetch_called, false, 'B34 must reject before fetch_transaction is called')
+end)
+
+t.test('B34: signature verifier path runs when feePayer is absent', function()
+  -- Sanity check: B34 must not fire when feePayer is not set. The fetch
+  -- callback must be reached. Returning nil ends in a downstream
+  -- 'transaction not found' error which is the correct downstream concern.
+  local fetch_called = false
+  t.assert_error(function()
+    verify.verify_signature(signature_context(), {
+      fetch_transaction = function()
+        fetch_called = true
+        return nil
+      end,
+    })
+  end, 'transaction not found')
+  t.assert_equal(fetch_called, true, 'verifier must reach fetch_transaction when feePayer is absent')
+end)
+

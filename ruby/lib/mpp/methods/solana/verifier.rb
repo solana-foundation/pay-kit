@@ -16,12 +16,29 @@ module Mpp
           end
 
           signature = credential.payload["signature"]
-          return VerificationResult.failure("missing transaction or signature payload") unless signature.is_a?(String) && !signature.empty?
+          return VerificationResult.failure("missing transaction or signature payload", code: ErrorCodes::CODE_PAYMENT_INVALID) unless signature.is_a?(String) && !signature.empty?
+
+          # B34: reject push-mode (type=signature) credentials when the
+          # challenge requires a server-side fee payer. A signature-only
+          # credential references an already-landed transaction that the
+          # client paid the fee for, defeating the server-funded charge.
+          # Reject before any RPC call so a partially-validated push
+          # credential never touches the network. Mirrors Rust spine and
+          # PHP #100 / Python #106.
+          request_for_b34 = expected_request || Intent::ChargeRequest.from_h(challenge.decode_request)
+          details = request_for_b34.method_details || {}
+          if details["feePayer"] == true
+            return VerificationResult.failure(
+              "Push-mode credentials are not allowed when the route uses a server-side fee payer",
+              code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH
+            )
+          end
 
           validate_signature(signature)
           VerificationResult.success(reference: signature)
         rescue ArgumentError, Error => error
-          VerificationResult.failure(error.message)
+          code = error.respond_to?(:code) ? error.code : nil
+          VerificationResult.failure(error.message, code: code)
         end
 
         # Verify a standard-base64 transaction payload against a request.

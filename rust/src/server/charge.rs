@@ -547,6 +547,19 @@ impl Mpp {
                 signature
             }
             CredentialPayload::Signature { ref signature } => {
+                // B34: reject push-mode credentials (`type=signature`) on
+                // routes that require a server-side fee payer. A signature-
+                // only credential references an already-landed transaction
+                // that the client has paid the fee for, defeating the
+                // purpose of a server-funded charge. Reject before any RPC
+                // call so a partially-validated push credential never
+                // touches the network. Ludo's spec lock; mirrors PHP #100
+                // and Python #106.
+                if method_details.fee_payer.unwrap_or(false) {
+                    return Err(VerificationError::credential_mismatch(
+                        "Push-mode credentials are not allowed when the route uses a server-side fee payer",
+                    ));
+                }
                 let signature_str = self.verify_push(signature, request, &method_details)?;
                 self.consume_signature(&signature_str).await?;
                 signature_str
@@ -4106,6 +4119,87 @@ mod tests {
         let err = mpp.verify_credential(&cred).await.unwrap_err();
         assert_eq!(err.code, Some("malformed-credential"));
         assert!(err.message.contains("intent"), "got: {err:?}");
+    }
+
+    // ── B34: push-mode credentials rejected on fee-payer routes ──
+    //
+    // A signature-only credential references an already-landed transaction
+    // that the client paid the fee for. A route that uses a server-side fee
+    // payer expects the server to fund the transaction; accepting a push
+    // credential there means the route paid no fee, defeating the purpose
+    // of a server-funded charge. The reject runs before any RPC call so a
+    // partially-validated push credential never touches the network.
+    //
+    // Ludo's spec lock. Mirrors PHP #100 and Python #106.
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b34_rejects_push_credential_on_fee_payer_route() {
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
+            fee_payer: true,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp.charge("0.10").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({
+                "type": "signature",
+                "signature": "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC",
+            }),
+        };
+
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(
+            err.message
+                .to_lowercase()
+                .contains("push-mode credentials are not allowed"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b34_accepts_pull_credential_on_fee_payer_route() {
+        // Sanity check: the B34 reject is gated on the credential type, not
+        // on fee_payer alone. A pull-mode (transaction) credential against
+        // the same fee-payer route must still reach the broadcast path.
+        // We do not drive broadcast here, only assert the early reject does
+        // not fire: any error must come from broadcast, not from B34.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
+            fee_payer: true,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp.charge("0.10").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({
+                "type": "transaction",
+                "transaction": "AAAA",
+            }),
+        };
+
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            !err.message
+                .to_lowercase()
+                .contains("push-mode credentials are not allowed"),
+            "B34 fired on a pull credential: {err:?}"
+        );
     }
 
     // ── Replay protection tests ──
