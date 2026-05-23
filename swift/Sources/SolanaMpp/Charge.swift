@@ -177,7 +177,18 @@ public enum Charge {
         if let mintStr = mint {
             let mintPk = try Pubkey(base58: mintStr)
             let tokenProgram = try resolveTokenProgram(methodDetails: methodDetails, mintBase58: mintStr)
-            let decimals = UInt8(methodDetails.decimals ?? 6)
+            let rawDecimals = methodDetails.decimals ?? 6
+            guard rawDecimals >= 0, rawDecimals <= 255 else {
+                // SPL TokenChecked encodes decimals as u8; an out-of-range
+                // server value must not crash the client (would `UInt8(_:)`
+                // trap on a negative or oversized Int). Surface as a domain
+                // error so the caller sees a clean failure instead of a
+                // SIGTRAP.
+                throw MppError.invalidTransaction(
+                    "methodDetails.decimals out of range [0, 255]: \(rawDecimals)"
+                )
+            }
+            let decimals = UInt8(rawDecimals)
             let sourceAta = try AssociatedTokenAccount.address(
                 owner: signerPubkey,
                 mint: mintPk,
