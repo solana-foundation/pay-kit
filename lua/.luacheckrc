@@ -47,3 +47,8 @@ files["mpp/server/html_assets/gen.lua"] = {
 files["examples/nginx/access.lua"] = {
   globals = { "ngx" },
 }
+
+-- Same `ngx` allowlist for the Kong custom plugin example.
+files["examples/openresty/kong-plugin/kong/plugins/mpp-charge/handler.lua"] = {
+  globals = { "ngx" },
+}

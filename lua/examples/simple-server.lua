@@ -4,28 +4,32 @@
 -- Mirrors `ruby/examples/simple-server/app.rb`: a bare TCP loop that
 -- gates `/paid` behind an MPP charge and serves `/health` for free.
 -- A request without `Authorization: Payment ...` gets a 402 with a
--- signed `WWW-Authenticate` challenge issued by `mpp.server.new`.
---
--- This example does NOT settle on-chain. The Solana stack required
--- for transaction decode + base58 + Ed25519 + ATA derive ships in
--- the follow-up Lua PR B; this file uses a stub `verify_payment`
--- that always rejects so the example demonstrates challenge
--- issuance and credential parsing without claiming settlement
--- support that PR A does not own. Once PR B lands, swap the stub
--- for `mpp.server.solana_verify.new_signature_verifier` and the
--- `pay curl` flow returns 200 with a `payment-receipt` header.
+-- signed `WWW-Authenticate` challenge issued by `mpp.server.new`. A
+-- well-formed `Authorization: Payment` credential triggers the full
+-- Solana settlement lifecycle: parse the wire transaction, cosign
+-- with the configured fee payer, simulate, broadcast, consume the
+-- signature, and await confirmation. On success the response carries
+-- the `Payment-Receipt` header with the on-chain signature.
 --
 -- Run:
 --   cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
---   luajit examples/simple-server.lua
+--   MPP_FEE_PAYER_SECRET_KEY='[...]' luajit examples/simple-server.lua
 -- Then, in another terminal:
 --   curl -i http://127.0.0.1:4569/paid       # 402 with WWW-Authenticate
+--   pay curl http://127.0.0.1:4569/paid       # 200 with Payment-Receipt
 --   curl -i http://127.0.0.1:4569/health     # 200 (unprotected)
 
 local socket = require('socket')
 local mpp = require('mpp')
 local json = require('mpp.util.json')
 local headers = require('mpp.protocol.core.headers')
+local intents = require('mpp.protocol.intents.charge')
+local solana_verify = require('mpp.server.solana_verify')
+local charge_handler = require('mpp.server.charge_handler')
+local rpc_module = require('mpp.solana.rpc')
+local rpc_transport = require('mpp.solana.rpc_transport')
+local signer_module = require('mpp.methods.solana.signer')
+local store_module = require('mpp.store')
 
 local PORT = tonumber(os.getenv('PORT') or '4569')
 local RECIPIENT = os.getenv('MPP_PAY_TO')
@@ -34,25 +38,37 @@ local CURRENCY = os.getenv('MPP_CURRENCY') or 'USDC'
 local NETWORK = os.getenv('MPP_NETWORK') or 'localnet'
 local SECRET = os.getenv('MPP_SECRET_KEY') or 'lua-mpp-dev-secret'
 local AMOUNT = os.getenv('MPP_AMOUNT') or '1000'
+local RPC_URL = os.getenv('MPP_RPC_URL') or 'https://402.surfnet.dev:8899'
+local FEE_PAYER_KEY = os.getenv('MPP_FEE_PAYER_SECRET_KEY')
 
--- PR B replaces this stub with `mpp.server.solana_verify.new_signature_verifier`
--- backed by the real base58 / transaction codec / Ed25519 / ATA derive stack.
-local function stub_verify_payment(_context)
-  error({
-    code = 'settlement-deferred',
-    message = 'settlement requires the Solana stack landing in PR B; '
-            .. 'this example only demonstrates challenge issuance',
-  })
-end
+local rpc = rpc_module.new({ url = RPC_URL, transport = rpc_transport.new() })
+local fee_payer = FEE_PAYER_KEY and signer_module.from_json_array(FEE_PAYER_KEY) or nil
+
+-- The real verifier replaces the PR A stub. When no fee-payer secret key is
+-- configured the server runs in verify-only mode: it still settles, but
+-- callers must pre-cosign the transaction.
+local verifier_bundle = solana_verify.new_real_verifier({ pull_signer = fee_payer })
+
+local handler = charge_handler.new({
+  rpc = rpc,
+  network = NETWORK,
+  replay_store = store_module.memory(),
+  transaction_verifier = verifier_bundle.transaction_verifier,
+  pull_transaction_signer = verifier_bundle.pull_transaction_signer,
+  pull_blockhash_extractor = verifier_bundle.pull_blockhash_extractor,
+})
 
 local server = mpp.server.new({
   recipient = RECIPIENT,
   currency = CURRENCY,
   decimals = 6,
   network = NETWORK,
+  rpc_url = RPC_URL,
   secret_key = SECRET,
   realm = 'Lua MPP Example',
-  verify_payment = stub_verify_payment,
+  fee_payer = fee_payer ~= nil,
+  fee_payer_key = fee_payer and fee_payer.public_key or nil,
+  verify_payment = handler:as_callback(),
 })
 
 -- Read one HTTP request from a TCP socket. Returns { method, path, headers }.
@@ -73,7 +89,6 @@ local function read_request(conn)
   return { method = method, path = raw_path, headers = hdrs }
 end
 
--- Write one HTTP response. `body` is a string; `hdrs` is a name->value table.
 local function write_response(conn, status, hdrs, body)
   local reason = ({
     [200] = 'OK',
@@ -95,21 +110,27 @@ end
 
 -- 402 builder: issue a fresh signed challenge for `/paid`.
 local function payment_required(conn)
-  local challenge = server:charge(AMOUNT)
+  local challenge_value = server:charge(AMOUNT)
   write_response(conn, 402, {
     ['content-type'] = 'application/json',
-    ['www-authenticate'] = headers.format_www_authenticate(challenge),
+    ['www-authenticate'] = headers.format_www_authenticate(challenge_value),
   }, json.encode({ error = 'payment required' }))
 end
 
--- 200 / 402 settlement attempt: only reached when an Authorization
--- header is present. The stub verifier always raises, so this branch
--- demonstrates the structured-error 402 shape; PR B swaps the stub
--- for the real settler.
+-- 200 / 402 settlement attempt: only reached when an Authorization header is
+-- present. The real verifier walks the wire transaction; on success the
+-- receipt header carries the on-chain signature for the client to confirm.
 local function attempt_settlement(conn, authorization)
+  local credential, parse_err = headers.parse_authorization(authorization)
+  if not credential then
+    write_response(conn, 402, { ['content-type'] = 'application/json' },
+      json.encode({ error = 'invalid authorization', detail = parse_err }))
+    return
+  end
+  local expected_base_units = intents.parse_units(AMOUNT, 6)
   local ok, settlement = pcall(function()
-    return server:verify_credential_with_expected(authorization, {
-      amount = AMOUNT,
+    return server:verify_credential_with_expected(credential, {
+      amount = expected_base_units,
       currency = CURRENCY,
       recipient = RECIPIENT,
     })
@@ -121,11 +142,15 @@ local function attempt_settlement(conn, authorization)
         hdrs[name] = value
       end
     end
-    write_response(conn, 200, hdrs,
-      json.encode({ ok = true, paid = true }))
+    if settlement and settlement.reference then
+      hdrs[mpp.PaymentReceiptHeader] = headers.format_receipt(settlement)
+    end
+    write_response(conn, 200, hdrs, json.encode({ ok = true, paid = true }))
   else
     local detail = type(settlement) == 'table' and settlement.message
       or tostring(settlement)
+    io.stderr:write('settlement failed: ' .. tostring(detail) .. '\n')
+    io.stderr:flush()
     write_response(conn, 402, { ['content-type'] = 'application/json' },
       json.encode({ error = 'verification failed', detail = detail }))
   end
@@ -134,8 +159,8 @@ end
 local listener = assert(socket.bind('127.0.0.1', PORT))
 listener:settimeout(0.1)
 io.stderr:write(string.format(
-  'lua simple-server listening on 127.0.0.1:%d (recipient=%s currency=%s network=%s)\n',
-  PORT, RECIPIENT, CURRENCY, NETWORK))
+  'lua simple-server listening on 127.0.0.1:%d (recipient=%s currency=%s network=%s rpc=%s fee_payer=%s)\n',
+  PORT, RECIPIENT, CURRENCY, NETWORK, RPC_URL, tostring(fee_payer and fee_payer.public_key or 'none')))
 io.stderr:flush()
 
 local function handle_one()
