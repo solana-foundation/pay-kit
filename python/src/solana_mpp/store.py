@@ -103,18 +103,18 @@ class FileReplayStore:
             # next restart. The operator must repair or remove the file
             # before the server can resume verification.
             raise RuntimeError(
-                f"FileReplayStore at {self._path} is corrupted; refusing to start "
-                f"with empty replay evidence: {exc}"
+                f"FileReplayStore at {self._path} is corrupted; refusing to start with empty replay evidence: {exc}"
             ) from exc
         if not isinstance(value, dict):
-            raise RuntimeError(
-                f"FileReplayStore at {self._path} is not a JSON object; refusing to start"
-            )
+            raise RuntimeError(f"FileReplayStore at {self._path} is not a JSON object; refusing to start")
         return value
 
     def _flush(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = tempfile.NamedTemporaryFile(
+        # NamedTemporaryFile with delete=False then explicit close + replace
+        # is the atomic-rename pattern; a `with` block would close the file
+        # before os.replace runs and lose the atomicity. SIM115 ignored.
+        tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
             mode="w",
             encoding="utf-8",
             dir=str(self._path.parent),

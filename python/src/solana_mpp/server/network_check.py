@@ -51,6 +51,5 @@ def check_network_blockhash(network: str, blockhash_b58: str) -> None:
     # The blockhash detail is debug-grade, not actionable for end
     # users — keep the message terse.
     raise WrongNetworkError(
-        f"Signed against localnet but the server expects {network}. "
-        f"Switch your client RPC to {network} and re-sign."
+        f"Signed against localnet but the server expects {network}. Switch your client RPC to {network} and re-sign."
     )

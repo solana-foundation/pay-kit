@@ -30,7 +30,7 @@ from solana_mpp.protocol.solana import (
     stablecoin_symbol,
 )
 from solana_mpp.server.network_check import check_network_blockhash
-from solana_mpp.store import MemoryStore, Store
+from solana_mpp.store import Store
 
 logger = logging.getLogger(__name__)
 
@@ -246,10 +246,7 @@ def _status_ok(response: Any) -> bool:
     value = _rpc_value(response)
     data = _json_like(value)
     if isinstance(data, list):
-        for entry in data:
-            if entry and entry.get("err") is None:
-                return True
-        return False
+        return any(entry and entry.get("err") is None for entry in data)
     return data is not None
 
 
@@ -306,7 +303,7 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             raise PaymentError(
                 "v0 transactions with address lookup tables are not supported",
                 code="invalid-payload",
-            )
+            ) from None
         message = vtx.message
         message_instructions = list(vtx.message.instructions)
 
@@ -402,7 +399,6 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
     Mirrors the cosign step in rust/src/server/charge.rs verify_pull.
     """
     from solders.message import to_bytes_versioned
-    from solders.signature import Signature
     from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
@@ -701,7 +697,8 @@ class Mpp:
         method_name = "solana"
         if credential.challenge.method != method_name:
             raise PaymentError(
-                f"credential method '{credential.challenge.method}' does not match this server (expected '{method_name}')",
+                f"credential method '{credential.challenge.method}' does not match this server "
+                f"(expected '{method_name}')",
                 code="method-mismatch",
             )
         # IntentName equivalent: case-insensitive "charge" comparison.
@@ -714,7 +711,8 @@ class Mpp:
         # one), so a tampered echoed realm passes HMAC unless re-signed. Pin it.
         if credential.challenge.realm != self._realm:
             raise PaymentError(
-                f"credential realm '{credential.challenge.realm}' does not match this server (expected '{self._realm}')",
+                f"credential realm '{credential.challenge.realm}' does not match this server "
+                f"(expected '{self._realm}')",
                 code="realm-mismatch",
             )
         if request.currency != self._currency:

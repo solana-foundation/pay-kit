@@ -10,8 +10,8 @@ from solana_mpp._headers import format_authorization
 from solana_mpp._types import PaymentChallenge, PaymentCredential
 from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import (
-    CredentialPayload,
     MEMO_PROGRAM,
+    CredentialPayload,
     MethodDetails,
     is_native_sol,
 )

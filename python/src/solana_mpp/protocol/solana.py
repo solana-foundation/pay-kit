@@ -50,6 +50,7 @@ def _canonical_network(network: str) -> str:
     """
     return "mainnet" if network == "mainnet-beta" else network
 
+
 STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
     "USDC": TOKEN_PROGRAM,
     "USDT": TOKEN_PROGRAM,

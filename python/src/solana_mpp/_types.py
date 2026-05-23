@@ -16,11 +16,11 @@ from solana_mpp._challenge import compute_challenge_id, constant_time_equal
 # Offset is either ``Z``/``z`` or ``+HH:MM`` / ``-HH:MM``.
 _RFC3339_RE = re.compile(
     r"^"
-    r"(\d{4})-(\d{2})-(\d{2})"          # full-date
-    r"[Tt]"                              # time separator
-    r"(\d{2}):(\d{2}):(\d{2})"          # partial-time hh:mm:ss
-    r"(\.\d+)?"                          # optional time-secfrac
-    r"(?:[Zz]|([+-])(\d{2}):(\d{2}))"   # time-offset
+    r"(\d{4})-(\d{2})-(\d{2})"  # full-date
+    r"[Tt]"  # time separator
+    r"(\d{2}):(\d{2}):(\d{2})"  # partial-time hh:mm:ss
+    r"(\.\d+)?"  # optional time-secfrac
+    r"(?:[Zz]|([+-])(\d{2}):(\d{2}))"  # time-offset
     r"$"
 )
 

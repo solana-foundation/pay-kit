@@ -340,10 +340,7 @@ class TestAuthParamTokenForm:
 
     def test_accepts_quoted_form(self):
         request_b64 = encode_json({"amount": "1"})
-        header = (
-            f'Payment id="abc", realm="api", method="solana", '
-            f'intent="charge", request="{request_b64}"'
-        )
+        header = f'Payment id="abc", realm="api", method="solana", intent="charge", request="{request_b64}"'
         parsed = parse_www_authenticate(header)
         assert parsed.id == "abc"
         assert parsed.realm == "api"
@@ -405,8 +402,7 @@ class TestMultiChallenge:
         # Realm literally contains a comma; serialize manually to bypass
         # _escape_quoted_value behavior so the comma stays raw inside quotes.
         header = (
-            f'Payment id="abc", realm="api, with, commas", '
-            f'method="solana", intent="charge", request="{request_b64}"'
+            f'Payment id="abc", realm="api, with, commas", method="solana", intent="charge", request="{request_b64}"'
         )
         challenges = parse_www_authenticate_all([header])
         assert len(challenges) == 1

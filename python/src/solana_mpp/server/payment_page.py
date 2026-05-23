@@ -79,9 +79,7 @@ def challenge_to_html(challenge: PaymentChallenge, rpc_url: str, network: str) -
 
     description_html = ""
     if challenge.description:
-        description_html = (
-            f'<p class="mppx-summary-description">{html_mod.escape(challenge.description)}</p>'
-        )
+        description_html = f'<p class="mppx-summary-description">{html_mod.escape(challenge.description)}</p>'
 
     expires_html = ""
     if challenge.expires:

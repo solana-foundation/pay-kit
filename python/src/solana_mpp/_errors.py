@@ -24,7 +24,6 @@ canonical snake_case code when emitting a 402 response body.
 
 from __future__ import annotations
 
-
 # Canonical structured error codes (L6 / P1).
 CODE_CHARGE_REQUEST_MISMATCH = "charge_request_mismatch"
 CODE_CHALLENGE_ROUTE_MISMATCH = "challenge_route_mismatch"

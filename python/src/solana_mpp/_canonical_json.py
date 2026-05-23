@@ -60,7 +60,7 @@ def _encode_object(value: dict) -> str:
     # UTF-16 BE bytes and sort by that byte sequence. The encoding does NOT
     # add a BOM (we picked BE explicitly).
     entries = []
-    for key in value.keys():
+    for key in value:
         if not isinstance(key, str):
             raise TypeError("JSON object keys must be strings for canonical encoding")
         entries.append((key.encode("utf-16-be"), key))

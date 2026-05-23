@@ -2,6 +2,7 @@
 
 Listens on port 3004. Requires Surfpool on localhost:8899.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -10,9 +11,8 @@ import os
 import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from solana_mpp._rpc import SolanaRpc
-
 from solana_mpp._headers import format_www_authenticate, parse_authorization
+from solana_mpp._rpc import SolanaRpc
 from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
 from solana_mpp.server.payment_page import (
     accepts_html,
@@ -33,30 +33,58 @@ FORTUNES = [
     "Curiosity kills boredom.",
 ]
 
-mpp = Mpp(Config(
-    recipient=RECIPIENT,
-    secret_key=SECRET,
-    currency="USDC",
-    decimals=6,
-    network="localnet",
-    rpc_url=RPC_URL,
-    html=True,
-    store=MemoryStore(),
-    rpc=SolanaRpc(RPC_URL),
-))
+mpp = Mpp(
+    Config(
+        recipient=RECIPIENT,
+        secret_key=SECRET,
+        currency="USDC",
+        decimals=6,
+        network="localnet",
+        rpc_url=RPC_URL,
+        html=True,
+        store=MemoryStore(),
+        rpc=SolanaRpc(RPC_URL),
+    )
+)
 
 # Fund recipient at startup
 try:
     import httpx
 
-    httpx.post(RPC_URL, json={
-        "jsonrpc": "2.0", "id": 1, "method": "surfnet_setAccount",
-        "params": [RECIPIENT, {"lamports": 1_000_000_000, "data": "", "executable": False, "owner": "11111111111111111111111111111111", "rentEpoch": 0}],
-    }, timeout=5)
-    httpx.post(RPC_URL, json={
-        "jsonrpc": "2.0", "id": 1, "method": "surfnet_setTokenAccount",
-        "params": [RECIPIENT, USDC_MINT, {"amount": 0, "state": "initialized"}, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"],
-    }, timeout=5)
+    httpx.post(
+        RPC_URL,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "surfnet_setAccount",
+            "params": [
+                RECIPIENT,
+                {
+                    "lamports": 1_000_000_000,
+                    "data": "",
+                    "executable": False,
+                    "owner": "11111111111111111111111111111111",
+                    "rentEpoch": 0,
+                },
+            ],
+        },
+        timeout=5,
+    )
+    httpx.post(
+        RPC_URL,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "surfnet_setTokenAccount",
+            "params": [
+                RECIPIENT,
+                USDC_MINT,
+                {"amount": 0, "state": "initialized"},
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            ],
+        },
+        timeout=5,
+    )
 except Exception:
     pass
 
@@ -96,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"fortune": fortune}).encode())
                 return
-            except Exception as e:
+            except Exception:
                 pass  # Fall through to challenge
 
         # Issue challenge
@@ -112,11 +140,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(html.encode())
         else:
-            body = json.dumps({
-                "type": "https://paymentauth.org/problems/payment-required",
-                "title": "Payment Required",
-                "status": 402,
-            })
+            body = json.dumps(
+                {
+                    "type": "https://paymentauth.org/problems/payment-required",
+                    "title": "Payment Required",
+                    "status": 402,
+                }
+            )
             self.send_response(402)
             self.send_header("Content-Type", "application/json")
             self.send_header("WWW-Authenticate", www_auth)

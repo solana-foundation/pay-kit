@@ -15,7 +15,6 @@ from solana_mpp.server.network_check import (
     check_network_blockhash,
 )
 
-
 # ── happy paths ────────────────────────────────────────────────────────────
 
 

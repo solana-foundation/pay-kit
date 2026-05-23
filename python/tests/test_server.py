@@ -15,7 +15,6 @@ from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, Pa
 from solana_mpp._types import ChallengeEcho, PaymentCredential
 from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
-from solana_mpp.store import MemoryStore
 from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
@@ -24,6 +23,7 @@ from solana_mpp.server.mpp import (
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
 )
+from solana_mpp.store import MemoryStore
 
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -160,7 +160,9 @@ def mpp() -> Mpp:
         decimals=6,
         network="devnet",
         secret_key=TEST_SECRET,
-        rpc=rpc, store=MemoryStore(),)
+        rpc=rpc,
+        store=MemoryStore(),
+    )
     return Mpp(config)
 
 
@@ -251,7 +253,9 @@ class TestCharge:
                 decimals=6,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=FakeRPC(), store=MemoryStore(),)
+                rpc=FakeRPC(),
+                store=MemoryStore(),
+            )
         )
         challenge = handler.charge("1.00")
         request = challenge.decode_request()
@@ -364,7 +368,9 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge("1.00")
         credential = PaymentCredential(
@@ -399,7 +405,9 @@ class TestVerifyCredential:
                 decimals=9,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
@@ -433,7 +441,9 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -459,7 +469,9 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -484,7 +496,9 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -509,7 +523,9 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
@@ -554,7 +570,9 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -579,7 +597,9 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -604,7 +624,9 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -629,7 +651,9 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc, store=MemoryStore(),)
+                rpc=rpc,
+                store=MemoryStore(),
+            )
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
@@ -906,9 +930,7 @@ class TestL8SettlementOrdering:
             return True
 
     def _build_credential(self, mpp_handler: Mpp) -> tuple[PaymentCredential, str]:
-        transaction = _build_spl_transfer_checked_transaction(
-            TEST_RECIPIENT, USDC_DEVNET, 1_000_000
-        )
+        transaction = _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1_000_000)
         challenge = mpp_handler.charge("1.00")
         echo = challenge.to_echo()
         credential = PaymentCredential(
@@ -946,12 +968,8 @@ class TestL8SettlementOrdering:
         broadcast_idx = ordering.index("send_raw_transaction")
         consume_idx = ordering.index("store.put_if_absent")
         confirm_idx = ordering.index("confirm_transaction")
-        assert broadcast_idx < consume_idx, (
-            f"L8 violation: broadcast must precede consume; saw {ordering}"
-        )
-        assert consume_idx < confirm_idx, (
-            f"L8 violation: consume must precede await; saw {ordering}"
-        )
+        assert broadcast_idx < consume_idx, f"L8 violation: broadcast must precede consume; saw {ordering}"
+        assert consume_idx < confirm_idx, f"L8 violation: consume must precede await; saw {ordering}"
 
     async def test_confirm_timeout_after_broadcast_does_not_rollback_consume(self):
         """The headline L8 bug: a confirm-timeout post-broadcast used to
@@ -1039,9 +1057,7 @@ class TestL8SettlementOrdering:
         # Critical: the rejection happened BEFORE any RPC call. A signature
         # credential under feePayer is a structural error; we never look up
         # the transaction on chain.
-        assert ordering == [], (
-            f"B34 violation: rejection must happen before RPC; saw {ordering}"
-        )
+        assert ordering == [], f"B34 violation: rejection must happen before RPC; saw {ordering}"
 
     async def test_signature_keyed_consume_not_credential_keyed(self):
         """A retry of the same credential MUST collide on the on-chain

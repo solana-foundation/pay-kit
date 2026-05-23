@@ -35,7 +35,7 @@ class TestKeySort:
         # (G CLEF): code-point sort puts  first; UTF-16 sort puts
         # the supplementary one first because its first surrogate 0xD834
         # is BELOW 0xE000.
-        result = encode_canonical({"": 1, "\U0001D11E": 2})
+        result = encode_canonical({"": 1, "\U0001d11e": 2})
         # Surrogate-first ordering: \U0001D11E comes before .
         assert result == b'{"\xf0\x9d\x84\x9e":2,"\xee\x80\x80":1}'
 
@@ -122,7 +122,7 @@ class TestStringEncoding:
     def test_valid_supplementary_plane_codepoint(self):
         # A complete surrogate pair (U+1D11E = G CLEF) is valid; it encodes
         # to a 4-byte UTF-8 sequence.
-        result = encode_canonical("\U0001D11E")
+        result = encode_canonical("\U0001d11e")
         assert result == b'"\xf0\x9d\x84\x9e"'
 
 
@@ -147,7 +147,4 @@ class TestArrayAndComposite:
                 "recipient": "11111111111111111111111111111112",
             }
         )
-        assert result == (
-            b'{"amount":"1000000","currency":"USDC","recipient":'
-            b'"11111111111111111111111111111112"}'
-        )
+        assert result == (b'{"amount":"1000000","currency":"USDC","recipient":"11111111111111111111111111111112"}')

@@ -63,16 +63,19 @@ class TestCanonicalCodes:
     def test_canonical_codes_set(self):
         from solana_mpp._errors import CANONICAL_CODES
 
-        assert CANONICAL_CODES == frozenset(
-            {
-                "charge_request_mismatch",
-                "challenge_route_mismatch",
-                "challenge_verification_failed",
-                "challenge_expired",
-                "payment_invalid",
-                "wrong_network",
-                "signature_consumed",
-            }
+        assert (
+            frozenset(
+                {
+                    "charge_request_mismatch",
+                    "challenge_route_mismatch",
+                    "challenge_verification_failed",
+                    "challenge_expired",
+                    "payment_invalid",
+                    "wrong_network",
+                    "signature_consumed",
+                }
+            )
+            == CANONICAL_CODES
         )
 
     def test_canonical_code_returns_canonical_unchanged(self):
@@ -128,9 +131,7 @@ class TestPaymentRequiredResponseBuilder:
     def test_includes_challenge_header_when_provided(self):
         from solana_mpp._errors import payment_required_response
 
-        resp = payment_required_response(
-            "challenge", code="payment_invalid", challenge_header='Payment id="x"'
-        )
+        resp = payment_required_response("challenge", code="payment_invalid", challenge_header='Payment id="x"')
         assert resp["headers"]["www-authenticate"] == 'Payment id="x"'
 
     def test_omits_challenge_header_by_default(self):
