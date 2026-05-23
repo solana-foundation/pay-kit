@@ -35,7 +35,7 @@ const (
 	defaultSecretKey       = "go-mpp-dev-secret"
 	defaultRealm           = "Go MPP Example"
 	defaultPort            = 4572
-	defaultAmount          = "1000"
+	defaultAmount          = "0.001"
 	defaultDescription     = "Go protected endpoint"
 	settlementHeaderName   = "x-payment-settlement-signature"
 	shutdownTimeoutSeconds = 5
