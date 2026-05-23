@@ -6,6 +6,7 @@ import functools
 from collections.abc import Callable
 from typing import Any
 
+from solana_mpp._errors import PaymentError, payment_required_response
 from solana_mpp._headers import format_www_authenticate
 from solana_mpp.server.mpp import Mpp
 
@@ -48,25 +49,35 @@ def pay(mpp_handler: Mpp, amount: str, **options: Any) -> Callable:
             if hasattr(request, "headers"):
                 auth_header = request.headers.get("authorization")
 
+            verification_error: PaymentError | None = None
             if auth_header:
                 try:
                     credential = parse_authorization(auth_header)
                     expected = ChargeRequest.from_dict(challenge.decode_request())
                     receipt = await mpp_handler.verify_credential_with_expected(credential, expected)
                     return await handler(request, credential, receipt, *args, **kwargs)
-                except Exception:
-                    pass
+                except PaymentError as err:
+                    verification_error = err
+                except Exception as err:  # noqa: BLE001 (catch-all for framework parse errors)
+                    verification_error = PaymentError(str(err), code="payment_invalid")
 
-            # Issue challenge
+            # Issue (or re-issue) a 402 with a canonical L6 code in the body.
             www_auth = format_www_authenticate(challenge)
-
-            # Return a dict that the framework can use to build a 402 response
-            return {
-                "__mpp_challenge": True,
-                "status_code": 402,
-                "headers": {"WWW-Authenticate": www_auth},
-                "challenge": challenge,
-            }
+            if verification_error is None:
+                response = payment_required_response(
+                    "Payment required",
+                    code="payment_invalid",
+                    challenge_header=www_auth,
+                )
+            else:
+                response = payment_required_response(
+                    str(verification_error) or "Payment required",
+                    code=verification_error.code or "payment_invalid",
+                    challenge_header=www_auth,
+                )
+            response["__mpp_challenge"] = True
+            response["challenge"] = challenge
+            return response
 
         return wrapper
 
