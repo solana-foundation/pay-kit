@@ -1,55 +1,196 @@
-# Solana MPP Kotlin SDK
+<p align="center">
+  <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
+</p>
 
-Kotlin support currently provides the MPP charge client protocol core:
+# solana-mpp-kotlin
 
-- parse `WWW-Authenticate: Payment ...` charge challenges
-- decode Solana charge request payloads
-- build pull-mode `Authorization: Payment ...` credentials
-- inject a transaction provider for wallet or application-specific signing
-- model a small JVM `SolanaSigner` boundary for wallet-backed signing
+Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Kotlin.
+Implements the Solana payment method for the
+[Machine Payments Protocol](https://mpp.dev).
 
-The package does not pick an Android wallet dependency yet. Android integrations can connect the signer boundary to Solana Mobile Wallet Adapter or another signing stack while the SDK keeps the MPP challenge and credential contract aligned with TypeScript and Rust.
+**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
+any HTTP API accept payments using the `402 Payment Required` flow. You
+do not need to know anything about Solana to use this library, pick a
+currency, give it your wallet address, and gate a route in a few lines.
 
-`MemorySigner` uses JDK Ed25519 and is intended for tests and local development only. It is not a wallet, key-management layer, or Solana transaction builder.
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.3.21-blue)]()
+[![JVM](https://img.shields.io/badge/JVM-17-blue)]()
+[![Coverage](https://img.shields.io/badge/coverage-%3E%3D90%25-brightgreen)]()
 
-## Solana Mobile integration
+## Scope
 
-For Android applications, keep this package as the MPP protocol layer and add the official Solana Mobile dependencies in the app or adapter module:
+Kotlin is **client-only** in the M1 / M2 / M3 grant scope. The package
+parses MPP charge challenges, derives the Solana transaction on the
+client, signs it with the user's Ed25519 key, and replays the request
+with an `Authorization: Payment ...` header. There is no Kotlin server.
+Production deployments host the server side in TypeScript, Rust, Go,
+PHP, Ruby, Python, or Lua and treat Kotlin as the wallet-side client.
+
+## Repo layout
+
+```text
+kotlin/
+├── src/main/kotlin/com/solana/mpp/
+│   ├── Base58.kt           # Bitcoin-alphabet base58 codec
+│   ├── Base64Url.kt        # url-safe base64 (no padding)
+│   ├── Charge.kt           # full charge build pipeline
+│   ├── Ed25519.kt          # BouncyCastle signing + PDA derivation
+│   ├── Headers.kt          # WWW-Authenticate / Authorization parser
+│   ├── HttpClient.kt       # OkHttp client with 402 retry + JSON-RPC
+│   ├── Instructions.kt     # SystemProgram, SPL, ATA, compute budget
+│   ├── Models.kt           # exceptions, challenge + credential schema
+│   ├── SolanaSigner.kt     # signer abstraction + MemorySigner
+│   └── Transaction.kt      # legacy + v0 Solana wire codec
+└── src/test/kotlin/com/solana/mpp/
+                            # base58, instructions, transaction, PDA,
+                            # ed25519, http, charge tests
+```
+
+## Quick start
+
+```kotlin
+import com.solana.mpp.Charge
+import com.solana.mpp.JsonRpcClient
+import com.solana.mpp.MemorySigner
+import com.solana.mpp.MppHttpClient
+
+// Wallet integrations swap MemorySigner for their own SolanaSigner.
+val signer = MemorySigner.fromSecretKey(walletSecretKeyBytes)
+val rpc = JsonRpcClient("http://localhost:8899")
+val client = MppHttpClient(signer = signer, blockhashProvider = rpc)
+
+val response = client.mppGet("http://localhost:4570/paid")
+println(response.code)                     // 200 after MPP retry
+println(response.header("Payment-Receipt")) // on-chain signature
+```
+
+`currency` accepts a symbol like `"USDC"`, `"USDT"`, `"USDG"`, `"PYUSD"`,
+or `"CASH"`. The challenge body sets the actual currency; the client
+resolves the mint address, token program, and decimals from
+`Charge.resolveStablecoinMint` and the challenge `methodDetails`.
+
+## Mobile and wallet integration
+
+`MemorySigner` is for tests and local examples only. Production Android
+apps connect `SolanaSigner` to a wallet stack. The official
+[Solana Mobile](https://docs.solanamobile.com) packages stay outside
+this SDK so non-Android JVM users do not pull a wallet stack in
+transitively:
 
 ```kotlin
 implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
 implementation("com.solanamobile:web3-solana:0.2.5")
 implementation("com.solanamobile:rpc-core:0.2.7")
-implementation("io.github.funkatronics:multimult:0.2.3")
 ```
 
-`mobile-wallet-adapter-clientlib-ktx` is the right boundary for connecting to MWA-compatible wallets. `web3-solana` and `rpc-core` are useful for transaction construction and RPC in an Android app. They are intentionally not runtime dependencies of the core MPP package yet so non-Android JVM users can parse challenges and build credentials without pulling in a wallet stack.
+Implement `SolanaSigner` against your wallet's signing primitive; pass
+it to `MppHttpClient` and the rest of the flow is unchanged.
 
-## Build
+## Building
 
 ```sh
+cd kotlin
 gradle check
 ```
 
-## Usage
+`gradle check` runs the unit tests and enforces the 90 percent line
+coverage gate through Jacoco.
 
-```kotlin
-import com.solana.mpp.ChargeCredentialBuilder
-import com.solana.mpp.ChargeTransactionProvider
-import com.solana.mpp.Base64Url
-import com.solana.mpp.MemorySigner
-import com.solana.mpp.MppHeaders
+## Running the interop adapter
 
-val challenge = MppHeaders.parseWWWAuthenticate(wwwAuthenticateHeader)
-val signer = MemorySigner.generate()
-val builder = ChargeCredentialBuilder(
-    ChargeTransactionProvider { request ->
-        // Build the Solana transaction with your wallet/application code, then
-        // sign the transaction message through the signer boundary.
-        val transactionMessage = "${request.externalId}:${request.recipient}:${signer.address}".encodeToByteArray()
-        Base64Url.encode(signer.sign(transactionMessage))
-    }
-)
-
-val authorization = builder.authorizationHeader(challenge)
+```sh
+cd tests/interop/kotlin-client
+MPP_INTEROP_TARGET_URL=http://localhost:4570/paid \
+MPP_INTEROP_RPC_URL=http://localhost:8899 \
+MPP_INTEROP_CLIENT_SECRET_KEY='[1,2,3,...,64]' \
+  gradle run --no-daemon
 ```
+
+The adapter is the same Kotlin client wired to the env-var contract the
+TypeScript / Vitest harness drives in CI.
+
+## Client compatibility matrix
+
+Kotlin is client-only. Cells listed without a status are not
+implemented in this language; the dash placeholder keeps the matrix
+diffable across SDKs.
+
+| Intent | Status |
+|---|:---:|
+| `x402/exact` | — |
+| `x402/upto` | — |
+| `x402/batch-settlement` | — |
+| `mpp/charge/pull` | implemented |
+| `mpp/charge/push` | — |
+| `mpp/session` | planned (M3) |
+| `mpp/subscription` | — |
+
+## Server compatibility matrix
+
+| Intent | Status |
+|---|:---:|
+| `x402/exact` | — |
+| `x402/upto` | — |
+| `x402/batch-settlement` | — |
+| `mpp/charge/pull` | — |
+| `mpp/charge/push` | — |
+| `mpp/session` | — |
+| `mpp/subscription` | — |
+
+Kotlin does not ship server code in this milestone. Deployments host the
+server side in one of the other SDKs and use Kotlin for the wallet side.
+
+## Solana dependencies
+
+| Dependency | Why | Version |
+|---|---|---|
+| `org.bouncycastle:bcprov-jdk18on` | Ed25519 sign + verify, point validation for PDA off-curve checks | 1.78.1 |
+| `com.squareup.okhttp3:okhttp` | HTTP client, JSON-RPC transport, 402 retry | 4.12.0 |
+| `org.jetbrains.kotlinx:kotlinx-serialization-json` | challenge body parsing, credential payload encoding | 1.9.0 |
+
+Solana base58, transaction bincode, instruction builders, ATA derivation,
+and the compute-budget program are implemented inline in pure Kotlin
+(`Base58.kt`, `Transaction.kt`, `Instructions.kt`, `Ed25519.kt`) so the
+SDK does not pin a full Solana stack. Byte-for-byte parity with the Rust
+spine is asserted in the test suite (golden vectors in
+`TransactionTest.kt`, `InstructionsTest.kt`, `PdaTest.kt`).
+
+## Coding convention
+
+This SDK follows the
+[official Kotlin coding conventions](https://kotlinlang.org/docs/coding-conventions.html)
+plus the per-language style notes at
+`skills/pay-sdk-implementation/references/coding-conventions.md`. No
+Kotlin-specific skill is published at skills.sh today; if and when one
+lands, swap this link.
+
+The repo-level `pay-sdk-implementation` skill remains the protocol
+source of truth: Rust wire format first, Kotlin idioms second.
+
+## Code coverage
+
+`gradle check` runs the test suite and the Jacoco coverage gate:
+
+- line coverage: at least 90 percent
+
+The XML and HTML reports land at
+`build/reports/jacoco/test/jacocoTestReport.xml` and
+`build/reports/jacoco/test/html/`.
+
+## Interop
+
+Adapter at `tests/interop/kotlin-client`. Focused harness commands:
+
+```bash
+cd tests/interop
+MPP_INTEROP_CLIENTS=kotlin MPP_INTEROP_SERVERS=typescript pnpm test
+```
+
+The Kotlin client adapter is the canonical proof that the SDK is
+wire-compatible with the TypeScript reference server.
+
+## Spec
+
+- HTTP Payment Authentication scheme: <https://paymentauth.org>
+- MPP spec PRs: <https://github.com/tempoxyz/mpp-specs>
+- Rust reference: `rust/src/client/charge.rs` in this repository
