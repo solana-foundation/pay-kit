@@ -240,3 +240,20 @@ func TestMiddlewareChargeFuncError500(t *testing.T) {
 		t.Fatalf("expected 500, got %d", rr.Code)
 	}
 }
+
+func TestMarkAuthorizationBoundResponsePreservesExistingVary(t *testing.T) {
+	withAuthorization := http.Header{"Vary": {"Accept-Encoding, Authorization"}}
+	markAuthorizationBoundResponse(withAuthorization)
+	if got := withAuthorization.Values("Vary"); len(got) != 1 {
+		t.Fatalf("expected existing authorization vary to be preserved, got %#v", got)
+	}
+	if withAuthorization.Get("Cache-Control") != "no-store" {
+		t.Fatal("expected no-store cache control")
+	}
+
+	wildcard := http.Header{"Vary": {"*"}}
+	markAuthorizationBoundResponse(wildcard)
+	if got := wildcard.Values("Vary"); len(got) != 1 || got[0] != "*" {
+		t.Fatalf("expected wildcard vary to be preserved, got %#v", got)
+	}
+}

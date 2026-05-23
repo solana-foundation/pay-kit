@@ -25,6 +25,9 @@ func TestWrapErrorNilCauseFallsBackToNewError(t *testing.T) {
 	if err.Err != nil {
 		t.Fatal("expected no inner error when cause is nil")
 	}
+	if err.Unwrap() != nil {
+		t.Fatal("expected nil wrapped cause")
+	}
 	if err.Message != "rpc failed" {
 		t.Fatalf("unexpected message %q", err.Message)
 	}

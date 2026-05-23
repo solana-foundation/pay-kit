@@ -8,12 +8,14 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/token"
+	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 
 	"github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/client"
 	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )
 
 func newTestMpp(t *testing.T) (*Mpp, *testutil.FakeRPC, testutilConfig) {
@@ -976,5 +978,168 @@ func TestVerifyCredentialChallengeMismatchRejected(t *testing.T) {
 	}
 	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
 		t.Fatal("expected challenge mismatch to fail")
+	}
+}
+
+func TestVerifyTransfersAgainstChallengeRejectsMissingSPLSplitMemo(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	splitRecipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+	splitATA, err := solanautil.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find split ata failed: %v", err)
+	}
+
+	primaryIx, err := token.NewTransferCheckedInstruction(800, 6, sourceATA, mint, recipientATA, payer.PublicKey(), nil).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build primary transfer failed: %v", err)
+	}
+	splitIx, err := token.NewTransferCheckedInstruction(200, 6, sourceATA, mint, splitATA, payer.PublicKey(), nil).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build split transfer failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, primaryIx, splitIx)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: splitRecipient.String(), Amount: "200", Memo: "platform fee"}},
+	}); err == nil {
+		t.Fatal("expected missing SPL split memo to fail")
+	}
+}
+
+func TestVerifyTransfersAgainstChallengeRejectsUnexpectedSPLMemo(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+
+	primaryIx, err := token.NewTransferCheckedInstruction(1000, 6, sourceATA, mint, recipientATA, payer.PublicKey(), nil).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build primary transfer failed: %v", err)
+	}
+	memoIx, err := solanautil.BuildMemoInstruction("unexpected")
+	if err != nil {
+		t.Fatalf("build memo failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, primaryIx, memoIx)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{}); err == nil {
+		t.Fatal("expected unexpected SPL memo to fail")
+	}
+}
+
+func TestVerifyTransfersAgainstChallengeAcceptsToken2022Transfer(t *testing.T) {
+	payer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	tokenProgram := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
+
+	sourceATA, err := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, tokenProgram)
+	if err != nil {
+		t.Fatalf("find source ata failed: %v", err)
+	}
+	recipientATA, err := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
+	if err != nil {
+		t.Fatalf("find recipient ata failed: %v", err)
+	}
+	ix, err := token2022.NewTransferCheckedInstruction(1000, 6, sourceATA, mint, recipientATA, payer.PublicKey(), nil).ValidateAndBuild()
+	if err != nil {
+		t.Fatalf("build transfer failed: %v", err)
+	}
+
+	tx := newTestTransaction(t, payer, ix)
+	if err := verifyTransfersAgainstChallenge(tx, 1000, mint.String(), recipient, "", protocol.MethodDetails{
+		TokenProgram: protocol.Token2022Program,
+	}); err != nil {
+		t.Fatalf("expected token2022 transfer to pass: %v", err)
+	}
+}
+
+func TestBuildExpectedTransfersRejectsInvalidSplitFields(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey()
+	if _, err := buildExpectedTransfers(1000, recipient, protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "not-a-number"}},
+	}); err == nil {
+		t.Fatal("expected invalid split amount to fail")
+	}
+	if _, err := buildExpectedTransfers(1000, recipient, protocol.MethodDetails{
+		Splits: []protocol.Split{{Recipient: "not-a-pubkey", Amount: "100"}},
+	}); err == nil {
+		t.Fatal("expected invalid split recipient to fail")
+	}
+}
+
+func TestVerifyCredentialRejectsInvalidPayloadType(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type": "voucher",
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+		t.Fatal("expected invalid payload type to fail")
+	}
+}
+
+func TestVerifyCredentialWithExpectedRejectsInvalidExpectedMethodDetails(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type":      "signature",
+		"signature": testutil.NewPrivateKey().PublicKey().String(),
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+
+	var expected intents.ChargeRequest
+	if err := challenge.Request.Decode(&expected); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	expected.MethodDetails = map[string]any{"decimals": "not-a-number"}
+
+	if _, err := handler.VerifyCredentialWithExpected(context.Background(), credential, expected); err == nil {
+		t.Fatal("expected invalid expected methodDetails to fail")
+	}
+}
+
+func TestVerifyCredentialMalformedTransactionData(t *testing.T) {
+	handler, _, _ := newTestMpp(t)
+	challenge, _ := handler.Charge(context.Background(), "0.001")
+	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
+		"type":        "transaction",
+		"transaction": "not-base64",
+	})
+	if err != nil {
+		t.Fatalf("credential failed: %v", err)
+	}
+	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+		t.Fatal("expected error for malformed transaction data")
 	}
 }
