@@ -98,7 +98,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
 
         self::assertFalse($result->ok);
-        self::assertSame('invalid signature length', $result->reason);
+        self::assertStringStartsWith('invalid signature character length', $result->reason);
     }
 
     public function testRejectsBase58SignatureWithWrongDecodedLength(): void
@@ -114,7 +114,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
 
         self::assertFalse($result->ok);
-        self::assertSame('invalid signature length', $result->reason);
+        self::assertStringStartsWith('invalid signature byte length', $result->reason);
     }
 
     public function testRejectsInvalidTransactionPayload(): void

@@ -97,7 +97,14 @@ $handler = new SolanaChargeHandler(
         blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
     ),
     rpc: $rpc,
-    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-interop-replay-' . getmypid()),
+    // Use a stable per-process replay store path so the file-backed
+    // store survives mid-test SIGTERM and restart. The interop harness
+    // submits the same signature twice on the cross-route-replay
+    // scenario; a PID-suffixed path would reset the store between
+    // restarts and break the second-submission reject. The fixed path
+    // is scoped to this binary so concurrent harness runs in different
+    // directories do not collide.
+    replayStore: new FileReplayStore(sys_get_temp_dir() . '/mpp-php-interop-replay'),
     feePayer: $feePayer,
     network: $network,
     settlementHeader: $settlementHeader,

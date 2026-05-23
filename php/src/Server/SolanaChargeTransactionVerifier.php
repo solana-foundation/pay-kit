@@ -86,12 +86,18 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
 
     private function validateSignature(string $signature): void
     {
-        if (strlen($signature) < 87 || strlen($signature) > 88) {
-            throw new InvalidArgumentException('invalid signature length');
+        $length = strlen($signature);
+        if ($length < 87 || $length > 88) {
+            throw new InvalidArgumentException(
+                'invalid signature character length ' . $length . ' (expected 87 or 88 base58 characters)'
+            );
         }
         $decoded = Base58::decode($signature);
-        if (strlen($decoded) !== 64) {
-            throw new InvalidArgumentException('invalid signature length');
+        $decodedLength = strlen($decoded);
+        if ($decodedLength !== 64) {
+            throw new InvalidArgumentException(
+                'invalid signature byte length ' . $decodedLength . ' (expected 64 bytes after base58 decode)'
+            );
         }
     }
 
