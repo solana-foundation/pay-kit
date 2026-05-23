@@ -41,6 +41,28 @@ _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 _SYSTEM_TRANSFER_INSTRUCTION = 2
 _TOKEN_TRANSFER_CHECKED_INSTRUCTION = 12
 
+# Compute-budget program allowlist caps. These must stay in sync with the
+# canonical Rust reference at ``rust/src/server/charge.rs`` constants
+# ``MAX_COMPUTE_UNIT_LIMIT`` and ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS``,
+# and the mirrored caps on Ruby, PHP, Lua, Go server SDKs. A challenge
+# carrying a SetComputeUnitLimit / SetComputeUnitPrice instruction over
+# these caps is rejected before broadcast so the payer cannot drain the
+# fee payer with an unbounded priority fee.
+_COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
+_COMPUTE_BUDGET_SET_LIMIT_DISCRIMINATOR = 2
+_COMPUTE_BUDGET_SET_PRICE_DISCRIMINATOR = 3
+MAX_COMPUTE_UNIT_LIMIT = 200_000
+MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
+
+# Maximum number of additional split recipients on a single charge.
+# Matches Rust ``splits.len() > 8`` guard in
+# ``rust/src/server/charge.rs::verify_versioned_transaction_pre_broadcast``
+# and the equivalent ``count($splits) > 8`` / ``splits.length > 8`` guards
+# in PHP and Ruby. A high split count balloons the transaction size and
+# the per-recipient ATA verification cost, so we reject early at the
+# pre-broadcast stage.
+MAX_SPLITS = 8
+
 # Legacy Solana memo program (v1). MPP charge transactions MUST use memo v2
 # (``MEMO_PROGRAM`` from :mod:`solana_mpp.protocol.solana`). v1 had a different
 # instruction shape and is rejected to match the L2 lock landed on PHP fde0efb
@@ -49,6 +71,18 @@ _MEMO_V1_PROGRAM = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"
 
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
+    # Reject over-bound splits up-front. Mirrors the Rust pre-broadcast
+    # guard at ``rust/src/server/charge.rs::verify_versioned_transaction_pre_broadcast``
+    # (``splits.len() > 8``) and the equivalent PHP / Ruby guards. A
+    # high split count balloons transaction size and per-recipient ATA
+    # verification cost, so we surface the limit + observed count in
+    # the error so the client can repair the challenge.
+    if len(details.splits) > MAX_SPLITS:
+        raise PaymentError(
+            f"too many splits: {len(details.splits)} exceeds limit {MAX_SPLITS}",
+            code="too-many-splits",
+        )
+
     total_amount = int(request.amount)
     split_total = sum(int(split.amount) for split in details.splits)
     primary_amount = total_amount - split_total
@@ -271,6 +305,50 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
+def _validate_compute_budget_instruction(data: bytes, account_count: int) -> None:
+    """Validate a single ComputeBudget program instruction.
+
+    Mirrors ``validate_compute_budget_instruction`` in
+    ``rust/src/server/charge.rs``: SetComputeUnitLimit (discriminator 2,
+    u32 LE units in ``data[1..5]``) and SetComputeUnitPrice (discriminator
+    3, u64 LE microlamports in ``data[1..9]``) are the only accepted
+    shapes, both must carry zero account references, and each value is
+    capped at the per-instruction maximum. Anything else is rejected as
+    an invalid payload to keep the on-wire allowlist tight.
+    """
+    if account_count != 0:
+        raise PaymentError(
+            "compute budget instruction must not have accounts",
+            code="compute-budget-invalid",
+        )
+    if not data:
+        raise PaymentError(
+            "compute budget instruction has empty data",
+            code="compute-budget-invalid",
+        )
+    discriminator = data[0]
+    if discriminator == _COMPUTE_BUDGET_SET_LIMIT_DISCRIMINATOR and len(data) == 5:
+        units = int.from_bytes(data[1:5], "little")
+        if units > MAX_COMPUTE_UNIT_LIMIT:
+            raise PaymentError(
+                f"compute unit limit {units} exceeds cap {MAX_COMPUTE_UNIT_LIMIT}",
+                code="compute-budget-cap-exceeded",
+            )
+        return
+    if discriminator == _COMPUTE_BUDGET_SET_PRICE_DISCRIMINATOR and len(data) == 9:
+        price = int.from_bytes(data[1:9], "little")
+        if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS:
+            raise PaymentError(
+                f"compute unit price {price} exceeds cap {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}",
+                code="compute-budget-cap-exceeded",
+            )
+        return
+    raise PaymentError(
+        "unsupported compute budget instruction",
+        code="compute-budget-invalid",
+    )
+
+
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
     """Decode local transfer and memo instructions from a legacy or v0 transaction.
 
@@ -373,6 +451,13 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             except UnicodeDecodeError as exc:
                 raise PaymentError("memo instruction is not valid UTF-8", code="invalid-payload") from exc
             instructions.append({"programId": MEMO_PROGRAM, "parsed": memo})
+        elif program_id == _COMPUTE_BUDGET_PROGRAM:
+            # Validate compute-budget instructions inline so an over-cap
+            # SetComputeUnitLimit / SetComputeUnitPrice is rejected with a
+            # structured error before broadcast. The instruction itself
+            # carries no transfer semantics, so we do not append it to
+            # the parsed instruction list consumed downstream.
+            _validate_compute_budget_instruction(data, len(instruction.accounts))
         elif program_id == _MEMO_V1_PROGRAM:
             # L2 lock: MPP charge requires memo v2. Memo v1 has a different
             # instruction shape (UTF-8 directly in data with no signer check)

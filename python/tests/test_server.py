@@ -1188,3 +1188,136 @@ class TestCoSignSplitBounds:
         # Skip the 1-byte num_sigs prefix; first 64 bytes after are the
         # fee-payer signature slot.
         assert signed_bytes[1:65] != b"\x00" * 64
+
+
+class TestComputeBudgetGuard:
+    """Compute-budget allowlist parity with Rust / PHP / Ruby.
+
+    SetComputeUnitLimit and SetComputeUnitPrice are the only accepted
+    instruction shapes; values must stay at or under the per-instruction
+    caps. Mirrors ``validate_compute_budget_instruction`` in
+    ``rust/src/server/charge.rs`` and the matching PHP / Ruby validators.
+    """
+
+    _COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111"
+
+    @staticmethod
+    def _build_tx_with_compute_budget_data(data: bytes) -> str:
+        signer = Keypair()
+        instructions = [
+            Instruction(Pubkey.from_string(TestComputeBudgetGuard._COMPUTE_BUDGET), data, []),
+            transfer(
+                TransferParams(
+                    from_pubkey=signer.pubkey(),
+                    to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                    lamports=1000,
+                )
+            ),
+        ]
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([signer], blockhash)
+        import base64
+
+        return base64.b64encode(bytes(transaction)).decode("ascii")
+
+    def test_set_compute_unit_limit_at_cap_is_accepted(self):
+        from solana_mpp.server.mpp import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+
+        data = bytes([2]) + MAX_COMPUTE_UNIT_LIMIT.to_bytes(4, "little")
+        tx_b64 = self._build_tx_with_compute_budget_data(data)
+        # No exception: the transfer is decoded and the compute-budget
+        # instruction is silently accepted (not surfaced in the parsed list).
+        out = _decode_legacy_payment_instructions(tx_b64)
+        assert any(item.get("program") == "system" for item in out)
+        assert not any(item.get("programId") == self._COMPUTE_BUDGET for item in out)
+
+    def test_set_compute_unit_limit_over_cap_is_rejected(self):
+        from solana_mpp.server.mpp import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+
+        over = MAX_COMPUTE_UNIT_LIMIT + 1
+        data = bytes([2]) + over.to_bytes(4, "little")
+        tx_b64 = self._build_tx_with_compute_budget_data(data)
+        with pytest.raises(PaymentError) as exc:
+            _decode_legacy_payment_instructions(tx_b64)
+        assert exc.value.code == "compute-budget-cap-exceeded"
+        assert str(MAX_COMPUTE_UNIT_LIMIT) in str(exc.value)
+        assert str(over) in str(exc.value)
+
+    def test_set_compute_unit_price_over_cap_is_rejected(self):
+        from solana_mpp.server.mpp import (
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+            _decode_legacy_payment_instructions,
+        )
+
+        over = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1
+        data = bytes([3]) + over.to_bytes(8, "little")
+        tx_b64 = self._build_tx_with_compute_budget_data(data)
+        with pytest.raises(PaymentError) as exc:
+            _decode_legacy_payment_instructions(tx_b64)
+        assert exc.value.code == "compute-budget-cap-exceeded"
+        assert str(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) in str(exc.value)
+        assert str(over) in str(exc.value)
+
+    def test_unknown_compute_budget_discriminator_is_rejected(self):
+        from solana_mpp.server.mpp import _decode_legacy_payment_instructions
+
+        # Discriminator 0 (RequestUnits) is no longer a permitted shape
+        # in the MPP allowlist; reject as invalid payload.
+        data = bytes([0, 0, 0, 0, 0])
+        tx_b64 = self._build_tx_with_compute_budget_data(data)
+        with pytest.raises(PaymentError) as exc:
+            _decode_legacy_payment_instructions(tx_b64)
+        assert exc.value.code == "compute-budget-invalid"
+
+    def test_canonical_code_maps_to_payment_invalid(self):
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+
+        assert canonical_code("compute-budget-cap-exceeded") == CODE_PAYMENT_INVALID
+        assert canonical_code("compute-budget-invalid") == CODE_PAYMENT_INVALID
+
+
+class TestSplitsCountGuard:
+    """Splits-count cap parity with Rust / PHP / Ruby.
+
+    A challenge advertising more than ``MAX_SPLITS`` (8) split recipients
+    is rejected before transaction verification so the verifier never
+    walks an unbounded ATA list or transfer list. Mirrors the Rust guard
+    in ``verify_versioned_transaction_pre_broadcast`` and the matching
+    PHP / Ruby counts.
+    """
+
+    @staticmethod
+    def _make_request_with_n_splits(n: int) -> tuple[ChargeRequest, MethodDetails]:
+        request = ChargeRequest(amount="10000", currency="USDC", recipient=TEST_RECIPIENT)
+        splits = [
+            Split(recipient=TEST_RECIPIENT, amount="1")
+            for _ in range(n)
+        ]
+        details = MethodDetails(splits=splits)
+        return request, details
+
+    def test_splits_at_cap_is_accepted(self):
+        from solana_mpp.server.mpp import MAX_SPLITS, _build_expected_transfers
+
+        request, details = self._make_request_with_n_splits(MAX_SPLITS)
+        out = _build_expected_transfers(request, details)
+        # primary + 8 splits = 9 entries
+        assert len(out) == MAX_SPLITS + 1
+
+    def test_splits_over_cap_is_rejected(self):
+        from solana_mpp.server.mpp import MAX_SPLITS, _build_expected_transfers
+
+        observed = MAX_SPLITS + 1
+        request, details = self._make_request_with_n_splits(observed)
+        with pytest.raises(PaymentError) as exc:
+            _build_expected_transfers(request, details)
+        assert exc.value.code == "too-many-splits"
+        assert str(observed) in str(exc.value)
+        assert str(MAX_SPLITS) in str(exc.value)
+
+    def test_canonical_code_maps_to_payment_invalid(self):
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+
+        assert canonical_code("too-many-splits") == CODE_PAYMENT_INVALID
