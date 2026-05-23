@@ -37,6 +37,7 @@ describe("interop scenario selection", () => {
       "charge-splits-too-many",
       "charge-splits-sum-equals-amount",
       "charge-cross-server-portability",
+      "charge-idempotent-resubmit",
     ]);
   });
 

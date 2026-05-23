@@ -359,4 +359,28 @@ export const chargeScenarios: readonly InteropScenario[] = [
       ["rust", "typescript"],
     ],
   },
+  {
+    // M1 same-server idempotent resubmit. Client pays server A, then
+    // re-submits the same Authorization to server A. Canonical
+    // behavior per the L4 replay store is to reject with
+    // `signature_consumed`. In pull mode both the rust and TS SDKs
+    // reserve the signature in the replay store *after* broadcast,
+    // so a same-credential resubmit actually trips the RPC's
+    // "already been processed" error before the store check fires.
+    // Both signals are mapped to canonical signature_consumed at
+    // the 402 boundary.
+    id: "charge-idempotent-resubmit",
+    intent: "charge",
+    kind: "idempotent-resubmit",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 402,
+    expectedCode: "signature_consumed",
+    clientIds: ["typescript"],
+    serverIds: ["typescript", "rust"],
+  },
 ] as const;
