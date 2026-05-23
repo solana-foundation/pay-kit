@@ -111,4 +111,15 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("ruby", "MPP_INTEROP_SERVERS", false),
   },
+  {
+    id: "lua",
+    label: "Lua HTTP server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../tests/interop/lua-server/server.lua",
+    ],
+    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
+  },
 ];

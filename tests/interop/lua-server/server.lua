@@ -1,0 +1,268 @@
+#!/usr/bin/env luajit
+-- Lua MPP interop adapter for the cross-language harness.
+--
+-- Mirrors `tests/interop/ruby-server/server.rb`: a raw TCP loop that
+-- gates `interopScenario.resourcePath` behind a `charge` challenge and
+-- settles the credential on Surfpool. The harness drives this binary by
+-- the contract in `skills/pay-sdk-implementation/references/interop-harness.md`:
+--
+--   1. Set environment variables (MPP_INTEROP_*).
+--   2. Spawn the adapter.
+--   3. Read one JSON line from stdout: {"type":"ready", ...}.
+--   4. Drive the resource over HTTP on the port the adapter reports.
+--   5. Send SIGTERM to shut down.
+--
+-- All diagnostic logs go to stderr; stdout is reserved for the handshake.
+--
+-- Run manually:
+--   cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
+--   MPP_INTEROP_RPC_URL=... MPP_INTEROP_PAY_TO=... ... luajit ../tests/interop/lua-server/server.lua
+
+package.path = table.concat({
+  './?.lua',
+  './?/init.lua',
+  './lua/?.lua',
+  './lua/?/init.lua',
+  package.path,
+}, ';')
+
+local socket = require('socket')
+local mpp = require('mpp')
+local json = require('mpp.util.json')
+local headers = require('mpp.protocol.core.headers')
+local solana_verify = require('mpp.server.solana_verify')
+local charge_handler = require('mpp.server.charge_handler')
+local rpc_module = require('mpp.solana.rpc')
+local rpc_transport = require('mpp.solana.rpc_transport')
+local signer_module = require('mpp.methods.solana.signer')
+local store_module = require('mpp.store')
+
+local function log(message)
+  io.stderr:write(message .. '\n')
+  io.stderr:flush()
+end
+
+local function require_env(name)
+  local value = os.getenv(name)
+  if value == nil or value == '' then
+    log('missing required env: ' .. name)
+    os.exit(2)
+  end
+  return value
+end
+
+local function optional_env(name, default)
+  local value = os.getenv(name)
+  if value == nil or value == '' then
+    return default
+  end
+  return value
+end
+
+local rpc_url           = require_env('MPP_INTEROP_RPC_URL')
+local network           = optional_env('MPP_INTEROP_NETWORK', 'localnet')
+local mint              = require_env('MPP_INTEROP_MINT')
+local amount            = require_env('MPP_INTEROP_AMOUNT')
+local pay_to            = require_env('MPP_INTEROP_PAY_TO')
+local secret_key        = optional_env('MPP_INTEROP_SECRET_KEY', 'mpp-interop-secret-key')
+local resource_path     = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid')
+local settlement_header = optional_env('MPP_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature')
+local replay_path       = os.getenv('MPP_INTEROP_REPLAY_SOURCE_PATH')
+local replay_amount     = os.getenv('MPP_INTEROP_REPLAY_SOURCE_AMOUNT')
+local splits_raw        = optional_env('MPP_INTEROP_SPLITS', '[]')
+
+local splits_decoded, splits_err = json.decode(splits_raw)
+if type(splits_decoded) ~= 'table' then
+  log('MPP_INTEROP_SPLITS must decode to an array: ' .. tostring(splits_err))
+  os.exit(2)
+end
+
+local fee_payer = signer_module.from_json_array(require_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY'))
+
+local rpc = rpc_module.new({ url = rpc_url, transport = rpc_transport.new() })
+local verifier_bundle = solana_verify.new_real_verifier({ pull_signer = fee_payer })
+
+local handler = charge_handler.new({
+  rpc = rpc,
+  network = network,
+  replay_store = store_module.memory(),
+  transaction_verifier = verifier_bundle.transaction_verifier,
+  pull_transaction_signer = verifier_bundle.pull_transaction_signer,
+  pull_blockhash_extractor = verifier_bundle.pull_blockhash_extractor,
+})
+
+local server = mpp.server.new({
+  recipient = pay_to,
+  currency = mint,
+  decimals = 6,
+  network = network,
+  rpc_url = rpc_url,
+  secret_key = secret_key,
+  realm = 'MPP Interop',
+  fee_payer = true,
+  fee_payer_key = fee_payer.public_key,
+  verify_payment = handler:as_callback(),
+})
+
+local function read_request(conn)
+  local line = conn:receive('*l')
+  if not line or line == '' then return nil end
+  local method, path = line:match('^(%S+)%s+(%S+)%s+HTTP/')
+  if not method then return nil end
+  local hdrs = {}
+  while true do
+    local h = conn:receive('*l')
+    if not h or h == '' then break end
+    local name, value = h:match('^([^:]+):%s*(.*)$')
+    if name then hdrs[name:lower()] = value end
+  end
+  return { method = method, path = path, headers = hdrs }
+end
+
+local STATUS_REASONS = {
+  [200] = 'OK',
+  [402] = 'Payment Required',
+  [404] = 'Not Found',
+  [500] = 'Server Error',
+}
+
+local function write_response(conn, status, hdrs, body)
+  local reason = STATUS_REASONS[status] or 'Server Error'
+  local payload
+  if type(body) == 'string' then
+    payload = body
+  else
+    payload = json.encode(body)
+  end
+  hdrs = hdrs or {}
+  hdrs['connection'] = 'close'
+  hdrs['content-length'] = tostring(#payload)
+  conn:send('HTTP/1.1 ' .. status .. ' ' .. reason .. '\r\n')
+  for name, value in pairs(hdrs) do
+    conn:send(name .. ': ' .. value .. '\r\n')
+  end
+  conn:send('\r\n')
+  conn:send(payload)
+end
+
+local function build_charge_options(request_amount)
+  local options = {
+    description = 'Lua interop protected content',
+  }
+  if #splits_decoded > 0 then
+    options.splits = splits_decoded
+  end
+  return request_amount, options
+end
+
+local function handle_charge(conn, authorization, expected_amount)
+  if authorization == nil or authorization == '' then
+    -- Issue a fresh signed challenge.
+    local _amt, charge_options = build_charge_options(expected_amount)
+    local ok, challenge_value = pcall(function()
+      return server:charge_with_options(expected_amount, charge_options)
+    end)
+    if not ok then
+      log('charge issuance error: ' .. tostring(challenge_value))
+      write_response(conn, 500, { ['content-type'] = 'application/json' },
+        { error = tostring(challenge_value) })
+      return
+    end
+    write_response(conn, 402, {
+      ['content-type'] = 'application/json',
+      ['www-authenticate'] = headers.format_www_authenticate(challenge_value),
+    }, { error = 'payment required' })
+    return
+  end
+
+  -- Parse the Authorization header into a credential structure.
+  local credential, parse_err = headers.parse_authorization(authorization)
+  if not credential then
+    log('authorization parse error: ' .. tostring(parse_err))
+    write_response(conn, 402, { ['content-type'] = 'application/json' },
+      { error = 'invalid authorization' })
+    return
+  end
+
+  local ok, settlement = pcall(function()
+    return server:verify_credential_with_expected(credential, {
+      amount = expected_amount,
+      currency = mint,
+      recipient = pay_to,
+    })
+  end)
+  if not ok then
+    local detail = type(settlement) == 'table' and settlement.message or tostring(settlement)
+    log('settlement error: ' .. tostring(detail))
+    write_response(conn, 402, { ['content-type'] = 'application/json' },
+      { error = 'verification failed', detail = detail })
+    return
+  end
+
+  -- The receipt structure carries the settlement reference (on-chain signature).
+  local response_headers = { ['content-type'] = 'application/json' }
+  if settlement and settlement.headers then
+    for name, value in pairs(settlement.headers) do
+      response_headers[name] = value
+    end
+  end
+  -- The harness asserts the configured settlement header is present on the
+  -- success path. The Lua receipt object exposes the on-chain signature as
+  -- `reference`; surface it under the harness header.
+  if settlement and settlement.reference then
+    response_headers[settlement_header] = settlement.reference
+  end
+  write_response(conn, 200, response_headers, { ok = true, paid = true })
+end
+
+local listener = assert(socket.bind('127.0.0.1', 0))
+listener:settimeout(0.2)
+local _, port = listener:getsockname()
+port = tonumber(port)
+
+io.stdout:write(json.encode({
+  type = 'ready',
+  implementation = 'lua',
+  role = 'server',
+  port = port,
+  capabilities = { 'charge' },
+}) .. '\n')
+io.stdout:flush()
+
+log('lua interop server listening on 127.0.0.1:' .. tostring(port))
+
+local function serve_one()
+  local conn = listener:accept()
+  if not conn then return end
+  conn:settimeout(5)
+  local req = read_request(conn)
+  if not req then
+    conn:close()
+    return
+  end
+  if req.method == 'GET' and req.path == '/health' then
+    write_response(conn, 200, { ['content-type'] = 'application/json' }, { ok = true })
+    conn:close()
+    return
+  end
+  local protected_amount
+  if req.method == 'GET' and req.path == resource_path then
+    protected_amount = amount
+  elseif req.method == 'GET' and replay_path and req.path == replay_path then
+    protected_amount = replay_amount or amount
+  end
+  if protected_amount == nil then
+    write_response(conn, 404, { ['content-type'] = 'application/json' }, { error = 'not_found' })
+    conn:close()
+    return
+  end
+  handle_charge(conn, req.headers['authorization'], protected_amount)
+  conn:close()
+end
+
+while true do
+  local ok, err = pcall(serve_one)
+  if not ok then
+    log('serve error: ' .. tostring(err))
+  end
+end
