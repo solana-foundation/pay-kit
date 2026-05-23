@@ -11,7 +11,9 @@ use SolanaMpp\Intent\ChargeRequest;
 use SolanaMpp\Server\ChargeServer;
 use SolanaMpp\Server\ChargeSettlement;
 use SolanaMpp\Server\PaymentRequiredResponse;
+use SolanaMpp\Server\MemoryReplayStore;
 use SolanaMpp\Server\PaymentVerifier;
+use SolanaMpp\Server\ReplayStore;
 use SolanaMpp\Server\SolanaChargeHandler;
 use SolanaMpp\Server\VerificationResult;
 use SolanaPhpSdk\Keypair\Keypair;
@@ -173,6 +175,40 @@ final class SolanaChargeHandlerTest extends TestCase
         self::assertStringContainsString('Transaction BroadcastSig failed', $result->body['detail']);
     }
 
+    public function testReturns402WhenPullSignatureIsReplayed(): void
+    {
+        $challenges = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $request = $this->chargeRequest();
+        $challenge = $challenges->createChallenge($request);
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'transaction', 'transaction' => $this->minimalLegacyTransactionBase64()],
+        );
+
+        $http = new FakeJsonRpcHttpClient([
+            'sendTransaction' => [
+                ['result' => 'PullReplaySig'],
+                ['result' => 'PullReplaySig'],
+            ],
+            'getSignatureStatuses' => [
+                ['result' => ['value' => [['slot' => 1, 'confirmationStatus' => 'confirmed', 'err' => null]]]],
+                ['result' => ['value' => [['slot' => 2, 'confirmationStatus' => 'confirmed', 'err' => null]]]],
+            ],
+        ]);
+        $handler = $this->handler(
+            challenges: $challenges,
+            rpc: new RpcClient('http://test.invalid', $http),
+            verifier: new AlwaysAcceptVerifier(),
+        );
+
+        $first = $handler->handle($credential->toAuthorizationHeader(), $request);
+        $second = $handler->handle($credential->toAuthorizationHeader(), $request);
+
+        self::assertInstanceOf(ChargeSettlement::class, $first);
+        self::assertInstanceOf(PaymentRequiredResponse::class, $second);
+        self::assertSame('Transaction signature already consumed', $second->body['detail']);
+    }
+
     public function testFeePayerPubkeyReflectsConfiguredKeypair(): void
     {
         $keypair = Keypair::generate();
@@ -190,13 +226,17 @@ final class SolanaChargeHandlerTest extends TestCase
         string $network = 'mainnet-beta',
         ?RpcClient $rpc = null,
         ?PaymentVerifier $verifier = null,
+        ?ReplayStore $replayStore = null,
+        int $confirmationAttempts = 40,
     ): SolanaChargeHandler {
         return new SolanaChargeHandler(
             challenges: $challenges ?? new ChargeServer(secretKey: 'secret', realm: 'api'),
             rpc: $rpc ?? new RpcClient('http://unused.invalid', new NullHttpClient()),
+            replayStore: $replayStore ?? new MemoryReplayStore(),
             feePayer: $feePayer,
             network: $network,
             verifier: $verifier,
+            confirmationAttempts: $confirmationAttempts,
             confirmationDelayMicros: 0,
         );
     }

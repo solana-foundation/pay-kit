@@ -30,12 +30,18 @@ use SolanaPhpSdk\Util\Base58;
 final class SolanaChargeHandler
 {
     private readonly PaymentVerifier $verifier;
+    private readonly ReplayStore $replayStore;
 
     /**
      * @param ChargeServer $challenges Low-level challenge signing + credential
      *        parsing (created with a `blockhashProvider` if you want
      *        `recentBlockhash` pre-fetched into every 402).
      * @param RpcClient $rpc RPC endpoint used for broadcast and confirmation.
+     * @param ReplayStore $replayStore Replay store keyed by
+     *        `solana-charge:consumed:<signature>`. Production deployments
+     *        must use a shared atomic store (Redis, SQL, or
+     *        {@see FileReplayStore}); do not create a fresh in-memory store
+     *        per request.
      * @param ?Keypair $feePayer When set, the handler adds the server's
      *        signature to the fee-payer slot before broadcast. Required for
      *        charge requests that advertise `methodDetails.feePayer = true`.
@@ -55,6 +61,7 @@ final class SolanaChargeHandler
     public function __construct(
         private readonly ChargeServer $challenges,
         private readonly RpcClient $rpc,
+        ReplayStore $replayStore,
         private readonly ?Keypair $feePayer = null,
         private readonly string $network = 'mainnet-beta',
         private readonly string $settlementHeader = 'x-payment-settlement-signature',
@@ -63,6 +70,7 @@ final class SolanaChargeHandler
         private readonly int $confirmationDelayMicros = 250_000,
     ) {
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
+        $this->replayStore = $replayStore;
     }
 
     /**
@@ -117,6 +125,7 @@ final class SolanaChargeHandler
 
         try {
             $signature = $this->settle($transaction);
+            $this->consumeSignature($signature);
         } catch (Throwable $error) {
             return $this->challenges->paymentRequiredResponse($request, $error->getMessage());
         }
@@ -173,6 +182,18 @@ final class SolanaChargeHandler
 
         $this->awaitConfirmation($signature);
         return $signature;
+    }
+
+    /**
+     * Atomically mark a settled signature as consumed. Replays raise so the
+     * outer handler can convert them into a 402.
+     */
+    private function consumeSignature(string $signature): void
+    {
+        $key = "solana-charge:consumed:$signature";
+        if (!$this->replayStore->consume($key)) {
+            throw new RuntimeException('Transaction signature already consumed');
+        }
     }
 
     private function awaitConfirmation(string $signature): void
