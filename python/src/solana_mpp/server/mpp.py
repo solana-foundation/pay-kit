@@ -423,6 +423,8 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
                 "fee payer pubkey not present in transaction accounts",
                 code="invalid-payload",
             ) from exc
+        num_required = int(vtx.message.header.num_required_signatures)
+        _assert_signature_slot(idx, num_required)
         # v0 messages are signed over ``to_bytes_versioned(msg)`` which
         # prepends the 0x80 version byte.
         message_bytes = bytes(to_bytes_versioned(vtx.message))
@@ -443,6 +445,8 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
             "fee payer pubkey not present in transaction accounts",
             code="invalid-payload",
         ) from exc
+    num_required = int(tx.message.header.num_required_signatures)
+    _assert_signature_slot(idx, num_required)
 
     # Legacy Transaction: sign ``bytes(msg)`` directly.
     message_bytes = bytes(tx.message)
@@ -451,6 +455,27 @@ def _co_sign_with_fee_payer(transaction_b64: str, fee_payer: Any) -> str:
     sig_start = 1 + idx * 64
     serialized[sig_start : sig_start + 64] = sig_bytes
     return base64.b64encode(bytes(serialized)).decode("ascii")
+
+
+def _assert_signature_slot(idx: int, num_required: int) -> None:
+    """Validate that ``idx`` falls inside the required-signers block.
+
+    The Solana wire format reserves one 64-byte slot per required signer at
+    the head of the transaction; account keys outside the
+    ``num_required_signatures`` block live in the readonly-signed or
+    unsigned regions and have no signature slot. Splicing into ``1 + idx *
+    64`` for an out-of-range ``idx`` overwrites message bytes and produces
+    a corrupted transaction that the cluster would reject opaquely. We
+    reject the credential here with a clear ``payment_invalid`` so the
+    client sees a deterministic failure.
+    """
+    if idx < 0 or idx >= num_required:
+        raise PaymentError(
+            f"fee payer pubkey at account index {idx} is outside the "
+            f"required-signers block (num_required_signatures={num_required}); "
+            "a client must place the fee payer inside the signer header",
+            code="invalid-payload",
+        )
 
 
 def _verify_local_transaction_intent(

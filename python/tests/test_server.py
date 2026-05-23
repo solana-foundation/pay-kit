@@ -1089,3 +1089,102 @@ class TestL8SettlementOrdering:
         assert any(VALID_SIGNATURE in key for key in keys), (
             f"consume key must be keyed by on-chain signature; saw {keys}"
         )
+
+
+class TestCoSignSplitBounds:
+    """Greptile follow-up: ``_co_sign_with_fee_payer`` MUST validate that
+    the fee-payer account index falls inside the required-signers block
+    before splicing the signature into the wire transaction. Splicing at
+    ``1 + idx * 64`` for an out-of-range index would overwrite message
+    bytes and produce a corrupted transaction the cluster rejects
+    opaquely.
+    """
+
+    def test_fee_payer_in_readonly_unsigned_block_is_rejected(self):
+        from solders.hash import Hash
+        from solders.instruction import AccountMeta, Instruction
+        from solders.keypair import Keypair
+        from solders.message import Message
+        from solders.pubkey import Pubkey
+        from solders.system_program import TransferParams, transfer
+        from solders.transaction import Transaction
+
+        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+
+        # Build a transaction whose only signer is ``real_signer``. Then
+        # reference ``rogue_fee_payer.pubkey()`` in a readonly-unsigned
+        # account meta. The fee-payer key exists in account_keys but its
+        # index lands in the readonly-unsigned region, outside the
+        # required-signers block.
+        real_signer = Keypair()
+        rogue_fee_payer = Keypair()
+        recipient = Pubkey.from_string(TEST_RECIPIENT)
+
+        transfer_ix = transfer(
+            TransferParams(
+                from_pubkey=real_signer.pubkey(),
+                to_pubkey=recipient,
+                lamports=1000,
+            )
+        )
+        # A second instruction that touches the rogue pubkey as a readonly
+        # non-signer account; this places it in the readonly-unsigned
+        # block of the compiled message.
+        touch_rogue = Instruction(
+            Pubkey.from_string(MEMO_PROGRAM),
+            b"touch",
+            [AccountMeta(rogue_fee_payer.pubkey(), False, False)],
+        )
+
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash([transfer_ix, touch_rogue], real_signer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([real_signer], blockhash)
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+
+        # The rogue pubkey is present in account_keys but its index is >=
+        # num_required_signatures (== 1 here). Splicing at that slot would
+        # overwrite message bytes.
+        with pytest.raises(PaymentError, match="outside the required-signers block"):
+            _co_sign_with_fee_payer(tx_b64, rogue_fee_payer)
+
+    def test_fee_payer_at_required_slot_co_signs(self):
+        # Positive control: when the fee-payer pubkey IS the first
+        # required signer, the splice succeeds. Verifies the new bounds
+        # check did not regress the happy path.
+        from solders.hash import Hash
+        from solders.keypair import Keypair
+        from solders.message import Message
+        from solders.pubkey import Pubkey
+        from solders.system_program import TransferParams, transfer
+        from solders.transaction import Transaction
+
+        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+
+        fee_payer = Keypair()
+        recipient = Pubkey.from_string(TEST_RECIPIENT)
+
+        ix = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=recipient,
+                lamports=1000,
+            )
+        )
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash([ix], fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        # Leave the signature slot zeroed so cosign can fill it.
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+
+        signed_b64 = _co_sign_with_fee_payer(tx_b64, fee_payer)
+        # Splice succeeded if the result is decodable and the signature
+        # slot is no longer all zeros.
+        signed_bytes = base64.b64decode(signed_b64)
+        # Skip the 1-byte num_sigs prefix; first 64 bytes after are the
+        # fee-payer signature slot.
+        assert signed_bytes[1:65] != b"\x00" * 64

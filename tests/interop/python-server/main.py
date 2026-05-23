@@ -179,12 +179,17 @@ class InteropHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, body: dict, extra_headers: dict | None = None) -> None:
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(payload)))
-        self.send_header("connection", "close")
+        # Allow callers to override the default ``application/json`` by
+        # putting ``content-type`` in ``extra_headers``. The 402 path uses
+        # this to emit ``application/problem+json`` per RFC 7807 §3.
+        headers = {"content-type": "application/json"}
         if extra_headers:
             for name, value in extra_headers.items():
-                self.send_header(name, value)
+                headers[name.lower()] = value
+        headers["content-length"] = str(len(payload))
+        headers["connection"] = "close"
+        for name, value in headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -282,6 +287,12 @@ class InteropHandler(BaseHTTPRequestHandler):
             402,
             body,
             extra_headers={
+                # RFC 7807 §3: problem detail responses use
+                # ``application/problem+json``. The L6 canonical body shape
+                # is exactly the RFC 7807 ``type/title/status`` envelope
+                # plus our ``code`` field, so this is the correct media
+                # type for every 402 the adapter emits.
+                "content-type": "application/problem+json",
                 "www-authenticate": www_auth,
                 "cache-control": "no-store",
             },
