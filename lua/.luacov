@@ -15,6 +15,16 @@ return {
   exclude = {
     "tests/.+",
     "mpp/server/html_assets/gen$",
+    -- The pure-Lua modular-arithmetic on-curve check inside
+    -- mpp/methods/solana/ata is exercised end-to-end by the
+    -- `ata.derive matches the Ruby reference` spec, which passes the
+    -- canonical fixture and asserts the derived address. luacov
+    -- instrumentation disables LuaJIT trace recording, so the bump
+    -- loop inside `find_program_address` multiplies that test's
+    -- wall-clock time by ~100x. Exclude the bignum file from the
+    -- coverage percentage while keeping the public surface
+    -- (`derive`, `find_program_address`) live in the unit suite.
+    "mpp/methods/solana/ata$",
   },
   includeuntestedfiles = {
     "mpp",
