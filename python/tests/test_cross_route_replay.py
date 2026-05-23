@@ -14,6 +14,7 @@ from solana_mpp._challenge import compute_challenge_id
 from solana_mpp._errors import PaymentError
 from solana_mpp._types import ChallengeEcho, PaymentCredential
 from solana_mpp.protocol.intents import ChargeRequest
+from solana_mpp.store import MemoryStore
 from solana_mpp.server.mpp import Config, Mpp
 
 TEST_SECRET = "cross-route-replay-test-secret-key"
@@ -27,8 +28,7 @@ def _make_mpp() -> Mpp:
             currency="USDC",
             decimals=6,
             network="devnet",
-            secret_key=TEST_SECRET,
-        )
+            secret_key=TEST_SECRET, store=MemoryStore(),)
     )
 
 

@@ -435,7 +435,16 @@ class Mpp:
         self._rpc_url = config.rpc_url or default_rpc_url(self._network)
         self._html = config.html
         self._fee_payer_signer = config.fee_payer_signer
-        self._store: Store = config.store or MemoryStore()
+        if config.store is None:
+            # L4 lock: a missing replay store is a server misconfiguration.
+            # Silently falling back to MemoryStore() used to leave a window
+            # where a credential could replay after restart. Mirrors the
+            # required-explicit-store contract on Ruby and PHP after #96 / #102.
+            raise PaymentError(
+                "replay store is required; pass MemoryStore() or FileReplayStore(path) explicitly",
+                code="invalid-config",
+            )
+        self._store: Store = config.store
         self._rpc = config.rpc
 
     @property

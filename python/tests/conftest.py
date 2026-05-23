@@ -43,5 +43,6 @@ def test_mpp(monkeypatch: pytest.MonkeyPatch) -> Mpp:
         decimals=6,
         network="devnet",
         secret_key=TEST_SECRET_KEY,
+        store=MemoryStore(),
     )
     return Mpp(config)

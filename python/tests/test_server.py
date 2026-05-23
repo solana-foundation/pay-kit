@@ -15,6 +15,7 @@ from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, Pa
 from solana_mpp._types import ChallengeEcho, PaymentCredential
 from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
+from solana_mpp.store import MemoryStore
 from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
@@ -159,20 +160,19 @@ def mpp() -> Mpp:
         decimals=6,
         network="devnet",
         secret_key=TEST_SECRET,
-        rpc=rpc,
-    )
+        rpc=rpc, store=MemoryStore(),)
     return Mpp(config)
 
 
 class TestConfig:
     def test_missing_recipient_raises(self):
         with pytest.raises(PaymentError, match="recipient"):
-            Mpp(Config(recipient="", secret_key=TEST_SECRET))
+            Mpp(Config(recipient="", secret_key=TEST_SECRET, store=MemoryStore()))
 
     def test_missing_secret_key_raises(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("MPP_SECRET_KEY", raising=False)
         with pytest.raises(PaymentError, match="secret key"):
-            Mpp(Config(recipient=TEST_RECIPIENT, secret_key=""))
+            Mpp(Config(recipient=TEST_RECIPIENT, secret_key="", store=MemoryStore()))
 
     def test_defaults(self, mpp: Mpp):
         assert mpp.realm == "MPP Payment"
@@ -251,8 +251,7 @@ class TestCharge:
                 decimals=6,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=FakeRPC(),
-            )
+                rpc=FakeRPC(), store=MemoryStore(),)
         )
         challenge = handler.charge("1.00")
         request = challenge.decode_request()
@@ -365,8 +364,7 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge("1.00")
         credential = PaymentCredential(
@@ -401,8 +399,7 @@ class TestVerifyCredential:
                 decimals=9,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
@@ -436,8 +433,7 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -463,8 +459,7 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -489,8 +484,7 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
         credential = PaymentCredential(
@@ -515,8 +509,7 @@ class TestVerifyCredential:
                 decimals=9,
                 network="mainnet-beta",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
@@ -561,8 +554,7 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -587,8 +579,7 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -613,8 +604,7 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions())
         credential = PaymentCredential(
@@ -639,8 +629,7 @@ class TestVerifyCredential:
                 decimals=6,
                 network="devnet",
                 secret_key=TEST_SECRET,
-                rpc=rpc,
-            )
+                rpc=rpc, store=MemoryStore(),)
         )
         challenge = mpp.charge_with_options("1.00", ChargeOptions(external_id="order-123"))
         credential = PaymentCredential(
