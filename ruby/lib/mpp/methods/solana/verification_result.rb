@@ -5,12 +5,13 @@ module Mpp
     module Solana
       # Result returned by lower-level credential verifiers.
       class VerificationResult
-        attr_reader :reference, :reason, :credential, :challenge
+        attr_reader :reference, :reason, :code, :credential, :challenge
 
-        def initialize(ok:, reference: nil, reason: nil, credential: nil, challenge: nil)
+        def initialize(ok:, reference: nil, reason: nil, code: nil, credential: nil, challenge: nil)
           @ok = ok
           @reference = reference
           @reason = reason
+          @code = code
           @credential = credential
           @challenge = challenge
         end
@@ -25,9 +26,11 @@ module Mpp
           new(ok: true, reference: reference, credential: credential, challenge: challenge)
         end
 
-        # Create a failed verification result.
-        def self.failure(reason)
-          new(ok: false, reason: reason)
+        # Create a failed verification result. The optional `code` carries the
+        # canonical L6 error code (see Mpp::ErrorCodes); when nil, the response
+        # builder classifies the reason string into a canonical code.
+        def self.failure(reason, code: nil)
+          new(ok: false, reason: reason, code: code)
         end
       end
     end

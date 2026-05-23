@@ -32,9 +32,26 @@ module Mpp
       end
 
       # Return a 402 response for a charge request.
-      def payment_required_response(request, reason: nil)
+      #
+      # When `reason` is nil the body is the legacy unauthenticated shape
+      # `{error: payment_required}` and no code is attached: the request has
+      # not been verified yet so there is nothing to classify.
+      #
+      # When `reason` is present the body carries:
+      # - `code`: canonical L6 code (`Mpp::ErrorCodes::CODE_*`)
+      # - `error`: alias of `code` for backward compatibility
+      # - `message`: human-readable reason string
+      #
+      # `code` argument forces a specific canonical code; without it the
+      # classifier maps the reason string to a canonical code.
+      def payment_required_response(request, reason: nil, code: nil)
         header = create_challenge_header(request, description: request.description)
-        body = reason.nil? ? {"error" => "payment_required"} : {"error" => "payment_invalid", "message" => reason}
+        body = if reason.nil?
+          {"error" => "payment_required"}
+        else
+          canonical = code || ErrorCodes.canonical_code(reason)
+          {"code" => canonical, "error" => canonical, "message" => reason}
+        end
         Challenge.new(www_authenticate: header, body: body, reason: reason)
       end
 
@@ -52,8 +69,8 @@ module Mpp
           opaque: credential.challenge.opaque
         )
 
-        return Methods::Solana::VerificationResult.failure("challenge verification failed") unless challenge.verify?(secret_key)
-        return Methods::Solana::VerificationResult.failure("challenge expired") if challenge.expired?(now: now)
+        return Methods::Solana::VerificationResult.failure("challenge verification failed", code: ErrorCodes::CODE_CHALLENGE_VERIFICATION_FAILED) unless challenge.verify?(secret_key)
+        return Methods::Solana::VerificationResult.failure("challenge expired", code: ErrorCodes::CODE_CHALLENGE_EXPIRED) if challenge.expired?(now: now)
 
         result = verify_pinned_fields(challenge, expected_request)
         return result unless result.ok?
@@ -67,7 +84,8 @@ module Mpp
 
         Methods::Solana::VerificationResult.success(reference: result.reference, credential: credential, challenge: challenge)
       rescue KeyError, ArgumentError, Error => error
-        Methods::Solana::VerificationResult.failure(error.message)
+        code = error.respond_to?(:code) ? error.code : nil
+        Methods::Solana::VerificationResult.failure(error.message, code: code)
       end
 
       # Create a receipt header for a settled on-chain signature.
@@ -84,20 +102,20 @@ module Mpp
       private
 
       def verify_pinned_fields(challenge, expected)
-        return Methods::Solana::VerificationResult.failure("Credential method does not match this server") unless challenge.method == "solana"
-        return Methods::Solana::VerificationResult.failure("Credential intent is not a charge") unless challenge.intent.casecmp("charge").zero?
-        return Methods::Solana::VerificationResult.failure("Credential realm does not match this server") unless challenge.realm == realm
-        return Methods::Solana::VerificationResult.failure("Endpoint currency is required") if expected.currency.to_s.empty?
-        return Methods::Solana::VerificationResult.failure("Credential recipient does not match this server") if expected.recipient.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential method does not match this server", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.method == "solana"
+        return Methods::Solana::VerificationResult.failure("Credential intent is not a charge", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.intent.casecmp("charge").zero?
+        return Methods::Solana::VerificationResult.failure("Credential realm does not match this server", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.realm == realm
+        return Methods::Solana::VerificationResult.failure("Endpoint currency is required", code: ErrorCodes::CODE_PAYMENT_INVALID) if expected.currency.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential recipient does not match this server", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) if expected.recipient.to_s.empty?
 
         Methods::Solana::VerificationResult.success
       end
 
       def verify_expected(decoded, expected)
-        return Methods::Solana::VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}") unless decoded.amount == expected.amount
-        return Methods::Solana::VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}") unless decoded.currency == expected.currency
-        return Methods::Solana::VerificationResult.failure("Recipient mismatch") unless decoded.recipient == expected.recipient
-        return Methods::Solana::VerificationResult.failure("Method details mismatch") unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
+        return Methods::Solana::VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.amount == expected.amount
+        return Methods::Solana::VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.currency == expected.currency
+        return Methods::Solana::VerificationResult.failure("Recipient mismatch", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.recipient == expected.recipient
+        return Methods::Solana::VerificationResult.failure("Method details mismatch", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
 
         Methods::Solana::VerificationResult.success
       end

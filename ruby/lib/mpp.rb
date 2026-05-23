@@ -2,6 +2,7 @@
 
 require_relative "mpp/version"
 require_relative "mpp/error"
+require_relative "mpp/error_codes"
 require_relative "mpp/expires"
 require_relative "mpp/store"
 require_relative "mpp/core/base64_url"
