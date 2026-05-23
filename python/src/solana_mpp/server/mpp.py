@@ -241,8 +241,22 @@ def _verify_parsed_memo_instructions(
         matched.add(match_index)
 
     for index, instruction in enumerate(instructions):
-        if index not in matched and _parsed_program_id(instruction) == MEMO_PROGRAM:
+        program_id = _parsed_program_id(instruction)
+        if index not in matched and program_id == MEMO_PROGRAM:
             raise PaymentError("unexpected Memo Program instruction in payment transaction", code="invalid-payload")
+        # L2 lock parity with the pull-mode pre-broadcast decoder
+        # (_decode_legacy_payment_instructions). Push-mode signature
+        # credentials reach this verifier without going through
+        # _decode_legacy_payment_instructions; without an explicit Memo
+        # v1 program-id check here, a confirmed on-chain transaction
+        # carrying a Memo v1 instruction would slip past the v2-only
+        # matcher above, leaving the L2 guard partial. Reject the
+        # credential so push-mode matches pull-mode behaviour.
+        if program_id == _MEMO_V1_PROGRAM:
+            raise PaymentError(
+                "memo v1 program is not supported (use Memo v2)",
+                code="invalid-payload",
+            )
 
 
 def _rpc_value(response: Any) -> Any:

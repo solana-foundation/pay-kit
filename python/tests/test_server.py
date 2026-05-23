@@ -855,6 +855,21 @@ class TestMemoV1Rejected:
         with pytest.raises(PaymentError, match="memo v1"):
             _decode_legacy_payment_instructions(tx_b64)
 
+    def test_parsed_memo_verifier_rejects_memo_v1(self):
+        """Push-mode (signature credential) reaches
+        ``_verify_parsed_memo_instructions`` without going through the
+        pre-broadcast decoder. The matcher must reject a Memo v1
+        program ID directly so push-mode matches pull-mode behaviour.
+        """
+        request = ChargeRequest(amount="1000", currency="sol", recipient="recipient-1")
+        details = MethodDetails()
+        v1_instruction = {
+            "programId": self._MEMO_V1,
+            "parsed": {"type": "memo", "info": "tampered"},
+        }
+        with pytest.raises(PaymentError, match="memo v1"):
+            _verify_parsed_memo_instructions([v1_instruction], request, details)
+
 
 class TestL8SettlementOrdering:
     """L8 lock: broadcast → consume_signature → await_confirmation.
