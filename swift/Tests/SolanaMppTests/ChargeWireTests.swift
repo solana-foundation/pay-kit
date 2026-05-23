@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SolanaMpp
 
-@Suite("Charge wire-signing pull path")
+@Suite("Charge wire-signing pull path", .serialized)
 struct ChargeWireTests {
     /// End-to-end pull-mode credential for an SPL charge with one
     /// split (matches the harness charge-split-ata shape). The test
@@ -208,6 +208,174 @@ struct ChargeWireTests {
         }
     }
 
+    /// Regression for codex PR #104 P2 finding: when the server omits
+    /// `methodDetails.tokenProgram`, the client must resolve the program
+    /// id from the mint account's owner via RPC (matching the Rust
+    /// client's `resolve_token_program`). The previous hard-coded
+    /// allow-list silently treated Token-2022 mints not in the set as
+    /// legacy SPL, deriving wrong ATAs and producing a transaction that
+    /// would fail on-chain.
+    @Test
+    func resolvesTokenProgramFromMintOwnerWhenOmitted_LegacySpl() async throws {
+        RpcStubURLProtocol.reset()
+        RpcStubURLProtocol.responder = { _ in
+            let body = #"{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","lamports":0,"data":["",""],"executable":false,"rentEpoch":0}}}"#
+            return StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(body.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RpcStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let rpc = RpcClient(endpoint: URL(string: "https://stub.test/rpc")!, urlSession: session)
+
+        let seed = Data(repeating: 21, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x77, count: 32))
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "\(mint)",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "feePayer": false,
+            "recentBlockhash": "\(blockhash)"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-legacy",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        let header = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
+        #expect(header.hasPrefix("Payment "))
+    }
+
+    @Test
+    func resolvesTokenProgramFromMintOwnerWhenOmitted_Token2022() async throws {
+        RpcStubURLProtocol.reset()
+        RpcStubURLProtocol.responder = { _ in
+            // Token-2022 program id: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+            let body = #"{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"owner":"TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb","lamports":0,"data":["",""],"executable":false,"rentEpoch":0}}}"#
+            return StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(body.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RpcStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let rpc = RpcClient(endpoint: URL(string: "https://stub.test/rpc")!, urlSession: session)
+
+        let seed = Data(repeating: 22, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x78, count: 32))
+        // A plausible base58 mint not present in any hard-coded set.
+        let mint = "9zoqdwEBKWEi9G5Ze8BSkdmppbGSebokm5o8HWXdZMVw"
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "\(mint)",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "feePayer": false,
+            "recentBlockhash": "\(blockhash)"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-t22",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        let header = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
+        #expect(header.hasPrefix("Payment "))
+    }
+
+    @Test
+    func rejectsOmittedTokenProgramWithoutRpc() async throws {
+        // Without an RpcClient and without explicit tokenProgram, the
+        // client must refuse to silently guess a program id. The
+        // previous hard-coded allow-list could mis-derive ATAs for any
+        // Token-2022 mint outside the set.
+        let seed = Data(repeating: 23, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x79, count: 32))
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "\(mint)",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "recentBlockhash": "\(blockhash)"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-no-rpc",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        await #expect(throws: MppError.self) {
+            _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
+        }
+    }
+
+    @Test
+    func rejectsMintOwnedByUnsupportedProgram() async throws {
+        RpcStubURLProtocol.reset()
+        RpcStubURLProtocol.responder = { _ in
+            // System program is not a valid token program.
+            let body = #"{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"owner":"11111111111111111111111111111111","lamports":0,"data":["",""],"executable":false,"rentEpoch":0}}}"#
+            return StubResponse(statusCode: 200, headers: ["Content-Type": "application/json"], body: Data(body.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RpcStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let rpc = RpcClient(endpoint: URL(string: "https://stub.test/rpc")!, urlSession: session)
+
+        let seed = Data(repeating: 24, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x7A, count: 32))
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "\(mint)",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "decimals": 6,
+            "recentBlockhash": "\(blockhash)"
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-bad-owner",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        await #expect(throws: MppError.self) {
+            _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
+        }
+    }
+
     @Test
     func pickChallengeReturnsFirstSolanaCharge() throws {
         let request = Base64URL.encode(Data(#"{"amount":"1","currency":"SOL","recipient":"11111111111111111111111111111112","methodDetails":{}}"#.utf8))
@@ -219,4 +387,44 @@ struct ChargeWireTests {
         let picked = try Charge.pickChallenge(wwwAuthenticateHeaders: headers)
         #expect(picked.id == "y")
     }
+}
+
+// MARK: - Dedicated URLProtocol stub for RPC tests
+//
+// Lives in its own subclass so it does not share global responder state
+// with `StubURLProtocol` (used by HTTPClientTests). URLSession installs
+// every protocol class globally for any matching session, so a single
+// shared stub would cause cross-suite test races.
+
+final class RpcStubURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var responder: ((URLRequest) -> StubResponse)?
+    nonisolated(unsafe) static var requestCount = 0
+
+    static func reset() {
+        responder = nil
+        requestCount = 0
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount += 1
+        guard let responder = Self.responder else {
+            client?.urlProtocol(self, didFailWithError: NSError(domain: "rpc-stub", code: 0))
+            return
+        }
+        let stub = responder(request)
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: stub.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: stub.headers
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: stub.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
