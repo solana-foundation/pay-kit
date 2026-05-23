@@ -41,13 +41,15 @@ pay curl http://127.0.0.1:4567/paid
 
 1. Constructor builds the `ChargeRequest` (amount / currency / recipient
    from `.env`) and configures `SolanaChargeHandler` with an `RpcClient`
-   pointing at the Solana RPC endpoint.
+   pointing at the Solana RPC endpoint plus a shared `FileReplayStore` under
+   `storage/framework/mpp-replay`.
 2. `handle()` passes the `Authorization` header to the handler. The handler
    verifies HMAC + expiry, pins the challenge against the expected request,
    decodes and validates the client-signed transaction
    (`SolanaChargeTransactionVerifier`), rejects Surfpool-signed transactions
-   on non-localnet networks, broadcasts via `sendTransaction`, and polls
-   until `confirmed`/`finalized`.
+   on non-localnet networks, broadcasts via `sendTransaction`, consumes the
+   signature in the replay store, then polls until `confirmed` or
+   `finalized`.
 3. On 402 (missing or invalid credential) the middleware short-circuits with
    the SDK-built `application/problem+json` response and the
    `www-authenticate` challenge header.
@@ -60,6 +62,9 @@ To use a fee-payer signer (so the client doesn't have to hold SOL), pass a
 `Keypair` to `SolanaChargeHandler`'s `feePayer:` parameter and set
 `methodDetails.feePayer = true` / `methodDetails.feePayerKey = $handler->feePayerPubkey()`
 on the `ChargeRequest`.
+
+For production deployments, replace the example `FileReplayStore` with Redis,
+SQL, or another shared atomic store if the app runs across multiple hosts.
 
 ## Apply the middleware to other routes
 
