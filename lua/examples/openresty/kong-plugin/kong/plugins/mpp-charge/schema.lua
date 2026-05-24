@@ -21,11 +21,19 @@ return {
           { currency   = { type = 'string', required = true, default = 'USDC' } },
           { decimals   = { type = 'integer', required = false, default = 6 } },
           { network    = { type = 'string', required = false, default = 'mainnet-beta' } },
-          { secret_key = { type = 'string', required = true } },
+          -- referenceable + encrypted on every secret field. Kong vault
+          -- references like {vault://env/MPP_SECRET_KEY} only resolve
+          -- when the schema marks the field referenceable; encrypted
+          -- forces Kong to encrypt at rest in the Postgres/Cassandra
+          -- backing store instead of writing the raw key as plaintext.
+          -- Operators who use Kong Enterprise vaults or KMS-backed
+          -- workflows need both flags to keep the Ed25519 + HMAC
+          -- material out of plain DB rows.
+          { secret_key = { type = 'string', required = true, referenceable = true, encrypted = true } },
           { realm      = { type = 'string', required = false, default = 'MPP' } },
           { amount     = { type = 'string', required = true } },
           { rpc_url    = { type = 'string', required = true } },
-          { fee_payer_secret_key = { type = 'string', required = false } },
+          { fee_payer_secret_key = { type = 'string', required = false, referenceable = true, encrypted = true } },
           -- Shared dict name backing the cross-worker replay store.
           -- Must match a `lua_shared_dict <name> <size>` directive in
           -- the http block. Default `mpp_replay` matches the example
