@@ -316,15 +316,21 @@ function Server:_finalize_verification(credential_value, request, payload)
       'verification result must include a reference')
   end
 
-  local replay_key = result.replay_key or (CONSUMED_PREFIX .. reference)
-  -- L8 ordering: in pull mode, solana_verify.verify_transaction now
-  -- writes the consume marker between broadcast and await_confirmation
-  -- and signals back via result.consumed=true. Skip the outer
-  -- put_if_absent in that case so we do not double-consume our own
-  -- marker. In push mode (signature credentials) and any other path
-  -- where the verifier did not consume, fall back to the outer guard
-  -- so the L4 lock still applies.
+  -- Settlement layers that already consumed the replay marker themselves
+  -- (e.g. `charge_handler:as_callback()` which writes
+  -- `solana-charge:consumed:<sig>` inside `settle_pull` before await, and
+  -- `solana_verify.verify_transaction` which writes the same key between
+  -- broadcast and await for the L8 ordering fix) signal back via
+  -- `result.consumed = true`. Skip the outer put_if_absent in that case so
+  -- the same marker is not re-asserted against the shared store. When the
+  -- verifier supplies its own `replay_key` we also know the consume already
+  -- happened, so honoring `consumed` here keeps the Kong / OpenResty
+  -- wiring (shared replay store between charge_handler and Server) from
+  -- double-asserting and returning a spurious `signature_consumed` on the
+  -- first valid payment. Push-mode signature verifiers that do not consume
+  -- themselves fall through to the outer guard.
   if result.consumed ~= true then
+    local replay_key = result.replay_key or (CONSUMED_PREFIX .. reference)
     local inserted = self.store:put_if_absent(replay_key, true)
     if not inserted then
       error_codes.raise(error_codes.SIGNATURE_CONSUMED, 'payment already consumed')

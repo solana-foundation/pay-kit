@@ -467,4 +467,98 @@ t.test('as_callback returns a function usable by mpp.server', function()
   local result = cb({ payload = { type = 'transaction', transaction = 'tx' }, request = {} })
   t.assert_equal(result.reference, 'cb-sig')
   t.assert_true(result.replay_key:find('server-noop', 1, true) ~= nil)
+  -- The callback must signal that the durable replay marker is already in
+  -- place so the outer `Server:_finalize_verification` skips its own
+  -- `put_if_absent` call against the (potentially shared) store. Without
+  -- this signal the Kong wiring would double-consume the same key.
+  t.assert_equal(result.consumed, true)
+end)
+
+-- Kong / OpenResty wiring regression. The Kong plugin shares a single
+-- replay_store between `charge_handler.new({ replay_store = shared })` and
+-- `mpp.server.new({ store = shared })`. Codex round 3 on PR #103 flagged
+-- that without the `consumed` signal (or namespaced replay_key) the inner
+-- `settle_pull` consume of `solana-charge:consumed:<sig>` collides with
+-- the outer `Server:_finalize_verification` put_if_absent of the same
+-- key on `result.reference`, returning `signature_consumed` for the
+-- first valid payment. This test drives the full Kong-style stack
+-- against a real `mpp.store.memory()` and asserts:
+--   1. first valid settlement returns a receipt (no signature_consumed)
+--   2. resubmission of the same signature is rejected as signature_consumed
+t.test('Kong-style shared replay_store does not double-consume on first payment', function()
+  local mpp = require('mpp')
+  local SECRET = 'kong-test-secret'
+  local RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
+
+  local shared = store.memory()
+  local handler = new_handler({
+    replay_store = shared,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { result = 'sig-kong-1' } },
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed', err = nil } } } },
+    }),
+  })
+  local server = mpp.server.new({
+    recipient = RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = SECRET,
+    realm = 'MPP',
+    store = shared,
+    verify_payment = handler:as_callback(),
+  })
+
+  local challenge = server:charge('1.00')
+  local function build_credential()
+    return mpp.NewPaymentCredential(challenge:to_echo(), {
+      type = 'transaction',
+      transaction = 'fake-tx-base64',
+    })
+  end
+
+  -- First valid settlement must succeed; the shared store's consume
+  -- happens once (inside settle_pull) and the outer finalize honors the
+  -- `consumed` signal so it does not re-assert the same key.
+  local receipt = server:verify_credential_with_expected(build_credential(), {
+    amount = '1000000',
+    currency = 'USDC',
+    recipient = RECIPIENT,
+  })
+  t.assert_equal(receipt.reference, 'sig-kong-1')
+
+  -- A second settlement with the same signature must hit the durable
+  -- replay marker inside `settle_pull` and raise `signature_consumed`.
+  -- Use a fresh handler bound to the same `shared` store so the RPC
+  -- script is replayable; the consume marker is in the shared store.
+  local replay_handler = new_handler({
+    replay_store = shared,
+    rpc = fake_rpc({
+      simulateTransaction = { { result = { err = nil } } },
+      sendTransaction = { { result = 'sig-kong-1' } },
+      getSignatureStatuses = { { result = { { confirmationStatus = 'confirmed', err = nil } } } },
+    }),
+  })
+  local replay_server = mpp.server.new({
+    recipient = RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = SECRET,
+    realm = 'MPP',
+    store = shared,
+    verify_payment = replay_handler:as_callback(),
+  })
+  local ok, err = pcall(function()
+    replay_server:verify_credential_with_expected(build_credential(), {
+      amount = '1000000',
+      currency = 'USDC',
+      recipient = RECIPIENT,
+    })
+  end)
+  t.assert_true(not ok, 'replay must be rejected')
+  local message = type(err) == 'table' and err.message or tostring(err)
+  t.assert_true(message:find('consumed', 1, true) ~= nil,
+    'expected signature_consumed-style error, got: ' .. tostring(message))
 end)

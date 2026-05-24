@@ -288,11 +288,17 @@ function Handler:settle(payload, request)
 end
 
 --- Build a `verify_payment` callback compatible with `mpp.server.new`. The
--- callback consumes the replay store inside the handler, so the server's
--- own `put_if_absent` call in `_finalize_verification` is a no-op for the
--- same reference. `options.replay_key_prefix` controls the prefix the
--- server-level consume uses; the suffix is always the on-chain signature
--- so each settlement still gets a distinct server-level key.
+-- callback consumes the replay store inside the handler (in `settle_pull`
+-- between broadcast and await; in `settle_push` after on-chain shape
+-- verification) and reports back with `consumed = true` so the outer
+-- `Server:_finalize_verification` skips its own `put_if_absent` call.
+-- This is the contract that lets the Kong / OpenResty wiring share a
+-- single replay store between `charge_handler.new({ replay_store })` and
+-- `mpp.server.new({ store })` without the second consume colliding with
+-- the first and rejecting a valid first payment as `signature_consumed`.
+-- `options.replay_key_prefix` is retained for backward compatibility and
+-- still surfaces the namespaced server-level key in the returned table
+-- even though the outer consume is now a no-op.
 function Handler:as_callback(options)
   options = options or {}
   local prefix = options.replay_key_prefix or 'solana-charge:server-noop:'
@@ -301,11 +307,11 @@ function Handler:as_callback(options)
     local signature = handler:settle(context.payload, context.request)
     return {
       reference = signature,
-      -- Build the server-level replay_key as prefix + signature so the
-      -- key is unique per settlement. The handler already consumed the
-      -- real signature in the replay store; this server-level key only
-      -- needs to be distinct from earlier settlements.
       replay_key = prefix .. signature,
+      -- Signals to `Server:_finalize_verification` that the durable
+      -- replay marker is already in place; the outer put_if_absent is
+      -- skipped so we do not re-assert against the same shared store.
+      consumed = true,
     }
   end
 end
