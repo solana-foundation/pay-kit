@@ -31,6 +31,14 @@ return {
           -- the http block. Default `mpp_replay` matches the example
           -- nginx.conf shipped under the kong-plugin README.
           { shared_dict_name = { type = 'string', required = false, default = 'mpp_replay' } },
+          -- Timeout in seconds applied to connect/send/read on the
+          -- non-blocking cosocket RPC transport. The default (30s)
+          -- matches `mpp.solana.rpc_transport`.
+          { rpc_timeout = { type = 'number', required = false, default = 30 } },
+          -- Whether the cosocket transport verifies the TLS chain on
+          -- HTTPS RPC URLs. Defaults to true; toggle off only for
+          -- self-signed test endpoints.
+          { rpc_ssl_verify = { type = 'boolean', required = false, default = true } },
         },
       },
     },

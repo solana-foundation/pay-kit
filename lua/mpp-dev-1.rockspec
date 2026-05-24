@@ -48,6 +48,7 @@ build = {
     ["mpp.server.store_shared_dict"] = "mpp/server/store_shared_dict.lua",
     ["mpp.solana.rpc"] = "mpp/solana/rpc.lua",
     ["mpp.solana.rpc_transport"] = "mpp/solana/rpc_transport.lua",
+    ["mpp.solana.rpc_transport_resty"] = "mpp/solana/rpc_transport_resty.lua",
     ["mpp.store"] = "mpp/store.lua",
     ["mpp.util.base58"] = "mpp/util/base58.lua",
     ["mpp.util.base64_std"] = "mpp/util/base64_std.lua",

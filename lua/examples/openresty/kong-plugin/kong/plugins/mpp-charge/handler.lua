@@ -32,7 +32,13 @@ local headers = require('mpp.protocol.core.headers')
 local solana_verify = require('mpp.server.solana_verify')
 local charge_handler_module = require('mpp.server.charge_handler')
 local rpc_module = require('mpp.solana.rpc')
-local rpc_transport = require('mpp.solana.rpc_transport')
+-- The Kong / OpenResty access phase MUST use a cosocket-based transport.
+-- The blocking `mpp.solana.rpc_transport` (LuaSocket / LuaSec) would
+-- block the entire nginx worker for the full RPC round-trip and starve
+-- every other concurrent request on that worker; codex PR #103 review
+-- flagged that as a P1 worker-starvation risk. `rpc_transport_resty`
+-- wraps `lua-resty-http`, which yields to the nginx event loop on I/O.
+local rpc_transport_resty = require('mpp.solana.rpc_transport_resty')
 local signer_module = require('mpp.methods.solana.signer')
 local store_shared_dict = require('mpp.server.store_shared_dict')
 local error_codes = require('mpp.protocol.core.error_codes')
@@ -54,9 +60,15 @@ local function get_server(conf)
   if conf.fee_payer_secret_key and conf.fee_payer_secret_key ~= '' then
     fee_payer = signer_module.from_json_array(conf.fee_payer_secret_key)
   end
+  -- Allow an operator-provided transport for tests / mocks; default to
+  -- the cosocket transport so production Kong workers stay non-blocking.
+  local transport = conf.rpc_transport or rpc_transport_resty.new({
+    timeout = conf.rpc_timeout,
+    ssl_verify = conf.rpc_ssl_verify,
+  })
   local rpc = rpc_module.new({
     url = conf.rpc_url,
-    transport = rpc_transport.new(),
+    transport = transport,
   })
   -- Cross-worker replay store. Kong's default `worker_processes auto`
   -- spawns one Lua state per CPU core; an in-memory store would be

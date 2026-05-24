@@ -52,3 +52,16 @@ files["examples/nginx/access.lua"] = {
 files["examples/openresty/kong-plugin/kong/plugins/mpp-charge/handler.lua"] = {
   globals = { "ngx" },
 }
+
+-- The cosocket transport reads `ngx.get_phase()` to refuse running in
+-- non-cosocket-capable nginx phases. luacheck does not ship with the
+-- OpenResty global set; allowlist the `ngx` global here too.
+files["mpp/solana/rpc_transport_resty.lua"] = {
+  read_globals = { "ngx" },
+}
+
+-- The resty-transport spec writes to the `ngx` global to simulate the
+-- OpenResty environment for each test case.
+files["tests/solana_rpc_transport_resty_spec.lua"] = {
+  globals = { "ngx" },
+}

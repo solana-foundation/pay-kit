@@ -25,6 +25,7 @@ require('tests.methods_solana_ata_spec')
 require('tests.methods_solana_signer_spec')
 require('tests.methods_solana_verifier_spec')
 require('tests.solana_rpc_transport_spec')
+require('tests.solana_rpc_transport_resty_spec')
 require('tests.error_codes_spec')
 require('tests.store_shared_dict_spec')
 

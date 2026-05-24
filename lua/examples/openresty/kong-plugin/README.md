@@ -39,11 +39,23 @@ sudo luarocks --lua-version=5.1 install <path-to-mpp-dev-1.rockspec>
 sudo luarocks --lua-version=5.1 install luasocket
 sudo luarocks --lua-version=5.1 install luasodium
 sudo luarocks --lua-version=5.1 install luasec
+sudo luarocks --lua-version=5.1 install lua-resty-http
 ```
 
 The `luasodium` rock requires `libsodium` at the system level
 (`apt-get install libsodium-dev` on Debian / Ubuntu,
 `brew install libsodium` on macOS).
+
+`lua-resty-http` ships bundled with OpenResty distributions; install
+the rock explicitly on bare nginx-with-Lua builds. The plugin uses
+it for non-blocking, cosocket-based Solana RPC calls. The blocking
+`socket.http` / `ssl.https` transport from `mpp.solana.rpc_transport`
+would block the entire nginx worker for the full RPC round trip and
+starve every other concurrent request on that worker; never wire
+that transport into the access phase. The `luasocket` and `luasec`
+rocks are still required because `mpp.solana.rpc_transport` is loaded
+by the standalone luajit server example and indirectly via the
+rockspec dependency list.
 
 ## Shared replay store (cross-worker safety)
 
