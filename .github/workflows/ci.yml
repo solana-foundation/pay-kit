@@ -228,7 +228,7 @@ jobs:
           if-no-files-found: ignore
 
   interop-swift:
-    name: "Interop: Swift client to TypeScript server"
+    name: "Interop: Swift client to TypeScript + Rust servers"
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -240,6 +240,7 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install TypeScript workspace
         working-directory: typescript
         run: pnpm install --frozen-lockfile
@@ -252,6 +253,9 @@ jobs:
       - name: Build Swift interop client
         working-directory: tests/interop/swift-client
         run: swift build
+      - name: Build Rust interop server
+        working-directory: rust
+        run: cargo build --bin interop_server
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck
@@ -261,6 +265,12 @@ jobs:
           MPP_INTEROP_CLIENTS: swift
           MPP_INTEROP_SERVERS: typescript
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays typescript server"
+      - name: Run Swift client interop smoke against Rust server
+        working-directory: tests/interop
+        env:
+          MPP_INTEROP_CLIENTS: swift
+          MPP_INTEROP_SERVERS: rust
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
 
   integration:
     name: Integration tests
