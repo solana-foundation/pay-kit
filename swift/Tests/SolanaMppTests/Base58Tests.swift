@@ -73,12 +73,11 @@ struct Base58Tests {
 
     @Test
     func roundTripsRandomBytes() throws {
-        var rng = SystemRandomNumberGenerator()
         for _ in 0..<32 {
-            let length = Int(rng.next(upperBound: UInt(33)))
+            let length = Int.random(in: 0..<33)
             var bytes = [UInt8]()
             bytes.reserveCapacity(length)
-            for _ in 0..<length { bytes.append(UInt8(truncatingIfNeeded: rng.next())) }
+            for _ in 0..<length { bytes.append(UInt8.random(in: 0...UInt8.max)) }
             let data = Data(bytes)
             let encoded = Base58.encode(data)
             let decoded = try Base58.decode(encoded)
