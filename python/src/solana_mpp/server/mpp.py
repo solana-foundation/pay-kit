@@ -1520,6 +1520,22 @@ class Mpp:
         )
 
     def _verify_confirmed_transaction(self, tx: dict[str, Any], request: ChargeRequest, details: MethodDetails) -> None:
+        """Post-confirmation verification of the on-chain transaction
+        shape (transfers, memos, instruction allowlist).
+
+        L8 contract: this runs AFTER the durable replay marker is
+        written by ``_verify_transaction`` (broadcast → consume →
+        await → verify). The pre-broadcast verifier
+        ``_verify_local_transaction_intent`` already enforces the same
+        invariants on the raw signed bytes before any RPC call, so a
+        malicious credential never broadcasts; this confirmed-tx
+        verifier is defense-in-depth that re-checks the artifact the
+        cluster actually accepted, catching any cluster-side
+        rewriting / replay-attack the pre-broadcast verifier could
+        not see. Both layers must accept the same shape, otherwise the
+        receipt is rejected and the consume marker stays written
+        (the credential is single-use either way).
+        """
         meta = tx.get("meta") or {}
         if meta.get("err") is not None:
             raise PaymentError(f"transaction failed on-chain: {meta['err']}", code="transaction-failed")

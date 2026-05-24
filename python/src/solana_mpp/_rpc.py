@@ -32,6 +32,21 @@ class _RpcError(PaymentError):
     """JSON-RPC level error from a Solana node."""
 
 
+class _RpcResponse:
+    """Minimal value-wrapper matching the ``solana-py`` AsyncClient
+    response shape that the rest of the codebase expects (``.value``
+    attribute access). Extracted to module level so the same wrapper
+    is reused by ``send_raw_transaction``, ``get_transaction``, and the
+    legacy ``confirm_transaction`` shim instead of being redeclared
+    inside each method body.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
 class SolanaRpc:
     """Minimal async JSON-RPC client for the Solana RPC API."""
 
@@ -75,30 +90,27 @@ class SolanaRpc:
                 code="payment_invalid",
             )
 
-        class _Resp:
-            def __init__(self, value):
-                self.value = value
-
-        return _Resp(signature)
+        return _RpcResponse(signature)
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
         result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])
         return (result or {}).get("value") or []
 
     async def confirm_transaction(self, signature: Any, *_args: Any, **_kwargs: Any) -> Any:
-        """Match the solana-py AsyncClient.confirm_transaction signature shape."""
-
-        class _Resp:
-            def __init__(self, value):
-                self.value = value
-
+        """Compatibility shim matching the ``solana-py`` AsyncClient
+        ``confirm_transaction`` shape. Not used on the production
+        settlement path (the server uses ``await_confirmation`` with
+        discriminated error codes); kept so embedders that bind a
+        legacy ``solana.rpc.async_api.AsyncClient``-compatible interface
+        still get the expected response shape.
+        """
         for _ in range(40):
             statuses = await self.get_signature_statuses([str(signature)])
             status = statuses[0] if statuses else None
             if isinstance(status, dict) and status.get("confirmationStatus") in {"confirmed", "finalized"}:
-                return _Resp([{"err": status.get("err")}])
+                return _RpcResponse([{"err": status.get("err")}])
             await asyncio.sleep(0.25)
-        return _Resp([{"err": "timeout"}])
+        return _RpcResponse([{"err": "timeout"}])
 
     async def get_transaction(self, signature: Any, **_kwargs: Any) -> Any:
         result = await self._call(
@@ -112,12 +124,7 @@ class SolanaRpc:
                 },
             ],
         )
-
-        class _Resp:
-            def __init__(self, value):
-                self.value = value
-
-        return _Resp(result)
+        return _RpcResponse(result)
 
     async def await_confirmation(
         self,
