@@ -185,6 +185,32 @@ rb-audit:
 rb-test-cover:
     cd ruby && just test-cover
 
+# ── Kotlin ──
+
+# Install Kotlin deps (resolved on first Gradle invocation; no-op recipe).
+kt-install:
+    cd kotlin && gradle --version
+
+# Build the Kotlin SDK
+kt-build:
+    cd kotlin && gradle build -x test
+
+# Run Kotlin unit tests
+kt-test:
+    cd kotlin && gradle test
+
+# Format Kotlin sources (Kotlin Coding Conventions; ktlint when present)
+kt-fmt:
+    cd kotlin && (command -v ktlint >/dev/null && ktlint -F src/**/*.kt) || echo "ktlint not installed; relying on Kotlin Coding Conventions"
+
+# Lint Kotlin (detekt when present)
+kt-lint:
+    cd kotlin && (command -v detekt >/dev/null && detekt) || gradle compileKotlin
+
+# Coverage with ≥90% line gate (enforced by jacocoTestCoverageVerification)
+kt-test-cover:
+    cd kotlin && gradle test jacocoTestCoverageVerification
+
 # ── HTML Payment Links ──
 
 # Install HTML payment link dependencies
@@ -209,13 +235,13 @@ html-test-e2e:
 build: html-build ts-build rs-build go-build php-build rb-build
 
 # Run all unit tests
-test: ts-test rs-test go-test lua-test py-test php-test rb-test
+test: ts-test rs-test go-test lua-test py-test php-test rb-test kt-test
 
 # Run all tests including integration + coverage gates
-test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover php-test-cover rb-test-cover
+test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-test-cover php-test-cover rb-test-cover kt-test-cover
 
 # Format everything
-fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt rb-fmt
+fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt rb-fmt kt-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-lint go-test-cover lua-lint lua-test-cover lua-audit py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-lint go-test-cover lua-lint lua-test-cover lua-audit py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover kt-fmt kt-lint kt-test-cover
