@@ -269,6 +269,23 @@ class HttpClientTest {
     }
 
     @Test
+    fun jsonRpcClientWrapsNonJsonResponseInMppException() {
+        // Regression: a load-balancer 503 HTML page (or any non-JSON
+        // body) used to leak a raw kotlinx.serialization
+        // SerializationException out of JsonRpcClient.post(). Callers
+        // catching MppException to handle network failures would
+        // silently miss it. After the fix, the parse step wraps the
+        // failure in MppException.InvalidTransaction.
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(503)
+                .setBody("<html><body>Service Unavailable</body></html>"),
+        )
+        val rpc = JsonRpcClient(server.url("/").toString())
+        assertFailsWith<MppException.InvalidTransaction> { rpc.fetchRecentBlockhash() }
+    }
+
+    @Test
     fun jsonRpcClientSendTransactionReturnsSignature() {
         server.enqueue(
             MockResponse()
