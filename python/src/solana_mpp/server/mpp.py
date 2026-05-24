@@ -801,9 +801,8 @@ def _validate_instruction_allowlist(
     expected_mint = None if native else resolve_mint(request.currency, details.network)
     expected_token_program: str | None = None
     if not native:
-        expected_token_program = (
-            details.token_program
-            or default_token_program_for_currency(request.currency, details.network)
+        expected_token_program = details.token_program or default_token_program_for_currency(
+            request.currency, details.network
         )
     allowed_ata_owners = _expected_split_recipients(request, details)
     expected_memos = {memo for _label, memo in _expected_memos(request, details)}
@@ -888,8 +887,7 @@ def _validate_instruction_allowlist(
                 )
             lamports = int.from_bytes(data[4:12], "little")
             match_idx = next(
-                (i for i, (rcpt, amt) in enumerate(remaining_transfers)
-                 if rcpt == destination and amt == lamports),
+                (i for i, (rcpt, amt) in enumerate(remaining_transfers) if rcpt == destination and amt == lamports),
                 -1,
             )
             if match_idx == -1:
@@ -957,8 +955,11 @@ def _validate_instruction_allowlist(
                     )
             amount = int.from_bytes(data[1:9], "little")
             match_idx = next(
-                (i for i, (rcpt, amt) in enumerate(remaining_transfers)
-                 if amt == amount and _verify_ata_owner(destination, rcpt, mint, program_id)),
+                (
+                    i
+                    for i, (rcpt, amt) in enumerate(remaining_transfers)
+                    if amt == amount and _verify_ata_owner(destination, rcpt, mint, program_id)
+                ),
                 -1,
             )
             if match_idx == -1:

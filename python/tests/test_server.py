@@ -136,6 +136,7 @@ class FakeRPC:
         err = status.get("err") if isinstance(status, dict) else None
         if err is not None:
             from solana_mpp._errors import PaymentError
+
             raise PaymentError(
                 f"transaction failed on-chain: {err}",
                 code="transaction-failed",
@@ -937,6 +938,7 @@ class TestL8SettlementOrdering:
             err = status.get("err") if isinstance(status, dict) else None
             if err is not None:
                 from solana_mpp._errors import PaymentError
+
                 raise PaymentError(
                     f"transaction failed on-chain: {err}",
                     code="transaction-failed",
@@ -1383,10 +1385,7 @@ class TestSplitsCountGuard:
     @staticmethod
     def _make_request_with_n_splits(n: int) -> tuple[ChargeRequest, MethodDetails]:
         request = ChargeRequest(amount="10000", currency="USDC", recipient=TEST_RECIPIENT)
-        splits = [
-            Split(recipient=TEST_RECIPIENT, amount="1")
-            for _ in range(n)
-        ]
+        splits = [Split(recipient=TEST_RECIPIENT, amount="1") for _ in range(n)]
         details = MethodDetails(splits=splits)
         return request, details
 
