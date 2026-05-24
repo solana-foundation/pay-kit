@@ -126,6 +126,61 @@ class ChargeBuildTest {
     }
 
     @Test
+    fun acceptsSplitsSumFittingInLong() {
+        // Two large but non-overflowing splits. Sum stays within Long.
+        val request = ChargeRequest(
+            amount = (Long.MAX_VALUE).toString(),
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "localnet",
+                splits = listOf(
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = "100",
+                    ),
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = "200",
+                    ),
+                ),
+            ),
+        )
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    @Test
+    fun rejectsSplitsSumOverflowingLong() {
+        // Each split fits in Long but their sum overflows. Without the
+        // checked-addition guard, splitsTotal would wrap negative, the
+        // `primaryAmount <= 0L` check would pass, and each per-split
+        // transfer would still emit its huge positive amount on the
+        // wire. Regression for the Go #101 / Kotlin #105 P1 finding.
+        val big = (Long.MAX_VALUE - 10L).toString()
+        val request = ChargeRequest(
+            amount = (Long.MAX_VALUE).toString(),
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "localnet",
+                splits = listOf(
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = big,
+                    ),
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = big,
+                    ),
+                ),
+            ),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
     fun rejectsNegativeSplitAmountWithStructuredError() {
         // Regression: `toLongOrNull` parses "-100" into -100L, so
         // splitsTotal could go negative and `primaryAmount =

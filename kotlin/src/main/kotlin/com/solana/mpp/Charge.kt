@@ -92,13 +92,26 @@ object Charge {
         // require(lamports >= 0) would then throw an unchecked
         // IllegalArgumentException from deep in the stack instead of the
         // structured MppException.InvalidTransaction callers expect.
-        val splitsTotal = splits.sumOf { split ->
+        // Use checked addition so a hostile or compromised challenge
+        // cannot craft splits whose individual amounts each fit in Long
+        // but whose sum wraps. `sumOf { Long }` is plain `+`, so an
+        // overflow silently produces a small/negative `splitsTotal`
+        // that would clear the `primaryAmount <= 0L` guard while each
+        // per-split transfer still emits its huge positive amount on
+        // the wire. `Math.addExact` throws ArithmeticException on
+        // overflow, which we surface as a structured
+        // MppException.InvalidTransaction. Mirrors the Go #101 fix.
+        val splitsTotal = splits.fold(0L) { acc, split ->
             val v = split.amount.toLongOrNull()
                 ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
             if (v < 0L) {
                 throw MppException.InvalidTransaction("Split amount cannot be negative: ${split.amount}")
             }
-            v
+            try {
+                Math.addExact(acc, v)
+            } catch (_: ArithmeticException) {
+                throw MppException.InvalidTransaction("Splits sum overflows Long")
+            }
         }
         val primaryAmount = totalAmount - splitsTotal
         if (primaryAmount <= 0L) {
