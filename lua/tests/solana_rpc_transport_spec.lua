@@ -23,9 +23,11 @@ local function install_http_stub(status)
   }
 end
 
+local fake_https_called
 local function install_https_stub(body)
   package.loaded['ssl.https'] = {
     request = function(req)
+      fake_https_called = req
       local ltn12 = require('ltn12')
       ltn12.pump.all(req.source, req.sink)
       -- Sink already received the request body; overwrite with the
@@ -78,6 +80,29 @@ if real_https then
     local rpc_transport = require('mpp.solana.rpc_transport')
     local response = rpc_transport.new()('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
     helper.assert_true(response:match('https') ~= nil, 'response carries the stubbed payload')
+    package.loaded['ssl.https'] = real_https
+  end)
+
+  helper.test('rpc_transport enables luasec peer cert verification by default', function()
+    install_https_stub('{"jsonrpc":"2.0","result":"x","id":1}')
+    package.loaded['mpp.solana.rpc_transport'] = nil
+    fake_https_called = nil
+    local rpc_transport = require('mpp.solana.rpc_transport')
+    rpc_transport.new()('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
+    helper.assert_true(fake_https_called ~= nil, 'luasec request was called')
+    helper.assert_equal(fake_https_called.verify, 'peer')
+    helper.assert_equal(fake_https_called.protocol, 'tlsv1_2')
+    helper.assert_true(type(fake_https_called.options) == 'table', 'ssl options set')
+    package.loaded['ssl.https'] = real_https
+  end)
+
+  helper.test('rpc_transport allows opts.ssl_verify override for explicit insecure callers', function()
+    install_https_stub('{"jsonrpc":"2.0","result":"x","id":1}')
+    package.loaded['mpp.solana.rpc_transport'] = nil
+    fake_https_called = nil
+    local rpc_transport = require('mpp.solana.rpc_transport')
+    rpc_transport.new({ ssl_verify = 'none' })('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
+    helper.assert_equal(fake_https_called.verify, 'none')
     package.loaded['ssl.https'] = real_https
   end)
 end

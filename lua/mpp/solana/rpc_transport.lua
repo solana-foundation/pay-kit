@@ -70,6 +70,23 @@ function M.new(opts)
         error({ code = 'transport-error', message = err })
       end
       https.TIMEOUT = timeout
+      -- luasec's default SSL context is verify="none", which silently
+      -- accepts any certificate the peer presents. A network-adjacent
+      -- attacker (shared network, DNS hijack, malicious proxy) can then
+      -- impersonate the RPC endpoint and return a fabricated
+      -- getSignatureStatuses confirmation. The server would issue a
+      -- Payment-Receipt for an unsettled transaction. Force peer
+      -- verification with the system CA bundle. Callers can override
+      -- via opts.ssl_params if they need a custom trust store.
+      request.protocol = opts.ssl_protocol or 'tlsv1_2'
+      request.verify = opts.ssl_verify or 'peer'
+      request.options = opts.ssl_options or { 'all', 'no_sslv2', 'no_sslv3', 'no_tlsv1', 'no_tlsv1_1' }
+      if opts.ssl_cafile then
+        request.cafile = opts.ssl_cafile
+      end
+      if opts.ssl_capath then
+        request.capath = opts.ssl_capath
+      end
       result, status_or_err = https.request(request)
     else
       local http, err = load_http()
