@@ -66,18 +66,6 @@ await new Promise((resolve, reject) => {
   });
 });
 
-const payer = Buffer.from(surfnet.payerSecretKey).toString("hex");
-const _ = payer; // unused; the payer is the pre-funded Surfpool payer, not the cosigner
-
-const fee_payer_secret_key = JSON.stringify(
-  Array.from(Buffer.from(
-    // pay-CLI default localnet wallet secret key, base58:
-    // 5wvnBkodUeELUyLt5CCR8Nn7MG9w4v6fZxC6PnK5rcbFezrUXjvbQ9xiMaHmZQGmZar4D7XJESuPfXCnhT1ZJHgG
-    // Decoded inline below to avoid pulling base58 here:
-    [247,111,101,212,46,244,26,198,131,36,80,35,56,40,120,243,81,8,189,123,27,187,153,143,107,149,82,135,225,11,78,106,96,53,201,103,156,36,67,66,89,139,239,67,145,219,48,194,183,103,206,248,48,194,250,252,156,231,58,212,101,25,243,77],
-  )),
-);
-
 console.log(`Surfpool ready at http://127.0.0.1:${rpcPort} -> ${surfnet.rpcUrl}`);
 console.log(`Pay wallet funded: SOL + 1000 USDC`);
 console.log(`Recipient ATA seeded: ${RECIPIENT} +0.001 USDC`);
@@ -89,7 +77,13 @@ console.log(`export MPP_NETWORK=localnet`);
 console.log(`export MPP_CURRENCY=USDC`);
 console.log(`export MPP_PAY_TO=${RECIPIENT}`);
 console.log(`export MPP_AMOUNT=0.001`);
-console.log(`export MPP_FEE_PAYER_SECRET_KEY='${fee_payer_secret_key}'`);
+console.log();
+console.log("# MPP_FEE_PAYER_SECRET_KEY is intentionally unset: the only");
+console.log("# pre-funded wallet in this fixture is the pay-CLI default,");
+console.log("# which is already the SPL transfer source. Using it as the");
+console.log("# fee payer too would make the same account both payer and");
+console.log("# authority, which the verifier rejects (payment_invalid).");
+console.log("# Verify-only mode is correct here; pay-CLI pre-cosigns.");
 console.log();
 
 const shutdown = () => {

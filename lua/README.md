@@ -116,9 +116,18 @@ Three runnable examples ship in this package. All exercise the full
 
 ```bash
 cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
-MPP_FEE_PAYER_SECRET_KEY='[...]' luajit examples/simple-server.lua
+luajit examples/simple-server.lua
 # listens on 127.0.0.1:4569
 ```
+
+Without `MPP_FEE_PAYER_SECRET_KEY` the server runs in verify-only mode:
+clients (including `pay curl`) pre-cosign the wire transaction and the
+server only verifies, broadcasts, consumes, and awaits. Set
+`MPP_FEE_PAYER_SECRET_KEY='[..64 bytes..]'` when you want the server to
+cosign on behalf of the caller; the configured key must be a separate
+funded keypair from the SPL transfer source, otherwise the same account
+would be both payer and authority and the verifier rejects it
+(`payment_invalid`).
 
 ```bash
 brew install pay

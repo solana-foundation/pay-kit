@@ -85,7 +85,7 @@ curl -i -X POST http://localhost:8001/services/protected-api/plugins \
   -d "config.currency=USDC" \
   -d "config.network=mainnet-beta" \
   -d "config.secret_key=<hmac secret>" \
-  -d "config.amount=1000" \
+  -d "config.amount=1.50" \
   -d "config.rpc_url=https://api.mainnet-beta.solana.com" \
   -d "config.fee_payer_secret_key=[148,222,...]"
 ```

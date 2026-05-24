@@ -22,7 +22,7 @@ Usage in `kong.conf` (or the equivalent declarative configuration):
             currency:  USDC
             network:   mainnet-beta
             secret_key: <hmac secret>
-            amount:    "1000"
+            amount:    "1.50"     -- human display form; parse_units(amount, decimals) converts to base units
             rpc_url:   https://api.mainnet-beta.solana.com
             fee_payer_secret_key: "[..64 bytes..]"
 ]]
@@ -34,7 +34,6 @@ local charge_handler_module = require('mpp.server.charge_handler')
 local rpc_module = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
 local signer_module = require('mpp.methods.solana.signer')
-local store_module = require('mpp.store')
 local store_shared_dict = require('mpp.server.store_shared_dict')
 local error_codes = require('mpp.protocol.core.error_codes')
 local intents = require('mpp.protocol.intents.charge')
