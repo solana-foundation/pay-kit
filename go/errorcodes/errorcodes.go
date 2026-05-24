@@ -34,13 +34,13 @@ import (
 
 // Canonical L6 structured error codes (snake_case).
 const (
-	ChargeRequestMismatch        = "charge_request_mismatch"
-	ChallengeRouteMismatch       = "challenge_route_mismatch"
-	ChallengeVerificationFailed  = "challenge_verification_failed"
-	ChallengeExpired             = "challenge_expired"
-	PaymentInvalid               = "payment_invalid"
-	WrongNetwork                 = "wrong_network"
-	SignatureConsumed            = "signature_consumed"
+	ChargeRequestMismatch       = "charge_request_mismatch"
+	ChallengeRouteMismatch      = "challenge_route_mismatch"
+	ChallengeVerificationFailed = "challenge_verification_failed"
+	ChallengeExpired            = "challenge_expired"
+	PaymentInvalid              = "payment_invalid"
+	WrongNetwork                = "wrong_network"
+	SignatureConsumed           = "signature_consumed"
 )
 
 // All returns the canonical set in declaration order. Callers that

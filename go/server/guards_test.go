@@ -264,4 +264,3 @@ func TestValidateComputeBudgetInstructions_RejectsAccounts(t *testing.T) {
 		t.Fatalf("code = %q, want %q", sdkErr.Code, mpp.ErrCodeComputeBudgetExceeded)
 	}
 }
-

@@ -51,9 +51,9 @@ func TestAcceptsHTML(t *testing.T) {
 
 func TestIsServiceWorkerRequest(t *testing.T) {
 	tests := []struct {
-		name    string
-		rawURL  string
-		want    bool
+		name   string
+		rawURL string
+		want   bool
 	}{
 		{"with param", "http://example.com/?__mpp_worker", true},
 		{"with param and value", "http://example.com/?__mpp_worker=1", true},
