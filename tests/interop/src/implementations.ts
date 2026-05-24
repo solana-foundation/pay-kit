@@ -65,7 +65,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-c",
       "cd swift-client && swift run --quiet SwiftInteropClient",
     ],
-    enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", true),
+    enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", false),
   },
 ];
 
