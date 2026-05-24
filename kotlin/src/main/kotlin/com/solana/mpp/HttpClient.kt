@@ -1,5 +1,6 @@
 package com.solana.mpp
 
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -172,7 +173,20 @@ class JsonRpcClient(
         okHttp.newCall(request).execute().use { response ->
             val text = response.body?.string()
                 ?: throw MppException.InvalidTransaction("empty RPC response")
-            val parsed = json.parseToJsonElement(text)
+            // Guard the JSON parse so a non-JSON RPC response (e.g. an
+            // HTML 503 page from a load balancer during a node restart)
+            // surfaces as the structured MppException.InvalidTransaction
+            // that every other branch already raises. Without this
+            // wrapper, callers catching MppException to handle network
+            // failures would silently miss a raw SerializationException
+            // bubbling up from kotlinx.serialization.
+            val parsed = try {
+                json.parseToJsonElement(text)
+            } catch (e: SerializationException) {
+                throw MppException.InvalidTransaction(
+                    "RPC response was not valid JSON (status ${response.code}): ${e.message ?: "parse error"}",
+                )
+            }
             if (parsed !is JsonObject) {
                 throw MppException.InvalidTransaction("non-object RPC response")
             }
