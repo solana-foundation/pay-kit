@@ -277,24 +277,39 @@ function M.format_www_authenticate(value)
   return M.PAYMENT_SCHEME .. ' ' .. table.concat(parts, ', ')
 end
 
+-- parse_authorization returns `(value, nil)` on success and `(nil, err)` on
+-- any malformed input (missing scheme, oversize token, bad base64url,
+-- invalid JSON, malformed inner challenge). Callers across the SDK
+-- (`examples/simple-server.lua`, the Kong plugin handler, the interop
+-- harness) already use the `(value, err)` shape; the previous
+-- `error(...)` exits surfaced to those callers as 500-style unwinds
+-- instead of structured 402 responses, which codex PR #103 review
+-- flagged as P2. Internally protect every fallible step with pcall.
 function M.parse_authorization(header)
   local token = M.extract_payment_scheme(header)
   if not token then
-    error('expected "Payment" scheme')
+    return nil, 'expected "Payment" scheme'
   end
   token = token:sub(#M.PAYMENT_SCHEME + 1):gsub('^%s+', '')
   if #token > max_token_len then
-    error('token exceeds maximum length of ' .. max_token_len .. ' bytes')
+    return nil, 'token exceeds maximum length of ' .. max_token_len .. ' bytes'
   end
   local payload, decode_err = types.base64url_decode(token)
   if not payload then
-    error(decode_err)
+    return nil, decode_err
   end
-  local ok, value = pcall(json.decode, payload)
-  if not ok then
-    error('invalid credential JSON: ' .. value)
+  local json_ok, value = pcall(json.decode, payload)
+  if not json_ok then
+    return nil, 'invalid credential JSON: ' .. tostring(value)
   end
-  value.challenge = challenge.challenge_from_table(value.challenge)
+  if type(value) ~= 'table' then
+    return nil, 'credential payload must be a JSON object'
+  end
+  local challenge_ok, challenge_value = pcall(challenge.challenge_from_table, value.challenge)
+  if not challenge_ok then
+    return nil, 'invalid credential challenge: ' .. tostring(challenge_value)
+  end
+  value.challenge = challenge_value
   return value
 end
 
