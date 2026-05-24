@@ -110,8 +110,8 @@ module Mpp
         # timestamped as ``2099-01-01t00:00:00z`` parses instead of
         # falling into the rescue. PHP already does this; matching here.
         normalized = expires
-          .sub(/(\d)t(\d)/, '\1T\2')
-          .sub(/z\z/, 'Z')
+          .sub(/(\d)t(\d)/, "\\1T\\2")
+          .sub(/z\z/, "Z")
         parsed = Time.iso8601(normalized)
         parsed <= now
       rescue ArgumentError
