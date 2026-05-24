@@ -199,7 +199,12 @@ function Server:_verify_challenge_and_decode(credential_value, now_epoch)
     error('missing or invalid payload type')
   end
   if payload_type == 'signature' and method_details.feePayer then
-    error('type="signature" credentials cannot be used with fee sponsorship')
+    -- B34: keep this message byte-identical to the verifier-layer B34
+    -- reject in solana_verify.lua so the canonical-codes classifier
+    -- and any text-based log monitor see the same string from either
+    -- layer. Divergence would force the classifier to learn two
+    -- patterns for the same condition.
+    error('Push-mode credentials are not allowed when the route uses a server-side fee payer')
   end
 
   return request, method_details, payload

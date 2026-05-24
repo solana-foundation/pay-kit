@@ -95,13 +95,14 @@ export type InteropScenario = {
   // pays, then re-submits the same Authorization to the same server.
   // The server must respond with `signature_consumed`.
   kind?: "standard" | "cross-server-portability" | "idempotent-resubmit";
-  // For `cross-server-portability`. The id of the second server impl to
-  // spawn alongside the matrix-iterated primary. If unset for the
-  // cross-server kinds, the runner picks any other enabled server.
-  secondServerId?: string;
   // For `cross-server-portability`. Pairs to iterate over. Each entry is
-  // [serverA, serverB]. When set, this overrides the standard
-  // matrix-iteration and runs only the listed pairs.
+  // [serverA, serverB]. The runner spawns server A and server B with
+  // distinct MPP secret keys, the client pays A, then re-submits the
+  // same Authorization to B. B MUST reject with the canonical
+  // `challenge_verification_failed` code. crossServerPairs is REQUIRED
+  // for `cross-server-portability` scenarios; a scenario that omits it
+  // will be skipped (the runner does not silently pair against an
+  // arbitrary fallback server).
   crossServerPairs?: Array<[string, string]>;
 };
 

@@ -108,7 +108,7 @@ t.test('verify credential rejects sponsored push mode', function()
   })
   t.assert_error(function()
     server:verify_credential(credential, 1770000000)
-  end, 'fee sponsorship')
+  end, 'server.side fee payer')
 end)
 
 t.test('verify credential requires verification callback', function()
