@@ -1,3 +1,11 @@
+// Package core implements the wire-level primitives shared by every MPP
+// intent: PaymentChallenge, PaymentCredential, Receipt, the
+// MethodName/IntentName newtypes, the Base64URLJSON helper, RFC 8785
+// canonical-JSON encoding, HMAC challenge-ID computation, and the
+// WWW-Authenticate / Authorization / Payment-Receipt header
+// parser/formatter pair. The wire format mirrors
+// rust/src/protocol/core/{challenge,headers,types}.rs so the
+// cross-language interop harness exercises byte-identical output.
 package core
 
 import (

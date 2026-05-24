@@ -1,3 +1,9 @@
+// Package intents carries the MPP intent request bodies. Today this is
+// the charge intent (ChargeRequest, with string-encoded base-unit
+// amounts so JSON consumers without u64 safety stay correct), plus the
+// ParseUnits helper that converts a human-readable decimal amount into
+// base units at the SDK boundary. Wire format mirrors
+// rust/src/protocol/intents/charge.rs.
 package intents
 
 import (
@@ -47,12 +53,12 @@ func (r ChargeRequest) ValidateMaxAmount(maxAmount string) error {
 	if err != nil {
 		return err
 	}
-	max := new(big.Int)
-	if _, ok := max.SetString(maxAmount, 10); !ok || !max.IsUint64() {
+	maxValue := new(big.Int)
+	if _, ok := maxValue.SetString(maxAmount, 10); !ok || !maxValue.IsUint64() {
 		return fmt.Errorf("invalid max amount: %s", maxAmount)
 	}
-	if actual > max.Uint64() {
-		return fmt.Errorf("amount %d exceeds maximum %d", actual, max.Uint64())
+	if actual > maxValue.Uint64() {
+		return fmt.Errorf("amount %d exceeds maximum %d", actual, maxValue.Uint64())
 	}
 	return nil
 }

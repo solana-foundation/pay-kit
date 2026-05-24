@@ -1,3 +1,11 @@
+// Package solanautil holds internal Solana-toolchain glue used by the
+// MPP charge handlers and client builders: a minimal Signer interface,
+// an RPCClient interface mirroring the subset of gagliardetto's
+// solana-go RPC client the SDK depends on, plus helpers to build SOL /
+// SPL transfer / associated-token-account / compute-budget / memo
+// instructions, decode transactions, split amounts, and run the
+// simulate-broadcast-confirm sequence. Internal-only; the public SDK
+// surface lives in the top-level mpp/server/client packages.
 package solanautil
 
 import (

@@ -1,3 +1,8 @@
+// Package testutil holds unit-test scaffolding shared across the Go
+// MPP packages: a deterministic in-memory RPC fake that satisfies the
+// solanautil.RPCClient interface and a helper for generating ephemeral
+// signers. Internal-only; consumers depending on the SDK should not
+// import this package.
 package testutil
 
 import (
@@ -12,7 +17,9 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-// NewPrivateKey returns a fresh test signer.
+// NewPrivateKey returns a fresh test signer. Panics on key-generation
+// failure (only possible if the crypto/rand source is broken, which
+// should never happen in a unit test environment).
 func NewPrivateKey() solana.PrivateKey {
 	key, err := solana.NewRandomPrivateKey()
 	if err != nil {
@@ -49,6 +56,9 @@ func NewFakeRPC() *FakeRPC {
 	}
 }
 
+// GetAccountInfoWithOpts looks up the canned mint owner registered for
+// account; returns rpc.ErrNotFound when the account is unknown so the
+// SDK exercises the same not-found branch as a live RPC.
 func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -63,12 +73,16 @@ func (f *FakeRPC) GetAccountInfoWithOpts(_ context.Context, account solana.Publi
 	}, nil
 }
 
+// GetLatestBlockhash returns the canned Blockhash on the fake RPC.
 func (f *FakeRPC) GetLatestBlockhash(_ context.Context, _ rpc.CommitmentType) (*rpc.GetLatestBlockhashResult, error) {
 	return &rpc.GetLatestBlockhashResult{
 		Value: &rpc.LatestBlockhashResult{Blockhash: f.Blockhash},
 	}, nil
 }
 
+// GetSignatureStatuses returns the canned per-signature status, falling
+// back to a confirmed status so the WaitForConfirmation poll completes
+// in a single round when no override is registered.
 func (f *FakeRPC) GetSignatureStatuses(_ context.Context, _ bool, signatures ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -85,6 +99,9 @@ func (f *FakeRPC) GetSignatureStatuses(_ context.Context, _ bool, signatures ...
 	return &rpc.GetSignatureStatusesResult{Value: values}, nil
 }
 
+// GetTransaction returns the canned GetTxErr first (so tests can force
+// not-found / RPC failure branches), then the recorded transaction for
+// the signature, or rpc.ErrNotFound when neither is set.
 func (f *FakeRPC) GetTransaction(_ context.Context, signature solana.Signature, _ *rpc.GetTransactionOpts) (*rpc.GetTransactionResult, error) {
 	if f.GetTxErr != nil {
 		return nil, f.GetTxErr
@@ -98,6 +115,10 @@ func (f *FakeRPC) GetTransaction(_ context.Context, signature solana.Signature, 
 	return TxResultFromTransaction(tx)
 }
 
+// SendTransactionWithOpts records the broadcast transaction (clone) and
+// returns its first signature, defaulting the per-signature status to
+// confirmed so a follow-up WaitForConfirmation poll terminates on the
+// first round.
 func (f *FakeRPC) SendTransactionWithOpts(_ context.Context, tx *solana.Transaction, _ rpc.TransactionOpts) (solana.Signature, error) {
 	if f.SendErr != nil {
 		return solana.Signature{}, f.SendErr
@@ -119,6 +140,9 @@ func (f *FakeRPC) SendTransactionWithOpts(_ context.Context, tx *solana.Transact
 	return signature, nil
 }
 
+// SimulateTransactionWithOpts records the simulated transaction (clone)
+// and returns a successful empty response, or the canned SimulateErr
+// when tests force a simulation failure branch.
 func (f *FakeRPC) SimulateTransactionWithOpts(_ context.Context, tx *solana.Transaction, _ *rpc.SimulateTransactionOpts) (*rpc.SimulateTransactionResponse, error) {
 	if f.SimulateErr != nil {
 		return nil, f.SimulateErr

@@ -1,3 +1,14 @@
+// Package mpp is the root of the Go Solana MPP SDK. It re-exports the
+// protocol wire types, header helpers, intent request shapes, the
+// replay-protection Store interface, the structured SDK Error type, and
+// RFC 3339 challenge-expiry helpers, so downstream callers can import
+// `mpp` alone instead of reaching into the protocol subpackages.
+//
+// Server-side handlers live in the `server` subpackage and client-side
+// transaction builders live in the `client` subpackage. The wire format
+// and module split mirror the Rust reference crate documented in
+// skills/pay-sdk-implementation; cross-language behavior is locked via
+// the interop harness at tests/interop.
 package mpp
 
 import (
@@ -10,6 +21,8 @@ import (
 // consumers can write `mpp.PaymentChallenge` instead of reaching into
 // the protocol subpackages. Documentation lives on the underlying
 // declarations in protocol/core and protocol/intents.
+//
+//revive:disable:exported
 type (
 	Base64URLJSON     = core.Base64URLJSON
 	ChallengeEcho     = core.ChallengeEcho
@@ -24,6 +37,8 @@ type (
 	CredentialPayload = protocol.CredentialPayload
 	Split             = protocol.Split
 )
+
+//revive:enable:exported
 
 // Re-exported header name and scheme constants. The canonical values
 // are defined in protocol/core; these aliases keep the public surface
