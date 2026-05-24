@@ -9,7 +9,6 @@ from solana_mpp._types import PaymentCredential
 from solana_mpp.server.middleware import pay
 from solana_mpp.server.mpp import Config, Mpp
 from solana_mpp.store import MemoryStore
-
 from tests.test_server import (
     TEST_RECIPIENT,
     TEST_SECRET,
