@@ -97,7 +97,10 @@ module Mpp
         hour, minute, second = match[4].to_i, match[5].to_i, match[6].to_i
         return true if month < 1 || month > 12
         return true if day < 1 || day > 31
-        return true if hour > 23 || minute > 59 || second > 59
+        # RFC 3339 section 5.7 allows seconds = 60 for positive leap seconds;
+        # PHP, Lua, and Go SDKs all accept the value at parse-time. Reject only
+        # at 61 so a credential timestamped at exactly 23:59:60 UTC parses.
+        return true if hour > 23 || minute > 59 || second > 60
         return true if year > 9999
         return true unless Date.valid_date?(year, month, day)
 

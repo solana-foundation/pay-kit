@@ -170,6 +170,13 @@ class CoreTest < Minitest::Test
     # Hour 24 rejected.
     c5 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T24:00:00Z")
     assert c5.expired?
+    # RFC 3339 section 5.7: positive leap-second seconds=60 must be accepted
+    # (PHP, Lua, Go SDKs accept it; Ruby previously rejected with second > 59).
+    c6 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-12-31T23:59:60Z")
+    refute c6.expired?
+    # seconds = 61 stays rejected.
+    c7 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01T00:00:61Z")
+    assert c7.expired?
   end
 
   def test_parse_auth_params_branches

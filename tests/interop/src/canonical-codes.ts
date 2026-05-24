@@ -80,7 +80,7 @@ const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[]
   // Compute-budget allowlist violations are a server policy rejection, not a
   // tx-shape mismatch; classify as `payment_invalid` to match Rust/Go/Python
   // server parity (see rust/src/bin/interop_server.rs::classify_canonical_code).
-  { pattern: /unexpected program instruction/i, code: "charge_request_mismatch" },
+  { pattern: /unexpected program instruction/i, code: "payment_invalid" },
   { pattern: /credential method does not match/i, code: "challenge_route_mismatch" },
   { pattern: /credential intent is not a charge/i, code: "challenge_route_mismatch" },
   { pattern: /credential realm does not match/i, code: "challenge_route_mismatch" },
