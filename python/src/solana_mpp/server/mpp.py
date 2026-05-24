@@ -1304,10 +1304,17 @@ class Mpp:
         # canonical code mapping in ``_errors`` collapses both to the
         # same client-facing 402 body, so the discrimination is purely
         # diagnostic.
-        sig = Signature.from_string(signature)
+        # Pass the raw signature string straight through. The previous
+        # ``Signature.from_string(signature)`` call sat between the
+        # durable consume marker (above) and the get_transaction call;
+        # if that parse ever raised (malformed RPC response, future
+        # solders API change), the consume would be durable but no
+        # receipt would be issued, stranding the user. ``get_transaction``
+        # already calls ``str(signature)`` internally on the wire, so the
+        # conversion is redundant work on the post-consume critical path.
         await self._rpc.await_confirmation(signature)
 
-        tx_resp = await self._rpc.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
+        tx_resp = await self._rpc.get_transaction(signature, encoding="jsonParsed", max_supported_transaction_version=0)
         tx = _transaction_dict(tx_resp)
         if tx is None:
             raise PaymentError("transaction not found or not yet confirmed", code="transaction-not-found")
