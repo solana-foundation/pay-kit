@@ -60,15 +60,26 @@ public enum Charge {
     }
 
     /// Returns the first solana + charge challenge in a list of raw
-    /// `WWW-Authenticate` header values. The spine returns multi-value
+    /// `WWW-Authenticate` header values whose embedded `ChargeRequest`
+    /// also decodes cleanly. The spine returns multi-value
     /// `WWW-Authenticate` for the same resource (e.g. one challenge per
     /// supported stablecoin); the client picks the first compatible one.
+    ///
+    /// Decoding the request during selection avoids choosing a
+    /// structurally valid header whose payload is malformed JSON or
+    /// missing required fields, which would otherwise surface as a late
+    /// failure inside `buildChargeTransaction`.
     public static func pickChallenge(wwwAuthenticateHeaders: [String]) throws -> PaymentChallenge {
         for header in wwwAuthenticateHeaders {
-            if let challenge = try? MppHeaders.parseWWWAuthenticate(header),
-               challenge.method == "solana", challenge.intent == "charge" {
-                return challenge
+            guard let challenge = try? MppHeaders.parseWWWAuthenticate(header),
+                  challenge.method == "solana", challenge.intent == "charge" else {
+                continue
             }
+            // Schema-validate the embedded ChargeRequest before
+            // returning. A challenge whose request payload does not
+            // decode is not compatible, even if the header framing is.
+            guard (try? challenge.chargeRequest) != nil else { continue }
+            return challenge
         }
         throw MppError.unsupportedChallenge(method: "(missing)", intent: "(missing)")
     }
@@ -120,6 +131,13 @@ public enum Charge {
 
         let amount = try parseU64(request.amount, field: "amount")
         let splits = methodDetails.splits ?? []
+        // Spine cap: Rust (`rust/src/client/charge.rs`) and TypeScript
+        // (`typescript/packages/mpp/src/server/Charge.ts`) both reject
+        // requests with more than 8 splits. Enforce here so Swift never
+        // signs a credential the verifier will reject.
+        guard splits.count <= 8 else {
+            throw MppError.invalidTransaction("too many splits: \(splits.count) > 8")
+        }
         var splitsTotal: UInt64 = 0
         for split in splits {
             let value = try parseU64(split.amount, field: "split amount")
@@ -142,18 +160,16 @@ public enum Charge {
             guard let mintStr = mint else {
                 throw MppError.invalidTransaction("ataCreationRequired requires an SPL token charge")
             }
-            // Accept any input that resolves to a usable SPL mint: either
-            // the request currency is a known symbol (USDC, USDT, USDG,
-            // PYUSD, CASH) that maps to a real mint, or it is already a
-            // base58 mint address that resolveStablecoinMint passed
-            // through. The literal `mintStr == request.currency` check
-            // wrongly rejected the symbol form because resolution
-            // returns the mint address, not the symbol.
-            let isSymbol = mintStr != request.currency
-            let isPassThrough = mintStr == request.currency && isLikelyBase58MintAddress(mintStr)
-            guard isSymbol || isPassThrough else {
+            // Spine parity: Rust (`rust/src/server/charge.rs`
+            // `validate_charge_options`) requires the request currency to
+            // be the resolved mint address itself, not a symbol like
+            // "USDC". Symbol-form charges with `ataCreationRequired`
+            // would be rejected by Rust/TS verifiers, so reject them
+            // client-side too instead of signing a credential that fails
+            // downstream.
+            guard mintStr == request.currency, isLikelyBase58MintAddress(mintStr) else {
                 throw MppError.invalidTransaction(
-                    "ataCreationRequired requires currency to be an SPL token mint address or known symbol"
+                    "ataCreationRequired requires currency to be an SPL token mint address (got \"\(request.currency)\")"
                 )
             }
         }
