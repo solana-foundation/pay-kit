@@ -1016,7 +1016,17 @@ class Config:
     html: bool = False
     fee_payer_signer: Any = None
     store: Store | None = None
-    rpc: Any = None  # solana.rpc.async_api.AsyncClient
+    # The RPC client MUST expose at least the methods on
+    # :class:`solana_mpp._rpc.SolanaRpc`: ``send_raw_transaction``,
+    # ``get_signature_statuses``, ``await_confirmation``,
+    # ``get_recent_blockhash`` and ``get_transaction``. The previous
+    # ``# solana.rpc.async_api.AsyncClient`` comment suggested the legacy
+    # solana-py client was a drop-in replacement; it is not, because it
+    # lacks ``await_confirmation`` and would AttributeError between the
+    # broadcast and the confirmation poll, AFTER the consume marker is
+    # durable. ``Mpp.__init__`` validates the contract at config time so
+    # the failure surfaces before any 402 traffic.
+    rpc: Any = None
 
 
 class Mpp:
@@ -1056,6 +1066,20 @@ class Mpp:
                 code="invalid-config",
             )
         self._store: Store = config.store
+        # Validate the RPC client contract up-front. The settlement path
+        # calls ``send_raw_transaction``, ``await_confirmation`` and
+        # ``get_transaction`` after the durable consume marker is
+        # written; a missing method on the rpc instance would surface
+        # only after that consume, stranding the user. Reject at config
+        # time instead.
+        if config.rpc is not None:
+            for method_name in ("send_raw_transaction", "await_confirmation", "get_transaction"):
+                if not callable(getattr(config.rpc, method_name, None)):
+                    raise PaymentError(
+                        f"rpc client missing required method '{method_name}'; "
+                        "use solana_mpp._rpc.SolanaRpc or a compatible client",
+                        code="invalid-config",
+                    )
         self._rpc = config.rpc
         # Held by ``using_rpc`` to serialize per-request RPC swaps when
         # the interop adapter (or any embedder) wants a fresh client
