@@ -85,27 +85,55 @@ local function parse_auth_params(input)
   return params
 end
 
+-- RFC 7230 sec 3.2.6 tchar.
+local TCHAR_EXTRA = "!#$%%&'*+-.^_`|~"
+local function token_char(ch)
+  if ch == '' then return false end
+  if ch:match('[%w]') then return true end
+  return TCHAR_EXTRA:find(ch, 1, true) ~= nil
+end
+
+-- If `header[pos]` starts an auth-scheme (RFC 7235 sec 2.1), return
+-- offset_after_scheme, is_payment_scheme. Otherwise return nil.
+--
+-- A scheme requires: token, 1*SP, then non-empty content (either auth-param
+-- list `key=val,...` or a token68 credential). A bare `token=` (no SP gap)
+-- is an auth-param continuation, not a new scheme.
+local function match_auth_scheme_start(header, pos, len, payment_scheme_lower)
+  local token_end = pos
+  while token_end <= len and token_char(header:sub(token_end, token_end)) do
+    token_end = token_end + 1
+  end
+  if token_end == pos then return nil end
+  local after_token = header:sub(token_end, token_end)
+  if after_token ~= ' ' and after_token ~= '\t' then return nil end
+  local cursor = token_end
+  while cursor <= len do
+    local c = header:sub(cursor, cursor)
+    if c ~= ' ' and c ~= '\t' then break end
+    cursor = cursor + 1
+  end
+  if cursor > len then return nil end
+  -- Must have non-empty content (not just trailing whitespace or a comma).
+  local c0 = header:sub(cursor, cursor)
+  if c0 == ',' then return nil end
+  local scheme = header:sub(pos, token_end - 1):lower()
+  return token_end, scheme == payment_scheme_lower
+end
+
 -- Quote-aware split of a WWW-Authenticate header value into individual `Payment` chunks (RFC 7235 sec 4.1).
+--
+-- Detects auth-scheme boundaries (token + SP + key=value), not just literal "Payment"
+-- occurrences, so trailing or interleaving non-Payment schemes (e.g. Bearer) correctly
+-- terminate the previous Payment chunk.
 local function split_payment_challenge_values(header)
   local len = #header
-  local starts = {}
+  local scheme_starts = {} -- list of {offset, is_payment}
   local in_quote = false
   local escaped = false
+  local at_boundary = true
   local i = 1
-  local scheme = M.PAYMENT_SCHEME
-  local slen = #scheme
-
-  local function is_scheme_start(pos)
-    if pos + slen > len then return false end
-    if header:sub(pos, pos + slen - 1):lower() ~= scheme:lower() then return false end
-    local nxt = header:sub(pos + slen, pos + slen)
-    if nxt ~= ' ' and nxt ~= '\t' then return false end
-    local prev = pos - 1
-    while prev >= 1 and (header:sub(prev, prev) == ' ' or header:sub(prev, prev) == '\t') do
-      prev = prev - 1
-    end
-    return prev < 1 or header:sub(prev, prev) == ','
-  end
+  local payment_scheme_lower = M.PAYMENT_SCHEME:lower()
 
   while i <= len do
     local ch = header:sub(i, i)
@@ -120,26 +148,43 @@ local function split_payment_challenge_values(header)
       i = i + 1
     elseif ch == '"' then
       in_quote = true
+      at_boundary = false
       i = i + 1
-    elseif is_scheme_start(i) then
-      starts[#starts + 1] = i
-      i = i + slen
+    elseif ch == ',' then
+      at_boundary = true
+      i = i + 1
+    elseif ch == ' ' or ch == '\t' then
+      i = i + 1
+    elseif at_boundary and token_char(ch) then
+      local scheme_end, is_payment = match_auth_scheme_start(header, i, len, payment_scheme_lower)
+      if scheme_end then
+        scheme_starts[#scheme_starts + 1] = { i, is_payment }
+        i = scheme_end
+        at_boundary = false
+      else
+        at_boundary = false
+        i = i + 1
+      end
     else
+      at_boundary = false
       i = i + 1
     end
   end
 
-  if #starts == 0 then
+  if #scheme_starts == 0 then
     return {}
   end
 
   local chunks = {}
-  for idx, start in ipairs(starts) do
-    local finish = starts[idx + 1] and (starts[idx + 1] - 1) or len
-    local chunk = header:sub(start, finish):gsub('^%s+', ''):gsub('%s+$', '')
-    chunk = chunk:gsub(',%s*$', '')
-    if chunk ~= '' then
-      chunks[#chunks + 1] = chunk
+  for idx, entry in ipairs(scheme_starts) do
+    local start, is_payment = entry[1], entry[2]
+    if is_payment then
+      local finish = scheme_starts[idx + 1] and (scheme_starts[idx + 1][1] - 1) or len
+      local chunk = header:sub(start, finish):gsub('^%s+', ''):gsub('%s+$', '')
+      chunk = chunk:gsub(',%s*$', '')
+      if chunk ~= '' then
+        chunks[#chunks + 1] = chunk
+      end
     end
   end
   return chunks

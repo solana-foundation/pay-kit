@@ -70,17 +70,22 @@ final class Headers
     /**
      * Split a header value into individual `Payment` challenge chunks (quote-aware).
      *
+     * Detects RFC 7235 sec 2.1 auth-scheme boundaries (a token followed by whitespace and a
+     * key=value pair), not just literal "Payment" occurrences. This is required to correctly
+     * terminate a Payment chunk when a different scheme (e.g. Bearer) follows it on the same
+     * header value, and to skip over non-Payment schemes that precede or interleave with
+     * Payment schemes.
+     *
      * @return array<int, string>
      */
     private static function splitPaymentChallengeValues(string $header): array
     {
         $length = strlen($header);
-        $starts = [];
+        $schemeStarts = []; // list of [offset, isPayment]
         $inQuote = false;
         $escaped = false;
         $i = 0;
-        $scheme = self::PAYMENT_SCHEME;
-        $sLen = strlen($scheme);
+        $atBoundary = true; // true at start of header or right after a top-level comma
 
         while ($i < $length) {
             $ch = $header[$i];
@@ -97,24 +102,43 @@ final class Headers
             }
             if ($ch === '"') {
                 $inQuote = true;
+                $atBoundary = false;
                 $i++;
                 continue;
             }
-            if (self::isPaymentSchemeStart($header, $i, $scheme, $sLen, $length)) {
-                $starts[] = $i;
-                $i += $sLen;
+            if ($ch === ',') {
+                $atBoundary = true;
+                $i++;
                 continue;
             }
+            if ($ch === ' ' || $ch === "\t") {
+                $i++;
+                continue;
+            }
+            if ($atBoundary && self::isTokenChar($ch)) {
+                $schemeMatch = self::matchAuthSchemeStart($header, $i, $length);
+                if ($schemeMatch !== null) {
+                    [$schemeEnd, $isPayment] = $schemeMatch;
+                    $schemeStarts[] = [$i, $isPayment];
+                    $i = $schemeEnd;
+                    $atBoundary = false;
+                    continue;
+                }
+            }
+            $atBoundary = false;
             $i++;
         }
 
-        if ($starts === []) {
+        if ($schemeStarts === []) {
             return [];
         }
 
         $chunks = [];
-        foreach ($starts as $index => $start) {
-            $end = $starts[$index + 1] ?? $length;
+        foreach ($schemeStarts as $idx => [$start, $isPayment]) {
+            if (!$isPayment) {
+                continue;
+            }
+            $end = $schemeStarts[$idx + 1][0] ?? $length;
             $chunk = trim(substr($header, $start, $end - $start));
             $chunk = rtrim($chunk, ', ');
             if ($chunk !== '') {
@@ -124,23 +148,45 @@ final class Headers
         return $chunks;
     }
 
-    private static function isPaymentSchemeStart(string $header, int $index, string $scheme, int $sLen, int $length): bool
+    /**
+     * RFC 7230 sec 3.2.6 tchar.
+     */
+    private static function isTokenChar(string $ch): bool
     {
-        if ($index + $sLen >= $length) {
-            return false;
+        return (ctype_alnum($ch) === true) || strpos("!#$%&'*+-.^_`|~", $ch) !== false;
+    }
+
+    /**
+     * If `header[$index]` starts an auth-scheme (RFC 7235 sec 2.1), return
+     * [offsetAfterScheme, isPaymentScheme]. Otherwise return null.
+     *
+     * A scheme requires: token, 1*SP, then non-empty content (either an
+     * auth-param list `key=val,...` or a token68 credential). A bare
+     * `token=` (no SP gap) is an auth-param continuation, not a new scheme.
+     *
+     * @return array{0: int, 1: bool}|null
+     */
+    private static function matchAuthSchemeStart(string $header, int $index, int $length): ?array
+    {
+        $tokenEnd = $index;
+        while ($tokenEnd < $length && self::isTokenChar($header[$tokenEnd])) {
+            $tokenEnd++;
         }
-        if (strcasecmp(substr($header, $index, $sLen), $scheme) !== 0) {
-            return false;
+        if ($tokenEnd === $index) {
+            return null;
         }
-        $next = $header[$index + $sLen];
-        if ($next !== ' ' && $next !== "\t") {
-            return false;
+        if ($tokenEnd >= $length || ($header[$tokenEnd] !== ' ' && $header[$tokenEnd] !== "\t")) {
+            return null;
         }
-        $prev = $index - 1;
-        while ($prev >= 0 && ($header[$prev] === ' ' || $header[$prev] === "\t")) {
-            $prev--;
+        $cursor = $tokenEnd;
+        while ($cursor < $length && ($header[$cursor] === ' ' || $header[$cursor] === "\t")) {
+            $cursor++;
         }
-        return $prev < 0 || $header[$prev] === ',';
+        if ($cursor >= $length || $header[$cursor] === ',') {
+            return null;
+        }
+        $scheme = substr($header, $index, $tokenEnd - $index);
+        return [$tokenEnd, strcasecmp($scheme, self::PAYMENT_SCHEME) === 0];
     }
 
     /**

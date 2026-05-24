@@ -38,14 +38,19 @@ module Mpp
       end
 
       # Split a WWW-Authenticate header value into individual Payment challenges (quote-aware).
+      #
+      # Detects RFC 7235 sec 2.1 auth-scheme boundaries (a token followed by whitespace and a
+      # key=value pair), not just literal "Payment" occurrences. This is required to correctly
+      # terminate a Payment chunk when a different scheme (e.g. Bearer) follows it on the same
+      # header value, and to skip over non-Payment schemes that precede or interleave with
+      # Payment schemes.
       def split_payment_challenge_values(header)
         bytes = header.to_s
-        starts = []
+        scheme_starts = [] # array of [offset, is_payment]
         in_quote = false
         escaped = false
+        at_boundary = true
         i = 0
-        scheme = PAYMENT_SCHEME
-        slen = scheme.length
         while i < bytes.length
           ch = bytes[i]
           if in_quote
@@ -62,39 +67,77 @@ module Mpp
 
           if ch == "\""
             in_quote = true
+            at_boundary = false
             i += 1
             next
           end
 
-          if payment_scheme_start?(bytes, i, scheme, slen)
-            starts << i
-            i += slen
+          if ch == ","
+            at_boundary = true
+            i += 1
             next
           end
 
+          if [" ", "\t"].include?(ch)
+            i += 1
+            next
+          end
+
+          if at_boundary && token_char?(ch)
+            match = match_auth_scheme_start(bytes, i)
+            if match
+              scheme_end, is_payment = match
+              scheme_starts << [i, is_payment]
+              i = scheme_end
+              at_boundary = false
+              next
+            end
+          end
+
+          at_boundary = false
           i += 1
         end
 
-        return [] if starts.empty?
+        return [] if scheme_starts.empty?
 
-        starts.each_with_index.map do |start, idx|
-          finish = starts[idx + 1] || bytes.length
-          bytes[start...finish].strip.sub(/,\s*\z/, "").strip
-        end.reject(&:empty?)
+        chunks = []
+        scheme_starts.each_with_index do |(start, is_payment), idx|
+          next unless is_payment
+
+          finish = scheme_starts[idx + 1] ? scheme_starts[idx + 1][0] : bytes.length
+          chunk = bytes[start...finish].strip.sub(/,\s*\z/, "").strip
+          chunks << chunk unless chunk.empty?
+        end
+        chunks
       end
 
-      def payment_scheme_start?(bytes, index, scheme, slen)
-        return false if index + slen >= bytes.length
+      # RFC 7230 sec 3.2.6 tchar.
+      TCHAR_EXTRA = "!#$%&'*+-.^_`|~"
+      def token_char?(ch)
+        return false unless ch
 
-        prefix = bytes[index, slen]
-        return false unless prefix&.casecmp(scheme)&.zero?
+        ch.match?(/[A-Za-z0-9]/) || TCHAR_EXTRA.include?(ch)
+      end
 
-        next_char = bytes[index + slen]
-        return false unless next_char && [" ", "\t"].include?(next_char)
+      # If `bytes[index]` starts an auth-scheme (RFC 7235 sec 2.1), return
+      # [offset_after_scheme, is_payment_scheme]. Otherwise return nil.
+      #
+      # A scheme requires: token, 1*SP, then non-empty content (either an
+      # auth-param list `key=val,...` or a token68 credential). A bare
+      # `token=` (no SP gap) is an auth-param continuation, not a new scheme.
+      def match_auth_scheme_start(bytes, index)
+        token_end = index
+        token_end += 1 while token_end < bytes.length && token_char?(bytes[token_end])
+        return nil if token_end == index
 
-        prev = index - 1
-        prev -= 1 while prev >= 0 && [" ", "\t"].include?(bytes[prev])
-        prev < 0 || bytes[prev] == ","
+        return nil unless [" ", "\t"].include?(bytes[token_end])
+
+        cursor = token_end
+        cursor += 1 while cursor < bytes.length && [" ", "\t"].include?(bytes[cursor])
+        return nil if cursor >= bytes.length || bytes[cursor] == ","
+
+        scheme = bytes[index, token_end - index]
+        [token_end, scheme.casecmp(PAYMENT_SCHEME).zero?]
       end
 
       # Parse a single `WWW-Authenticate` challenge.

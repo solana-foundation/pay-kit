@@ -123,6 +123,76 @@ t.test('expires parser is strict RFC 3339', function()
   t.assert_true(expires.parse_rfc3339('2099-01-01T24:00:00Z') == nil)
 end)
 
+t.test('parse_www_authenticate_all single Payment scheme', function()
+  local h = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(h)
+  t.assert_equal(#results, 1)
+  t.assert_equal(results[1].id, 'a')
+end)
+
+t.test('parse_www_authenticate_all Payment followed by Bearer', function()
+  local h = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", '
+         .. 'Bearer realm="oauth"'
+  local results = mpp.ParseWWWAuthenticateAll(h)
+  t.assert_equal(#results, 1)
+  t.assert_equal(results[1].id, 'a')
+end)
+
+t.test('parse_www_authenticate_all Bearer followed by Payment', function()
+  local h = 'Bearer realm="oauth", '
+         .. 'Payment id="a", realm="r", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(h)
+  t.assert_equal(#results, 1)
+  t.assert_equal(results[1].id, 'a')
+end)
+
+t.test('parse_www_authenticate_all interleaved schemes', function()
+  local h = 'Bearer realm="oauth", '
+         .. 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", '
+         .. 'Basic realm="basic", '
+         .. 'Payment id="b", realm="r", method="solana", intent="charge", request="e30"'
+  local results = mpp.ParseWWWAuthenticateAll(h)
+  t.assert_equal(#results, 2)
+  t.assert_equal(results[1].id, 'a')
+  t.assert_equal(results[2].id, 'b')
+end)
+
+t.test('canonical JSON UTF-8 codepoint boundary', function()
+  local json = require('mpp.util.json')
+  -- U+10FFFF: max valid Unicode codepoint, F4 8F BF BF (accepted).
+  local max_cp = string.char(0xF4, 0x8F, 0xBF, 0xBF)
+  local ok = pcall(json.encode, { k = max_cp })
+  t.assert_true(ok)
+  -- U+110000: out-of-range, F4 90 80 80 (rejected).
+  local out_of_range = string.char(0xF4, 0x90, 0x80, 0x80)
+  local ok2 = pcall(json.encode, { k = out_of_range })
+  t.assert_true(not ok2)
+  -- F5+ leading byte rejected.
+  local bad_lead = string.char(0xF5, 0x80, 0x80, 0x80)
+  local ok3 = pcall(json.encode, { k = bad_lead })
+  t.assert_true(not ok3)
+end)
+
+t.test('canonical JSON UTF-8 surrogate pair emoji round-trips', function()
+  local json = require('mpp.util.json')
+  -- U+1F600 grinning face, encoded as F0 9F 98 80 in UTF-8.
+  local emoji = string.char(0xF0, 0x9F, 0x98, 0x80)
+  local encoded = json.encode({ k = emoji })
+  t.assert_equal(encoded, '{"k":"' .. emoji .. '"}')
+end)
+
+t.test('canonical JSON UTF-8 overlong sequences rejected', function()
+  local json = require('mpp.util.json')
+  -- Overlong 3-byte encoding of U+007F: E0 81 BF (rejected).
+  local overlong3 = string.char(0xE0, 0x81, 0xBF)
+  local ok = pcall(json.encode, { k = overlong3 })
+  t.assert_true(not ok)
+  -- Overlong 4-byte encoding of U+FFFF: F0 8F BF BF (rejected).
+  local overlong4 = string.char(0xF0, 0x8F, 0xBF, 0xBF)
+  local ok2 = pcall(json.encode, { k = overlong4 })
+  t.assert_true(not ok2)
+end)
+
 t.test('parse_www_authenticate_all skips malformed challenge and returns valid siblings', function()
   -- First challenge has invalid base64url in request; second is valid. Should yield one challenge.
   local header = 'Payment id="bad", realm="r", method="solana", intent="charge", request="!!!", '

@@ -127,6 +127,47 @@ class CoreTest < Minitest::Test
     assert_equal 1, results.length
   end
 
+  def test_parse_www_authenticate_all_scheme_boundary_single_payment
+    h = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 1, results.length
+    assert_equal "a", results.first.id
+  end
+
+  def test_parse_www_authenticate_all_payment_followed_by_bearer
+    h = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", Bearer realm="oauth"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 1, results.length
+    assert_equal "a", results.first.id
+  end
+
+  def test_parse_www_authenticate_all_bearer_followed_by_payment
+    h = 'Bearer realm="oauth", Payment id="a", realm="r", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 1, results.length
+    assert_equal "a", results.first.id
+  end
+
+  def test_parse_www_authenticate_all_multiple_payment_schemes
+    h = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", ' \
+        'Payment id="b", realm="r", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 2, results.length
+    assert_equal "a", results[0].id
+    assert_equal "b", results[1].id
+  end
+
+  def test_parse_www_authenticate_all_interleaved_schemes
+    h = 'Bearer realm="oauth", ' \
+        'Payment id="a", realm="r", method="solana", intent="charge", request="e30", ' \
+        'Basic realm="basic", ' \
+        'Payment id="b", realm="r", method="solana", intent="charge", request="e30"'
+    results = Mpp::Core::Headers.parse_www_authenticate_all([h])
+    assert_equal 2, results.length
+    assert_equal "a", results[0].id
+    assert_equal "b", results[1].id
+  end
+
   def test_payment_scheme_start_negatives
     # "Paymentx" without whitespace is not a scheme start; should yield empty.
     assert_empty Mpp::Core::Headers.parse_www_authenticate_all(["Paymentid=x"])

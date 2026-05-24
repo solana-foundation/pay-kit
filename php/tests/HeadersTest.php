@@ -193,6 +193,54 @@ final class HeadersTest extends TestCase
         self::assertSame('b', $results[1]->id);
     }
 
+    public function testParseWwwAuthenticateAllSchemeBoundarySinglePayment(): void
+    {
+        $header = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30"';
+        $results = Headers::parseWwwAuthenticateAll($header);
+        self::assertCount(1, $results);
+        self::assertSame('a', $results[0]->id);
+    }
+
+    public function testParseWwwAuthenticateAllPaymentFollowedByBearer(): void
+    {
+        $header = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", '
+                . 'Bearer realm="oauth"';
+        $results = Headers::parseWwwAuthenticateAll($header);
+        self::assertCount(1, $results);
+        self::assertSame('a', $results[0]->id);
+    }
+
+    public function testParseWwwAuthenticateAllBearerFollowedByPayment(): void
+    {
+        $header = 'Bearer realm="oauth", '
+                . 'Payment id="a", realm="r", method="solana", intent="charge", request="e30"';
+        $results = Headers::parseWwwAuthenticateAll($header);
+        self::assertCount(1, $results);
+        self::assertSame('a', $results[0]->id);
+    }
+
+    public function testParseWwwAuthenticateAllMultiplePaymentSchemes(): void
+    {
+        $header = 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", '
+                . 'Payment id="b", realm="r", method="solana", intent="charge", request="e30"';
+        $results = Headers::parseWwwAuthenticateAll($header);
+        self::assertCount(2, $results);
+        self::assertSame('a', $results[0]->id);
+        self::assertSame('b', $results[1]->id);
+    }
+
+    public function testParseWwwAuthenticateAllInterleavedSchemes(): void
+    {
+        $header = 'Bearer realm="oauth", '
+                . 'Payment id="a", realm="r", method="solana", intent="charge", request="e30", '
+                . 'Basic realm="basic", '
+                . 'Payment id="b", realm="r", method="solana", intent="charge", request="e30"';
+        $results = Headers::parseWwwAuthenticateAll($header);
+        self::assertCount(2, $results);
+        self::assertSame('a', $results[0]->id);
+        self::assertSame('b', $results[1]->id);
+    }
+
     public function testReceiptHeaderRoundTrip(): void
     {
         $receipt = Receipt::success(
