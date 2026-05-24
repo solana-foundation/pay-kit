@@ -147,6 +147,18 @@ class FileReplayStore:
     async def get(self, key: str) -> Any | None:
         return self._data.get(key)
 
+    async def _flush_off_loop(self, data: dict[str, Any]) -> None:
+        """Run the blocking ``_flush`` in a worker thread.
+
+        ``_flush`` performs synchronous file IO and ``os.fsync()``; both
+        block the event loop if called directly from an async coroutine
+        and degrade tail latency for the whole server under load.
+        ``asyncio.to_thread`` offloads the call to the default executor
+        so other coroutines stay responsive while the page-cache
+        flushes to disk.
+        """
+        await asyncio.to_thread(self._flush, data)
+
     async def put(self, key: str, value: Any) -> None:
         # Greptile P1 (follow-up): flush BEFORE committing to
         # ``self._data``. If ``_flush`` raises (disk full mid-fsync, IO
@@ -156,7 +168,7 @@ class FileReplayStore:
         # We build the next dict, flush it, then swap.
         async with self._lock:
             next_data = {**self._data, key: value}
-            self._flush(next_data)
+            await self._flush_off_loop(next_data)
             self._data = next_data
 
     async def delete(self, key: str) -> None:
@@ -164,7 +176,7 @@ class FileReplayStore:
             if key not in self._data:
                 return
             next_data = {k: v for k, v in self._data.items() if k != key}
-            self._flush(next_data)
+            await self._flush_off_loop(next_data)
             self._data = next_data
 
     async def put_if_absent(self, key: str, value: Any) -> bool:
@@ -172,6 +184,6 @@ class FileReplayStore:
             if key in self._data:
                 return False
             next_data = {**self._data, key: value}
-            self._flush(next_data)
+            await self._flush_off_loop(next_data)
             self._data = next_data
             return True

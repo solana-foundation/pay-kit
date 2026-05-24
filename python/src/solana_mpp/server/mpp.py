@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -1015,6 +1017,33 @@ class Mpp:
             )
         self._store: Store = config.store
         self._rpc = config.rpc
+        # Held by ``using_rpc`` to serialize per-request RPC swaps when
+        # the interop adapter (or any embedder) wants a fresh client
+        # bound to the current event loop. The async lock is created
+        # lazily on first use so construction does not require a
+        # running loop.
+        self._rpc_swap_lock = asyncio.Lock()
+
+    @contextlib.asynccontextmanager
+    async def using_rpc(self, rpc: Any):
+        """Scope an RPC client to the surrounding async block.
+
+        The interop adapter (and any sequential HTTP server pattern)
+        previously assigned ``self._rpc = fresh_rpc`` directly, which
+        is a race waiting to happen the moment the handler is run on a
+        ThreadingMixIn server or with multiple concurrent
+        ``asyncio.run()`` calls. This context manager performs the
+        swap under a per-instance lock and always restores the prior
+        value on exit, even if the body raises, eliminating the shared
+        mutation antipattern flagged by Greptile.
+        """
+        async with self._rpc_swap_lock:
+            previous = self._rpc
+            self._rpc = rpc
+            try:
+                yield
+            finally:
+                self._rpc = previous
 
     @property
     def realm(self) -> str:

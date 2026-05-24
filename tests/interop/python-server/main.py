@@ -269,10 +269,18 @@ class InteropHandler(BaseHTTPRequestHandler):
             # fragile. We close the request-scoped client immediately
             # after the verify call returns.
             async def _verify_with_fresh_rpc():
+                # Use the explicit ``using_rpc`` context manager rather
+                # than mutating ``self.mpp._rpc`` directly. The previous
+                # in-place mutation was safe under a sequential
+                # HTTPServer, but it is a race waiting to happen the
+                # moment anyone swaps in ThreadingMixIn or runs two
+                # ``asyncio.run`` invocations concurrently. ``using_rpc``
+                # serializes the swap under a per-instance lock and
+                # always restores the prior RPC on exit.
                 fresh_rpc = SolanaRpc(self.cfg["rpc_url"])
-                self.mpp._rpc = fresh_rpc  # noqa: SLF001 (intentional override)
                 try:
-                    return await self.mpp.verify_credential_with_expected(credential, expected)
+                    async with self.mpp.using_rpc(fresh_rpc):
+                        return await self.mpp.verify_credential_with_expected(credential, expected)
                 finally:
                     await fresh_rpc.aclose()
 
