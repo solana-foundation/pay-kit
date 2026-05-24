@@ -130,14 +130,13 @@ struct ChargeWireTests {
     }
 
     @Test
-    func acceptsKnownSymbolCurrencyWithAtaCreationSplit() async throws {
-        // Regression for Greptile finding on PR #104: the
-        // ataCreationRequired guard previously demanded
-        // `resolvedMint == request.currency`, which always failed when
-        // the request carried a symbol like "USDC" (the resolved value
-        // is the mint address, not the symbol). The interop tests
-        // missed this because the TS server fixture emits raw mint
-        // addresses. This test exercises the symbol path end to end.
+    func rejectsSymbolCurrencyWithAtaCreationSplit() async throws {
+        // Spine parity for codex PR #104 P2 finding: Rust
+        // (`rust/src/server/charge.rs` `validate_charge_options`) and TS
+        // verifiers require the request currency to be the resolved mint
+        // address itself when `ataCreationRequired` is set; a symbol
+        // like "USDC" is rejected. Swift must reject client-side so it
+        // never signs a credential the verifier will refuse.
         let seed = Data(repeating: 11, count: 32)
         let signer = try MemorySigner(secretKey: seed)
         let blockhash = Base58.encode(Data(repeating: 0x55, count: 32))
@@ -166,8 +165,9 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        let header = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
-        #expect(header.hasPrefix("Payment "))
+        await #expect(throws: MppError.self) {
+            _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
+        }
     }
 
     @Test
@@ -386,6 +386,60 @@ struct ChargeWireTests {
         ]
         let picked = try Charge.pickChallenge(wwwAuthenticateHeaders: headers)
         #expect(picked.id == "y")
+    }
+
+    @Test
+    func pickChallengeSkipsSolanaChargeWithMalformedRequestPayload() throws {
+        // Regression for codex PR #104 P2 finding: a header that frames
+        // as `method=solana, intent=charge` but whose embedded request
+        // payload is malformed must be skipped during selection so the
+        // caller does not get a challenge that explodes later in
+        // `buildChargeTransaction`.
+        let validRequest = Base64URL.encode(Data(#"{"amount":"1","currency":"SOL","recipient":"11111111111111111111111111111112","methodDetails":{}}"#.utf8))
+        let malformedRequest = Base64URL.encode(Data(#"{"not a charge request"}"#.utf8))
+        let headers = [
+            "Payment id=\"bad\", realm=\"r\", method=\"solana\", intent=\"charge\", request=\"\(malformedRequest)\"",
+            "Payment id=\"good\", realm=\"r\", method=\"solana\", intent=\"charge\", request=\"\(validRequest)\"",
+        ]
+        let picked = try Charge.pickChallenge(wwwAuthenticateHeaders: headers)
+        #expect(picked.id == "good")
+    }
+
+    @Test
+    func rejectsMoreThanEightSplits() async throws {
+        // Spine cap for codex PR #104 P2 finding: Rust and TS both
+        // reject `splits.length > 8`. Swift must enforce client-side so
+        // it never signs an out-of-spec credential.
+        let seed = Data(repeating: 13, count: 32)
+        let signer = try MemorySigner(secretKey: seed)
+        let blockhash = Base58.encode(Data(repeating: 0x77, count: 32))
+        let splitsArray = (0..<9)
+            .map { _ in #"{"recipient":"11111111111111111111111111111112","amount":"1"}"# }
+            .joined(separator: ",")
+        let requestJson = """
+        {
+          "amount": "1000",
+          "currency": "SOL",
+          "recipient": "5wEwLBR3aTGdz8wWUFKafdGiLcQNqotQK1ndJxXLfHir",
+          "methodDetails": {
+            "network": "localnet",
+            "feePayer": false,
+            "recentBlockhash": "\(blockhash)",
+            "splits": [\(splitsArray)]
+          }
+        }
+        """
+        let requestB64 = Base64URL.encode(Data(requestJson.utf8))
+        let challenge = try PaymentChallenge(
+            id: "ch-too-many-splits",
+            realm: "MPP Payment",
+            method: "solana",
+            intent: "charge",
+            request: requestB64
+        )
+        await #expect(throws: MppError.self) {
+            _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
+        }
     }
 }
 
