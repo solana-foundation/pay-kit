@@ -104,7 +104,15 @@ module Mpp
         return true if year > 9999
         return true unless Date.valid_date?(year, month, day)
 
-        parsed = Time.iso8601(expires)
+        # Time.iso8601 rejects lowercase 't' / 'z' separators that the regex
+        # above accepts (RFC 3339 sec 5.6 allows both cases; ISO 8601 strict
+        # requires uppercase). Normalize before delegating so a credential
+        # timestamped as ``2099-01-01t00:00:00z`` parses instead of
+        # falling into the rescue. PHP already does this; matching here.
+        normalized = expires
+          .sub(/(\d)t(\d)/, '\1T\2')
+          .sub(/z\z/, 'Z')
+        parsed = Time.iso8601(normalized)
         parsed <= now
       rescue ArgumentError
         true
