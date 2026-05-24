@@ -142,9 +142,12 @@ export const serverImplementations: ImplementationDefinition[] = [
     id: "python",
     label: "Python HTTP server",
     role: "server",
-    // Default on after the focused TS-to-Python and Rust-to-Python
-    // matrices passed locally (11 + 9 + 13 tests green).
+    // Default OFF to match the other newly-landed adapters (PHP, Ruby, Go).
+    // The default interop matrix should not require a Python toolchain on
+    // every contributor's machine; opt-in via
+    // ``MPP_INTEROP_SERVERS=python`` (or the dedicated focused-matrix CI
+    // jobs in .github/workflows/python.yml).
     command: ["python3", "python-server/main.py"],
-    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", true),
+    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
   },
 ];
