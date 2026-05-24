@@ -1636,8 +1636,8 @@ class TestInstructionAllowlist:
         """SECURITY: an ATA create for an owner that is NOT a charge
         recipient must be rejected so the attacker cannot get the fee
         payer to fund an arbitrary ATA rent."""
-        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
         from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
         from solana_mpp.server.mpp import _verify_local_transaction_intent
 
         fee_payer = Keypair()

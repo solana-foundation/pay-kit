@@ -763,7 +763,7 @@ def _validate_instruction_allowlist(
             raise PaymentError(
                 "v0 transactions with address lookup tables are not supported",
                 code="invalid-payload",
-            )
+            ) from None
         message = vtx.message
         message_instructions = list(vtx.message.instructions)
 
@@ -1313,7 +1313,6 @@ class Mpp:
         # landed on Ruby + PHP + Rust in PR #96 / #102. This is the same
         # confirmation-timeout double-pay window Ludo found on the Rust
         # spine; closing it here brings Python into parity.
-        from solders.signature import Signature
 
         raw_tx = base64.b64decode(signed_b64)
         send_resp = await self._rpc.send_raw_transaction(raw_tx)
