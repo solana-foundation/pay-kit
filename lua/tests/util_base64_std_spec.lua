@@ -28,6 +28,33 @@ helper.test('base64_std preserves the + and / characters distinct from URL-safe 
   helper.assert_equal(encoded:sub(1, 1), '+')
 end)
 
+-- Codex PR #103 P2: strict_decode parity with Ruby's Base64.strict_decode64.
+helper.test('base64_std decode rejects internal padding (Zm=9)', function()
+  helper.assert_error(function() base64_std.decode('Zm=9') end, 'invalid base64')
+end)
+
+helper.test('base64_std decode rejects non-multiple-of-4 length', function()
+  helper.assert_error(function() base64_std.decode('Zm9') end, 'multiple of 4')
+end)
+
+helper.test('base64_std decode rejects non-alphabet characters', function()
+  helper.assert_error(function() base64_std.decode('Zm9*') end, 'invalid base64 character')
+end)
+
+helper.test('base64_std decode rejects three trailing pads', function()
+  helper.assert_error(function() base64_std.decode('Zg=====') end, 'multiple of 4')
+end)
+
+helper.test('base64_std decode rejects non-canonical trailing bits', function()
+  -- 'Ah==' would decode to a single byte but the low 4 bits of 'h' (33)
+  -- are not zero, so it is not a canonical Base64 encoding.
+  helper.assert_error(function() base64_std.decode('Ah==') end, 'trailing bits')
+end)
+
+helper.test('base64_std decode rejects embedded whitespace', function()
+  helper.assert_error(function() base64_std.decode('Zm9v Yg==') end, 'multiple of 4')
+end)
+
 helper.test('base64_std round-trips a 256-byte buffer', function()
   local bytes = {}
   for i = 0, 255 do

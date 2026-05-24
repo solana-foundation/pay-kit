@@ -47,29 +47,76 @@ function M.encode(input)
 end
 
 --- Decode a standard padded Base64 string into binary bytes.
+--
+-- Strict mode: matches Ruby's `Base64.strict_decode64` / PHP's
+-- `base64_decode($input, true)`. Codex PR #103 review (P2) flagged
+-- that the previous implementation accepted malformed strings with
+-- internal `=` (e.g. `Zm=9`) or non-canonical trailing padding.
+-- Reject any of:
+--   * length not a multiple of 4
+--   * `=` appearing anywhere except as canonical trailing padding
+--     (at most two `=`, and only in the final quantum)
+--   * non-alphabet bytes (including whitespace; the Solana wire payloads
+--     never include whitespace)
+--   * any base64 character whose low bits would produce trailing
+--     non-zero bits beyond the encoded byte length
 function M.decode(input)
   if input == nil or input == '' then
     return ''
   end
-  -- Strip whitespace; the wire format does not introduce any but defensive
-  -- code helps when the value is copy-pasted into a test fixture.
-  local cleaned = input:gsub('%s', '')
-  -- Drop trailing padding before processing; treat it as length information
-  -- rather than as a special character.
-  local padding = 0
-  while cleaned:sub(-1) == '=' do
-    cleaned = cleaned:sub(1, -2)
-    padding = padding + 1
+  if type(input) ~= 'string' then
+    error('base64 input must be a string')
   end
+  if #input % 4 ~= 0 then
+    error('invalid base64 input: length is not a multiple of 4')
+  end
+
+  -- Validate every character before decoding. Padding (`=`) is only
+  -- allowed in the last quantum (positions #input-1 and #input), and
+  -- only as a contiguous trailing run of length 0, 1, or 2.
+  local padding = 0
+  if input:sub(-1) == '=' then
+    padding = 1
+    if input:sub(-2, -2) == '=' then
+      padding = 2
+    end
+  end
+  local content_len = #input - padding
+  for i = 1, content_len do
+    if DECODE[input:sub(i, i)] == nil then
+      error('invalid base64 character at position ' .. tostring(i))
+    end
+  end
+  -- Anything past content_len must be `=` (we already counted padding).
+  for i = content_len + 1, #input do
+    if input:sub(i, i) ~= '=' then
+      error('invalid base64 padding at position ' .. tostring(i))
+    end
+  end
+
   local out = {}
   local i = 1
-  while i <= #cleaned do
-    local c1 = DECODE[cleaned:sub(i, i)]
-    local c2 = DECODE[cleaned:sub(i + 1, i + 1)]
-    local c3 = DECODE[cleaned:sub(i + 2, i + 2)]
-    local c4 = DECODE[cleaned:sub(i + 3, i + 3)]
-    if c1 == nil or c2 == nil then
-      error('invalid base64 input at position ' .. tostring(i))
+  while i <= content_len do
+    local c1 = DECODE[input:sub(i, i)]
+    local c2 = DECODE[input:sub(i + 1, i + 1)]
+    local c3_char = input:sub(i + 2, i + 2)
+    local c4_char = input:sub(i + 3, i + 3)
+    local c3 = c3_char ~= '' and c3_char ~= '=' and DECODE[c3_char] or nil
+    local c4 = c4_char ~= '' and c4_char ~= '=' and DECODE[c4_char] or nil
+    -- Strictness: for a 2-byte final quantum (padding=2), the second
+    -- character contributes only 4 low bits; the remaining 2 bits must
+    -- be zero. For a 3-byte final quantum (padding=1), the third
+    -- character contributes only 2 low bits; the remaining 4 bits must
+    -- be zero. Reject otherwise so non-canonical encodings (e.g.
+    -- `Ag==` valid but `Ah==` invalid) round-trip cleanly.
+    if c3 == nil and c4 == nil then
+      if c2 % 16 ~= 0 then
+        error('invalid base64 trailing bits at position ' .. tostring(i))
+      end
+    elseif c4 == nil then
+      if c3 % 4 ~= 0 then
+        error('invalid base64 trailing bits at position ' .. tostring(i + 2))
+      end
     end
     local triple = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
     out[#out + 1] = string.char(math.floor(triple / 65536) % 256)
@@ -81,12 +128,6 @@ function M.decode(input)
     end
     i = i + 4
   end
-  -- The decode loop already emits only the bytes that the input carries
-  -- (it skips the second and third byte when c3 / c4 are nil after the
-  -- trailing padding has been stripped). The captured `padding` count is
-  -- kept around in case a future caller wants to assert canonical padding,
-  -- but it is not used to truncate the output.
-  local _ = padding
   return table.concat(out)
 end
 
