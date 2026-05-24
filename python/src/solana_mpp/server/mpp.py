@@ -173,7 +173,7 @@ def _verify_ata_owner(ata_address: str, expected_owner: str, mint: str, token_pr
         owner_pk = Pubkey.from_string(expected_owner)
         mint_pk = Pubkey.from_string(mint)
         tp_pk = Pubkey.from_string(token_program)
-        ata_program = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        ata_program = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
         expected_ata, _bump = Pubkey.find_program_address(
             [bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)],
             ata_program,
@@ -1028,14 +1028,18 @@ class Mpp:
     async def using_rpc(self, rpc: Any):
         """Scope an RPC client to the surrounding async block.
 
-        The interop adapter (and any sequential HTTP server pattern)
-        previously assigned ``self._rpc = fresh_rpc`` directly, which
-        is a race waiting to happen the moment the handler is run on a
-        ThreadingMixIn server or with multiple concurrent
-        ``asyncio.run()`` calls. This context manager performs the
-        swap under a per-instance lock and always restores the prior
-        value on exit, even if the body raises, eliminating the shared
-        mutation antipattern flagged by Greptile.
+        Swaps ``self._rpc`` for the duration of the body and always
+        restores the prior value on exit, even if the body raises.
+
+        Concurrency caveat: the underlying lock is an ``asyncio.Lock``,
+        which serialises only coroutines running on the SAME event
+        loop. Embedders that share one ``Mpp`` instance across multiple
+        OS threads (each running its own ``asyncio.run`` loop) MUST
+        provide their own thread-level coordination. The interop
+        adapter ships a sequential ``HTTPServer`` (not ThreadingMixIn),
+        so this lock is sufficient there; a ThreadingHTTPServer or
+        Gunicorn-style worker pool would require either thread-local
+        ``Mpp`` instances or a ``threading.Lock`` wrapping the swap.
         """
         async with self._rpc_swap_lock:
             previous = self._rpc
