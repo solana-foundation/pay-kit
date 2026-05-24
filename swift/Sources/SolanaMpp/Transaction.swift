@@ -263,14 +263,35 @@ public enum TransactionBuilder {
             numReadonlyUnsignedAccounts: UInt8(readonlyNonSigners.count)
         )
 
-        let compiled: [CompiledInstruction] = instructions.map { ix in
-            let programIdIndex = keyIndex[ix.programId]!
-            let accountIndices = ix.accounts.map { keyIndex[$0.pubkey]! }
-            return CompiledInstruction(
+        // Resolve compiled instructions through the key index. The index
+        // is built from the same `slots` map that observed every
+        // program-id and account pubkey above, so every lookup should
+        // succeed; surface a domain error (not a SIGTRAP) on the
+        // pathological case where it does not, to keep production paths
+        // free of force-unwraps on derived-from-input data.
+        var compiled: [CompiledInstruction] = []
+        compiled.reserveCapacity(instructions.count)
+        for ix in instructions {
+            guard let programIdIndex = keyIndex[ix.programId] else {
+                throw MppError.invalidTransaction(
+                    "program id \(ix.programId.base58) is missing from compiled account keys"
+                )
+            }
+            var accountIndices: [UInt8] = []
+            accountIndices.reserveCapacity(ix.accounts.count)
+            for meta in ix.accounts {
+                guard let idx = keyIndex[meta.pubkey] else {
+                    throw MppError.invalidTransaction(
+                        "account \(meta.pubkey.base58) is missing from compiled account keys"
+                    )
+                }
+                accountIndices.append(idx)
+            }
+            compiled.append(CompiledInstruction(
                 programIdIndex: programIdIndex,
                 accountIndices: accountIndices,
                 data: ix.data
-            )
+            ))
         }
 
         return try TransactionMessage(
