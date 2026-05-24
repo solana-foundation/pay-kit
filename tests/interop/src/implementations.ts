@@ -120,6 +120,11 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../tests/interop/lua-server/server.lua",
     ],
-    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", true),
+    // Lua defaults off to match php/ruby: the harness requires a
+    // luarocks-installed lua_modules tree under lua/ and a working
+    // luajit, neither of which the default local interop run sets up.
+    // CI and the focused matrix opt in via MPP_INTEROP_SERVERS=lua.
+    // Codex PR #103 review (P2).
+    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
   },
 ];
