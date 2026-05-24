@@ -51,10 +51,12 @@ object MppHeaders {
                 cursor += 1
             }
             // A real new challenge requires a token followed by at
-            // least one space; if the next token is followed by `=`
-            // we are still inside the previous challenge's
-            // auth-param list.
-            if (cursor > schemeStart && cursor < header.length && header[cursor] == ' ') {
+            // least one HTTP whitespace char (SP or HTAB per RFC 7230);
+            // if the next token is followed by `=` we are still inside
+            // the previous challenge's auth-param list. `isWhitespace()`
+            // covers both SP and HTAB so we don't miss tab-separated
+            // challenges from compliant peers.
+            if (cursor > schemeStart && cursor < header.length && header[cursor].isWhitespace()) {
                 boundaries.add(pos + 1)
             }
         }
@@ -177,32 +179,54 @@ object MppHeaders {
             val key = value.substring(keyStart, index).trim()
             index += 1
 
-            if (index >= value.length || value[index] != '"') {
+            if (index >= value.length) throw MppException.InvalidHeader
+
+            val rawValue: String
+            if (value[index] == '"') {
+                index += 1
+                val decoded = StringBuilder()
+                var escaped = false
+                var closed = false
+                while (index < value.length) {
+                    val char = value[index]
+                    index += 1
+                    when {
+                        escaped -> {
+                            decoded.append(char)
+                            escaped = false
+                        }
+                        char == '\\' -> escaped = true
+                        char == '"' -> {
+                            closed = true
+                            break
+                        }
+                        else -> decoded.append(char)
+                    }
+                }
+                if (!closed || escaped) throw MppException.InvalidHeader
+                rawValue = decoded.toString()
+            } else {
+                // RFC 7235: auth-param value = token / quoted-string.
+                // Compliant peers (Rust ref included) emit short token
+                // values like `method=solana` unquoted. The Rust
+                // reference parses both forms; matching it keeps
+                // interop healthy.
+                val valueStart = index
+                while (index < value.length && !value[index].isWhitespace() && value[index] != ',') {
+                    index += 1
+                }
+                if (index == valueStart) throw MppException.InvalidHeader
+                rawValue = value.substring(valueStart, index)
+            }
+
+            // Rust reference rejects duplicate auth-params; silently
+            // overwriting matters for challenge-echo integrity (`id`,
+            // `request`, `digest`, `opaque`) and would let a hostile
+            // header swap critical fields without detection.
+            if (params.containsKey(key)) {
                 throw MppException.InvalidHeader
             }
-            index += 1
-
-            val decoded = StringBuilder()
-            var escaped = false
-            var closed = false
-            while (index < value.length) {
-                val char = value[index]
-                index += 1
-                when {
-                    escaped -> {
-                        decoded.append(char)
-                        escaped = false
-                    }
-                    char == '\\' -> escaped = true
-                    char == '"' -> {
-                        closed = true
-                        break
-                    }
-                    else -> decoded.append(char)
-                }
-            }
-            if (!closed || escaped) throw MppException.InvalidHeader
-            params[key] = decoded.toString()
+            params[key] = rawValue
         }
 
         return params

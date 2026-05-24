@@ -168,12 +168,18 @@ class ChargeCredentialTest {
     }
 
     @Test
-    fun rejectsUnquotedAuthParam() {
-        assertFailsWith<MppException.InvalidHeader> {
-            MppHeaders.parseWWWAuthenticate(
-                """Payment id="challenge-9", realm="MPP Payment", method="solana", intent="charge", request=${encodedRequest()}""",
-            )
-        }
+    fun acceptsUnquotedTokenAuthParam() {
+        // RFC 7235 allows auth-param values to be `token` OR
+        // `quoted-string`. The Rust reference parser accepts both, so
+        // an unquoted `request=<token>` (here a base64url payload
+        // which is a valid token) must parse cleanly. Previously this
+        // test asserted rejection, which broke interop with compliant
+        // peers (see PR #105 codex review, Headers P2).
+        val challenge = MppHeaders.parseWWWAuthenticate(
+            """Payment id="challenge-9", realm="MPP Payment", method="solana", intent="charge", request=${encodedRequest()}""",
+        )
+        assertEquals("challenge-9", challenge.id)
+        assertEquals("solana", challenge.method)
     }
 
     @Test
