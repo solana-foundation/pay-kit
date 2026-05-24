@@ -36,7 +36,7 @@ python/
 │   ├── protocol/                ChargeRequest + Solana protocol helpers
 │   └── server/                  Mpp handler + middleware + payment page
 ├── examples/payment_link_server.py
-├── tests/                       pytest suite (291 cases)
+├── tests/                       pytest suite (324 cases)
 └── pyproject.toml
 ```
 
@@ -80,7 +80,18 @@ tokens not in the table.
 The L4 lock (PR #96 / #102 cross-SDK) requires an explicit replay
 store. `MemoryStore()` is fine for tests and single-process deployments;
 `FileReplayStore(path)` persists the consumed-signature set across
-restarts.
+restarts (it flushes the on-disk write before committing the in-memory
+consumed set, so a crash mid-settlement can never lose a replay record).
+
+Pass `fee_payer_signer=<solders.Keypair>` on `Config` to opt into
+server-side fee-payer co-sign for pull mode. The server then advertises
+`feePayer=true` on the challenge, validates the client-signed transaction
+against a strict instruction allowlist (SPL transferChecked / System
+transfer / Memo v2 matching expected memos / ATA idempotent create /
+ComputeBudget), refuses to sign anything off-list, and pins the fee-payer
+pubkey to `account_keys[0]` before splicing the signature. Servers that
+swap RPC endpoints per request can use `async with mpp.using_rpc(rpc):`
+to scope a transport for the duration of a single verification call.
 
 ### ASGI / Starlette middleware
 
@@ -104,7 +115,7 @@ error code (`payment_invalid`, `signature_consumed`, ...) on any 402.
 ```bash
 cd python
 pip install -e ".[dev]"
-python -m solana_mpp.examples.payment_link_server  # or python examples/payment_link_server.py
+python examples/payment_link_server.py
 ```
 
 In another terminal, with a local Surfpool on 127.0.0.1:8899:
