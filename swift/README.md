@@ -140,9 +140,10 @@ in `Tests/SolanaMppTests`.
 
 This SDK follows the
 [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/)
-and the Swift skill at
-[skills.sh/mindrally/skills/swift](https://www.skills.sh/mindrally/skills/swift)
-for idiomatic Swift practices.
+for idiomatic Swift practices: clarity at point of use, role-based
+parameter labels, structured concurrency (`Sendable`-only public
+surface), throws over precondition on caller-controlled input, and
+value types for wire-format models.
 
 Formatting and linting are not enforced in CI on the Swift package
 today; `swift-format` and `swiftlint` are reasonable defaults for

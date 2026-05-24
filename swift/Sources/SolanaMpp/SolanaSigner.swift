@@ -39,6 +39,17 @@ public struct MemorySigner: SolanaSigner, Sendable {
 
     private let signHandler: @Sendable (Data) async throws -> Data
 
+    /// Custom-handler initializer. **Trust boundary**: this initializer
+    /// accepts a caller-supplied `publicKey` and `address` and does not
+    /// verify that the supplied `sign` closure actually controls the
+    /// corresponding secret. The SDK does not check signatures against
+    /// the embedded public key; that pairing is the caller's
+    /// responsibility (for production code, prefer `init(secretKey:)`
+    /// or wire `sign` to a hardware / remote signer whose public key
+    /// you trust out-of-band). Misuse here yields credentials the
+    /// MPP server will reject at HMAC + chain-verification time, not a
+    /// silent forgery, but the failure mode is "credential rejected
+    /// after RPC round-trip" rather than "rejected locally".
     public init(
         publicKey: Data,
         address: String,
@@ -49,6 +60,8 @@ public struct MemorySigner: SolanaSigner, Sendable {
         self.signHandler = sign
     }
 
+    /// Test-only initializer. Returns the same canned signature on
+    /// every call. Same trust caveat as `init(publicKey:address:sign:)`.
     public init(publicKey: Data, address: String, signature: Data) {
         self.init(publicKey: publicKey, address: address) { _ in signature }
     }
