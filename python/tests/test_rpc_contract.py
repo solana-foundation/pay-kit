@@ -1,7 +1,8 @@
 import pytest
+
+from solana_mpp._errors import PaymentError
 from solana_mpp.server.mpp import Config, Mpp
 from solana_mpp.store import MemoryStore
-from solana_mpp._errors import PaymentError
 
 
 class _LegacyClientLackingAwaitConfirmation:

@@ -30,8 +30,11 @@ jobs:
       - name: Run tests with coverage
         working-directory: python
         # Coverage gate is 80% pending follow-up backfill of payment_page.py
-        # (HTML render path, 22%), _rpc.py (new in this PR, 0%), and the
-        # mpp.py cosign branch. Tracked as M1g follow-up.
+        # (HTML render path, 22%) and _rpc.py (new in this PR, 0%).
+        # The mpp.py cosign branch (including fee-payer drain detection
+        # and the server-context fee-payer pubkey source-of-truth check)
+        # is now exercised by TestFeePayerSourceDrainProtection and
+        # TestFeePayerPubkeySourceOfTruth. Remaining gap tracked as M1g.
         run: |
           pytest \
             --cov=solana_mpp \
