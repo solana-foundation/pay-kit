@@ -718,6 +718,7 @@ def _validate_instruction_allowlist(
     transaction_b64: str,
     request: ChargeRequest,
     details: MethodDetails,
+    expected_fee_payer_pubkey: str | None = None,
 ) -> None:
     """Reject any instruction not on the strict fee-payer co-sign allowlist.
 
@@ -771,14 +772,29 @@ def _validate_instruction_allowlist(
     if not account_keys:
         raise PaymentError("transaction has no accounts", code="invalid-payload")
     fee_payer_account = account_keys[0]
-    # SECURITY: when the charge advertises feePayer=true, methodDetails.feePayerKey
-    # is the authoritative server-side fee-payer pubkey (mirrors rust's
-    # ``expected_fee_payer`` invariant). Any transfer-like instruction that
-    # sources lamports / tokens from this account MUST be rejected so the
-    # server cannot be coerced into co-signing a drain.
-    fee_payer_pubkey: str | None = (
-        details.fee_payer_key if details.fee_payer and details.fee_payer_key else None
-    )
+    # SECURITY: when the charge advertises feePayer=true the protective
+    # pubkey used for drain detection MUST come from the server-side
+    # signing context (``Mpp._fee_payer_signer.pubkey()``), NOT from
+    # client-echoed ``methodDetails.feePayerKey``. A malicious client can
+    # tamper the echoed key to a pubkey it controls, pass the source-account
+    # checks below (because they compare against the tampered value), and
+    # still get the real server keypair to co-sign and broadcast a transfer
+    # sourced from the actual server fee-payer.
+    #
+    # The client-echoed ``details.fee_payer_key`` is cross-checked against
+    # the server pubkey above this allowlist (in ``_verify_local_transaction_intent``)
+    # so a mismatch is rejected up-front with ``payment_invalid``. Here we
+    # only consume the server-supplied pubkey. If no server pubkey was
+    # threaded (e.g. unit tests that call the helper directly), we fall
+    # back to the echoed value for backward compatibility; production
+    # callers always thread the server pubkey.
+    fee_payer_pubkey: str | None
+    if expected_fee_payer_pubkey is not None:
+        fee_payer_pubkey = expected_fee_payer_pubkey
+    elif details.fee_payer and details.fee_payer_key:
+        fee_payer_pubkey = details.fee_payer_key
+    else:
+        fee_payer_pubkey = None
 
     expected_transfers = _build_expected_transfers(request, details)
     native = is_native_sol(request.currency)
@@ -974,8 +990,29 @@ def _verify_local_transaction_intent(
     transaction_b64: str,
     request: ChargeRequest,
     details: MethodDetails,
+    expected_fee_payer_pubkey: str | None = None,
 ) -> None:
-    """Verify locally-decodable payment intent before broadcasting."""
+    """Verify locally-decodable payment intent before broadcasting.
+
+    ``expected_fee_payer_pubkey`` is the AUTHORITATIVE server-side fee-payer
+    pubkey (``Mpp._fee_payer_signer.pubkey()``). It is threaded by
+    ``_verify_transaction`` so the no-leftovers allowlist can detect drain
+    attempts against the real server key, not against a client-echoed
+    ``methodDetails.feePayerKey`` value (which an attacker controls). When
+    both are present and ``details.fee_payer`` is true we also reject any
+    mismatch up-front with the canonical ``payment_invalid`` code so a
+    tampered echoed key cannot silently slip through.
+    """
+    if (
+        expected_fee_payer_pubkey is not None
+        and details.fee_payer
+        and details.fee_payer_key
+        and details.fee_payer_key != expected_fee_payer_pubkey
+    ):
+        raise PaymentError(
+            "methodDetails.feePayerKey does not match the server fee-payer signer",
+            code="invalid-payload",
+        )
     instructions = _decode_legacy_payment_instructions(transaction_b64)
     if is_native_sol(request.currency):
         _verify_parsed_sol_transfers(instructions, request, details)
@@ -988,7 +1025,12 @@ def _verify_local_transaction_intent(
     # (especially System Program transfers from the fee payer) so the
     # fee-payer co-sign path cannot be tricked into draining the
     # server's SOL.
-    _validate_instruction_allowlist(transaction_b64, request, details)
+    _validate_instruction_allowlist(
+        transaction_b64,
+        request,
+        details,
+        expected_fee_payer_pubkey=expected_fee_payer_pubkey,
+    )
 
 
 @dataclass
@@ -1355,7 +1397,20 @@ class Mpp:
                 code="invalid-payload-type",
             ) from exc
         check_network_blockhash(self._network, blockhash_b58)
-        _verify_local_transaction_intent(payload.transaction, request, details)
+        # SECURITY: pass the SERVER-side fee-payer pubkey (not the
+        # client-echoed ``details.fee_payer_key``) so the allowlist's
+        # drain-detection check matches against the actual signing key.
+        # A tampered echoed key is rejected up-front by
+        # ``_verify_local_transaction_intent``.
+        server_fee_payer_pubkey: str | None = None
+        if self._fee_payer_signer is not None:
+            server_fee_payer_pubkey = str(self._fee_payer_signer.pubkey())
+        _verify_local_transaction_intent(
+            payload.transaction,
+            request,
+            details,
+            expected_fee_payer_pubkey=server_fee_payer_pubkey,
+        )
 
         # If the challenge advertises a server-side fee payer, co-sign the
         # client's transaction now (after pre-broadcast verification, before

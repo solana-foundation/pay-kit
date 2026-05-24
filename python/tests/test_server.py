@@ -1885,3 +1885,227 @@ class TestFeePayerSourceDrainProtection:
         tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
         # Must not raise.
         _verify_local_transaction_intent(tx_b64, request, details)
+
+
+class TestFeePayerPubkeySourceOfTruth:
+    """SECURITY: the fee-payer pubkey used to detect drain attempts in the
+    allowlist MUST come from the server-side signing context, NOT from
+    client-echoed ``methodDetails.feePayerKey``. A malicious client can set
+    the echoed key to an attacker-controlled pubkey, which would let the
+    drain-detection check compare against the wrong pubkey while the real
+    server keypair still signs and broadcasts the transfer.
+
+    Mirrors the rust ``expected_fee_payer`` invariant: the server is the
+    sole source of truth for which key it intends to sign with.
+    """
+
+    AMOUNT = 1_000_000
+
+    def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([fee_payer], blockhash)
+        import base64
+
+        return base64.b64encode(bytes(transaction)).decode("ascii")
+
+    def _spl_transfer_checked(
+        self,
+        source_ata: str,
+        mint: str,
+        destination_ata: str,
+        authority: Pubkey,
+        amount: int,
+        decimals: int,
+        token_program: str,
+    ) -> Instruction:
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals])
+        return Instruction(
+            Pubkey.from_string(token_program),
+            data,
+            [
+                AccountMeta(Pubkey.from_string(source_ata), False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(destination_ata), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def test_sol_drain_with_tampered_echoed_fee_payer_key_is_rejected(self):
+        """Attack: client echoes ``methodDetails.feePayerKey = ATTACKER``
+        but the real server fee-payer signer is SERVER. The malicious
+        transaction sources lamports FROM SERVER. Without the server-context
+        fix the allowlist compares the source against ATTACKER, finds no
+        match, and lets the transfer through; the server then co-signs
+        and drains itself. MUST be rejected with payment_invalid."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        server_fee_payer = Keypair()
+        attacker = Keypair()
+        request = ChargeRequest(
+            amount="1000",
+            currency="SOL",
+            recipient=TEST_RECIPIENT,
+        )
+        # Client-echoed key points at the attacker, not at the real server.
+        details = MethodDetails(
+            network="devnet",
+            fee_payer=True,
+            fee_payer_key=str(attacker.pubkey()),
+        )
+        drain_payment = transfer(
+            TransferParams(
+                from_pubkey=server_fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=1000,
+            )
+        )
+        tx_b64 = self._build_tx([drain_payment], server_fee_payer)
+        # Server threads its own pubkey; the mismatch check fires first.
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(
+                tx_b64,
+                request,
+                details,
+                expected_fee_payer_pubkey=str(server_fee_payer.pubkey()),
+            )
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+
+    def test_spl_drain_with_tampered_echoed_fee_payer_key_is_rejected(self):
+        """SPL variant: client echoes a bogus fee-payer key, the drain
+        transfer is sourced from the real server fee-payer's ATA. MUST
+        be rejected with payment_invalid."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        server_fee_payer = Keypair()
+        attacker = Keypair()
+        request = ChargeRequest(
+            amount=str(self.AMOUNT),
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            fee_payer=True,
+            fee_payer_key=str(attacker.pubkey()),
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        server_fee_payer_ata = _derive_ata(str(server_fee_payer.pubkey()), mint, TOKEN_PROGRAM)
+        drain = self._spl_transfer_checked(
+            source_ata=server_fee_payer_ata,
+            mint=mint,
+            destination_ata=recipient_ata,
+            authority=server_fee_payer.pubkey(),
+            amount=self.AMOUNT,
+            decimals=6,
+            token_program=TOKEN_PROGRAM,
+        )
+        tx_b64 = self._build_tx([drain], server_fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(
+                tx_b64,
+                request,
+                details,
+                expected_fee_payer_pubkey=str(server_fee_payer.pubkey()),
+            )
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+
+    def test_echoed_fee_payer_key_mismatch_with_server_signer_is_rejected(self):
+        """Pre-allowlist sanity check: when both ``details.fee_payer`` is
+        true AND an echoed ``fee_payer_key`` is present AND a server
+        signer pubkey is threaded, a mismatch MUST be rejected with the
+        canonical ``payment_invalid`` code so a tampered echoed key cannot
+        slip through even if the rest of the transaction happens to be
+        well-formed."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        server_fee_payer = Keypair()
+        attacker = Keypair()
+        request = ChargeRequest(
+            amount="1000",
+            currency="SOL",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            fee_payer=True,
+            fee_payer_key=str(attacker.pubkey()),
+        )
+        # A perfectly well-formed payment from a third-party sender.
+        sender = Keypair()
+        payment = transfer(
+            TransferParams(
+                from_pubkey=sender.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=1000,
+            )
+        )
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash([payment], server_fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([server_fee_payer, sender], blockhash)
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(
+                tx_b64,
+                request,
+                details,
+                expected_fee_payer_pubkey=str(server_fee_payer.pubkey()),
+            )
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "feepayerkey" in str(exc.value).lower() or "fee-payer" in str(exc.value).lower()
+
+    def test_legitimate_payment_with_matching_echoed_and_server_keys_is_accepted(self):
+        """Positive control: client echoes the correct server fee-payer
+        pubkey, transaction is well-formed with a third-party sender.
+        Must not raise."""
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        server_fee_payer = Keypair()
+        sender = Keypair()
+        request = ChargeRequest(
+            amount=str(self.AMOUNT),
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            fee_payer=True,
+            fee_payer_key=str(server_fee_payer.pubkey()),
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        sender_ata = _derive_ata(str(sender.pubkey()), mint, TOKEN_PROGRAM)
+        legit = self._spl_transfer_checked(
+            source_ata=sender_ata,
+            mint=mint,
+            destination_ata=recipient_ata,
+            authority=sender.pubkey(),
+            amount=self.AMOUNT,
+            decimals=6,
+            token_program=TOKEN_PROGRAM,
+        )
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash([legit], server_fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([server_fee_payer, sender], blockhash)
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+        _verify_local_transaction_intent(
+            tx_b64,
+            request,
+            details,
+            expected_fee_payer_pubkey=str(server_fee_payer.pubkey()),
+        )
