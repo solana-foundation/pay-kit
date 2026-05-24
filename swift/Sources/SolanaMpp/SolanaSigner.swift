@@ -20,8 +20,15 @@ public protocol SolanaSigner: Sendable {
 ///
 /// - `init(secretKey:)` accepts either a 32-byte Ed25519 seed or the
 ///   64-byte Solana canonical keypair file format (seed `||` public key).
-///   Signing uses Apple CryptoKit `Curve25519.Signing.PrivateKey`, which
-///   produces the deterministic 64-byte signature defined by RFC 8032.
+///   Signing uses Apple CryptoKit `Curve25519.Signing.PrivateKey`. The
+///   Ed25519 signature scheme itself is deterministic per RFC 8032 sec 5.1.6
+///   for any given (private key, message) pair, but Apple CryptoKit's
+///   public-API contract on `signature(for:)` does not guarantee
+///   determinism across iOS / macOS releases (it may add a random nonce
+///   for side-channel hardening in a future version). Callers that need a
+///   hard guarantee of bit-for-bit reproducibility across runtimes should
+///   inject their own RFC 8032 implementation via the `sign:` closure
+///   initializer below.
 /// - `init(publicKey:address:sign:)` accepts a custom signing closure for
 ///   tests that want to inject a canned response.
 /// - `init(publicKey:address:signature:)` returns the same signature on

@@ -123,10 +123,33 @@ public struct MppHTTPClient: Sendable {
         var results: [String] = []
         var current = ""
         var index = trimmed.startIndex
+        // ASCII byte view + per-position prefix probe avoids the O(n^2)
+        // remaining.lowercased() copy that ran on every character of the
+        // header. The MPP scheme name is fixed ASCII so case-insensitive
+        // prefix-matching one slot at a time stays O(1) per step.
+        let paymentLower: [UInt8] = Array("payment".utf8)
         while index < trimmed.endIndex {
-            // Look for "Payment" at this position (case-insensitive).
-            let remaining = trimmed[index...]
-            if remaining.lowercased().hasPrefix("payment") {
+            // Probe for the "Payment" scheme at this position case-insensitively
+            // without copying the remaining suffix.
+            var hasPaymentPrefix = false
+            if let endProbe = trimmed.index(index, offsetBy: paymentLower.count, limitedBy: trimmed.endIndex) {
+                let probe = trimmed[index..<endProbe]
+                let bytes = Array(probe.utf8)
+                if bytes.count == paymentLower.count {
+                    var matched = true
+                    for byteIndex in 0..<paymentLower.count {
+                        // ASCII case-fold by setting bit 0x20 on letters.
+                        var byte = bytes[byteIndex]
+                        if byte >= 0x41, byte <= 0x5A { byte |= 0x20 }
+                        if byte != paymentLower[byteIndex] {
+                            matched = false
+                            break
+                        }
+                    }
+                    hasPaymentPrefix = matched
+                }
+            }
+            if hasPaymentPrefix {
                 if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     results.append(trimRightComma(current))
                 }
