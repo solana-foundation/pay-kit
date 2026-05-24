@@ -47,6 +47,7 @@ local function utf8_codepoints(value)
       local b2, b3 = value:byte(i + 1), value:byte(i + 2)
       if b2 < 0x80 or b2 >= 0xC0 or b3 < 0x80 or b3 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
       cp = (b1 - 0xE0) * 4096 + (b2 - 0x80) * 64 + (b3 - 0x80)
+      if cp < 0x800 then return nil, 'overlong UTF-8 sequence' end
       if cp >= 0xD800 and cp <= 0xDFFF then return nil, 'lone surrogate' end
       advance = 3
     elseif b1 < 0xF5 then
@@ -54,6 +55,10 @@ local function utf8_codepoints(value)
       local b2, b3, b4 = value:byte(i + 1), value:byte(i + 2), value:byte(i + 3)
       if b2 < 0x80 or b2 >= 0xC0 or b3 < 0x80 or b3 >= 0xC0 or b4 < 0x80 or b4 >= 0xC0 then return nil, 'invalid UTF-8 continuation' end
       cp = (b1 - 0xF0) * 262144 + (b2 - 0x80) * 4096 + (b3 - 0x80) * 64 + (b4 - 0x80)
+      if cp < 0x10000 then return nil, 'overlong UTF-8 sequence' end
+      -- Reject codepoints above U+10FFFF (max valid Unicode, RFC 3629 sec 3).
+      -- 0xF4 lead with continuation > 0x8F encodes >= U+110000.
+      if cp > 0x10FFFF then return nil, 'UTF-8 codepoint out of range' end
       advance = 4
     else
       return nil, 'invalid UTF-8 lead byte'
