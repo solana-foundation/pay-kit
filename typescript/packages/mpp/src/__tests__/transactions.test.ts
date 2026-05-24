@@ -90,3 +90,20 @@ test('coSignBase64Transaction throws on invalid base64 input', async () => {
 
     await expect(coSignBase64Transaction(feePayer, 'not-valid-base64!!!')).rejects.toThrow();
 });
+
+test('coSignBase64Transaction throws when signer is not an expected signer for the tx', async () => {
+    const { base64Tx } = await buildPartiallySignedTx();
+    const outsider = await generateKeyPairSigner();
+    await expect(coSignBase64Transaction(outsider, base64Tx)).rejects.toThrow(/not an expected signer/);
+});
+
+test('coSignBase64Transaction throws when signTransactions returns no signature', async () => {
+    const { base64Tx, feePayer } = await buildPartiallySignedTx();
+    const fakeSigner = {
+        address: feePayer.address,
+        async signTransactions(_txs: unknown[]) {
+            return [{}];
+        },
+    } as unknown as TransactionPartialSigner;
+    await expect(coSignBase64Transaction(fakeSigner, base64Tx)).rejects.toThrow(/did not return a signature/);
+});
