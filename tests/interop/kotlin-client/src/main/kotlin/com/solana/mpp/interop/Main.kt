@@ -11,7 +11,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -134,19 +133,22 @@ internal fun parseSecretKey(raw: String): ByteArray {
     }
     val bytes = ByteArray(element.size)
     for ((index, value) in element.withIndex()) {
-        val int = value.jsonPrimitive.intOrNull
-            ?: value.jsonPrimitive.longOrNull?.toInt()
+        // Read as Long first so values outside Int range surface as
+        // out-of-range rather than wrapping. `longOrNull?.toInt()`
+        // would coerce e.g. 4294967296 to 0 silently, bypassing the
+        // 0..255 guard and producing a different signer.
+        val long = value.jsonPrimitive.longOrNull
             ?: error("non-integer byte at index $index in secret key")
         // Guard the 0..255 range explicitly so out-of-range values do
         // not silently wrap through Int.toByte() (e.g. 256 becoming 0,
         // -1 becoming 255), which would produce a different signer
         // without any error surfacing to the caller.
-        if (int < 0 || int > 255) {
+        if (long < 0L || long > 255L) {
             throw IllegalArgumentException(
-                "byte at index $index out of range 0..255: $int",
+                "byte at index $index out of range 0..255: $long",
             )
         }
-        bytes[index] = int.toByte()
+        bytes[index] = long.toInt().toByte()
     }
     // Sanity check the size before handing off to MemorySigner.
     if (bytes.size != 32 && bytes.size != 64) {
