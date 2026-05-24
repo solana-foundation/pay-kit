@@ -256,9 +256,18 @@ function Server:_finalize_verification(credential_value, request, payload)
   end
 
   local replay_key = result.replay_key or (CONSUMED_PREFIX .. reference)
-  local inserted = self.store:put_if_absent(replay_key, true)
-  if not inserted then
-    error('payment already consumed')
+  -- L8 ordering: in pull mode, solana_verify.verify_transaction now
+  -- writes the consume marker between broadcast and await_confirmation
+  -- and signals back via result.consumed=true. Skip the outer
+  -- put_if_absent in that case so we do not double-consume our own
+  -- marker. In push mode (signature credentials) and any other path
+  -- where the verifier did not consume, fall back to the outer guard
+  -- so the L4 lock still applies.
+  if result.consumed ~= true then
+    local inserted = self.store:put_if_absent(replay_key, true)
+    if not inserted then
+      error('payment already consumed')
+    end
   end
 
   return challenge.new_receipt({

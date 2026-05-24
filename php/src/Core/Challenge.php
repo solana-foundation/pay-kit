@@ -155,6 +155,17 @@ final class Challenge
         // bounded it to 1..9 digits, so truncation is safe). Sub-microsecond precision is dropped
         // for expiry comparison purposes which is acceptable since we only need second-level resolution.
         $normalized = strtr($this->expires, ['t' => 'T', 'z' => 'Z']);
+        // RFC 3339 §5.7 leap second normalization. The range guard above
+        // accepts sec=60 for spec parity with Lua/Go/Ruby, but PHP's
+        // DateTimeImmutable::createFromFormat rejects :60 outright (it
+        // does not implement the leap-second extension). Downshift to
+        // :59 before delegating so a credential timestamped exactly at
+        // 23:59:60 UTC parses to 23:59:59 UTC for expiry comparison.
+        // The 1-second resolution slip at the leap-second boundary has
+        // no operational impact: expiry comparison is whole-second.
+        if ($second === 60) {
+            $normalized = preg_replace('/:60(?=\.|Z|[+\-])/', ':59', $normalized, 1) ?? $normalized;
+        }
         $frac = $m[7];
         if ($frac !== '') {
             $truncated = substr($frac, 0, 6);

@@ -3,6 +3,11 @@ local protocol = require('mpp.protocol.solana')
 
 local M = {}
 
+-- Replay-store key prefix; must match the prefix used by init.lua's
+-- _finalize_verification so the inner L8 consume and the outer
+-- sanity-check guard hit the same namespace.
+local CONSUMED_PREFIX_HOLDER = 'solana-charge:consumed:'
+
 local TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 local TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 local SYSTEM_PROGRAM = '11111111111111111111111111111111'
@@ -425,8 +430,28 @@ function M.verify_transaction(context, hooks)
   if signature == nil or signature == '' then
     error('send_transaction returned an empty signature')
   end
+  -- L8 broadcast-then-consume-then-await ordering. Mirrors the Rust /
+  -- Ruby / PHP / Python spine: the durable replay marker MUST be
+  -- written between send_transaction and await_transaction. If we await
+  -- first and the await times out, a retry can re-broadcast the same
+  -- bytes, leak through the not-yet-marked store, and double-pay.
+  -- Consuming the signature before await closes that window: a retry
+  -- after timeout hits the already-consumed marker and short-circuits.
+  local replay_key = CONSUMED_PREFIX_HOLDER .. signature
+  if context.store ~= nil and type(context.store.put_if_absent) == 'function' then
+    local inserted = context.store:put_if_absent(replay_key, true)
+    if not inserted then
+      error('payment already consumed')
+    end
+  end
   local tx = hooks.await_transaction(signature)
-  return verify_confirmed_transaction(signature, tx, request, method_details, hooks)
+  local result = verify_confirmed_transaction(signature, tx, request, method_details, hooks)
+  -- Signal to the server caller (init.lua _finalize_verification) that
+  -- the replay marker is already durable, so the outer put_if_absent
+  -- becomes a no-op and does not double-consume.
+  result.replay_key = replay_key
+  result.consumed = true
+  return result
 end
 
 function M.new_signature_verifier(hooks)
