@@ -67,6 +67,11 @@ final class ChallengeTest extends TestCase
         self::assertTrue($mk('2099-01-01T00:00:00+00:60')->isExpired($now));
         // Lowercase t/z accepted on parse.
         self::assertFalse($mk('2099-01-01t00:00:00z')->isExpired($now));
+        // RFC 3339 section 5.7: positive leap-second seconds=60 must be accepted
+        // (Lua + Go SDKs accept it; PHP previously rejected with $second > 59).
+        self::assertFalse($mk('2099-12-31T23:59:60Z')->isExpired($now));
+        // 61 stays rejected.
+        self::assertTrue($mk('2099-01-01T00:00:61Z')->isExpired($now));
 
         // 7/8/9 fractional digit (nanosecond) precision must round-trip after
         // truncation to microseconds (codex P2 finding on PR #102; PHP's `u`

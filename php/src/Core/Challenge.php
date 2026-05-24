@@ -131,7 +131,11 @@ final class Challenge
         $minute = (int)$m[5];
         $second = (int)$m[6];
         $offsetTag = $m[8];
-        if ($month < 1 || $month > 12 || $day < 1 || $day > 31 || $hour > 23 || $minute > 59 || $second > 59) {
+        // RFC 3339 section 5.7 allows seconds = 60 for positive leap seconds.
+        // Lua and Go SDKs accept the value at the parser level; PHP must too,
+        // otherwise a credential timestamped exactly at 23:59:60 UTC is
+        // wrongly flagged expired.
+        if ($month < 1 || $month > 12 || $day < 1 || $day > 31 || $hour > 23 || $minute > 59 || $second > 60) {
             return true;
         }
         if ($year > 9999 || !checkdate($month, $day, $year)) {
