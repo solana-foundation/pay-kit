@@ -2,6 +2,9 @@ package protocol
 
 import "strings"
 
+// Solana program and well-known mint addresses used by the SDK.
+// Mirrors the constant tables in rust/src/protocol/solana.rs so the
+// wire-format paths stay byte-identical across language SDKs.
 const (
 	TokenProgram           = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	Token2022Program       = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"

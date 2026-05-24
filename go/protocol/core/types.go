@@ -86,10 +86,13 @@ func (b Base64URLJSON) DecodeValue() (map[string]any, error) {
 	return out, nil
 }
 
+// MarshalJSON emits the embedded base64url-encoded JSON string so the
+// outer document keeps the canonical wire form.
 func (b Base64URLJSON) MarshalJSON() ([]byte, error) {
 	return json.Marshal(b.raw)
 }
 
+// UnmarshalJSON reads a base64url-encoded JSON string into the value.
 func (b *Base64URLJSON) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, &b.raw)
 }

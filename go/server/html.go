@@ -1,7 +1,7 @@
 package server
 
 import (
-	_ "embed"
+	_ "embed" // required by go:embed directives below
 	"encoding/json"
 	"fmt"
 	gohtml "html"

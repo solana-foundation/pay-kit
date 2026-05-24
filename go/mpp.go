@@ -6,6 +6,10 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )
 
+// Re-exported protocol types. Aliases keep the public surface flat so
+// consumers can write `mpp.PaymentChallenge` instead of reaching into
+// the protocol subpackages. Documentation lives on the underlying
+// declarations in protocol/core and protocol/intents.
 type (
 	Base64URLJSON     = core.Base64URLJSON
 	ChallengeEcho     = core.ChallengeEcho
@@ -21,6 +25,9 @@ type (
 	Split             = protocol.Split
 )
 
+// Re-exported header name and scheme constants. The canonical values
+// are defined in protocol/core; these aliases keep the public surface
+// flat for downstream callers.
 const (
 	AuthorizationHeader   = core.AuthorizationHeader
 	PaymentReceiptHeader  = core.PaymentReceiptHeader
@@ -29,6 +36,10 @@ const (
 	WWWAuthenticateHeader = core.WWWAuthenticateHeader
 )
 
+// Re-exported helper functions for parsing and formatting MPP wire
+// format. Each function delegates to its canonical implementation in
+// protocol/core or protocol/intents; documentation lives on the
+// underlying definitions.
 var (
 	Base64URLDecode            = core.Base64URLDecode
 	Base64URLEncode            = core.Base64URLEncode

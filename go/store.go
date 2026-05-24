@@ -25,6 +25,8 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{data: map[string]json.RawMessage{}}
 }
 
+// Get returns a copy of the raw JSON value previously stored under key.
+// The second return value reports whether the key was found.
 func (s *MemoryStore) Get(_ context.Context, key string) (json.RawMessage, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -37,6 +39,8 @@ func (s *MemoryStore) Get(_ context.Context, key string) (json.RawMessage, bool,
 	return out, true, nil
 }
 
+// Put marshals value to JSON and stores it under key, overwriting any
+// previous value at that key.
 func (s *MemoryStore) Put(_ context.Context, key string, value any) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -48,6 +52,8 @@ func (s *MemoryStore) Put(_ context.Context, key string, value any) error {
 	return nil
 }
 
+// Delete removes key from the store. Deleting a missing key is a no-op
+// and is not reported as an error.
 func (s *MemoryStore) Delete(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -55,6 +61,10 @@ func (s *MemoryStore) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+// PutIfAbsent atomically stores value under key only when no value
+// exists yet. It returns true when the value was inserted and false
+// when the key was already present. This is the operation server-side
+// replay protection relies on.
 func (s *MemoryStore) PutIfAbsent(_ context.Context, key string, value any) (bool, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {

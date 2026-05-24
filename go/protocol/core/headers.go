@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+// Header names and scheme tokens for the HTTP Payment Authentication
+// scheme. Names are lowercase to match Go's canonical http.Header keys.
 const (
 	WWWAuthenticateHeader = "www-authenticate"
 	AuthorizationHeader   = "authorization"
