@@ -1,3 +1,10 @@
+// Command payment-link-server runs the Go MPP payment-link example
+// server backed by a Surfpool localnet RPC. It serves a single
+// `/fortune` endpoint protected with the Solana MPP charge intent in
+// HTML mode, exposes the generated service worker and an L6 canonical
+// 402 JSON body for API clients, and pre-funds the recipient token
+// account via Surfpool cheatcodes so a fresh localnet can settle a
+// charge without a separate fixture step.
 package main
 
 import (
@@ -17,11 +24,24 @@ import (
 
 const csp = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'"
 
-func rpcCall(rpcURL, method string, params interface{}) {
-	body, _ := json.Marshal(map[string]interface{}{
+// rpcCall fires a single Surfpool JSON-RPC cheatcode (best-effort).
+// Errors are surfaced to stderr but do not abort the example server;
+// Surfpool will reject malformed cheatcodes with a 4xx that callers
+// see on the next protected request.
+func rpcCall(rpcURL, method string, params any) {
+	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": method, "params": params,
 	})
-	http.Post(rpcURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("rpcCall: marshal %s: %v", method, err)
+		return
+	}
+	resp, err := http.Post(rpcURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("rpcCall: post %s: %v", method, err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func main() {
@@ -45,11 +65,11 @@ func main() {
 
 	// Fund recipient via surfpool cheatcodes so their token account exists.
 	rpcURL := m.RPCURL()
-	rpcCall(rpcURL, "surfnet_setAccount", []interface{}{
-		recipient, map[string]interface{}{"lamports": 1_000_000_000, "data": "", "executable": false, "owner": "11111111111111111111111111111111", "rentEpoch": 0},
+	rpcCall(rpcURL, "surfnet_setAccount", []any{
+		recipient, map[string]any{"lamports": 1_000_000_000, "data": "", "executable": false, "owner": "11111111111111111111111111111111", "rentEpoch": 0},
 	})
-	rpcCall(rpcURL, "surfnet_setTokenAccount", []interface{}{
-		recipient, mint, map[string]interface{}{"amount": 0, "state": "initialized"}, tokenProgram,
+	rpcCall(rpcURL, "surfnet_setTokenAccount", []any{
+		recipient, mint, map[string]any{"amount": 0, "state": "initialized"}, tokenProgram,
 	})
 
 	http.HandleFunc("/fortune", func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +90,7 @@ func main() {
 					}
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
-					json.NewEncoder(w).Encode(map[string]string{"fortune": "A smooth long journey!"})
+					_ = json.NewEncoder(w).Encode(map[string]string{"fortune": "A smooth long journey!"})
 					return
 				}
 			}
@@ -92,7 +112,11 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		wwwAuth, _ := core.FormatWWWAuthenticate(mpp.PaymentChallenge(challenge))
+		wwwAuth, err := core.FormatWWWAuthenticate(mpp.PaymentChallenge(challenge))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("WWW-Authenticate", wwwAuth)
 
 		// Browser — HTML payment page.
@@ -118,9 +142,9 @@ func main() {
 		))
 	})
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 
 	log.Println("payment-link-server listening on :3002")
