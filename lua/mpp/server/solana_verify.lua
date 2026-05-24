@@ -331,10 +331,50 @@ function verify_instruction_allowlist(instructions, request, method_details)
     [MEMO_PROGRAM] = true,
     [COMPUTE_BUDGET_PROGRAM] = true,
   }
+  -- SECURITY: when the charge advertises feePayer=true, methodDetails.feePayerKey
+  -- is the authoritative server-side fee-payer pubkey (mirrors the rust spine
+  -- ``expected_fee_payer`` invariant and the Python fix on PR #106
+  -- 6925f4e + 5bf71d9). Any transfer-like instruction that sources lamports or
+  -- tokens from this account must be rejected so the server cannot be coerced
+  -- into co-signing a drain of fee-payer SOL or tokens. Without this guard a
+  -- malicious client can append a SystemProgram::Transfer FROM the fee-payer
+  -- on top of a valid SPL payment; the SPL verifier passes, the allowlist
+  -- accepts SystemProgram, and the server co-signs the drain.
+  local fee_payer_pubkey = nil
+  if method_details and method_details.feePayer == true and method_details.feePayerKey
+     and method_details.feePayerKey ~= '' then
+    fee_payer_pubkey = method_details.feePayerKey
+  end
   for _, ix in ipairs(instructions or {}) do
     local program = resolve_program(ix)
     if not allowed[program] then
       error('Unexpected program instruction in payment transaction: ' .. tostring(program))
+    end
+    if fee_payer_pubkey ~= nil then
+      local info = instruction_info(ix)
+      local parsed_type = ix.parsed and ix.parsed.type or nil
+      if program == SYSTEM_PROGRAM and parsed_type == 'transfer'
+         and info and info.source == fee_payer_pubkey then
+        -- Mirrors rust ``verify_sol_transfer_instructions`` and Python
+        -- ``_validate_instruction_allowlist`` 5bf71d9: reject any System
+        -- transfer that sources lamports from the configured fee-payer.
+        error('payment_invalid: fee payer cannot fund the SOL payment transfer')
+      end
+      if (program == TOKEN_PROGRAM or program == TOKEN_2022_PROGRAM)
+         and parsed_type == 'transferChecked' and info then
+        -- Mirrors rust ``verify_spl_transfer_instructions`` and Python
+        -- ``_validate_instruction_allowlist`` 5bf71d9: reject any SPL
+        -- transferChecked authorized by the fee-payer. (The source ATA owner
+        -- check is performed in ``verify_spl_transfers`` via the token-account
+        -- lookup hook; here we catch the authority shape directly so a
+        -- fee-payer drain is rejected before the ATA fetch.)
+        if info.authority == fee_payer_pubkey then
+          error('payment_invalid: fee payer cannot authorize the SPL payment transfer')
+        end
+        if info.multisigAuthority == fee_payer_pubkey then
+          error('payment_invalid: fee payer cannot authorize the SPL payment transfer')
+        end
+      end
     end
   end
 end

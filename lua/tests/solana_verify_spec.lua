@@ -767,6 +767,261 @@ t.test('B34: rejects signature credential when method_details.feePayer is true',
   t.assert_equal(fetch_called, false, 'B34 must reject before fetch_transaction is called')
 end)
 
+-- SECURITY (PR #102 codex P1 mirror of Python PR #106 6925f4e + 5bf71d9):
+-- on fee-payer-enabled SPL routes the instruction allowlist must reject any
+-- SystemProgram::Transfer sourced from the fee-payer pubkey. Without this
+-- guard a malicious client appends an extra system transfer FROM fee-payer
+-- TO an attacker on top of a valid SPL payment; the SPL verifier passes
+-- (required transferChecked is present), the allowlist accepts SYSTEM_PROGRAM,
+-- and the server co-signs the entire transaction, draining fee-payer SOL.
+t.test('SECURITY: rejects extra SystemProgram transfer sourced from fee-payer on SPL route', function()
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '2500',
+      currency = 'mint-1',
+      recipient = 'recipient-1',
+      methodDetails = {
+        tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+        feePayer = true,
+        feePayerKey = 'fee-payer-1',
+      },
+    },
+    method_details = {
+      tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      feePayer = true,
+      feePayerKey = 'fee-payer-1',
+    },
+  })
+  t.assert_error(function()
+    verify.verify_transaction(context, {
+      send_transaction = function() return 'sig-drain' end,
+      await_transaction = function()
+        return {
+          meta = { err = nil },
+          transaction = {
+            message = {
+              instructions = {
+                {
+                  programId = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                  parsed = {
+                    type = 'transferChecked',
+                    info = {
+                      source = 'sender-ata',
+                      destination = 'token-account-1',
+                      mint = 'mint-1',
+                      authority = 'sender-1',
+                      tokenAmount = { amount = '2500' },
+                    },
+                  },
+                },
+                -- Attacker-appended drain: fee-payer SOL to attacker address.
+                {
+                  program = 'system',
+                  parsed = {
+                    type = 'transfer',
+                    info = {
+                      source = 'fee-payer-1',
+                      destination = 'attacker',
+                      lamports = '5000000000',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        }
+      end,
+      fetch_token_account = function()
+        return { owner = 'recipient-1', mint = 'mint-1' }
+      end,
+    })
+  end, 'payment_invalid')
+end)
+
+t.test('SECURITY: rejects SPL transferChecked authorized by fee-payer on SPL route', function()
+  -- Same shape, different lever: attacker funds the required transferChecked
+  -- itself FROM the fee-payer token account (authority = fee-payer). Mirrors
+  -- Python test_spl_drain_with_fee_payer_ata_as_source_is_rejected.
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '2500',
+      currency = 'mint-1',
+      recipient = 'recipient-1',
+      methodDetails = {
+        tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+        feePayer = true,
+        feePayerKey = 'fee-payer-1',
+      },
+    },
+    method_details = {
+      tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      feePayer = true,
+      feePayerKey = 'fee-payer-1',
+    },
+  })
+  t.assert_error(function()
+    verify.verify_transaction(context, {
+      send_transaction = function() return 'sig-drain' end,
+      await_transaction = function()
+        return {
+          meta = { err = nil },
+          transaction = {
+            message = {
+              instructions = {
+                {
+                  programId = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                  parsed = {
+                    type = 'transferChecked',
+                    info = {
+                      source = 'fee-payer-ata',
+                      destination = 'token-account-1',
+                      mint = 'mint-1',
+                      authority = 'fee-payer-1',
+                      tokenAmount = { amount = '2500' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        }
+      end,
+      fetch_token_account = function()
+        return { owner = 'recipient-1', mint = 'mint-1' }
+      end,
+    })
+  end, 'payment_invalid')
+end)
+
+t.test('SECURITY: accepts SPL payment + ComputeBudget on fee-payer route', function()
+  -- Positive control: a legitimate SPL payment + ComputeBudget + fee-payer
+  -- co-sign must still pass. Mirrors Python
+  -- test_legitimate_spl_payment_with_fee_payer_cosign_is_accepted.
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '2500',
+      currency = 'mint-1',
+      recipient = 'recipient-1',
+      methodDetails = {
+        tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+        feePayer = true,
+        feePayerKey = 'fee-payer-1',
+      },
+    },
+    method_details = {
+      tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      feePayer = true,
+      feePayerKey = 'fee-payer-1',
+    },
+  })
+  local result = verify.verify_transaction(context, {
+    send_transaction = function() return 'sig-ok' end,
+    await_transaction = function()
+      return {
+        meta = { err = nil },
+        transaction = {
+          message = {
+            instructions = {
+              {
+                programId = 'ComputeBudget111111111111111111111111111111',
+                parsed = { type = 'setComputeUnitLimit', info = { units = 100000 } },
+              },
+              {
+                programId = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                parsed = {
+                  type = 'transferChecked',
+                  info = {
+                    source = 'sender-ata',
+                    destination = 'token-account-1',
+                    mint = 'mint-1',
+                    authority = 'sender-1',
+                    tokenAmount = { amount = '2500' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }
+    end,
+    fetch_token_account = function()
+      return { owner = 'recipient-1', mint = 'mint-1' }
+    end,
+  })
+  t.assert_equal(result.reference, 'sig-ok')
+end)
+
+t.test('SECURITY: accepts SystemProgram transfer to recipient from non-fee-payer source', function()
+  -- Mixed-route negative-of-negative: fee-payer is configured (SPL route),
+  -- but the extra system transfer sources from a non-fee-payer account, so
+  -- it does not drain server funds. The allowlist must accept it. (The SPL
+  -- verifier handles the required transferChecked; the extra system transfer
+  -- is below the allowlist's drain guard.)
+  local context = signature_context({
+    payload = { type = 'transaction', transaction = 'base64-tx' },
+    request = {
+      amount = '2500',
+      currency = 'mint-1',
+      recipient = 'recipient-1',
+      methodDetails = {
+        tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+        feePayer = true,
+        feePayerKey = 'fee-payer-1',
+      },
+    },
+    method_details = {
+      tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      feePayer = true,
+      feePayerKey = 'fee-payer-1',
+    },
+  })
+  local result = verify.verify_transaction(context, {
+    send_transaction = function() return 'sig-ok2' end,
+    await_transaction = function()
+      return {
+        meta = { err = nil },
+        transaction = {
+          message = {
+            instructions = {
+              {
+                programId = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+                parsed = {
+                  type = 'transferChecked',
+                  info = {
+                    source = 'sender-ata',
+                    destination = 'token-account-1',
+                    mint = 'mint-1',
+                    authority = 'sender-1',
+                    tokenAmount = { amount = '2500' },
+                  },
+                },
+              },
+              {
+                program = 'system',
+                parsed = {
+                  type = 'transfer',
+                  info = {
+                    source = 'sender-1',
+                    destination = 'recipient-1',
+                    lamports = '1000',
+                  },
+                },
+              },
+            },
+          },
+        },
+      }
+    end,
+    fetch_token_account = function()
+      return { owner = 'recipient-1', mint = 'mint-1' }
+    end,
+  })
+  t.assert_equal(result.reference, 'sig-ok2')
+end)
+
 t.test('B34: signature verifier path runs when feePayer is absent', function()
   -- Sanity check: B34 must not fire when feePayer is not set. The fetch
   -- callback must be reached. Returning nil ends in a downstream
