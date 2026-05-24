@@ -77,10 +77,16 @@ const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[]
   { pattern: /splits consume the entire amount/i, code: "charge_request_mismatch" },
   { pattern: /too many splits/i, code: "charge_request_mismatch" },
   { pattern: /push-mode credentials are not allowed/i, code: "charge_request_mismatch" },
-  // Compute-budget allowlist violations are a server policy rejection, not a
-  // tx-shape mismatch; classify as `payment_invalid` to match Rust/Go/Python
-  // server parity (see rust/src/bin/interop_server.rs::classify_canonical_code).
-  { pattern: /unexpected program instruction/i, code: "payment_invalid" },
+  // Classify allowlist violations as `charge_request_mismatch` to match the
+  // current Rust spine (`rust/src/bin/interop_server.rs::classify_canonical_code`
+  // returns `charge_request_mismatch` for this substring). An earlier
+  // commit (330dd5a) flipped this to `payment_invalid` based on a stale
+  // Greptile note that misread the Rust reference; reverting so the
+  // cross-SDK G39 matrix is non-divergent. A separate follow-up can debate
+  // whether the canonical code for instruction-allowlist violations
+  // should be promoted to `payment_invalid` across every server; until
+  // that lands, all SDKs agree on `charge_request_mismatch` here.
+  { pattern: /unexpected program instruction/i, code: "charge_request_mismatch" },
   { pattern: /credential method does not match/i, code: "challenge_route_mismatch" },
   { pattern: /credential intent is not a charge/i, code: "challenge_route_mismatch" },
   { pattern: /credential realm does not match/i, code: "challenge_route_mismatch" },
