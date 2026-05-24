@@ -84,7 +84,17 @@ module Mpp
       [/too many splits/i, CODE_CHARGE_REQUEST_MISMATCH],
       [/credential method does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH],
       [/credential intent is not a charge/i, CODE_CHALLENGE_ROUTE_MISMATCH],
-      [/credential realm does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH]
+      [/credential realm does not match/i, CODE_CHALLENGE_ROUTE_MISMATCH],
+      # Instruction allowlist violations from the pre-broadcast verifier
+      # (verify_instruction_allowlist). The message originates as
+      # "Unexpected program instruction ..." in the verifier and must
+      # map to charge_request_mismatch to stay byte-identical with the
+      # TS/Rust/Lua canonical classifiers (tests/interop/src/canonical-codes.ts
+      # and rust/src/bin/interop_server.rs::classify_canonical_code).
+      # Without this entry the rescue chain in verify_transaction_payload
+      # silently downgrades allowlist rejections to payment_invalid which
+      # breaks G39 cross-SDK assertion equality.
+      [/unexpected program instruction/i, CODE_CHARGE_REQUEST_MISMATCH]
       # B34 (push-mode credential on a fee-payer route) is always raised
       # with an explicit CODE_CHARGE_REQUEST_MISMATCH at the verifier, so
       # the classifier never sees its message. No fallback pattern is
