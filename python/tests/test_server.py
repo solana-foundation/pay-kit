@@ -1680,3 +1680,208 @@ class TestInstructionAllowlist:
         with pytest.raises(PaymentError) as exc:
             _verify_local_transaction_intent(tx_b64, request, details)
         assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+
+
+class TestFeePayerSourceDrainProtection:
+    """SECURITY: when methodDetails.feePayer is true, neither the System
+    Program transfer branch nor the SPL transferChecked branch may accept
+    an instruction that sources lamports / tokens from the configured
+    fee-payer. Mirrors the rust spine ``verify_sol_transfer_instructions``
+    and ``verify_spl_transfer_instructions`` fee-payer source checks.
+
+    Without these guards, a malicious client whose challenge advertised
+    feePayer=true could craft a payment whose transfer is funded by the
+    fee-payer itself; the allowlist would pass (correct destination,
+    correct amount, correct mint) and the server would co-sign, draining
+    the fee-payer balance.
+    """
+
+    AMOUNT = 1_000_000
+    PYUSD_DEVNET_MINT = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
+
+    def _build_tx(self, instructions: list[Instruction], fee_payer: Keypair) -> str:
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash(instructions, fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([fee_payer], blockhash)
+        import base64
+
+        return base64.b64encode(bytes(transaction)).decode("ascii")
+
+    def _spl_transfer_checked(
+        self,
+        source_ata: str,
+        mint: str,
+        destination_ata: str,
+        authority: Pubkey,
+        amount: int,
+        decimals: int,
+        token_program: str,
+    ) -> Instruction:
+        data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals])
+        return Instruction(
+            Pubkey.from_string(token_program),
+            data,
+            [
+                AccountMeta(Pubkey.from_string(source_ata), False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(destination_ata), False, True),
+                AccountMeta(authority, True, False),
+            ],
+        )
+
+    def test_sol_drain_with_fee_payer_as_source_is_rejected(self):
+        """SECURITY: SOL transfer FROM the configured fee-payer TO the
+        recipient matches destination + amount, but the source IS the
+        fee-payer; the server would otherwise co-sign and drain fee-payer
+        SOL beyond the network fee. MUST be rejected with payment_invalid."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request = ChargeRequest(
+            amount="1000",
+            currency="SOL",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+        )
+        drain_payment = transfer(
+            TransferParams(
+                from_pubkey=fee_payer.pubkey(),
+                to_pubkey=Pubkey.from_string(TEST_RECIPIENT),
+                lamports=1000,
+            )
+        )
+        tx_b64 = self._build_tx([drain_payment], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "fee payer" in str(exc.value).lower()
+
+    def test_spl_drain_with_fee_payer_ata_as_source_is_rejected(self):
+        """SECURITY: SPL transferChecked from the fee-payer's ATA to the
+        recipient ATA with fee-payer as authority. Without the source-ATA
+        check the allowlist accepts the transfer (correct mint, amount,
+        destination), the server co-signs, and the fee-payer's token
+        balance is drained. MUST be rejected with payment_invalid."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request = ChargeRequest(
+            amount=str(self.AMOUNT),
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        fee_payer_ata = _derive_ata(str(fee_payer.pubkey()), mint, TOKEN_PROGRAM)
+        drain = self._spl_transfer_checked(
+            source_ata=fee_payer_ata,
+            mint=mint,
+            destination_ata=recipient_ata,
+            authority=fee_payer.pubkey(),
+            amount=self.AMOUNT,
+            decimals=6,
+            token_program=TOKEN_PROGRAM,
+        )
+        tx_b64 = self._build_tx([drain], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "fee payer" in str(exc.value).lower()
+
+    def test_spl_token_2022_drain_with_fee_payer_ata_as_source_is_rejected(self):
+        """SECURITY: same drain shape on the Token-2022 program id (PYUSD
+        devnet mint, derived under TOKEN_2022_PROGRAM). The fee-payer
+        source check must hold for both token program ids."""
+        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        request = ChargeRequest(
+            amount=str(self.AMOUNT),
+            currency="PYUSD",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_2022_PROGRAM,
+            decimals=6,
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+        )
+        mint = self.PYUSD_DEVNET_MINT
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_2022_PROGRAM)
+        fee_payer_ata = _derive_ata(str(fee_payer.pubkey()), mint, TOKEN_2022_PROGRAM)
+        drain = self._spl_transfer_checked(
+            source_ata=fee_payer_ata,
+            mint=mint,
+            destination_ata=recipient_ata,
+            authority=fee_payer.pubkey(),
+            amount=self.AMOUNT,
+            decimals=6,
+            token_program=TOKEN_2022_PROGRAM,
+        )
+        tx_b64 = self._build_tx([drain], fee_payer)
+        with pytest.raises(PaymentError) as exc:
+            _verify_local_transaction_intent(tx_b64, request, details)
+        assert canonical_code(exc.value.code) == CODE_PAYMENT_INVALID
+        assert "fee payer" in str(exc.value).lower()
+
+    def test_legitimate_spl_payment_with_fee_payer_cosign_is_accepted(self):
+        """Positive control: a legitimate SPL payment with the fee-payer
+        co-signing for network fees but the transfer authority and source
+        ATA owned by a separate sender keypair MUST be accepted. The
+        fee-payer source check must not over-block legitimate co-sign
+        transfers."""
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        sender = Keypair()
+        request = ChargeRequest(
+            amount=str(self.AMOUNT),
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            fee_payer=True,
+            fee_payer_key=str(fee_payer.pubkey()),
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        sender_ata = _derive_ata(str(sender.pubkey()), mint, TOKEN_PROGRAM)
+        legit = self._spl_transfer_checked(
+            source_ata=sender_ata,
+            mint=mint,
+            destination_ata=recipient_ata,
+            authority=sender.pubkey(),
+            amount=self.AMOUNT,
+            decimals=6,
+            token_program=TOKEN_PROGRAM,
+        )
+        # Build with fee_payer as the tx fee-payer; sender co-signs the
+        # SPL authority slot.
+        blockhash = Hash.from_string(TEST_BLOCKHASH)
+        message = Message.new_with_blockhash([legit], fee_payer.pubkey(), blockhash)
+        transaction = Transaction.new_unsigned(message)
+        transaction.sign([fee_payer, sender], blockhash)
+        import base64
+
+        tx_b64 = base64.b64encode(bytes(transaction)).decode("ascii")
+        # Must not raise.
+        _verify_local_transaction_intent(tx_b64, request, details)

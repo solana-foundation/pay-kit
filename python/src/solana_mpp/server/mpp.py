@@ -771,6 +771,14 @@ def _validate_instruction_allowlist(
     if not account_keys:
         raise PaymentError("transaction has no accounts", code="invalid-payload")
     fee_payer_account = account_keys[0]
+    # SECURITY: when the charge advertises feePayer=true, methodDetails.feePayerKey
+    # is the authoritative server-side fee-payer pubkey (mirrors rust's
+    # ``expected_fee_payer`` invariant). Any transfer-like instruction that
+    # sources lamports / tokens from this account MUST be rejected so the
+    # server cannot be coerced into co-signing a drain.
+    fee_payer_pubkey: str | None = (
+        details.fee_payer_key if details.fee_payer and details.fee_payer_key else None
+    )
 
     expected_transfers = _build_expected_transfers(request, details)
     native = is_native_sol(request.currency)
@@ -845,12 +853,23 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             try:
+                source = account_keys[int(accounts[0])]
                 destination = account_keys[int(accounts[1])]
             except IndexError as exc:
                 raise PaymentError(
                     "transfer references an unknown account",
                     code="invalid-payload",
                 ) from exc
+            # SECURITY: reject any System transfer that sources lamports from
+            # the configured fee-payer (mirrors rust spine ``verify_sol_transfer_instructions``).
+            # Without this guard a malicious client can satisfy the required
+            # payment with a transfer FROM the fee-payer, draining server SOL
+            # on top of the network fee already debited from account_keys[0].
+            if fee_payer_pubkey is not None and source == fee_payer_pubkey:
+                raise PaymentError(
+                    "fee payer cannot fund the SOL payment transfer",
+                    code="invalid-payload",
+                )
             lamports = int.from_bytes(data[4:12], "little")
             match_idx = next(
                 (i for i, (rcpt, amt) in enumerate(remaining_transfers)
@@ -876,7 +895,7 @@ def _validate_instruction_allowlist(
                     "token program does not match methodDetails.tokenProgram",
                     code="invalid-payload",
                 )
-            if len(data) < 10 or len(accounts) < 3:
+            if len(data) < 10 or len(accounts) < 4:
                 raise PaymentError(
                     "unexpected Token Program instruction in payment transaction",
                     code="invalid-payload",
@@ -887,8 +906,10 @@ def _validate_instruction_allowlist(
                     code="invalid-payload",
                 )
             try:
+                source_ata = account_keys[int(accounts[0])]
                 mint = account_keys[int(accounts[1])]
                 destination = account_keys[int(accounts[2])]
+                authority = account_keys[int(accounts[3])]
             except IndexError as exc:
                 raise PaymentError(
                     "token transfer references an unknown account",
@@ -899,6 +920,25 @@ def _validate_instruction_allowlist(
                     "token transfer mint does not match the charge currency",
                     code="invalid-payload",
                 )
+            # SECURITY: reject any SPL transferChecked authorized by the
+            # configured fee-payer or sourced from the fee-payer's ATA for
+            # this mint / token program. Mirrors rust spine
+            # ``verify_spl_transfer_instructions``. Without these checks a
+            # malicious client can present a transferChecked FROM the
+            # fee-payer ATA TO the recipient ATA matching the required
+            # amount; the allowlist would pass and the server would
+            # co-sign, draining fee-payer tokens.
+            if fee_payer_pubkey is not None:
+                if authority == fee_payer_pubkey:
+                    raise PaymentError(
+                        "fee payer cannot authorize the SPL payment transfer",
+                        code="invalid-payload",
+                    )
+                if _verify_ata_owner(source_ata, fee_payer_pubkey, mint, program_id):
+                    raise PaymentError(
+                        "fee payer token account cannot fund the SPL payment transfer",
+                        code="invalid-payload",
+                    )
             amount = int.from_bytes(data[1:9], "little")
             match_idx = next(
                 (i for i, (rcpt, amt) in enumerate(remaining_transfers)
