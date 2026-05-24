@@ -12,7 +12,6 @@ diagnostics (logging, traceback) go to stderr.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import socket
