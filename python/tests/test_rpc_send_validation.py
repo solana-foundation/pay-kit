@@ -37,7 +37,7 @@ class _FakeClient:
 
 def _rpc_with(payload) -> SolanaRpc:
     rpc = SolanaRpc("http://localhost:9999")
-    rpc._client = _FakeClient(payload)
+    rpc._client = _FakeClient(payload)  # pyright: ignore[reportAttributeAccessIssue]
     return rpc
 
 
