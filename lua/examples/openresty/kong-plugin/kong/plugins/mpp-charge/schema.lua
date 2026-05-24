@@ -39,6 +39,15 @@ return {
           -- HTTPS RPC URLs. Defaults to true; toggle off only for
           -- self-signed test endpoints.
           { rpc_ssl_verify = { type = 'boolean', required = false, default = true } },
+          -- TTL applied to the cross-worker replay marker stored in
+          -- ngx.shared.DICT. Without a TTL the dict relies on LRU
+          -- eviction when memory pressure hits, which can release a
+          -- consumed signature back into the replay surface while the
+          -- credential is still within its challenge validity window.
+          -- Default 86400 seconds (24h) is well beyond any plausible
+          -- challenge expires lifetime; tune higher only if you sign
+          -- long-lived credentials.
+          { replay_ttl_seconds = { type = 'number', required = false, default = 86400 } },
         },
       },
     },

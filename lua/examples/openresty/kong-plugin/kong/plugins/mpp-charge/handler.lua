@@ -87,7 +87,15 @@ local function get_server(conf)
       ' to be declared in the http block; see lua/examples/openresty/kong-plugin/README.md'
     )
   end
-  local replay_store = store_shared_dict.new(dict)
+  -- TTL guard against LRU eviction while a credential is still within
+  -- its challenge validity window. Without a TTL, nginx evicts the
+  -- oldest entries under shared-dict pressure, which can release a
+  -- consumed signature back into the replay surface. Default to the
+  -- configured replay_ttl_seconds; fall back to 86400 (24h) so the
+  -- dict's :add expires the marker well before any plausible challenge
+  -- expires field could legitimately revive it.
+  local replay_ttl = conf.replay_ttl_seconds or 86400
+  local replay_store = store_shared_dict.new(dict, { ttl_seconds = replay_ttl })
   local verifier_bundle = solana_verify.new_real_verifier({ pull_signer = fee_payer })
   local handler = charge_handler_module.new({
     rpc = rpc,
