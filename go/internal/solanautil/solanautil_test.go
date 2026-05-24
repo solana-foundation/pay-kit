@@ -188,6 +188,56 @@ func TestSplitAmountsNoSplits(t *testing.T) {
 	}
 }
 
+func TestSplitAmountsAccumulatorOverflow(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	const maxU64 = "18446744073709551615" // 2^64 - 1
+	cases := []struct {
+		name    string
+		total   uint64
+		splits  []protocol.Split
+		wantErr bool
+	}{
+		{
+			name:  "splits sum exactly fits in uint64",
+			total: 1<<63 + 1, // > sum, so primary is non-zero
+			splits: []protocol.Split{
+				{Recipient: recipient, Amount: "9223372036854775807"}, // 2^63 - 1
+				{Recipient: recipient, Amount: "1"},
+			},
+			wantErr: false,
+		},
+		{
+			name:  "splits sum overflows uint64 must reject",
+			total: 1000,
+			splits: []protocol.Split{
+				{Recipient: recipient, Amount: maxU64},
+				{Recipient: recipient, Amount: "1"},
+			},
+			wantErr: true,
+		},
+		{
+			name:  "two near-max splits wrap to small value must reject",
+			total: 1000,
+			splits: []protocol.Split{
+				{Recipient: recipient, Amount: "9223372036854775808"}, // 2^63
+				{Recipient: recipient, Amount: "9223372036854775808"}, // 2^63, sum wraps to 0
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := SplitAmounts(tc.total, tc.splits)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestSplitAmountsInvalidAmount(t *testing.T) {
 	splits := []protocol.Split{
 		{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "not-a-number"},

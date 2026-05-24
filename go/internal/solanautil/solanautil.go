@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math/bits"
 	"strconv"
 	"time"
 
@@ -274,7 +275,11 @@ func SplitAmounts(total uint64, splits []protocol.Split) (uint64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("invalid split amount %q", split.Amount)
 		}
-		splitTotal += amount
+		sum, carry := bits.Add64(splitTotal, amount, 0)
+		if carry != 0 {
+			return 0, mpp.NewError(mpp.ErrCodeSplitsExceed, "splits consume the entire amount")
+		}
+		splitTotal = sum
 	}
 	if splitTotal >= total {
 		return 0, mpp.NewError(mpp.ErrCodeSplitsExceed, "splits consume the entire amount")
