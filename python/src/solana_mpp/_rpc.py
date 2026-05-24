@@ -66,6 +66,14 @@ class SolanaRpc:
             "sendTransaction",
             [encoded, {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "confirmed"}],
         )
+        # A non-compliant RPC proxy may return {"result": null} or a non-string
+        # body. Validate before the caller writes the signature to the durable
+        # replay store; a "None"-keyed entry would persist forever as garbage.
+        if not isinstance(signature, str) or not signature.strip():
+            raise _RpcError(
+                "sendTransaction returned empty or non-string signature",
+                code="payment_invalid",
+            )
 
         class _Resp:
             def __init__(self, value):
