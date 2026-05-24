@@ -426,6 +426,43 @@ function M.verify_transaction(context, hooks)
     error('await_transaction callback is required')
   end
 
+  -- SECURITY (PR #102 codex round 3 P1): the compute-budget cap and the
+  -- instruction allowlist (including the fee-payer drain guard) MUST run
+  -- BEFORE send_transaction. Previously these checks ran inside
+  -- verify_confirmed_transaction (after broadcast + await), which let a
+  -- malicious transaction be broadcast (and potentially settle on-chain)
+  -- before the policy rejected it. The pre-broadcast checks operate on
+  -- jsonParsed-style instructions supplied by `hooks.parse_transaction`;
+  -- the caller is responsible for decoding the wire bytes into the same
+  -- shape Solana's getTransaction(jsonParsed) returns. If the hook is
+  -- missing we fail closed so the security invariant cannot be silently
+  -- lost on integration.
+  if type(hooks.parse_transaction) ~= 'function' then
+    error('parse_transaction callback is required for pull-mode pre-broadcast policy checks')
+  end
+  local parsed = hooks.parse_transaction(payload.transaction)
+  if type(parsed) ~= 'table' then
+    error('parse_transaction must return a parsed transaction table')
+  end
+  -- Accept three shapes for ergonomic adapter authoring:
+  --   { instructions = {...} }
+  --   { message = { instructions = {...} } }       (Solana message shape)
+  --   { transaction = { message = { instructions = {...} } } }  (jsonParsed wrapper)
+  local pre_instructions = parsed.instructions
+  if pre_instructions == nil and parsed.message then
+    pre_instructions = parsed.message.instructions
+  end
+  if pre_instructions == nil and parsed.transaction and parsed.transaction.message then
+    pre_instructions = parsed.transaction.message.instructions
+  end
+  if type(pre_instructions) ~= 'table' then
+    error('parse_transaction result is missing message.instructions')
+  end
+  -- Pre-broadcast: compute-budget cap + instruction allowlist (incl.
+  -- fee-payer drain guard). Reject BEFORE any RPC call.
+  verify_compute_budget(pre_instructions)
+  verify_instruction_allowlist(pre_instructions, request, method_details)
+
   local signature = hooks.send_transaction(payload.transaction)
   if signature == nil or signature == '' then
     error('send_transaction returned an empty signature')
@@ -438,19 +475,30 @@ function M.verify_transaction(context, hooks)
   -- Consuming the signature before await closes that window: a retry
   -- after timeout hits the already-consumed marker and short-circuits.
   local replay_key = CONSUMED_PREFIX_HOLDER .. signature
+  local stored = false
   if context.store ~= nil and type(context.store.put_if_absent) == 'function' then
     local inserted = context.store:put_if_absent(replay_key, true)
     if not inserted then
       error('payment already consumed')
     end
+    stored = true
   end
   local tx = hooks.await_transaction(signature)
+  -- Post-confirmation: verify the on-chain artifact shape (recipient
+  -- ATA owner, mint, amount, memos). Compute-budget + allowlist checks
+  -- also re-run here as defense-in-depth against an RPC that returns
+  -- different instructions than what the client supplied pre-broadcast.
   local result = verify_confirmed_transaction(signature, tx, request, method_details, hooks)
-  -- Signal to the server caller (init.lua _finalize_verification) that
-  -- the replay marker is already durable, so the outer put_if_absent
-  -- becomes a no-op and does not double-consume.
-  result.replay_key = replay_key
-  result.consumed = true
+  if stored then
+    -- Signal to the server caller (init.lua _finalize_verification) that
+    -- the replay marker is already durable, so the outer put_if_absent
+    -- becomes a no-op and does not double-consume. When `context.store`
+    -- was nil we did NOT write the marker, so leave `consumed` unset so
+    -- the outer guard runs against its own store and replay protection
+    -- stays intact (mirrors codex round 3 P2 on the silent-disable gap).
+    result.replay_key = replay_key
+    result.consumed = true
+  end
   return result
 end
 
