@@ -106,6 +106,18 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "kotlin-x402-client",
+    label: "Kotlin x402 exact client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd ../../kotlin && gradle --quiet --console=plain runInteropClient",
+    ],
+    enabled: isEnabled("kotlin-x402-client", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [

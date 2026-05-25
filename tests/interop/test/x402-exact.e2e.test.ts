@@ -88,6 +88,15 @@ describe("x402 exact intent — cross-language matrix", () => {
   const allowedPair = (clientId: string, serverId: string): boolean => {
     if (clientId === "ts-x402" && serverId === "ts-x402") return true;
     if (clientId === "rust-x402" && serverId === "rust-x402") return true;
+    // Kotlin client speaks the canonical PaymentProof payload (signed
+    // Solana transaction in `payload.transaction`) and pairs against
+    // the Rust spine server for true cross-spine coverage. The TS
+    // reference server expects a stub `payload.challengeId` envelope
+    // and advertises requirements via `maxAmountRequired`, so the
+    // TS pair is intentionally excluded.
+    if (clientId === "kotlin-x402-client" && serverId === "rust-x402") {
+      return true;
+    }
     return false;
   };
 
