@@ -418,7 +418,9 @@ func (m *Mpp) verifyTransaction(
 	cleanupConsumed := true
 	defer func() {
 		if cleanupConsumed {
-			_ = m.store.Delete(context.Background(), consumedKey)
+			// Detach cancellation but keep trace/values so rollback still
+			// runs when the caller's context is already canceled.
+			_ = m.store.Delete(context.WithoutCancel(ctx), consumedKey)
 		}
 	}()
 	if err := solanautil.SimulateTransaction(ctx, m.rpc, tx); err != nil {
@@ -457,11 +459,11 @@ func (m *Mpp) verifySignature(
 	}
 	signature, err := solana.SignatureFromBase58(payload.Signature)
 	if err != nil {
-		_ = m.store.Delete(context.Background(), consumedPrefix+payload.Signature)
+		_ = m.store.Delete(context.WithoutCancel(ctx), consumedPrefix+payload.Signature)
 		return mpp.Receipt{}, err
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
-		_ = m.store.Delete(context.Background(), consumedPrefix+payload.Signature)
+		_ = m.store.Delete(context.WithoutCancel(ctx), consumedPrefix+payload.Signature)
 		return mpp.Receipt{}, err
 	}
 	return successReceipt(payload.Signature, credential.Challenge.ID, request.ExternalID), nil
