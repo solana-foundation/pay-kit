@@ -14,5 +14,11 @@
     <include>
       <directory>src</directory>
     </include>
+    <exclude>
+      <!-- x402 port has its own dedicated regression suite
+           (tests/x402_interop_server_test.php). PHPUnit only covers the
+           MPP code; x402 coverage is asserted by composer test:x402. -->
+      <directory>src/x402</directory>
+    </exclude>
   </source>
 </phpunit>
