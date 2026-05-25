@@ -76,6 +76,6 @@ Intentional Go-side specifics (not divergences):
   code sees canonical base58. The spine accepts the same pattern.
 - Duplicate-settlement cache keys are SHA-256 of the encoded
   transaction, in addition to Solana's native per-signature
-  uniqueness — defense-in-depth, matches the source x402-sdk PR #18.
+  uniqueness — defense-in-depth, matches the upstream reference.
 
-No upstream behavior changes vs x402-sdk PR #18 (tip `e3bf746`).
+No upstream behavior changes vs the reference port (tip `e3bf746`).
