@@ -30,7 +30,7 @@ class InteropServerTest < Minitest::Test
     assert_equal "125000", requirement.fetch("amount")
     assert_equal PAY_TO, requirement.fetch("payTo")
     assert_equal X402::Interop::Exact.base58_encode(state.fee_payer.raw_public_key),
-                 requirement.fetch("extra").fetch("feePayer")
+      requirement.fetch("extra").fetch("feePayer")
   end
 
   def test_exact_challenge_includes_extra_offered_mints
@@ -418,7 +418,7 @@ class InteropServerTest < Minitest::Test
     state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
 
     assert_equal "unit-settlement",
-                 X402::Interop::Server.settle_exact_payment(state, build_payment_header(state))
+      X402::Interop::Server.settle_exact_payment(state, build_payment_header(state))
   end
 
   def test_server_rejects_payment_for_different_resource
@@ -437,7 +437,7 @@ class InteropServerTest < Minitest::Test
     payment_header = build_payment_header(state, resource: "/resource/a")
 
     assert_equal "unit-settlement",
-                 X402::Interop::Server.settle_exact_payment(state, payment_header, resource: "/resource/a")
+      X402::Interop::Server.settle_exact_payment(state, payment_header, resource: "/resource/a")
   end
 
   def test_settlement_cache_evicts_entries_after_ttl
@@ -466,7 +466,7 @@ class InteropServerTest < Minitest::Test
     state = build_state
     status, headers, body = X402::Interop::Server.response_for(
       "/protected",
-      { "PAYMENT-SIGNATURE" => "not base64" },
+      {"PAYMENT-SIGNATURE" => "not base64"},
       state
     )
 
@@ -532,7 +532,7 @@ class InteropServerTest < Minitest::Test
   def test_account_exists_returns_true_when_rpc_value_is_present
     state = build_state
 
-    with_net_http_response(JSON.generate("result" => { "value" => { "owner" => "token" } })) do
+    with_net_http_response(JSON.generate("result" => {"value" => {"owner" => "token"}})) do
       assert X402::Interop::Server.account_exists?(state, PAY_TO)
     end
   end
@@ -540,7 +540,7 @@ class InteropServerTest < Minitest::Test
   def test_account_exists_returns_false_when_rpc_value_is_missing
     state = build_state
 
-    with_net_http_response(JSON.generate("result" => { "value" => nil })) do
+    with_net_http_response(JSON.generate("result" => {"value" => nil})) do
       refute X402::Interop::Server.account_exists?(state, PAY_TO)
     end
   end
@@ -582,19 +582,19 @@ class InteropServerTest < Minitest::Test
     status, headers, body = X402::Interop::Server.response_for("/exact", {}, state)
     assert_equal 402, status
     assert headers.key?("PAYMENT-REQUIRED")
-    assert_equal({ error: "payment_required" }, body)
+    assert_equal({error: "payment_required"}, body)
 
     status, headers, body = X402::Interop::Server.response_for("/missing", {}, state)
     assert_equal 404, status
     assert_empty headers
-    assert_equal({ error: "not_found" }, body)
+    assert_equal({error: "not_found"}, body)
   end
 
   def test_protected_route_returns_settlement_success
     state = build_state(sender: ->(_state, _transaction) { "settlement-signature" })
     status, headers, body = X402::Interop::Server.response_for(
       "/protected",
-      { "payment-signature" => build_payment_header(state, resource: "/protected") },
+      {"payment-signature" => build_payment_header(state, resource: "/protected")},
       state
     )
 
@@ -629,7 +629,7 @@ class InteropServerTest < Minitest::Test
 
     status, _headers, body = X402::Interop::Server.response_for(
       "/protected",
-      { "PAYMENT-SIGNATURE" => payment_header },
+      {"PAYMENT-SIGNATURE" => payment_header},
       server_b
     )
 
@@ -648,7 +648,7 @@ class InteropServerTest < Minitest::Test
     status, headers, body = X402::Interop::Server.response_for("/protected", {}, state)
 
     assert_equal 402, status
-    assert_equal({ error: "payment_required" }, body)
+    assert_equal({error: "payment_required"}, body)
     assert JSON.parse(Base64.decode64(headers.fetch("PAYMENT-REQUIRED"))).fetch("accepts").any?
   end
 
@@ -682,7 +682,7 @@ class InteropServerTest < Minitest::Test
       requirement: X402::Interop::Server.exact_requirement(state, resource: resource),
       client_secret_key: JSON.generate(secret(1)),
       recent_blockhash: BLOCKHASH,
-      resource: { "type" => "http", "uri" => resource || "/protected" }
+      resource: {"type" => "http", "uri" => resource || "/protected"}
     )
   end
 

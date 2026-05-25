@@ -70,7 +70,7 @@ module X402
         envelope = {
           x402Version: 2,
           accepted: requirement,
-          payload: { transaction: Base64.strict_encode64(transaction) }
+          payload: {transaction: Base64.strict_encode64(transaction)}
         }
         envelope[:resource] = resource if resource.is_a?(Hash)
 
@@ -276,11 +276,11 @@ module X402
 
           data = message.byteslice(offset, data_length)
           offset += data_length
-          { program_index: program_index, accounts: accounts, data: data }
+          {program_index: program_index, accounts: accounts, data: data}
         end
 
         read_short_vec(message, offset) if offset < message.bytesize
-        { account_keys: account_keys, instructions: instructions }
+        {account_keys: account_keys, instructions: instructions}
       end
 
       def verify_exact_instructions!(account_keys:, instructions:, requirement:, managed_signers:)
@@ -302,12 +302,12 @@ module X402
         instructions.drop(3).each_with_index do |instruction, index|
           program = instruction_program(instruction, account_keys)
           allowed_programs = if index == 2
-                               [base58_decode(MEMO_PROGRAM)]
-                             else
-                               [base58_decode(LIGHTHOUSE_PROGRAM), base58_decode(MEMO_PROGRAM)]
-                             end
+            [base58_decode(MEMO_PROGRAM)]
+          else
+            [base58_decode(LIGHTHOUSE_PROGRAM), base58_decode(MEMO_PROGRAM)]
+          end
           if index < 2 && program == base58_decode(ASSOCIATED_TOKEN_PROGRAM) &&
-             valid_destination_ata_create_instruction?(instruction, account_keys, requirement, transfer)
+              valid_destination_ata_create_instruction?(instruction, account_keys, requirement, transfer)
             destination_create_ata = true
             next
           end

@@ -20,7 +20,7 @@ class InteropClientTest < Minitest::Test
     encoded = Base64.strict_encode64(JSON.generate("x402Version" => 2, "accepts" => [requirement]))
 
     selected = X402::Interop::Client.select_svm_requirement(
-      headers: { "PAYMENT-REQUIRED" => encoded },
+      headers: {"PAYMENT-REQUIRED" => encoded},
       body: "",
       network: NETWORK
     )
@@ -35,13 +35,13 @@ class InteropClientTest < Minitest::Test
       "asset" => ASSET,
       "amount" => "1000"
     }
-    resource = { "url" => "/protected", "description" => "test" }
+    resource = {"url" => "/protected", "description" => "test"}
     encoded = Base64.strict_encode64(
       JSON.generate("x402Version" => 2, "resource" => resource, "accepts" => [requirement])
     )
 
     selected, selected_resource = X402::Interop::Client.select_svm_challenge(
-      headers: { "PAYMENT-REQUIRED" => encoded },
+      headers: {"PAYMENT-REQUIRED" => encoded},
       body: "",
       network: NETWORK
     )
@@ -75,7 +75,7 @@ class InteropClientTest < Minitest::Test
 
   def test_ignores_malformed_payment_required_header_and_body
     selected = X402::Interop::Client.select_svm_requirement(
-      headers: { "PAYMENT-REQUIRED" => "not-json" },
+      headers: {"PAYMENT-REQUIRED" => "not-json"},
       body: "not-json",
       network: NETWORK
     )
@@ -155,7 +155,7 @@ class InteropClientTest < Minitest::Test
     secret[0, 32] = (1..32).to_a
     client_address = X402::Interop::Exact.public_key_base58(JSON.generate(secret))
     requirement = exact_requirement
-    resource = { "url" => "/protected" }
+    resource = {"url" => "/protected"}
 
     header = X402::Interop::Exact.build_exact_payment_signature(
       requirement: requirement,
@@ -295,7 +295,7 @@ class InteropClientTest < Minitest::Test
     requirement.fetch("extra").delete("recentBlockhash")
 
     with_net_http_response(
-      JSON.generate("result" => { "value" => { "blockhash" => "11111111111111111111111111111111" } })
+      JSON.generate("result" => {"value" => {"blockhash" => "11111111111111111111111111111111"}})
     ) do
       header = X402::Interop::Exact.build_exact_payment_signature_from_rpc(
         requirement: requirement,

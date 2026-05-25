@@ -30,16 +30,16 @@ module X402
 
       class State
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer, :fee_payer_secret_key, :amount,
-                    :transaction_sender, :settlement_cache, :account_checker
+          :transaction_sender, :settlement_cache, :account_checker
 
         def initialize(env: ENV, transaction_sender: nil, settlement_cache: nil, account_checker: nil)
           @rpc_url = required_env(env, "X402_INTEROP_RPC_URL")
           @network = env.fetch("X402_INTEROP_NETWORK", DEFAULT_NETWORK)
           @mint = env.fetch("X402_INTEROP_MINT", DEFAULT_MINT)
           @extra_offered_mints = env.fetch("X402_INTEROP_EXTRA_OFFERED_MINTS", "")
-                                    .split(",")
-                                    .map(&:strip)
-                                    .reject(&:empty?)
+            .split(",")
+            .map(&:strip)
+            .reject(&:empty?)
           @pay_to = required_env(env, "X402_INTEROP_PAY_TO")
           @fee_payer_secret_key = required_env(env, "X402_INTEROP_FACILITATOR_SECRET_KEY")
           @fee_payer = Exact.private_key_from_json(@fee_payer_secret_key)
@@ -138,7 +138,7 @@ module X402
       end
 
       def token_program_for_mint(mint)
-        mint == DEVNET_PYUSD_MINT ? Exact::TOKEN_2022_PROGRAM : DEFAULT_TOKEN_PROGRAM
+        (mint == DEVNET_PYUSD_MINT) ? Exact::TOKEN_2022_PROGRAM : DEFAULT_TOKEN_PROGRAM
       end
 
       def payment_requirement_matches?(left, right)
@@ -174,8 +174,8 @@ module X402
         end
 
         requirement = if accepted.is_a?(Hash)
-                        requirements.find { |candidate| payment_requirement_matches?(accepted, candidate) }
-                      end
+          requirements.find { |candidate| payment_requirement_matches?(accepted, candidate) }
+        end
         unless requirement
           # Mirrors the Go reference at go/cmd/interop-server/main.go:856 which
           # responds with `{"error":"payment_invalid"}` for this class of
@@ -215,7 +215,7 @@ module X402
             fee_payer_secret_key: state.fee_payer_secret_key
           )
           state.transaction_sender.call(state, signed_transaction)
-        rescue StandardError
+        rescue
           state.settlement_cache.release(transaction_payload)
           raise
         end
@@ -292,7 +292,7 @@ module X402
           method: "getAccountInfo",
           params: [
             account,
-            { encoding: "base64" }
+            {encoding: "base64"}
           ]
         )
         response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
@@ -330,14 +330,14 @@ module X402
       def response_for(path, headers, state)
         case path
         when "/health"
-          [200, {}, { ok: true }]
+          [200, {}, {ok: true}]
         when "/capabilities"
           [200, {}, CAPABILITY_PAYLOAD]
         when "/exact"
           [
             402,
-            { "PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state)) },
-            { error: "payment_required" }
+            {"PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state))},
+            {error: "payment_required"}
           ]
         when DEFAULT_RESOURCE_PATH
           payment_signature = header_value(headers, "PAYMENT-SIGNATURE")
@@ -347,7 +347,7 @@ module X402
             settlement = settle_exact_payment(state, payment_signature, resource: path)
             [
               200,
-              { DEFAULT_SETTLEMENT_HEADER => settlement },
+              {DEFAULT_SETTLEMENT_HEADER => settlement},
               {
                 ok: true,
                 paid: true,
@@ -358,10 +358,10 @@ module X402
                 }
               }
             ]
-          rescue StandardError => e
+          rescue => e
             [
               402,
-              { "PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state, resource: path)) },
+              {"PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state, resource: path))},
               payment_error_body(e)
             ]
           end
@@ -379,8 +379,8 @@ module X402
       def payment_required_response(state, resource: nil)
         [
           402,
-          { "PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state, resource: resource)) },
-          { error: "payment_required" }
+          {"PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state, resource: resource))},
+          {error: "payment_required"}
         ]
       end
     end
