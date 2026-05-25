@@ -2,12 +2,27 @@ import { describe, expect, it } from "vitest";
 import { selectInteropIntents, selectInteropScenarios } from "../src/contracts";
 
 describe("interop intent selection", () => {
-  it("defaults to the implemented charge scenario", () => {
+  it("defaults to the legacy charge intent for CI stability", () => {
+    // x402-exact is opt-in via MPP_INTEROP_INTENTS=x402-exact (or
+    // comma-list) so the canonical MPP charge matrix in the existing
+    // runner is not perturbed by the new intent's enabled-by-default
+    // adapters.
     expect(selectInteropIntents(undefined)).toEqual(["charge"]);
   });
 
   it("accepts the implemented charge scenario", () => {
     expect(selectInteropIntents(" charge ")).toEqual(["charge"]);
+  });
+
+  it("accepts the implemented x402-exact intent", () => {
+    expect(selectInteropIntents("x402-exact")).toEqual(["x402-exact"]);
+  });
+
+  it("accepts both intents at once", () => {
+    expect(selectInteropIntents("charge,x402-exact")).toEqual([
+      "charge",
+      "x402-exact",
+    ]);
   });
 
   it("rejects scenarios that are not implemented yet", () => {
@@ -39,6 +54,20 @@ describe("interop scenario selection", () => {
       "charge-splits-sum-equals-amount",
       "charge-cross-server-portability",
       "charge-idempotent-resubmit",
+    ]);
+  });
+
+  it("returns x402-exact scenarios when explicitly requested", () => {
+    expect(
+      selectInteropScenarios("x402-exact", undefined).map(
+        (scenario) => scenario.id,
+      ),
+    ).toEqual([
+      "x402-exact-basic",
+      "x402-exact-network-mismatch",
+      "x402-exact-cross-route-replay",
+      "x402-exact-cross-server-portability",
+      "x402-exact-idempotent-resubmit",
     ]);
   });
 
