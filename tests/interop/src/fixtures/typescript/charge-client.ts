@@ -98,6 +98,13 @@ async function payTarget(
   const client = Mppx.create({
     methods: [
       solana.charge({
+        // Push-mode (broadcast=true): the SDK signs, broadcasts, and
+        // confirms locally, then sends a type=signature credential.
+        // Pull-mode (default): the SDK signs and lets the server
+        // broadcast a type=transaction credential. The harness drives
+        // the choice via MPP_INTEROP_PAYMENT_MODE so a single client
+        // adapter covers both wire modes.
+        broadcast: environment.paymentMode === "push",
         signer,
         rpcUrl: environment.rpcUrl,
         ...(environment.computeUnitLimit !== undefined
