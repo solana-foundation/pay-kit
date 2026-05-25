@@ -187,6 +187,18 @@ function M.parse_compute_budget(ix)
     end
     return { kind = 'compute_budget_set_price', price = price_str }
   end
+  -- Known non-cap discriminators that do not affect compute-budget caps:
+  --   0 = RequestUnits (deprecated)
+  --   1 = RequestHeapFrame
+  --   4 = SetLoadedAccountsDataSizeLimit
+  -- The hooks-based verifier path in `mpp.server.solana_verify` accepts
+  -- these as harmless pass-through, so the real verifier path must
+  -- behave identically to avoid a behavioral split where a transaction
+  -- whose wallet inserts disc 1 or 4 verifies under hooks but is
+  -- rejected by the real verifier with `payment_invalid`.
+  if discriminator == 0 or discriminator == 1 or discriminator == 4 then
+    return { kind = 'compute_budget_noop', discriminator = discriminator }
+  end
   error('Unsupported compute budget instruction')
 end
 

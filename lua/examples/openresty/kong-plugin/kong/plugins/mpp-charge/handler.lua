@@ -97,6 +97,15 @@ local function get_server(conf)
   local replay_ttl = conf.replay_ttl_seconds or 86400
   local replay_store = store_shared_dict.new(dict, { ttl_seconds = replay_ttl })
   local verifier_bundle = solana_verify.new_real_verifier({ pull_signer = fee_payer })
+  -- Inject `ngx.sleep` so the confirmation poll yields the cosocket back
+  -- to the OpenResty event loop between attempts. The default
+  -- `default_sleep` in `charge_handler.lua` is a CPU busy-wait
+  -- (`while monotonic_seconds() < target do end`); under defaults of
+  -- 40 attempts x 0.25s a single pull-mode settlement would block the
+  -- worker for up to 10s of accumulated busy-wait, starving every other
+  -- request on the same worker. `ngx.sleep` is non-blocking and is the
+  -- pattern the `charge_handler.lua` constructor docs explicitly
+  -- recommend for production OpenResty deployments.
   local handler = charge_handler_module.new({
     rpc = rpc,
     network = conf.network,
@@ -104,6 +113,7 @@ local function get_server(conf)
     transaction_verifier = verifier_bundle.transaction_verifier,
     pull_transaction_signer = verifier_bundle.pull_transaction_signer,
     pull_blockhash_extractor = verifier_bundle.pull_blockhash_extractor,
+    sleep = ngx.sleep,
   })
   local server = mpp.server.new({
     recipient  = conf.recipient,

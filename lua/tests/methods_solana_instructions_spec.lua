@@ -87,9 +87,27 @@ helper.test('parse_compute_budget rejects accounts and unknown discriminators', 
   helper.assert_error(function()
     instructions.parse_compute_budget(build_ix(string.char(2) .. le_u32(1), { 0 }))
   end, 'must not have accounts')
+  -- Discriminator 99 has no documented compute-budget semantics, so the
+  -- parser must reject it. The previously-bundled-in cases (disc 0/1/4)
+  -- are now valid non-cap pass-through and have a dedicated test below.
   helper.assert_error(function()
-    instructions.parse_compute_budget(build_ix(string.char(0), {}))
+    instructions.parse_compute_budget(build_ix(string.char(99), {}))
   end, 'Unsupported')
+end)
+
+helper.test('parse_compute_budget accepts disc 0/1/4 as non-cap pass-through', function()
+  -- The hooks-based verifier in `mpp.server.solana_verify` accepts
+  -- discriminators 0 (RequestUnits, deprecated), 1 (RequestHeapFrame),
+  -- and 4 (SetLoadedAccountsDataSizeLimit) without enforcing compute
+  -- caps. The real verifier path here must match that behavior so a
+  -- wallet that inserts a RequestHeapFrame instruction does not
+  -- verify under hooks but fail with `payment_invalid` under the
+  -- real verifier. Regression coverage for the behavioral split.
+  for _, disc in ipairs({ 0, 1, 4 }) do
+    local parsed = instructions.parse_compute_budget(build_ix(string.char(disc), {}))
+    helper.assert_equal(parsed.kind, 'compute_budget_noop')
+    helper.assert_equal(parsed.discriminator, disc)
+  end
 end)
 
 helper.test('decode_le_uint round-trips a 2^63 value as a decimal string', function()
