@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v13),
     ],
     dependencies: [
-        .package(path: "../../../swift"),
+        .package(path: "../../swift"),
     ],
     targets: [
         .executableTarget(
