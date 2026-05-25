@@ -1,0 +1,29 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Build Go SDK
+build:
+    mkdir -p /tmp/go-build-cache
+    GOCACHE=/tmp/go-build-cache go build ./...
+
+# Test Go SDK
+test:
+    mkdir -p /tmp/go-build-cache
+    GOCACHE=/tmp/go-build-cache go test ./...
+
+# Format Go SDK
+fmt:
+    gofmt -w $(find . -name '*.go' -type f | sort)
+
+# Lint Go SDK
+lint:
+    gofmt -l $(find . -name '*.go' -not -path './vendor/*')
+    golangci-lint run --timeout=5m
+
+# Run Go coverage with a minimum threshold of 70%
+test-cover:
+    mkdir -p /tmp/go-build-cache
+    GOCACHE=/tmp/go-build-cache go test ./... -coverprofile=coverage.out -covermode=atomic
+    GOCACHE=/tmp/go-build-cache ./scripts/check_coverage.sh coverage.out 70

@@ -52,31 +52,29 @@ rs-lint:
     cd rust && cargo clippy -- -D warnings
 
 # ── Go ──
+# Recipes live in go/Justfile. The wrappers below delegate so the
+# orchestration targets ("build", "test", "test-all", "fmt", "pre-commit")
+# keep working without root-level knowledge of Go commands.
 
-# Build Go SDK
+# Build Go SDK (delegates to go/Justfile)
 go-build:
-    mkdir -p /tmp/go-build-cache
-    cd go && GOCACHE=/tmp/go-build-cache go build ./...
+    cd go && just build
 
-# Test Go SDK
+# Test Go SDK (delegates to go/Justfile)
 go-test:
-    mkdir -p /tmp/go-build-cache
-    cd go && GOCACHE=/tmp/go-build-cache go test ./...
+    cd go && just test
 
-# Format Go SDK
+# Format Go SDK (delegates to go/Justfile)
 go-fmt:
-    cd go && gofmt -w $$(find . -name '*.go' -type f | sort)
+    cd go && just fmt
 
-# Lint Go SDK
+# Lint Go SDK (delegates to go/Justfile)
 go-lint:
-    cd go && gofmt -l $$(find . -name '*.go' -not -path './vendor/*')
-    cd go && golangci-lint run --timeout=5m
+    cd go && just lint
 
-# Run Go coverage with a minimum threshold of 70%
+# Run Go coverage with the 70% gate (delegates to go/Justfile)
 go-test-cover:
-    mkdir -p /tmp/go-build-cache
-    cd go && GOCACHE=/tmp/go-build-cache go test ./... -coverprofile=coverage.out -covermode=atomic
-    cd go && GOCACHE=/tmp/go-build-cache ./scripts/check_coverage.sh coverage.out 70
+    cd go && just test-cover
 
 # ── Lua ──
 
