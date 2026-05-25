@@ -31,6 +31,6 @@ curl -i http://127.0.0.1:8000/paid
 ## Environment
 
 `HOST`, `PORT`, `MPP_RPC_URL`, `MPP_NETWORK`, `MPP_CURRENCY`,
-`MPP_PAY_TO`, `MPP_SECRET_KEY`, `MPP_AMOUNT`. Defaults match the Ruby
-Sinatra example so cross-language clients can hit either server with
+`MPP_PAY_TO`, `MPP_SECRET_KEY`, `MPP_AMOUNT`. Defaults match the other
+language examples so cross-language clients can hit either server with
 the same configuration.
