@@ -214,7 +214,7 @@ same structural transaction verifier as pull mode, consumes the
 signature through replay storage, and emits the same receipt shape.
 
 The direct Lua interop server at
-[`tests/interop/lua-server/server.lua`](../tests/interop/lua-server/server.lua)
+[`harness/lua-server/server.lua`](../harness/lua-server/server.lua)
 exercises this end-to-end through Surfpool in CI.
 
 ## Examples
@@ -316,11 +316,11 @@ replay rejection, transaction failures, missing metadata, timeouts.
 ## Interop
 
 The Lua interop server at
-[`tests/interop/lua-server/server.lua`](../tests/interop/lua-server/server.lua)
+[`harness/lua-server/server.lua`](../harness/lua-server/server.lua)
 participates in the cross-language harness. Focused commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=lua pnpm exec vitest run test/e2e.test.ts
 MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=lua pnpm exec vitest run test/e2e.test.ts
 ```
@@ -328,7 +328,7 @@ MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=lua pnpm exec vitest run test
 For a local DX run that mirrors the harness's Surfpool fixture:
 
 ```bash
-cd tests/interop && node lua-server/dx-gate.mjs        # one terminal
+cd harness && node lua-server/dx-gate.mjs        # one terminal
 cd lua && <copy env from dx-gate>                      # second terminal
        eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
        luajit examples/simple-server.lua

@@ -185,7 +185,7 @@ transaction verifier as pull mode, consumes the signature through replay
 storage, and emits the same receipt shape.
 
 The direct Ruby interop server at
-[`tests/interop/ruby-server/server.rb`](../tests/interop/ruby-server/server.rb)
+[`harness/ruby-server/server.rb`](../harness/ruby-server/server.rb)
 exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
 clients.
 
@@ -261,12 +261,12 @@ and replay consumption.
 ## Interop
 
 The Ruby server has a direct harness adapter at
-`tests/interop/ruby-server/server.rb`. It is server-side only in this pass.
+`harness/ruby-server/server.rb`. It is server-side only in this pass.
 
 Focused harness commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=ruby pnpm test
 MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=ruby pnpm test
 ```

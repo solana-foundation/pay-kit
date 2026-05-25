@@ -375,7 +375,7 @@ fn read_memory_signer(
 }
 
 /// Classify a free-text error message into a canonical L6 structured
-/// error code. Mirrors tests/interop/src/canonical-codes.ts and the
+/// error code. Mirrors harness/src/canonical-codes.ts and the
 /// Python / Ruby SDK helpers. The G39 fault matrix asserts cross-SDK
 /// agreement on this code.
 fn classify_canonical_code(message: &str) -> &'static str {

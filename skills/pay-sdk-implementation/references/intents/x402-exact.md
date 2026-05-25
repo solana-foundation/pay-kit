@@ -25,7 +25,7 @@ Wait for the user to confirm:
 2. The MPP `charge` cells are already passing interop in the new SDK
    (x402 reuses much of the same Solana primitives — splits, fee
    payer, replay store — so MPP-first is the correct order).
-3. The x402 scheme strings in `tests/interop/src/implementations.ts`
+3. The x402 scheme strings in `harness/src/implementations.ts`
    have been agreed (likely `"x402:exact"` or similar; do not invent).
 
 If any are missing, leave the row at `—` in the README matrix and

@@ -1,8 +1,8 @@
 # Interop harness adapter
 
 Cross-language compatibility is enforced by the TypeScript/Vitest harness
-at `mpp-sdk/tests/interop`. Read its README first
-(`tests/interop/README.md`) — that is the contract; this file summarizes
+at `mpp-sdk/harness`. Read its README first
+(`harness/README.md`) — that is the contract; this file summarizes
 the bits that bite when adding a new language.
 
 ## What you must build
@@ -19,10 +19,10 @@ Reference adapters:
 
 - `rust/src/bin/interop_client.rs` (94 lines — copy it).
 - `rust/src/bin/interop_server.rs` (317 lines — copy it).
-- `tests/interop/rust-client/` — Cargo manifest wrapper used by the
+- `harness/rust-client/` — Cargo manifest wrapper used by the
   harness command.
 
-## The contract (verbatim from `tests/interop/README.md`)
+## The contract (verbatim from `harness/README.md`)
 
 ### Server `ready` message
 
@@ -33,7 +33,7 @@ Reference adapters:
 Fields:
 
 - `type`: `"ready"`
-- `implementation`: stable id (matches `tests/interop/src/implementations.ts`)
+- `implementation`: stable id (matches `harness/src/implementations.ts`)
 - `role`: `"server"`
 - `port`: local TCP port the protected resource is served on
 
@@ -105,7 +105,7 @@ base58 — the harness does not encode them in base58.
 
 ## Registering the adapter
 
-Add an entry to `tests/interop/src/implementations.ts` — one each for
+Add an entry to `harness/src/implementations.ts` — one each for
 client and server:
 
 ```ts
@@ -137,10 +137,10 @@ export const serverImplementations: ImplementationDefinition[] = [
 Default `enabled: false`. Only flip to `true` once the focused matrix
 below passes locally.
 
-Then drop an adapter wrapper in `tests/interop/<lang>-client/` with
+Then drop an adapter wrapper in `harness/<lang>-client/` with
 whatever scaffold the language needs (e.g. a `Cargo.toml` that
 path-depends on `../../<lang>`, or a `package.json` with a single
-`start` script). The harness command is relative to `tests/interop`.
+`start` script). The harness command is relative to `harness`.
 
 ## Focused matrix command
 

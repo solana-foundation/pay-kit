@@ -128,7 +128,7 @@ Unit tests (mirror Rust's `verify_push`-adjacent tests):
 Interop scenarios: scaffold a `charge-basic-push` variant. The current
 default scenario (`charge-basic`) exercises pull because the TS server
 is fee-payer; once the new SDK enables push for the client adapter,
-add an explicit push-mode variant to `tests/interop/src/contracts.ts`.
+add an explicit push-mode variant to `harness/src/contracts.ts`.
 
 E2E: the Playwright tests in `html/tests` exercise the push flow via a
 browser wallet. The new-language server must run this suite (see

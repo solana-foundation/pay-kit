@@ -53,7 +53,7 @@ this monorepo.
 | Go (#101)   | `go/server/server.go` (`maxComputeUnitLimit`)              | pending PR #101 merge                     |
 | Python (#106) | `python/src/solana_mpp/server/mpp.py`                    | pending PR #106 merge                     |
 
-`tests/interop/test/compute-budget-caps.test.ts` parses each file above
+`harness/test/compute-budget-caps.test.ts` parses each file above
 and asserts byte-identical literals against the canonical pair. Go and
 Python rows are marked `optional: true` until their PRs land, then
 flip to required and surface drift the same way as the other SDKs.
@@ -66,8 +66,8 @@ flip to required and surface drift the same way as the other SDKs.
    code when either limit is exceeded; include the cap value in the
    reason string for parity with the existing SDKs.
 3. Append a row to `SDKS` in
-   `tests/interop/test/compute-budget-caps.test.ts` and to the table
+   `harness/test/compute-budget-caps.test.ts` and to the table
    above. Append a fixture row to
    `charge-compute-budget-over-cap` in
-   `tests/interop/src/intents/charge.ts` once the SDK is wired into the
+   `harness/src/intents/charge.ts` once the SDK is wired into the
    interop harness.

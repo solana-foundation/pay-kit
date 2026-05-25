@@ -24,7 +24,7 @@ import { describe, expect, it } from "vitest";
  * Issue: #109.
  */
 
-const REPO_ROOT = resolve(__dirname, "..", "..", "..");
+const REPO_ROOT = resolve(__dirname, "..", "..");
 
 const CANONICAL_LIMIT = 200_000;
 const CANONICAL_PRICE_MICROLAMPORTS = 5_000_000;

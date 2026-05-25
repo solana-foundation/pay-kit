@@ -1,4 +1,4 @@
-module github.com/solana-foundation/pay-kit/tests/interop/go-client
+module github.com/solana-foundation/mpp-sdk/harness/go-server
 
 go 1.26.1
 
@@ -37,6 +37,6 @@ require (
 	golang.org/x/time v0.11.0 // indirect
 )
 
-replace github.com/solana-foundation/pay-kit/go => ../../../go
+replace github.com/solana-foundation/pay-kit/go => ../../go
 
 replace github.com/gagliardetto/solana-go => github.com/lgalabru/solana-go v0.0.0-20260403020633-3cb13b392078

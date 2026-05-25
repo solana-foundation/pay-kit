@@ -23,7 +23,7 @@ use SolanaPhpSdk\Rpc\RpcClient;
 error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
-require __DIR__ . '/../../../php/vendor/autoload.php';
+require __DIR__ . '/../../php/vendor/autoload.php';
 
 // ── Env ──────────────────────────────────────────────────────────────────────
 

@@ -39,7 +39,7 @@ swift/
 │       ├── Instructions.swift # System, SPL, ATA, compute budget, memo
 │       └── Ata.swift          # Associated Token Account PDA derivation
 ├── Tests/SolanaMppTests/      # XCTest / swift-testing suite
-└── Examples/                  # Sample clients (M2: Solana Seeker demo app)
+└── Examples/                  # Sample clients (planned: Solana Seeker demo app)
 ```
 
 Mirrors the Rust layout (`rust/src/{client,protocol}/`) so cross-language
@@ -47,10 +47,10 @@ contributors can navigate by feature, not file name.
 
 ## Scope
 
-Swift is **client-only** across every milestone in the MPP roadmap.
-This package ships the charge client; an MPP server in Swift is not
-in scope. The session and subscription intents add to this package
-in M2 and M3.
+Swift is **client-only** in the MPP SDK. This package ships the charge
+client; an MPP server in Swift is not in scope. The session and
+subscription intents will be added to this package as the protocol
+surface for those intents stabilizes.
 
 ## Quick start, client
 
@@ -100,21 +100,21 @@ Then add `SolanaMpp` to your target dependencies.
 
 ## Client compatibility matrix
 
-Swift is client-only across the MPP roadmap.
+Swift is client-only in the MPP SDK.
 
 | Intent | Status |
 |---|:---:|
-| `x402/exact` | planned (M2) |
+| `x402/exact` | planned |
 | `x402/upto` | --- |
 | `x402/batch-settlement` | --- |
 | `mpp/charge/pull` | available |
 | `mpp/charge/push` | planned |
-| `mpp/session` | planned (M2) |
-| `mpp/subscription` | planned (M3) |
+| `mpp/session` | planned |
+| `mpp/subscription` | planned |
 
 ## Server compatibility matrix
 
-Swift does not ship a server in any milestone.
+Swift does not ship a server.
 
 | Intent | Status |
 |---|:---:|
@@ -185,8 +185,8 @@ them as the `swift-coverage` artifact. The harness covers:
 ## Interop
 
 The Swift interop adapter lives at
-[`tests/interop/swift-client`](../tests/interop/swift-client) and is
-registered in `tests/interop/src/implementations.ts`. Default on after
+[`harness/swift-client`](../harness/swift-client) and is
+registered in `harness/src/implementations.ts`. Default on after
 the focused TS-to-Swift matrix passes locally (this PR ships both the
 default-off registration and the default-on flip atop the same diff,
 per the roadmap's sequential-rebase rule on the
@@ -195,7 +195,7 @@ per the roadmap's sequential-rebase rule on the
 Focused matrix commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=typescript pnpm exec vitest run
 MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=rust       pnpm exec vitest run
 ```

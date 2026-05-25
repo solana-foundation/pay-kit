@@ -2,7 +2,7 @@
 
 require "json"
 require "socket"
-require_relative "../../../ruby/lib/mpp"
+require_relative "../../ruby/lib/mpp"
 
 # Read a required environment variable for the interop adapter.
 def require_env(name)
