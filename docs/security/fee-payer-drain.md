@@ -26,9 +26,9 @@ Client appends an SPL `transferChecked` whose source account is the fee-payer's 
 
 Client crafts a transaction where the fee-payer is placed at a non-canonical signer slot (e.g. slot 1) alongside an attacker-controlled signer at slot 0 (or vice versa, depending on the SDK's convention). Solana's fee-payer is the first account in `account_keys`; placing the server's pubkey at the wrong slot can confuse a naive verifier into checking the wrong signature slot, or into co-signing on behalf of a transaction whose nominal fee-payer is the attacker.
 
-### 4. Tampered-Details Attack (Client-Supplied `details.fee_payer`)
+### 4. Tampered-Details Attack (Client-Supplied `methodDetails.feePayerKey`)
 
-The MPP charge request carries `methodDetails.feePayer_key` (or equivalent). A malicious client supplies `details.fee_payer = ATTACKER_PUBKEY` while the server's actual signing key is `SERVER_PUBKEY`. If the verifier trusts the client-supplied details field as the source of truth for "who is the fee-payer", it will validate guards (source != fee-payer, slot, etc.) against `ATTACKER_PUBKEY`. The real `SERVER_PUBKEY` then signs a transaction that drains itself.
+The MPP charge request carries `methodDetails.feePayerKey` (string, base58 pubkey; this is the canonical wire field across all SDKs, see [`typescript/packages/mpp/src/Methods.ts`](../../typescript/packages/mpp/src/Methods.ts) L62, [`go/protocol/solana.go`](../../go/protocol/solana.go) L115, [`python/src/solana_mpp/protocol/solana.py`](../../python/src/solana_mpp/protocol/solana.py) L120, [`rust/src/protocol/solana.rs`](../../rust/src/protocol/solana.rs) L394, [`php/src/Server/SolanaChargeTransactionVerifier.php`](../../php/src/Server/SolanaChargeTransactionVerifier.php) L304, [`ruby/lib/mpp/methods/solana/verifier.rb`](../../ruby/lib/mpp/methods/solana/verifier.rb), [`lua/mpp/server/init.lua`](../../lua/mpp/server/init.lua) L85). A malicious client supplies `methodDetails.feePayerKey = ATTACKER_PUBKEY` while the server's actual signing key is `SERVER_PUBKEY`. If the verifier trusts the client-supplied details field as the source of truth for "who is the fee-payer", it will validate guards (source != fee-payer, slot, etc.) against `ATTACKER_PUBKEY`. The real `SERVER_PUBKEY` then signs a transaction that drains itself.
 
 Source of truth MUST be the server-context fee-payer pubkey (the public key of the server's signer keypair), never a client-controlled field.
 
@@ -54,7 +54,7 @@ Every server SDK that supports fee-payer co-sign MUST enforce:
 1. **Instruction allowlist.** Reject any instruction whose program ID is not on the canonical safe list (SystemProgram for SOL routes, Token / Token-2022 for SPL routes, ComputeBudget for cap-bounded compute instructions, Memo for the memo discriminator on memo routes, AssociatedToken for declared split-recipient ATA creation). Any unknown program ID is a hard reject.
 2. **Source-account check on transfer instructions.** Every `SystemProgram::Transfer` and SPL `transfer` / `transferChecked` instruction MUST have its source account compared to the fee-payer pubkey. If `source == fee_payer` (or `source == ATA(fee_payer, mint)` for SPL), reject. This blocks attack shapes (1) and (2).
 3. **Signer-slot enforcement.** The fee-payer MUST occupy the canonical signer slot. Solana requires fee-payer at `account_keys[0]`; SDKs MUST verify the configured fee-payer pubkey equals `account_keys[0]` and that the corresponding signature slot is the one the server will populate. This blocks attack shape (3).
-4. **Server-context fee-payer pubkey.** The "fee-payer pubkey" used by guards (2) and (3) MUST be derived from the server's signer (the public key of the server-held keypair), not from any client-supplied field. Client-supplied `details.feePayer_key`, when present, MUST be reconciled with the server's signer pubkey and rejected on mismatch. This blocks attack shape (4).
+4. **Server-context fee-payer pubkey.** The "fee-payer pubkey" used by guards (2) and (3) MUST be derived from the server's signer (the public key of the server-held keypair), not from any client-supplied field. Client-supplied `methodDetails.feePayerKey`, when present, MUST be reconciled with the server's signer pubkey and rejected on mismatch. This blocks attack shape (4).
 
 A passing fee-payer co-sign path is the conjunction of all four. Missing any one re-opens the corresponding attack shape.
 
@@ -95,7 +95,7 @@ When porting MPP server support to a new language:
    - SOL drain (extra `SystemProgram::Transfer` sourced from fee-payer)
    - SPL drain (`transferChecked` sourced from fee-payer's ATA, or authorized by fee-payer)
    - Slot-index attack (fee-payer at a non-canonical signer slot)
-   - Tampered-details attack (`details.feePayer_key` mismatched with server signer pubkey)
+   - Tampered-details attack (`methodDetails.feePayerKey` mismatched with server signer pubkey)
    Each test must assert that the verifier rejects the transaction AND that the server does not broadcast it (no signature attached, no RPC `sendTransaction` call observed). Add at least one positive control that exercises a legitimate payment with fee-payer co-sign and asserts it succeeds.
 3. Cite this document from the new SDK's README security section, with a link to the language-specific file:line where each invariant is enforced.
 4. Add a row to the two tables above (Where Each SDK Enforces, Attack Regression Tests) when the new SDK lands on `main`.
