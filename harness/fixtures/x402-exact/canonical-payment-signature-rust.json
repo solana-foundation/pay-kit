@@ -1,0 +1,16 @@
+{
+  "_description": "Rust-spine canonical PAYMENT-SIGNATURE envelope. Wire-mirrors rust/crates/x402/src/protocol/schemes/exact/types.rs::PaymentSignatureEnvelope. The `payload` field deserializes as PaymentProof::Transaction with a base64-encoded serialized signed VersionedTransaction. The transaction blob below is the SHORTEST recognisable placeholder — a base64 of the bytes `not-a-real-signed-transaction-but-valid-base64` — so the JSON layer parses cleanly and the spine's structural verifier rejects it at the transaction-decode step with `invalid_exact_svm_payload_transaction_instructions_length` (or a sibling token in that family, depending on which decode pass fails first). Use this fixture to assert: (a) Rust's serde envelope parser accepts a well-formed PaymentSignatureEnvelope; (b) the verifier rejects with a specific `invalid_exact_svm_payload_*` token (NOT a generic parse error). A real adapter writing a real PaymentProof substitutes the `transaction` value with the base64 of an actual signed transaction; everything outside `payload` is invariant.",
+  "x402Version": 2,
+  "scheme": "exact",
+  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  "accepted": {
+    "scheme": "exact",
+    "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "payTo": "5xYbHvVQfTUyzCzKx5KjVxyqXqQ4Ujm5SbqQXJ5w8nVA",
+    "amount": "1000"
+  },
+  "payload": {
+    "transaction": "bm90LWEtcmVhbC1zaWduZWQtdHJhbnNhY3Rpb24tYnV0LXZhbGlkLWJhc2U2NA=="
+  }
+}

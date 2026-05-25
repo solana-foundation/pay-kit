@@ -122,7 +122,7 @@ describe("x402-exact live matrix (env-gated)", () => {
     return;
   }
   if (!happyPath) {
-    it.fails("happy-path scenario x402-exact-basic missing from registry", () => {
+    it("happy-path scenario x402-exact-basic must be in the registry", () => {
       throw new Error("x402-exact-basic scenario not found in interopScenarios");
     });
     return;
