@@ -1,17 +1,10 @@
 # MPP Charge Demo (Android)
 
 A minimal Jetpack Compose Android app that pays a 402-protected route
-using the Kotlin MPP SDK at `kotlin/`.
+using the Kotlin MPP SDK at `kotlin/` and signs the transaction with a
+real Solana wallet via Mobile Wallet Adapter.
 
 Tracked under issue #114.
-
-> **DEMO ONLY**
->
-> This app uses a deterministic seed signer that is publicly known
-> (see `DemoSigner` in `MainActivity.kt`). The corresponding private
-> key is committed in plaintext and identical for every build.
-> Do **NOT** fund the displayed address on Solana mainnet or any
-> production network. Use devnet only.
 
 ## Layout
 
@@ -96,30 +89,57 @@ Surfpool + the iOSDemo's `MerchantServer/serve.py`. App shows
 
 ## Expected UI state
 
-1. On cold start the app shows the demo signer's base58 public key.
-   Fund this account on devnet before pressing Pay.
-2. Tapping Pay runs `MppHttpClient.mppGet`, which receives a 402,
-   builds and signs the credential, and replays with
+1. On cold start the app shows "Idle. Press Connect Wallet to begin."
+2. Tapping Connect Wallet hands off to Mobile Wallet Adapter, which
+   deep-links into an installed wallet (Phantom, Solflare, Backpack, or
+   a side-loaded mock wallet on the emulator). After the user approves
+   the connection the app shows the wallet's base58 public key.
+3. Tapping Pay issues an unauthenticated GET against the merchant URL,
+   parses the 402 challenge, builds the unsigned charge transaction via
+   `Charge.buildUnsignedChargeTransaction` with the wallet's pubkey as
+   fee payer, hands the wire bytes to the wallet via
+   `walletAdapter.transact { signTransactions(...) }`, base64-encodes
+   the signed result, and replays the request with
    `Authorization: Payment ...`.
-3. On success the UI shows the HTTP status, the response body, and a
-   Solana Explorer URL for the on-chain signature.
-4. On failure the UI shows the exception class and message.
+4. On success the UI shows the HTTP status, the response body, and a
+   Solana Explorer URL for the on-chain settlement signature.
+5. On failure the UI shows the exception class and message.
 
-## Solana Seeker / Mobile Wallet Adapter integration
+## Wallet setup
 
-The `SolanaSigner` interface in
-`kotlin/src/main/kotlin/com/solana/mpp/SolanaSigner.kt` is the swap
-point. The demo wires a `MemorySigner` so it is verifiable end-to-end
-without hardware. To target the Seeker dev kit or any MWA-compliant
-wallet:
+The demo requires a Mobile Wallet Adapter compatible wallet to be
+installed on the device or emulator. Three options, ordered by
+convenience:
 
-1. Add `com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3`
-   as a dependency.
-2. Implement `SolanaSigner.sign(message)` by calling the MWA
-   `signMessages` primitive.
-3. Pass the MWA-backed signer to `MppHttpClient(...)`.
+- **Real wallet on a physical device.** Install Phantom, Solflare, or
+  Backpack from Google Play, fund the account on devnet, and run the
+  app on the same device. The wallet picker appears when you tap
+  Connect Wallet.
+- **Mock wallet on an emulator.** Build and install
+  [`solana-mobile/mock-mwa-wallet`](https://github.com/solana-mobile/mock-mwa-wallet)
+  on the same emulator. The mock wallet auto-approves requests with a
+  hard-coded key and is the recommended path for CI or reviewer
+  walkthroughs that do not need a real signature.
+- **Seeker / Saga device.** Both ship with MWA preinstalled. Install
+  the demo APK via `adb install` and tap Connect Wallet.
 
-Follow-up to flesh out the MWA path is tracked on issue #114.
+## SDK integration notes
+
+The demo uses two SDK entry points instead of the high-level
+`MppHttpClient`, because Mobile Wallet Adapter signs whole
+transactions while `MppHttpClient` expects a `SolanaSigner` that
+signs message bytes:
+
+- `Charge.buildUnsignedChargeTransaction(walletPublicKey, request, blockhashProvider)`
+  returns the raw legacy Solana transaction wire bytes with zeroed
+  signature slots. The wire bytes are byte-identical to what the
+  local-signer path produces before signing (asserted in
+  `ChargeBuildTest.unsignedChargeTransactionMatchesSignedTransactionExceptForSignatureSlot`).
+- `MppHeaders.formatAuthorization(PaymentCredential(challenge.echo(), CredentialPayload.transaction(base64SignedTx)))`
+  builds the canonical `Authorization: Payment ...` header.
+
+Any external-wallet integration (MWA, hardware wallet, HSM, etc.) can
+follow the same two-step pattern.
 
 ## CI
 

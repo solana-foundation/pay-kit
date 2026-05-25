@@ -82,4 +82,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // Solana Mobile Wallet Adapter client library. The demo delegates
+    // transaction signing to a real wallet (Phantom, Solflare, Backpack,
+    // or solana-mobile/mock-mwa-wallet for emulator testing) instead of
+    // holding a private key locally.
+    //
+    // Pinned to 2.0.0 (rather than 2.0.7) to match the Kotlin 1.9.x +
+    // AGP 8.5.x toolchain this demo uses. 2.0.7 transitively pulls
+    // androidx artifacts compiled against Kotlin 2.1, whose metadata
+    // the 1.9 compiler cannot read. The
+    // solana-mobile/solana-kotlin-compose-scaffold reference project
+    // pins 2.0.0 for the same reason.
+    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.0")
 }
