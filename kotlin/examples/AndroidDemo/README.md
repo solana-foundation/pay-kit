@@ -5,6 +5,14 @@ using the Kotlin MPP SDK at `kotlin/`.
 
 Tracked under issue #114.
 
+> **DEMO ONLY**
+>
+> This app uses a deterministic seed signer that is publicly known
+> (see `DemoSigner` in `MainActivity.kt`). The corresponding private
+> key is committed in plaintext and identical for every build.
+> Do **NOT** fund the displayed address on Solana mainnet or any
+> production network. Use devnet only.
+
 ## Layout
 
 ```

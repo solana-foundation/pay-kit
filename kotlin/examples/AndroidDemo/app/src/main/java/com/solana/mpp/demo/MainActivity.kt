@@ -3,9 +3,11 @@ package com.solana.mpp.demo
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +24,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.solana.mpp.Charge
 import com.solana.mpp.JsonRpcClient
@@ -65,6 +69,7 @@ private fun DemoScreen() {
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        DemoWarningBanner()
         Text(text = "MPP Charge Demo", style = MaterialTheme.typography.headlineSmall)
         Text(
             text = "Pay a 402-protected route using a local Ed25519 signer.",
@@ -109,6 +114,35 @@ private fun DemoScreen() {
         // Show the demo signer pubkey on first composition so the user
         // can fund it on devnet before pressing Pay.
         status = status.copy(message = "Signer pubkey: ${DemoSigner.publicKeyBase58()}")
+    }
+}
+
+@Composable
+private fun DemoWarningBanner() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFB71C1C))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = "DEMO ONLY",
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "This app uses a deterministic seed signer that is publicly known.",
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "Do NOT fund this address on mainnet or any production network.",
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
