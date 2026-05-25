@@ -13,7 +13,6 @@ from unittest.mock import patch
 from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.message import to_bytes_versioned
-from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from spl.token.constants import TOKEN_PROGRAM_ID
@@ -598,14 +597,13 @@ class ExactRpcMetadataTests(unittest.TestCase):
         with patch(
             "x402.interop.exact.fetch_mint_metadata",
             return_value=MintMetadata(decimals=6, token_program=TOKEN_PROGRAM_ID),
-        ) as fetch_metadata:
-            with patch("x402.interop.exact.latest_blockhash", return_value=str(Hash.default())):
-                header = build_exact_payment_signature_from_rpc(
-                    requirement=requirement,
-                    client_secret_key=client.to_json(),
-                    rpc_url="http://rpc.test",
-                    resource={"type": "http", "uri": "/protected"},
-                )
+        ) as fetch_metadata, patch("x402.interop.exact.latest_blockhash", return_value=str(Hash.default())):
+            header = build_exact_payment_signature_from_rpc(
+                requirement=requirement,
+                client_secret_key=client.to_json(),
+                rpc_url="http://rpc.test",
+                resource={"type": "http", "uri": "/protected"},
+            )
 
         fetch_metadata.assert_called_once_with(
             "http://rpc.test",
@@ -708,7 +706,7 @@ class FakeResponse:
         self.headers = headers
         self._body = body
 
-    def __enter__(self) -> "FakeResponse":
+    def __enter__(self) -> FakeResponse:
         return self
 
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
@@ -731,9 +729,11 @@ class FakeHttpError(urllib.error.HTTPError):
 
 class ClientMainTests(unittest.TestCase):
     def test_main_requires_target_url(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "X402_INTEROP_TARGET_URL is required"):
-                interop_client.main()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "X402_INTEROP_TARGET_URL is required"),
+        ):
+            interop_client.main()
 
     def test_main_pays_exact_challenge_and_emits_paid_result(self) -> None:
         client_secret_key = Keypair().to_json()
@@ -758,21 +758,19 @@ class ClientMainTests(unittest.TestCase):
                 "X402_INTEROP_CLIENT_SECRET_KEY": client_secret_key,
             },
             clear=True,
-        ):
-            with patch(
-                "x402.interop.client.urllib.request.urlopen",
-                side_effect=[
-                    FakeHttpError(402, {}, challenge),
-                    FakeResponse(200, {"x-fixture-settlement": "signature-1"}, paid_body),
-                ],
-            ) as urlopen:
-                with patch(
-                    "x402.interop.client.build_exact_payment_signature_from_rpc",
-                    return_value="payment-header",
-                ) as build_signature:
-                    output = io.StringIO()
-                    with redirect_stdout(output):
-                        self.assertEqual(interop_client.main(), 0)
+        ), patch(
+            "x402.interop.client.urllib.request.urlopen",
+            side_effect=[
+                FakeHttpError(402, {}, challenge),
+                FakeResponse(200, {"x-fixture-settlement": "signature-1"}, paid_body),
+            ],
+        ) as urlopen, patch(
+            "x402.interop.client.build_exact_payment_signature_from_rpc",
+            return_value="payment-header",
+        ) as build_signature:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(interop_client.main(), 0)
 
         build_signature.assert_called_once_with(
             requirement=requirement,
@@ -805,21 +803,19 @@ class ClientMainTests(unittest.TestCase):
                 "X402_INTEROP_CLIENT_SECRET_KEY": Keypair().to_json(),
             },
             clear=True,
+        ), patch(
+            "x402.interop.client.urllib.request.urlopen",
+            side_effect=[
+                FakeResponse(402, {}, challenge),
+                FakeHttpError(402, {}, "not-json"),
+            ],
+        ), patch(
+            "x402.interop.client.build_exact_payment_signature_from_rpc",
+            return_value="payment-header",
         ):
-            with patch(
-                "x402.interop.client.urllib.request.urlopen",
-                side_effect=[
-                    FakeResponse(402, {}, challenge),
-                    FakeHttpError(402, {}, "not-json"),
-                ],
-            ):
-                with patch(
-                    "x402.interop.client.build_exact_payment_signature_from_rpc",
-                    return_value="payment-header",
-                ):
-                    output = io.StringIO()
-                    with redirect_stdout(output):
-                        self.assertEqual(interop_client.main(), 0)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(interop_client.main(), 0)
 
         payload = json.loads(output.getvalue())
         self.assertFalse(payload["ok"])
@@ -843,18 +839,16 @@ class ClientMainTests(unittest.TestCase):
                 "X402_INTEROP_CLIENT_SECRET_KEY": Keypair().to_json(),
             },
             clear=True,
+        ), patch(
+            "x402.interop.client.urllib.request.urlopen",
+            side_effect=[FakeHttpError(402, {}, challenge)],
+        ), patch(
+            "x402.interop.client.build_exact_payment_signature_from_rpc",
+            side_effect=RuntimeError("metadata unavailable"),
         ):
-            with patch(
-                "x402.interop.client.urllib.request.urlopen",
-                side_effect=[FakeHttpError(402, {}, challenge)],
-            ):
-                with patch(
-                    "x402.interop.client.build_exact_payment_signature_from_rpc",
-                    side_effect=RuntimeError("metadata unavailable"),
-                ):
-                    output = io.StringIO()
-                    with redirect_stdout(output):
-                        self.assertEqual(interop_client.main(), 0)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(interop_client.main(), 0)
 
         payload = json.loads(output.getvalue())
         self.assertFalse(payload["ok"])

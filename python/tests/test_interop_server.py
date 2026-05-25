@@ -1,20 +1,21 @@
-import unittest
 import base64
 import io
 import json
 import os
 import threading
+import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
-from solders.keypair import Keypair
 from solders.hash import Hash
 from solders.instruction import Instruction
+from solders.keypair import Keypair
 from solders.message import MessageV0, to_bytes_versioned
 from solders.pubkey import Pubkey
 from solders.signature import Signature
-from solders.system_program import TransferParams, transfer as system_transfer
+from solders.system_program import TransferParams
+from solders.system_program import transfer as system_transfer
 from solders.transaction import VersionedTransaction
 from spl.token.constants import TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID
 from spl.token.instructions import (
@@ -24,14 +25,15 @@ from spl.token.instructions import (
 )
 
 from x402.interop import server as interop_server
+from x402.interop.exact import build_exact_payment_signature
 from x402.interop.server import (
-    InteropHandler,
-    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
-    MEMO_PROGRAM_ID,
     CAPABILITY_PAYLOAD,
     DEFAULT_RESOURCE_PATH,
     DEFAULT_SETTLEMENT_HEADER,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    MEMO_PROGRAM_ID,
     SETTLEMENT_CACHE_TTL_SECONDS,
+    InteropHandler,
     ServerState,
     _claim_settlement_payload,
     _header_value,
@@ -43,7 +45,6 @@ from x402.interop.server import (
     exact_requirement,
     settle_exact_payment,
 )
-from x402.interop.exact import build_exact_payment_signature
 
 
 class State:
@@ -173,9 +174,11 @@ class InteropServerTest(unittest.TestCase):
     def test_required_env_reads_present_values_and_rejects_missing(self):
         with patch.dict(os.environ, {"EXAMPLE_ENV": "value"}, clear=True):
             self.assertEqual(_required_env("EXAMPLE_ENV"), "value")
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "EXAMPLE_ENV is required"):
-                _required_env("EXAMPLE_ENV")
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "EXAMPLE_ENV is required"),
+        ):
+            _required_env("EXAMPLE_ENV")
 
     def test_server_state_reads_environment_defaults_and_extra_mints(self):
         fee_payer = Keypair()
@@ -587,12 +590,11 @@ class InteropServerTest(unittest.TestCase):
         with patch(
             "x402.interop.server.exact_requirements",
             return_value=[expected_requirement],
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "invalid_exact_svm_payload_memo_mismatch",
         ):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "invalid_exact_svm_payload_memo_mismatch",
-            ):
-                settle_exact_payment(State(), encode_payment_signature(envelope))
+            settle_exact_payment(State(), encode_payment_signature(envelope))
 
     def test_settle_rejects_missing_expected_memo_before_broadcast(self):
         expected_requirement = {
@@ -622,9 +624,8 @@ class InteropServerTest(unittest.TestCase):
         with patch(
             "x402.interop.server.exact_requirements",
             return_value=[expected_requirement],
-        ):
-            with self.assertRaisesRegex(RuntimeError, "invalid_exact_svm_payload_memo_mismatch"):
-                settle_exact_payment(State(), encode_payment_signature(envelope))
+        ), self.assertRaisesRegex(RuntimeError, "invalid_exact_svm_payload_memo_mismatch"):
+            settle_exact_payment(State(), encode_payment_signature(envelope))
 
     def test_settle_allows_lighthouse_optional_instruction_before_broadcast(self):
         client = Keypair()
@@ -801,16 +802,14 @@ class InteropServerTest(unittest.TestCase):
         with patch(
             "x402.interop.server.urllib.request.urlopen",
             return_value=FakeRpcResponse({"error": {"message": "boom"}}),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "sendTransaction RPC error"):
-                _send_transaction(state, transaction)
+        ), self.assertRaisesRegex(RuntimeError, "sendTransaction RPC error"):
+            _send_transaction(state, transaction)
 
         with patch(
             "x402.interop.server.urllib.request.urlopen",
             return_value=FakeRpcResponse({"result": ""}),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "sendTransaction returned empty signature"):
-                _send_transaction(state, transaction)
+        ), self.assertRaisesRegex(RuntimeError, "sendTransaction returned empty signature"):
+            _send_transaction(state, transaction)
 
     def test_get_routes_emit_expected_responses_without_socket_io(self):
         cases = [
@@ -954,15 +953,17 @@ class InteropServerTest(unittest.TestCase):
             servers.append(server)
             return server
 
-        with patch("x402.interop.server.ServerState", return_value=fake_state):
-            with patch("x402.interop.server.ThreadingHTTPServer", side_effect=make_server):
-                with patch(
-                    "x402.interop.server.signal.signal",
-                    side_effect=lambda signum, handler: signal_handlers.append((signum, handler)),
-                ):
-                    output = io.StringIO()
-                    with patch("sys.stdout", output):
-                        self.assertEqual(interop_server.main(), 0)
+        output = io.StringIO()
+        with (
+            patch("x402.interop.server.ServerState", return_value=fake_state),
+            patch("x402.interop.server.ThreadingHTTPServer", side_effect=make_server),
+            patch(
+                "x402.interop.server.signal.signal",
+                side_effect=lambda signum, handler: signal_handlers.append((signum, handler)),
+            ),
+            patch("sys.stdout", output),
+        ):
+            self.assertEqual(interop_server.main(), 0)
 
         self.assertEqual(servers[0].address, ("127.0.0.1", 0))
         self.assertIs(servers[0].handler_class, InteropHandler)
@@ -1082,7 +1083,7 @@ class FeePayerAttackRegressionTest(unittest.TestCase):
         a valid exact payment and must fail."""
         state = self._state()
         client = Keypair()
-        requirement = exact_requirement(state)
+        exact_requirement(state)
         mint = Pubkey.from_string(state.mint)
         pay_to = Pubkey.from_string(state.pay_to)
         # Compile with client as fee_payer (slot 0); state.fee_payer is added
@@ -1168,8 +1169,10 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
             start.wait(timeout=2)
             return "broadcast-sig"
 
-        with patch("x402.interop.server._send_transaction", side_effect=slow_send):
-            with ThreadPoolExecutor(max_workers=2) as pool:
+        with (
+            patch("x402.interop.server._send_transaction", side_effect=slow_send),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
                 f1 = pool.submit(settle_exact_payment, state, header)
                 f2 = pool.submit(settle_exact_payment, state, header)
                 start.set()
@@ -1203,9 +1206,8 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
         with patch(
             "x402.interop.server.VersionedTransaction.verify_and_hash_message",
             side_effect=RuntimeError("bad signature"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "bad signature"):
-                settle_exact_payment(state, header)
+        ), self.assertRaisesRegex(RuntimeError, "bad signature"):
+            settle_exact_payment(state, header)
 
         with patch("x402.interop.server._send_transaction", return_value="sig-2"):
             self.assertEqual(settle_exact_payment(state, header), "sig-2")
