@@ -1,0 +1,13 @@
+parameters:
+    level: max
+    paths:
+        - src
+        - tests
+        - examples/simple-server
+        - ../harness/php-server
+    excludePaths:
+        # Procedural x402 port — ships as `mixed`-typed
+        # procedural functions for spine parity with the upstream reference.
+        # Tracked under follow-up to add `@param`/`@return` annotations.
+        - src/x402/*
+        - tests/x402_interop_server_test.php

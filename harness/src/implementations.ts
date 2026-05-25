@@ -231,4 +231,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "php-x402-server",
+    label: "PHP x402 exact server",
+    role: "server",
+    // Server-only x402 adapter. Mirrors the Rust crates/x402 placement.
+    command: ["php", "../php/bin/x402-interop-server.php"],
+    // Default OFF: opt-in via MPP_INTEROP_SERVERS=php-x402-server.
+    enabled: isEnabled("php-x402-server", "MPP_INTEROP_SERVERS", false),
+    intents: ["x402-exact"],
+  },
 ];

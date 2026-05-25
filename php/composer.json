@@ -20,7 +20,8 @@
   },
   "autoload": {
     "psr-4": {
-      "SolanaMpp\\": "src/"
+      "SolanaMpp\\": "src/",
+      "SolanaMpp\\X402\\": "src/x402/"
     }
   },
   "autoload-dev": {
@@ -31,13 +32,18 @@
   "scripts": {
     "format:check": "php-cs-fixer fix --dry-run --diff --using-cache=no --sequential",
     "lint:syntax": "find src tests examples ../harness/php-server \\( -path examples/laravel -prune \\) -o -name '*.php' -print0 | xargs -0 -n1 php -l",
-    "lint:static": "phpstan analyse --level=max --debug --memory-limit=1G src tests examples/simple-server ../harness/php-server",
+    "lint:static": "phpstan analyse --debug --memory-limit=1G",
     "lint": [
       "@lint:syntax",
       "@format:check",
       "@lint:static"
     ],
-    "test": "phpunit",
+    "test": [
+      "@test:mpp",
+      "@test:x402"
+    ],
+    "test:mpp": "phpunit",
+    "test:x402": "php tests/x402_interop_server_test.php",
     "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 90"
   },
   "config": {
