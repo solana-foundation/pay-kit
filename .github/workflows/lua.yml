@@ -59,7 +59,7 @@ jobs:
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
           luajit -lluacov tests/run.lua
           luacov
-          ./scripts/check_coverage.sh ../luacov.report.out 87
+          ./scripts/check_coverage.sh ../luacov.report.out 90
 
       # Codex PR #103 P3: the coverage gate excludes mpp/methods/solana/ata
       # because luacov disables LuaJIT trace recording and the on-curve check
