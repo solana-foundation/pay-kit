@@ -78,7 +78,7 @@ jobs:
           pip install -e ".[dev]"
       # Critical order: install + build the TypeScript workspace BEFORE
       # installing the interop harness. harness has
-      # ``"@solana/mpp": "file:../../typescript/packages/mpp"`` which
+      # ``"@solana/mpp": "file:../typescript/packages/mpp"`` which
       # pnpm copies into node_modules at install time. If the typescript
       # package has no dist/ at that moment, the TS interop client crashes
       # with ``Cannot find module '@solana/mpp/dist/client/index.js''`` on

@@ -3,8 +3,8 @@
 
 Spawns the adapter as a subprocess, reads the ``ready`` handshake JSON
 from stdout, hits the protected resource without credentials, and
-asserts the 402 response shape (Greptile follow-up: Content-Type MUST
-be ``application/problem+json`` per RFC 7807 §3, not
+asserts the 402 response shape (Content-Type MUST be
+``application/problem+json`` per RFC 7807 §3, not
 ``application/json``).
 """
 
