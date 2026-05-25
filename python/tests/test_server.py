@@ -1585,9 +1585,90 @@ class TestInstructionAllowlist:
         with pytest.raises(PaymentError, match="memo v1"):
             _verify_local_transaction_intent(tx_b64, request, details)
 
-    def test_valid_spl_payment_with_ata_create_for_recipient_is_accepted(self):
+    def test_valid_spl_payment_with_ata_create_for_required_split_is_accepted(self):
         """Positive control: SPL payment can legitimately include an
-        idempotent ATA create for the recipient ahead of the transfer."""
+        idempotent ATA create for a SPLIT recipient that declared
+        ``ataCreationRequired=true``. Mirrors Rust spine policy:
+        ``allowed_ata_owners`` is the set of required-split owners; the
+        primary recipient is never in that set.
+        """
+        from solana_mpp.protocol.solana import (
+            ASSOCIATED_TOKEN_PROGRAM,
+            Split,
+        )
+        from solana_mpp.server.mpp import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        split_recipient = "8wXtPeU6557ETkp9WHFY1n1EcU6NxDvbAggHGsMYiHsB"
+        request = ChargeRequest(
+            amount="1000000",
+            currency="USDC",
+            recipient=TEST_RECIPIENT,
+        )
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            splits=[
+                Split(
+                    recipient=split_recipient,
+                    amount="100000",
+                    ata_creation_required=True,
+                ),
+            ],
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        split_ata = _derive_ata(split_recipient, mint, TOKEN_PROGRAM)
+        # Idempotent ATA create for the REQUIRED SPLIT recipient.
+        ata_create = Instruction(
+            Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
+            b"\x01",
+            [
+                AccountMeta(fee_payer.pubkey(), True, True),
+                AccountMeta(Pubkey.from_string(split_ata), False, True),
+                AccountMeta(Pubkey.from_string(split_recipient), False, False),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string("11111111111111111111111111111111"), False, False),
+                AccountMeta(Pubkey.from_string(TOKEN_PROGRAM), False, False),
+            ],
+        )
+        # SPL transfer covering the primary leg.
+        source = Pubkey.new_unique()
+        spl_primary = bytes([12]) + (900_000).to_bytes(8, "little") + bytes([6])
+        primary_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            spl_primary,
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        # SPL transfer covering the split leg.
+        spl_split = bytes([12]) + (100_000).to_bytes(8, "little") + bytes([6])
+        split_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            spl_split,
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(split_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        tx_b64 = self._build_tx([ata_create, primary_transfer, split_transfer], fee_payer)
+        # Must not raise.
+        _verify_local_transaction_intent(tx_b64, request, details)
+
+    def test_ata_create_for_primary_recipient_is_rejected(self):
+        """SECURITY: even the top-level recipient is NOT a valid ATA-create
+        owner under fee-payer sponsorship. Only splits with
+        ``ataCreationRequired=true`` are allowed (Rust spine policy).
+        Without this, a malicious client could get the fee payer to spend
+        SOL on rent for a primary-recipient ATA the route did not authorize.
+        """
         from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
         from solana_mpp.server.mpp import _verify_local_transaction_intent
 
@@ -1597,11 +1678,10 @@ class TestInstructionAllowlist:
             currency="USDC",
             recipient=TEST_RECIPIENT,
         )
+        # No splits, no ataCreationRequired -> allowed_ata_owners empty.
         details = MethodDetails(network="devnet", token_program=TOKEN_PROGRAM, decimals=6)
         mint = USDC_DEVNET
         recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
-        # Idempotent ATA create: data == [1], 6 accounts in canonical order
-        # (payer, ata, owner, mint, system, token_program).
         ata_create = Instruction(
             Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
             b"\x01",
@@ -1614,7 +1694,6 @@ class TestInstructionAllowlist:
                 AccountMeta(Pubkey.from_string(TOKEN_PROGRAM), False, False),
             ],
         )
-        # Build SPL transfer matching the recipient ATA.
         source = Pubkey.new_unique()
         spl_data = bytes([12]) + (1_000_000).to_bytes(8, "little") + bytes([6])
         spl_transfer = Instruction(
@@ -1628,8 +1707,8 @@ class TestInstructionAllowlist:
             ],
         )
         tx_b64 = self._build_tx([ata_create, spl_transfer], fee_payer)
-        # Must not raise.
-        _verify_local_transaction_intent(tx_b64, request, details)
+        with pytest.raises(PaymentError, match="not authorized"):
+            _verify_local_transaction_intent(tx_b64, request, details)
 
     def test_ata_create_for_attacker_owner_is_rejected(self):
         """SECURITY: an ATA create for an owner that is NOT a charge

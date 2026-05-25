@@ -593,18 +593,38 @@ def _assert_signature_slot(idx: int, num_required: int) -> None:
         )
 
 
-def _expected_split_recipients(request: ChargeRequest, details: MethodDetails) -> set[str]:
-    """Return the union of the primary recipient and every split recipient.
+def _expected_ata_creation_policy(
+    details: MethodDetails,
+    fee_payer_pubkey: str | None,
+) -> tuple[set[str], set[str]]:
+    """Return ``(allowed_ata_owners, required_ata_owners)`` per Rust spine.
 
-    Used by the strict instruction allowlist to decide which ATA owners
-    may legally appear in an ``AssociatedToken create_idempotent``
-    instruction. Mirrors the ``allowed_ata_owners`` set on the canonical
-    Rust path in ``validate_instruction_allowlist``.
+    Mirrors ``expected_ata_creation_policy`` in
+    ``rust/src/server/charge.rs``:
+
+    - ``required_ata_owners`` is the set of split recipients with
+      ``ataCreationRequired=true``.
+    - ``allowed_ata_owners`` is ``required_ata_owners`` when the route
+      advertises ``feePayer=true`` (the server only sponsors ATA creates
+      that the route explicitly demanded), and the set of every split
+      recipient when no fee-payer co-sign is in play (client pays its
+      own ATA rent so it may opportunistically create ATAs for any
+      declared split).
+
+    The primary recipient is NEVER in ``allowed_ata_owners``. Including
+    it would let a sponsored route co-sign an ATA create for the top-level
+    recipient even though no split asked for it, spending fee-payer SOL
+    on rent the route did not authorize.
     """
-    owners: set[str] = {request.recipient}
+    required_owners: set[str] = set()
+    split_owners: set[str] = set()
     for split in details.splits:
-        owners.add(split.recipient)
-    return owners
+        split_owners.add(split.recipient)
+        if split.ata_creation_required:
+            required_owners.add(split.recipient)
+
+    allowed_owners = set(required_owners) if fee_payer_pubkey is not None else split_owners
+    return allowed_owners, required_owners
 
 
 def _validate_ata_create_idempotent(
@@ -804,7 +824,7 @@ def _validate_instruction_allowlist(
         expected_token_program = details.token_program or default_token_program_for_currency(
             request.currency, details.network
         )
-    allowed_ata_owners = _expected_split_recipients(request, details)
+    allowed_ata_owners, _required_ata_owners = _expected_ata_creation_policy(details, fee_payer_pubkey)
     expected_memos = {memo for _label, memo in _expected_memos(request, details)}
 
     # Track which required transfers / memos have been satisfied so each

@@ -19,7 +19,6 @@ from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
 from solana_mpp._errors import PaymentError
-from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import (
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
@@ -228,32 +227,49 @@ def test_assert_signature_slot_inside_range_but_not_zero_rejected():
 
 
 # ---------------------------------------------------------------------------
-# _expected_split_recipients
+# _expected_ata_creation_policy (mirrors rust spine)
 # ---------------------------------------------------------------------------
 
 
-def test_expected_split_recipients_combines_recipient_and_splits():
-    req = ChargeRequest(
-        recipient="REC11111111111111111111111111111111111111111",
-        amount="100",
-        currency="SOL",
+def test_ata_policy_no_fee_payer_allows_every_split_owner():
+    # When no fee-payer co-sign is in play the client pays its own rent,
+    # so any declared split may opportunistically host an ATA create.
+    # Primary recipient is NEVER in the allowed set.
+    details = MethodDetails(
+        splits=[
+            Split(recipient="SPL1", amount="10"),
+            Split(recipient="SPL2", amount="20", ata_creation_required=True),
+        ]
     )
-    details = MethodDetails(splits=[
-        Split(recipient="SPL11111111111111111111111111111111111111111", amount="10"),
-        Split(recipient="SPL22222222222222222222222222222222222222222", amount="20"),
-    ])
-    out = M._expected_split_recipients(req, details)
-    assert out == {
-        "REC11111111111111111111111111111111111111111",
-        "SPL11111111111111111111111111111111111111111",
-        "SPL22222222222222222222222222222222222222222",
-    }
+    allowed, required = M._expected_ata_creation_policy(details, fee_payer_pubkey=None)
+    assert allowed == {"SPL1", "SPL2"}
+    assert required == {"SPL2"}
 
 
-def test_expected_split_recipients_no_splits():
-    req = ChargeRequest(recipient="REC", amount="1", currency="SOL")
+def test_ata_policy_with_fee_payer_only_allows_required_split_owners():
+    # When fee-payer co-sign is in play the server only sponsors ATA
+    # creates the route explicitly demanded via ataCreationRequired.
+    # An unmarked split MUST NOT appear in allowed; primary recipient is
+    # never allowed regardless of fee-payer.
+    details = MethodDetails(
+        splits=[
+            Split(recipient="SPL1", amount="10"),  # not required
+            Split(recipient="SPL2", amount="20", ata_creation_required=True),
+        ]
+    )
+    allowed, required = M._expected_ata_creation_policy(details, fee_payer_pubkey="FP")
+    assert allowed == {"SPL2"}
+    assert required == {"SPL2"}
+
+
+def test_ata_policy_no_splits():
     details = MethodDetails()
-    assert M._expected_split_recipients(req, details) == {"REC"}
+    allowed_no_fp, required_no_fp = M._expected_ata_creation_policy(details, None)
+    assert allowed_no_fp == set()
+    assert required_no_fp == set()
+    allowed_fp, required_fp = M._expected_ata_creation_policy(details, "FP")
+    assert allowed_fp == set()
+    assert required_fp == set()
 
 
 # ---------------------------------------------------------------------------
