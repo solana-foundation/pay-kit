@@ -10,6 +10,7 @@ from solana_mpp._errors import (
     VerificationError,
 )
 from solana_mpp._expires import days, hours, minutes, seconds, weeks
+from solana_mpp._rpc import SolanaRpc
 from solana_mpp._types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.store import MemoryStore, Store
 
@@ -23,6 +24,7 @@ __all__ = [
     "PaymentError",
     "Receipt",
     "ReplayError",
+    "SolanaRpc",
     "Store",
     "VerificationError",
     "days",
