@@ -115,11 +115,10 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // Push-mode B34: the server route is built WITHOUT
     // methodDetails.feePayer so the credential is not rejected by the
     // server-side fee payer guard (see charge.rs / SolanaChargeHandler).
-    // Gated to servers that have push support shipped today and a
-    // working interop fixture: php (this PR). TS / rust / ruby / lua /
-    // python servers ship push support in their SDKs but route this
-    // through a paymentMode-aware interop fixture in a follow-up; their
-    // serverIds are added here once the fixture lands.
+    // Server fixtures honour MPP_INTEROP_PAYMENT_MODE=push by omitting
+    // the fee payer signer when constructing the charge method.
+    // Excluded: lua and python ship push support in their SDKs but do
+    // not yet have an interop server fixture under tests/interop/.
     id: "charge-push",
     intent: "charge",
     paymentMode: "push",
@@ -131,7 +130,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     settlementHeader: "x-fixture-settlement",
     expectedStatus: 200,
     clientIds: ["typescript"],
-    serverIds: ["php"],
+    serverIds: ["typescript", "rust", "php", "ruby"],
   },
   {
     id: "charge-network-mismatch",
