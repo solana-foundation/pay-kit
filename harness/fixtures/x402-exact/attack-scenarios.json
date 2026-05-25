@@ -1,0 +1,126 @@
+{
+  "_description": "Attack scenarios for the x402-exact SVM verifier. Each scenario provides a malformed PAYMENT-SIGNATURE credential the verifier MUST reject. `expectedRejectTokens` lists every reject token a spec-compliant server may emit (the exhaustive parity assertion picks the first match in the response body's `code`, `error`, or `message` field). Wire-only adapters (no SVM transaction decoder) may emit `payment_invalid` as the generic fallback — the test harness accepts either the specific token or `payment_invalid`. Specific SVM verifiers (rust spine, language ports with full structural verify) are held to the specific token.",
+  "scenarios": [
+    {
+      "name": "missing_accepted_block",
+      "description": "Credential lacks `accepted` block entirely. Generic parser-level reject.",
+      "credentialOverride": {},
+      "deleteFields": ["accepted"],
+      "expectedRejectTokens": ["payment_invalid", "challenge_verification_failed"]
+    },
+    {
+      "name": "missing_payload_block",
+      "description": "Credential lacks `payload`. Parser/structural reject.",
+      "credentialOverride": {},
+      "deleteFields": ["payload"],
+      "expectedRejectTokens": ["payment_invalid", "challenge_verification_failed"]
+    },
+    {
+      "name": "tampered_amount",
+      "description": "Credential amount diverges from offered requirement. SVM verifier emits amount_mismatch; wire adapter may emit charge_request_mismatch.",
+      "credentialOverride": {
+        "accepted": {
+          "amount": "1"
+        }
+      },
+      "expectedRejectTokens": [
+        "invalid_exact_svm_payload_amount_mismatch",
+        "charge_request_mismatch",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "tampered_recipient",
+      "description": "Credential payTo diverges from offered requirement. SVM verifier emits recipient_mismatch.",
+      "credentialOverride": {
+        "accepted": {
+          "payTo": "11111111111111111111111111111112"
+        }
+      },
+      "expectedRejectTokens": [
+        "invalid_exact_svm_payload_recipient_mismatch",
+        "charge_request_mismatch",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "tampered_mint",
+      "description": "Credential asset diverges from offered requirement. SVM verifier emits mint_mismatch.",
+      "credentialOverride": {
+        "accepted": {
+          "asset": "So11111111111111111111111111111111111111112"
+        }
+      },
+      "expectedRejectTokens": [
+        "invalid_exact_svm_payload_mint_mismatch",
+        "charge_request_mismatch",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "wrong_network",
+      "description": "Credential network diverges from server's offered network.",
+      "credentialOverride": {
+        "accepted": {
+          "network": "solana:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        }
+      },
+      "expectedRejectTokens": [
+        "wrong_network",
+        "charge_request_mismatch",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "tokenProgram_mismatch",
+      "description": "Credential carries an `extra.tokenProgram` that does not match the offered token program. SPL Token-2022 vs legacy SPL confusion class. Wire-only adapters (no SVM transaction decoder) cannot catch this and may accept; full-verifier adapters MUST reject.",
+      "credentialOverride": {
+        "accepted": {
+          "extra": {
+            "decimals": 6,
+            "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          }
+        }
+      },
+      "wireOnlyMayAccept": true,
+      "expectedRejectTokens": [
+        "invalid_exact_svm_payload_mint_mismatch",
+        "charge_request_mismatch",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "missing_challenge_id",
+      "description": "Payload missing challengeId. Verifier may emit challenge_verification_failed or payment_invalid.",
+      "credentialOverride": {
+        "payload": {
+          "resource": "/protected"
+        }
+      },
+      "replaceFields": ["payload"],
+      "expectedRejectTokens": [
+        "challenge_verification_failed",
+        "payment_invalid"
+      ]
+    },
+    {
+      "name": "resource_mismatch",
+      "description": "Payload claims a different resource than the one requested.",
+      "credentialOverride": {
+        "payload": {
+          "challengeId": "canonical-fixture-challenge-0001",
+          "resource": "/some-other-route"
+        }
+      },
+      "expectedRejectTokens": [
+        "charge_request_mismatch",
+        "challenge_route_mismatch",
+        "payment_invalid"
+      ]
+    }
+  ],
+  "replayScenario": {
+    "_description": "Replay: submit the same canonical-payment-signature.json twice. Server MUST accept the first and reject the second with `signature_consumed`.",
+    "expectedRejectTokens": ["signature_consumed"]
+  }
+}

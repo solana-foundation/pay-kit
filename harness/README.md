@@ -165,6 +165,47 @@ X402_INTEROP_FACILITATOR_SECRET_KEY='[...]' \
 pnpm test x402-exact.e2e.test.ts
 ```
 
+#### x402-exact test tiers
+
+The x402-exact intent splits its coverage across three tiers:
+
+1. **Wire compat (`test/x402-exact.compat.test.ts`)** — runs in the
+   default `pnpm test` invocation. No live RPC, no cargo build, no
+   funded keypair. Drives each registered x402-exact adapter (gated by
+   `COMPAT_INCLUDE_IDS`) against the canonical fixtures in
+   `harness/fixtures/x402-exact/`:
+   - **canonical-challenge.json** — the 402 envelope every client must
+     parse.
+   - **canonical-payment-signature.json** — the credential every server
+     must parse (accept or reject with a known token).
+   - **canonical-reject-tokens.json** — the union of taxonomy-aligned
+     reject tokens (high-level + `invalid_exact_svm_payload_*` family,
+     mirrored from `rust/crates/x402/src/protocol/schemes/exact/verify.rs`).
+   - **attack-scenarios.json** — tampered credential overrides; each
+     scenario enumerates the reject tokens a spec-compliant server may
+     emit. Wire-only adapters may emit `payment_invalid` as fallback.
+
+2. **Self-pair + spine cross-pair (`test/x402-exact.e2e.test.ts`)** —
+   the canonical cross-language matrix, env-gated behind
+   `X402_INTEROP_MATRIX=1`. Enumerates every same-language self-pair
+   plus every adapter ↔ Rust spine cross-pair.
+
+3. **Live full matrix (`test/x402-exact.live.matrix.test.ts`)** —
+   superset of tier 2: every `allowedPair` from the policy in
+   `implementations.ts`. Also env-gated. Designed to widen
+   automatically as new x402-exact adapters register; no test edit
+   required to pick them up.
+
+To extend with a new language adapter:
+- Register `{id, label, role, command, intents: ["x402-exact"], enabled}`
+  in `harness/src/implementations.ts`.
+- Add the adapter id to `COMPAT_INCLUDE_IDS` in
+  `test/x402-exact.compat.test.ts` once the adapter has a fast startup
+  cost (no cargo build per test); otherwise leave it out and rely on
+  the live matrix.
+- The live matrix picks up the adapter automatically via the
+  `allowedPair` policy.
+
 Cross-server portability and idempotent-resubmit scenarios are gated
 separately:
 
