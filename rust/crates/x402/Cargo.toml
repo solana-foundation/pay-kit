@@ -1,0 +1,49 @@
+[package]
+name = "solana-x402"
+version = "0.1.0"
+edition = "2021"
+description = "Solana-only x402 SDK"
+license = "MIT"
+
+[features]
+default = ["server", "client"]
+server = ["dep:tokio"]
+client = ["dep:reqwest"]
+
+[dependencies]
+# Signing — solana-keychain with sdk-v3
+solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "abf75944", default-features = false, features = ["memory", "sdk-v3"] }
+
+# Solana — atomic crates only
+solana-hash = { version = "3.1", default-features = false }
+solana-address = { version = "1.1", default-features = false }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "3.1", default-features = false }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-rpc-client = { version = "3.1", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "3.1", default-features = false }
+solana-transaction-status = { version = "3.1", default-features = false }
+
+# Async
+tokio = { version = "1", features = ["full"], optional = true }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bs58 = "0.5"
+base64 = "0.22"
+bincode = "1"
+getrandom = "0.3"
+url = "2"
+
+# Errors
+thiserror = "2"
+
+[dev-dependencies]
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }

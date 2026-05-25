@@ -1,0 +1,9 @@
+[package]
+name = "solana-pay-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Solana primitives for the pay-kit crates (MPP + x402)"
+license = "MIT"
+repository = "https://github.com/solana-foundation/pay-kit"
+
+[dependencies]

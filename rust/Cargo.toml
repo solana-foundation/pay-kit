@@ -1,74 +1,9 @@
-[package]
-name = "solana-mpp"
-version = "0.6.0"
-edition = "2021"
-description = "Solana payment method for the Machine Payments Protocol"
-license = "MIT"
-repository = "https://github.com/solana-foundation/mpp-sdk"
-
-[features]
-default = ["server", "client"]
-server = ["dep:tokio"]
-client = ["dep:reqwest"]
-axum = ["server", "dep:axum"]
-gcp_kms = ["solana-keychain/gcp_kms"]
-
-[dependencies]
-# Signing — solana-keychain with sdk-v3 (fix/deps branch pins solana-signature <3.3)
-solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "abf75944", default-features = false, features = ["memory", "sdk-v3"] }
-
-# Solana — atomic crates only
-solana-hash = { version = "3.1", default-features = false }
-solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "3.0", default-features = false }
-solana-pubkey = { version = "3.0", default-features = false }
-solana-commitment-config = { version = "3.0", default-features = false }
-solana-rpc-client = { version = "3.1", default-features = false }
-solana-signature = { version = "3.1", default-features = false, features = ["default"] }
-solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "3.0", default-features = false }
-solana-transaction-status = { version = "3.1", default-features = false }
-# Keep spl-token-2022-interface 2.1 compiling until Solana 3.1 can move to
-# the newer token-2022 interface line.
-solana-zero-copy = { version = "=1.0.0", default-features = false }
-
-# Async
-tokio = { version = "1", features = ["full"], optional = true }
-
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
-
-# Axum extractor (opt-in)
-axum = { version = "0.8", optional = true, default-features = false }
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_json_canonicalizer = "0.3"
-bs58 = "0.5"
-base64 = "0.22"
-bincode = "1"
-borsh = { version = "1.0", features = ["derive"] }
-payment_channels_client = { path = "payment_channels_client" }
-solana-address = { version = "2", features = ["borsh", "curve25519"] }
-
-# Crypto (HMAC challenge IDs + distribution hash + voucher verification)
-hmac = "0.12"
-sha2 = "0.10"
-blake3 = "1"
-ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
-
-# Time (expiration, timestamps)
-time = { version = "0.3", features = ["formatting", "parsing"] }
-
-# Observability
-tracing = "0.1"
-
-# Errors
-thiserror = "2"
-
-[dev-dependencies]
-tokio = { version = "1", features = ["full"] }
-axum = "0.8"
-surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "3dcb436" }
-serial_test = "3"
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/core/payment-channels",
+    "crates/mpp",
+    "crates/x402",
+    "crates/kit",
+]

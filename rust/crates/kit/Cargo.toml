@@ -1,0 +1,20 @@
+[package]
+name = "solana-pay-kit"
+version = "0.1.0"
+edition = "2021"
+description = "Solana payment SDK: MPP + x402 unified behind feature flags"
+license = "MIT"
+repository = "https://github.com/solana-foundation/pay-kit"
+
+[features]
+default = ["mpp", "x402"]
+mpp = ["dep:solana-mpp"]
+x402 = ["dep:solana-x402"]
+server = ["solana-mpp?/server", "solana-x402?/server"]
+client = ["solana-mpp?/client", "solana-x402?/client"]
+axum = ["solana-mpp?/axum"]
+gcp_kms = ["solana-mpp?/gcp_kms"]
+
+[dependencies]
+solana-mpp = { path = "../mpp", optional = true }
+solana-x402 = { path = "../x402", optional = true }
