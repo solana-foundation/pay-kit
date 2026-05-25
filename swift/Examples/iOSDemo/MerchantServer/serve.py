@@ -69,10 +69,23 @@ FORTUNES = [
 ]
 
 
+def _rpc_post(rpc_url: str, payload: dict) -> None:
+    """POST a JSON-RPC payload to surfpool and fail loudly on HTTP errors.
+
+    Without `raise_for_status`, a 4xx/5xx from surfpool (or a missing
+    `surfnet_*` method on a non-Surfpool RPC) would silently no-op the
+    funding step and the first charge would surface as
+    `InsufficientFunds` with no breadcrumb back to the funding step.
+    Surface boot-time failures instead.
+    """
+    response = httpx.post(rpc_url, json=payload, timeout=10)
+    response.raise_for_status()
+
+
 def fund_demo_signer(rpc_url: str) -> None:
     """Seed SOL + USDC on the demo signer so the iOS app can charge."""
     # 1 SOL of lamports.
-    httpx.post(rpc_url, json={
+    _rpc_post(rpc_url, {
         "jsonrpc": "2.0", "id": 1, "method": "surfnet_setAccount",
         "params": [
             DEMO_SIGNER,
@@ -84,18 +97,18 @@ def fund_demo_signer(rpc_url: str) -> None:
                 "rentEpoch": 0,
             },
         ],
-    }, timeout=10)
+    })
     # 1000 USDC (6 decimals) on the demo signer's USDC ATA.
-    httpx.post(rpc_url, json={
+    _rpc_post(rpc_url, {
         "jsonrpc": "2.0", "id": 1, "method": "surfnet_setTokenAccount",
         "params": [
             DEMO_SIGNER, USDC_MINT,
             {"amount": 1_000_000_000, "state": "initialized"},
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
         ],
-    }, timeout=10)
+    })
     # Initialize recipient's ATA so the first charge doesn't have to.
-    httpx.post(rpc_url, json={
+    _rpc_post(rpc_url, {
         "jsonrpc": "2.0", "id": 1, "method": "surfnet_setAccount",
         "params": [
             RECIPIENT,
@@ -107,15 +120,15 @@ def fund_demo_signer(rpc_url: str) -> None:
                 "rentEpoch": 0,
             },
         ],
-    }, timeout=10)
-    httpx.post(rpc_url, json={
+    })
+    _rpc_post(rpc_url, {
         "jsonrpc": "2.0", "id": 1, "method": "surfnet_setTokenAccount",
         "params": [
             RECIPIENT, USDC_MINT,
             {"amount": 0, "state": "initialized"},
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
         ],
-    }, timeout=10)
+    })
 
 
 def make_handler(mpp: Mpp):
