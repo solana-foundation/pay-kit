@@ -1,11 +1,12 @@
 import type { CanonicalErrorCode } from "./canonical-codes";
 import { chargeScenarios } from "./intents/charge";
+import { x402ExactScenarios } from "./intents/x402-exact";
 
 export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
-export type InteropIntent = "charge";
+export type InteropIntent = "charge" | "x402-exact";
 
 export type InteropScenarioSplit = {
   recipientKey: string;
@@ -136,8 +137,10 @@ export type AdapterMessage = ReadyMessage | ClientRunResult;
 
 export { chargeCanonicalJsonVectors } from "./intents/charge";
 
-export const interopScenarios: readonly InteropScenario[] =
-  chargeScenarios;
+export const interopScenarios: readonly InteropScenario[] = [
+  ...chargeScenarios,
+  ...x402ExactScenarios,
+];
 
 export const interopScenario: InteropScenario = {
   ...(interopScenarios[0] as InteropScenario),
@@ -191,11 +194,18 @@ function selectScenarioIds(rawSelection: string | undefined): string[] {
   return selected;
 }
 
+// The legacy MPP charge runner predates the x402-exact intent. To keep
+// the existing CI matrix's default behaviour (charge-only) stable while
+// still surfacing the new intent through `selectInteropIntents("x402-exact")`,
+// the empty-selection default is restricted to "charge". Callers that
+// want the full intent set should pass the explicit list.
+const DEFAULT_INTENTS: readonly InteropIntent[] = ["charge"];
+
 export function selectInteropIntents(
   rawSelection: string | undefined,
 ): InteropIntent[] {
   if (!rawSelection || rawSelection.trim() === "") {
-    return [...supportedInteropIntents];
+    return [...DEFAULT_INTENTS];
   }
 
   const selected = rawSelection
@@ -209,8 +219,7 @@ export function selectInteropIntents(
   if (unsupported.length > 0) {
     throw new Error(
       `Unsupported MPP_INTEROP_INTENTS value(s): ${unsupported.join(", ")}. ` +
-        `Supported intents: ${supportedInteropIntents.join(", ")}. ` +
-        "Session and subscription scenarios are not implemented in this harness yet.",
+        `Supported intents: ${supportedInteropIntents.join(", ")}.`,
     );
   }
 

@@ -123,6 +123,55 @@ Use these environment variables to filter the active matrix:
 - `MPP_INTEROP_INTENTS=charge`
 - `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay`
 
+### x402 exact intent
+
+A second intent, `x402-exact`, exercises the canonical x402 `exact` scheme
+against the Rust spine in `rust/crates/x402/src/bin/interop_{client,server}.rs`.
+The TypeScript reference adapters live at
+`src/fixtures/typescript/exact-{client,server}.ts` and share the same
+harness contract as the Rust spine: identical `X402_INTEROP_*` env vars,
+identical `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` headers, identical
+ready / result JSON shapes. The TS reference fixture carries a stub
+credential payload (challenge id + resource) and is paired against the
+TS reference server in the default matrix; the Rust spine is paired
+against itself. As language adapters that carry a real Solana
+PaymentProof land, they expand the matrix by registering under
+`intents: ["x402-exact"]` in `implementations.ts`.
+
+Env vars consumed by both roles:
+
+- `X402_INTEROP_RPC_URL`, `X402_INTEROP_NETWORK`, `X402_INTEROP_MINT`
+- `X402_INTEROP_PAY_TO`, `X402_INTEROP_PRICE`
+- `X402_INTEROP_FACILITATOR_SECRET_KEY`
+
+Server-only:
+
+- `X402_INTEROP_EXTRA_OFFERED_MINTS` (CSV of additional mint addresses)
+
+Client-only:
+
+- `X402_INTEROP_TARGET_URL`
+- `X402_INTEROP_CLIENT_SECRET_KEY`
+- `X402_INTEROP_PREFER_CURRENCIES` (CSV of preferred currencies)
+
+Run the x402 matrix slice:
+
+```bash
+X402_INTEROP_MATRIX=1 \
+X402_INTEROP_RPC_URL=http://127.0.0.1:8899 \
+X402_INTEROP_MINT=... X402_INTEROP_PAY_TO=... \
+X402_INTEROP_CLIENT_SECRET_KEY='[...]' \
+X402_INTEROP_FACILITATOR_SECRET_KEY='[...]' \
+pnpm test x402-exact.e2e.test.ts
+```
+
+Cross-server portability and idempotent-resubmit scenarios are gated
+separately:
+
+```bash
+X402_INTEROP_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
+```
+
 The current scenario set covers only the `charge` intent. It includes a basic
 payment, a split payment that requires the server fee payer to create the split
 recipient ATA, a negative network-mismatch payment, and a cross-route replay

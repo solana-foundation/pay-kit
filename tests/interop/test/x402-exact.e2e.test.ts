@@ -1,0 +1,128 @@
+// Cross-language matrix for the x402 `exact` intent. Iterates every
+// active x402 client × every active x402 server registered in
+// `src/implementations.ts` and asserts the happy-path scenario reaches
+// HTTP 200 with the fixture settlement header populated.
+//
+// Gated behind `X402_INTEROP_MATRIX=1` so the default `pnpm test` run
+// in pay-kit does not require cargo or a live Surfpool RPC. The
+// canonical CI invocation is:
+//
+//   X402_INTEROP_MATRIX=1 \
+//   X402_INTEROP_RPC_URL=... \
+//   X402_INTEROP_PAY_TO=... \
+//   X402_INTEROP_CLIENT_SECRET_KEY=[...] \
+//   X402_INTEROP_FACILITATOR_SECRET_KEY=[...] \
+//   pnpm test x402-exact.e2e.test.ts
+
+import { afterAll, describe, expect, it } from "vitest";
+import { interopScenarios } from "../src/contracts";
+import {
+  clientImplementations,
+  serverImplementations,
+} from "../src/implementations";
+import { runClient, startServer, stopServer } from "../src/process";
+
+const MATRIX_ENABLED = process.env.X402_INTEROP_MATRIX === "1";
+
+const requiredEnvs = [
+  "X402_INTEROP_RPC_URL",
+  "X402_INTEROP_MINT",
+  "X402_INTEROP_PAY_TO",
+  "X402_INTEROP_CLIENT_SECRET_KEY",
+  "X402_INTEROP_FACILITATOR_SECRET_KEY",
+];
+
+function missingEnvs(): string[] {
+  return requiredEnvs.filter(
+    name => !process.env[name] || process.env[name]?.trim() === "",
+  );
+}
+
+const happyPath = interopScenarios.find(
+  scenario => scenario.id === "x402-exact-basic",
+);
+
+const x402Clients = clientImplementations.filter(
+  impl => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-exact"),
+);
+const x402Servers = serverImplementations.filter(
+  impl => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-exact"),
+);
+
+type RunningServer = Awaited<ReturnType<typeof startServer>>;
+const runningServers: RunningServer[] = [];
+
+afterAll(async () => {
+  for (const server of runningServers.splice(0)) {
+    await stopServer(server);
+  }
+});
+
+describe("x402 exact intent — cross-language matrix", () => {
+  if (!MATRIX_ENABLED) {
+    it.skip("matrix is gated behind X402_INTEROP_MATRIX=1", () => {});
+    return;
+  }
+
+  const missing = missingEnvs();
+  if (missing.length > 0) {
+    it.skip(`missing required env vars: ${missing.join(", ")}`, () => {});
+    return;
+  }
+
+  if (!happyPath) {
+    it.fails("happy-path scenario x402-exact-basic missing from registry", () => {
+      throw new Error("x402-exact-basic scenario not found in interopScenarios");
+    });
+    return;
+  }
+
+  // Pair restriction: the TS reference adapters speak a stub payload
+  // (no real signed Solana transaction in the fixture) so they only
+  // interoperate with each other. The Rust spine adapters carry the
+  // canonical PaymentProof and are exercised end-to-end by the rust
+  // crate's own integration tests (`cargo test -p solana-x402`).
+  // The cross-language matrix asserts the harness wiring and the
+  // ready/result protocol; full TS<->Rust on-chain settlement parity
+  // arrives with the TS SDK port (tracked separately).
+  const allowedPair = (clientId: string, serverId: string): boolean => {
+    if (clientId === "ts-x402" && serverId === "ts-x402") return true;
+    if (clientId === "rust-x402" && serverId === "rust-x402") return true;
+    return false;
+  };
+
+  for (const server of x402Servers) {
+    for (const client of x402Clients) {
+      if (!allowedPair(client.id, server.id)) {
+        it.skip(`${client.id} client ↔ ${server.id} server: pair not in default matrix`, () => {});
+        continue;
+      }
+      it(`${client.id} client ↔ ${server.id} server: happy path`, async () => {
+        const env = {
+          X402_INTEROP_NETWORK: happyPath.network,
+          X402_INTEROP_PRICE: happyPath.price,
+          X402_INTEROP_RESOURCE_PATH: happyPath.resourcePath,
+          X402_INTEROP_SETTLEMENT_HEADER: happyPath.settlementHeader,
+        } satisfies Record<string, string>;
+
+        const running = await startServer(server, env);
+        runningServers.push(running);
+
+        try {
+          const targetUrl = `http://127.0.0.1:${running.ready.port}${happyPath.resourcePath}`;
+          const result = await runClient(client, targetUrl, {
+            X402_INTEROP_TARGET_URL: targetUrl,
+            ...env,
+          });
+
+          expect(result.status).toBe(happyPath.expectedStatus);
+          expect(result.ok).toBe(true);
+          expect(result.settlement).toBeTruthy();
+        } finally {
+          await stopServer(running);
+          runningServers.splice(runningServers.indexOf(running), 1);
+        }
+      }, 120_000);
+    }
+  }
+});
