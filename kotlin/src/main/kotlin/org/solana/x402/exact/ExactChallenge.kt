@@ -35,7 +35,9 @@ data class SelectedChallenge(
  * rather than silently producing a mainnet mint address.
  */
 sealed class SolanaNetwork(val caip2: String) {
-    object Mainnet : SolanaNetwork("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpLcR4w9wpc")
+    // Aligned to Rust spine SOLANA_MAINNET constant (32-char canonical prefix
+    // of the genesis hash); see rust/crates/x402/src/protocol/schemes/exact/types.rs.
+    object Mainnet : SolanaNetwork("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")
     object Devnet : SolanaNetwork("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
     object Localnet : SolanaNetwork("solana:localnet")
 

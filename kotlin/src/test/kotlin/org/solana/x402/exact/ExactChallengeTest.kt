@@ -10,6 +10,23 @@ import kotlin.test.assertNull
 
 class ExactChallengeTest {
     @Test
+    fun `SolanaNetwork mainnet CAIP-2 matches Rust spine SOLANA_MAINNET constant`() {
+        // Regression: previous tip shipped the 44-char full base58 genesis hash,
+        // which broke interop with every spine-compliant mainnet challenge. The
+        // Rust spine constant lives at
+        // rust/crates/x402/src/protocol/schemes/exact/types.rs (SOLANA_MAINNET).
+        assertEquals(
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+            SolanaNetwork.Mainnet.caip2,
+        )
+        assertEquals(32, SolanaNetwork.Mainnet.caip2.removePrefix("solana:").length)
+        assertEquals(
+            SolanaNetwork.Mainnet,
+            SolanaNetwork.fromIdentifierOrNull("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"),
+        )
+    }
+
+    @Test
     fun `selects Solana exact requirement from PAYMENT-REQUIRED header`() {
         val envelope = """
             {
@@ -87,7 +104,7 @@ class ExactChallengeTest {
               "accepts": [
                 {
                   "scheme": "exact",
-                  "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                  "network": "solana:not-a-real-cluster",
                   "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
                   "amount": "1000"
                 }
@@ -117,7 +134,8 @@ class ExactChallengeTest {
         assertEquals(devnetUsdc, ExactChallenge.stablecoinMint("USDC", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"))
         assertEquals(devnetUsdc, ExactChallenge.stablecoinMint("USDC", "localnet"))
         assertEquals(mainnetUsdc, ExactChallenge.stablecoinMint("USDC", "mainnet-beta"))
-        assertEquals(mainnetUsdc, ExactChallenge.stablecoinMint("USDC", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpLcR4w9wpc"))
+        // Aligned to Rust spine SOLANA_MAINNET constant (32-char canonical prefix).
+        assertEquals(mainnetUsdc, ExactChallenge.stablecoinMint("USDC", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"))
     }
 
     @Test
