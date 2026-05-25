@@ -17,6 +17,14 @@ const DEFAULT_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const DEFAULT_TOKEN_DECIMALS = 6;
 const DEFAULT_MAX_TIMEOUT_SECONDS = 60;
 const DEFAULT_NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+// These devnet defaults are the same literals exposed by the canonical
+// `Mints` class (which mirrors the Rust spine
+// `protocol::schemes::exact::types::mints` module byte-for-byte). They are
+// duplicated as file-level `const` strings here because PHP `const` at file
+// scope is limited to literal expressions on the lib's ^8.1 baseline. For
+// any new symbol+network resolution, call `Mints::resolve()` — it is
+// fail-closed (returns null on unknown pairs) so callers never silently
+// mis-bind devnet challenges to mainnet mints.
 const DEFAULT_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const PYUSD_DEVNET_MINT = 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM';
 const SETTLEMENT_CACHE_TTL_MS = 120_000;
