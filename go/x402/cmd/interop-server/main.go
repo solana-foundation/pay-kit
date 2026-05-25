@@ -67,6 +67,9 @@ var stablecoinMintsByNetwork = map[string]map[string]string{
 		solanaMainnetCAIP2: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 		solanaDevnetCAIP2:  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 	},
+	"USDT": {
+		solanaMainnetCAIP2: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+	},
 	"USDG": {
 		solanaMainnetCAIP2: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
 		solanaDevnetCAIP2:  "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
@@ -84,12 +87,12 @@ var stablecoinMintsByNetwork = map[string]map[string]string{
 
 // knownMintAliases lists the case-insensitive currency-name aliases that
 // resolveMintAlias understands. Kept stable for error messages.
-var knownMintAliases = []string{"USDC", "USDG", "PYUSD", "CASH"}
+var knownMintAliases = []string{"USDC", "USDT", "USDG", "PYUSD", "CASH"}
 
 // resolveMintAlias returns the canonical base58 mint address for a given
 // input on the configured CAIP-2 network. The input may already be a base58
 // mint (in which case it is returned unchanged) or a known stablecoin alias
-// (USDC, USDG, PYUSD, CASH). Unknown aliases and aliases without a
+// (USDC, USDT, USDG, PYUSD, CASH). Unknown aliases and aliases without a
 // configured mint for the network return a descriptive error.
 func resolveMintAlias(input string, network string) (string, error) {
 	trimmed := strings.TrimSpace(input)
