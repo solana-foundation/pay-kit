@@ -153,7 +153,7 @@ If the TypeScript adapter cannot resolve `@solana/mpp/client` or
 install:
 
 ```bash
-cd ../../typescript
+cd ../typescript
 pnpm --filter @solana/mpp build
 
 cd ../harness

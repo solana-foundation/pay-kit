@@ -43,7 +43,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "run",
       "--quiet",
       "--manifest-path",
-      "../../rust/Cargo.toml",
+      "../rust/Cargo.toml",
       "-p",
       "solana-mpp",
       "--bin",
@@ -106,7 +106,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "run",
       "--quiet",
       "--manifest-path",
-      "../../rust/Cargo.toml",
+      "../rust/Cargo.toml",
       "-p",
       "solana-mpp",
       "--bin",
@@ -133,7 +133,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../../ruby && bundle exec ruby ../harness/ruby-server/server.rb",
+      "cd ../ruby && bundle exec ruby ../harness/ruby-server/server.rb",
     ],
     enabled: isEnabled("ruby", "MPP_INTEROP_SERVERS", false),
   },
@@ -144,7 +144,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
+      "cd ../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
     ],
     // Lua defaults off to match php/ruby: the harness requires a
     // luarocks-installed lua_modules tree under lua/ and a working

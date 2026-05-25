@@ -1,7 +1,7 @@
 --[[
 Canonical structured error codes for the Lua MPP server.
 
-Mirrors `python/src/solana_mpp/_errors.py` (M1 closure / L6 audit row).
+Mirrors `python/src/solana_mpp/_errors.py`.
 Every server-side rejection raises through `raise(code, message)`
 which throws an `error({code = code, message = message})` table the
 HTTP boundary then translates into a JSON 402 body carrying `code`,

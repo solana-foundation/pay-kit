@@ -21,14 +21,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
-# Ensure the local Python SDK is importable when run from harness.
+# Ensure the local Python SDK is importable when run from the harness.
 # Walk parents looking for the repo root marker (pyproject.toml at python/
 # or .git) so the adapter stays self-contained regardless of how deep this
-# file lives inside ``tests/``. The harness invokes us from
-# ``harness`` (parents[0]=python-server, parents[1]=interop,
-# parents[2]=tests, parents[3]=repo root); the previous ``parents[2]``
-# resolved to ``<repo>/tests`` and silently fell through to a global
-# ``solana-mpp`` install, hiding local SDK regressions.
+# file lives inside ``harness/``. The harness invokes us from
+# ``harness/python-server``; the previous fixed ``parents[2]`` index
+# silently fell through to a global ``solana-mpp`` install, hiding local
+# SDK regressions.
 def _find_repo_root(start: Path) -> Path:
     for candidate in [start, *start.parents]:
         if (candidate / ".git").exists() or (candidate / "python" / "pyproject.toml").is_file():
