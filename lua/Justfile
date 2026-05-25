@@ -32,7 +32,7 @@ test-cover:
     rm -f ../luacov.stats.out ../luacov.report.out
     eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit -lluacov tests/run.lua
     eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luacov
-    ./scripts/check_coverage.sh ../luacov.report.out 87
+    ./scripts/check_coverage.sh ../luacov.report.out 90
 
 # Audit-equivalent: run luarocks lint over the rockspec. This is the closest
 # analogue to `bundle audit` / `composer audit` in the Lua ecosystem.
