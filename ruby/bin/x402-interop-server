@@ -1,0 +1,86 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "socket"
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "x402/server"
+
+server = TCPServer.new("127.0.0.1", 0)
+running = true
+
+def interop_state
+  @interop_state ||= X402::Interop::Server::State.new
+end
+
+def read_headers(connection)
+  headers = {}
+  loop do
+    line = connection.gets
+    break if line.nil? || line.strip.empty?
+
+    name, value = line.split(":", 2)
+    headers[name] = value.strip if name && value
+  end
+  headers
+end
+
+def write_response(connection, status, headers, body)
+  encoded = JSON.generate(body)
+  reason = case status
+           when 200 then "OK"
+           when 402 then "Payment Required"
+           when 404 then "Not Found"
+           else "Not Implemented"
+           end
+
+  connection.write("HTTP/1.1 #{status} #{reason}\r\n")
+  connection.write("content-type: application/json\r\n")
+  headers.each do |name, value|
+    connection.write("#{name}: #{value}\r\n")
+  end
+  connection.write("content-length: #{encoded.bytesize}\r\n")
+  connection.write("connection: close\r\n\r\n")
+  connection.write(encoded)
+end
+
+shutdown = proc do
+  running = false
+  begin
+    server.close unless server.closed?
+  rescue IOError, ThreadError
+    nil
+  end
+end
+
+trap("TERM", &shutdown)
+trap("INT", &shutdown)
+
+puts JSON.generate(
+  X402::Interop::Server::CAPABILITY_PAYLOAD.merge(type: "ready", port: server.addr[1])
+)
+$stdout.flush
+
+while running
+  begin
+    begin
+      connection = server.accept
+    rescue IOError, ThreadError
+      break
+    end
+
+    begin
+      request_line = connection.gets.to_s
+      path = (request_line.split[1] || "/").split("?", 2).first
+      headers = read_headers(connection)
+
+      status, response_headers, body = X402::Interop::Server.response_for(path, headers, interop_state)
+      write_response(connection, status, response_headers, body)
+    rescue Errno::EPIPE, IOError => error
+      warn "dropped connection: #{error.class}: #{error.message}"
+    end
+  ensure
+    connection&.close unless connection&.closed?
+  end
+end
