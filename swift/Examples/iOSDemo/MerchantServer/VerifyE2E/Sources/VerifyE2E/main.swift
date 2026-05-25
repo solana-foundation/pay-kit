@@ -1,16 +1,11 @@
-// Standalone Swift script that exercises the same code path as the
+// Standalone Swift driver that exercises the same code path as the
 // iOSDemo app (MppHTTPClient + MemorySigner with the demo seed) against
 // a running Surfpool + MerchantServer stack. Useful for verifying the
 // stack outside the Simulator and for the PR's evidence trail.
 //
-// Run from the repo root:
+// Run from this directory:
 //
-//     swift run --package-path swift mpp-ios-demo-verify
-//
-// Or directly (slower, recompiles every time):
-//
-//     swift -I swift/.build/debug -L swift/.build/debug \
-//         swift/Examples/iOSDemo/MerchantServer/verify_e2e.swift
+//     swift run
 //
 // Requires:
 //   - Surfpool: http://127.0.0.1:8899
