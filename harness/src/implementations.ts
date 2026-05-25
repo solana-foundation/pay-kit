@@ -242,4 +242,16 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "lua-x402-server",
+    label: "Lua x402 exact server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "lua ../../lua/x402/bin/interop-server.lua",
+    ],
+    enabled: isEnabled("lua-x402-server", "MPP_INTEROP_SERVERS", false),
+    intents: ["x402-exact"],
+  },
 ];
