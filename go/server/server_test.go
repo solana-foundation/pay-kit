@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"testing"
 	"time"
@@ -958,6 +959,102 @@ func TestVerifyCredentialTransactionWithFeePayerSigner(t *testing.T) {
 	}
 	if receipt.Status != mpp.ReceiptStatusSuccess {
 		t.Fatalf("unexpected receipt: %#v", receipt)
+	}
+}
+
+// TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast covers the
+// pre-broadcast verifier in sponsored pull mode: a credential whose SOL
+// transfer amount has been tampered after the client signed must be
+// rejected before the server co-signs or sends the transaction. Mirrors
+// the Rust reference (`verify_versioned_transaction_pre_broadcast` in
+// rust/src/server/charge.rs). Regression for the codex finding that
+// flagged sign-then-broadcast-then-verify ordering.
+func TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast(t *testing.T) {
+	rpcClient := testutil.NewFakeRPC()
+	recipient := testutil.NewPrivateKey()
+	feePayer := testutil.NewPrivateKey()
+	clientSigner := testutil.NewPrivateKey()
+	handler, err := New(Config{
+		Recipient:      recipient.PublicKey().String(),
+		Currency:       "sol",
+		Decimals:       9,
+		Network:        "localnet",
+		SecretKey:      "test-secret",
+		RPC:            rpcClient,
+		Store:          mpp.NewMemoryStore(),
+		FeePayerSigner: feePayer,
+	})
+	if err != nil {
+		t.Fatalf("new mpp failed: %v", err)
+	}
+	challenge, err := handler.Charge(context.Background(), "0.001")
+	if err != nil {
+		t.Fatalf("charge failed: %v", err)
+	}
+	authHeader, err := client.BuildCredentialHeader(context.Background(), clientSigner, rpcClient, challenge)
+	if err != nil {
+		t.Fatalf("build credential failed: %v", err)
+	}
+	credential, err := mpp.ParseAuthorization(authHeader)
+	if err != nil {
+		t.Fatalf("parse authorization failed: %v", err)
+	}
+	var payload protocol.CredentialPayload
+	if err := credential.PayloadAs(&payload); err != nil {
+		t.Fatalf("decode credential payload: %v", err)
+	}
+	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode transaction: %v", err)
+	}
+	// Tamper the SOL transfer: bump the lamports far above the challenge
+	// amount. The client signature stays as-is, but the pre-broadcast
+	// verifier inspects instructions and must reject before sign/send.
+	tampered := false
+	for index, compiled := range tx.Message.Instructions {
+		programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+		if err != nil {
+			t.Fatalf("resolve program id: %v", err)
+		}
+		if !programID.Equals(solana.SystemProgramID) {
+			continue
+		}
+		data := []byte(compiled.Data)
+		// System Transfer layout: 4-byte little-endian discriminator (2)
+		// followed by 8-byte little-endian lamports. Anything else (e.g.
+		// CreateAccount, CreateAccountWithSeed) carries different bytes
+		// and is skipped.
+		if len(data) != 12 || binary.LittleEndian.Uint32(data[0:4]) != 2 {
+			continue
+		}
+		current := binary.LittleEndian.Uint64(data[4:12])
+		binary.LittleEndian.PutUint64(data[4:12], current+999_999)
+		tx.Message.Instructions[index].Data = data
+		tampered = true
+		break
+	}
+	if !tampered {
+		t.Fatal("expected at least one SOL transfer to tamper")
+	}
+	rebuiltEncoded, err := solanautil.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("re-encode transaction: %v", err)
+	}
+	tamperedCredential, err := mpp.NewPaymentCredential(credential.Challenge, map[string]string{
+		"type":        "transaction",
+		"transaction": rebuiltEncoded,
+	})
+	if err != nil {
+		t.Fatalf("rebuild credential: %v", err)
+	}
+	if _, err := handler.VerifyCredential(context.Background(), tamperedCredential); err == nil {
+		t.Fatal("expected tampered transfer amount to be rejected pre-broadcast")
+	}
+	// Pre-broadcast rejection: the FakeRPC must not have observed any
+	// broadcast attempt. This is the load-bearing assertion for the codex
+	// finding (sign → verify → broadcast, not sign → broadcast → verify).
+	if got := len(rpcClient.Sent); got != 0 {
+		t.Fatalf("expected zero broadcasts before pre-broadcast verify, got %d", got)
 	}
 }
 

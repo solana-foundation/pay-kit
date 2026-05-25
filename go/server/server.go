@@ -399,6 +399,20 @@ func (m *Mpp) verifyTransaction(
 	if err := CheckNetworkBlockhash(m.network, tx.Message.RecentBlockhash.String()); err != nil {
 		return mpp.Receipt{}, err
 	}
+	// Verify the transaction's transfer instructions BEFORE the server co-signs
+	// or broadcasts. The on-chain `verifyOnChain` check still runs after
+	// confirmation as defense-in-depth, but inspecting the decoded instructions
+	// up-front prevents a malformed or tampered credential from spending the
+	// fee payer's lamports on a doomed broadcast. Mirrors the Rust reference
+	// (`verify_versioned_transaction_pre_broadcast` in
+	// rust/src/server/charge.rs).
+	amount, err := request.ParseAmount()
+	if err != nil {
+		return mpp.Receipt{}, err
+	}
+	if err := verifyTransfersAgainstChallenge(tx, amount, request.Currency, m.recipient, request.ExternalID, details); err != nil {
+		return mpp.Receipt{}, err
+	}
 	if m.feePayerSigner != nil {
 		if err := solanautil.SignTransaction(tx, m.feePayerSigner); err != nil {
 			return mpp.Receipt{}, err
