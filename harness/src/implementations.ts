@@ -69,17 +69,6 @@ export const clientImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", false),
   },
-  {
-    id: "kotlin",
-    label: "Kotlin HTTP client",
-    role: "client",
-    command: [
-      "sh",
-      "-c",
-      "cd kotlin-client && gradle --quiet run --no-daemon",
-    ],
-    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", true),
-  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
