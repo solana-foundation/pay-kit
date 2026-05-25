@@ -1,17 +1,25 @@
 <p align="center">
-  <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
 # SolanaMpp
 
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Swift.
-Implements the Solana payment method for the
+Consume stablecoin-gated HTTP endpoints (USDC, USDT, PYUSD, ...) from
+Swift. Implements the client side of the Solana payment method for the
 [Machine Payments Protocol](https://mpp.dev).
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library, pick a
-currency, give it your wallet address, and pay a protected route in two lines.
+This library is **client-only**. It parses MPP `402 Payment Required`
+challenges, derives the Solana transaction on the client, signs it with
+the user's Ed25519 key, and replays the request with an
+`Authorization: Payment ...` header. Server support for serving
+MPP-gated routes lives in the TypeScript, Rust, Go, PHP, Ruby, Python,
+and Lua packages.
+
+**MPP** is [an open protocol proposal](https://paymentauth.org) that
+lets any HTTP API accept payments using the `402 Payment Required` flow.
+You do not need to know anything about Solana to use this library, pick
+a currency, give it your wallet address, and pay a protected route in
+two lines.
 
 [![Swift](https://img.shields.io/badge/Swift-6.0%2B-blue)]()
 [![Platforms](https://img.shields.io/badge/platforms-iOS%2016%20%7C%20macOS%2013-lightgrey)]()

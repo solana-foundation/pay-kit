@@ -4,27 +4,26 @@
 
 # solana-mpp-kotlin
 
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Kotlin.
-Implements the Solana payment method for the
+Consume stablecoin-gated HTTP endpoints (USDC, USDT, PYUSD, ...) from
+Kotlin. Implements the client side of the Solana payment method for the
 [Machine Payments Protocol](https://mpp.dev).
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library, pick a
-currency, give it your wallet address, and gate a route in a few lines.
+This library is **client-only**. It parses MPP `402 Payment Required`
+challenges, derives the Solana transaction on the client, signs it with
+the user's Ed25519 key (or a wallet via Mobile Wallet Adapter), and
+replays the request with an `Authorization: Payment ...` header. Server
+support for serving MPP-gated routes lives in the TypeScript, Rust, Go,
+PHP, Ruby, Python, and Lua packages.
+
+**MPP** is [an open protocol proposal](https://paymentauth.org) that
+lets any HTTP API accept payments using the `402 Payment Required` flow.
+You do not need to know anything about Solana to use this library, pick
+a currency, give it your wallet address, and pay a protected route in a
+few lines.
 
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.3.21-blue)]()
 [![JVM](https://img.shields.io/badge/JVM-17-blue)]()
 [![Coverage](https://img.shields.io/badge/coverage-%3E%3D90%25-brightgreen)]()
-
-## Scope
-
-Kotlin is **client-only** in the M1 / M2 / M3 grant scope. The package
-parses MPP charge challenges, derives the Solana transaction on the
-client, signs it with the user's Ed25519 key, and replays the request
-with an `Authorization: Payment ...` header. There is no Kotlin server.
-Production deployments host the server side in TypeScript, Rust, Go,
-PHP, Ruby, Python, or Lua and treat Kotlin as the wallet-side client.
 
 ## Repo layout
 
