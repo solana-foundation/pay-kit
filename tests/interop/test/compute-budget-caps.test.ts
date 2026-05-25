@@ -146,10 +146,11 @@ describe("compute-budget cap conformance (issue #109)", () => {
       }
       const limitMatch = source.match(sdk.limitPattern);
       const priceMatch = source.match(sdk.pricePattern);
-      if (sdk.optional && (limitMatch === null || priceMatch === null)) {
-        // SDK source file exists on main but the open PR that introduces
-        // the cap constants has not landed yet. Re-asserting the cap is
-        // the responsibility of that PR's tests; skip silently here.
+      if (sdk.optional && limitMatch === null && priceMatch === null) {
+        // SDK source file exists on main but neither cap constant has
+        // landed yet (open PR introduces them as a pair). A partial match
+        // (one constant present, the other missing) is a real regression
+        // and must surface as a failure rather than be silently skipped.
         return;
       }
       const limit = parseLiteral(limitMatch, "limit", sdk.language);
