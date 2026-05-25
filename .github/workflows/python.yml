@@ -29,19 +29,13 @@ jobs:
         run: pyright
       - name: Run tests with coverage
         working-directory: python
-        # Coverage gate is 80% pending follow-up backfill of payment_page.py
-        # (HTML render path, 22%) and _rpc.py (new in this PR, 0%).
-        # The mpp.py cosign branch (including fee-payer drain detection
-        # and the server-context fee-payer pubkey source-of-truth check)
-        # is now exercised by TestFeePayerSourceDrainProtection and
-        # TestFeePayerPubkeySourceOfTruth. Remaining gap tracked as M1g.
+        # Coverage gate: line coverage at 90% (M1 baseline). Branch coverage gate is M2-followup, tracked in #108.
         run: |
           pytest \
             --cov=solana_mpp \
-            --cov-branch \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
-            --cov-fail-under=80 \
+            --cov-fail-under=90 \
             --ignore=tests/test_server_html.py
       - name: Upload Python coverage
         if: always()

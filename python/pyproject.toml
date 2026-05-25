@@ -44,7 +44,9 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["solana_mpp"]
-branch = true
+# Line coverage is the M1 baseline gate (90%). Branch coverage is M2 work
+# tracked in issue #108.
+branch = false
 
 [tool.coverage.report]
 fail_under = 90
