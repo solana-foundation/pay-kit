@@ -27,11 +27,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.solana.mpp.Charge
-import com.solana.mpp.JsonRpcClient
-import com.solana.mpp.MemorySigner
-import com.solana.mpp.MppException
-import com.solana.mpp.MppHttpClient
+import com.solana.mpp.client.Charge
+import com.solana.mpp.client.JsonRpcClient
+import com.solana.mpp.client.MppHttpClient
+import com.solana.mpp.crypto.MemorySigner
+import com.solana.mpp.protocol.MppException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
