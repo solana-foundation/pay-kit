@@ -237,6 +237,26 @@ def _verify_transfer_instruction(
     program = _instruction_program(instruction, account_keys)
     if program not in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
         raise RuntimeError("invalid_exact_svm_payload_no_transfer_instruction")
+
+    # Bind the on-chain transfer's program ID to the requirement's tokenProgram.
+    # Mirrors the canonical spine binding in:
+    #   - PHP:  php/src/x402/InteropServer.php  (verify_transfer_instruction)
+    #   - Ruby: ruby/lib/x402/exact.rb          (verify_transfer_instruction!)
+    #   - Lua:  lua/x402/bin/interop-server.lua (verify_exact_transaction)
+    # Without this, an SPL Token transfer can be substituted for a Token-2022
+    # requirement (or vice versa) whenever the destination ATA derivation
+    # happens to coincide.
+    extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
+    required_token_program_str = (
+        extra.get("tokenProgram") if isinstance(extra, dict) else None
+    ) or DEFAULT_TOKEN_PROGRAM
+    try:
+        required_token_program = Pubkey.from_string(str(required_token_program_str))
+    except Exception as error:
+        raise RuntimeError("invalid_exact_svm_payload_no_transfer_instruction") from error
+    if program != required_token_program:
+        raise RuntimeError("invalid_exact_svm_payload_no_transfer_instruction")
+
     if len(instruction.accounts) < 4 or len(instruction.data) != 10 or instruction.data[0] != 12:
         raise RuntimeError("invalid_exact_svm_payload_no_transfer_instruction")
 

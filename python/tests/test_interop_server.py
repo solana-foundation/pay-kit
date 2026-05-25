@@ -1259,5 +1259,90 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
             _claim_settlement_payload(bare, "payload-key")  # type: ignore[arg-type]
 
 
+class TokenProgramBindingRegressionTest(unittest.TestCase):
+    """Regression: the on-chain transfer's program ID must match the
+    requirement's ``extra.tokenProgram``. Without this binding a malicious
+    payer could substitute an SPL Token transfer for a Token-2022 requirement
+    (or vice versa) whenever the destination ATAs happened to coincide.
+
+    Mirrors the spine binding implemented in PHP, Ruby, and Lua ports.
+    """
+
+    def test_mismatch_requirement_spl_transaction_token2022_is_rejected(self):
+        """P1: requirement advertises SPL Token, transaction uses Token-2022."""
+        state = State()
+        client = Keypair()
+        requirement = exact_requirement(state)
+        # State.mint is an SPL Token mint (not in TOKEN_2022_STABLECOIN_MINTS),
+        # so requirement['extra']['tokenProgram'] is the SPL Token program.
+        self.assertEqual(
+            requirement["extra"]["tokenProgram"],
+            str(TOKEN_PROGRAM_ID),
+        )
+        tx = transaction_from_instructions(
+            state.fee_payer.pubkey(),
+            [
+                set_compute_unit_limit(20_000),
+                set_compute_unit_price(1),
+                # Build the transfer with Token-2022 even though the requirement
+                # advertises the SPL Token program.
+                transfer_checked_instruction(client, requirement, TOKEN_2022_PROGRAM_ID),
+            ],
+            signers=[client],
+        )
+        header = header_from_transaction(tx, accepted=requirement)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "invalid_exact_svm_payload_no_transfer_instruction",
+        ):
+            settle_exact_payment(state, header)
+
+    def test_mismatch_requirement_token2022_transaction_spl_is_rejected(self):
+        """P1 reverse: requirement advertises Token-2022, transaction uses SPL Token."""
+        state = MultiCurrencyState()
+        client = Keypair()
+        # accepts[1] uses the Token-2022 stablecoin mint -> tokenProgram = Token-2022.
+        requirement = exact_challenge(state)["accepts"][1]
+        self.assertEqual(
+            requirement["extra"]["tokenProgram"],
+            str(TOKEN_2022_PROGRAM_ID),
+        )
+        tx = transaction_from_instructions(
+            state.fee_payer.pubkey(),
+            [
+                set_compute_unit_limit(20_000),
+                set_compute_unit_price(1),
+                # Build the transfer with the SPL Token program even though the
+                # requirement advertises Token-2022.
+                transfer_checked_instruction(client, requirement, TOKEN_PROGRAM_ID),
+            ],
+            signers=[client],
+        )
+        header = header_from_transaction(tx, accepted=requirement)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "invalid_exact_svm_payload_no_transfer_instruction",
+        ):
+            settle_exact_payment(state, header)
+
+    def test_matching_token_program_is_accepted(self):
+        """Positive control: matching tokenProgram still settles."""
+        state = State()
+        client = Keypair()
+        requirement = exact_requirement(state)
+        tx = transaction_from_instructions(
+            state.fee_payer.pubkey(),
+            [
+                set_compute_unit_limit(20_000),
+                set_compute_unit_price(1),
+                transfer_checked_instruction(client, requirement, TOKEN_PROGRAM_ID),
+            ],
+            signers=[client],
+        )
+        header = header_from_transaction(tx, accepted=requirement)
+        with patch("x402.interop.server._send_transaction", return_value="sig-match"):
+            self.assertEqual(settle_exact_payment(state, header), "sig-match")
+
+
 if __name__ == "__main__":
     unittest.main()
