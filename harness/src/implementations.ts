@@ -117,6 +117,27 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "swift-x402-client",
+    label: "Swift x402 exact client",
+    role: "client",
+    command: [
+      "swift",
+      "run",
+      "--package-path",
+      "../../swift",
+      "x402-interop-client",
+    ],
+    // The Swift adapter requires CryptoKit and Apple's Swift toolchain. The
+    // public CI matrix runs interop on ubuntu-latest, which does not ship a
+    // Swift toolchain by default. Guard with a runtime OS check so accidentally
+    // enabling `swift-x402-client` in MPP_INTEROP_CLIENTS on Linux is a no-op
+    // rather than a hard failure during `swift run` bootstrap.
+    enabled:
+      isEnabled("swift-x402-client", "MPP_INTEROP_CLIENTS", false) &&
+      process.platform === "darwin",
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
