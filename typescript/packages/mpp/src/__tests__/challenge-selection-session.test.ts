@@ -92,17 +92,19 @@ describe('selectSolanaSessionChallenge', () => {
 
     test('filters by currency when currency option provided', () => {
         const sel = selectSolanaSessionChallenge(
-            [sessionChallenge('usdc'), sessionChallenge('cash', { currency: 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH' })],
+            [
+                sessionChallenge('usdc'),
+                sessionChallenge('cash', { currency: 'CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH' }),
+            ],
             { currency: 'USDC', network: 'devnet' },
         );
         expect(sel?.id).toBe('usdc');
     });
 
     test('returns undefined when no candidate matches the requested mode', () => {
-        const sel = selectSolanaSessionChallenge(
-            [sessionChallenge('only-push', { modes: ['push'] })],
-            { mode: 'pull' },
-        );
+        const sel = selectSolanaSessionChallenge([sessionChallenge('only-push', { modes: ['push'] })], {
+            mode: 'pull',
+        });
         expect(sel).toBeUndefined();
     });
 
@@ -124,10 +126,7 @@ describe('selectSolanaSessionChallenge', () => {
     });
 
     test('defaults challenges without modes to ["push"]', () => {
-        const sel = selectSolanaSessionChallenge(
-            [sessionChallenge('no-modes')],
-            { mode: 'push' },
-        );
+        const sel = selectSolanaSessionChallenge([sessionChallenge('no-modes')], { mode: 'push' });
         expect(sel?.id).toBe('no-modes');
     });
 });
