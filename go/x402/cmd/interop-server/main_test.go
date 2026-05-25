@@ -2261,6 +2261,71 @@ func TestAcceptsFeePayerAsAtaCreatePayer(t *testing.T) {
 	}
 }
 
+// TestVerifyExactTransactionEnforcesTokenProgramBinding mirrors the Rust spine
+// binding (rust/crates/x402/src/protocol/schemes/exact/verify.rs:73-80) and the
+// PHP/Ruby/Lua ports: the on-chain transferChecked instruction's program MUST
+// match requirement.Extra["tokenProgram"]. Without this, a Token-2022 transfer
+// could satisfy an SPL Token requirement (and vice versa) because the
+// destination-ATA derivation uses the parsed program, not the required one.
+func TestVerifyExactTransactionEnforcesTokenProgramBinding(t *testing.T) {
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "unit-token-program-binding"
+
+	t.Run("mismatch_requires_spl_token_but_tx_uses_token2022", func(t *testing.T) {
+		// Requirement declares SPL Token; build a transaction using Token-2022 with
+		// a Token-2022 ATA. Verification must reject the program mismatch even
+		// though the transfer otherwise looks well-formed.
+		splRequirement := exactRequirement(state)
+		token2022Requirement := exactRequirement(state)
+		token2022Requirement.Extra = cloneExtra(token2022Requirement.Extra)
+		token2022Requirement.Extra["tokenProgram"] = token2022Program
+		tx := transactionForTest(t, token2022Requirement, client)
+
+		err := verifyExactTransaction(tx, splRequirement)
+		if err == nil || err.Error() != "invalid_exact_svm_payload_transaction_token_program" {
+			t.Fatalf("expected token_program rejection, got %v", err)
+		}
+	})
+
+	t.Run("reverse_requires_token2022_but_tx_uses_spl_token", func(t *testing.T) {
+		token2022Requirement := exactRequirement(state)
+		token2022Requirement.Extra = cloneExtra(token2022Requirement.Extra)
+		token2022Requirement.Extra["tokenProgram"] = token2022Program
+		// Build the transaction against an SPL Token requirement (default).
+		splRequirement := exactRequirement(state)
+		tx := transactionForTest(t, splRequirement, client)
+
+		err := verifyExactTransaction(tx, token2022Requirement)
+		if err == nil || err.Error() != "invalid_exact_svm_payload_transaction_token_program" {
+			t.Fatalf("expected token_program rejection, got %v", err)
+		}
+	})
+
+	t.Run("positive_control_matching_pair_accepted", func(t *testing.T) {
+		requirement := exactRequirement(state)
+		tx := transactionForTest(t, requirement, client)
+		if err := verifyExactTransaction(tx, requirement); err != nil {
+			t.Fatalf("expected matching tokenProgram pair to be accepted, got %v", err)
+		}
+	})
+
+	t.Run("missing_required_token_program_rejected", func(t *testing.T) {
+		requirement := exactRequirement(state)
+		tx := transactionForTest(t, requirement, client)
+		mutated := requirement
+		mutated.Extra = cloneExtra(requirement.Extra)
+		delete(mutated.Extra, "tokenProgram")
+		err := verifyExactTransaction(tx, mutated)
+		if err == nil || err.Error() != "invalid_exact_svm_payload_transaction_token_program" {
+			t.Fatalf("expected missing tokenProgram to be rejected, got %v", err)
+		}
+	})
+}
+
 func mustPanic(t *testing.T, fn func()) {
 	t.Helper()
 	defer func() {

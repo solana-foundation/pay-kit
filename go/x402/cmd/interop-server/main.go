@@ -574,6 +574,22 @@ func verifyExactTransaction(transaction *solana.Transaction, requirement payment
 	if err != nil {
 		return err
 	}
+	// Mirror the Rust spine binding (rust/crates/x402/src/protocol/schemes/exact/verify.rs:73-80)
+	// and the PHP/Ruby/Lua ports: the on-chain transfer's token program MUST match the
+	// program declared in requirement.Extra["tokenProgram"]. Without this check, a Token-2022
+	// transfer can satisfy an SPL Token requirement (or vice versa), because the
+	// destination-ATA derivation below uses the parsed program rather than the required one.
+	requiredTokenProgramRaw, ok := requirement.Extra["tokenProgram"].(string)
+	if !ok || requiredTokenProgramRaw == "" {
+		return fmt.Errorf("invalid_exact_svm_payload_transaction_token_program")
+	}
+	requiredTokenProgram, err := solana.PublicKeyFromBase58(requiredTokenProgramRaw)
+	if err != nil {
+		return fmt.Errorf("invalid_exact_svm_payload_transaction_token_program")
+	}
+	if !transfer.tokenProgram.Equals(requiredTokenProgram) {
+		return fmt.Errorf("invalid_exact_svm_payload_transaction_token_program")
+	}
 	if err := verifyOptionalInstructions(transaction, instructions[3:], requirement, transfer); err != nil {
 		return err
 	}
