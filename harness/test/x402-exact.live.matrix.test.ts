@@ -29,6 +29,7 @@ import {
   serverImplementations,
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
+import { allowedX402Pair } from "../src/x402-pair-policy";
 
 const MATRIX_ENABLED = process.env.X402_INTEROP_MATRIX === "1";
 
@@ -53,41 +54,11 @@ const x402Servers = serverImplementations.filter(
   impl => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-exact"),
 );
 
-// Pair selector mirrors the policy in x402-exact.e2e.test.ts. Kept in
-// sync deliberately: any change there should be reflected here (and
-// vice-versa). The live matrix is the broader of the two — it runs
-// EVERY pair that satisfies the policy.
-const TS_REFERENCE_ID = "ts-x402";
-const RUST_SPINE_PREFIX = "rust-x402";
-
-function isTsReference(id: string): boolean {
-  return id === TS_REFERENCE_ID;
-}
-function isRustSpine(id: string): boolean {
-  return (
-    id === RUST_SPINE_PREFIX ||
-    id === `${RUST_SPINE_PREFIX}-client` ||
-    id === `${RUST_SPINE_PREFIX}-server`
-  );
-}
-function baseLang(id: string): string {
-  return id.replace(/-client$/, "").replace(/-server$/, "");
-}
-function allowedPair(clientId: string, serverId: string): boolean {
-  if (isTsReference(clientId) || isTsReference(serverId)) {
-    return isTsReference(clientId) && isTsReference(serverId);
-  }
-  if (isRustSpine(clientId) && isRustSpine(serverId)) return true;
-  if (baseLang(clientId) === baseLang(serverId)) return true;
-  if (isRustSpine(clientId) || isRustSpine(serverId)) return true;
-  return false;
-}
-
 function enumeratePairs(): Array<{ clientId: string; serverId: string }> {
   const out: Array<{ clientId: string; serverId: string }> = [];
   for (const server of x402Servers) {
     for (const client of x402Clients) {
-      if (allowedPair(client.id, server.id)) {
+      if (allowedX402Pair(client.id, server.id)) {
         out.push({ clientId: client.id, serverId: server.id });
       }
     }

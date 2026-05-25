@@ -21,6 +21,10 @@ import {
   serverImplementations,
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
+import {
+  allowedX402Pair,
+  baseLang,
+} from "../src/x402-pair-policy";
 
 const MATRIX_ENABLED = process.env.X402_INTEROP_MATRIX === "1";
 
@@ -91,33 +95,9 @@ describe("x402 exact intent — cross-language matrix", () => {
   // The pair selector is data-driven so that as new language adapters
   // land (rebased onto this PR), the matrix widens automatically
   // without further test edits.
-  const TS_REFERENCE_ID = "ts-x402";
-  const RUST_SPINE_PREFIX = "rust-x402";
-
-  const isTsReference = (id: string): boolean => id === TS_REFERENCE_ID;
-  const isRustSpine = (id: string): boolean =>
-    id === RUST_SPINE_PREFIX ||
-    id === `${RUST_SPINE_PREFIX}-client` ||
-    id === `${RUST_SPINE_PREFIX}-server`;
-
-  const baseLang = (id: string): string =>
-    id.replace(/-client$/, "").replace(/-server$/, "");
-
-  const allowedPair = (clientId: string, serverId: string): boolean => {
-    // TS reference only pairs with itself (stub payload would fail
-    // real signature verification on any other server).
-    if (isTsReference(clientId) || isTsReference(serverId)) {
-      return isTsReference(clientId) && isTsReference(serverId);
-    }
-    // Rust spine self-pair.
-    if (isRustSpine(clientId) && isRustSpine(serverId)) return true;
-    // Same-language self-pair (e.g. go-x402-client ↔ go-x402-server).
-    if (baseLang(clientId) === baseLang(serverId)) return true;
-    // Cross-spine pair: language adapter on one side, Rust spine on
-    // the other (either direction).
-    if (isRustSpine(clientId) || isRustSpine(serverId)) return true;
-    return false;
-  };
+  // Pair policy lives in src/x402-pair-policy.ts so the e2e and live
+  // matrix tests cannot drift apart silently.
+  const allowedPair = allowedX402Pair;
 
   // Explicit per-language self-pair group: each registered x402-exact
   // language adapter (client + server of the same baseLang) gets a

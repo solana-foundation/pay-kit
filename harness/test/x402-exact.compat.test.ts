@@ -110,6 +110,16 @@ const challenge = loadJson<CanonicalChallenge>("canonical-challenge.json");
 const credential = loadJson<CanonicalCredential>(
   "canonical-payment-signature.json",
 );
+type RustCredential = {
+  x402Version: number;
+  scheme: string;
+  network: string;
+  accepted: Record<string, unknown>;
+  payload: { transaction?: string; signature?: string };
+};
+const rustCredential = loadJson<RustCredential>(
+  "canonical-payment-signature-rust.json",
+);
 const rejectTokens = loadJson<{
   highLevelTokens: string[];
   exactSvmPayloadTokens: string[];
@@ -260,10 +270,14 @@ function extractRejectToken(body: unknown): string | undefined {
     const value = record[field];
     if (typeof value === "string") candidates.push(value);
   }
+  // Sort longest-first so suffixed tokens (e.g.
+  // `..._compute_price_instruction_too_high`) match before their
+  // shorter prefix (`..._compute_price_instruction`) — otherwise the
+  // shorter token would greedily credit the wrong reject class.
   const taxonomy = [
     ...rejectTokens.exactSvmPayloadTokens,
     ...rejectTokens.highLevelTokens,
-  ];
+  ].sort((a, b) => b.length - a.length);
   for (const token of taxonomy) {
     for (const candidate of candidates) {
       if (candidate.includes(token)) return token;
@@ -334,6 +348,33 @@ describe("x402-exact compat: registered adapters", () => {
 
   it("at least one x402-exact server adapter is registered", () => {
     expect(servers.length).toBeGreaterThan(0);
+  });
+
+  it("rust-canonical fixture matches the rust spine PaymentSignatureEnvelope shape", () => {
+    // Wire shape lock: every field the rust spine's
+    // PaymentSignatureEnvelope (rust/crates/x402/src/protocol/schemes/exact/types.rs)
+    // requires must be present. `payload` must deserialize as
+    // PaymentProof::Transaction OR PaymentProof::Signature — i.e. exactly
+    // one of `transaction` / `signature` keys, both base-encoded strings.
+    expect(rustCredential.x402Version).toBe(2);
+    expect(typeof rustCredential.scheme).toBe("string");
+    expect(typeof rustCredential.network).toBe("string");
+    expect(rustCredential.accepted).toBeDefined();
+    const proofKeys = Object.keys(rustCredential.payload);
+    expect(proofKeys).toHaveLength(1);
+    const proofKey = proofKeys[0];
+    expect(["transaction", "signature"]).toContain(proofKey);
+    const proofValue = (rustCredential.payload as Record<string, unknown>)[
+      proofKey
+    ];
+    expect(typeof proofValue).toBe("string");
+    expect((proofValue as string).length).toBeGreaterThan(0);
+    if (proofKey === "transaction") {
+      // base64 round-trip — the spine's first step.
+      const decoded = Buffer.from(proofValue as string, "base64");
+      const reEncoded = decoded.toString("base64");
+      expect(reEncoded).toBe(proofValue);
+    }
   });
 
   it("canonical fixtures are wire-consistent with each other", () => {
@@ -453,8 +494,23 @@ describe("x402-exact compat: server → canonical credential", () => {
       const header = encodeCredential(credentialToSend);
       const { status, body } = await postCredential(targetUrl, header);
 
-      // Either accept (200) or a parseable 402 with a known reject token.
+      // Wire-only adapters may accept the stub credential (200). Full
+      // verifiers MUST reject — the canonical credential carries a
+      // `payload.challengeId/resource` shape, not a real
+      // PaymentProof::Transaction, so accepting it would be a verifier
+      // bypass. Adapters opting in via X402_COMPAT_STUB_ACCEPT (CSV of
+      // ids) declare their verifier accepts the stub on purpose.
+      const stubAcceptAllowed =
+        WIRE_ONLY_ADAPTER_IDS.has(server.id) ||
+        (process.env.X402_COMPAT_STUB_ACCEPT ?? "")
+          .split(",")
+          .map(s => s.trim())
+          .includes(server.id);
       if (status === 200) {
+        expect(
+          stubAcceptAllowed,
+          `full verifier ${server.id} accepted the TS-wire stub credential (verifier bypass risk)`,
+        ).toBe(true);
         expect(body).toBeDefined();
       } else {
         expect(status).toBe(402);
@@ -603,9 +659,10 @@ describe("x402-exact compat: server → attack scenarios", () => {
       const replayAllowed = new Set<string>(
         attackSuite.replayScenario.expectedRejectTokens,
       );
-      if (WIRE_ONLY_ADAPTER_IDS.has(server.id)) {
-        replayAllowed.add("payment_invalid");
-      }
+      // No payment_invalid fallback for replay: once the first
+      // submission was accepted (asserted above), the second MUST be
+      // classified as signature_consumed by every adapter. A generic
+      // rejection here would be a real replay-detection regression.
       expect(
         replayAllowed.has(token as string),
         `replay token ${token} not in allowed ${[...replayAllowed].join(",")}`,
