@@ -58,7 +58,7 @@ in M2 and M3.
 import SolanaMpp
 
 let signer = try MemorySigner(secretKey: secretKeyData) // 32-byte seed or 64-byte Solana keypair
-let rpc = RpcClient(endpoint: URL(string: "https://api.devnet.solana.com")!)
+let rpc = RpcClient(endpoint: URL(string: "https://402.surfnet.dev")!)
 let client = MppHTTPClient(signer: signer, rpc: rpc)
 
 let response = try await client.fetch(url: URL(string: "https://api.example.com/paid-content")!)
@@ -203,7 +203,7 @@ MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=rust       pnpm exec vitest run
 ## Spec
 
 This SDK implements the
-[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+[Solana Charge Intent draft](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 
 ## License
