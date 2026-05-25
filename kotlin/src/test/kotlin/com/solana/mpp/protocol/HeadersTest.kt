@@ -47,6 +47,25 @@ class HeadersTest {
     }
 
     @Test
+    fun acceptsLabeledSplitsAndUnknownFields() {
+        // Server may emit splits with `label` (Rust SolanaChargeSplit) and
+        // future-additive method-detail fields. The Kotlin decoder must
+        // tolerate both rather than failing wire-compatibility before signing.
+        val json = """{"amount":"100","currency":"USDC","recipient":"r",""" +
+            """"methodDetails":{"network":"devnet","futureField":"x",""" +
+            """"splits":[{"recipient":"r1","amount":"60","label":"Vendor"},""" +
+            """{"recipient":"r2","amount":"40","label":"Tax","ataCreationRequired":true}]}}"""
+        val req = Base64Url.encode(json.encodeToByteArray())
+        val decoded = MppHeaders.decodeChargeRequest(req)
+        val splits = decoded.methodDetails.splits
+        assertNotNull(splits)
+        assertEquals(2, splits.size)
+        assertEquals("Vendor", splits[0].label)
+        assertEquals("Tax", splits[1].label)
+        assertEquals(true, splits[1].ataCreationRequired)
+    }
+
+    @Test
     fun splitsTabSeparatedChallenges() {
         val req = validRequestB64()
         // Two challenges joined by comma; second uses HTAB (\t) after

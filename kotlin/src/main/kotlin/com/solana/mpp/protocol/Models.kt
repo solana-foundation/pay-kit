@@ -99,6 +99,7 @@ data class SolanaChargeSplit(
     val amount: String,
     val ataCreationRequired: Boolean? = null,
     val memo: String? = null,
+    val label: String? = null,
 )
 
 /** MPP credential submitted in the `Authorization` header. */

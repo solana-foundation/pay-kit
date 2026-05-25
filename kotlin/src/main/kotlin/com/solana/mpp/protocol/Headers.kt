@@ -13,6 +13,7 @@ object MppHeaders {
     private val json = Json {
         encodeDefaults = false
         explicitNulls = false
+        ignoreUnknownKeys = true
     }
 
     /**
