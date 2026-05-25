@@ -16,5 +16,6 @@ require('tests.html_spec')
 require('tests.cross_route_replay_spec')
 require('tests.rpc_spec')
 require('tests.charge_handler_spec')
+require('tests.library_coverage_spec')
 
 require('tests.test_helper').run()
