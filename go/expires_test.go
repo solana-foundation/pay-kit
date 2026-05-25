@@ -17,7 +17,7 @@ func TestExpiresHelpersProduceRFC3339(t *testing.T) {
 
 func TestHoursAfterMinutes(t *testing.T) {
 	t.Parallel()
-	if !(Hours(1) > Minutes(1)) {
+	if Hours(1) <= Minutes(1) {
 		t.Fatal("expected 1 hour timestamp to be later than 1 minute timestamp")
 	}
 }

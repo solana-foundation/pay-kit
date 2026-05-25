@@ -44,7 +44,7 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		if err != nil {
 			return nil, err
 		}
-		req.Body.Close()
+		_ = req.Body.Close()
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
@@ -72,13 +72,15 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// context.Background() here, which would break cancellation/deadline.
 	authHeader, err := BuildCredentialHeaderWithOptions(req.Context(), t.Signer, t.RPC, challenge, t.buildOptions())
 	if err != nil {
-		// Cannot build credential — return original 402.
-		return resp, nil
+		// Cannot build credential: return the original 402 response so the
+		// caller still sees the server's challenge headers. The credential
+		// build failure is recoverable from the caller's perspective.
+		return resp, nil //nolint:nilerr // intentional fallback to original 402
 	}
 
 	// Drain and close the first response body before retrying.
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 
 	// Clone the request for retry.
 	retry := req.Clone(req.Context())

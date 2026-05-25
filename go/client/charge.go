@@ -7,7 +7,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
-	"github.com/solana-foundation/pay-kit/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/protocol/intents"

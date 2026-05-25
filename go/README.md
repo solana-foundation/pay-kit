@@ -33,8 +33,8 @@ go/
 
 ```go
 import (
-    mpp "github.com/solana-foundation/mpp-sdk/go"
-    "github.com/solana-foundation/mpp-sdk/go/server"
+    mpp "github.com/solana-foundation/pay-kit/go"
+    "github.com/solana-foundation/pay-kit/go/server"
 )
 
 handler, err := server.New(server.Config{
@@ -84,7 +84,7 @@ shape).
 
 ```go
 import (
-    "github.com/solana-foundation/mpp-sdk/go/client"
+    "github.com/solana-foundation/pay-kit/go/client"
 )
 
 httpClient := client.NewClient(signer, rpcClient)

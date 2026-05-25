@@ -114,8 +114,10 @@ type signerErr struct {
 	pub solana.PublicKey
 }
 
-func (s signerErr) PublicKey() solana.PublicKey                { return s.pub }
-func (s signerErr) Sign(_ []byte) (solana.Signature, error)    { return solana.Signature{}, errors.New("sign failed") }
+func (s signerErr) PublicKey() solana.PublicKey { return s.pub }
+func (s signerErr) Sign(_ []byte) (solana.Signature, error) {
+	return solana.Signature{}, errors.New("sign failed")
+}
 
 func TestSignTransactionSignerError(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()

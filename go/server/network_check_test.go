@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/solana-foundation/pay-kit/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 )
 
 // Pure-function tests for CheckNetworkBlockhash. The check is asymmetric:

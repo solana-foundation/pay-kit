@@ -46,7 +46,7 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 			if IsServiceWorkerRequest(r) {
 				w.Header().Set("Content-Type", "application/javascript")
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(ServiceWorkerJS()))
+				_, _ = w.Write([]byte(ServiceWorkerJS()))
 				return
 			}
 
@@ -111,7 +111,7 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 				if err == nil {
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
 					w.WriteHeader(http.StatusPaymentRequired)
-					w.Write([]byte(html))
+					_, _ = w.Write([]byte(html))
 					return
 				}
 				// Fall through to JSON on HTML error.
@@ -130,7 +130,7 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 			}
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusPaymentRequired)
-			w.Write(body)
+			_, _ = w.Write(body)
 		})
 	}
 }

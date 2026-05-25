@@ -16,11 +16,11 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
-	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
-	mppserver "github.com/solana-foundation/mpp-sdk/go/server"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
+	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/protocol/intents"
+	mppserver "github.com/solana-foundation/pay-kit/go/server"
 )
 
 type interopEnvironment struct {

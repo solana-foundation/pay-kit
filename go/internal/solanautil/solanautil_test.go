@@ -409,7 +409,6 @@ func TestBuildMemoInstructionRejectsLongMemo(t *testing.T) {
 	}
 }
 
-
 func TestResolveRecentBlockhashRejectsInvalidProvided(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	if _, err := ResolveRecentBlockhash(context.Background(), rpcClient, "not-a-blockhash"); err == nil {

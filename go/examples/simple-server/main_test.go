@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
-	"github.com/solana-foundation/mpp-sdk/go/server"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/server"
 )
 
 func newSmokeMpp(t *testing.T) *server.Mpp {

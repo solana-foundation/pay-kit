@@ -29,7 +29,7 @@ package errorcodes
 import (
 	"errors"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 )
 
 // Canonical L6 structured error codes (snake_case).

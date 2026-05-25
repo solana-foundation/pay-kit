@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/client"
-	"github.com/solana-foundation/mpp-sdk/go/errorcodes"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/client"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 )
 
 // decode402Body asserts the response is a 402 with the canonical
@@ -144,7 +144,7 @@ func TestMiddlewareJSONBodyKeyOrderIsCanonical(t *testing.T) {
 	statusIdx := strings.Index(raw, `"status"`)
 	titleIdx := strings.Index(raw, `"title"`)
 	typeIdx := strings.Index(raw, `"type"`)
-	if !(codeIdx >= 0 && codeIdx < errorIdx && errorIdx < messageIdx && messageIdx < statusIdx && statusIdx < titleIdx && titleIdx < typeIdx) {
+	if codeIdx < 0 || codeIdx >= errorIdx || errorIdx >= messageIdx || messageIdx >= statusIdx || statusIdx >= titleIdx || titleIdx >= typeIdx {
 		t.Fatalf("expected canonical key order (code,error,message,status,title,type), got %s", raw)
 	}
 }

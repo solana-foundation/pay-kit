@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 )
 
 func TestAllReturnsEveryCanonicalCode(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 // TestValidateSplitsCount table-tests the cap that prevents a client from

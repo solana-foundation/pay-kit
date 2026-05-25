@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/solana-foundation/pay-kit/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )
