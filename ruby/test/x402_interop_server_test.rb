@@ -268,6 +268,85 @@ class InteropServerTest < Minitest::Test
     assert_empty sent
   end
 
+  # Attack regression: fee-payer ATA drain via extra SPL TransferChecked.
+  # A malicious client appends a TransferChecked in the optional-instruction
+  # slot that names the fee payer as an additional account (e.g. authority).
+  # The instruction-list sweep runs before the optional-program allowlist,
+  # so the canonical reject token is the fee-payer-in-instruction-accounts
+  # reason — proving the sweep (not the program-allowlist fallback) is the
+  # gate that closes this drain.
+  def test_settlement_rejects_extra_token_transfer_naming_fee_payer
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "unit-settlement"
+    })
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
+      append_extra_token_transfer_with_fee_payer_authority(transaction)
+    end
+
+    error = assert_raises(RuntimeError) do
+      X402::Interop::Server.settle_exact_payment(state, payment_header)
+    end
+
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_empty sent
+  end
+
+  # Attack regression: fee-payer SOL drain via SystemProgram::Transfer.
+  # The classic "facilitator drain" shape — instead of an SPL transfer,
+  # the attacker appends a native lamport transfer whose source is the
+  # fee payer. The instruction-list sweep is the responsible gate.
+  def test_settlement_rejects_extra_system_transfer_from_fee_payer
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "unit-settlement"
+    })
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
+      append_system_transfer_from_fee_payer(transaction)
+    end
+
+    error = assert_raises(RuntimeError) do
+      X402::Interop::Server.settle_exact_payment(state, payment_header)
+    end
+
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_empty sent
+  end
+
+  # Attack regression: fee-payer pubkey appears at instruction-account
+  # position 1 (not the carve-out slot 0) of an extra memo instruction.
+  # Mirrors the "SLOT attack" shape: fee payer named at a non-payer slot.
+  # The sweep must reject regardless of position.
+  def test_settlement_rejects_fee_payer_at_instruction_slot_one
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "unit-settlement"
+    })
+    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
+      append_memo_with_fee_payer_at_slot_one(transaction)
+    end
+
+    error = assert_raises(RuntimeError) do
+      X402::Interop::Server.settle_exact_payment(state, payment_header)
+    end
+
+    assert_equal "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts", error.message
+    assert_empty sent
+  end
+
+  # Positive control: the same envelope minus the attack mutation must be
+  # accepted. Confirms the sweep does not block the canonical happy-path
+  # transfer that the cross-spine reference clients emit.
+  def test_settlement_accepts_clean_envelope_positive_control
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+
+    assert_equal "unit-settlement",
+      X402::Interop::Server.settle_exact_payment(state, build_payment_header(state))
+  end
+
   def test_settlement_rejects_lighthouse_as_sixth_instruction
     sent = []
     state = build_state(sender: ->(_state, transaction) {
@@ -803,6 +882,90 @@ class InteropServerTest < Minitest::Test
       5,
       1,
       1
+    ].pack("C*")
+    transaction.insert(transaction.bytesize - 1, instruction)
+    transaction
+  end
+
+  # Append an extra SPL TransferChecked instruction in the optional slot,
+  # naming the fee payer (account index 0) as one of the transfer accounts.
+  # Token program is already present as a static key (index 5).
+  def append_extra_token_transfer_with_fee_payer_authority(transaction)
+    message_offset = 1 + (2 * 64)
+    account_count_offset = message_offset + 4
+    account_count = transaction.getbyte(account_count_offset)
+    account_keys_offset = account_count_offset + 1
+    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
+
+    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
+    # Token program index is 5 in build_transaction's account_keys layout.
+    # Accounts: [fee_payer=0, mint=6, fee_payer=0, fee_payer=0] — four
+    # accounts as required by TransferChecked, with the fee payer named at
+    # both source and authority positions.
+    instruction = [
+      5,             # program_index (token program)
+      4,             # short_vec(account_count)
+      0, 6, 0, 0,    # accounts: fee_payer, mint, fee_payer, fee_payer
+      10,            # short_vec(data_len)
+      12,            # discriminator: TransferChecked
+      1, 0, 0, 0, 0, 0, 0, 0, # amount = 1 (little-endian u64)
+      6              # decimals
+    ].pack("C*")
+    transaction.insert(transaction.bytesize - 1, instruction)
+    transaction
+  end
+
+  # Append a SystemProgram::Transfer that names the fee payer as source.
+  # This is the canonical fee-payer SOL drain shape.
+  def append_system_transfer_from_fee_payer(transaction)
+    message_offset = 1 + (2 * 64)
+    account_count_offset = message_offset + 4
+    account_count = transaction.getbyte(account_count_offset)
+    account_keys_offset = account_count_offset + 1
+    blockhash_offset = account_keys_offset + (account_count * 32)
+
+    # Add SystemProgram as a new static account key.
+    transaction.setbyte(account_count_offset, account_count + 1)
+    transaction.insert(blockhash_offset, X402::Interop::Exact.base58_decode(X402::Interop::Exact::SYSTEM_PROGRAM))
+    system_program_index = account_count
+
+    new_account_count = account_count + 1
+    instruction_count_offset = account_keys_offset + (new_account_count * 32) + 32
+    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
+    # SystemProgram::Transfer instruction:
+    # - accounts: [from=fee_payer=0, to=pay_to (account index 3 = destination_ata; we just want a valid index)]
+    # - data: discriminator 2 (u32 LE) + lamports (u64 LE)
+    instruction = [
+      system_program_index, # program_index
+      2,                    # short_vec(account_count)
+      0, 3,                 # accounts: from=fee_payer, to=any-account
+      12,                   # short_vec(data_len)
+      2, 0, 0, 0,           # discriminator: Transfer
+      1, 0, 0, 0, 0, 0, 0, 0 # lamports = 1
+    ].pack("C*")
+    transaction.insert(transaction.bytesize - 1, instruction)
+    transaction
+  end
+
+  # Append a memo-program instruction whose accounts vector names the fee
+  # payer at position 1 (a non-carve-out slot). The sweep must reject
+  # before settlement, regardless of which slot the fee payer appears in
+  # (only ATA-create's funding-payer slot 0 is carved out).
+  def append_memo_with_fee_payer_at_slot_one(transaction)
+    message_offset = 1 + (2 * 64)
+    account_count_offset = message_offset + 4
+    account_count = transaction.getbyte(account_count_offset)
+    account_keys_offset = account_count_offset + 1
+    instruction_count_offset = account_keys_offset + (account_count * 32) + 32
+
+    transaction.setbyte(instruction_count_offset, transaction.getbyte(instruction_count_offset) + 1)
+    # Memo program index is 7 in build_transaction's account_keys layout.
+    # Accounts: [memo_program=7, fee_payer=0] — fee payer at position 1.
+    instruction = [
+      7,        # program_index (memo)
+      2,        # short_vec(account_count)
+      7, 0,     # accounts: filler, fee_payer
+      0         # short_vec(data_len) — empty
     ].pack("C*")
     transaction.insert(transaction.bytesize - 1, instruction)
     transaction

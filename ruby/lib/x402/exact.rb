@@ -291,7 +291,7 @@ module X402
         verify_compute_limit_instruction!(instructions.fetch(0), account_keys)
         verify_compute_price_instruction!(instructions.fetch(1), account_keys)
         transfer = verify_transfer_instruction!(instructions.fetch(2), account_keys, requirement, managed_signers)
-        verify_fee_payer_not_in_instruction_accounts!(instructions, account_keys, managed_signers)
+        reject_fee_payer_in_instruction_accounts!(instructions, account_keys, managed_signers)
 
         destination_create_ata = false
         invalid_reason_by_index = [
@@ -341,14 +341,54 @@ module X402
         raise "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction"
       end
 
-      def verify_fee_payer_not_in_instruction_accounts!(instructions, account_keys, managed_signers)
+      # Sweep every instruction's account list and reject any whose accounts
+      # name a facilitator-managed signer (the fee payer). This closes the
+      # ATA-drain vector where a malicious client appends an extra instruction
+      # — TransferChecked, SystemProgram::Transfer, or any program — that
+      # references the fee-payer pubkey as a signer or source. Mirrors the
+      # Rust spine's `authority` check on the canonical transfer
+      # (`rust/crates/x402/src/protocol/schemes/exact/verify.rs:382`) but
+      # extends it to every instruction so optional/auxiliary instructions
+      # cannot quietly drain managed-signer balances after the facilitator
+      # co-signs.
+      #
+      # Carve-out: the legitimate `AssociatedTokenAccount::Create` /
+      # `CreateIdempotent` instruction places the funding payer at account
+      # index 0. When that payer is the fee payer (the only managed signer
+      # the facilitator funds), it is the documented happy path used by
+      # cross-spine clients to lazily provision the destination ATA. Allow
+      # the fee payer in that exact slot; reject it anywhere else in the
+      # ATA-create accounts vector and in every other instruction.
+      def reject_fee_payer_in_instruction_accounts!(instructions, account_keys, managed_signers)
+        ata_program = base58_decode(ASSOCIATED_TOKEN_PROGRAM)
         instructions.each do |instruction|
-          instruction.fetch(:accounts).each do |index|
+          accounts = instruction.fetch(:accounts)
+          program = instruction_program(instruction, account_keys)
+          carve_out_payer_slot =
+            program == ata_program && ata_create_data?(instruction.fetch(:data))
+
+          accounts.each_with_index do |index, position|
+            next if carve_out_payer_slot && position.zero?
+
             if managed_signers.include?(account_key_for_index(index, account_keys))
               raise "invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts"
             end
           end
         end
+      end
+
+      def ata_create_data?(data)
+        # Associated Token Account program instruction discriminator:
+        # - empty data           → Create (legacy variant)
+        # - single byte 0x00     → Create
+        # - single byte 0x01     → CreateIdempotent
+        # Any other shape is RecoverNested or a future variant — reject the
+        # carve-out so we don't leak the fee-payer slot into unknown shapes.
+        return true if data.bytesize.zero?
+        return false unless data.bytesize == 1
+
+        first = data.getbyte(0)
+        first == 0 || first == 1
       end
 
       def verify_compute_price_instruction!(instruction, account_keys)
