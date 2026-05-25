@@ -131,7 +131,22 @@ def fund_demo_signer(rpc_url: str) -> None:
     })
 
 
-def make_handler(mpp: Mpp):
+def make_handler(mpp: Mpp, rpc_url: str):
+    async def _verify_with_fresh_rpc(credential):
+        # `BaseHTTPRequestHandler` is synchronous, so each request runs
+        # `asyncio.run(...)`, which creates a new event loop and closes
+        # it on exit. The `SolanaRpc` instance built at startup binds
+        # its `httpx.AsyncClient` to whichever loop first touches it;
+        # subsequent `asyncio.run` calls then hit `RuntimeError: Event
+        # loop is closed` once that loop is torn down. Build a fresh
+        # per-request RPC inside the current loop, scope it via
+        # `Mpp.using_rpc`, and let it live and die with this loop. The
+        # `HTTPServer` here is single-threaded so the `using_rpc`
+        # asyncio.Lock is sufficient synchronisation.
+        rpc = SolanaRpc(rpc_url)
+        async with mpp.using_rpc(rpc):
+            return await mpp.verify_credential(credential)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):  # noqa: A002 - matches BaseHTTPRequestHandler
             sys.stderr.write("[merchant] " + (format % args) + "\n")
@@ -148,7 +163,7 @@ def make_handler(mpp: Mpp):
             if auth.startswith("Payment "):
                 try:
                     credential = parse_authorization(auth)
-                    receipt = asyncio.run(mpp.verify_credential(credential))
+                    receipt = asyncio.run(_verify_with_fresh_rpc(credential))
                     fortune = random.choice(FORTUNES)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -227,7 +242,7 @@ def main() -> None:
         rpc=SolanaRpc(args.rpc_url),
     ))
 
-    server = HTTPServer(("0.0.0.0", args.port), make_handler(mpp))
+    server = HTTPServer(("0.0.0.0", args.port), make_handler(mpp, args.rpc_url))
     print(
         f"[merchant] listening on http://0.0.0.0:{args.port} (RPC {args.rpc_url})",
         flush=True,
