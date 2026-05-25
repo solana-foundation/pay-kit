@@ -270,7 +270,7 @@ func TestRequestRoundTrip(t *testing.T) {
 	}
 }
 
-func TestVerifyCredentialWithExpectedRejectsCurrencyMismatch(t *testing.T) {
+func TestVerifyCredentialWithExpectedRejectsCurrencyMismatchAssertsCode(t *testing.T) {
 	handler, _, _ := newTestMpp(t)
 	challenge, err := handler.Charge(context.Background(), "0.001")
 	if err != nil {
@@ -294,7 +294,7 @@ func TestVerifyCredentialWithExpectedRejectsCurrencyMismatch(t *testing.T) {
 	}
 }
 
-func TestVerifyCredentialWithExpectedRejectsRecipientMismatch(t *testing.T) {
+func TestVerifyCredentialWithExpectedRejectsRecipientMismatchAssertsCode(t *testing.T) {
 	handler, _, _ := newTestMpp(t)
 	challenge, err := handler.Charge(context.Background(), "0.001")
 	if err != nil {

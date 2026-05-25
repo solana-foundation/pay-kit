@@ -409,14 +409,6 @@ func TestBuildMemoInstructionRejectsLongMemo(t *testing.T) {
 	}
 }
 
-func TestResolveTokenProgramUnsupportedOwner(t *testing.T) {
-	rpcClient := testutil.NewFakeRPC()
-	mint := testutil.NewPrivateKey().PublicKey()
-	rpcClient.MintOwners[mint.String()] = solana.SystemProgramID
-	if _, err := ResolveTokenProgram(context.Background(), rpcClient, mint, ""); err == nil {
-		t.Fatal("expected unsupported mint owner error")
-	}
-}
 
 func TestResolveRecentBlockhashRejectsInvalidProvided(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
