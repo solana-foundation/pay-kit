@@ -86,6 +86,14 @@ describe("x402-exact live matrix (env-gated)", () => {
   }
   const missing = missingEnvs();
   if (missing.length > 0) {
+    // Loud stderr so CI matrix misconfiguration is visible in the
+    // job log even though vitest only renders skip in green. Per spec
+    // this is `skip` not `fail` (the matrix is opt-in by env), but
+    // the warning surfaces the missing envs without silencing them.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `\n[x402-live-matrix] SKIP: X402_INTEROP_MATRIX=1 set but required env vars are missing: ${missing.join(", ")}\n`,
+    );
     it.skip(
       `live matrix skipped: missing required env vars: ${missing.join(", ")}`,
       () => {},
