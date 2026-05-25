@@ -6,12 +6,12 @@
 
 Charge stablecoins (USDC, USDT, PYUSD, USDG, CASH) for any HTTP endpoint,
 in Python. Implements the Solana payment method for the
-[Machine Payments Protocol](https://mpp.dev).
+[HTTP Payment Authentication Scheme](https://paymentauth.org).
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-don't need to know anything about Solana to use this library. Pick a
-currency, give it your wallet address, and gate a route in two lines.
+The wire format, error grammar, and challenge / credential shape are
+all defined at [paymentauth.org](https://paymentauth.org). This SDK
+follows that spec — pick a currency, give it your wallet address, and
+gate a route in two lines.
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![Coverage](https://img.shields.io/badge/coverage-81%25-yellow)]()
@@ -110,24 +110,41 @@ verification through `verify_credential_with_expected`, and emits a
 structured `application/problem+json` body with the L6 canonical
 error code (`payment_invalid`, `signature_consumed`, ...) on any 402.
 
-## Running the example
+## Running the examples
+
+A clean Flask example mirroring the Ruby Sinatra example lives at
+[`examples/simple-server/app.py`](./examples/simple-server/app.py).
+It exposes `GET /health` (free) and `GET /paid` (gated by an
+`@mpp_charge` decorator).
 
 ```bash
 cd python
 pip install -e ".[dev]"
-python examples/payment_link_server.py
+pip install flask
+python examples/simple-server/app.py
 ```
 
-In another terminal, with a local Surfpool on 127.0.0.1:8899:
+In another terminal:
+
+```bash
+curl -i http://127.0.0.1:8000/paid
+# HTTP/1.1 402 Payment Required
+# WWW-Authenticate: Payment realm="Python Flask Example", ...
+```
+
+A second `examples/payment_link_server.py` runs the same flow against
+a local Surfpool on `127.0.0.1:8899`, serves a payment-page HTML
+fallback, and is the adapter used by the interop harness:
 
 ```bash
 brew install pay
-curl http://localhost:3004/fortune         # 402 payment required
+python examples/payment_link_server.py &
 pay --local curl http://localhost:3004/fortune  # pays and succeeds
 ```
 
-The example defaults to `localnet`, `USDC`, and a local recipient.
-Override `RPC_URL` for a different endpoint.
+The examples default to `localnet`, `USDC`, and a local recipient.
+Override `RPC_URL` (or `MPP_RPC_URL` for the Flask example) for a
+different endpoint.
 
 ## Client compatibility matrix
 
