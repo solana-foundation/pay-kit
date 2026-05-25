@@ -28,7 +28,7 @@ __pycache__/
 .coverage
 .venv/
 *.pyc
-tests/interop/go-client/go-client
+tests/harness/go-client/go-client
 .claude/
 .gocache
 mpp-sdk-self-learning/

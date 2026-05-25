@@ -52,9 +52,9 @@ solana-pay-kit = { version = "0.1", default-features = false, features = ["mpp"]
 ## Interop
 
 The TypeScript interop harness can run the Rust server and client adapters from
-`../tests/interop`.
+`../tests/harness`.
 
 ```bash
-cd ../tests/interop
+cd ../tests/harness
 pnpm test
 ```

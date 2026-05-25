@@ -1,5 +1,5 @@
 """Regression tests for the Python interop adapter at
-``tests/interop/python-server/main.py``.
+``tests/harness/python-server/main.py``.
 
 Spawns the adapter as a subprocess, reads the ``ready`` handshake JSON
 from stdout, hits the protected resource without credentials, and

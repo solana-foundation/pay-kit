@@ -185,8 +185,8 @@ them as the `swift-coverage` artifact. The harness covers:
 ## Interop
 
 The Swift interop adapter lives at
-[`tests/interop/swift-client`](../tests/interop/swift-client) and is
-registered in `tests/interop/src/implementations.ts`. Default on after
+[`tests/harness/swift-client`](../tests/harness/swift-client) and is
+registered in `tests/harness/src/implementations.ts`. Default on after
 the focused TS-to-Swift matrix passes locally (this PR ships both the
 default-off registration and the default-on flip atop the same diff,
 per the roadmap's sequential-rebase rule on the
@@ -195,7 +195,7 @@ per the roadmap's sequential-rebase rule on the
 Focused matrix commands:
 
 ```bash
-cd tests/interop
+cd tests/harness
 MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=typescript pnpm exec vitest run
 MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=rust       pnpm exec vitest run
 ```

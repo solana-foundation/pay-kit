@@ -122,7 +122,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../../ruby && bundle exec ruby ../tests/interop/ruby-server/server.rb",
+      "cd ../../ruby && bundle exec ruby ../tests/harness/ruby-server/server.rb",
     ],
     enabled: isEnabled("ruby", "MPP_INTEROP_SERVERS", false),
   },
@@ -133,7 +133,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../tests/interop/lua-server/server.lua",
+      "cd ../../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../tests/harness/lua-server/server.lua",
     ],
     // Lua defaults off to match php/ruby: the harness requires a
     // luarocks-installed lua_modules tree under lua/ and a working

@@ -44,25 +44,25 @@ jobs:
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
       - name: Install interop harness
-        working-directory: tests/interop
+        working-directory: tests/harness
         run: pnpm install --frozen-lockfile
       - name: Build Swift interop client
-        working-directory: tests/interop/swift-client
+        working-directory: tests/harness/swift-client
         run: swift build
       - name: Build Rust interop server
         working-directory: rust
         run: cargo build --bin interop_server
       - name: Typecheck interop harness
-        working-directory: tests/interop
+        working-directory: tests/harness
         run: pnpm typecheck
       - name: Run Swift client interop smoke against TypeScript server
-        working-directory: tests/interop
+        working-directory: tests/harness
         env:
           MPP_INTEROP_CLIENTS: swift
           MPP_INTEROP_SERVERS: typescript
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays typescript server"
       - name: Run Swift client interop smoke against Rust server
-        working-directory: tests/interop
+        working-directory: tests/harness
         env:
           MPP_INTEROP_CLIENTS: swift
           MPP_INTEROP_SERVERS: rust
