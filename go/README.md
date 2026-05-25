@@ -217,11 +217,25 @@ Go.
 ## Coding convention
 
 This SDK follows the
-[`skills.sh/mindrally/skills/go`](https://www.skills.sh/mindrally/skills/go)
-best-practice skill selected for this PR: small interfaces, explicit
-error returns, table-driven tests, deterministic wire serialization,
-defensive payment verification, and branch-aware tests on
-security-sensitive paths.
+[`samber/cc-skills-golang`](https://www.skills.sh/samber/cc-skills-golang)
+collection as the primary Go skill set. The skills most load-bearing
+for this SDK:
+
+- `golang-code-style`, `golang-naming`, `golang-project-layout`,
+  `golang-lint` for idiomatic structure
+- `golang-error-handling`, `golang-safety`, `golang-context` for
+  defensive payment verification and cancellation propagation
+- `golang-testing`, `golang-stretchr-testify`, `golang-benchmark` for
+  table-driven and security-branch-aware coverage
+- `golang-concurrency`, `golang-performance` for deterministic wire
+  serialization under load
+- `golang-security`, `golang-dependency-management`,
+  `golang-documentation` for supply chain and godoc parity
+
+Translated to this SDK: small interfaces, explicit error returns,
+table-driven tests, deterministic wire serialization, defensive
+payment verification, and branch-aware tests on security-sensitive
+paths.
 
 The repo-level `pay-sdk-implementation` skill remains the protocol
 source of truth: Rust and spec wire format first, Go idioms second.
