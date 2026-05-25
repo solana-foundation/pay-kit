@@ -33,3 +33,4 @@ tests/interop/go-client/go-client
 .gocache
 mpp-sdk-self-learning/
 .build/
+go/coverage.out
