@@ -2,7 +2,6 @@ package client
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 
@@ -68,12 +67,10 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return resp, nil
 	}
 
-	ctx := req.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	authHeader, err := BuildCredentialHeaderWithOptions(ctx, t.Signer, t.RPC, challenge, t.buildOptions())
+	// req.Context() is documented to never return nil for a server-prepared
+	// or client-built request, so propagate it directly. Never substitute
+	// context.Background() here, which would break cancellation/deadline.
+	authHeader, err := BuildCredentialHeaderWithOptions(req.Context(), t.Signer, t.RPC, challenge, t.buildOptions())
 	if err != nil {
 		// Cannot build credential — return original 402.
 		return resp, nil
