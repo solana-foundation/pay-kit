@@ -73,7 +73,18 @@ The single screen exposes two text fields:
 
 For a local surfpool + interop server on the host machine, point
 both at `http://10.0.2.2:<port>` from inside the emulator (Android's
-loopback alias for the host).
+loopback alias for the host). The app permits cleartext HTTP only
+for `10.0.2.2`, `127.0.0.1`, and `localhost` via
+`app/src/main/res/xml/network_security_config.xml`. All other
+destinations remain HTTPS-only.
+
+## End-to-end screenshot
+
+End-to-end run in the Android 34 (arm64) emulator against local
+Surfpool + the iOSDemo's `MerchantServer/serve.py`. App shows
+"HTTP 200", the fortune body, and the on-chain settlement signature.
+
+![Android emulator screenshot showing HTTP 200 and settlement signature](docs/android-demo-screenshot.png)
 
 ## Expected UI state
 

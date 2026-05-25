@@ -6,6 +6,7 @@
     <application
         android:label="MPP Charge Demo"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false">
         <activity
             android:name=".MainActivity"
