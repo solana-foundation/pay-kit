@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
     private val walletAdapter = MobileWalletAdapter(
         connectionIdentity = ConnectionIdentity(
             identityUri = Uri.parse("https://402.surfnet.dev"),
-            iconUri = Uri.parse("https://402.surfnet.dev/icon.png"),
+            iconUri = Uri.parse("icon.png"),
             identityName = "MPP Charge Demo",
         ),
     ).apply {
@@ -214,17 +214,23 @@ private suspend fun runCharge(
 ): Status {
     return try {
         // 1. Initial GET. Expect 402 with a Solana charge challenge.
-        val initialResponse = withContext(Dispatchers.IO) {
-            httpClient.newCall(Request.Builder().url(merchantUrl).get().build()).execute()
+        // Read everything that touches the response body off the main thread
+        // so okhttp's lazy body consumption does not raise
+        // NetworkOnMainThreadException on resume.
+        data class InitialResponse(val code: Int, val body: String, val wwwAuth: List<String>)
+        val initialParsed = withContext(Dispatchers.IO) {
+            httpClient.newCall(Request.Builder().url(merchantUrl).get().build()).execute().use { resp ->
+                InitialResponse(
+                    code = resp.code,
+                    body = resp.body?.string().orEmpty(),
+                    wwwAuth = resp.headers("WWW-Authenticate"),
+                )
+            }
         }
-        val initialCode = initialResponse.code
-        if (initialCode != 402) {
-            val body = initialResponse.body?.string().orEmpty()
-            initialResponse.close()
-            return Status(false, "Expected 402, got HTTP $initialCode\n$body")
+        if (initialParsed.code != 402) {
+            return Status(false, "Expected 402, got HTTP ${initialParsed.code}\n${initialParsed.body}")
         }
-        val challengeHeaders = initialResponse.headers("WWW-Authenticate")
-        initialResponse.close()
+        val challengeHeaders = initialParsed.wwwAuth
         val challenge = MppHeaders.selectSolanaChargeChallenge(challengeHeaders)
             ?: throw MppException.InvalidPaymentScheme
 
@@ -274,24 +280,28 @@ private suspend fun runCharge(
                 payload = CredentialPayload.transaction(signedTxBase64),
             ),
         )
-        val authedResponse = withContext(Dispatchers.IO) {
+        data class AuthedResponse(val code: Int, val body: String)
+        val authed = withContext(Dispatchers.IO) {
             httpClient.newCall(
                 Request.Builder().url(merchantUrl).get()
                     .header("Authorization", authorization)
                     .build(),
-            ).execute()
+            ).execute().use { resp ->
+                AuthedResponse(resp.code, resp.body?.string().orEmpty())
+            }
         }
-        val code = authedResponse.code
-        val body = authedResponse.body?.string().orEmpty()
-        authedResponse.close()
+        val code = authed.code
+        val body = authed.body
         Status(
             inFlight = false,
             message = "HTTP $code\n$body",
             signature = extractSignature(body),
         )
     } catch (mpp: MppException) {
+        android.util.Log.e("MppDemo", "MPP error", mpp)
         Status(false, "MPP error: ${mpp.message ?: mpp::class.simpleName}")
     } catch (t: Throwable) {
+        android.util.Log.e("MppDemo", "runCharge failed", t)
         Status(false, "Error: ${t.javaClass.simpleName}: ${t.message ?: "(no message)"}")
     }
 }
