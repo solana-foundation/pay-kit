@@ -38,12 +38,13 @@ Fee-payer co-sign is the highest-trust operation a charge server performs. The s
 
 Trust boundaries:
 
-| Field                            | Trust              |
-| -------------------------------- | ------------------ |
-| Transaction bytes (instructions, account keys, signers) | Untrusted (client) |
-| `methodDetails.feePayer = true`  | Trusted (route config) |
-| `methodDetails.feePayer_key`     | Untrusted on the wire, MUST be reconciled with server signer pubkey |
-| Server fee-payer keypair         | Trusted (server context) |
+| Field                            | Source            | Trust              |
+| -------------------------------- | ----------------- | ------------------ |
+| Transaction bytes (instructions, account keys, signers) | Client (wire) | Untrusted |
+| `methodDetails.feePayer = true`  | Route config (server) | Trusted (declares whether co-sign is enabled for this route) |
+| `methodDetails.feePayerKey`      | Client (wire) | Untrusted: it is the client's claim about which pubkey should pay fees. The server MUST NOT use it as the source of truth for guards (2) and (3); it MUST be reconciled with the server-context fee-payer pubkey and rejected on mismatch. |
+| Server fee-payer pubkey (e.g. Rust `Config.fee_payer_signer.pubkey()`, PHP `SolanaChargeTransactionVerifier` server-context pubkey, Go server config) | Server context (process memory) | Trusted: this is the only authoritative source for "who is the fee-payer" in guards (2) and (3). |
+| Server fee-payer keypair         | Server context (process memory) | Trusted (signing key, never leaves the server) |
 
 Without an instruction allowlist and source-account guard, signing is equivalent to "the server will sign anything the client puts in front of it". With the four invariants below, the server signs only transactions whose instructions match the canonical safe shape and whose drainable sources are not the fee-payer.
 
