@@ -18,6 +18,7 @@ use SolanaPhpSdk\Programs\SystemProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\VersionedTransaction;
+use SolanaPhpSdk\Util\Base58;
 
 /**
  * Verifies Solana charge transaction payloads before server co-sign/broadcast.
@@ -25,35 +26,97 @@ use SolanaPhpSdk\Transaction\VersionedTransaction;
  * Successful results intentionally do not carry a receipt reference. Broadcast
  * the co-signed transaction first, then create the receipt from the settled
  * on-chain signature with ChargeServer::createReceiptHeaderForReference().
+ *
+ * The verifier supports both pull-mode (`type=transaction`) credentials,
+ * where the client signs a transaction the server still has to broadcast,
+ * and push-mode (`type=signature`) credentials, where the client has already
+ * broadcast and confirmed a transaction on-chain and only sends the
+ * signature. Push-mode credentials only get a shape check at the credential
+ * layer (signature length); the handler is responsible for fetching the
+ * settled transaction and re-running {@see verifyTransactionPayload} against
+ * the on-chain artifact.
  */
-final class SolanaChargeTransactionVerifier implements PaymentVerifier
+final class SolanaChargeTransactionVerifier implements PaymentVerifier, TransactionPayloadVerifier
 {
     private const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
     private const MAX_COMPUTE_UNIT_LIMIT = 200_000;
     private const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000;
 
     /**
-     * Verify a pull-mode transaction credential against its charge request.
+     * Verify a pull- or push-mode credential against its challenge.
+     *
+     * Pull mode (`type=transaction`): runs the full pre-broadcast shape
+     * check now, before the handler co-signs and broadcasts.
+     *
+     * Push mode (`type=signature`): the wire transaction is not in the
+     * credential, so only the signature shape is validated here. The
+     * handler MUST fetch the settled transaction by signature and call
+     * {@see verifyTransactionPayload} against the on-chain artifact to
+     * enforce the same shape contract pull mode does.
      */
     public function verify(Credential $credential, Challenge $challenge): VerificationResult
     {
         $transaction = $credential->payload['transaction'] ?? null;
-        if (!is_string($transaction) || $transaction === '') {
-            return VerificationResult::failure('missing transaction payload');
+        if (is_string($transaction) && $transaction !== '') {
+            try {
+                $request = ChargeRequest::fromArray($challenge->decodeRequest());
+                return $this->verifyTransactionPayload($transaction, $request);
+            } catch (Throwable $error) {
+                // Surface the message from any failure (the SDK's own
+                // InvalidArgumentException, an upstream solana-php SolanaException
+                // for malformed pubkeys/transactions, etc.); they all describe a
+                // protocol-level reason the credential should be rejected.
+                return VerificationResult::failure($error->getMessage());
+            }
         }
 
+        $signature = $credential->payload['signature'] ?? null;
+        if (is_string($signature) && $signature !== '') {
+            try {
+                $this->validateSignature($signature);
+            } catch (Throwable $error) {
+                return VerificationResult::failure($error->getMessage());
+            }
+
+            return VerificationResult::success(reference: $signature);
+        }
+
+        return VerificationResult::failure('missing transaction or signature payload');
+    }
+
+    /**
+     * Verify a base64-encoded Solana transaction against the expected charge.
+     *
+     * Used both by pull-mode pre-broadcast (via {@see verify()}) and by the
+     * push-mode handler path after it has fetched the settled transaction
+     * from the RPC by signature.
+     */
+    public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
+    {
         try {
-            $request = ChargeRequest::fromArray($challenge->decodeRequest());
-            $this->verifyTransaction($transaction, $request);
+            $this->verifyTransaction($transactionBase64, $request);
         } catch (Throwable $error) {
-            // Surface the message from any failure (the SDK's own
-            // InvalidArgumentException, an upstream solana-php SolanaException
-            // for malformed pubkeys/transactions, etc.) — they all describe a
-            // protocol-level reason the credential should be rejected.
             return VerificationResult::failure($error->getMessage());
         }
 
         return VerificationResult::success(reference: '');
+    }
+
+    /**
+     * Shape check for a base58 ed25519 signature. The on-chain verification
+     * happens later in the handler via getTransaction; this is a cheap
+     * pre-RPC gate so obviously-malformed credentials reject without any
+     * network round-trip.
+     */
+    private function validateSignature(string $signature): void
+    {
+        if (strlen($signature) < 87 || strlen($signature) > 88) {
+            throw new InvalidArgumentException('invalid signature length');
+        }
+        $decoded = Base58::decode($signature);
+        if (strlen($decoded) !== 64) {
+            throw new InvalidArgumentException('invalid signature length');
+        }
     }
 
     private function verifyTransaction(string $transactionBase64, ChargeRequest $request): void
