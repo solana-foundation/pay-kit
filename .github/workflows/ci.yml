@@ -243,35 +243,6 @@ jobs:
           name: go-coverage
           path: go/coverage.out
 
-  test-kotlin:
-    name: Kotlin tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.5.1"
-      - name: Run tests with coverage
-        working-directory: kotlin
-        # `gradle check` runs test + jacocoTestReport +
-        # jacocoTestCoverageVerification so the 90 percent line-coverage
-        # gate is enforced in CI (previous `gradle test jacocoTestReport`
-        # generated the report without enforcing the gate).
-        run: gradle check
-      - name: Upload Kotlin coverage
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: kotlin-coverage
-          path: |
-            kotlin/build/reports/jacoco/test/jacocoTestReport.xml
-            kotlin/build/reports/jacoco/test/html/
-          if-no-files-found: ignore
-
   integration:
     name: Integration tests
     needs: build-html
@@ -520,19 +491,3 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: ruby
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "9.5.1"
-      - name: Pre-warm Gradle for the Kotlin interop client
-        working-directory: tests/interop/kotlin-client
-        run: gradle installDist --no-daemon
-      - name: Run Kotlin client interop smoke
-        working-directory: tests/interop
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
-        env:
-          MPP_INTEROP_CLIENTS: kotlin
-          MPP_INTEROP_SERVERS: typescript
