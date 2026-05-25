@@ -1,0 +1,58 @@
+// Standalone Swift script that exercises the same code path as the
+// iOSDemo app (MppHTTPClient + MemorySigner with the demo seed) against
+// a running Surfpool + MerchantServer stack. Useful for verifying the
+// stack outside the Simulator and for the PR's evidence trail.
+//
+// Run from the repo root:
+//
+//     swift run --package-path swift mpp-ios-demo-verify
+//
+// Or directly (slower, recompiles every time):
+//
+//     swift -I swift/.build/debug -L swift/.build/debug \
+//         swift/Examples/iOSDemo/MerchantServer/verify_e2e.swift
+//
+// Requires:
+//   - Surfpool: http://127.0.0.1:8899
+//   - Merchant: http://127.0.0.1:3004/fortune
+import Foundation
+import SolanaMpp
+
+let seed = Data([
+    0x69, 0x4f, 0x53, 0x2d, 0x44, 0x45, 0x4d, 0x4f,
+    0x2d, 0x53, 0x45, 0x45, 0x44, 0x2d, 0x44, 0x4f,
+    0x2d, 0x4e, 0x4f, 0x54, 0x2d, 0x55, 0x53, 0x45,
+    0x2d, 0x49, 0x4e, 0x2d, 0x50, 0x52, 0x4f, 0x44,
+])
+
+let merchantURL = URL(string: ProcessInfo.processInfo.environment["MERCHANT_URL"]
+    ?? "http://127.0.0.1:3004/fortune")!
+let rpcURL = URL(string: ProcessInfo.processInfo.environment["RPC_URL"]
+    ?? "http://127.0.0.1:8899")!
+
+let exitCode = await { () -> Int32 in
+    do {
+        let signer = try MemorySigner(secretKey: seed)
+        print("[verify] signer address: \(signer.address)")
+        let client = MppHTTPClient(
+            signer: signer,
+            rpc: RpcClient(endpoint: rpcURL)
+        )
+        let response = try await client.fetch(
+            url: merchantURL,
+            method: "GET",
+            additionalHeaders: ["Accept": "application/json"],
+            body: nil,
+            settlementHeader: "payment-receipt"
+        )
+        let body = String(data: response.body, encoding: .utf8) ?? ""
+        print("[verify] HTTP \(response.status)")
+        print("[verify] settlement signature: \(response.settlementSignature ?? "(none)")")
+        print("[verify] body: \(body)")
+        return (200..<300).contains(response.status) ? 0 : 1
+    } catch {
+        print("[verify] error: \(error)")
+        return 2
+    }
+}()
+exit(exitCode)
