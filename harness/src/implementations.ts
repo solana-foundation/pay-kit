@@ -4,6 +4,10 @@ export type ImplementationDefinition = {
   role: "client" | "server";
   command: string[];
   enabled: boolean;
+  // Optional. When set, this adapter only participates in scenarios whose
+  // `intent` is in this list. Defaults to "charge" only for back-compat
+  // with the existing MPP charge matrix.
+  intents?: string[];
 };
 
 function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolean {
@@ -79,6 +83,39 @@ export const clientImplementations: ImplementationDefinition[] = [
       "cd kotlin-client && gradle --quiet run --no-daemon",
     ],
     enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", true),
+  },
+  {
+    id: "ts-x402",
+    label: "TypeScript x402 exact client",
+    role: "client",
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/exact-client.ts",
+    ],
+    enabled: isEnabled("ts-x402", "X402_INTEROP_CLIENTS", true),
+    intents: ["x402-exact"],
+  },
+  {
+    id: "rust-x402",
+    label: "Rust x402 exact client",
+    role: "client",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../../rust/Cargo.toml",
+      "-p",
+      "solana-x402",
+      "--bin",
+      "interop_client",
+    ],
+    enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
+    intents: ["x402-exact"],
   },
 ];
 
@@ -171,5 +208,38 @@ export const serverImplementations: ImplementationDefinition[] = [
     role: "server",
     command: ["sh", "-c", "cd go-server && go run ."],
     enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
+  },
+  {
+    id: "ts-x402",
+    label: "TypeScript x402 exact server",
+    role: "server",
+    command: [
+      "pnpm",
+      "exec",
+      "node",
+      "--import",
+      "tsx",
+      "src/fixtures/typescript/exact-server.ts",
+    ],
+    enabled: isEnabled("ts-x402", "X402_INTEROP_SERVERS", true),
+    intents: ["x402-exact"],
+  },
+  {
+    id: "rust-x402",
+    label: "Rust x402 exact server",
+    role: "server",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../../rust/Cargo.toml",
+      "-p",
+      "solana-x402",
+      "--bin",
+      "interop_server",
+    ],
+    enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
+    intents: ["x402-exact"],
   },
 ];

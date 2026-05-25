@@ -320,13 +320,23 @@ describe("mpp interop", () => {
     ) {
       continue;
     }
+    // The x402-exact intent has its own runner in
+    // `test/x402-exact.e2e.test.ts` that emits `X402_INTEROP_*` env vars.
+    // The legacy MPP runner builds `MPP_INTEROP_*` env, which the x402
+    // adapters do not consume, so we hard-skip the new intent here even
+    // when MPP_INTEROP_INTENTS explicitly selects it.
+    if (scenario.intent === "x402-exact") {
+      continue;
+    }
     const scenarioServers = activeServers.filter(
       (implementation) =>
-        !scenario.serverIds || scenario.serverIds.includes(implementation.id),
+        (!implementation.intents || implementation.intents.includes(scenario.intent)) &&
+        (!scenario.serverIds || scenario.serverIds.includes(implementation.id)),
     );
     const scenarioClients = activeClients.filter(
       (implementation) =>
-        !scenario.clientIds || scenario.clientIds.includes(implementation.id),
+        (!implementation.intents || implementation.intents.includes(scenario.intent)) &&
+        (!scenario.clientIds || scenario.clientIds.includes(implementation.id)),
     );
 
     for (const serverImplementation of scenarioServers) {
