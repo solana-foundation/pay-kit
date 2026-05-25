@@ -77,6 +77,77 @@ object Charge {
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
     ): String {
+        val built = buildUnsignedChargeMessage(
+            walletPublicKey = PublicKey(signer.publicKeyBytes),
+            request = request,
+            blockhashProvider = blockhashProvider,
+            computeUnitLimit = computeUnitLimit,
+            computeUnitPrice = computeUnitPrice,
+        )
+        val signature = signer.sign(built.messageBytes)
+        val signerIndex = built.message.accountKeys.indexOfFirst {
+            it.bytes.contentEquals(built.walletPublicKey.bytes)
+        }
+        if (signerIndex < 0) {
+            throw MppException.InvalidTransaction("Signer not found in transaction accounts")
+        }
+        val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
+        signatures[signerIndex] = signature
+        val txBytes = Transaction.serializeLegacyTransaction(built.message, signatures)
+        return Base64.getEncoder().encodeToString(txBytes)
+    }
+
+    /**
+     * Builds the unsigned transaction wire bytes for a charge request,
+     * for callers that delegate signing to an external wallet (e.g.
+     * Mobile Wallet Adapter). The returned bytes are the canonical legacy
+     * Solana transaction wire format with zeroed signature slots; the
+     * caller is responsible for handing them to the wallet, replacing
+     * the slot for `walletPublicKey` with the wallet's signature, and
+     * base64-encoding the result for the MPP Authorization header.
+     *
+     * Shares the instruction composition and message build path with
+     * [buildChargeTransaction] so the unsigned wire bytes a wallet
+     * receives match the bytes the local-signer path would have produced
+     * before signing.
+     */
+    fun buildUnsignedChargeTransaction(
+        walletPublicKey: PublicKey,
+        request: ChargeRequest,
+        blockhashProvider: BlockhashProvider,
+        computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
+        computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
+    ): ByteArray {
+        val built = buildUnsignedChargeMessage(
+            walletPublicKey = walletPublicKey,
+            request = request,
+            blockhashProvider = blockhashProvider,
+            computeUnitLimit = computeUnitLimit,
+            computeUnitPrice = computeUnitPrice,
+        )
+        val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
+        return Transaction.serializeLegacyTransaction(built.message, signatures)
+    }
+
+    /**
+     * Internal carrier for the compiled message, its serialized bytes,
+     * and the wallet public key so [buildChargeTransaction] and
+     * [buildUnsignedChargeTransaction] share a single composition path
+     * without re-deriving any wire-affecting state.
+     */
+    private data class UnsignedChargeMessage(
+        val message: Transaction.LegacyMessage,
+        val messageBytes: ByteArray,
+        val walletPublicKey: PublicKey,
+    )
+
+    private fun buildUnsignedChargeMessage(
+        walletPublicKey: PublicKey,
+        request: ChargeRequest,
+        blockhashProvider: BlockhashProvider,
+        computeUnitLimit: Int,
+        computeUnitPrice: Long,
+    ): UnsignedChargeMessage {
         val totalAmount = request.amount.toLongOrNull()
             ?: throw MppException.InvalidTransaction("Invalid amount: ${request.amount}")
         if (totalAmount <= 0L) {
@@ -121,7 +192,7 @@ object Charge {
             throw MppException.InvalidTransaction("Splits consume the entire amount")
         }
 
-        val signerKey = PublicKey(signer.publicKeyBytes)
+        val signerKey = walletPublicKey
         val recipientKey = PublicKey.fromBase58(request.recipient)
         val md = request.methodDetails
         val useFeePayer = md.feePayer == true && md.feePayerKey != null
@@ -208,16 +279,11 @@ object Charge {
         )
 
         val messageBytes = message.serialize()
-        val signature = signer.sign(messageBytes)
-        val signerIndex = message.accountKeys.indexOfFirst { it.bytes.contentEquals(signerKey.bytes) }
-        if (signerIndex < 0) {
-            throw MppException.InvalidTransaction("Signer not found in transaction accounts")
-        }
-        val signatures = MutableList<ByteArray?>(message.header.numRequiredSignatures) { null }
-        signatures[signerIndex] = signature
-
-        val txBytes = Transaction.serializeLegacyTransaction(message, signatures)
-        return Base64.getEncoder().encodeToString(txBytes)
+        return UnsignedChargeMessage(
+            message = message,
+            messageBytes = messageBytes,
+            walletPublicKey = walletPublicKey,
+        )
     }
 
     /**

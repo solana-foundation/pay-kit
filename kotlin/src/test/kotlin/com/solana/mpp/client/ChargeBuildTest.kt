@@ -381,4 +381,61 @@ class ChargeBuildTest {
             Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
         }
     }
+
+    @Test
+    fun unsignedChargeTransactionMatchesSignedTransactionExceptForSignatureSlot() {
+        // Drives the external-signer code path (e.g. Mobile Wallet Adapter).
+        // The unsigned bytes must equal the locally-signed bytes once the
+        // signature slot is zeroed; this guarantees a wallet that signs the
+        // wire bytes we hand it produces a transaction byte-identical to
+        // what the local-signer path would have produced.
+        val request = ChargeRequest(
+            amount = "1000000",
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "localnet"),
+        )
+        val signed = JBase64.getDecoder().decode(
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash),
+        )
+        val unsigned = Charge.buildUnsignedChargeTransaction(
+            walletPublicKey = PublicKey(signer().publicKeyBytes),
+            request = request,
+            blockhashProvider = fixedBlockhash,
+        )
+        assertEquals(signed.size, unsigned.size)
+        // Compact-array length byte is at index 0; then numRequiredSignatures
+        // 64-byte signature slots follow. The rest is the message body and
+        // must be byte-identical.
+        val sigCount = signed[0].toInt() and 0xff
+        val messageStart = 1 + sigCount * 64
+        for (i in messageStart until signed.size) {
+            assertEquals(signed[i], unsigned[i], "byte $i differs between signed and unsigned")
+        }
+        // The unsigned signature slot for the wallet must be 64 zero bytes.
+        for (i in 1 until 1 + 64) {
+            assertEquals(0.toByte(), unsigned[i])
+        }
+    }
+
+    @Test
+    fun unsignedChargeTransactionAcceptsExternalWalletPublicKey() {
+        // Smoke test that an externally-provided pubkey (i.e. one the
+        // local process has no signing key for) produces a well-formed
+        // unsigned transaction. This is the production MWA case.
+        val externalPubkey = PublicKey.fromBase58("CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY")
+        val request = ChargeRequest(
+            amount = "500",
+            currency = "USDC",
+            recipient = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+            methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
+        )
+        val unsigned = Charge.buildUnsignedChargeTransaction(
+            walletPublicKey = externalPubkey,
+            request = request,
+            blockhashProvider = fixedBlockhash,
+        )
+        assertTrue(unsigned.size > 64)
+        assertEquals(0x01.toByte(), unsigned[0])
+    }
 }
