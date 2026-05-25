@@ -117,6 +117,18 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "go-x402-client",
+    label: "Go x402 exact client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd ../go/x402/cmd/interop-client && go run .",
+    ],
+    enabled: isEnabled("go-x402-client", "MPP_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
@@ -240,6 +252,18 @@ export const serverImplementations: ImplementationDefinition[] = [
       "interop_server",
     ],
     enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
+    intents: ["x402-exact"],
+  },
+  {
+    id: "go-x402-server",
+    label: "Go x402 exact server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "cd ../go/x402/cmd/interop-server && go run .",
+    ],
+    enabled: isEnabled("go-x402-server", "MPP_INTEROP_SERVERS", false),
     intents: ["x402-exact"],
   },
 ];
