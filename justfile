@@ -67,6 +67,11 @@ go-test:
 go-fmt:
     cd go && gofmt -w $$(find . -name '*.go' -type f | sort)
 
+# Lint Go SDK
+go-lint:
+    cd go && gofmt -l $$(find . -name '*.go' -not -path './vendor/*')
+    cd go && golangci-lint run --timeout=5m
+
 # Run Go coverage with a minimum threshold of 70%
 go-test-cover:
     mkdir -p /tmp/go-build-cache
@@ -215,4 +220,4 @@ test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover py-te
 fmt: ts-fmt rs-fmt go-fmt py-fmt php-fmt rb-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-lint lua-test-cover lua-audit py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-lint go-test-cover lua-lint lua-test-cover lua-audit py-lint py-test-cover php-lint php-test-cover rb-lint rb-audit rb-test-cover
