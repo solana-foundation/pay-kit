@@ -62,6 +62,15 @@ struct ContentView: View {
             }
             .navigationTitle("MPP iOS Demo")
         }
+        .task {
+            // Headless screenshot hook for CI / PR evidence: when launched
+            // with `MPP_AUTO_PAY=1`, fire the pay flow once on appear so a
+            // screencap captures the success state without UI interaction.
+            // No-op for normal users.
+            if ProcessInfo.processInfo.environment["MPP_AUTO_PAY"] == "1" {
+                await pay()
+            }
+        }
     }
 
     @ViewBuilder
