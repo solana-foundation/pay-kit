@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/solana-foundation/mpp-sdk/go"
+	"github.com/solana-foundation/pay-kit/go"
 )
 
 // SurfpoolBlockhashPrefix is the base58 prefix embedded in every blockhash

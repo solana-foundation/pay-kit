@@ -4,7 +4,7 @@
 
 **DO NOT CREATE A GITHUB ISSUE** to report a security problem.
 
-Instead please use this [Report a Vulnerability](https://github.com/solana-foundation/mpp-sdk/security/advisories/new) link.
+Instead please use this [Report a Vulnerability](https://github.com/solana-foundation/pay-kit/security/advisories/new) link.
 
 Provide a helpful title and detailed description of the problem.
 

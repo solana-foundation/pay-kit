@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
-	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
+	"github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )
 
 // resignEcho recomputes the HMAC ID after a test mutates one of the

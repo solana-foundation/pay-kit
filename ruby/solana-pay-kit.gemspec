@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.summary = "Solana charge server for the Machine Payments Protocol"
   spec.description = "Let your APIs charge agents using x402 and MPP protocols"
   spec.authors = ["Solana Foundation"]
-  spec.homepage = "https://github.com/solana-foundation/mpp-sdk"
+  spec.homepage = "https://github.com/solana-foundation/pay-kit"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
 

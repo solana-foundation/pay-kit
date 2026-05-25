@@ -7,7 +7,7 @@ description: Derive a new-language SDK port of the Solana payment SDKs (MPP toda
 
 This skill scaffolds a language port of the Solana payment SDKs that stays
 wire-compatible with the Rust reference at `mpp-sdk/rust` (in the
-`solana-foundation/mpp-sdk` repo). It supports both **MPP** (today) and
+`solana-foundation/pay-kit` repo). It supports both **MPP** (today) and
 **x402** (scaffolded; spec references only until x402-kit lands).
 
 ## Specs (authoritative)

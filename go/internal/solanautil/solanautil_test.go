@@ -7,8 +7,8 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 func TestSplitAmounts(t *testing.T) {

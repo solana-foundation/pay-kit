@@ -47,7 +47,7 @@ const response = await mppx.fetch(url)`}</pre>
           <span style={s.dot}>{"\u00b7"}</span>
           <a
             style={s.link}
-            href="https://github.com/solana-foundation/mpp-sdk"
+            href="https://github.com/solana-foundation/pay-kit"
             target="_blank"
             rel="noopener"
           >

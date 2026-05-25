@@ -14,8 +14,8 @@ import (
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	"github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	"github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 // Signer is the minimal signer surface shared by the client and server packages.

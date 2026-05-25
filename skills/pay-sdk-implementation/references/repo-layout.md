@@ -1,7 +1,7 @@
 # Repo layout
 
 The new-language SDK lives as a sibling of the existing language
-directories in `solana-foundation/mpp-sdk`:
+directories in `solana-foundation/pay-kit`:
 
 ```
 mpp-sdk/

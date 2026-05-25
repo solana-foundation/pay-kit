@@ -1,9 +1,9 @@
 package mpp
 
 import (
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
-	"github.com/solana-foundation/mpp-sdk/go/protocol/core"
-	"github.com/solana-foundation/mpp-sdk/go/protocol/intents"
+	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/protocol/core"
+	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )
 
 type (

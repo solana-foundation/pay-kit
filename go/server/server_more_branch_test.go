@@ -10,10 +10,10 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/internal/solanautil"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 func TestFormatAmountDisplayLongUnknownCurrencyTruncates(t *testing.T) {

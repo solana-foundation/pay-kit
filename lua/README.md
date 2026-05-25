@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
 # mpp (Lua)
@@ -130,8 +130,12 @@ curl -i http://127.0.0.1:4569/paid          # 402 Payment Required with
 ### OpenResty / nginx middleware
 
 ```bash
-cd lua/examples/nginx
-openresty -p . -c nginx.conf                # listens on 127.0.0.1:4570
+# install openresty
+brew tap openresty/brew
+brew install openresty
+
+# start proxy
+openresty -p . -c examples/nginx/nginx.conf                # listens on 127.0.0.1:4570
 ```
 
 The Lua middleware (`access.lua`) runs in nginx's access phase and

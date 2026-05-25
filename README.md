@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
 # @solana/mpp
@@ -76,7 +76,7 @@ pnpm add @solana/mpp
 cargo add solana-mpp
 
 # Go
-go get github.com/solana-foundation/mpp-sdk/go
+go get github.com/solana-foundation/pay-kit/go
 
 # Python
 pip install solana-mpp
@@ -139,7 +139,7 @@ receipt = await mpp.verify_credential(credential)
 <summary>Go</summary>
 
 ```go
-import "github.com/solana-foundation/mpp-sdk/go/server"
+import "github.com/solana-foundation/pay-kit/go/server"
 
 m, _ := server.New(server.Config{
     Recipient: "RecipientPubkey...",

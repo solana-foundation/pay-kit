@@ -25,8 +25,8 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/client"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/client"
 )
 
 const fixtureSettlementHeader = "x-fixture-settlement"

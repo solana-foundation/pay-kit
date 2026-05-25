@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
+	mpp "github.com/solana-foundation/pay-kit/go"
 )
 
 type contextKey string

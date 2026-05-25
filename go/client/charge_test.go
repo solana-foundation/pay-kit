@@ -7,10 +7,10 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
-	"github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/internal/solanautil"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
-	"github.com/solana-foundation/mpp-sdk/go/protocol"
+	"github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 func memoTexts(t *testing.T, tx *solana.Transaction) []string {

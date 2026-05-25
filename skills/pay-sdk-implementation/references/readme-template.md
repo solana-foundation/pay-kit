@@ -27,7 +27,7 @@ stores up front.
 
 ```md
 <p align="center">
-  <img src="https://github.com/solana-foundation/mpp-sdk/raw/main/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
 </p>
 
 # <package-name>

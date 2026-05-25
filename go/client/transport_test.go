@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/internal/testutil"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper.

@@ -6,8 +6,8 @@ import (
 	"io"
 	"net/http"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/internal/solanautil"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
 )
 
 // PaymentTransport wraps an http.RoundTripper and transparently handles

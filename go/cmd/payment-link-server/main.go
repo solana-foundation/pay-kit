@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
-	mpp "github.com/solana-foundation/mpp-sdk/go"
-	"github.com/solana-foundation/mpp-sdk/go/protocol/core"
-	"github.com/solana-foundation/mpp-sdk/go/server"
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/protocol/core"
+	"github.com/solana-foundation/pay-kit/go/server"
 )
 
 const csp = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'"

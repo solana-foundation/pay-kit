@@ -1,7 +1,7 @@
 package = "mpp"
 version = "dev-1"
 source = {
-  url = "git+https://github.com/solana-foundation/mpp-sdk.git",
+  url = "git+https://github.com/solana-foundation/pay-kit.git",
 }
 description = {
   summary = "Solana payment method for the Machine Payments Protocol (MPP), Lua server SDK.",
@@ -9,10 +9,10 @@ description = {
     Lua implementation of the MPP charge server intent. Issues 402 Payment
     Required challenges, verifies credentials against a Solana-backed payment
     flow, and orchestrates settlement via a transport-agnostic JSON-RPC
-    client. Mirrors the Rust reference at github.com/solana-foundation/mpp-sdk
+    client. Mirrors the Rust reference at github.com/solana-foundation/pay-kit
     rust/.
   ]],
-  homepage = "https://github.com/solana-foundation/mpp-sdk",
+  homepage = "https://github.com/solana-foundation/pay-kit",
   license = "MIT",
 }
 dependencies = {

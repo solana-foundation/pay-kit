@@ -1,4 +1,4 @@
-module github.com/solana-foundation/mpp-sdk/go
+module github.com/solana-foundation/pay-kit/go
 
 go 1.26.1
 
