@@ -4,7 +4,9 @@ use serde_json::json;
 use solana_keychain::memory::MemorySigner;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_x402::{
-    client::exact::{build_payment_header, parse_x402_challenge_with_selection, ChallengeSelection},
+    client::exact::{
+        build_payment_header, parse_x402_challenge_with_selection, ChallengeSelection,
+    },
     PAYMENT_SIGNATURE_HEADER,
 };
 
@@ -42,12 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         network: Some(&network),
         currencies: preferred_refs.as_deref(),
     };
-    let requirements = parse_x402_challenge_with_selection(
-        &first_headers,
-        Some(&first_body),
-        &selection,
-    )
-    .ok_or_else(|| "server did not return a supported SVM x402 challenge".to_string())?;
+    let requirements =
+        parse_x402_challenge_with_selection(&first_headers, Some(&first_body), &selection)
+            .ok_or_else(|| "server did not return a supported SVM x402 challenge".to_string())?;
 
     let rpc = RpcClient::new(rpc_url);
     let payment_header = build_payment_header(&signer, &rpc, &requirements).await?;

@@ -137,10 +137,10 @@ fn payment_options(state: &InteropState) -> Vec<PaymentOption<'static>> {
     // SAFETY: the strings live as long as the leaked allocation does. We
     // leak intentionally because adapter binaries are short-lived and the
     // allocations need 'static lifetimes for `PaymentOption<'static>`.
-    let primary_currency: &'static str = Box::leak(state.x402.currency().to_string().into_boxed_str());
+    let primary_currency: &'static str =
+        Box::leak(state.x402.currency().to_string().into_boxed_str());
     let price: &'static str = Box::leak(state.price.clone().into_boxed_str());
-    let resource_path: &'static str =
-        Box::leak(state.resource_path.clone().into_boxed_str());
+    let resource_path: &'static str = Box::leak(state.resource_path.clone().into_boxed_str());
 
     let extras: Vec<PaymentOption<'static>> = state
         .extra_offered_mints
@@ -242,8 +242,7 @@ fn handle_connection(
                         )?;
                     }
                     Err(error) => {
-                        let (_, header_value) =
-                            payment_required_header_for(&requirements_list)?;
+                        let (_, header_value) = payment_required_header_for(&requirements_list)?;
                         write_json_response(
                             &mut stream,
                             402,

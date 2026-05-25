@@ -68,8 +68,8 @@ fn verify_on_chain_transfer(
     let expected_mint = resolve_expected_mint(requirements);
     let expected_recipient = Pubkey::from_str(&requirements.recipient)
         .map_err(|e| Error::Other(format!("Invalid recipient: {e}")))?;
-    let expected_mint_pubkey = Pubkey::from_str(&expected_mint)
-        .map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
+    let expected_mint_pubkey =
+        Pubkey::from_str(&expected_mint).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
     let token_program_str = requirements
         .token_program
         .clone()
@@ -139,7 +139,10 @@ fn matches_parsed_transfer(
         Some(info) => info,
         None => return false,
     };
-    let destination = info.get("destination").and_then(|v| v.as_str()).unwrap_or("");
+    let destination = info
+        .get("destination")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mint = info.get("mint").and_then(|v| v.as_str()).unwrap_or("");
     let amount = info
         .get("tokenAmount")

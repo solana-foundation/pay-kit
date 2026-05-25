@@ -272,7 +272,9 @@ impl X402 {
         options: &[PaymentOption<'_>],
     ) -> Result<PaymentRequiredEnvelope, Error> {
         if options.is_empty() {
-            return Err(Error::Other("at least one payment option is required".into()));
+            return Err(Error::Other(
+                "at least one payment option is required".into(),
+            ));
         }
         let mut accepts = Vec::with_capacity(options.len());
         for option in options {
@@ -386,7 +388,9 @@ impl X402 {
         options: &[PaymentOption<'_>],
     ) -> Result<VerifiedExactPayment, Error> {
         if options.is_empty() {
-            return Err(Error::Other("at least one payment option is required".into()));
+            return Err(Error::Other(
+                "at least one payment option is required".into(),
+            ));
         }
         let mut available = Vec::with_capacity(options.len());
         for option in options {
@@ -436,9 +440,9 @@ impl X402 {
                 // to a scheme + network. Every offered option for this server
                 // is on the same network and scheme, so v1 multi-option means
                 // "the credential accepts any of these"; pick the first.
-                available.first().ok_or_else(|| {
-                    Error::Other("at least one payment option is required".into())
-                })
+                available
+                    .first()
+                    .ok_or_else(|| Error::Other("at least one payment option is required".into()))
             }
             other => Err(Error::InvalidPaymentRequired(format!(
                 "Unsupported x402 version: {other}"
@@ -938,7 +942,9 @@ mod tests {
             serde_json::to_vec(&envelope).unwrap(),
         );
 
-        let requirements = x402.exact_requirements("0", ExactOptions::default()).unwrap();
+        let requirements = x402
+            .exact_requirements("0", ExactOptions::default())
+            .unwrap();
         assert!(x402
             .verify_payment_signature_for_requirements(&header, &requirements)
             .await
@@ -962,7 +968,9 @@ mod tests {
             &base64::engine::general_purpose::STANDARD,
             serde_json::to_vec(&envelope).unwrap(),
         );
-        let requirements = x402.exact_requirements("0", ExactOptions::default()).unwrap();
+        let requirements = x402
+            .exact_requirements("0", ExactOptions::default())
+            .unwrap();
         assert!(x402
             .verify_payment_signature_for_requirements(&header, &requirements)
             .await
@@ -986,7 +994,9 @@ mod tests {
             &base64::engine::general_purpose::STANDARD,
             serde_json::to_vec(&envelope).unwrap(),
         );
-        let requirements = x402.exact_requirements("0", ExactOptions::default()).unwrap();
+        let requirements = x402
+            .exact_requirements("0", ExactOptions::default())
+            .unwrap();
         assert!(x402
             .verify_payment_signature_for_requirements(&header, &requirements)
             .await
@@ -1018,7 +1028,8 @@ mod tests {
             accepted: Some(accepted),
             resource: None,
             payload: PaymentProof::Signature {
-                signature: "5UfDuX6nSqMzMR8W7n6K3b1GKLmaqEisBFCcYPRLjNHrCbVQJF3BVjkE7aQJMQ2Kx".to_string(),
+                signature: "5UfDuX6nSqMzMR8W7n6K3b1GKLmaqEisBFCcYPRLjNHrCbVQJF3BVjkE7aQJMQ2Kx"
+                    .to_string(),
             },
         };
         base64::Engine::encode(
@@ -1077,8 +1088,7 @@ mod tests {
         // server didn't offer.
         let mut bad_accepted = x402.exact_requirements_for_option(&options[0]).unwrap();
         bad_accepted.currency = "USDT".to_string();
-        let header =
-            make_envelope_with_accepted(serde_json::to_value(&bad_accepted).unwrap());
+        let header = make_envelope_with_accepted(serde_json::to_value(&bad_accepted).unwrap());
 
         let err = x402
             .process_payment_with_options(&header, &options)
@@ -1100,7 +1110,9 @@ mod tests {
         let x402 = X402::new(cfg).unwrap();
 
         // Forge requirements for USDG (not in the accepted list).
-        let mut hand_built = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let mut hand_built = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
         hand_built.currency = "USDG".to_string();
         let header = make_envelope_with_accepted(serde_json::to_value(&hand_built).unwrap());
 
@@ -1109,7 +1121,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("not in this server's accepted-currency list"),
+            err.to_string()
+                .contains("not in this server's accepted-currency list"),
             "got: {err:?}"
         );
     }
@@ -1119,7 +1132,9 @@ mod tests {
     #[tokio::test]
     async fn single_currency_mode_unchanged() {
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
         // Verify Tier-2 rejects a non-USDC route requirement when in
         // single-currency mode.
         let mut wrong = route_requirements.clone();
@@ -1130,7 +1145,9 @@ mod tests {
             .verify_payment_signature_for_requirements(&header, &wrong)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not in this server's accepted-currency list"));
+        assert!(err
+            .to_string()
+            .contains("not in this server's accepted-currency list"));
     }
 
     /// `process_payment` is the convenience entry that builds requirements
@@ -1140,7 +1157,9 @@ mod tests {
     #[tokio::test]
     async fn process_payment_rejects_cross_route_replay() {
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
 
         let mut lying_accepted = route_requirements.clone();
         lying_accepted.amount = "0".to_string();
@@ -1150,7 +1169,10 @@ mod tests {
             .process_payment(&header, "1.0", ExactOptions::default())
             .await
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("amount"), "got: {err:?}");
+        assert!(
+            err.to_string().to_lowercase().contains("amount"),
+            "got: {err:?}"
+        );
     }
 
     /// `process_payment` and `verify_payment_signature_for_requirements`
@@ -1188,12 +1210,13 @@ mod tests {
     #[tokio::test]
     async fn structural_backstop_rejects_drift_on_unenumerated_field() {
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
 
         let mut drifting_accepted = route_requirements.clone();
         drifting_accepted.max_age = Some(999_999);
-        let header =
-            make_envelope_with_accepted(serde_json::to_value(&drifting_accepted).unwrap());
+        let header = make_envelope_with_accepted(serde_json::to_value(&drifting_accepted).unwrap());
 
         let err = x402
             .verify_payment_signature_for_requirements(&header, &route_requirements)
@@ -1211,7 +1234,9 @@ mod tests {
         // `accepted` claiming $0. Without the Tier-2 check, the verifier
         // would have used the credential's claim as the source of truth.
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
 
         let mut lying_accepted = route_requirements.clone();
         lying_accepted.amount = "0".to_string();
@@ -1228,7 +1253,9 @@ mod tests {
     #[tokio::test]
     async fn cross_route_v2_attacker_lying_about_recipient_rejected() {
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
 
         let mut lying_accepted = route_requirements.clone();
         lying_accepted.recipient = Pubkey::new_unique().to_string();
@@ -1238,13 +1265,18 @@ mod tests {
             .verify_payment_signature_for_requirements(&header, &route_requirements)
             .await
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("recipient"), "got: {err:?}");
+        assert!(
+            err.to_string().to_lowercase().contains("recipient"),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn cross_route_v2_attacker_lying_about_currency_rejected() {
         let x402 = X402::new(config()).unwrap();
-        let route_requirements = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let route_requirements = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
 
         let mut lying_accepted = route_requirements.clone();
         lying_accepted.currency = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string();
@@ -1254,7 +1286,10 @@ mod tests {
             .verify_payment_signature_for_requirements(&header, &route_requirements)
             .await
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("currency"), "got: {err:?}");
+        assert!(
+            err.to_string().to_lowercase().contains("currency"),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -1263,7 +1298,9 @@ mod tests {
         // X402 instance's configured recipient. Even with no envelope-side
         // tampering, this must fail-closed.
         let x402 = X402::new(config()).unwrap();
-        let mut wrong = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let mut wrong = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
         wrong.recipient = Pubkey::new_unique().to_string();
 
         let header = make_envelope_with_accepted(serde_json::to_value(&wrong).unwrap());
@@ -1277,7 +1314,9 @@ mod tests {
     #[tokio::test]
     async fn tier2_rejects_miswired_route_with_wrong_currency() {
         let x402 = X402::new(config()).unwrap();
-        let mut wrong = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let mut wrong = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
         wrong.currency = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string();
 
         let header = make_envelope_with_accepted(serde_json::to_value(&wrong).unwrap());
@@ -1285,13 +1324,18 @@ mod tests {
             .verify_payment_signature_for_requirements(&header, &wrong)
             .await
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("currency"), "got: {err:?}");
+        assert!(
+            err.to_string().to_lowercase().contains("currency"),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn tier2_rejects_miswired_route_with_wrong_network() {
         let x402 = X402::new(config()).unwrap();
-        let mut wrong = x402.exact_requirements("1.0", ExactOptions::default()).unwrap();
+        let mut wrong = x402
+            .exact_requirements("1.0", ExactOptions::default())
+            .unwrap();
         wrong.network = "solana:mainnet".to_string();
 
         // Envelope still claims devnet so we don't fail at parse-time.
@@ -1300,7 +1344,10 @@ mod tests {
             .verify_payment_signature_for_requirements(&header, &wrong)
             .await
             .unwrap_err();
-        assert!(err.to_string().to_lowercase().contains("network"), "got: {err:?}");
+        assert!(
+            err.to_string().to_lowercase().contains("network"),
+            "got: {err:?}"
+        );
     }
 
     // ── is_loopback_rpc ────────────────────────────────────────────────────

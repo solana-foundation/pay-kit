@@ -314,10 +314,13 @@ fn select_requirement(
     // `resolve_stablecoin_mint`.
     if let Some(currencies) = selection.currencies {
         for accepted_currency in currencies {
-            if let Some(matched) = on_preferred_network
-                .iter()
-                .find(|requirement| currencies_match(&requirement.currency, accepted_currency, requirement.cluster.as_deref()))
-            {
+            if let Some(matched) = on_preferred_network.iter().find(|requirement| {
+                currencies_match(
+                    &requirement.currency,
+                    accepted_currency,
+                    requirement.cluster.as_deref(),
+                )
+            }) {
                 return Some((*matched).clone());
             }
         }
