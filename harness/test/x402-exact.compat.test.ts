@@ -137,6 +137,16 @@ const attackSuite = loadJson<AttackSuite>("attack-scenarios.json");
 // compat coverage via X402_COMPAT_INCLUDE_RUST=1 (CI matrix sets this
 // on the rust toolchain job). The live matrix (env-gated) covers the
 // rust spine on every happy-path pair regardless of this flag.
+//
+// Note: the rust spine deserializes its keypair envs via
+// `MemorySigner::from_bytes` (rust/crates/x402/src/bin/interop_*.rs)
+// which rejects placeholder byte arrays. Callers opting into the rust
+// compat slice MUST also provide REAL ed25519 keypairs in
+// `X402_INTEROP_FACILITATOR_SECRET_KEY` and
+// `X402_INTEROP_CLIENT_SECRET_KEY` (the same envs the live matrix
+// requires). When `X402_COMPAT_INCLUDE_RUST=1` is set without real
+// keypairs, the rust adapter exits before printing its `ready`
+// message and the harness fails with a clear adapter-startup error.
 const COMPAT_INCLUDE_IDS = new Set<string>(["ts-x402"]);
 if (process.env.X402_COMPAT_INCLUDE_RUST === "1") {
   COMPAT_INCLUDE_IDS.add("rust-x402");
