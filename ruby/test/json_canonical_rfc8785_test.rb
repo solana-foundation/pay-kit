@@ -72,7 +72,7 @@ class JsonCanonicalRfc8785Test < Minitest::Test
 
   def test_canonical_json_rejects_duplicate_keys_after_symbol_coerce
     # String "a" and symbol :a both coerce to "a"; duplicate must raise.
-    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({"a" => 1, a: 2}) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({"a" => 1, :a => 2}) }
   end
 
   def test_canonical_json_rejects_unsupported_value_type
