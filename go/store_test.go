@@ -32,6 +32,22 @@ func TestMemoryStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMemoryStorePutMarshalError(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	if err := store.Put(ctx, "k", make(chan int)); err == nil {
+		t.Fatal("expected marshal error for channel value")
+	}
+}
+
+func TestMemoryStorePutIfAbsentMarshalError(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	if _, err := store.PutIfAbsent(ctx, "k", make(chan int)); err == nil {
+		t.Fatal("expected marshal error for channel value")
+	}
+}
+
 func TestMemoryStorePutIfAbsent(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
