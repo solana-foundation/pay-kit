@@ -31,3 +31,5 @@ __pycache__/
 tests/interop/go-client/go-client
 .claude/
 .gocache
+mpp-sdk-self-learning/
+.build/
