@@ -1,7 +1,14 @@
 # Python Flask MPP example
 
-A minimal Flask app with one MPP-protected endpoint, mirroring the
-Ruby Sinatra example at `ruby/examples/sinatra/app.rb`.
+A minimal Flask app with one MPP-protected endpoint, organized as an
+app factory with separate `config` and `middleware` modules so it can
+double as a Flask best-practice template.
+
+Layout:
+
+- `app.py` builds the Flask app via a `create_app(mpp, settings)` factory
+- `config.py` reads `ServerSettings` and the MPP `Config` from env vars
+- `middleware.py` exposes the `mpp_charge(mpp, amount, description)` decorator
 
 Two routes:
 
@@ -17,7 +24,7 @@ Two routes:
 cd python
 pip install -e ".[dev]"
 pip install flask
-python examples/simple-server/app.py
+python examples/flask/app.py
 ```
 
 In another terminal:

@@ -112,8 +112,9 @@ error code (`payment_invalid`, `signature_consumed`, ...) on any 402.
 
 ## Running the examples
 
-A clean Flask example mirroring the Ruby Sinatra example lives at
-[`examples/simple-server/app.py`](./examples/simple-server/app.py).
+A clean Flask example with an app factory, `config.py`, and a
+`middleware.py` charge decorator lives at
+[`examples/flask/app.py`](./examples/flask/app.py).
 It exposes `GET /health` (free) and `GET /paid` (gated by an
 `@mpp_charge` decorator).
 
@@ -121,7 +122,7 @@ It exposes `GET /health` (free) and `GET /paid` (gated by an
 cd python
 pip install -e ".[dev]"
 pip install flask
-python examples/simple-server/app.py
+python examples/flask/app.py
 ```
 
 In another terminal:
