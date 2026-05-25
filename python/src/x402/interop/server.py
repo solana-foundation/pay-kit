@@ -508,7 +508,7 @@ class InteropHandler(BaseHTTPRequestHandler):
                 {
                     "error": "payment_required",
                 },
-                payment_required=exact_challenge(self.server.state),
+                payment_required=exact_challenge(self.server.state),  # pyright: ignore[reportAttributeAccessIssue]
             )
             return
 
@@ -521,17 +521,17 @@ class InteropHandler(BaseHTTPRequestHandler):
             self._write_json(
                 402,
                 {"error": "payment_required"},
-                payment_required=exact_challenge(self.server.state),
+                payment_required=exact_challenge(self.server.state),  # pyright: ignore[reportAttributeAccessIssue]
             )
             return
 
         try:
-            settlement = settle_exact_payment(self.server.state, payment_signature)
+            settlement = settle_exact_payment(self.server.state, payment_signature)  # pyright: ignore[reportAttributeAccessIssue]
         except Exception as error:
             self._write_json(
                 402,
                 self.payment_error_body(error),
-                payment_required=exact_challenge(self.server.state),
+                payment_required=exact_challenge(self.server.state),  # pyright: ignore[reportAttributeAccessIssue]
             )
             return
 
@@ -543,7 +543,7 @@ class InteropHandler(BaseHTTPRequestHandler):
                 "settlement": {
                     "success": True,
                     "transaction": settlement,
-                    "network": self.server.state.network,
+                    "network": self.server.state.network,  # pyright: ignore[reportAttributeAccessIssue]
                 },
             },
             headers={DEFAULT_SETTLEMENT_HEADER: settlement},
@@ -577,7 +577,7 @@ class InteropHandler(BaseHTTPRequestHandler):
 def main() -> int:
     state = ServerState()
     server = ThreadingHTTPServer(("127.0.0.1", 0), InteropHandler)
-    server.state = state
+    server.state = state  # pyright: ignore[reportAttributeAccessIssue]
 
     def shutdown(_signum: int, _frame: object) -> None:
         server.shutdown()

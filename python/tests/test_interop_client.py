@@ -719,10 +719,10 @@ class FakeResponse:
 
 class FakeHttpError(urllib.error.HTTPError):
     def __init__(self, status: int, headers: dict[str, str], body: object) -> None:
-        super().__init__("http://example.test/protected", status, "error", headers, None)
+        super().__init__("http://example.test/protected", status, "error", headers, None)  # pyright: ignore[reportArgumentType]
         self._body = body
 
-    def read(self) -> bytes:
+    def read(self) -> bytes:  # pyright: ignore[reportIncompatibleMethodOverride]
         body = self._body if isinstance(self._body, str) else json.dumps(self._body)
         return body.encode("utf-8")
 

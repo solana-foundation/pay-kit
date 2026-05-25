@@ -47,17 +47,21 @@ from x402.interop.server import (
 )
 
 
-class State:
+class State(ServerState):
     network = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     amount = "1000"
     pay_to = "11111111111111111111111111111112"
     fee_payer = Keypair()
+    rpc_url = "http://127.0.0.1:0"
+    extra_offered_mints: list[str] = []
 
     def __init__(self) -> None:
         # Mirror ServerState.__init__ so the shared lock actually serialises
         # concurrent claim attempts during stress tests, instead of falling
-        # through to a per-call lazy-init fallback.
+        # through to a per-call lazy-init fallback. We deliberately skip the
+        # parent __init__ because it reads X402_INTEROP_* env vars that the
+        # tests stub via class attributes above.
         self.settlement_cache: dict[str, float] = {}
         self.settlement_cache_lock = threading.Lock()
 
@@ -152,8 +156,8 @@ def header_from_transaction(transaction, accepted=None):
 def dispatch_get(path, headers=None, state=None):
     handler = object.__new__(InteropHandler)
     handler.path = path
-    handler.headers = headers or {}
-    handler.server = type("Server", (), {"state": state or State()})()
+    handler.headers = headers or {}  # pyright: ignore[reportAttributeAccessIssue]
+    handler.server = type("Server", (), {"state": state or State()})()  # pyright: ignore[reportAttributeAccessIssue]
     writes = []
     handler._write_json = (
         lambda status, body, payment_required=None, headers=None: writes.append(
@@ -915,8 +919,8 @@ class InteropServerTest(unittest.TestCase):
     def test_write_json_sets_content_headers_and_payment_required_header(self):
         handler = object.__new__(InteropHandler)
         sent = []
-        handler.send_response = lambda status: sent.append(("response", status))
-        handler.send_header = lambda name, value: sent.append(("header", name, value))
+        handler.send_response = lambda status: sent.append(("response", status))  # pyright: ignore[reportAttributeAccessIssue]
+        handler.send_header = lambda name, value: sent.append(("header", name, value))  # pyright: ignore[reportAttributeAccessIssue]
         handler.end_headers = lambda: sent.append(("end",))
         handler.wfile = io.BytesIO()
 
@@ -1247,12 +1251,12 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
 
         bare = BareState()
         with self.assertRaisesRegex(RuntimeError, "settlement_cache_lock"):
-            _claim_settlement_payload(bare, "payload-key")
+            _claim_settlement_payload(bare, "payload-key")  # type: ignore[arg-type]
 
         # Even with a lock present, a missing cache must also fail loudly.
-        bare.settlement_cache_lock = threading.Lock()
+        bare.settlement_cache_lock = threading.Lock()  # type: ignore[attr-defined]
         with self.assertRaisesRegex(RuntimeError, "settlement_cache"):
-            _claim_settlement_payload(bare, "payload-key")
+            _claim_settlement_payload(bare, "payload-key")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
