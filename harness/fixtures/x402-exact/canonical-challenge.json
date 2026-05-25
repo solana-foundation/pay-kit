@@ -1,0 +1,23 @@
+{
+  "_description": "Canonical x402 `exact` 402 challenge envelope. Wire-mirrors what every spec-compliant server emits. Every language adapter's client MUST be able to parse this envelope without error and select an offer from `accepts`. Sourced from the Rust spine's `accepted_payments` shape in rust/crates/x402/src/bin/interop_server.rs (the JSON body of the 402 response, base64-decoded). See also harness/src/fixtures/typescript/exact-server.ts::buildRequirements which produces the wire-equivalent envelope.",
+  "x402Version": 2,
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      "resource": "/protected",
+      "description": "Surfpool-backed protected content",
+      "mimeType": "application/json",
+      "payTo": "5xYbHvVQfTUyzCzKx5KjVxyqXqQ4Ujm5SbqQXJ5w8nVA",
+      "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "maxAmountRequired": "1000",
+      "maxTimeoutSeconds": 60,
+      "extra": {
+        "decimals": 6,
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      }
+    }
+  ],
+  "resource": "/protected",
+  "error": null
+}

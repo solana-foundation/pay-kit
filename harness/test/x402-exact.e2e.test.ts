@@ -119,6 +119,36 @@ describe("x402 exact intent — cross-language matrix", () => {
     return false;
   };
 
+  // Explicit per-language self-pair group: each registered x402-exact
+  // language adapter (client + server of the same baseLang) gets a
+  // documented self-pair test. The `allowedPair` filter below already
+  // covers same-baseLang via the generic loop, but enumerating
+  // self-pairs explicitly makes regressions easier to spot in the
+  // vitest output ("`ts-x402 self-pair` failed" reads more clearly
+  // than "client ts-x402 ↔ server ts-x402 failed" buried in the
+  // full cross-product log).
+  const selfPairLangs = Array.from(
+    new Set(x402Clients.map(impl => baseLang(impl.id))),
+  ).filter(lang =>
+    x402Servers.some(impl => baseLang(impl.id) === lang),
+  );
+
+  describe("self-pair (each language ↔ itself)", () => {
+    if (selfPairLangs.length === 0) {
+      it.skip("no x402-exact adapters registered", () => {});
+      return;
+    }
+    for (const lang of selfPairLangs) {
+      it(`${lang} self-pair is enumerated`, () => {
+        const client = x402Clients.find(impl => baseLang(impl.id) === lang);
+        const server = x402Servers.find(impl => baseLang(impl.id) === lang);
+        expect(client).toBeTruthy();
+        expect(server).toBeTruthy();
+        expect(allowedPair(client!.id, server!.id)).toBe(true);
+      });
+    }
+  });
+
   for (const server of x402Servers) {
     for (const client of x402Clients) {
       if (!allowedPair(client.id, server.id)) {

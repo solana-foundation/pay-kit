@@ -1,0 +1,29 @@
+{
+  "_description": "Canonical reject tokens that every x402-exact server adapter MUST be capable of emitting on the appropriate failure class. The high-level (`payment_invalid`, `signature_consumed`, `wrong_network`, etc.) tokens are shared with the MPP charge intent and live in harness/src/canonical-codes.ts. The `invalid_exact_svm_payload_*` family is x402-exact-specific and is enumerated from rust/crates/x402/src/protocol/schemes/exact/verify.rs — adapters that ship a real SVM verifier (Rust spine + any language port that wires a full transaction structural verifier) MUST be able to emit every token in this list for the corresponding attack class. Wire-only TS reference adapters may emit `payment_invalid` instead, since they don't decode the signed transaction blob.",
+  "highLevelTokens": [
+    "payment_invalid",
+    "signature_consumed",
+    "wrong_network",
+    "charge_request_mismatch",
+    "challenge_verification_failed",
+    "challenge_route_mismatch",
+    "challenge_expired"
+  ],
+  "exactSvmPayloadTokens": [
+    "invalid_exact_svm_payload_amount_mismatch",
+    "invalid_exact_svm_payload_memo_count",
+    "invalid_exact_svm_payload_memo_mismatch",
+    "invalid_exact_svm_payload_mint_mismatch",
+    "invalid_exact_svm_payload_no_transfer_instruction",
+    "invalid_exact_svm_payload_recipient_mismatch",
+    "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+    "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
+    "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction",
+    "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high",
+    "invalid_exact_svm_payload_transaction_instructions_length",
+    "invalid_exact_svm_payload_unknown_fifth_instruction",
+    "invalid_exact_svm_payload_unknown_fourth_instruction",
+    "invalid_exact_svm_payload_unknown_optional_instruction",
+    "invalid_exact_svm_payload_unknown_sixth_instruction"
+  ]
+}

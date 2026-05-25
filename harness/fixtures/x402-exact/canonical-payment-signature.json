@@ -1,0 +1,20 @@
+{
+  "_description": "Canonical PAYMENT-SIGNATURE credential payload that every adapter's client constructs in response to canonical-challenge.json. The wire shape mirrors the Rust spine's PaymentPayload (rust/crates/x402/src/protocol/types.rs) and harness/src/fixtures/typescript/exact-client.ts. Adapters that carry a real signed Solana VersionedTransaction substitute a base64 transaction blob into payload.transaction; the wire shape outside of `payload` is invariant. Every adapter's SERVER-side parser MUST accept this credential without throwing (semantic acceptance of the stub `transaction` blob is gated by adapter capability, but the JSON-level parser MUST succeed).",
+  "x402Version": 2,
+  "accepted": {
+    "scheme": "exact",
+    "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "payTo": "5xYbHvVQfTUyzCzKx5KjVxyqXqQ4Ujm5SbqQXJ5w8nVA",
+    "amount": "1000",
+    "extra": {
+      "decimals": 6,
+      "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    }
+  },
+  "payload": {
+    "challengeId": "canonical-fixture-challenge-0001",
+    "resource": "/protected"
+  },
+  "resource": "/protected"
+}
