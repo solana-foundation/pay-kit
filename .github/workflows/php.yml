@@ -68,7 +68,7 @@ jobs:
         run: pnpm --filter @solana/mpp build
       - name: Build Rust interop client
         working-directory: rust
-        run: cargo build --bin interop_client
+        run: cargo build -p solana-mpp --bin interop_client
       - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
