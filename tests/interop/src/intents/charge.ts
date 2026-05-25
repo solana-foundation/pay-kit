@@ -107,7 +107,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 200,
   },
   {
-    // M1 push-mode end-to-end. The TS client signs, broadcasts, and
+    // push-mode end-to-end. The TS client signs, broadcasts, and
     // awaits confirmation on-chain via the surfpool RPC, then sends
     // only the signature as a `type=signature` credential. Each
     // server adapter re-fetches the on-chain transaction by signature
@@ -366,7 +366,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // synthetic client_rejected_credential body is fixture-internal.
   },
   {
-    // M1 cross-server credential portability. The client pays server A
+    // cross-server credential portability. The client pays server A
     // and captures the Authorization header from the successful charge.
     // The same Authorization is then submitted to server B (different
     // language, different HMAC secret). Server B must reject because
@@ -395,7 +395,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     ],
   },
   {
-    // M1 same-server idempotent resubmit. Client pays server A, then
+    // same-server idempotent resubmit. Client pays server A, then
     // re-submits the same Authorization to server A. Canonical
     // behavior per the L4 replay store is to reject with
     // `signature_consumed`. In pull mode both the rust and TS SDKs

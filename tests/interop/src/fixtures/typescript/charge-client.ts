@@ -120,7 +120,7 @@ async function payTarget(
   return await client.fetch(targetUrl);
 }
 
-// M1 cross-server portability + same-server idempotent resubmit. Pays
+// cross-server portability + same-server idempotent resubmit. Pays
 // `targetUrl` via the manual challenge/credential flow so we can capture
 // the Authorization header, then re-sends that same header to
 // `resubmitUrl`. The harness asserts on the second (resubmit) response;

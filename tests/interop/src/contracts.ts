@@ -93,7 +93,7 @@ export type InteropScenario = {
   // excluded via `serverIds` per scenario; once their L6 work lands, the
   // serverIds gate is dropped.
   expectedCode?: CanonicalErrorCode;
-  // M1 cross-server / idempotent-resubmit support. Default `standard`
+  // cross-server / idempotent-resubmit support. Default `standard`
   // exercises the single-server pay-once flow. `cross-server-portability`
   // spawns two servers (A and B) with different MPP secret keys; the
   // client pays A, then re-submits the same Authorization to B. B must

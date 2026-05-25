@@ -39,7 +39,7 @@ swift/
 │       ├── Instructions.swift # System, SPL, ATA, compute budget, memo
 │       └── Ata.swift          # Associated Token Account PDA derivation
 ├── Tests/SolanaMppTests/      # XCTest / swift-testing suite
-└── Examples/                  # Sample clients (M2: Solana Seeker demo app)
+└── Examples/                  # Sample clients
 ```
 
 Mirrors the Rust layout (`rust/src/{client,protocol}/`) so cross-language
@@ -47,10 +47,10 @@ contributors can navigate by feature, not file name.
 
 ## Scope
 
-Swift is **client-only** across every milestone in the MPP roadmap.
+Swift is **client-only** in MPP.
 This package ships the charge client; an MPP server in Swift is not
 in scope. The session and subscription intents add to this package
-in M2 and M3.
+as follow-ups.
 
 ## Quick start, client
 
@@ -104,17 +104,17 @@ Swift is client-only across the MPP roadmap.
 
 | Intent | Status |
 |---|:---:|
-| `x402/exact` | planned (M2) |
+| `x402/exact` | planned |
 | `x402/upto` | --- |
 | `x402/batch-settlement` | --- |
 | `mpp/charge/pull` | available |
 | `mpp/charge/push` | planned |
-| `mpp/session` | planned (M2) |
-| `mpp/subscription` | planned (M3) |
+| `mpp/session` | planned |
+| `mpp/subscription` | planned |
 
 ## Server compatibility matrix
 
-Swift does not ship a server in any milestone.
+Swift does not ship a server.
 
 | Intent | Status |
 |---|:---:|
