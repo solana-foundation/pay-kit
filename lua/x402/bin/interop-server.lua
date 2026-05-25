@@ -5,6 +5,20 @@ local json = require("dkjson")
 local sodium = require("luasodium")
 local luazen = require("luazen")
 
+-- Resolve the `lua/` package root relative to this bin script so the L8
+-- settle helpers in `x402/exact_settle.lua` are loadable regardless of the
+-- caller's working directory. The interop harness spawns this script with
+-- `lua ../../lua/x402/bin/interop-server.lua` from its own cwd, so a static
+-- `require('x402.exact_settle')` would otherwise fail.
+do
+  local script_path = arg and arg[0] or debug.getinfo(1, 'S').source:gsub('^@', '')
+  local script_dir = script_path:match('(.*/)') or './'
+  local lua_root = script_dir .. '../..'
+  package.path = lua_root .. '/?.lua;' .. lua_root .. '/?/init.lua;' .. package.path
+end
+
+local exact_settle = require('x402.exact_settle')
+
 -- luasec (https) is optional at require time so the static probe and
 -- non-HTTPS RPC flows still load on environments without OpenSSL bindings.
 -- We require peer TLS verification whenever the RPC URL is https://...,
@@ -685,8 +699,18 @@ local associated_token_program = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 local system_program = "11111111111111111111111111111111"
 local max_compute_unit_price = 5000000
 local max_memo_bytes = 256
-local duplicate_cache_ttl = 120
-local settlement_cache = {}
+-- L8 replay store. Keyed by `x402-svm-exact:consumed:<base58_signature>`,
+-- populated AFTER `getSignatureStatuses` confirms the broadcast — never
+-- pre-claimed. In-process memory is sufficient for the interop server
+-- (single-process fixture). Production deployments should swap this for
+-- the shared-dict store in `mpp/server/store_shared_dict.lua` to survive
+-- worker process churn.
+local replay_store = exact_settle.new_memory_store()
+-- Confirmation polling budget. Bounded by the count of attempts so the
+-- loop always terminates within roughly the blockhash validity window
+-- (~150 slots × ~400ms ≈ 60s). Tunable via env for interop probes.
+local confirmation_attempts = tonumber(os.getenv("X402_INTEROP_CONFIRMATION_ATTEMPTS")) or 30
+local confirmation_delay_seconds = tonumber(os.getenv("X402_INTEROP_CONFIRMATION_DELAY_SECONDS")) or 1
 local capability_payload = {
   { "implementation", "lua" },
   { "role", "server" },
@@ -1145,28 +1169,6 @@ local function verify_token_accounts_exist(parsed, requirement, transfer)
   end
 end
 
-local function transaction_cache_key(transaction)
-  return base64_encode(sodium.crypto_hash_sha256(transaction))
-end
-
-local function claim_settlement(cache_key)
-  local now = socket.gettime()
-  for key, seen_at in pairs(settlement_cache) do
-    if now - seen_at > duplicate_cache_ttl then
-      settlement_cache[key] = nil
-    end
-  end
-  if settlement_cache[cache_key] then
-    return false
-  end
-  settlement_cache[cache_key] = now
-  return true
-end
-
-local function release_settlement(cache_key)
-  settlement_cache[cache_key] = nil
-end
-
 local function send_transaction(transaction)
   local result = post_json_rpc("sendTransaction", {
     base64_encode(transaction),
@@ -1201,44 +1203,57 @@ local function settle_exact_payment(payment_header)
   end
   local parsed = parse_versioned_transaction(transaction)
   local transfer = verify_exact_transaction(parsed, payment.accepted)
-  local cache_key = transaction_cache_key(transaction)
-  if not claim_settlement(cache_key) then
-    error("duplicate_settlement")
-  end
+  verify_token_accounts_exist(parsed, payment.accepted, transfer)
 
-  local settled = false
-  local function settle()
-    verify_token_accounts_exist(parsed, payment.accepted, transfer)
-    -- Reuse the keypair that was loaded and validated at startup so the
-    -- public key that funds the transaction is identical to the one the
-    -- server advertised in `extra.feePayer`. Falling back to a re-load here
-    -- would let challenge-time and settle-time keys drift apart.
-    local keypair = loaded_facilitator_keypair
-      or keypair_from_json_secret(required_env("X402_INTEROP_FACILITATOR_SECRET_KEY"))
-    local signed_transaction = sign_transaction_with_fee_payer(transaction, parsed, keypair)
-    local signed_parsed = parse_versioned_transaction(signed_transaction)
-    verify_transaction_signatures(signed_transaction, signed_parsed)
-    local settlement = send_transaction(signed_transaction)
-    settled = true
-    return settlement
-  end
+  -- Reuse the keypair loaded and validated at startup so the public key
+  -- funding the transaction is identical to the one the server advertised
+  -- in `extra.feePayer`. Re-loading here would let challenge-time and
+  -- settle-time keys drift apart.
+  local keypair = loaded_facilitator_keypair
+    or keypair_from_json_secret(required_env("X402_INTEROP_FACILITATOR_SECRET_KEY"))
+  local signed_transaction = sign_transaction_with_fee_payer(transaction, parsed, keypair)
+  local signed_parsed = parse_versioned_transaction(signed_transaction)
+  verify_transaction_signatures(signed_transaction, signed_parsed)
 
-  local ok, result = pcall(settle)
-  if not ok then
-    if not settled then
-      release_settlement(cache_key)
-    end
-    error(result)
-  end
-  return result
+  -- L8 ordering: broadcast → await `getSignatureStatuses` → put_if_absent.
+  -- The replay store is touched ONLY after the network confirms the
+  -- signature, so a preflight/processed return cannot mark a transaction
+  -- consumed prematurely. A duplicate signature raises a canonical
+  -- `signature_consumed` table-error which `payment_error_response` maps
+  -- back to the wire-level error code — never a 200. See the
+  -- `x402-sdk-implementation` skill's `pr-readiness.md` L8 section and
+  -- the MPP `server/charge.rs` reference.
+  return exact_settle.broadcast_confirm_consume({
+    broadcast = function() return send_transaction(signed_transaction) end,
+    rpc_call = post_json_rpc,
+    replay_store = replay_store,
+    confirmation_attempts = confirmation_attempts,
+    confirmation_delay_seconds = confirmation_delay_seconds,
+    sleep = socket.sleep,
+  })
 end
 
 local function payment_required_response()
   return 402, "Payment Required", "PAYMENT-REQUIRED: " .. exact_payment_required_header() .. "\r\n", json_object({ { "error", "payment_required" } })
 end
 
-local function payment_error_response(message)
-  return 402, "Payment Required", "PAYMENT-REQUIRED: " .. exact_payment_required_header() .. "\r\n", json_object({ { "error", "payment_invalid" }, { "message", message } })
+-- Map raised errors to canonical x402 error codes. Table-shaped errors
+-- (e.g. `{ code = 'signature_consumed', message = ... }`) preserve their
+-- canonical code so a duplicate L8 settlement is reported as
+-- `signature_consumed`, not flattened to `payment_invalid` — which would
+-- mask the replay-store rejection from interop clients.
+local function payment_error_response(err)
+  local code = "payment_invalid"
+  local message
+  if type(err) == "table" then
+    if type(err.code) == "string" and err.code ~= "" then
+      code = err.code
+    end
+    message = err.message or err[1] or "payment error"
+  else
+    message = err
+  end
+  return 402, "Payment Required", "PAYMENT-REQUIRED: " .. exact_payment_required_header() .. "\r\n", json_object({ { "error", code }, { "message", tostring(message) } })
 end
 
 local function response_for(path, headers)
