@@ -1,4 +1,7 @@
-package com.solana.mpp
+package com.solana.mpp.client
+
+import com.solana.mpp.protocol.*
+import com.solana.mpp.crypto.*
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json

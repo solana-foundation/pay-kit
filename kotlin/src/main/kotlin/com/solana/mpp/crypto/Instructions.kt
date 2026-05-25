@@ -1,4 +1,6 @@
-package com.solana.mpp
+package com.solana.mpp.crypto
+
+import com.solana.mpp.protocol.MppException
 
 /**
  * Solana program identifiers used by the MPP charge client.

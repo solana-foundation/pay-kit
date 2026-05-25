@@ -1,4 +1,6 @@
-package com.solana.mpp
+package com.solana.mpp.crypto
+
+import com.solana.mpp.protocol.MppException
 
 import java.util.Base64
 

@@ -1,10 +1,10 @@
 package com.solana.mpp.interop
 
-import com.solana.mpp.Charge
-import com.solana.mpp.JsonRpcClient
-import com.solana.mpp.MemorySigner
-import com.solana.mpp.MppHeaders
-import com.solana.mpp.MppHttpClient
+import com.solana.mpp.client.Charge
+import com.solana.mpp.client.JsonRpcClient
+import com.solana.mpp.client.MppHttpClient
+import com.solana.mpp.crypto.MemorySigner
+import com.solana.mpp.protocol.MppHeaders
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

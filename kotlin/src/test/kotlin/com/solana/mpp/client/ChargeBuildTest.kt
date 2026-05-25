@@ -1,4 +1,7 @@
-package com.solana.mpp
+package com.solana.mpp.client
+
+import com.solana.mpp.protocol.*
+import com.solana.mpp.crypto.*
 
 import java.util.Base64 as JBase64
 import kotlin.test.Test

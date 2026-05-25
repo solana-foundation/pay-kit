@@ -1,4 +1,6 @@
-package com.solana.mpp
+package com.solana.mpp.protocol
+
+import com.solana.mpp.crypto.*
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement

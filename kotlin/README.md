@@ -31,20 +31,27 @@ PHP, Ruby, Python, or Lua and treat Kotlin as the wallet-side client.
 ```text
 kotlin/
 ├── src/main/kotlin/com/solana/mpp/
-│   ├── Base58.kt           # Bitcoin-alphabet base58 codec
-│   ├── Base64Url.kt        # url-safe base64 (no padding)
-│   ├── Charge.kt           # full charge build pipeline
-│   ├── Ed25519.kt          # BouncyCastle signing + PDA derivation
-│   ├── Headers.kt          # WWW-Authenticate / Authorization parser
-│   ├── HttpClient.kt       # OkHttp client with 402 retry + JSON-RPC
-│   ├── Instructions.kt     # SystemProgram, SPL, ATA, compute budget
-│   ├── Models.kt           # exceptions, challenge + credential schema
-│   ├── SolanaSigner.kt     # signer abstraction + MemorySigner
-│   └── Transaction.kt      # legacy + v0 Solana wire codec
-└── src/test/kotlin/com/solana/mpp/
-                            # base58, instructions, transaction, PDA,
-                            # ed25519, http, charge tests
+│   ├── client/                # Charge build pipeline + HTTP/JSON-RPC
+│   │   ├── Charge.kt          # full charge build pipeline
+│   │   └── HttpClient.kt      # OkHttp client with 402 retry + JSON-RPC
+│   ├── protocol/              # Wire format + canonical JSON + errors
+│   │   ├── CanonicalJson.kt   # deterministic JSON encoding
+│   │   ├── Headers.kt         # WWW-Authenticate / Authorization parser
+│   │   └── Models.kt          # exceptions, challenge + credential schema
+│   └── crypto/                # Solana primitives (vendored)
+│       ├── Base58.kt          # Bitcoin-alphabet base58 codec
+│       ├── Base64Url.kt       # url-safe base64 (no padding)
+│       ├── Ed25519.kt         # BouncyCastle signing + PDA derivation
+│       ├── Instructions.kt    # SystemProgram, SPL, ATA, compute budget
+│       ├── SolanaSigner.kt    # signer abstraction + MemorySigner
+│       └── Transaction.kt     # legacy + v0 Solana wire codec
+├── src/test/kotlin/com/solana/mpp/{client,protocol,crypto}/
+│                                # tests mirror the main source layout
+└── examples/                  # Sample clients (M2: Solana Seeker demo app)
 ```
+
+Mirrors the Rust layout (`rust/src/{client,protocol}/`) so cross-language
+contributors can navigate by feature.
 
 ## Quick start
 
