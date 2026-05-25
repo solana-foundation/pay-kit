@@ -61,6 +61,33 @@ class JsonCanonicalRfc8785Test < Minitest::Test
     assert_equal "1e-7", Mpp::Core::Json.canonical_generate(1e-7)
   end
 
+  # Cover the explicit error branches in the encoder so SimpleCov branch
+  # coverage stays >= 90 cross-SDK baseline.
+  def test_canonical_json_rejects_non_string_keys
+    # Integer key forced via raw Hash construction.
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({1 => "v"}) }
+    # Non-string non-symbol non-integer key.
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({Object.new => "v"}) }
+  end
+
+  def test_canonical_json_rejects_duplicate_keys_after_symbol_coerce
+    # String "a" and symbol :a both coerce to "a"; duplicate must raise.
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({"a" => 1, a: 2}) }
+  end
+
+  def test_canonical_json_rejects_unsupported_value_type
+    # Hits the case-else branch in encode_value when the value is not
+    # Hash/Array/String/Integer/Float/true/false/nil.
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate(Object.new) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({k: Object.new}) }
+  end
+
+  def test_canonical_json_zero_floats_round_trip
+    # Exercises the digits='0' fallback branch in shortest_digits_and_exponent.
+    assert_equal "0", Mpp::Core::Json.canonical_generate(0.0)
+    assert_equal "0", Mpp::Core::Json.canonical_generate(-0.0)
+  end
+
   def test_canonical_json_branches_extra
     # Symbol keys converted.
     assert_equal '{"a":1,"b":2}', Mpp::Core::Json.canonical_generate({a: 1, b: 2})

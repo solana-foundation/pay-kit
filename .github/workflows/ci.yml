@@ -173,6 +173,23 @@ jobs:
         # reflects the SDK surface downstream users link against.
         run: cargo llvm-cov --ignore-filename-regex 'src/bin/|src/program/|client/multi_delegate' --json --output-path coverage.json
 
+      - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
+        working-directory: rust
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          with open('coverage.json') as f:
+              data = json.load(f)
+          totals = data['data'][0]['totals']
+          lines = totals['lines']
+          pct = lines['percent']
+          floor = 90.0
+          print(f"Rust line coverage: {pct:.2f}% (floor {floor})")
+          if pct < floor:
+              print(f"FAIL: {pct:.2f}% < {floor}")
+              sys.exit(1)
+          PY
+
       - name: Rust format check
         working-directory: rust
         run: cargo fmt --check
@@ -209,14 +226,14 @@ jobs:
           # Narrow `go test` to library packages so coverage measures SDK
           # surface area only (cmd/ + internal/testutil hold fixtures and
           # are excluded; mirrors the per-package narrowing pattern from
-          # PR #101). Cross-language baseline target is 90; library
-          # packages currently aggregate at ~84.1% because client,
-          # internal/solanautil, and server have known coverage gaps
-          # tracked outside this PR. The gate ratchets from 70 to 84
-          # without breaking CI; lifting to 90 is queued as a follow-up
-          # after the per-package gap-fill PRs land.
+          # PR #101). Gate set to the cross-SDK baseline of 90; library
+          # packages currently aggregate at ~85% because client,
+          # internal/solanautil, and server have known coverage gaps.
+          # The threshold WILL fail until gap-fill PRs land; surfaced as
+          # an explicit finding per PR #102 review thread rather than
+          # lowering the gate.
           go test ./ ./client ./internal/solanautil ./protocol ./protocol/core ./protocol/intents ./server -coverprofile=coverage.out -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 84
+          ./scripts/check_coverage.sh coverage.out 90
       - name: Upload Go coverage
         if: always()
         uses: actions/upload-artifact@v7

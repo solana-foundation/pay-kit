@@ -31,6 +31,32 @@ class ExpiresRfc3339Test < Minitest::Test
     assert c3.expired?
   end
 
+  # Rfc3339Parser parser-error branches (cover the explicit nil-returning
+  # arms so SimpleCov branch coverage stays >= 90 cross-SDK baseline).
+  def test_rfc3339_parser_explicit_error_branches
+    parser = Mpp::Core::Rfc3339Parser
+    assert_nil parser.parse(123) # non-string input
+    assert_nil parser.parse("not-a-timestamp")
+    assert_nil parser.parse("2099-13-01T00:00:00Z") # month > 12
+    assert_nil parser.parse("2099-00-01T00:00:00Z") # month < 1
+    assert_nil parser.parse("2099-01-00T00:00:00Z") # day < 1
+    assert_nil parser.parse("2099-01-32T00:00:00Z") # day > 31
+    assert_nil parser.parse("2099-01-01T24:00:00Z") # hour > 23
+    assert_nil parser.parse("2099-01-01T00:60:00Z") # minute > 59
+    assert_nil parser.parse("2099-01-01T00:00:61Z") # second > 60
+    assert_nil parser.parse("10000-01-01T00:00:00Z") # year > 9999
+    assert_nil parser.parse("2099-02-30T00:00:00Z") # invalid calendar date
+    assert_nil parser.parse("2099-01-01T00:00:00+99:00") # invalid offset hour
+  end
+
+  def test_rfc3339_parser_accepts_valid_variants
+    parser = Mpp::Core::Rfc3339Parser
+    refute_nil parser.parse("2099-01-01t00:00:00z") # lowercase t/z
+    refute_nil parser.parse("2099-01-01T00:00:00.123456789Z") # 9 fractional digits
+    refute_nil parser.parse("2099-12-31T23:59:60Z") # leap second
+    refute_nil parser.parse("2099-01-01T00:00:00-08:00") # negative offset
+  end
+
   def test_expires_strict_rfc3339_branches
     # Lowercase t accepted.
     c1 = Mpp::Core::Challenge.with_secret(secret_key: "s", realm: "api", method: "solana", intent: "charge", request: {}, expires: "2099-01-01t00:00:00Z")

@@ -32,6 +32,8 @@ module Mpp
       # not a valid RFC 3339 date-time. Returns nil for any out-of-range
       # component so callers can fail-closed.
       def parse(value)
+        return nil unless value.is_a?(String)
+
         match = REGEX.match(value)
         return nil unless match
 
