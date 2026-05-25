@@ -224,14 +224,43 @@ function decodeCredentialHeader(headerValue: string): CanonicalCredential {
   ) as CanonicalCredential;
 }
 
+// Pull a reject token from a 402 response body. The Rust spine wraps
+// verifier failures as `{ error: "payment_invalid", message: "<verifier-token>: ..." }`
+// (rust/crates/x402/src/bin/interop_server.rs ~L246) so the most-specific
+// token is in `message`, not `error`. We search every field for a known
+// reject token before falling back to the high-level `error` field. Order
+// of preference: `code` (canonical), then any field with a substring match
+// against the known reject taxonomy, then `error`.
 function extractRejectToken(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const record = body as Record<string, unknown>;
-  for (const field of ["code", "error", "message"] as const) {
+  // Canonical structured code wins outright.
+  if (typeof record.code === "string" && record.code.length > 0) {
+    return record.code;
+  }
+  // Then look in every string field for the most-specific token from
+  // the known taxonomy. `invalid_exact_svm_payload_*` and the
+  // high-level set are checked; first match wins by specificity
+  // (svm-payload tokens before high-level fallbacks).
+  const candidates: string[] = [];
+  for (const field of ["message", "error", "detail"] as const) {
     const value = record[field];
-    if (typeof value === "string" && value.length > 0) {
-      return value;
+    if (typeof value === "string") candidates.push(value);
+  }
+  const taxonomy = [
+    ...rejectTokens.exactSvmPayloadTokens,
+    ...rejectTokens.highLevelTokens,
+  ];
+  for (const token of taxonomy) {
+    for (const candidate of candidates) {
+      if (candidate.includes(token)) return token;
     }
+  }
+  // No taxonomy match — return whatever `error` or `message` says so
+  // the assertion can show the unrecognised string.
+  for (const field of ["error", "message"] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > 0) return value;
   }
   return undefined;
 }
@@ -305,21 +334,40 @@ describe("x402-exact compat: registered adapters", () => {
     );
   });
 
-  it("canonical reject tokens are exhaustive vs the rust spine reject taxonomy", () => {
-    // Hard-coded floor: the spine emits at least these high-level tokens
-    // and these SVM-payload tokens. If a new token lands in the rust
-    // spine and isn't mirrored here, the parity lock has drifted.
-    expect(rejectTokens.highLevelTokens).toContain("payment_invalid");
-    expect(rejectTokens.highLevelTokens).toContain("signature_consumed");
-    expect(rejectTokens.exactSvmPayloadTokens).toContain(
-      "invalid_exact_svm_payload_amount_mismatch",
+  it("canonical reject tokens are exactly the rust spine reject taxonomy", () => {
+    // Strict parity lock: grep the rust spine for every
+    // `"invalid_exact_svm_payload_*"` literal and assert the fixture
+    // lists EXACTLY those tokens (no missing, no stale). When the rust
+    // spine adds, removes, or renames a token, this test fails and
+    // points at the divergence — no silent drift.
+    const verifyPath = path.resolve(
+      __dirname,
+      "../../rust/crates/x402/src/protocol/schemes/exact/verify.rs",
     );
-    expect(rejectTokens.exactSvmPayloadTokens).toContain(
-      "invalid_exact_svm_payload_recipient_mismatch",
-    );
-    expect(rejectTokens.exactSvmPayloadTokens).toContain(
-      "invalid_exact_svm_payload_mint_mismatch",
-    );
+    if (!fs.existsSync(verifyPath)) {
+      // Rust source not vendored in this checkout (e.g. minimal CI image
+      // without the rust workspace). Fall back to a non-empty floor.
+      expect(rejectTokens.exactSvmPayloadTokens.length).toBeGreaterThan(0);
+      return;
+    }
+    const verifySource = fs.readFileSync(verifyPath, "utf8");
+    const spineTokens = new Set<string>();
+    for (const match of verifySource.matchAll(
+      /"(invalid_exact_svm_payload_[a-z_]+)"/g,
+    )) {
+      spineTokens.add(match[1]);
+    }
+    const fixtureSet = new Set(rejectTokens.exactSvmPayloadTokens);
+    const missing = [...spineTokens].filter(t => !fixtureSet.has(t));
+    const stale = [...fixtureSet].filter(t => !spineTokens.has(t));
+    expect(
+      missing,
+      `tokens in rust spine but missing from canonical-reject-tokens.json: ${missing.join(", ")}`,
+    ).toEqual([]);
+    expect(
+      stale,
+      `tokens in canonical-reject-tokens.json but no longer in rust spine: ${stale.join(", ")}`,
+    ).toEqual([]);
   });
 });
 
@@ -477,16 +525,16 @@ describe("x402-exact compat: server → attack scenarios", () => {
           token,
           `attack ${scenario.name} produced no reject token in ${JSON.stringify(body)}`,
         ).toBeTruthy();
-        // The token must be either one of the scenario-expected tokens
-        // or the generic `payment_invalid` fallback (allowed for
-        // wire-only adapters that don't decode the SVM transaction
-        // blob). Together this asserts the server emitted a
-        // taxonomy-aligned response — i.e. no novel out-of-band
-        // strings, no process crash, no unparseable body.
-        const allowed = new Set<string>([
-          ...scenario.expectedRejectTokens,
-          "payment_invalid",
-        ]);
+        // The token must be one of the scenario-expected tokens.
+        // Wire-only adapters (no SVM transaction decoder) may also emit
+        // the generic `payment_invalid` fallback — full verifiers must
+        // emit a specific token. This prevents a full verifier from
+        // silently regressing to a generic error and still passing the
+        // parity lock.
+        const allowed = new Set<string>(scenario.expectedRejectTokens);
+        if (WIRE_ONLY_ADAPTER_IDS.has(server.id)) {
+          allowed.add("payment_invalid");
+        }
         expect(
           allowed.has(token as string),
           `attack ${scenario.name}: token ${token} not in allowed set ${[...allowed].join(",")}`,
@@ -509,29 +557,34 @@ describe("x402-exact compat: server → attack scenarios", () => {
       const header = encodeCredential(sendCredential);
 
       const first = await postCredential(targetUrl, header);
-      // First send: accept OR reject — what matters is the second send
-      // produces a stable rejection (not a different one each time).
-      const second = await postCredential(targetUrl, header);
+      // Replay semantics REQUIRE the first submission to be accepted —
+      // otherwise the "second submit must produce signature_consumed"
+      // assertion is vacuous (a server that rejects every credential
+      // would trivially pass). Wire-only adapters that semantically
+      // reject the canonical credential (because the challenge id
+      // wasn't issued by this process, etc.) are not the right vehicle
+      // for the replay assertion; they exercise the
+      // `challenge_verification_failed` path under canonical credential
+      // test above. The replay test therefore fails if the first
+      // submission was rejected — that's a wiring bug, not a feature.
+      expect(
+        first.status,
+        `replay test requires first submit to be accepted; got ${first.status}: ${JSON.stringify(first.body)}`,
+      ).toBe(200);
 
-      if (first.status === 200) {
-        // If first succeeded, the replay MUST be rejected with
-        // signature_consumed.
-        expect(second.status).toBe(402);
-        const token = extractRejectToken(second.body);
-        expect(
-          attackSuite.replayScenario.expectedRejectTokens.includes(
-            token as string,
-          ) || token === "payment_invalid",
-        ).toBe(true);
-      } else {
-        // If the first send was rejected, the second send MUST be
-        // rejected deterministically with the same token (idempotent
-        // rejection).
-        expect(second.status).toBe(first.status);
-        expect(extractRejectToken(second.body)).toBe(
-          extractRejectToken(first.body),
-        );
+      const second = await postCredential(targetUrl, header);
+      expect(second.status).toBe(402);
+      const token = extractRejectToken(second.body);
+      const replayAllowed = new Set<string>(
+        attackSuite.replayScenario.expectedRejectTokens,
+      );
+      if (WIRE_ONLY_ADAPTER_IDS.has(server.id)) {
+        replayAllowed.add("payment_invalid");
       }
+      expect(
+        replayAllowed.has(token as string),
+        `replay token ${token} not in allowed ${[...replayAllowed].join(",")}`,
+      ).toBe(true);
     }, 60_000);
   }
 });

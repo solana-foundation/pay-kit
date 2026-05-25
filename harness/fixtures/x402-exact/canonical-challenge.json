@@ -1,5 +1,5 @@
 {
-  "_description": "Canonical x402 `exact` 402 challenge envelope. Wire-mirrors what every spec-compliant server emits. Every language adapter's client MUST be able to parse this envelope without error and select an offer from `accepts`. Sourced from the Rust spine's `accepted_payments` shape in rust/crates/x402/src/bin/interop_server.rs (the JSON body of the 402 response, base64-decoded). See also harness/src/fixtures/typescript/exact-server.ts::buildRequirements which produces the wire-equivalent envelope.",
+  "_description": "TS-wire x402 `exact` 402 challenge envelope. Mirrors the shape the TS reference server emits in harness/src/fixtures/typescript/exact-server.ts::encodePaymentRequiredHeader. NOTE on Rust-spine parity: the Rust spine (rust/crates/x402/src/protocol/schemes/exact/types.rs::PaymentRequiredEnvelope) serializes the top-level `resource` as a `ResourceInfo` object instead of a string, and Rust's PaymentRequirements is the canonical superset. Adapters that target ONLY this fixture pass the wire-compat tier; full Rust-spine compatibility is asserted by the live matrix in test/x402-exact.live.matrix.test.ts (which exchanges the actual Rust envelope), not by this fixture. See canonical-payment-signature-rust.json for the Rust-spine PaymentProof shape.",
   "x402Version": 2,
   "accepts": [
     {

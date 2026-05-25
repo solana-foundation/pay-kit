@@ -176,8 +176,15 @@ The x402-exact intent splits its coverage across three tiers:
    `harness/fixtures/x402-exact/`:
    - **canonical-challenge.json** — the 402 envelope every client must
      parse.
-   - **canonical-payment-signature.json** — the credential every server
-     must parse (accept or reject with a known token).
+   - **canonical-payment-signature.json** — the TS-wire credential every
+     server must parse (accept or reject with a known token). Wire-only
+     adapters may emit `payment_invalid` as fallback.
+   - **canonical-payment-signature-rust.json** — Rust-spine canonical
+     `PaymentSignatureEnvelope` with a `PaymentProof::Transaction`
+     payload. Asserts the Rust serde envelope parser accepts a
+     well-formed envelope and the verifier rejects with a specific
+     `invalid_exact_svm_payload_*` token (used by the live matrix
+     against the Rust spine server).
    - **canonical-reject-tokens.json** — the union of taxonomy-aligned
      reject tokens (high-level + `invalid_exact_svm_payload_*` family,
      mirrored from `rust/crates/x402/src/protocol/schemes/exact/verify.rs`).
