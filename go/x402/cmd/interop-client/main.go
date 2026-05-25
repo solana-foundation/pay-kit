@@ -294,7 +294,7 @@ func latestBlockhash(rpcURL string) (solana.Hash, error) {
 	if err != nil {
 		return solana.Hash{}, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return solana.Hash{}, fmt.Errorf("getLatestBlockhash HTTP %d", response.StatusCode)
 	}
@@ -416,7 +416,7 @@ func buildExactPaymentSignature(requirement paymentRequirement, resource map[str
 	}
 
 	blockhashValue, _ := requirement.Extra["recentBlockhash"].(string)
-	blockhash := solana.Hash{}
+	var blockhash solana.Hash
 	if blockhashValue != "" {
 		blockhash, err = solana.HashFromBase58(blockhashValue)
 		if err != nil {
@@ -478,7 +478,7 @@ func buildExactPaymentSignature(requirement paymentRequirement, resource map[str
 }
 
 func readResponse(response *http.Response) (map[string]string, string, error) {
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, "", err
@@ -511,6 +511,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() { _ = response.Body.Close() }()
 	headers, body, err := readResponse(response)
 	if err != nil {
 		panic(err)
@@ -540,6 +541,7 @@ func main() {
 				var paidResponse *http.Response
 				paidResponse, err = httpClient.Do(request)
 				if err == nil {
+					defer func() { _ = paidResponse.Body.Close() }()
 					paidHeaders, paidBody, readErr := readResponse(paidResponse)
 					if readErr != nil {
 						err = readErr

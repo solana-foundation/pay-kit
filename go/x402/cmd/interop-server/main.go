@@ -890,7 +890,7 @@ func accountExists(state serverState, account solana.PublicKey) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	rawBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return false, err
@@ -943,7 +943,7 @@ func sendTransaction(state serverState, transaction *solana.Transaction) (string
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	rawBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return "", err
@@ -1061,13 +1061,13 @@ func runInteropServer(state serverState, listener net.Listener, signals <-chan o
 	select {
 	case <-signals:
 		if err := server.Close(); err != nil {
-			fmt.Fprintln(errWriter, err)
+			_, _ = fmt.Fprintln(errWriter, err)
 			return err
 		}
 		return nil
 	case err := <-serveErr:
 		if err != nil {
-			fmt.Fprintln(errWriter, err)
+			_, _ = fmt.Fprintln(errWriter, err)
 		}
 		return err
 	}
