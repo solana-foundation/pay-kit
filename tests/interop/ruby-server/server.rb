@@ -35,6 +35,12 @@ resource_path     = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
 settlement_header = optional_env("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature")
 replay_path       = ENV["MPP_INTEROP_REPLAY_SOURCE_PATH"]
 replay_amount     = ENV["MPP_INTEROP_REPLAY_SOURCE_AMOUNT"]
+# B34 / push-mode: when the harness drives this server in push mode the
+# challenge MUST NOT advertise a server-side fee payer (the Ruby verifier
+# rejects type=signature credentials whenever methodDetails.feePayer == true,
+# see methods/solana/verifier.rb). Passing fee_payer: nil omits both
+# feePayer and feePayerKey from the challenge so the push path verifies.
+payment_mode      = optional_env("MPP_INTEROP_PAYMENT_MODE", "pull")
 splits            = JSON.parse(optional_env("MPP_INTEROP_SPLITS", "[]"))
 unless splits.is_a?(Array)
   warn "MPP_INTEROP_SPLITS must decode to an array"
@@ -47,7 +53,7 @@ server = Mpp.create(
     currency:  mint,
     network:   network,
     rpc:       rpc_url,
-    fee_payer: account_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
+    fee_payer: payment_mode == "push" ? nil : account_from_env("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
   ),
   secret_key:        secret_key,
   realm:             "MPP Interop",
