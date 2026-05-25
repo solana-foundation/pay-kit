@@ -11,8 +11,8 @@ import (
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 

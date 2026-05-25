@@ -13,8 +13,8 @@ import (
 
 	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/client"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/protocol/intents"
 )

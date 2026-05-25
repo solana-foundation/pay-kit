@@ -25,7 +25,7 @@ jobs:
             github.com/solana-foundation/mpp-sdk/go \
             github.com/solana-foundation/mpp-sdk/go/client \
             github.com/solana-foundation/mpp-sdk/go/errorcodes \
-            github.com/solana-foundation/mpp-sdk/go/internal/solanautil \
+            github.com/solana-foundation/mpp-sdk/go/internal/utils \
             github.com/solana-foundation/mpp-sdk/go/protocol \
             github.com/solana-foundation/mpp-sdk/go/protocol/core \
             github.com/solana-foundation/mpp-sdk/go/protocol/intents \
