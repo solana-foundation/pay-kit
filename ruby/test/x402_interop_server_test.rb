@@ -366,33 +366,115 @@ class InteropServerTest < Minitest::Test
     assert_empty sent
   end
 
-  def test_settlement_rejects_duplicate_transaction_payload_before_resending
-    sent = []
-    state = build_state(sender: ->(_state, _transaction) {
-      sent << true
-      "unit-settlement-#{sent.length}"
-    })
+  def test_settlement_rejects_duplicate_signature_after_confirmation
+    # Two settlements that confirm to the *same* on-chain signature must
+    # collapse to one. The replay store is keyed on the confirmed signature
+    # (`x402-svm-exact:consumed:<base58_signature>`), so the second attempt
+    # observes the already-consumed signature and surfaces the canonical
+    # `signature_consumed` reject.
+    state = build_state(sender: ->(_state, _transaction) { "shared-signature" })
     payment_header = build_payment_header(state)
 
-    assert_equal "unit-settlement-1", X402::Interop::Server.settle_exact_payment(state, payment_header)
+    assert_equal "shared-signature", X402::Interop::Server.settle_exact_payment(state, payment_header)
     error = assert_raises(RuntimeError) do
       X402::Interop::Server.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "duplicate_settlement", error.message
-    assert_equal 1, sent.length
+    assert_equal "signature_consumed", error.message
   end
 
-  def test_settlement_cache_releases_transaction_payload_after_send_failure
-    state = build_state(sender: ->(_state, _transaction) { raise "send failed" })
+  def test_settlement_orders_broadcast_then_confirm_then_put_if_absent
+    order = []
+    cache = X402::Interop::Server::SettlementCache.new
+    tracking_cache = Class.new do
+      def initialize(inner, order)
+        @inner = inner
+        @order = order
+      end
+
+      def put_if_absent(key, **kwargs)
+        @order << [:put_if_absent, key]
+        @inner.put_if_absent(key, **kwargs)
+      end
+
+      def duplicate?(key, **kwargs)
+        @inner.duplicate?(key, **kwargs)
+      end
+    end.new(cache, order)
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        order << [:broadcast]
+        "sig-ordering"
+      },
+      signature_confirmer: ->(_state, signature) {
+        order << [:confirm, signature]
+        signature
+      },
+      settlement_cache: tracking_cache
+    )
+
+    assert_equal "sig-ordering",
+      X402::Interop::Server.settle_exact_payment(state, build_payment_header(state))
+
+    assert_equal [
+      [:broadcast],
+      [:confirm, "sig-ordering"],
+      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"]
+    ], order
+  end
+
+  def test_settlement_does_not_record_signature_when_broadcast_fails_before_confirm
+    cache = X402::Interop::Server::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { raise "sendTransaction RPC error: blockhash not found" },
+      signature_confirmer: ->(_state, _signature) { raise "confirm must not run when broadcast failed" },
+      settlement_cache: cache
+    )
     payment_header = build_payment_header(state)
 
-    2.times do
-      error = assert_raises(RuntimeError) do
-        X402::Interop::Server.settle_exact_payment(state, payment_header)
-      end
-      assert_equal "send failed", error.message
+    error = assert_raises(RuntimeError) do
+      X402::Interop::Server.settle_exact_payment(state, payment_header)
     end
+    assert_match(/blockhash not found/, error.message)
+
+    # No release path exists by design — the replay key was never written, so
+    # a retry on the same envelope is free to broadcast again.
+    retried = false
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        retried = true
+        "retry-sig"
+      },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    assert_equal "retry-sig", X402::Interop::Server.settle_exact_payment(state, payment_header)
+    assert retried
+  end
+
+  def test_settlement_does_not_record_signature_when_confirmation_fails
+    cache = X402::Interop::Server::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "unconfirmed-sig" },
+      signature_confirmer: ->(_state, _signature) { raise "timed out awaiting confirmation for unconfirmed-sig" },
+      settlement_cache: cache
+    )
+
+    error = assert_raises(RuntimeError) do
+      X402::Interop::Server.settle_exact_payment(state, build_payment_header(state))
+    end
+    assert_match(/timed out awaiting confirmation/, error.message)
+
+    # Confirmation failed → put_if_absent never ran → the signature is not in
+    # the replay store. The retry is allowed to broadcast again, and Solana's
+    # own per-signature uniqueness inside the blockhash window prevents a
+    # double-pay if the original eventually confirms.
+    refute cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig")
+  end
+
+  def test_settlement_consumed_key_namespace_is_scheme_scoped
+    assert_equal "x402-svm-exact:consumed:abc123",
+      X402::Interop::Server.signature_consumed_key("abc123")
   end
 
   def test_settlement_rejects_missing_source_token_account_before_sending
@@ -737,7 +819,9 @@ class InteropServerTest < Minitest::Test
     price: "$0.001",
     extra_offered_mints: nil,
     sender: ->(_state, _transaction) { "unit-settlement" },
-    account_checker: ->(_state, _account) { true }
+    account_checker: ->(_state, _account) { true },
+    signature_confirmer: ->(_state, signature) { signature },
+    settlement_cache: nil
   )
     env = {
       "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
@@ -752,7 +836,9 @@ class InteropServerTest < Minitest::Test
     X402::Interop::Server::State.new(
       env: env,
       transaction_sender: sender,
-      account_checker: account_checker
+      account_checker: account_checker,
+      signature_confirmer: signature_confirmer,
+      settlement_cache: settlement_cache
     )
   end
 

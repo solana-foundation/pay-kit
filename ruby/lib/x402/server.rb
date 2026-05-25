@@ -30,9 +30,9 @@ module X402
 
       class State
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer, :fee_payer_secret_key, :amount,
-          :transaction_sender, :settlement_cache, :account_checker
+          :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer
 
-        def initialize(env: ENV, transaction_sender: nil, settlement_cache: nil, account_checker: nil)
+        def initialize(env: ENV, transaction_sender: nil, settlement_cache: nil, account_checker: nil, signature_confirmer: nil)
           @rpc_url = required_env(env, "X402_INTEROP_RPC_URL")
           @network = env.fetch("X402_INTEROP_NETWORK", DEFAULT_NETWORK)
           @mint = env.fetch("X402_INTEROP_MINT", DEFAULT_MINT)
@@ -47,6 +47,7 @@ module X402
           @transaction_sender = transaction_sender || Server.method(:send_transaction)
           @settlement_cache = settlement_cache || SettlementCache.new
           @account_checker = account_checker || Server.method(:account_exists?)
+          @signature_confirmer = signature_confirmer || Server.method(:await_confirmation)
         end
 
         private
@@ -59,24 +60,43 @@ module X402
         end
       end
 
+      # In-process replay store for confirmed Solana signatures. Keys are
+      # scheme-namespaced ("x402-svm-exact:consumed:<base58_signature>") so a
+      # future upto/batch scheme cannot collide, and so this keyspace does not
+      # bleed into MPP's `solana-charge:consumed:<sig>` namespace. Entries are
+      # TTL-pruned to bound memory; the durable replay primitive is Solana
+      # itself (a signed transaction can only land once within its blockhash
+      # window), so the store only needs to deduplicate retries arriving inside
+      # a short window after confirmation.
       class SettlementCache
         DEFAULT_TTL_SECONDS = 120
 
         def initialize(ttl_seconds: DEFAULT_TTL_SECONDS)
           @ttl_seconds = ttl_seconds
           @entries = {}
+          @mutex = Mutex.new
         end
 
+        # Atomically insert `key` if absent. Returns true when the key was
+        # newly recorded, false when it was already present. Mirrors the
+        # MPP/Python `put_if_absent` semantics on the L8 settlement path.
+        def put_if_absent(key, now: Time.now)
+          @mutex.synchronize do
+            prune(now)
+            return false if @entries.key?(key)
+
+            @entries[key] = now
+            true
+          end
+        end
+
+        # Back-compat probe kept for tests asserting TTL eviction semantics.
+        # Inverts `put_if_absent`: returns true when the key is already known,
+        # false when this call inserted it. New code on the settlement path
+        # MUST use `put_if_absent` directly so the broadcast→confirm→mark
+        # ordering stays explicit.
         def duplicate?(key, now: Time.now)
-          prune(now)
-          return true if @entries.key?(key)
-
-          @entries[key] = now
-          false
-        end
-
-        def release(key)
-          @entries.delete(key)
+          !put_if_absent(key, now: now)
         end
 
         private
@@ -207,18 +227,44 @@ module X402
         )
         Exact.verify_client_signatures!(transaction, [state.fee_payer.raw_public_key])
         verify_token_accounts_exist!(state, transfer)
-        raise "duplicate_settlement" if state.settlement_cache.duplicate?(transaction_payload)
 
-        begin
-          signed_transaction = Exact.sign_transaction_with_fee_payer(
-            transaction: transaction,
-            fee_payer_secret_key: state.fee_payer_secret_key
-          )
-          state.transaction_sender.call(state, signed_transaction)
-        rescue
-          state.settlement_cache.release(transaction_payload)
-          raise
+        signed_transaction = Exact.sign_transaction_with_fee_payer(
+          transaction: transaction,
+          fee_payer_secret_key: state.fee_payer_secret_key
+        )
+
+        # L8 settlement order, mirroring MPP `server/charge.rs:535-556` and
+        # the cross-language pull-mode contract recorded in
+        # skills/x402-sdk-implementation/references/pr-readiness.md:
+        #
+        #   1. broadcast (`sendTransaction`)
+        #   2. confirm (`getSignatureStatuses` → confirmed | finalized)
+        #   3. put_if_absent in the replay store keyed by the *confirmed*
+        #      base58 signature, namespaced as
+        #      `x402-svm-exact:consumed:<base58_signature>`
+        #
+        # There is no release-on-failure path: a crash or RPC error before
+        # step 3 simply never inserts the key, and Solana's per-signature
+        # uniqueness inside the blockhash window prevents a retry from
+        # double-broadcasting. Reserving the key *before* broadcast
+        # (claim-first) would require a release path that, on
+        # broadcast-succeeded-but-await-timed-out, could permit a double-pay
+        # if the original confirms later. The on-chain signature is the
+        # global uniqueness primitive, not the replay-store key.
+        signature = state.transaction_sender.call(state, signed_transaction)
+        state.signature_confirmer.call(state, signature)
+
+        unless state.settlement_cache.put_if_absent(signature_consumed_key(signature))
+          # Surface the canonical reject token. The interop matrix matches on
+          # this substring; do NOT echo a fresh PAYMENT-RESPONSE downstream.
+          raise "signature_consumed"
         end
+
+        signature
+      end
+
+      def signature_consumed_key(signature)
+        "x402-svm-exact:consumed:#{signature}"
       end
 
       def verify_token_accounts_exist!(state, transfer)
@@ -280,6 +326,47 @@ module X402
         raise "sendTransaction returned empty signature" unless result.is_a?(String) && !result.empty?
 
         result
+      end
+
+      DEFAULT_CONFIRMATION_ATTEMPTS = 40
+      DEFAULT_CONFIRMATION_DELAY_SECONDS = 0.25
+      CONFIRMED_STATUSES = ["confirmed", "finalized"].freeze
+
+      def await_confirmation(state, signature, attempts: DEFAULT_CONFIRMATION_ATTEMPTS,
+        delay_seconds: DEFAULT_CONFIRMATION_DELAY_SECONDS, sleeper: method(:sleep))
+        attempts.times do
+          statuses = fetch_signature_statuses(state, [signature])
+          status = statuses.first
+          if status.is_a?(Hash)
+            err = status["err"]
+            raise "transaction #{signature} failed on-chain: #{err.inspect}" unless err.nil?
+            return signature if CONFIRMED_STATUSES.include?(status["confirmationStatus"])
+          end
+          sleeper.call(delay_seconds)
+        end
+        raise "timed out awaiting confirmation for #{signature}"
+      end
+
+      def fetch_signature_statuses(state, signatures)
+        uri = URI(state.rpc_url)
+        request = Net::HTTP::Post.new(uri)
+        request["content-type"] = "application/json"
+        request.body = JSON.generate(
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getSignatureStatuses",
+          params: [signatures, {searchTransactionHistory: false}]
+        )
+        response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
+          http.request(request)
+        end
+        raise "getSignatureStatuses HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+        payload = JSON.parse(response.body)
+        raise "getSignatureStatuses RPC error: #{rpc_error_message(payload["error"])}" if payload["error"]
+
+        result = payload["result"]
+        (result.is_a?(Hash) ? result["value"] : nil) || []
       end
 
       def account_exists?(state, account)
