@@ -1,0 +1,83 @@
+# frozen_string_literal: true
+
+# RFC 8785 (JSON Canonicalization Scheme) test cases for the Ruby SDK.
+# Isolated from core_test.rb per PR #102 review (inline comment 3298060956)
+# so RFC 8785 (canonical JSON) and RFC 3339 (expires parser) live in
+# dedicated files. Battle-tested vector imports are tracked separately
+# (see follow-up issue referenced on the same PR thread).
+require_relative "test_helper"
+require "base64"
+
+class JsonCanonicalRfc8785Test < Minitest::Test
+  include RubyMppTestHelpers
+
+  def test_canonical_json_orders_nested_keys
+    value = {"b" => 2, "a" => [{"b" => true, "a" => false}]}
+
+    assert_equal '{"a":[{"a":false,"b":true}],"b":2}', Mpp::Core::Json.canonical_generate(value)
+    assert_equal "eyJhIjpbeyJhIjpmYWxzZSwiYiI6dHJ1ZX1dLCJiIjoyfQ", Mpp::Core::Base64Url.encode(Mpp::Core::Json.canonical_generate(value))
+  end
+
+  def test_canonical_json_es6_extra
+    # ES6 ToString: 1e-6 plain notation, 1e-7 exponential.
+    assert_equal "0.000001", Mpp::Core::Json.canonical_generate(1e-6)
+    assert_equal "1e-7", Mpp::Core::Json.canonical_generate(1e-7)
+    # 1e20 plain notation (still fits in plain form).
+    assert_equal "100000000000000000000", Mpp::Core::Json.canonical_generate(1e20)
+    # 0.1 + 0.2 round-trip preserves precision.
+    assert_equal "0.30000000000000004", Mpp::Core::Json.canonical_generate(0.1 + 0.2)
+  end
+
+  def test_canonical_json_utf16_key_order
+    # 'é' (U+00E9) > 'f' (U+0066) in UTF-16 code units, so 'f' sorts first.
+    value = {"é" => 1, "f" => 2}
+    assert_equal '{"f":2,"é":1}', Mpp::Core::Json.canonical_generate(value)
+  end
+
+  def test_canonical_json_es6_number_serialization
+    assert_equal "1e+21", Mpp::Core::Json.canonical_generate(1e21)
+    assert_equal "0.1", Mpp::Core::Json.canonical_generate(0.1)
+    assert_equal "0", Mpp::Core::Json.canonical_generate(-0.0)
+    assert_equal "0", Mpp::Core::Json.canonical_generate(0)
+  end
+
+  def test_canonical_json_rejects_lone_surrogates
+    # Build a UTF-8 byte sequence containing a lone high surrogate (U+D834) via raw bytes.
+    lone = [0xED, 0xA0, 0xB4].pack("C*").force_encoding(Encoding::UTF_8)
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({"k" => lone}) }
+  end
+
+  def test_canonical_json_covers_branches
+    assert_equal "true", Mpp::Core::Json.canonical_generate(true)
+    assert_equal "false", Mpp::Core::Json.canonical_generate(false)
+    assert_equal "null", Mpp::Core::Json.canonical_generate(nil)
+    assert_equal "[1,2,3]", Mpp::Core::Json.canonical_generate([1, 2, 3])
+    assert_equal '"\\u0001"', Mpp::Core::Json.canonical_generate("\x01")
+    assert_equal '"\\n"', Mpp::Core::Json.canonical_generate("\n")
+    assert_equal '{"a":1}', Mpp::Core::Json.canonical_generate({a: 1})
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate({1 => 2}) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate(Float::NAN) }
+    assert_raises(ArgumentError) { Mpp::Core::Json.canonical_generate(Float::INFINITY) }
+    assert_equal "1e-7", Mpp::Core::Json.canonical_generate(1e-7)
+  end
+
+  def test_canonical_json_branches_extra
+    # Symbol keys converted.
+    assert_equal '{"a":1,"b":2}', Mpp::Core::Json.canonical_generate({a: 1, b: 2})
+    # Integer.
+    assert_equal "42", Mpp::Core::Json.canonical_generate(42)
+    # Negative number.
+    assert_equal "-3.14", Mpp::Core::Json.canonical_generate(-3.14)
+    # Backslash and quote escapes.
+    assert_equal '"a\\\\b"', Mpp::Core::Json.canonical_generate("a\\b")
+    assert_equal '"a\\"b"', Mpp::Core::Json.canonical_generate("a\"b")
+    # Empty array, empty object.
+    assert_equal "[]", Mpp::Core::Json.canonical_generate([])
+    assert_equal "{}", Mpp::Core::Json.canonical_generate({})
+    # Tab and backspace control chars.
+    assert_equal '"\\t"', Mpp::Core::Json.canonical_generate("\t")
+    assert_equal '"\\b"', Mpp::Core::Json.canonical_generate("\b")
+    assert_equal '"\\f"', Mpp::Core::Json.canonical_generate("\f")
+    assert_equal '"\\r"', Mpp::Core::Json.canonical_generate("\r")
+  end
+end
