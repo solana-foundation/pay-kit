@@ -9,6 +9,10 @@ module Mpp
     # Vendors a small JCS implementation rather than delegating to JSON.generate so the
     # ordering, number serialization, and surrogate validation rules match the Rust spine.
     # See RFC 8785 sec 3.2.2 and sec 3.2.3.
+    #
+    # @see https://datatracker.ietf.org/doc/html/rfc8785 RFC 8785 JSON Canonicalization Scheme
+    # @see https://tc39.es/ecma262/multipage/abstract-operations.html#sec-numeric-types-number-tostring
+    #      ECMA-262 Number::toString algorithm
     module Json
       module_function
 

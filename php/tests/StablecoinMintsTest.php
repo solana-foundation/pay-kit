@@ -82,18 +82,31 @@ final class StablecoinMintsTest extends TestCase
     }
 
     /**
-     * The canonical mainnet slug is `mainnet`. The legacy `mainnet-beta`
-     * spelling is exposed as an aliased key for backward compatibility.
-     * This test catches alias drift: if a future commit changes the
-     * pubkey for one spelling but forgets the other, downstream consumers
-     * doing raw bracket access on either key get inconsistent results.
+     * The canonical mainnet slug is `mainnet`. Legacy `mainnet-beta` input
+     * is folded back to `mainnet` by normalizeNetwork() inside resolve(),
+     * so callers passing either spelling resolve to the same pubkey.
      */
-    public function testMainnetBetaAliasMatchesMainnetForEveryStablecoin(): void
+    public function testMainnetBetaAliasResolvesToMainnetForEveryStablecoin(): void
     {
-        self::assertSame(StablecoinMints::USDC['mainnet'], StablecoinMints::USDC['mainnet-beta']);
-        self::assertSame(StablecoinMints::USDT['mainnet'], StablecoinMints::USDT['mainnet-beta']);
-        self::assertSame(StablecoinMints::USDG['mainnet'], StablecoinMints::USDG['mainnet-beta']);
-        self::assertSame(StablecoinMints::PYUSD['mainnet'], StablecoinMints::PYUSD['mainnet-beta']);
-        self::assertSame(StablecoinMints::CASH['mainnet'], StablecoinMints::CASH['mainnet-beta']);
+        self::assertSame(
+            StablecoinMints::resolve('USDC', 'mainnet'),
+            StablecoinMints::resolve('USDC', 'mainnet-beta')
+        );
+        self::assertSame(
+            StablecoinMints::resolve('USDT', 'mainnet'),
+            StablecoinMints::resolve('USDT', 'mainnet-beta')
+        );
+        self::assertSame(
+            StablecoinMints::resolve('USDG', 'mainnet'),
+            StablecoinMints::resolve('USDG', 'mainnet-beta')
+        );
+        self::assertSame(
+            StablecoinMints::resolve('PYUSD', 'mainnet'),
+            StablecoinMints::resolve('PYUSD', 'mainnet-beta')
+        );
+        self::assertSame(
+            StablecoinMints::resolve('CASH', 'mainnet'),
+            StablecoinMints::resolve('CASH', 'mainnet-beta')
+        );
     }
 }

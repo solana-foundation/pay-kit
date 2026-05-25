@@ -16,6 +16,10 @@ final class Json
      *
      * Sorts object keys by UTF-16 code-unit order, serializes numbers per ES6 ToString
      * (ECMA-262 7.1.12.1), and rejects NaN, Infinity, and lone surrogates.
+     *
+     * @see https://datatracker.ietf.org/doc/html/rfc8785 RFC 8785 JSON Canonicalization Scheme
+     * @see https://tc39.es/ecma262/multipage/abstract-operations.html#sec-numeric-types-number-tostring
+     *      ECMA-262 Number::toString algorithm
      */
     public static function canonicalize(mixed $value): string
     {

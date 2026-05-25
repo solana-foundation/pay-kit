@@ -75,47 +75,15 @@ module Mpp
         secure_compare(expected, id)
       end
 
-      # Strict RFC 3339 date-time (sec 5.6) without leap-second support.
-      # Year is exactly 4 digits, T literal accepted upper or lower (per parse SHOULD), fractional seconds 1..9 digits.
-      RFC3339_REGEX = /\A
-        (\d{4})-(\d{2})-(\d{2})         # full-date
-        [Tt]
-        (\d{2}):(\d{2}):(\d{2})         # partial-time
-        (?:\.(\d{1,9}))?                # time-secfrac
-        (Z|z|[+-]\d{2}:\d{2})           # time-offset
-        \z/x
-      private_constant :RFC3339_REGEX
-
-      # Return true if the challenge is expired or has an invalid timestamp (fail-closed).
+      # Return true if the challenge is expired or has an invalid timestamp
+      # (fail-closed). RFC 3339 parsing is delegated to {Rfc3339Parser}.
       def expired?(now: Time.now.utc)
         return false if expires.nil?
 
-        match = RFC3339_REGEX.match(expires)
-        return true unless match
+        parsed = Rfc3339Parser.parse(expires)
+        return true if parsed.nil?
 
-        year, month, day = match[1].to_i, match[2].to_i, match[3].to_i
-        hour, minute, second = match[4].to_i, match[5].to_i, match[6].to_i
-        return true if month < 1 || month > 12
-        return true if day < 1 || day > 31
-        # RFC 3339 section 5.7 allows seconds = 60 for positive leap seconds;
-        # PHP, Lua, and Go SDKs all accept the value at parse-time. Reject only
-        # at 61 so a credential timestamped at exactly 23:59:60 UTC parses.
-        return true if hour > 23 || minute > 59 || second > 60
-        return true if year > 9999
-        return true unless Date.valid_date?(year, month, day)
-
-        # Time.iso8601 rejects lowercase 't' / 'z' separators that the regex
-        # above accepts (RFC 3339 sec 5.6 allows both cases; ISO 8601 strict
-        # requires uppercase). Normalize before delegating so a credential
-        # timestamped as ``2099-01-01t00:00:00z`` parses instead of
-        # falling into the rescue. PHP already does this; matching here.
-        normalized = expires
-          .sub(/(\d)t(\d)/, "\\1T\\2")
-          .sub(/z\z/, "Z")
-        parsed = Time.iso8601(normalized)
         parsed <= now
-      rescue ArgumentError
-        true
       end
 
       # Decode the base64url canonical JSON request.

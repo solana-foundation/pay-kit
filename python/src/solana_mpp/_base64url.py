@@ -22,7 +22,16 @@ def decode(s: str) -> bytes:
 
 
 def encode_json(obj: Any) -> str:
-    """Encode a Python object as compact JSON then base64url."""
+    """Encode a Python object as compact JSON then base64url.
+
+    Object keys are sorted (RFC 8785 sec 3.2.3 key ordering); number
+    serialization is delegated to ``json.dumps``.
+
+    See:
+        - https://datatracker.ietf.org/doc/html/rfc8785 RFC 8785 JCS
+        - https://tc39.es/ecma262/multipage/abstract-operations.html#sec-numeric-types-number-tostring
+          ECMA-262 Number::toString
+    """
     compact = json.dumps(obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
     return encode(compact.encode("utf-8"))
 

@@ -1,3 +1,8 @@
+-- RFC 8785 canonical JSON encoder for the MPP Lua SDK.
+--
+-- @see https://datatracker.ietf.org/doc/html/rfc8785 RFC 8785 JSON Canonicalization Scheme
+-- @see https://tc39.es/ecma262/multipage/abstract-operations.html#sec-numeric-types-number-tostring
+--      ECMA-262 Number::toString algorithm (RFC 8785 sec 3.2.2.3 reference)
 local M = {}
 
 local null_sentinel = {}
