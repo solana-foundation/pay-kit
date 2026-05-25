@@ -1,5 +1,5 @@
 import net from "node:net";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   createSolanaRpc,
   getBase64Codec,
@@ -65,6 +65,7 @@ function scenarioDecimals(scenario: InteropScenario): number {
 const runningServers: RunningServer[] = [];
 
 let surfnet: Surfnet | undefined;
+let surfnetDrainTimer: NodeJS.Timeout | undefined;
 let interopEnv: Record<string, string> | undefined;
 let splitRecipients: Record<string, string> = {};
 
@@ -166,6 +167,18 @@ beforeAll(async () => {
   }
 
   surfnet = Surfnet.start();
+  // Periodically drain the JS-side surfpool event queue. The Rust
+  // server fixture broadcasts via this in-process surfpool RPC, and
+  // each broadcast enqueues commit/log events on the JS side. Without
+  // a periodic drain, the queue backs up over a full matrix run and
+  // surfpool's RPC stops responding to subsequent simulate/broadcast
+  // calls, which surfaces as a 120s adapter-output timeout on
+  // charge-idempotent-resubmit (the matrix's tail scenario). The
+  // 1s cadence matches tests/interop/start-surfnet-proxy.mjs, which
+  // already does this for the proxy-mode launcher. See Ludo-7 / PR #102.
+  surfnetDrainTimer = setInterval(() => {
+    surfnet?.drainEvents();
+  }, 1_000);
 
   const client = Surfnet.newKeypair();
   const payTo = Surfnet.newKeypair();
@@ -278,6 +291,13 @@ afterEach(async () => {
     if (server) {
       await stopServer(server);
     }
+  }
+});
+
+afterAll(() => {
+  if (surfnetDrainTimer) {
+    clearInterval(surfnetDrainTimer);
+    surfnetDrainTimer = undefined;
   }
 });
 
