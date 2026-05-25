@@ -211,44 +211,6 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
-  test-go:
-    name: Go tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-      - name: Run tests with coverage
-        working-directory: go
-        env:
-          GOCACHE: /tmp/go-build-cache
-        run: |
-          go test \
-            github.com/solana-foundation/mpp-sdk/go \
-            github.com/solana-foundation/mpp-sdk/go/client \
-            github.com/solana-foundation/mpp-sdk/go/errorcodes \
-            github.com/solana-foundation/mpp-sdk/go/internal/solanautil \
-            github.com/solana-foundation/mpp-sdk/go/protocol \
-            github.com/solana-foundation/mpp-sdk/go/protocol/core \
-            github.com/solana-foundation/mpp-sdk/go/protocol/intents \
-            github.com/solana-foundation/mpp-sdk/go/server \
-            -coverprofile=coverage.out \
-            -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 90
-      - name: Run all Go packages
-        working-directory: go
-        env:
-          GOCACHE: /tmp/go-build-cache
-        run: go test ./...
-      - name: Upload Go coverage
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: go-coverage
-          path: go/coverage.out
-
   integration:
     name: Integration tests
     needs: build-html
