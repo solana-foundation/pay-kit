@@ -213,16 +213,21 @@ To extend with a new language adapter:
 - The live matrix picks up the adapter automatically via the
   `allowedPair` policy.
 
-Optional opt-in flags for the compat suite:
+Why the Rust spine is excluded from the compat suite: the spine
+deserializes `payload` as `PaymentProof::Transaction | Signature`
+(rust/crates/x402/src/protocol/schemes/exact/types.rs), so the TS-wire
+canonical credential — which carries `payload.challengeId/resource` —
+is rejected at the proof layer with a generic `payment_invalid` before
+the per-scenario assertions can run. Rust spine coverage is provided
+by the live matrix (tier 3), which builds real signed transactions
+and exercises the full structural verifier.
 
-- `X402_COMPAT_INCLUDE_RUST=1` — extends compat coverage to the Rust
-  spine adapter (`rust-x402`). CI jobs that already build the Rust
-  workspace set this; the default `pnpm test` run skips it to avoid
-  the cargo build cost. When set, callers MUST also export real
-  ed25519 keypairs in `X402_INTEROP_FACILITATOR_SECRET_KEY` and
-  `X402_INTEROP_CLIENT_SECRET_KEY` — the rust spine validates these
-  via `MemorySigner::from_bytes` and refuses to start with placeholder
-  bytes.
+Optional opt-in flag:
+
+- `X402_COMPAT_STUB_ACCEPT=<id,id,...>` — declares that the listed
+  full-verifier adapters intentionally accept the TS-wire stub
+  credential. Without this, a full-verifier adapter that returns 200
+  on the canonical credential is flagged as a verifier bypass.
 - `X402_COMPAT_REPLAY_TRUST=<id,id,...>` — declares that the listed
   adapters' verifier accepts the canonical stub credential and is
   therefore eligible for the replay assertion. Without this, only

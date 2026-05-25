@@ -131,26 +131,17 @@ const attackSuite = loadJson<AttackSuite>("attack-scenarios.json");
 // because their startup cost dwarfs the wire test. They re-enter via
 // the live matrix once env is set. The gate is keyed off adapter ids so
 // new language adapters automatically opt in.
-// Default compat suite covers fast in-process adapters only — adding
-// cargo-built adapters (rust-x402) to the default run multiplies CI
-// wall time by an order of magnitude per test. Opt in to rust-x402
-// compat coverage via X402_COMPAT_INCLUDE_RUST=1 (CI matrix sets this
-// on the rust toolchain job). The live matrix (env-gated) covers the
-// rust spine on every happy-path pair regardless of this flag.
-//
-// Note: the rust spine deserializes its keypair envs via
-// `MemorySigner::from_bytes` (rust/crates/x402/src/bin/interop_*.rs)
-// which rejects placeholder byte arrays. Callers opting into the rust
-// compat slice MUST also provide REAL ed25519 keypairs in
-// `X402_INTEROP_FACILITATOR_SECRET_KEY` and
-// `X402_INTEROP_CLIENT_SECRET_KEY` (the same envs the live matrix
-// requires). When `X402_COMPAT_INCLUDE_RUST=1` is set without real
-// keypairs, the rust adapter exits before printing its `ready`
-// message and the harness fails with a clear adapter-startup error.
+// The compat suite covers fast in-process adapters only. The rust
+// spine is intentionally NOT in this suite — its verifier deserializes
+// `payload` as `PaymentProof::Transaction|Signature`
+// (rust/crates/x402/src/protocol/schemes/exact/types.rs) and would
+// reject the TS-wire `payload.challengeId/resource` stub at the proof
+// layer with generic `payment_invalid`, defeating the per-scenario
+// specific-token assertions that make this suite robust. Rust spine
+// coverage lives in the live matrix where real signed transactions
+// are built (test/x402-exact.live.matrix.test.ts). New fast in-process
+// adapters that share the TS-wire credential shape can be added here.
 const COMPAT_INCLUDE_IDS = new Set<string>(["ts-x402"]);
-if (process.env.X402_COMPAT_INCLUDE_RUST === "1") {
-  COMPAT_INCLUDE_IDS.add("rust-x402");
-}
 
 // Adapters that don't decode the full SVM transaction blob and therefore
 // can't catch some attack classes (e.g. tokenProgram mismatch inside
