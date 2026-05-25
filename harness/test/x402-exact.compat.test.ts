@@ -121,7 +121,16 @@ const attackSuite = loadJson<AttackSuite>("attack-scenarios.json");
 // because their startup cost dwarfs the wire test. They re-enter via
 // the live matrix once env is set. The gate is keyed off adapter ids so
 // new language adapters automatically opt in.
+// Default compat suite covers fast in-process adapters only — adding
+// cargo-built adapters (rust-x402) to the default run multiplies CI
+// wall time by an order of magnitude per test. Opt in to rust-x402
+// compat coverage via X402_COMPAT_INCLUDE_RUST=1 (CI matrix sets this
+// on the rust toolchain job). The live matrix (env-gated) covers the
+// rust spine on every happy-path pair regardless of this flag.
 const COMPAT_INCLUDE_IDS = new Set<string>(["ts-x402"]);
+if (process.env.X402_COMPAT_INCLUDE_RUST === "1") {
+  COMPAT_INCLUDE_IDS.add("rust-x402");
+}
 
 // Adapters that don't decode the full SVM transaction blob and therefore
 // can't catch some attack classes (e.g. tokenProgram mismatch inside
@@ -546,6 +555,18 @@ describe("x402-exact compat: server → attack scenarios", () => {
       }, 60_000);
     }
 
+    // Replay assertion requires the canonical credential to be accepted
+    // on first submission. Adapters whose verifier needs a real signed
+    // transaction blob (rust spine) reject the stub canonical credential
+    // at bincode-deserialization, so replay against them is covered by
+    // the live matrix where a real PaymentProof::Transaction is built.
+    const replayCapable =
+      WIRE_ONLY_ADAPTER_IDS.has(server.id) ||
+      process.env.X402_COMPAT_REPLAY_TRUST?.split(",").includes(server.id);
+    if (!replayCapable) {
+      it.skip(`${server.id} replay test requires a real signed transaction (covered by live matrix)`, () => {});
+      continue;
+    }
     it(`${server.id} rejects replay (signature_consumed)`, async () => {
       const env = buildCompatEnv();
       running = await startServer(server, env);

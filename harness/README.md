@@ -213,6 +213,19 @@ To extend with a new language adapter:
 - The live matrix picks up the adapter automatically via the
   `allowedPair` policy.
 
+Optional opt-in flags for the compat suite:
+
+- `X402_COMPAT_INCLUDE_RUST=1` — extends compat coverage to the Rust
+  spine adapter (`rust-x402`). CI jobs that already build the Rust
+  workspace set this; the default `pnpm test` run skips it to avoid
+  the cargo build cost.
+- `X402_COMPAT_REPLAY_TRUST=<id,id,...>` — declares that the listed
+  adapters' verifier accepts the canonical stub credential and is
+  therefore eligible for the replay assertion. Without this, only
+  adapters in `WIRE_ONLY_ADAPTER_IDS` run the replay test (other
+  adapters cover replay via the live matrix with a real signed
+  transaction).
+
 Cross-server portability and idempotent-resubmit scenarios are gated
 separately:
 
