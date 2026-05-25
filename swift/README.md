@@ -20,23 +20,30 @@ currency, give it your wallet address, and pay a protected route in two lines.
 
 ```text
 swift/
-├── Sources/SolanaMpp/      # Wire format, charge client, HTTP retry
-│   ├── Base58.swift        # Bitcoin / Solana alphabet base58
-│   ├── Base64URL.swift     # RFC 4648 base64url for credential framing
-│   ├── Curve25519Field.swift # GF(2^255 - 19) for PDA on-curve checks
-│   ├── Pubkey.swift        # 32-byte account identifier
-│   ├── Ed25519.swift       # CryptoKit signing facade
-│   ├── SolanaSigner.swift  # Signer abstraction + MemorySigner
-│   ├── Transaction.swift   # Legacy + v0 message codec
-│   ├── Instructions.swift  # System, SPL, ATA, compute budget, memo
-│   ├── Ata.swift           # Associated Token Account PDA derivation
-│   ├── RpcClient.swift     # Minimal JSON-RPC client
-│   ├── Charge.swift        # MPP charge intent wire-signing pull path
-│   ├── HTTPClient.swift    # URLSession-backed 402 retry client
-│   ├── Headers.swift       # Payment WWW-Authenticate / Authorization
-│   └── Models.swift        # Wire-format Codable types
-└── Tests/SolanaMppTests/   # XCTest / swift-testing suite
+├── Sources/SolanaMpp/
+│   ├── Client/                # Charge client, HTTP retry, JSON-RPC
+│   │   ├── Charge.swift       # MPP charge intent wire-signing pull path
+│   │   ├── HTTPClient.swift   # URLSession-backed 402 retry client
+│   │   └── RpcClient.swift    # Minimal JSON-RPC client
+│   ├── Protocol/              # Wire format types
+│   │   ├── Headers.swift      # Payment WWW-Authenticate / Authorization
+│   │   └── Models.swift       # Wire-format Codable types
+│   └── Crypto/                # Solana primitives (vendored, no umbrella dep)
+│       ├── Base58.swift       # Bitcoin / Solana alphabet base58
+│       ├── Base64URL.swift    # RFC 4648 base64url for credential framing
+│       ├── Curve25519Field.swift # GF(2^255 - 19) for PDA on-curve checks
+│       ├── Pubkey.swift       # 32-byte account identifier
+│       ├── Ed25519.swift      # CryptoKit signing facade
+│       ├── SolanaSigner.swift # Signer abstraction + MemorySigner
+│       ├── Transaction.swift  # Legacy + v0 message codec
+│       ├── Instructions.swift # System, SPL, ATA, compute budget, memo
+│       └── Ata.swift          # Associated Token Account PDA derivation
+├── Tests/SolanaMppTests/      # XCTest / swift-testing suite
+└── Examples/                  # Sample clients (M2: Solana Seeker demo app)
 ```
+
+Mirrors the Rust layout (`rust/src/{client,protocol}/`) so cross-language
+contributors can navigate by feature, not file name.
 
 ## Scope
 
