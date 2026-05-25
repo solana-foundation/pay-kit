@@ -51,7 +51,7 @@ jobs:
         run: swift build
       - name: Build Rust interop server
         working-directory: rust
-        run: cargo build --bin interop_server
+        run: cargo build -p solana-mpp --bin interop_server
       - name: Typecheck interop harness
         working-directory: tests/interop
         run: pnpm typecheck

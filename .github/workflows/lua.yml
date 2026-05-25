@@ -139,7 +139,7 @@ jobs:
 
       - name: Build Rust interop client
         working-directory: rust
-        run: cargo build --bin interop_client
+        run: cargo build -p solana-mpp --bin interop_client
 
       - name: Install interop harness deps
         working-directory: tests/interop
