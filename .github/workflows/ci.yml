@@ -206,8 +206,17 @@ jobs:
         env:
           GOCACHE: /tmp/go-build-cache
         run: |
-          go test ./... -coverprofile=coverage.out -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 70
+          # Narrow `go test` to library packages so coverage measures SDK
+          # surface area only (cmd/ + internal/testutil hold fixtures and
+          # are excluded; mirrors the per-package narrowing pattern from
+          # PR #101). Cross-language baseline target is 90; library
+          # packages currently aggregate at ~84.1% because client,
+          # internal/solanautil, and server have known coverage gaps
+          # tracked outside this PR. The gate ratchets from 70 to 84
+          # without breaking CI; lifting to 90 is queued as a follow-up
+          # after the per-package gap-fill PRs land.
+          go test ./ ./client ./internal/solanautil ./protocol ./protocol/core ./protocol/intents ./server -coverprofile=coverage.out -covermode=atomic
+          ./scripts/check_coverage.sh coverage.out 84
       - name: Upload Go coverage
         if: always()
         uses: actions/upload-artifact@v7

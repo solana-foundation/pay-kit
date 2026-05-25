@@ -6,11 +6,12 @@ if ENV["COVERAGE"] == "1"
   SimpleCov.start do
     add_filter "/test/"
     add_filter "/examples/"
-    # Branch coverage temporarily tolerates 89.5 percent after the F6 RFC 3339
-    # strict parser landed with extra error-path branches that the existing
-    # unit tests do not yet exercise. Tracking issue: tighten back to 90
-    # once the parser-error tests for the lowercase-not-allowed, leap-day,
-    # and out-of-range-offset branches ship. Line coverage stays at 92.
+    # Branch coverage currently lands at ~89.85 percent; the cross-SDK
+    # baseline target is 90 (Lua / PHP / Python land there today).
+    # Holding the floor at 89.5 keeps CI green while the parser-error
+    # branches for lowercase t/z and leap-day rejection get explicit
+    # unit coverage in a follow-up. Line coverage stays at 92 since the
+    # suite already exceeds the cross-SDK target there.
     minimum_coverage line: 92, branch: 89.5
   end
 end
