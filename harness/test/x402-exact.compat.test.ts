@@ -201,9 +201,13 @@ async function startCanonicalFixtureServer(): Promise<{ url: string; close: () =
     });
     res.end(JSON.stringify({ ok: true }));
   });
-  await new Promise<void>(resolve =>
-    server.listen(0, "127.0.0.1", () => resolve()),
-  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
+  });
   const address = server.address();
   if (!address || typeof address === "string") {
     throw new Error("fixture server failed to bind");

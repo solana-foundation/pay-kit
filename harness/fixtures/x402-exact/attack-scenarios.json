@@ -1,65 +1,62 @@
 {
-  "_description": "Attack scenarios for the x402-exact SVM verifier. Each scenario provides a malformed PAYMENT-SIGNATURE credential the verifier MUST reject. `expectedRejectTokens` lists every reject token a spec-compliant server may emit (the exhaustive parity assertion picks the first match in the response body's `code`, `error`, or `message` field). Wire-only adapters (no SVM transaction decoder) may emit `payment_invalid` as the generic fallback — the test harness accepts either the specific token or `payment_invalid`. Specific SVM verifiers (rust spine, language ports with full structural verify) are held to the specific token.",
+  "_description": "Attack scenarios for the x402-exact verifier surface. Each scenario provides a malformed PAYMENT-SIGNATURE credential the server MUST reject with one of `expectedRejectTokens`. Wire-only adapters (no SVM transaction decoder, listed in WIRE_ONLY_ADAPTER_IDS in the test runner) get an automatic `payment_invalid` fallback — full verifiers do NOT and must emit a specific token. The harness extractRejectToken searches every response field for a known taxonomy token before falling back, so a server that buries a specific token in `message` is still credited.",
   "scenarios": [
     {
       "name": "missing_accepted_block",
-      "description": "Credential lacks `accepted` block entirely. Generic parser-level reject.",
+      "description": "Credential lacks `accepted` block entirely. Structural reject — every adapter must reject. The TS reference server hits the challenge-verification path first when the `payload.challengeId` is foreign-issued; the rust spine rejects at envelope deserialization. Both are surfaced as canonical tokens.",
       "credentialOverride": {},
       "deleteFields": ["accepted"],
-      "expectedRejectTokens": ["payment_invalid", "challenge_verification_failed"]
+      "expectedRejectTokens": ["challenge_verification_failed"]
     },
     {
       "name": "missing_payload_block",
-      "description": "Credential lacks `payload`. Parser/structural reject.",
+      "description": "Credential lacks `payload`. Structural reject. Rust spine rejects at PaymentSignatureEnvelope deserialization (payload is required); TS reference server's classifyCredential rejects when payload is absent. Both surface a canonical token.",
       "credentialOverride": {},
       "deleteFields": ["payload"],
-      "expectedRejectTokens": ["payment_invalid", "challenge_verification_failed"]
+      "expectedRejectTokens": ["challenge_verification_failed"]
     },
     {
       "name": "tampered_amount",
-      "description": "Credential amount diverges from offered requirement. SVM verifier emits amount_mismatch; wire adapter may emit charge_request_mismatch.",
+      "description": "Credential `accepted.amount` diverges from offered requirement. The TS reference compares `accepted` to offered requirements and emits charge_request_mismatch. Full SVM verifiers (rust spine) require a real signed transaction here; this scenario therefore targets the wire-binding check, not the on-chain amount check (which lives in the live matrix and emits invalid_exact_svm_payload_amount_mismatch).",
       "credentialOverride": {
         "accepted": {
           "amount": "1"
         }
       },
       "expectedRejectTokens": [
-        "invalid_exact_svm_payload_amount_mismatch",
         "charge_request_mismatch",
-        "payment_invalid"
+        "invalid_exact_svm_payload_amount_mismatch"
       ]
     },
     {
       "name": "tampered_recipient",
-      "description": "Credential payTo diverges from offered requirement. SVM verifier emits recipient_mismatch.",
+      "description": "Credential `accepted.payTo` diverges from offered requirement. Wire-binding check; on-chain recipient parity is asserted in the live matrix.",
       "credentialOverride": {
         "accepted": {
           "payTo": "11111111111111111111111111111112"
         }
       },
       "expectedRejectTokens": [
-        "invalid_exact_svm_payload_recipient_mismatch",
         "charge_request_mismatch",
-        "payment_invalid"
+        "invalid_exact_svm_payload_recipient_mismatch"
       ]
     },
     {
       "name": "tampered_mint",
-      "description": "Credential asset diverges from offered requirement. SVM verifier emits mint_mismatch.",
+      "description": "Credential `accepted.asset` diverges from offered requirement. Wire-binding check.",
       "credentialOverride": {
         "accepted": {
           "asset": "So11111111111111111111111111111111111111112"
         }
       },
       "expectedRejectTokens": [
-        "invalid_exact_svm_payload_mint_mismatch",
         "charge_request_mismatch",
-        "payment_invalid"
+        "invalid_exact_svm_payload_mint_mismatch"
       ]
     },
     {
       "name": "wrong_network",
-      "description": "Credential network diverges from server's offered network.",
+      "description": "Credential `accepted.network` diverges from server's offered network. The TS reference returns the canonical wrong_network token; full verifiers may also reject earlier with charge_request_mismatch when the requirement-binding check fails before the network check.",
       "credentialOverride": {
         "accepted": {
           "network": "solana:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
@@ -67,13 +64,12 @@
       },
       "expectedRejectTokens": [
         "wrong_network",
-        "charge_request_mismatch",
-        "payment_invalid"
+        "charge_request_mismatch"
       ]
     },
     {
       "name": "tokenProgram_mismatch",
-      "description": "Credential carries an `extra.tokenProgram` that does not match the offered token program. SPL Token-2022 vs legacy SPL confusion class. Wire-only adapters (no SVM transaction decoder) cannot catch this and may accept; full-verifier adapters MUST reject.",
+      "description": "Credential carries an `extra.tokenProgram` that does not match the offered token program (SPL Token-2022 vs legacy SPL confusion class). Wire-only adapters cannot catch this without decoding the transaction blob (wireOnlyMayAccept) — full-verifier adapters MUST reject with the mint_mismatch token (the tokenProgram is bound to the mint at verify time).",
       "credentialOverride": {
         "accepted": {
           "extra": {
@@ -85,13 +81,12 @@
       "wireOnlyMayAccept": true,
       "expectedRejectTokens": [
         "invalid_exact_svm_payload_mint_mismatch",
-        "charge_request_mismatch",
-        "payment_invalid"
+        "charge_request_mismatch"
       ]
     },
     {
       "name": "missing_challenge_id",
-      "description": "Payload missing challengeId. Verifier may emit challenge_verification_failed or payment_invalid.",
+      "description": "Payload missing challengeId. The TS reference server's facilitator-fixture rejects with challenge_verification_failed; the rust spine handles the absence via its own facilitator/idempotency layer and emits a sibling canonical token.",
       "credentialOverride": {
         "payload": {
           "resource": "/protected"
@@ -99,13 +94,12 @@
       },
       "replaceFields": ["payload"],
       "expectedRejectTokens": [
-        "challenge_verification_failed",
-        "payment_invalid"
+        "challenge_verification_failed"
       ]
     },
     {
       "name": "resource_mismatch",
-      "description": "Payload claims a different resource than the one requested.",
+      "description": "Payload claims a different resource than the one requested. Cross-route replay attempt at the credential layer.",
       "credentialOverride": {
         "payload": {
           "challengeId": "canonical-fixture-challenge-0001",
@@ -114,13 +108,12 @@
       },
       "expectedRejectTokens": [
         "charge_request_mismatch",
-        "challenge_route_mismatch",
-        "payment_invalid"
+        "challenge_route_mismatch"
       ]
     }
   ],
   "replayScenario": {
-    "_description": "Replay: submit the same canonical-payment-signature.json twice. Server MUST accept the first and reject the second with `signature_consumed`.",
+    "_description": "Replay: submit the same canonical-payment-signature.json twice. Server MUST accept the first and reject the second with `signature_consumed`. Wire-only adapters get the payment_invalid fallback via WIRE_ONLY_ADAPTER_IDS.",
     "expectedRejectTokens": ["signature_consumed"]
   }
 }
