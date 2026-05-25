@@ -28,6 +28,15 @@ const DEFAULT_NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const DEFAULT_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const PYUSD_DEVNET_MINT = 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM';
 const SETTLEMENT_CACHE_TTL_MS = 120_000;
+// Canonical x402-svm-exact replay namespace. The on-chain signature is the
+// only identity the network signs over, so we key the replay marker by the
+// base58 signature (NOT by hash(tx) or any pre-broadcast digest). The marker
+// is only written AFTER getSignatureStatuses reports `confirmed`/`finalized`,
+// mirroring the L8 ordering in rust/src/server/charge.rs:534-548 and the
+// Python/Lua sibling fixes (broadcast → confirm → put_if_absent). Once
+// written, it MUST NOT be released — a duplicate of the same landed
+// signature is a true on-chain replay, not a transient client retry.
+const REPLAY_KEY_PREFIX = 'x402-svm-exact:consumed:';
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
@@ -811,32 +820,38 @@ function settle_exact_payment(
 
     verify_exact_transaction($transactionBytes, $requirement, [$state['feePayerPublicKey']]);
     $signedTransaction = sign_transaction_with_fee_payer($transactionBytes, $state['feePayerSecretKey']);
-    $cacheKey = base64_encode(hash('sha256', $transactionBytes, true));
-    if (settlement_cache_is_duplicate($cacheKey)) {
-        throw new \RuntimeException('duplicate_settlement');
+
+    // Canonical L8 ordering (Codex r6 P1 fix): broadcast → confirm →
+    // put_if_absent(replay_key). The replay key is keyed by the network's
+    // base58 signature, namespaced under `x402-svm-exact:consumed:`, mirroring
+    // rust/src/server/charge.rs:534-548 and the Python/Lua sibling fixes.
+    //
+    // 1. Broadcast: sendTransaction RPC. A failure here means the network
+    //    never saw the transaction; we surface the error and DO NOT mark the
+    //    signature consumed, so the client can retry.
+    // 2. Confirm: getSignatureStatuses polling, bounded by RPC error or the
+    //    confirmation attempt cap (a stand-in for blockhash expiry in a
+    //    procedural runtime). A failure here means the transaction is in an
+    //    indeterminate state; we surface the canonical
+    //    `invalid_exact_svm_payload_settlement_not_confirmed` and DO NOT
+    //    consume the marker. Some other lander may eventually pick it up;
+    //    if a duplicate of the *same* signature lands twice the network
+    //    itself rejects the second copy.
+    // 3. put_if_absent(replay_key): only AFTER confirmation. A false return
+    //    means the same on-chain signature has already been used — that is a
+    //    true replay (signature_consumed), not a transient client retry, so
+    //    we surface the canonical error and DO NOT emit a fresh
+    //    PAYMENT-RESPONSE. The marker is durable for the cache TTL and is
+    //    NEVER released on failure.
+    $signature = ($sender ?? __NAMESPACE__ . '\\send_transaction')($state, $signedTransaction);
+    ($confirmer ?? __NAMESPACE__ . '\\confirm_signature')($state, $signature);
+
+    $replayKey = REPLAY_KEY_PREFIX . $signature;
+    if (!replay_put_if_absent($replayKey)) {
+        throw new \RuntimeException('signature_consumed');
     }
 
-    // Cache-poisoning invariant: settlement_cache_is_duplicate() inserts the
-    // key BEFORE the RPC send so concurrent duplicates are rejected, but any
-    // exception from the sender or confirmation step MUST release the key.
-    // Without the release below, a transient RPC failure would permanently
-    // lock out a legitimate retry. The regression is covered by
-    // php/tests/x402_interop_server_test.php (search for "release duplicate cache").
-    try {
-        $signature = ($sender ?? __NAMESPACE__ . '\\send_transaction')($state, $signedTransaction);
-        // Settlement confirmation gate (P1.1): mirroring TS reference
-        // typescript/packages/x402/src/signer.ts:225-246 and
-        // typescript/packages/x402/src/facilitator/exact/scheme.ts:417.
-        // The protected resource MUST NOT be unlocked until the network has
-        // confirmed the transaction. If confirmation fails or times out we
-        // release the duplicate-settlement cache so a legitimate retry is
-        // possible and surface the canonical error reason.
-        ($confirmer ?? __NAMESPACE__ . '\\confirm_signature')($state, $signature);
-        return $signature;
-    } catch (\Throwable $error) {
-        settlement_cache_release($cacheKey);
-        throw $error;
-    }
+    return $signature;
 }
 
 function confirm_signature(array $state, string $signature, ?callable $statusFetcher = null): void
@@ -900,7 +915,19 @@ function fetch_signature_status(array $state, string $signature): ?array
     return is_array($entry) ? $entry : null;
 }
 
-function settlement_cache_is_duplicate(string $key, ?int $nowMs = null): bool
+/**
+ * Atomic put-if-absent for the in-memory replay store. Returns true if the
+ * marker was newly inserted, false if the signature had already been consumed
+ * within the TTL window. NEVER call a corresponding release: a successful
+ * insert is permanent for the marker's lifetime — that is what guarantees an
+ * already-landed signature cannot be re-charged.
+ *
+ * Durability is a deploy concern. For interop-server.php the in-memory store
+ * is sufficient because the canonical replay invariant (key shape + ordering)
+ * is what gates correctness; production deployments swap the backing store
+ * for Redis/etcd without changing the key namespace.
+ */
+function replay_put_if_absent(string $key, ?int $nowMs = null): bool
 {
     $entries = &settlement_cache_entries();
 
@@ -913,17 +940,11 @@ function settlement_cache_is_duplicate(string $key, ?int $nowMs = null): bool
     }
 
     if (isset($entries[$key])) {
-        return true;
+        return false;
     }
 
     $entries[$key] = $nowMs;
-    return false;
-}
-
-function settlement_cache_release(string $key): void
-{
-    $entries = &settlement_cache_entries();
-    unset($entries[$key]);
+    return true;
 }
 
 function &settlement_cache_entries(): array

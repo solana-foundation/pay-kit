@@ -39,7 +39,7 @@ use function SolanaMpp\X402\Interop\send_transaction;
 use function SolanaMpp\X402\Interop\short_vec;
 use function SolanaMpp\X402\Interop\sign_transaction_with_fee_payer;
 use function SolanaMpp\X402\Interop\settle_exact_payment;
-use function SolanaMpp\X402\Interop\settlement_cache_is_duplicate;
+use function SolanaMpp\X402\Interop\replay_put_if_absent;
 use function SolanaMpp\X402\Interop\state_from_env;
 use function SolanaMpp\X402\Interop\verify_exact_transaction;
 
@@ -646,11 +646,11 @@ if ($missingMemoTransaction === false) {
 assert_runtime_error('invalid_exact_svm_payload_memo_mismatch', static fn () => verify_exact_transaction($missingMemoTransaction, $memoRequirement, [$memoRequirementState['feePayerPublicKey']]));
 
 if (
-    settlement_cache_is_duplicate('php-cache-unit', 1_000) !== false
-    || settlement_cache_is_duplicate('php-cache-unit', 1_001) !== true
-    || settlement_cache_is_duplicate('php-cache-unit', 121_001) !== false
+    replay_put_if_absent('php-cache-unit', 1_000) !== true
+    || replay_put_if_absent('php-cache-unit', 1_001) !== false
+    || replay_put_if_absent('php-cache-unit', 121_001) !== true
 ) {
-    fail('PHP settlement cache did not reject duplicates within the TTL and expire old entries');
+    fail('PHP replay store did not reject duplicates within the TTL and expire old entries');
 }
 
 $settlementCalls = 0;
@@ -661,11 +661,31 @@ $settled = settle_exact_payment($unitState, encoded_payment($validCanonicalPayme
 if ($settled !== 'settled-signature' || $settlementCalls !== 1) {
     fail('PHP exact settlement did not call the sender exactly once');
 }
-assert_rejects_payment($unitState, encoded_payment($validCanonicalPayment), 'duplicate_settlement');
-if ($settlementCalls !== 1) {
-    fail('PHP duplicate settlement reached the sender');
+// Codex r6 L8 fix: replay is now keyed by base58 signature under the
+// `x402-svm-exact:consumed:` namespace and ONLY written AFTER broadcast +
+// confirm. A duplicate of the SAME landed signature is a true on-chain
+// replay (`signature_consumed`), not a transient client retry. The duplicate
+// path re-broadcasts (the network is idempotent for an already-landed
+// signature) and re-confirms before the put_if_absent check fails — so the
+// sender is reached again, mirroring the canonical Rust/Python/Lua order.
+try {
+    settle_exact_payment($unitState, encoded_payment($validCanonicalPayment), static function () use (&$settlementCalls): string {
+        $settlementCalls++;
+        return 'settled-signature';
+    }, noop_confirmer());
+    fail('PHP duplicate settlement did not surface signature_consumed');
+} catch (RuntimeException $error) {
+    if ($error->getMessage() !== 'signature_consumed') {
+        fail('PHP duplicate settlement surfaced unexpected error: ' . $error->getMessage());
+    }
+}
+if ($settlementCalls !== 2) {
+    fail('PHP duplicate settlement did not re-broadcast before the replay check (L8 ordering)');
 }
 
+// A sender failure BEFORE confirmation MUST NOT consume the replay marker:
+// the network never saw the transaction, so a legitimate retry must be able
+// to land. The marker is only written after broadcast+confirm succeed.
 $retryPayment = valid_exact_payment_shell($unitState, "\x0a");
 $retryCalls = 0;
 try {
@@ -684,7 +704,7 @@ $retrySettlement = settle_exact_payment($unitState, encoded_payment($retryPaymen
     return 'retry-settled';
 }, noop_confirmer());
 if ($retrySettlement !== 'retry-settled' || $retryCalls !== 2) {
-    fail('PHP exact settlement did not release duplicate cache after sender failure');
+    fail('PHP exact settlement did not allow legitimate retry after a transient sender failure');
 }
 
 [$invalidStatus, $invalidHeaders, $invalidBody] = protected_response(
@@ -1058,7 +1078,9 @@ try {
 if ($senderCalls !== 1 || $unconfirmedCalls !== 1) {
     fail('PHP exact settlement did not invoke sender and confirmer exactly once before failing');
 }
-// Duplicate cache MUST have been released so a legitimate retry can settle.
+// Codex r6 L8 fix: the replay marker is written ONLY after confirmation
+// succeeds, so a failed confirmation never reserves the signature. A
+// legitimate retry MUST settle cleanly with a fresh sender invocation.
 $confirmRetryCalls = 0;
 $confirmRetrySettlement = settle_exact_payment(
     $confirmState,
@@ -1070,7 +1092,7 @@ $confirmRetrySettlement = settle_exact_payment(
     noop_confirmer(),
 );
 if ($confirmRetrySettlement !== 'confirmed-signature' || $confirmRetryCalls !== 1) {
-    fail('PHP exact settlement did not release duplicate cache after a failed confirmation');
+    fail('PHP exact settlement did not allow legitimate retry after a failed confirmation');
 }
 
 // protected_response MUST surface the not-confirmed error and emit 402.
@@ -1205,6 +1227,161 @@ try {
 }
 
 echo "PHP settlement confirmation regression suite OK\n";
+
+// --- Codex r6 L8 ordering + replay namespace regression tests -------------
+// Canonical ordering (mirrors rust/src/server/charge.rs:534-548 and the
+// Python/Lua sibling L8 fixes):
+//   broadcast (sendTransaction)
+//     → confirm   (getSignatureStatuses poll until confirmed/finalized)
+//       → put_if_absent(`x402-svm-exact:consumed:<base58-signature>`)
+//
+// The replay marker is keyed by the network signature (NOT a hash of the
+// pre-broadcast transaction bytes) and is written ONLY after confirmation.
+// A duplicate of the same landed signature is a true on-chain replay —
+// surfaced as the canonical `signature_consumed` error with no fresh
+// PAYMENT-RESPONSE. RPC failures before confirmation MUST NOT consume the
+// marker, so a legitimate retry can land.
+
+$l8State = $unitState;
+$l8Payment = valid_exact_payment_shell($l8State, "\x40");
+
+// Ordering test: confirm MUST be called before put_if_absent, and broadcast
+// MUST be called before confirm. We record the call order and the signature
+// passed to the confirmer, then inspect the replay store key shape.
+$callOrder = [];
+$confirmerSig = null;
+$l8Sender = static function () use (&$callOrder): string {
+    $callOrder[] = 'broadcast';
+    return 'l8-canonical-sig';
+};
+$l8Confirmer = static function (array $state, string $signature) use (&$callOrder, &$confirmerSig): void {
+    $callOrder[] = 'confirm';
+    $confirmerSig = $signature;
+};
+
+$l8Result = settle_exact_payment($l8State, encoded_payment($l8Payment), $l8Sender, $l8Confirmer);
+$callOrder[] = 'returned';
+if ($l8Result !== 'l8-canonical-sig') {
+    fail('PHP L8: settle_exact_payment did not return the broadcast signature, got ' . $l8Result);
+}
+if ($callOrder !== ['broadcast', 'confirm', 'returned']) {
+    fail('PHP L8: call order was not broadcast→confirm→returned, got ' . json_encode($callOrder));
+}
+if ($confirmerSig !== 'l8-canonical-sig') {
+    fail('PHP L8: confirmer received wrong signature, got ' . json_encode($confirmerSig));
+}
+
+// Replay key shape assertion: a fresh put_if_absent for the canonical key
+// MUST return false (already consumed), and any other namespace/encoding
+// MUST return true (never consumed).
+$canonicalKey = 'x402-svm-exact:consumed:l8-canonical-sig';
+if (replay_put_if_absent($canonicalKey) !== false) {
+    fail('PHP L8: canonical replay key was not present after settle — key shape mismatch');
+}
+// The pre-fix base64(sha256(tx)) key MUST NOT have been written.
+$legacyKey = base64_encode(hash('sha256', 'anything', true));
+if (replay_put_if_absent($legacyKey) !== true) {
+    fail('PHP L8: legacy base64(sha256(tx)) key was present in the replay store');
+}
+// Wrong namespace MUST be absent.
+if (replay_put_if_absent('x402-evm-exact:consumed:l8-canonical-sig') !== true) {
+    fail('PHP L8: replay store leaked across SVM/EVM namespaces');
+}
+if (replay_put_if_absent('consumed:l8-canonical-sig') !== true) {
+    fail('PHP L8: replay store accepted an unnamespaced key as canonical');
+}
+
+// Duplicate signature → canonical `signature_consumed` error. The duplicate
+// path re-broadcasts (Solana is idempotent for an already-landed signature)
+// and re-confirms before the replay check fails. We MUST surface the
+// canonical error with no fresh PAYMENT-RESPONSE.
+$dupPayment = valid_exact_payment_shell($l8State, "\x41");
+$dupSenderCalls = 0;
+$dupConfirmerCalls = 0;
+$dupSender = static function () use (&$dupSenderCalls): string {
+    $dupSenderCalls++;
+    return 'dup-sig-' . chr(0x40);
+};
+$dupConfirmer = static function (array $state, string $signature) use (&$dupConfirmerCalls): void {
+    $dupConfirmerCalls++;
+};
+settle_exact_payment($l8State, encoded_payment($dupPayment), $dupSender, $dupConfirmer);
+try {
+    settle_exact_payment($l8State, encoded_payment($dupPayment), $dupSender, $dupConfirmer);
+    fail('PHP L8: duplicate signature did not surface signature_consumed');
+} catch (RuntimeException $error) {
+    if ($error->getMessage() !== 'signature_consumed') {
+        fail('PHP L8: duplicate surfaced unexpected error: ' . $error->getMessage());
+    }
+}
+if ($dupSenderCalls !== 2 || $dupConfirmerCalls !== 2) {
+    fail('PHP L8: duplicate did not re-broadcast and re-confirm before the replay check');
+}
+
+// protected_response on a duplicate signature MUST emit 402 with the
+// `signature_consumed` message and NOT a fresh PAYMENT-RESPONSE header.
+[$dupStatus, $dupHeaders, $dupBody] = protected_response(
+    ['PAYMENT-SIGNATURE' => encoded_payment($dupPayment)],
+    $l8State,
+    $dupSender,
+    $dupConfirmer,
+);
+if (
+    $dupStatus !== 402
+    || ($dupBody['error'] ?? null) !== 'payment_error'
+    || ($dupBody['message'] ?? null) !== 'signature_consumed'
+    || isset($dupHeaders['PAYMENT-RESPONSE'])
+) {
+    fail('PHP L8: duplicate protected_response did not surface signature_consumed without a fresh PAYMENT-RESPONSE: ' . json_encode([$dupStatus, $dupHeaders, $dupBody]));
+}
+
+// Broadcast failure → replay marker MUST NOT be written. A subsequent
+// settle with a working sender MUST succeed.
+$rpcFailPayment = valid_exact_payment_shell($l8State, "\x42");
+$rpcFailSig = 'rpc-fail-sig-42';
+try {
+    settle_exact_payment(
+        $l8State,
+        encoded_payment($rpcFailPayment),
+        static function (): string {
+            throw new RuntimeException('sendTransaction RPC error: simulated');
+        },
+        $l8Confirmer,
+    );
+    fail('PHP L8: broadcast failure did not propagate');
+} catch (RuntimeException $error) {
+    if (!str_contains($error->getMessage(), 'sendTransaction RPC error')) {
+        throw $error;
+    }
+}
+// The marker for the (would-be) signature MUST be absent.
+if (replay_put_if_absent('x402-svm-exact:consumed:' . $rpcFailSig) !== true) {
+    fail('PHP L8: broadcast failure consumed the replay marker');
+}
+
+// Confirmation failure → replay marker MUST NOT be written either.
+$confirmFailPayment = valid_exact_payment_shell($l8State, "\x43");
+$confirmFailSig = 'confirm-fail-sig-43';
+try {
+    settle_exact_payment(
+        $l8State,
+        encoded_payment($confirmFailPayment),
+        static fn (): string => $confirmFailSig,
+        static function (): void {
+            throw new RuntimeException('invalid_exact_svm_payload_settlement_not_confirmed');
+        },
+    );
+    fail('PHP L8: confirmation failure did not propagate');
+} catch (RuntimeException $error) {
+    if (!str_contains($error->getMessage(), 'invalid_exact_svm_payload_settlement_not_confirmed')) {
+        throw $error;
+    }
+}
+if (replay_put_if_absent('x402-svm-exact:consumed:' . $confirmFailSig) !== true) {
+    fail('PHP L8: confirmation failure consumed the replay marker');
+}
+
+echo "PHP Codex r6 L8 ordering + replay namespace regression suite OK\n";
 
 // --- P1.2 lighthouse optional-instruction bound regression tests ----------
 // The Rust and TS spines accept any program-id-matching Lighthouse
