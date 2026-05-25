@@ -79,15 +79,43 @@ describe("x402 exact intent — cross-language matrix", () => {
 
   // Pair restriction: the TS reference adapters speak a stub payload
   // (no real signed Solana transaction in the fixture) so they only
-  // interoperate with each other. The Rust spine adapters carry the
-  // canonical PaymentProof and are exercised end-to-end by the rust
-  // crate's own integration tests (`cargo test -p solana-x402`).
-  // The cross-language matrix asserts the harness wiring and the
-  // ready/result protocol; full TS<->Rust on-chain settlement parity
-  // arrives with the TS SDK port (tracked separately).
+  // interoperate with each other and never with a real-signing language
+  // adapter. Every other `x402-exact` adapter (Rust spine plus any
+  // language port registered in `implementations.ts`) carries the
+  // canonical PaymentProof and can interop with the Rust spine on
+  // either side, plus its own same-language self-pair. Pure
+  // language-to-language pairings without the spine on one side are
+  // out of scope for this matrix — they are exercised in each
+  // language's own integration suite.
+  //
+  // The pair selector is data-driven so that as new language adapters
+  // land (rebased onto this PR), the matrix widens automatically
+  // without further test edits.
+  const TS_REFERENCE_ID = "ts-x402";
+  const RUST_SPINE_PREFIX = "rust-x402";
+
+  const isTsReference = (id: string): boolean => id === TS_REFERENCE_ID;
+  const isRustSpine = (id: string): boolean =>
+    id === RUST_SPINE_PREFIX ||
+    id === `${RUST_SPINE_PREFIX}-client` ||
+    id === `${RUST_SPINE_PREFIX}-server`;
+
+  const baseLang = (id: string): string =>
+    id.replace(/-client$/, "").replace(/-server$/, "");
+
   const allowedPair = (clientId: string, serverId: string): boolean => {
-    if (clientId === "ts-x402" && serverId === "ts-x402") return true;
-    if (clientId === "rust-x402" && serverId === "rust-x402") return true;
+    // TS reference only pairs with itself (stub payload would fail
+    // real signature verification on any other server).
+    if (isTsReference(clientId) || isTsReference(serverId)) {
+      return isTsReference(clientId) && isTsReference(serverId);
+    }
+    // Rust spine self-pair.
+    if (isRustSpine(clientId) && isRustSpine(serverId)) return true;
+    // Same-language self-pair (e.g. go-x402-client ↔ go-x402-server).
+    if (baseLang(clientId) === baseLang(serverId)) return true;
+    // Cross-spine pair: language adapter on one side, Rust spine on
+    // the other (either direction).
+    if (isRustSpine(clientId) || isRustSpine(serverId)) return true;
     return false;
   };
 
