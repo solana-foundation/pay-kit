@@ -1,0 +1,45 @@
+# golangci-lint config for the Go SDK.
+# Mirrors the lint discipline of the other language SDKs in this repo
+# (ruff for Python, standardrb for Ruby, clippy for Rust, eslint for TS,
+# luacheck for Lua, phpstan for PHP). Default-enabled core linters plus
+# a few opinionated ones that catch real bugs in payment / crypto code.
+
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    # Default Go-stdlib-style checks
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # Real bug catchers worth the noise
+    - errorlint    # %w wrapping discipline
+    - nilerr        # return nil instead of err
+    - bodyclose     # http response body closed
+    - unconvert     # redundant type conversions
+    - misspell      # typos
+    - dogsled       # too many _ assignments
+    - durationcheck # time.Duration math errors
+  exclusions:
+    paths:
+      - examples/simple-server
+      - cmd/payment-link-server
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - bodyclose
+          - errorlint
+          - unused
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
