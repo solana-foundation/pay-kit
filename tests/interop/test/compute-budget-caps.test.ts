@@ -73,6 +73,15 @@ const SDKS: Sdk[] = [
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9]+)/,
   },
+  // Lua PR #103 lands the same caps at the instruction-decoder layer in
+  // lua/mpp/methods/solana/instructions.lua; gated until merge.
+  {
+    language: "lua-instructions",
+    file: "lua/mpp/methods/solana/instructions.lua",
+    limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9]+)/,
+    pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9]+)/,
+    optional: true,
+  },
   // Go #101 lands `maxComputeUnitLimit` / `maxComputeUnitPriceMicroLamports`
   // in go/server/server.go; gated until merge.
   {
