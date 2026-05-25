@@ -30,7 +30,7 @@ linters:
   exclusions:
     paths:
       - examples/simple-server
-      - cmd/payment-link-server
+      - examples/payment-link-server
     rules:
       - path: _test\.go
         linters:
