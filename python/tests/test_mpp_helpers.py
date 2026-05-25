@@ -12,27 +12,21 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 from solders.keypair import Keypair
-from solders.message import MessageV0
-from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
-from solders.transaction import Transaction, VersionedTransaction
+from solders.transaction import Transaction
 
 from solana_mpp._errors import PaymentError
 from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import (
-    ASSOCIATED_TOKEN_PROGRAM,
-    MEMO_PROGRAM,
-    MethodDetails,
-    Split,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
+    MethodDetails,
+    Split,
 )
 from solana_mpp.server import mpp as M
-
 
 # ---------------------------------------------------------------------------
 # _rpc_value / _json_like / _transaction_dict / _status_ok
@@ -53,17 +47,17 @@ def test_rpc_value_dict_without_value_key():
 
 
 def test_rpc_value_object_with_value_attr():
-    class O:
+    class Obj:
         value = 42
 
-    assert M._rpc_value(O()) == 42
+    assert M._rpc_value(Obj()) == 42
 
 
 def test_rpc_value_object_without_value_attr_returns_self():
-    class O:
+    class Obj:
         pass
 
-    o = O()
+    o = Obj()
     assert M._rpc_value(o) is o
 
 
@@ -454,7 +448,9 @@ def test_extract_recent_blockhash_legacy():
 
 
 def test_decode_legacy_payment_instructions_invalid_base64():
-    with pytest.raises(Exception):  # noqa: BLE001
+    # Invalid base64 raises either binascii.Error (stdlib) or ValueError
+    # depending on PEP-657 enforcement; both are acceptable.
+    with pytest.raises((ValueError, Exception)):  # noqa: B017
         M._decode_legacy_payment_instructions("===not base64===")
 
 

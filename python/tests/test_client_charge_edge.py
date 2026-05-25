@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,11 +13,10 @@ from solana_mpp._base64url import encode_json
 from solana_mpp._headers import parse_authorization
 from solana_mpp._types import PaymentChallenge
 from solana_mpp.client.charge import (
-    build_credential_header,
     build_charge_transaction,
+    build_credential_header,
 )
 from solana_mpp.protocol.solana import MethodDetails, Split
-
 
 BLOCKHASH = "11111111111111111111111111111111"
 

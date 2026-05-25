@@ -148,7 +148,19 @@ async def test_await_confirmation_success_finalized():
 
 @pytest.mark.asyncio
 async def test_await_confirmation_raises_on_onchain_err():
-    rpc = _rpc({"result": {"value": [{"confirmationStatus": "confirmed", "err": {"InstructionError": [0, "BorshIoError"]}}]}, "id": 1})
+    rpc = _rpc(
+        {
+            "result": {
+                "value": [
+                    {
+                        "confirmationStatus": "confirmed",
+                        "err": {"InstructionError": [0, "BorshIoError"]},
+                    }
+                ]
+            },
+            "id": 1,
+        }
+    )
     with pytest.raises(PaymentError) as exc:
         await rpc.await_confirmation("sig", attempts=1, delay_seconds=0)
     assert exc.value.code == "transaction-failed"
