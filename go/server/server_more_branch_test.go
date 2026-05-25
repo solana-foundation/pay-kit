@@ -11,7 +11,7 @@ import (
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 )
@@ -65,8 +65,8 @@ func TestVerifyTransfersToken2022Path(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	t2022 := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
 
-	sourceATA, _ := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, t2022)
-	recipientATA, _ := solanautil.FindAssociatedTokenAddressWithProgram(recipient, mint, t2022)
+	sourceATA, _ := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, t2022)
+	recipientATA, _ := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, t2022)
 
 	primaryIx, err := token2022.NewTransferCheckedInstruction(
 		1000, 6, sourceATA, mint, recipientATA, payer.PublicKey(), nil,
@@ -90,8 +90,8 @@ func TestVerifyTransfersToken2022WrongMint(t *testing.T) {
 	wrongMint := testutil.NewPrivateKey().PublicKey()
 	t2022 := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
 
-	sourceATA, _ := solanautil.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, t2022)
-	recipientATA, _ := solanautil.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, t2022)
+	sourceATA, _ := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, t2022)
+	recipientATA, _ := utils.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, t2022)
 
 	primaryIx, err := token2022.NewTransferCheckedInstruction(
 		1000, 6, sourceATA, wrongMint, recipientATA, payer.PublicKey(), nil,
@@ -137,7 +137,7 @@ func TestBuildExpectedTransfersSplitsExceedTotal(t *testing.T) {
 func TestVerifyMemoInstructionsTooLong(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
-	ix, _ := solanautil.BuildSOLTransfer(payer.PublicKey(), recipient, 1)
+	ix, _ := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 1)
 	tx := newTestTransaction(t, payer, ix)
 	matched := make([]bool, len(tx.Message.Instructions))
 	err := verifyMemoInstructions(tx, matched, strings.Repeat("x", 600), nil)

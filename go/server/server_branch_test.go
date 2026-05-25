@@ -14,7 +14,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/protocol/intents"
@@ -223,7 +223,7 @@ func (r *rpcSimErr) SimulateTransactionWithOpts(_ context.Context, _ *solana.Tra
 
 func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient solana.PublicKey, lamports uint64, blockhash solana.Hash) string {
 	t.Helper()
-	ix, err := solanautil.BuildSOLTransfer(payer.PublicKey(), recipient, lamports)
+	ix, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, lamports)
 	if err != nil {
 		t.Fatalf("ix: %v", err)
 	}
@@ -231,10 +231,10 @@ func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient so
 	if err != nil {
 		t.Fatalf("tx: %v", err)
 	}
-	if err := solanautil.SignTransaction(tx, payer); err != nil {
+	if err := utils.SignTransaction(tx, payer); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	encoded, err := solanautil.EncodeTransactionBase64(tx)
+	encoded, err := utils.EncodeTransactionBase64(tx)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -421,11 +421,11 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 		t.Fatalf("charge: %v", err)
 	}
 	payer := testutil.NewPrivateKey()
-	ix, _ := solanautil.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
+	ix, _ := utils.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	// Intentionally do NOT sign — zero signatures slot remains, primary is zero.
 	tx.Signatures = []solana.Signature{{}}
-	encoded, _ := solanautil.EncodeTransactionBase64(tx)
+	encoded, _ := utils.EncodeTransactionBase64(tx)
 	credential, err := mpp.NewPaymentCredential(challenge.ToEcho(), map[string]string{
 		"type":        "transaction",
 		"transaction": encoded,
@@ -481,5 +481,5 @@ func TestVerifyTransactionWrongNetworkBlockhash(t *testing.T) {
 var _ = time.Now
 var _ = httptest.NewRecorder
 var _ http.Handler = (http.HandlerFunc)(nil)
-var _ = solanautil.SplitAmounts
+var _ = utils.SplitAmounts
 var _ = protocol.MemoProgram

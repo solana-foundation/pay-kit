@@ -8,7 +8,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 )
@@ -46,7 +46,7 @@ func TestBuildChargeTransactionSOLPull(t *testing.T) {
 	if payload.Type != "transaction" || payload.Transaction == "" {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestBuildChargeTransactionSOLWithExternalIDMemo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestBuildChargeTransactionWithFeePayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestBuildChargeTransactionTokenCreateRecipientATAFlag(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build failed: %v", err)
 			}
-			tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+			tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 			if err != nil {
 				t.Fatalf("decode failed: %v", err)
 			}
@@ -205,7 +205,7 @@ func TestBuildChargeTransactionTokenWithExternalIDMemo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestBuildChargeTransactionSOLWithSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestBuildChargeTransactionTokenWithSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestBuildChargeTransactionTokenWithFeePayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
-	tx, err := solanautil.DecodeTransactionBase64(payload.Transaction)
+	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}

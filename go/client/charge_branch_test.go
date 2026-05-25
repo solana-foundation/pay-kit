@@ -9,7 +9,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 )
@@ -184,4 +184,4 @@ func TestBuildChargeTransactionBroadcastSendError(t *testing.T) {
 }
 
 // Reference unused imports
-var _ = solanautil.SplitAmounts
+var _ = utils.SplitAmounts

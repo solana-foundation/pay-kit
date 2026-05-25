@@ -1,4 +1,4 @@
-package solanautil
+package utils
 
 import (
 	"context"

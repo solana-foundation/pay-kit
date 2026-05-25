@@ -1,6 +1,6 @@
 // Package testutil holds unit-test scaffolding shared across the Go
 // MPP packages: a deterministic in-memory RPC fake that satisfies the
-// solanautil.RPCClient interface and a helper for generating ephemeral
+// utils.RPCClient interface and a helper for generating ephemeral
 // signers. Internal-only; consumers depending on the SDK should not
 // import this package.
 package testutil

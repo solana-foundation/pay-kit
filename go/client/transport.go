@@ -6,15 +6,15 @@ import (
 	"net/http"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/internal/solanautil"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 )
 
 // PaymentTransport wraps an http.RoundTripper and transparently handles
 // HTTP 402 challenges by building a payment credential and retrying.
 type PaymentTransport struct {
 	Base    http.RoundTripper
-	Signer  solanautil.Signer
-	RPC     solanautil.RPCClient
+	Signer  utils.Signer
+	RPC     utils.RPCClient
 	Options *BuildOptions
 }
 
@@ -107,7 +107,7 @@ func isSupportedChargeChallenge(challenge mpp.PaymentChallenge) bool {
 }
 
 // NewClient creates an *http.Client with automatic 402 payment handling.
-func NewClient(signer solanautil.Signer, rpc solanautil.RPCClient, opts ...func(*PaymentTransport)) *http.Client {
+func NewClient(signer utils.Signer, rpc utils.RPCClient, opts ...func(*PaymentTransport)) *http.Client {
 	transport := &PaymentTransport{
 		Signer: signer,
 		RPC:    rpc,

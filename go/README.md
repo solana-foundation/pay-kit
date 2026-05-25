@@ -24,7 +24,7 @@ go/
 ├── server/                       PaymentMiddleware, Mpp handler, challenge issuer, verifier
 ├── protocol/                     Solana wire format (challenge, intents, charge request)
 ├── protocol/core/                Headers, credentials, receipts, base64url JSON
-├── internal/solanautil/          RPC client, transaction builders, ATA helpers
+├── internal/utils/               RPC client, transaction builders, ATA helpers
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod
 ```
