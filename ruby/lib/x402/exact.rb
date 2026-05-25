@@ -299,6 +299,19 @@ module X402
           "invalid_exact_svm_payload_unknown_fifth_instruction",
           "invalid_exact_svm_payload_unknown_sixth_instruction"
         ]
+        # INTENTIONAL_DIVERGENCE from spine: the Rust spine
+        # (`rust/src/protocol/schemes/exact/verify.rs:266`) and the TypeScript
+        # spine (`typescript/packages/x402/src/facilitator/exact/scheme.ts:300`)
+        # permit only Memo + Lighthouse in slots 3-5. This port additionally
+        # allows `AssociatedTokenAccount::Create` / `CreateIdempotent` in slots
+        # 3-4 so a buyer can fund their own destination ATA in-band; the shape
+        # of that exception is structurally validated by
+        # `valid_destination_ata_create_instruction?` and paired with the
+        # ATA-create-payer-slot carve-out in
+        # `reject_fee_payer_in_instruction_accounts!`. Matches the Go and Lua
+        # ports; tightening to spine parity is a protocol-wide decision that
+        # must land in the Rust spine first — tracked at
+        # `notes/lighthouse-allowlist-tracking.md`.
         instructions.drop(3).each_with_index do |instruction, index|
           program = instruction_program(instruction, account_keys)
           allowed_programs = if index == 2
@@ -359,6 +372,16 @@ module X402
       # cross-spine clients to lazily provision the destination ATA. Allow
       # the fee payer in that exact slot; reject it anywhere else in the
       # ATA-create accounts vector and in every other instruction.
+      #
+      # INTENTIONAL_DIVERGENCE from spine: the Rust spine has no fee-payer-
+      # in-instruction-accounts sweep at all and would reject this carve-out
+      # as out-of-band hardening. The port keeps the sweep (the spine-aligned
+      # `_transferring_funds` guard alone leaves the optional-slot DRAIN
+      # vectors covered by `TestVerifyExactTransactionAttackRegressions` open)
+      # and pairs it with the ATA-create payer-slot carve-out so the in-band
+      # destination-ATA-create flow still succeeds. Matches the Go and Lua
+      # ports; convergence with the spine is tracked at
+      # `notes/lighthouse-allowlist-tracking.md`.
       def reject_fee_payer_in_instruction_accounts!(instructions, account_keys, managed_signers)
         ata_program = base58_decode(ASSOCIATED_TOKEN_PROGRAM)
         instructions.each do |instruction|
