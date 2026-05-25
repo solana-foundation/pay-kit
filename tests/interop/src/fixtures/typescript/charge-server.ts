@@ -55,6 +55,11 @@ async function main() {
   // narrow cast at the call site is sufficient for the fixture.
   let mppx: unknown;
   let constructError: Error | undefined;
+  // B34 / push-mode: when the harness drives this server in push mode
+  // the route MUST NOT advertise a server-side fee payer. Omitting
+  // `signer` removes `feePayer/feePayerKey` from the challenge so the
+  // push verifier accepts the client-built, client-broadcast tx.
+  const pushMode = environment.paymentMode === "push";
   try {
     mppx = Mppx.create({
       secretKey: environment.secretKey,
@@ -65,7 +70,7 @@ async function main() {
           decimals: environment.decimals,
           network: environment.network,
           rpcUrl: environment.rpcUrl,
-          signer: feePayerSigner,
+          ...(pushMode ? {} : { signer: feePayerSigner }),
           splits: environment.splits,
         }),
       ],
