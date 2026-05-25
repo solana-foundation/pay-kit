@@ -35,7 +35,7 @@ python/
 │   ├── client/                  charge client + HTTP transport
 │   ├── protocol/                ChargeRequest + Solana protocol helpers
 │   └── server/                  Mpp handler + middleware + payment page
-├── examples/payment_link_server.py
+├── examples/payment-links/server.py
 ├── tests/                       pytest suite (324 cases)
 └── pyproject.toml
 ```
@@ -133,13 +133,13 @@ curl -i http://127.0.0.1:8000/paid
 # WWW-Authenticate: Payment realm="Python Flask Example", ...
 ```
 
-A second `examples/payment_link_server.py` runs the same flow against
+A second `examples/payment-links/server.py` runs the same flow against
 a local Surfpool on `127.0.0.1:8899`, serves a payment-page HTML
 fallback, and is the adapter used by the interop harness:
 
 ```bash
 brew install pay
-python examples/payment_link_server.py &
+python examples/payment-links/server.py &
 pay --local curl http://localhost:3004/fortune  # pays and succeeds
 ```
 

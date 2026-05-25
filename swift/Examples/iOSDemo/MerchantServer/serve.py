@@ -1,6 +1,6 @@
 """Merchant server for the Swift iOSDemo app.
 
-Runs the same 402 -> charge -> 200 flow as `python/examples/payment_link_server.py`,
+Runs the same 402 -> charge -> 200 flow as `python/examples/payment-links/server.py`,
 but pre-funds the Swift iOSDemo's seeded keypair
 (`B8pEG2UVbzLLSaZnN15UHVza7Ugk3HtfDaxUB4FbZ2xm`) with SOL and USDC on
 Surfpool so the on-device app can sign a real charge transaction
@@ -45,7 +45,7 @@ from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
 from solana_mpp.store import MemoryStore
 
 # Merchant recipient (separate from the demo signer). Same value as
-# python/examples/payment_link_server.py so interop fixtures keep
+# python/examples/payment-links/server.py so interop fixtures keep
 # working.
 RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
