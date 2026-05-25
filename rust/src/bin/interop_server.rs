@@ -64,6 +64,7 @@ const DEFAULT_TOKEN_DECIMALS: u8 = 6;
 struct InteropState {
     mpp: Mpp,
     price: String,
+    push_mode: bool,
     replay_source: Option<ReplaySource>,
     resource_path: String,
     settlement_header: String,
@@ -115,6 +116,14 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
     let network = env::var("MPP_INTEROP_NETWORK").unwrap_or_else(|_| "localnet".to_string());
     let mint = read_required_env("MPP_INTEROP_MINT")?;
     let pay_to = read_required_env("MPP_INTEROP_PAY_TO")?;
+    // B34 / push-mode: routes driven in push mode must not advertise a
+    // server-side fee payer (see charge.rs: push credentials are rejected
+    // when method_details.fee_payer == true). The fee payer secret key is
+    // still required for pull-mode runs; we just keep `fee_payer` off the
+    // Config so the challenge omits feePayer/feePayerKey.
+    let push_mode = env::var("MPP_INTEROP_PAYMENT_MODE")
+        .map(|v| v == "push")
+        .unwrap_or(false);
     let fee_payer: Arc<dyn SolanaSigner> =
         Arc::new(read_memory_signer("MPP_INTEROP_FEE_PAYER_SECRET_KEY")?);
     let price = env::var("MPP_INTEROP_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
@@ -145,12 +154,13 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             rpc_url: Some(rpc_url),
             secret_key: Some(secret_key),
             realm: Some("MPP Interop".to_string()),
-            fee_payer: true,
-            fee_payer_signer: Some(fee_payer),
+            fee_payer: !push_mode,
+            fee_payer_signer: if push_mode { None } else { Some(fee_payer) },
             store: None,
             html: false,
         })?,
         price,
+        push_mode,
         replay_source,
         resource_path: env::var("MPP_INTEROP_RESOURCE_PATH")
             .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string()),
@@ -261,7 +271,7 @@ fn payment_challenge_header(
         price,
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
-            fee_payer: true,
+            fee_payer: !state.push_mode,
             splits: state.splits.clone(),
             ..Default::default()
         },
@@ -298,7 +308,7 @@ fn expected_request_for_route(
         price,
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
-            fee_payer: true,
+            fee_payer: !state.push_mode,
             splits: state.splits.clone(),
             ..Default::default()
         },
