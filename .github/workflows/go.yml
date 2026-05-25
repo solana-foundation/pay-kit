@@ -69,3 +69,4 @@ jobs:
           working-directory: go
           version: v2.12.2
           args: --timeout=5m
+          skip-cache: true
