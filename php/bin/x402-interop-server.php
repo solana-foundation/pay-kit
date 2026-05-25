@@ -21,13 +21,26 @@ if ($address === false) {
     exit(1);
 }
 
-$state = null;
+// Eagerly load env-derived state before announcing readiness so that
+// malformed/missing X402_INTEROP_* env vars surface as a structured
+// startup error instead of slipping past the ready handshake and only
+// failing on the first request. Codex r5 (P3, conf 4/5).
+try {
+    $state = state_from_env(getenv());
+} catch (\Throwable $e) {
+    fwrite(STDERR, json_encode([
+        'type' => 'error',
+        'stage' => 'startup',
+        'message' => $e->getMessage(),
+    ], JSON_THROW_ON_ERROR) . PHP_EOL);
+    exit(1);
+}
+
 $stateForPath = static function (string $path) use (&$state): ?array {
     if (!in_array($path, ['/exact', DEFAULT_RESOURCE_PATH], true)) {
         return null;
     }
 
-    $state ??= state_from_env(getenv());
     return $state;
 };
 
