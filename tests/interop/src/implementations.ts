@@ -93,7 +93,12 @@ export const serverImplementations: ImplementationDefinition[] = [
     label: "PHP HTTP server",
     role: "server",
     command: ["php", "php-server/server.php"],
-    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", false),
+    // Enabled by default so the charge-push scenario runs in the
+    // canonical matrix. PHP runs against the scenarios whose
+    // `serverIds` includes "php"; scenarios without an explicit
+    // `serverIds` filter still iterate every enabled server, so this
+    // also exposes PHP to charge-basic, charge-split-ata, etc.
+    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", true),
   },
   {
     id: "ruby",

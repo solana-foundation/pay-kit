@@ -184,6 +184,12 @@ beforeAll(async () => {
   const uniqueMints = new Map<string, MintConfig>();
   let needsSolFunding = false;
   for (const scenario of activeScenarios) {
+    // Push-mode scenarios make the client pay its own fee on-chain, so
+    // the client wallet must be pre-funded with lamports even for SPL
+    // payments. SOL-native scenarios already trigger funding below.
+    if (scenario.paymentMode === "push") {
+      needsSolFunding = true;
+    }
     if (isSolNative(scenario)) {
       needsSolFunding = true;
       continue;
@@ -542,6 +548,7 @@ function environmentForScenario(
     MPP_INTEROP_AMOUNT: scenario.amount,
     MPP_INTEROP_MINT: scenario.asset,
     MPP_INTEROP_NETWORK: scenario.network,
+    MPP_INTEROP_PAYMENT_MODE: scenario.paymentMode ?? "pull",
     MPP_INTEROP_PRICE: scenario.price,
     MPP_INTEROP_RESOURCE_PATH: scenario.resourcePath,
     MPP_INTEROP_DECIMALS: String(scenarioDecimals(scenario)),

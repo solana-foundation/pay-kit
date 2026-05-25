@@ -21,6 +21,13 @@ export type CurrencyMode = "pubkey" | "symbol";
 export type InteropScenario = {
   id: string;
   intent: InteropIntent;
+  // Settlement mode. Defaults to "pull" (server broadcasts the client's
+  // signed transaction). "push" exercises the client-broadcast path: the
+  // client builds, signs, broadcasts, and awaits confirmation locally,
+  // then sends only the resulting transaction signature to the server as
+  // a `type=signature` credential. The server re-fetches the on-chain
+  // transaction and re-runs the structural verifier against it.
+  paymentMode?: "pull" | "push";
   network: string;
   price: string;
   amount: string;

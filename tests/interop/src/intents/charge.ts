@@ -107,6 +107,33 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 200,
   },
   {
+    // M1 push-mode end-to-end. The TS client signs, broadcasts, and
+    // awaits confirmation on-chain via the surfpool RPC, then sends
+    // only the signature as a `type=signature` credential. Each
+    // server adapter re-fetches the on-chain transaction by signature
+    // and re-runs its structural verifier against the settled artifact.
+    // Push-mode B34: the server route is built WITHOUT
+    // methodDetails.feePayer so the credential is not rejected by the
+    // server-side fee payer guard (see charge.rs / SolanaChargeHandler).
+    // Gated to servers that have push support shipped today and a
+    // working interop fixture: php (this PR). TS / rust / ruby / lua /
+    // python servers ship push support in their SDKs but route this
+    // through a paymentMode-aware interop fixture in a follow-up; their
+    // serverIds are added here once the fixture lands.
+    id: "charge-push",
+    intent: "charge",
+    paymentMode: "push",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/push",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 200,
+    clientIds: ["typescript"],
+    serverIds: ["php"],
+  },
+  {
     id: "charge-network-mismatch",
     intent: "charge",
     network: "devnet",
