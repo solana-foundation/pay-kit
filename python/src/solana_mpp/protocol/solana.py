@@ -62,10 +62,10 @@ STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
 
 def default_rpc_url(network: str) -> str:
     """Return the default RPC endpoint for a Solana network."""
-    canonical = _canonical_network(network)
-    if canonical == "devnet":
+    network = _canonical_network(network)
+    if network == "devnet":
         return "https://api.devnet.solana.com"
-    if canonical == "localnet":
+    if network == "localnet":
         return "http://localhost:8899"
     # Solana Labs still publishes RPC under the ``mainnet-beta`` host even
     # though the canonical SDK slug is ``mainnet``; mirror Rust and Ruby.
@@ -83,8 +83,8 @@ def resolve_mint(currency: str, network: str) -> str:
         return ""
     if upper in KNOWN_MINTS:
         networks = KNOWN_MINTS[upper]
-        canonical = _canonical_network(network)
-        return networks.get(canonical, networks.get("mainnet", currency))
+        network = _canonical_network(network)
+        return networks.get(network, networks.get("mainnet", currency))
     return currency
 
 
