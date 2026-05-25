@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -34,6 +33,21 @@ const (
 	duplicateCacheTTL       = 120 * time.Second
 	maxComputeUnitPrice     = 5_000_000
 	maxMemoBytes            = 256
+	// replayKeyNamespace MUST match the scheme-namespaced canonical key
+	// documented in the x402 PR-readiness reference and mirrors the MPP
+	// `solana-charge:consumed:<sig>` shape but scoped to x402 svm-exact so
+	// settled signatures across schemes (and against MPP) do not collide.
+	replayKeyNamespace = "x402-svm-exact:consumed:"
+)
+
+// confirmationPollAttempts × confirmationPollInterval bounds the
+// post-broadcast confirmation wait. Defaults mirror the MPP
+// `server/charge.rs:769` 30×200ms = ~6s window. These are vars (not
+// consts) so tests can shrink the poll budget to keep timeout coverage
+// fast.
+var (
+	confirmationPollAttempts = 60
+	confirmationPollInterval = 200 * time.Millisecond
 )
 
 var (
@@ -161,7 +175,19 @@ func newDuplicateSettlementCache() *duplicateSettlementCache {
 	}
 }
 
-func (cache *duplicateSettlementCache) claim(key string) bool {
+// putIfAbsent reserves `key` in the replay cache. Returns true if the key
+// was newly inserted, false if a prior settlement already consumed it.
+//
+// L8 ordering (see x402 PR-readiness reference and MPP
+// `server/charge.rs:535-556`): callers MUST broadcast → await on-chain
+// confirmation → `putIfAbsent(signature)`. There is no release-on-failure
+// path: a crash or RPC failure before this call simply never inserts a
+// key, and Solana's per-signature replay protection prevents a re-broadcast
+// of the same signed transaction from settling twice within its blockhash
+// window. The release path of the prior claim-first design has been
+// removed to close the partial-failure race where a release after a timed-
+// out confirmation would permit a double-pay if the original later landed.
+func (cache *duplicateSettlementCache) putIfAbsent(key string) bool {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -176,12 +202,6 @@ func (cache *duplicateSettlementCache) claim(key string) bool {
 	}
 	cache.entries[key] = now
 	return true
-}
-
-func (cache *duplicateSettlementCache) release(key string) {
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	delete(cache.entries, key)
 }
 
 func writeJSON(response http.ResponseWriter, status int, payload map[string]any) {
@@ -510,16 +530,6 @@ func settleExactPayment(state serverState, headerValue string) (string, error) {
 	if !transaction.Message.AccountKeys[0].Equals(state.feePayer.PublicKey()) {
 		return "", fmt.Errorf("invalid_exact_svm_payload_transaction_fee_payer_mismatch")
 	}
-	cacheKey := transactionCacheKey(encodedTransaction)
-	if !settlementCache.claim(cacheKey) {
-		return "", fmt.Errorf("duplicate_settlement")
-	}
-	settled := false
-	defer func() {
-		if !settled {
-			settlementCache.release(cacheKey)
-		}
-	}()
 	if err := verifyTokenAccountsExist(state, transaction, requirement); err != nil {
 		return "", err
 	}
@@ -536,17 +546,30 @@ func settleExactPayment(state serverState, headerValue string) (string, error) {
 		return "", err
 	}
 
-	settlement, err := sendTransaction(state, transaction)
+	// L8 ordering: broadcast → confirm → put_if_absent(signature).
+	// Mirrors MPP `server/charge.rs:535-556` (broadcast_pull,
+	// await_pull_confirmation, consume_signature). No claim-first, no
+	// release-on-failure. See x402 PR-readiness reference §"L8
+	// broadcast-then-confirm-then-mark ordering (SVM-specific)".
+	signature, err := sendTransaction(state, transaction)
 	if err != nil {
 		return "", err
 	}
-	settled = true
-	return settlement, nil
-}
-
-func transactionCacheKey(encodedTransaction string) string {
-	sum := sha256.Sum256([]byte(encodedTransaction))
-	return base64.StdEncoding.EncodeToString(sum[:])
+	if err := awaitSignatureConfirmation(state, signature); err != nil {
+		return "", err
+	}
+	if !settlementCache.putIfAbsent(replayKeyNamespace + signature) {
+		// Canonical `signature_consumed` surface (see MPP
+		// `VerificationError::signature_consumed`,
+		// rust/src/server/charge.rs:589-593). The interop server's
+		// existing error vocabulary maps this to "duplicate_settlement";
+		// keep that wire token so existing clients are not broken, but
+		// the semantic is now "this confirmed signature was already
+		// consumed by an earlier successful settlement", not "we saw
+		// this encoded transaction blob before broadcast".
+		return "", fmt.Errorf("duplicate_settlement")
+	}
+	return signature, nil
 }
 
 type transferCheckedFields struct {
@@ -985,6 +1008,72 @@ func sendTransaction(state serverState, transaction *solana.Transaction) (string
 		return "", fmt.Errorf("sendTransaction returned empty signature")
 	}
 	return payload.Result, nil
+}
+
+// awaitSignatureConfirmation polls `getSignatureStatuses` until the
+// signature reaches `confirmed` or `finalized` commitment. It returns an
+// error on explicit RPC error, an on-chain transaction failure
+// (status.err non-null), or when the poll budget elapses (the bounded
+// stand-in for blockhash-window expiry; a signature that has not been
+// observed within this window is treated as not landed so the caller
+// MUST NOT mark the signature as consumed). Mirrors the canonical loop
+// in MPP `server/charge.rs:761-784`.
+func awaitSignatureConfirmation(state serverState, signature string) error {
+	requestBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getSignatureStatuses",
+		"params": []any{
+			[]string{signature},
+			map[string]any{"searchTransactionHistory": false},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < confirmationPollAttempts; attempt++ {
+		response, err := state.httpClient.Post(state.rpcURL, "application/json", bytes.NewReader(requestBody))
+		if err != nil {
+			return fmt.Errorf("getSignatureStatuses transport: %w", err)
+		}
+		rawBody, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return fmt.Errorf("getSignatureStatuses HTTP %d: %s", response.StatusCode, string(rawBody))
+		}
+		var payload struct {
+			Result *struct {
+				Value []*struct {
+					Confirmations      *uint64 `json:"confirmations"`
+					ConfirmationStatus string  `json:"confirmationStatus"`
+					Err                any     `json:"err"`
+				} `json:"value"`
+			} `json:"result"`
+			Error any `json:"error"`
+		}
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
+			return err
+		}
+		if payload.Error != nil {
+			return fmt.Errorf("getSignatureStatuses RPC error: %v", payload.Error)
+		}
+		if payload.Result != nil && len(payload.Result.Value) > 0 && payload.Result.Value[0] != nil {
+			status := payload.Result.Value[0]
+			if status.Err != nil {
+				return fmt.Errorf("transaction failed on-chain: %v", status.Err)
+			}
+			if status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized" {
+				return nil
+			}
+		}
+		if attempt < confirmationPollAttempts-1 {
+			time.Sleep(confirmationPollInterval)
+		}
+	}
+	return fmt.Errorf("transaction not confirmed within timeout")
 }
 
 func newInteropMux(state serverState) *http.ServeMux {

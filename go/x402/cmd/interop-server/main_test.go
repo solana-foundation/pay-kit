@@ -390,8 +390,11 @@ func successfulSettlementClient(t *testing.T, signature string) *http.Client {
 			}
 			body := string(rawBody)
 			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
-			if strings.Contains(body, `"method":"sendTransaction"`) {
+			switch {
+			case strings.Contains(body, `"method":"sendTransaction"`):
 				responseBody = fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%q}`, signature)
+			case strings.Contains(body, `"method":"getSignatureStatuses"`):
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}]}}`
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -452,9 +455,12 @@ func TestSettleExactPaymentRejectsDuplicateTransactionPayload(t *testing.T) {
 			}
 			body := string(rawBody)
 			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
-			if strings.Contains(body, `"method":"sendTransaction"`) {
+			switch {
+			case strings.Contains(body, `"method":"sendTransaction"`):
 				sendCalls++
 				responseBody = `{"jsonrpc":"2.0","id":1,"result":"unit-settlement"}`
+			case strings.Contains(body, `"method":"getSignatureStatuses"`):
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}]}}`
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -483,12 +489,27 @@ func TestSettleExactPaymentRejectsDuplicateTransactionPayload(t *testing.T) {
 	if _, err := settleExactPayment(state, header); err == nil || err.Error() != "duplicate_settlement" {
 		t.Fatalf("expected duplicate_settlement, got %v", err)
 	}
-	if sendCalls != 1 {
-		t.Fatalf("expected one sendTransaction call, got %d", sendCalls)
+	// Under broadcast-first L8 ordering, the duplicate transaction does
+	// reach sendTransaction (Solana itself is the global uniqueness
+	// primitive: a re-broadcast of the same signed tx is idempotent
+	// within its blockhash window). The replay-store check only fires
+	// post-confirmation, so the second call broadcasts and then is
+	// rejected at putIfAbsent because the signature was already
+	// consumed by the first successful settlement.
+	if sendCalls != 2 {
+		t.Fatalf("expected two sendTransaction calls under broadcast-first ordering, got %d", sendCalls)
 	}
 }
 
-func TestSettleExactPaymentReleasesDuplicateCacheOnTokenAccountFailure(t *testing.T) {
+// TestSettleExactPaymentDoesNotConsumeReplayKeyOnPreBroadcastFailure covers
+// the L8 ordering invariant: a verification failure before broadcast (here,
+// a missing source token account) MUST NOT insert anything into the
+// replay-store. The proof is that an immediate retry of the same envelope
+// produces the same pre-broadcast error (rather than being rejected as a
+// duplicate settlement). Under broadcast-first ordering there is no
+// release-on-failure path; correctness follows from "never inserted in
+// the first place" instead.
+func TestSettleExactPaymentDoesNotConsumeReplayKeyOnPreBroadcastFailure(t *testing.T) {
 	settlementCache = newDuplicateSettlementCache()
 	defer func() {
 		settlementCache = newDuplicateSettlementCache()
@@ -529,7 +550,356 @@ func TestSettleExactPaymentReleasesDuplicateCacheOnTokenAccountFailure(t *testin
 		t.Fatalf("expected missing source account, got %v", err)
 	}
 	if _, err := settleExactPayment(state, header); err == nil || err.Error() != "source token account does not exist" {
-		t.Fatalf("expected failed settlement to release duplicate cache, got %v", err)
+		t.Fatalf("expected retry to surface the same pre-broadcast error (replay key never inserted), got %v", err)
+	}
+}
+
+// TestSettleExactPaymentL8OrderingObserved asserts the L8 RPC call
+// sequence: getAccountInfo (token-account existence) → sendTransaction
+// (broadcast) → getSignatureStatuses (await confirmation) → replay store
+// insert. The replay store insert is observable through a duplicate retry
+// returning duplicate_settlement on the SAME signature, without any RPC
+// activity ordered after putIfAbsent.
+func TestSettleExactPaymentL8OrderingObserved(t *testing.T) {
+	settlementCache = newDuplicateSettlementCache()
+	defer func() { settlementCache = newDuplicateSettlementCache() }()
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "l8-ordering"
+	var rpcCalls []string
+	state.httpClient = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			rawBody, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(rawBody)
+			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
+			switch {
+			case strings.Contains(body, `"method":"sendTransaction"`):
+				rpcCalls = append(rpcCalls, "sendTransaction")
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":"l8-sig"}`
+			case strings.Contains(body, `"method":"getSignatureStatuses"`):
+				rpcCalls = append(rpcCalls, "getSignatureStatuses")
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}]}}`
+			case strings.Contains(body, `"method":"getAccountInfo"`):
+				rpcCalls = append(rpcCalls, "getAccountInfo")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"content-type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+			}, nil
+		}),
+	}
+	requirement := exactRequirement(state)
+	header := encodePaymentSignatureForTest(t, paymentSignatureEnvelope{
+		X402Version: 2,
+		Accepted:    requirement,
+		Payload:     map[string]string{"transaction": signedTransactionForTest(t, requirement, client)},
+	})
+
+	signature, err := settleExactPayment(state, header)
+	if err != nil {
+		t.Fatalf("expected first settlement to succeed, got %v", err)
+	}
+	if signature != "l8-sig" {
+		t.Fatalf("signature = %q", signature)
+	}
+	// Drop pre-broadcast getAccountInfo calls; the load-bearing assertion
+	// is that broadcast precedes confirmation polling, which precedes the
+	// replay-store insert (proven by the subsequent duplicate_settlement).
+	var phaseOrder []string
+	for _, call := range rpcCalls {
+		if call == "sendTransaction" || call == "getSignatureStatuses" {
+			phaseOrder = append(phaseOrder, call)
+		}
+	}
+	if len(phaseOrder) < 2 || phaseOrder[0] != "sendTransaction" || phaseOrder[1] != "getSignatureStatuses" {
+		t.Fatalf("expected sendTransaction before getSignatureStatuses, got %v", phaseOrder)
+	}
+	if _, ok := settlementCache.entries[replayKeyNamespace+signature]; !ok {
+		t.Fatalf("expected replay key %q to be present after confirmation", replayKeyNamespace+signature)
+	}
+}
+
+// TestSettleExactPaymentDoesNotConsumeReplayKeyOnBroadcastFailure covers
+// the L8 invariant that an RPC failure during broadcast (before
+// confirmation) MUST NOT insert the replay key. Mirrors MPP
+// `server/charge.rs` semantics: only a confirmed signature is consumed.
+func TestSettleExactPaymentDoesNotConsumeReplayKeyOnBroadcastFailure(t *testing.T) {
+	settlementCache = newDuplicateSettlementCache()
+	defer func() { settlementCache = newDuplicateSettlementCache() }()
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "l8-broadcast-fail"
+	state.httpClient = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			rawBody, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(rawBody)
+			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
+			if strings.Contains(body, `"method":"sendTransaction"`) {
+				responseBody = `{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"blockhash not found"}}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"content-type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+			}, nil
+		}),
+	}
+	requirement := exactRequirement(state)
+	header := encodePaymentSignatureForTest(t, paymentSignatureEnvelope{
+		X402Version: 2,
+		Accepted:    requirement,
+		Payload:     map[string]string{"transaction": signedTransactionForTest(t, requirement, client)},
+	})
+
+	if _, err := settleExactPayment(state, header); err == nil || !strings.Contains(err.Error(), "sendTransaction RPC error") {
+		t.Fatalf("expected broadcast RPC error, got %v", err)
+	}
+	if len(settlementCache.entries) != 0 {
+		t.Fatalf("expected empty replay cache after broadcast failure, got %d entries", len(settlementCache.entries))
+	}
+}
+
+// TestSettleExactPaymentDoesNotConsumeReplayKeyOnConfirmationFailure
+// covers the L8 invariant that an on-chain failure surfaced via
+// getSignatureStatuses (e.g. tx landed but reverted) MUST NOT insert
+// the replay key — a future re-broadcast under a fresh blockhash is the
+// caller's option, not a duplicate.
+func TestSettleExactPaymentDoesNotConsumeReplayKeyOnConfirmationFailure(t *testing.T) {
+	settlementCache = newDuplicateSettlementCache()
+	defer func() { settlementCache = newDuplicateSettlementCache() }()
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "l8-confirm-fail"
+	state.httpClient = &http.Client{
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			rawBody, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(rawBody)
+			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
+			switch {
+			case strings.Contains(body, `"method":"sendTransaction"`):
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":"reverted-sig"}`
+			case strings.Contains(body, `"method":"getSignatureStatuses"`):
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"confirmed"}]}}`
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"content-type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(responseBody)),
+			}, nil
+		}),
+	}
+	requirement := exactRequirement(state)
+	header := encodePaymentSignatureForTest(t, paymentSignatureEnvelope{
+		X402Version: 2,
+		Accepted:    requirement,
+		Payload:     map[string]string{"transaction": signedTransactionForTest(t, requirement, client)},
+	})
+
+	if _, err := settleExactPayment(state, header); err == nil || !strings.Contains(err.Error(), "transaction failed on-chain") {
+		t.Fatalf("expected on-chain failure, got %v", err)
+	}
+	if _, ok := settlementCache.entries[replayKeyNamespace+"reverted-sig"]; ok {
+		t.Fatalf("expected replay key NOT to be consumed when confirmation surfaces on-chain failure")
+	}
+}
+
+// TestSettleExactPaymentReturnsCanonicalErrorForConsumedSignature covers
+// the L8 invariant that a putIfAbsent collision (signature already
+// consumed) surfaces the canonical duplicate_settlement error and does
+// not echo a fresh PAYMENT-RESPONSE.
+func TestSettleExactPaymentReturnsCanonicalErrorForConsumedSignature(t *testing.T) {
+	settlementCache = newDuplicateSettlementCache()
+	defer func() { settlementCache = newDuplicateSettlementCache() }()
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "l8-pre-consumed"
+	state.httpClient = successfulSettlementClient(t, "pre-consumed-sig")
+	// Simulate a prior successful settlement having already inserted
+	// the canonical replay key for this signature.
+	settlementCache.entries[replayKeyNamespace+"pre-consumed-sig"] = time.Now()
+
+	requirement := exactRequirement(state)
+	header := encodePaymentSignatureForTest(t, paymentSignatureEnvelope{
+		X402Version: 2,
+		Accepted:    requirement,
+		Payload:     map[string]string{"transaction": signedTransactionForTest(t, requirement, client)},
+	})
+	if _, err := settleExactPayment(state, header); err == nil || err.Error() != "duplicate_settlement" {
+		t.Fatalf("expected duplicate_settlement on already-consumed signature, got %v", err)
+	}
+}
+
+// TestSettleExactPaymentConcurrentDuplicatesCollapse asserts that two
+// concurrent settlements producing the same signature collapse to a
+// single successful settle and one canonical duplicate_settlement.
+// Solana's per-signature replay protection guarantees the on-chain
+// effect is single; the putIfAbsent collision in the replay store
+// guarantees the off-chain accounting is single.
+func TestSettleExactPaymentConcurrentDuplicatesCollapse(t *testing.T) {
+	settlementCache = newDuplicateSettlementCache()
+	defer func() { settlementCache = newDuplicateSettlementCache() }()
+	client, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := testServerState(t)
+	state.memo = "l8-concurrent"
+	state.httpClient = successfulSettlementClient(t, "concurrent-sig")
+	requirement := exactRequirement(state)
+	header := encodePaymentSignatureForTest(t, paymentSignatureEnvelope{
+		X402Version: 2,
+		Accepted:    requirement,
+		Payload:     map[string]string{"transaction": signedTransactionForTest(t, requirement, client)},
+	})
+
+	const concurrency = 4
+	var wg sync.WaitGroup
+	results := make([]error, concurrency)
+	signatures := make([]string, concurrency)
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			signatures[idx], results[idx] = settleExactPayment(state, header)
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	duplicates := 0
+	for i, err := range results {
+		switch {
+		case err == nil:
+			successes++
+			if signatures[i] != "concurrent-sig" {
+				t.Fatalf("unexpected signature %q", signatures[i])
+			}
+		case err.Error() == "duplicate_settlement":
+			duplicates++
+		default:
+			t.Fatalf("unexpected error %v", err)
+		}
+	}
+	if successes != 1 || duplicates != concurrency-1 {
+		t.Fatalf("expected 1 success + %d duplicates, got %d / %d", concurrency-1, successes, duplicates)
+	}
+}
+
+// TestAwaitSignatureConfirmationCases drills the L8 confirmation poll
+// directly against the four observable RPC outcomes: confirmed/finalized
+// success, on-chain failure, transport-level RPC error, and bounded
+// timeout when no status ever surfaces.
+func TestAwaitSignatureConfirmationCases(t *testing.T) {
+	prevAttempts := confirmationPollAttempts
+	prevInterval := confirmationPollInterval
+	confirmationPollAttempts = 3
+	confirmationPollInterval = time.Millisecond
+	defer func() {
+		confirmationPollAttempts = prevAttempts
+		confirmationPollInterval = prevInterval
+	}()
+
+	tests := map[string]struct {
+		responseBody string
+		wantErr      string
+	}{
+		"confirmed": {
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}]}}`,
+			wantErr:      "",
+		},
+		"finalized": {
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":32,"err":null,"confirmationStatus":"finalized"}]}}`,
+			wantErr:      "",
+		},
+		"on-chain failure": {
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"confirmed"}]}}`,
+			wantErr:      "transaction failed on-chain",
+		},
+		"rpc error": {
+			responseBody: `{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"boom"}}`,
+			wantErr:      "getSignatureStatuses RPC error",
+		},
+		"timeout": {
+			responseBody: `{"jsonrpc":"2.0","id":1,"result":{"value":[null]}}`,
+			wantErr:      "transaction not confirmed within timeout",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			state := testServerState(t)
+			state.httpClient = &http.Client{
+				Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"content-type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(test.responseBody)),
+					}, nil
+				}),
+			}
+			err := awaitSignatureConfirmation(state, "sig")
+			switch {
+			case test.wantErr == "" && err != nil:
+				t.Fatalf("expected success, got %v", err)
+			case test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)):
+				t.Fatalf("expected error containing %q, got %v", test.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestAwaitSignatureConfirmationTransportError(t *testing.T) {
+	prevAttempts := confirmationPollAttempts
+	confirmationPollAttempts = 1
+	defer func() { confirmationPollAttempts = prevAttempts }()
+	state := testServerState(t)
+	state.httpClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("dial timeout")
+		}),
+	}
+	if err := awaitSignatureConfirmation(state, "sig"); err == nil || !strings.Contains(err.Error(), "getSignatureStatuses transport") {
+		t.Fatalf("expected transport error, got %v", err)
+	}
+}
+
+func TestAwaitSignatureConfirmationNon2xx(t *testing.T) {
+	prevAttempts := confirmationPollAttempts
+	confirmationPollAttempts = 1
+	defer func() { confirmationPollAttempts = prevAttempts }()
+	state := testServerState(t)
+	state.httpClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"content-type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"boom"}`)),
+			}, nil
+		}),
+	}
+	if err := awaitSignatureConfirmation(state, "sig"); err == nil || !strings.Contains(err.Error(), "getSignatureStatuses HTTP 500") {
+		t.Fatalf("expected HTTP 500, got %v", err)
 	}
 }
 
@@ -1115,8 +1485,8 @@ func TestDuplicateSettlementCachePrunesExpiredEntries(t *testing.T) {
 	cache.entries["expired"] = now.Add(-(duplicateCacheTTL + time.Second))
 	cache.entries["fresh"] = now
 
-	if !cache.claim("new") {
-		t.Fatal("expected new key to be claimed")
+	if !cache.putIfAbsent("new") {
+		t.Fatal("expected new key to be inserted")
 	}
 	if _, ok := cache.entries["expired"]; ok {
 		t.Fatal("expected expired cache entry to be pruned")
@@ -1124,10 +1494,10 @@ func TestDuplicateSettlementCachePrunesExpiredEntries(t *testing.T) {
 	if _, ok := cache.entries["fresh"]; !ok {
 		t.Fatal("expected fresh cache entry to survive pruning")
 	}
-	if !cache.claim("expired") {
-		t.Fatal("expected pruned key to be claimable")
+	if !cache.putIfAbsent("expired") {
+		t.Fatal("expected pruned key to be re-insertable")
 	}
-	if cache.claim("fresh") {
+	if cache.putIfAbsent("fresh") {
 		t.Fatal("expected fresh duplicate to be rejected")
 	}
 }
@@ -1438,8 +1808,11 @@ func TestInteropMuxProtectedRouteSettlesValidPayment(t *testing.T) {
 			}
 			body := string(rawBody)
 			responseBody := `{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["","base64"]}}}`
-			if strings.Contains(body, `"method":"sendTransaction"`) {
+			switch {
+			case strings.Contains(body, `"method":"sendTransaction"`):
 				responseBody = `{"jsonrpc":"2.0","id":1,"result":"unit-mux-settlement"}`
+			case strings.Contains(body, `"method":"getSignatureStatuses"`):
+				responseBody = `{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":1,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}]}}`
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
