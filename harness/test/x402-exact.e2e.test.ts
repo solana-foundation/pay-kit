@@ -85,9 +85,16 @@ describe("x402 exact intent — cross-language matrix", () => {
   // The cross-language matrix asserts the harness wiring and the
   // ready/result protocol; full TS<->Rust on-chain settlement parity
   // arrives with the TS SDK port (tracked separately).
+  // Pair restriction: the TS reference adapters speak a stub payload and
+  // only interoperate with each other. The Rust and Python spine
+  // adapters carry the canonical PaymentProof (real signed Solana
+  // transactions) and interoperate end-to-end with each other as well as
+  // themselves. Cross-spine TS<->Rust/Python arrives with the TS SDK
+  // port (tracked separately).
+  const canonical = new Set(["rust-x402", "python-x402"]);
   const allowedPair = (clientId: string, serverId: string): boolean => {
     if (clientId === "ts-x402" && serverId === "ts-x402") return true;
-    if (clientId === "rust-x402" && serverId === "rust-x402") return true;
+    if (canonical.has(clientId) && canonical.has(serverId)) return true;
     return false;
   };
 

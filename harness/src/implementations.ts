@@ -106,6 +106,18 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "python-x402",
+    label: "Python x402 exact client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd ../python && PYTHONPATH=src python3 -m x402.interop.client",
+    ],
+    enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", true),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
@@ -229,6 +241,18 @@ export const serverImplementations: ImplementationDefinition[] = [
       "interop_server",
     ],
     enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
+    intents: ["x402-exact"],
+  },
+  {
+    id: "python-x402",
+    label: "Python x402 exact server",
+    role: "server",
+    command: [
+      "sh",
+      "-c",
+      "cd ../python && PYTHONPATH=src python3 -m x402.interop.server",
+    ],
+    enabled: isEnabled("python-x402", "X402_INTEROP_SERVERS", true),
     intents: ["x402-exact"],
   },
 ];

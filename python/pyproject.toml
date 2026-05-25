@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/solana_mpp"]
+packages = ["src/solana_mpp", "src/x402"]
 
 [tool.ruff]
 target-version = "py311"
@@ -41,9 +41,10 @@ include = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.coverage.run]
-source = ["solana_mpp"]
+source = ["solana_mpp", "x402"]
 # Line coverage gate is 90%. Branch coverage is follow-up work tracked in
 # issue #108.
 branch = false
