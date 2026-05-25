@@ -32,19 +32,30 @@ from x402.interop.server import (
     DEFAULT_SETTLEMENT_HEADER,
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
     MEMO_PROGRAM_ID,
-    SETTLEMENT_CACHE_TTL_SECONDS,
+    REPLAY_KEY_PREFIX,
     InteropHandler,
     ServerState,
-    _claim_settlement_payload,
+    _confirm_signature,
     _header_value,
     _normalize_amount,
     _payment_requirement_matches,
+    _put_if_absent_signature,
     _required_env,
     _send_transaction,
     exact_challenge,
     exact_requirement,
     settle_exact_payment,
 )
+
+
+def _stub_confirm():
+    """Stub the bounded ``getSignatureStatuses`` poll for unit tests.
+
+    The L8 settle path is broadcast → confirm → put_if_absent; tests that
+    only exercise the in-process replay fence stub the network calls so
+    the unit test does not require a live RPC.
+    """
+    return patch("x402.interop.server._confirm_signature", return_value=None)
 
 
 class State(ServerState):
@@ -64,6 +75,8 @@ class State(ServerState):
         # tests stub via class attributes above.
         self.settlement_cache: dict[str, float] = {}
         self.settlement_cache_lock = threading.Lock()
+        self.consumed_signatures: set[str] = set()
+        self.consumed_signatures_lock = threading.Lock()
 
 
 class MultiCurrencyState(State):
@@ -424,7 +437,10 @@ class InteropServerTest(unittest.TestCase):
             token_program=TOKEN_2022_PROGRAM_ID,
         )
 
-        with patch("x402.interop.server._send_transaction", return_value="signature-1"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="signature-1"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(state, header), "signature-1")
 
     def test_settle_rejects_missing_transfer_instruction_before_broadcast(self):
@@ -645,7 +661,10 @@ class InteropServerTest(unittest.TestCase):
             signers=(client,),
         )
 
-        with patch("x402.interop.server._send_transaction", return_value="signature-1"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="signature-1"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(State(), header_from_transaction(transaction)), "signature-1")
 
     def test_settle_accepts_lighthouse_with_varied_discriminators_and_accounts(self):
@@ -691,9 +710,12 @@ class InteropServerTest(unittest.TestCase):
                     ],
                     signers=(client,),
                 )
-                with patch(
-                    "x402.interop.server._send_transaction",
-                    return_value=f"signature-{label}",
+                with (
+                    patch(
+                        "x402.interop.server._send_transaction",
+                        return_value=f"signature-{label}",
+                    ),
+                    _stub_confirm(),
                 ):
                     self.assertEqual(
                         settle_exact_payment(
@@ -746,7 +768,13 @@ class InteropServerTest(unittest.TestCase):
             ):
                 settle_exact_payment(state, header)
 
-    def test_settle_rejects_duplicate_transaction_payload(self):
+    def test_settle_reserves_signature_after_confirmation_and_rejects_replay(self):
+        """L8 ordering: broadcast → confirm → put_if_absent. A retry of the
+        same credential lands a duplicate broadcast that returns the SAME
+        signature; ``put_if_absent`` returns False and the canonical
+        ``signature_consumed`` is surfaced. Replay key shape is
+        ``REPLAY_KEY_PREFIX + base58(signature)`` — keyed by the on-chain
+        signature, NOT the unsigned ``transaction_payload`` string."""
         header = build_exact_payment_signature(
             requirement=exact_requirement(State()),
             client_keypair=Keypair(),
@@ -756,12 +784,21 @@ class InteropServerTest(unittest.TestCase):
         )
         state = State()
 
-        with patch("x402.interop.server._send_transaction", return_value="signature-1"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="signature-1"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(state, header), "signature-1")
-            with self.assertRaisesRegex(RuntimeError, "duplicate_settlement"):
+            self.assertIn(
+                f"{REPLAY_KEY_PREFIX}signature-1", state.consumed_signatures
+            )
+            with self.assertRaisesRegex(RuntimeError, "signature_consumed"):
                 settle_exact_payment(state, header)
 
-    def test_settle_releases_duplicate_claim_when_broadcast_fails(self):
+    def test_settle_does_not_reserve_signature_when_broadcast_fails(self):
+        """L8: ``sendTransaction`` failures must NOT pre-consume the
+        signature. Honest retries (after a transient RPC outage) must be
+        able to settle once the network is back."""
         header = build_exact_payment_signature(
             requirement=exact_requirement(State()),
             client_keypair=Keypair(),
@@ -771,19 +808,95 @@ class InteropServerTest(unittest.TestCase):
         )
         state = State()
 
-        with patch("x402.interop.server._send_transaction", side_effect=RuntimeError("rpc down")):
+        with patch(
+            "x402.interop.server._send_transaction",
+            side_effect=RuntimeError("rpc down"),
+        ):
             for _attempt in range(2):
                 with self.assertRaisesRegex(RuntimeError, "rpc down"):
                     settle_exact_payment(state, header)
 
-    def test_settlement_cache_prunes_expired_claims(self):
+        # Replay store must be empty: nothing landed on chain.
+        self.assertEqual(state.consumed_signatures, set())
+
+        # Once RPC recovers, the same credential settles.
+        with (
+            patch(
+                "x402.interop.server._send_transaction", return_value="signature-1"
+            ),
+            _stub_confirm(),
+        ):
+            self.assertEqual(settle_exact_payment(state, header), "signature-1")
+
+    def test_settle_does_not_reserve_signature_when_confirmation_rpc_fails(self):
+        """L8: bounded confirmation RPC error must NOT consume the signature.
+        Mirrors the canonical Rust spine: an RPC-level confirm failure is
+        distinct from a successful broadcast that simply has not yet
+        landed (the latter falls through to reservation per audit gap G05)."""
+        header = build_exact_payment_signature(
+            requirement=exact_requirement(State()),
+            client_keypair=Keypair(),
+            blockhash=str(Hash.default()),
+            decimals=6,
+            token_program=TOKEN_PROGRAM_ID,
+        )
         state = State()
-        _claim_settlement_payload(state, "transaction-payload")
-        state.settlement_cache["transaction-payload"] -= SETTLEMENT_CACHE_TTL_SECONDS + 1
 
-        _claim_settlement_payload(state, "transaction-payload")
+        with (
+            patch(
+                "x402.interop.server._send_transaction", return_value="signature-1"
+            ),
+            patch(
+                "x402.interop.server._confirm_signature",
+                side_effect=RuntimeError("getSignatureStatuses RPC error: boom"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "getSignatureStatuses RPC error"),
+        ):
+            settle_exact_payment(state, header)
+        self.assertEqual(state.consumed_signatures, set())
 
-        self.assertIn("transaction-payload", state.settlement_cache)
+    def test_settle_l8_call_order_is_broadcast_then_confirm_then_reserve(self):
+        """L8 explicit ordering assertion: ``_send_transaction`` must run
+        BEFORE ``_confirm_signature``, and the replay reservation lands
+        AFTER both. Codex r6: ``sendTransaction`` only — no
+        confirm/finalize keys before broadcast."""
+        header = build_exact_payment_signature(
+            requirement=exact_requirement(State()),
+            client_keypair=Keypair(),
+            blockhash=str(Hash.default()),
+            decimals=6,
+            token_program=TOKEN_PROGRAM_ID,
+        )
+        state = State()
+        calls: list[str] = []
+
+        def fake_send(_state, _tx):
+            calls.append("broadcast")
+            # At broadcast time the replay store must still be empty.
+            self.assertEqual(state.consumed_signatures, set())
+            return "signature-l8"
+
+        def fake_confirm(_state, signature):
+            calls.append(f"confirm:{signature}")
+            # At confirm time the replay store must STILL be empty —
+            # reservation happens AFTER confirm returns.
+            self.assertEqual(state.consumed_signatures, set())
+
+        with (
+            patch(
+                "x402.interop.server._send_transaction", side_effect=fake_send
+            ),
+            patch(
+                "x402.interop.server._confirm_signature", side_effect=fake_confirm
+            ),
+        ):
+            self.assertEqual(settle_exact_payment(state, header), "signature-l8")
+
+        self.assertEqual(calls, ["broadcast", "confirm:signature-l8"])
+        self.assertEqual(
+            state.consumed_signatures,
+            {f"{REPLAY_KEY_PREFIX}signature-l8"},
+        )
 
     def test_send_transaction_posts_base64_transaction_and_handles_rpc_responses(self):
         transaction = transaction_from_instructions(State.fee_payer.pubkey(), [set_compute_unit_limit(20_000)])
@@ -814,6 +927,67 @@ class InteropServerTest(unittest.TestCase):
             return_value=FakeRpcResponse({"result": ""}),
         ), self.assertRaisesRegex(RuntimeError, "sendTransaction returned empty signature"):
             _send_transaction(state, transaction)
+
+    def test_confirm_signature_polls_getSignatureStatuses_and_returns_on_confirmed(self):
+        """L8: ``_confirm_signature`` issues a ``getSignatureStatuses`` RPC
+        and returns once the signature reports a confirmationStatus of
+        ``processed``/``confirmed``/``finalized``."""
+        state = State()
+        state.rpc_url = "http://rpc.test"
+
+        with patch(
+            "x402.interop.server.urllib.request.urlopen",
+            return_value=FakeRpcResponse(
+                {
+                    "result": {
+                        "value": [
+                            {
+                                "confirmationStatus": "confirmed",
+                                "err": None,
+                            }
+                        ]
+                    }
+                }
+            ),
+        ) as urlopen:
+            self.assertIsNone(_confirm_signature(state, "sig-1"))
+
+        body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(body["method"], "getSignatureStatuses")
+        self.assertEqual(body["params"][0], ["sig-1"])
+
+    def test_confirm_signature_raises_on_rpc_error(self):
+        """L8: an RPC-level error (transport failure) must surface so the
+        caller can bail out before reserving the signature."""
+        state = State()
+        state.rpc_url = "http://rpc.test"
+        with patch(
+            "x402.interop.server.urllib.request.urlopen",
+            return_value=FakeRpcResponse({"error": {"message": "boom"}}),
+        ), self.assertRaisesRegex(RuntimeError, "getSignatureStatuses RPC error"):
+            _confirm_signature(state, "sig-1")
+
+    def test_confirm_signature_raises_when_transaction_err_is_set(self):
+        """L8: a confirmed-with-error status must raise; the signature did
+        not settle and must not enter the replay store."""
+        state = State()
+        state.rpc_url = "http://rpc.test"
+        with patch(
+            "x402.interop.server.urllib.request.urlopen",
+            return_value=FakeRpcResponse(
+                {
+                    "result": {
+                        "value": [
+                            {
+                                "confirmationStatus": "confirmed",
+                                "err": {"InstructionError": [0, "Custom"]},
+                            }
+                        ]
+                    }
+                }
+            ),
+        ), self.assertRaisesRegex(RuntimeError, "transaction confirmed with error"):
+            _confirm_signature(state, "sig-1")
 
     def test_get_routes_emit_expected_responses_without_socket_io(self):
         cases = [
@@ -994,6 +1168,18 @@ class InteropServerTest(unittest.TestCase):
             },
         )
 
+    def test_payment_errors_surface_canonical_signature_consumed_code(self):
+        """L8: a duplicate post-confirm reservation must surface the
+        canonical ``signature_consumed`` code on the response body so the
+        harness ``canonical-codes.ts`` mapping resolves directly from
+        ``code``/``error`` (mirrors TypeScript exact-server fixture)."""
+        body = InteropHandler.payment_error_body(
+            RuntimeError("signature_consumed: transaction signature sig-1 already consumed")
+        )
+        self.assertEqual(body["error"], "signature_consumed")
+        self.assertEqual(body["code"], "signature_consumed")
+        self.assertIn("signature_consumed", body["message"])
+
 
 class FeePayerAttackRegressionTest(unittest.TestCase):
     """MPP §19.5 attack regression: fee-payer co-signing must never permit
@@ -1023,7 +1209,10 @@ class FeePayerAttackRegressionTest(unittest.TestCase):
             decimals=6,
             token_program=TOKEN_PROGRAM_ID,
         )
-        with patch("x402.interop.server._send_transaction", return_value="sig-ok"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="sig-ok"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(state, header), "sig-ok")
 
     def test_drain_via_system_program_transfer_from_fee_payer_is_rejected(self):
@@ -1152,9 +1341,9 @@ class FeePayerAttackRegressionTest(unittest.TestCase):
 
 class SettlementCacheConcurrencyTest(unittest.TestCase):
     """Regression for the prior Greptile P1: ThreadingHTTPServer dispatches
-    each request on its own thread. _claim_settlement_payload must hold the
-    cache lock across the check+insert so two concurrent identical payloads
-    cannot both pass the duplicate guard."""
+    each request on its own thread. ``_put_if_absent_signature`` must hold
+    the replay lock across the check+insert so two concurrent settlements
+    of the same on-chain signature cannot both pass the L8 fence."""
 
     def test_concurrent_duplicate_settlements_yield_exactly_one_success(self):
         state = State()
@@ -1168,13 +1357,17 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
         )
 
         start = threading.Event()
-        # Slow the send call so both threads race the claim, not the network.
+        # Slow the send call so both threads race the post-confirm
+        # ``put_if_absent`` fence, not the network. Both broadcasts come
+        # back with the SAME signature (the canonical de-dup token),
+        # exactly one wins the replay reservation.
         def slow_send(_state, _tx):
             start.wait(timeout=2)
             return "broadcast-sig"
 
         with (
             patch("x402.interop.server._send_transaction", side_effect=slow_send),
+            _stub_confirm(),
             ThreadPoolExecutor(max_workers=2) as pool,
         ):
                 f1 = pool.submit(settle_exact_payment, state, header)
@@ -1191,12 +1384,14 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
         errors = [r for r in results if r[0] == "err"]
         self.assertEqual(len(successes), 1, f"expected exactly one success, got {results}")
         self.assertEqual(len(errors), 1, f"expected exactly one duplicate error, got {results}")
-        self.assertIn("duplicate_settlement", errors[0][1])
+        self.assertIn("signature_consumed", errors[0][1])
 
-    def test_signature_verify_failure_releases_duplicate_claim(self):
-        """Codex P3 #6: a structurally valid payload whose client signature
-        fails verify_and_hash_message must release the cache so honest retries
-        with a valid signature can still settle (within TTL)."""
+    def test_signature_verify_failure_does_not_consume_signature(self):
+        """L8: a structurally valid payload whose client signature fails
+        ``verify_and_hash_message`` never broadcasts, so the replay store
+        must stay empty and honest retries with a valid signature can
+        still settle. Mirrors Codex P3 #6 under the new signature-keyed
+        fence."""
         state = State()
         client = Keypair()
         header = build_exact_payment_signature(
@@ -1212,51 +1407,56 @@ class SettlementCacheConcurrencyTest(unittest.TestCase):
             side_effect=RuntimeError("bad signature"),
         ), self.assertRaisesRegex(RuntimeError, "bad signature"):
             settle_exact_payment(state, header)
+        self.assertEqual(state.consumed_signatures, set())
 
-        with patch("x402.interop.server._send_transaction", return_value="sig-2"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="sig-2"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(state, header), "sig-2")
+        self.assertIn(f"{REPLAY_KEY_PREFIX}sig-2", state.consumed_signatures)
 
-    def test_claim_settlement_payload_serializes_under_thread_contention(self):
-        """Direct stress on the claim helper: 32 threads racing on the same
-        payload key — exactly one may insert."""
+    def test_put_if_absent_signature_serializes_under_thread_contention(self):
+        """Direct stress on the L8 replay fence: 32 threads racing the
+        same on-chain signature — exactly one ``put_if_absent`` wins."""
         state = State()
-        payload = "race-key"
         successes = []
-        failures = []
+        duplicates = []
         barrier = threading.Barrier(32)
 
         def worker():
             barrier.wait()
-            try:
-                _claim_settlement_payload(state, payload)
+            if _put_if_absent_signature(state, "race-sig"):
                 successes.append(1)
-            except RuntimeError as err:
-                failures.append(str(err))
+            else:
+                duplicates.append(1)
 
         with ThreadPoolExecutor(max_workers=32) as pool:
             for _ in range(32):
                 pool.submit(worker)
 
         self.assertEqual(len(successes), 1)
-        self.assertEqual(len(failures), 31)
-        self.assertTrue(all("duplicate_settlement" in f for f in failures))
+        self.assertEqual(len(duplicates), 31)
+        self.assertEqual(
+            state.consumed_signatures, {f"{REPLAY_KEY_PREFIX}race-sig"}
+        )
 
-    def test_claim_settlement_payload_fails_loudly_without_eager_cache(self):
-        """Regression: the helpers must refuse to operate on a state object
-        missing the eager-init fields. Previously they lazy-initialised a
-        per-call Lock, which silently defeated the concurrency guard."""
+    def test_put_if_absent_signature_fails_loudly_without_eager_bucket(self):
+        """Regression: the L8 replay helper must refuse to operate on a
+        state object missing the eager-init fields, instead of lazy-
+        initialising a per-call lock that silently defeats the
+        concurrency guard."""
 
         class BareState:
             pass
 
         bare = BareState()
-        with self.assertRaisesRegex(RuntimeError, "settlement_cache_lock"):
-            _claim_settlement_payload(bare, "payload-key")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(RuntimeError, "consumed_signatures_lock"):
+            _put_if_absent_signature(bare, "sig")  # type: ignore[arg-type]
 
-        # Even with a lock present, a missing cache must also fail loudly.
-        bare.settlement_cache_lock = threading.Lock()  # type: ignore[attr-defined]
-        with self.assertRaisesRegex(RuntimeError, "settlement_cache"):
-            _claim_settlement_payload(bare, "payload-key")  # type: ignore[arg-type]
+        bare.consumed_signatures_lock = threading.Lock()  # type: ignore[attr-defined]
+        with self.assertRaisesRegex(RuntimeError, "consumed_signatures"):
+            _put_if_absent_signature(bare, "sig")  # type: ignore[arg-type]
 
 
 class TokenProgramBindingRegressionTest(unittest.TestCase):
@@ -1340,7 +1540,10 @@ class TokenProgramBindingRegressionTest(unittest.TestCase):
             signers=[client],
         )
         header = header_from_transaction(tx, accepted=requirement)
-        with patch("x402.interop.server._send_transaction", return_value="sig-match"):
+        with (
+            patch("x402.interop.server._send_transaction", return_value="sig-match"),
+            _stub_confirm(),
+        ):
             self.assertEqual(settle_exact_payment(state, header), "sig-match")
 
 

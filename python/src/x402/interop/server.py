@@ -34,7 +34,24 @@ DEFAULT_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 DEFAULT_TOKEN_DECIMALS = 6
 DEFAULT_MAX_TIMEOUT_SECONDS = 60
 MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
-SETTLEMENT_CACHE_TTL_SECONDS = 120
+# Replay-store key namespace for x402 SVM exact. Mirrors the canonical
+# Rust spine key shape used by ``Mpp::consume_signature`` (see
+# ``rust/crates/mpp/src/server/charge.rs`` L474-563 and PR #85 Greptile P1):
+# the replay key is the base58-encoded transaction signature scoped under
+# the scheme-specific prefix. Codex r6 P1: the unsigned ``transaction``
+# payload string is NOT a stable replay key — two distinct clients can
+# submit byte-identical unsigned bytes; the on-chain signature is the
+# canonical de-dup token.
+REPLAY_KEY_PREFIX = "x402-svm-exact:consumed:"
+# Bounded confirmation poll for ``getSignatureStatuses``. Mirrors the
+# canonical spine (``await_pull_confirmation`` in Rust): broadcast →
+# bounded confirmation poll → consume signature. The poll deadline is
+# capped to keep the request handler bounded; on poll timeout we still
+# fall through to ``put_if_absent`` because the signature has already
+# been broadcast and reserving it prevents a retry from triggering a
+# second broadcast (audit gap G05).
+CONFIRMATION_POLL_DEADLINE_SECONDS = 10.0
+CONFIRMATION_POLL_INTERVAL_SECONDS = 0.25
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 LIGHTHOUSE_PROGRAM_ID = Pubkey.from_string("L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95")
@@ -83,8 +100,19 @@ class ServerState:
             for mint in os.environ.get("X402_INTEROP_EXTRA_OFFERED_MINTS", "").split(",")
             if mint.strip()
         ]
+        # Legacy in-process settlement cache (pre-L8): kept as a no-op
+        # initialiser so callers that still poke at the attribute do not
+        # crash, but the replay fence has moved to ``consumed_signatures``
+        # keyed by ``REPLAY_KEY_PREFIX + base58(signature)`` AFTER
+        # confirmation. See Codex r6 / PR #128.
         self.settlement_cache: dict[str, float] = {}
         self.settlement_cache_lock = threading.Lock()
+        # L8 replay fence: keyed by base58(signature) under
+        # ``REPLAY_KEY_PREFIX``. Populated AFTER broadcast AND bounded
+        # confirmation; ``put_if_absent`` returning False is the canonical
+        # ``signature_consumed`` signal (no fresh PAYMENT-RESPONSE).
+        self.consumed_signatures: set[str] = set()
+        self.consumed_signatures_lock = threading.Lock()
 
 
 def exact_requirement(state: ServerState) -> dict[str, Any]:
@@ -381,25 +409,41 @@ def _settlement_cache_lock(state: ServerState) -> threading.Lock:
     return lock
 
 
-def _claim_settlement_payload(state: ServerState, transaction_payload: str) -> None:
-    with _settlement_cache_lock(state):
-        now = time.monotonic()
-        cache = _settlement_cache(state)
-        expired = [
-            key
-            for key, claimed_at in cache.items()
-            if now - claimed_at > SETTLEMENT_CACHE_TTL_SECONDS
-        ]
-        for key in expired:
-            del cache[key]
-        if transaction_payload in cache:
-            raise RuntimeError("duplicate_settlement")
-        cache[transaction_payload] = now
+def _consumed_signatures(state: ServerState) -> set[str]:
+    bucket = getattr(state, "consumed_signatures", None)
+    if not isinstance(bucket, set):
+        raise RuntimeError(
+            "server_state_missing_consumed_signatures: state must eagerly initialise"
+            " 'consumed_signatures' as a set (see ServerState.__init__)"
+        )
+    return bucket
 
 
-def _release_settlement_payload(state: ServerState, transaction_payload: str) -> None:
-    with _settlement_cache_lock(state):
-        _settlement_cache(state).pop(transaction_payload, None)
+def _consumed_signatures_lock(state: ServerState) -> threading.Lock:
+    lock = getattr(state, "consumed_signatures_lock", None)
+    if lock is None or not hasattr(lock, "acquire") or not hasattr(lock, "release"):
+        raise RuntimeError(
+            "server_state_missing_consumed_signatures_lock: state must eagerly"
+            " initialise 'consumed_signatures_lock' as a threading.Lock (see"
+            " ServerState.__init__)"
+        )
+    return lock
+
+
+def _put_if_absent_signature(state: ServerState, signature: str) -> bool:
+    """Reserve the on-chain signature in the in-process replay store.
+
+    Key shape mirrors the canonical Rust spine: ``REPLAY_KEY_PREFIX +
+    base58(signature)``. Returns True on first insert, False if the
+    signature was already consumed by a prior settle.
+    """
+    key = f"{REPLAY_KEY_PREFIX}{signature}"
+    with _consumed_signatures_lock(state):
+        bucket = _consumed_signatures(state)
+        if key in bucket:
+            return False
+        bucket.add(key)
+        return True
 
 
 def _send_transaction(state: ServerState, transaction: VersionedTransaction) -> str:
@@ -434,6 +478,61 @@ def _send_transaction(state: ServerState, transaction: VersionedTransaction) -> 
     if not isinstance(result, str) or not result:
         raise RuntimeError("sendTransaction returned empty signature")
     return result
+
+
+def _confirm_signature(state: ServerState, signature: str) -> None:
+    """Bounded ``getSignatureStatuses`` poll. Mirrors the canonical Rust spine
+    ``await_pull_confirmation`` (rust/crates/mpp/src/server/charge.rs L474-563):
+    broadcast first, then poll for status, then reserve in the replay store.
+
+    Raises ``RuntimeError`` only on an RPC-level error (the request itself
+    failed). A bounded timeout WITHOUT confirmation does NOT raise — the
+    signature was already broadcast, and the replay reservation that
+    follows is what prevents a duplicate broadcast on retry (audit gap
+    G05).
+    """
+    deadline = time.monotonic() + CONFIRMATION_POLL_DEADLINE_SECONDS
+    while True:
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignatureStatuses",
+                "params": [[signature], {"searchTransactionHistory": False}],
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            state.rpc_url,
+            data=body,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("error"):
+            raise RuntimeError(
+                f"getSignatureStatuses RPC error: {payload['error']}"
+            )
+        result = payload.get("result")
+        value = result.get("value") if isinstance(result, dict) else None
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            status = value[0]
+            if status.get("err") is not None:
+                raise RuntimeError(
+                    f"transaction confirmed with error: {status['err']}"
+                )
+            confirmation = status.get("confirmationStatus")
+            if confirmation in ("processed", "confirmed", "finalized"):
+                return
+        if time.monotonic() >= deadline:
+            # Confirmation poll exhausted without a status. The
+            # transaction has already been broadcast, so we fall
+            # through to the replay reservation in the caller — this
+            # prevents a retry of the same credential from triggering a
+            # second broadcast (audit gap G05 / Rust spine parity).
+            return
+        time.sleep(CONFIRMATION_POLL_INTERVAL_SECONDS)
 
 
 def settle_exact_payment(state: ServerState, payment_header: str) -> str:
@@ -475,27 +574,41 @@ def settle_exact_payment(state: ServerState, payment_header: str) -> str:
     transaction = _decode_versioned_transaction(transaction_payload)
     fee_payer = Pubkey.from_string(str(state.fee_payer.pubkey()))
     _verify_exact_transaction(transaction, requirement, fee_payer)
-    _claim_settlement_payload(state, transaction_payload)
     signatures = list(transaction.signatures)
     account_keys = list(transaction.message.account_keys)
     if fee_payer not in account_keys:
-        _release_settlement_payload(state, transaction_payload)
         raise RuntimeError("fee payer not found in transaction accounts")
     signer_index = account_keys.index(fee_payer)
     if signer_index >= len(signatures):
-        _release_settlement_payload(state, transaction_payload)
         raise RuntimeError("fee payer is not a required transaction signer")
 
     signatures[signer_index] = state.fee_payer.sign_message(
         to_bytes_versioned(transaction.message)
     )
     signed = VersionedTransaction.populate(transaction.message, signatures)
-    try:
-        signed.verify_and_hash_message()
-        return _send_transaction(state, signed)
-    except Exception:
-        _release_settlement_payload(state, transaction_payload)
-        raise
+    signed.verify_and_hash_message()
+
+    # L8 canonical order (Codex r6 P1; mirrors Rust spine
+    # ``rust/crates/mpp/src/server/charge.rs`` L474-563):
+    #   1. broadcast (sendTransaction)
+    #   2. bounded confirmation poll (getSignatureStatuses)
+    #   3. put_if_absent(REPLAY_KEY_PREFIX + signature)
+    # The replay reservation is keyed by the on-chain signature, NOT the
+    # unsigned ``transaction_payload`` string. The previous pre-signing
+    # claim by raw payload was a false fence: two distinct clients can
+    # submit byte-identical unsigned bytes, and the same client retrying
+    # after a transient verifier failure would be permanently locked out
+    # without ever touching the chain.
+    signature = _send_transaction(state, signed)
+    _confirm_signature(state, signature)
+    if not _put_if_absent_signature(state, signature):
+        # Canonical signature_consumed signal: duplicate post-confirmation
+        # reservation. No fresh PAYMENT-RESPONSE is emitted — the caller
+        # surfaces the canonical 402 reject body keyed by this prefix.
+        raise RuntimeError(
+            f"signature_consumed: transaction signature {signature} already consumed"
+        )
+    return signature
 
 
 class InteropHandler(BaseHTTPRequestHandler):
@@ -506,7 +619,18 @@ class InteropHandler(BaseHTTPRequestHandler):
         # the canonical error key so cross-server reject scenarios in
         # tests/interop can match the body against the canonical token list
         # (`payment_invalid`, `No matching payment requirements`, ...).
+        # L8: signature_consumed gets the canonical code surfaced explicitly
+        # so the harness ``canonical-codes.ts`` mapping resolves to
+        # ``signature_consumed`` from the ``code``/``error`` field rather
+        # than relying on a regex match against the free-form message.
         reason = str(error)
+        if reason.startswith("signature_consumed"):
+            return {
+                "error": "signature_consumed",
+                "code": "signature_consumed",
+                "message": reason,
+                "invalidReason": reason,
+            }
         return {
             "error": "payment_invalid",
             "message": reason,
