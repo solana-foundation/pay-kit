@@ -35,7 +35,7 @@ M.REPLAY_KEY_PREFIX = 'x402-svm-exact:consumed:'
 --- reservation fires. Canonically this is the same outcome as a replay-store
 --- hit, so callers map it to `signature_consumed`. Mirrors the canonical-code
 --- classifier in `rust/crates/mpp/src/bin/interop_server.rs::classify_canonical_code`
---- and `tests/interop/src/canonical-codes.ts`.
+--- and `harness/src/canonical-codes.ts`.
 function M.is_duplicate_broadcast_error(message)
   if type(message) ~= 'string' then
     return false

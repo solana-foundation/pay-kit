@@ -1357,7 +1357,7 @@ end
 -- before binding a TCP socket and instead acts as a JSON-RPC-style verifier
 -- driven from stdin. Each line is a JSON object describing one verifier
 -- call; each response is a single line of JSON. Used by the runtime
--- adversarial tests in `tests/interop/test/lua-runtime.test.ts` to exercise
+-- adversarial tests in `harness/test/lua-runtime.test.ts` to exercise
 -- `verify_exact_transaction` against hand-crafted SVM payloads without
 -- standing up the full HTTP server.
 if os.getenv("X402_INTEROP_LUA_PROBE") == "1" then
