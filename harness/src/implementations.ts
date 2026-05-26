@@ -83,7 +83,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "kotlin-client/build/install/kotlin-client/bin/kotlin-client",
+      "kotlin-client/build/install/mpp-kotlin-interop-client/bin/mpp-kotlin-interop-client",
     ],
     // Defaults off to match swift/php/ruby/go: opt-in via
     // `MPP_INTEROP_CLIENTS=kotlin` (the interop-kotlin CI job sets this).
