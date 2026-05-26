@@ -7,7 +7,7 @@ require "pay_core/solana/ata"
 require "pay_core/solana/transaction"
 
 module Mpp
-  module Methods
+  module Protocol
     module Solana
       # Verifies Solana charge transactions before settlement.
       class Verifier
@@ -17,7 +17,7 @@ module Mpp
         # Verify a credential payload against a charge challenge.
         def verify(credential, challenge, expected_request: nil)
           if credential.payload["transaction"].is_a?(String) && !credential.payload["transaction"].empty?
-            request = expected_request || Intent::ChargeRequest.from_h(challenge.decode_request)
+            request = expected_request || Intents::ChargeRequest.from_h(challenge.decode_request)
             return verify_transaction_payload(credential.payload["transaction"], request)
           end
 
@@ -31,7 +31,7 @@ module Mpp
           # Reject before any RPC call so a partially-validated push
           # credential never touches the network. Mirrors Rust spine and
           # PHP #100 / Python #106.
-          request_for_b34 = expected_request || Intent::ChargeRequest.from_h(challenge.decode_request)
+          request_for_b34 = expected_request || Intents::ChargeRequest.from_h(challenge.decode_request)
           details = request_for_b34.method_details || {}
           if details["feePayer"] == true
             return VerificationResult.failure(

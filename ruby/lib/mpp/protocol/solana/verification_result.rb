@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Mpp
-  module Methods
+  module Protocol
     module Solana
       # Result returned by lower-level credential verifiers.
       class VerificationResult

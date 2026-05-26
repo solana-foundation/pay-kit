@@ -4,7 +4,7 @@ require "pay_core/solana/rpc"
 require "pay_core/solana/mints"
 
 module Mpp
-  module Methods
+  module Protocol
     module Solana
       # Build a Solana charge method bundling all static config (recipient,
       # currency, network, RPC, optional fee payer, decimals). Pass the result
@@ -13,7 +13,7 @@ module Mpp
       # `currency` accepts a symbol like "USDC" or "SOL" (looked up against
       # the built-in stablecoin table) or a raw 32-byte mint address.
       #
-      #   method = Mpp::Methods::Solana.charge(
+      #   method = Mpp::Protocol::Solana.charge(
       #     recipient: "CXhr...",
       #     currency:  "USDC",
       #     network:   "mainnet",
