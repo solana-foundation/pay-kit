@@ -884,7 +884,13 @@ impl Mpp {
                     "ataCreationRequired requires an SPL token charge",
                 ));
             }
-            let matched = verify_sol_transfers(&instructions, recipient, primary_amount, splits)?;
+            let matched = verify_sol_transfers(
+                &instructions,
+                recipient,
+                primary_amount,
+                splits,
+                expected_ata_payer,
+            )?;
             let mut matched = matched;
             verify_parsed_memo_instructions(
                 &instructions,
@@ -1678,12 +1684,14 @@ fn verify_sol_transfers(
     recipient: &str,
     primary_amount: u64,
     splits: &[Split],
+    fee_payer: Option<&str>,
 ) -> Result<HashSet<usize>, VerificationError> {
     let mut matched_instruction_indexes = HashSet::new();
     find_sol_transfer(
         instructions,
         recipient,
         primary_amount,
+        fee_payer,
         &mut matched_instruction_indexes,
     )?;
     for split in splits {
@@ -1695,6 +1703,7 @@ fn verify_sol_transfers(
             instructions,
             &split.recipient,
             amt,
+            fee_payer,
             &mut matched_instruction_indexes,
         )
         .map_err(|_| {
@@ -1711,10 +1720,14 @@ fn find_sol_transfer(
     instructions: &[serde_json::Value],
     recipient: &str,
     amount: u64,
+    fee_payer: Option<&str>,
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     for (index, ix) in instructions.iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
+            continue;
+        }
+        if parsed_program_id(ix) != Some(programs::SYSTEM_PROGRAM) {
             continue;
         }
         if let Some(parsed) = ix.get("parsed").and_then(|p| p.as_object()) {
@@ -1726,8 +1739,14 @@ fn find_sol_transfer(
                     .get("destination")
                     .and_then(|d| d.as_str())
                     .unwrap_or("");
+                let source = info.get("source").and_then(|s| s.as_str()).unwrap_or("");
                 let lamports = info.get("lamports").and_then(|l| l.as_u64()).unwrap_or(0);
                 if dest == recipient && lamports == amount {
+                    if fee_payer.is_some_and(|fp| source == fp) {
+                        return Err(VerificationError::invalid_payload(
+                            "Fee payer cannot fund the SOL payment transfer",
+                        ));
+                    }
                     matched_instruction_indexes.insert(index);
                     return Ok(());
                 }
@@ -4345,16 +4364,19 @@ mod tests {
     fn find_sol_transfer_success() {
         let mut matched = HashSet::new();
         let instructions = vec![serde_json::json!({
+            "program": "system",
             "parsed": {
                 "type": "transfer",
                 "info": {
+                    "source": "PayerPubkey",
                     "destination": "RecipientPubkey",
                     "lamports": 1000000
                 }
             }
         })];
         assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, &mut matched).is_ok()
+            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
+                .is_ok()
         );
     }
 
@@ -4362,16 +4384,19 @@ mod tests {
     fn find_sol_transfer_wrong_amount() {
         let mut matched = HashSet::new();
         let instructions = vec![serde_json::json!({
+            "program": "system",
             "parsed": {
                 "type": "transfer",
                 "info": {
+                    "source": "PayerPubkey",
                     "destination": "RecipientPubkey",
                     "lamports": 500000
                 }
             }
         })];
         assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, &mut matched).is_err()
+            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
+                .is_err()
         );
     }
 
@@ -4379,40 +4404,94 @@ mod tests {
     fn find_sol_transfer_wrong_recipient() {
         let mut matched = HashSet::new();
         let instructions = vec![serde_json::json!({
+            "program": "system",
             "parsed": {
                 "type": "transfer",
                 "info": {
+                    "source": "PayerPubkey",
                     "destination": "WrongPubkey",
                     "lamports": 1000000
                 }
             }
         })];
         assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, &mut matched).is_err()
+            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
+                .is_err()
         );
     }
 
     #[test]
     fn find_sol_transfer_empty_instructions() {
         let mut matched = HashSet::new();
-        assert!(find_sol_transfer(&[], "RecipientPubkey", 1_000_000, &mut matched).is_err());
+        assert!(find_sol_transfer(&[], "RecipientPubkey", 1_000_000, None, &mut matched).is_err());
     }
 
     #[test]
     fn find_sol_transfer_ignores_non_transfer_types() {
         let mut matched = HashSet::new();
         let instructions = vec![serde_json::json!({
+            "program": "system",
             "parsed": {
                 "type": "createAccount",
                 "info": {
+                    "source": "PayerPubkey",
                     "destination": "RecipientPubkey",
                     "lamports": 1000000
                 }
             }
         })];
         assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, &mut matched).is_err()
+            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
+                .is_err()
         );
+    }
+
+    #[test]
+    fn find_sol_transfer_rejects_non_system_program() {
+        let mut matched = HashSet::new();
+        // A "transfer" with a lamports field, but on the wrong program. The
+        // legacy implementation matched on parsed.type + info.lamports alone
+        // and would accept this; the hardened implementation must not.
+        let instructions = vec![serde_json::json!({
+            "programId": programs::TOKEN_PROGRAM,
+            "parsed": {
+                "type": "transfer",
+                "info": {
+                    "source": "PayerPubkey",
+                    "destination": "RecipientPubkey",
+                    "lamports": 1_000_000
+                }
+            }
+        })];
+        assert!(
+            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn find_sol_transfer_rejects_source_equals_fee_payer() {
+        let mut matched = HashSet::new();
+        let instructions = vec![serde_json::json!({
+            "program": "system",
+            "parsed": {
+                "type": "transfer",
+                "info": {
+                    "source": "FeePayerPubkey",
+                    "destination": "RecipientPubkey",
+                    "lamports": 1_000_000
+                }
+            }
+        })];
+        let err = find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            Some("FeePayerPubkey"),
+            &mut matched,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Fee payer cannot fund"));
     }
 
     #[test]
@@ -4421,18 +4500,22 @@ mod tests {
         let split_recipient = "SplitRecipient";
         let instructions = vec![
             serde_json::json!({
+                "program": "system",
                 "parsed": {
                     "type": "transfer",
                     "info": {
+                        "source": "PayerPubkey",
                         "destination": primary_recipient,
                         "lamports": 800000
                     }
                 }
             }),
             serde_json::json!({
+                "program": "system",
                 "parsed": {
                     "type": "transfer",
                     "info": {
+                        "source": "PayerPubkey",
                         "destination": split_recipient,
                         "lamports": 200000
                     }
@@ -4448,15 +4531,19 @@ mod tests {
             memo: None,
         }];
 
-        assert!(verify_sol_transfers(&instructions, primary_recipient, 800000, &splits).is_ok());
+        assert!(
+            verify_sol_transfers(&instructions, primary_recipient, 800000, &splits, None).is_ok()
+        );
     }
 
     #[test]
     fn verify_sol_transfers_missing_split() {
         let instructions = vec![serde_json::json!({
+            "program": "system",
             "parsed": {
                 "type": "transfer",
                 "info": {
+                    "source": "PayerPubkey",
                     "destination": "PrimaryRecipient",
                     "lamports": 800000
                 }
@@ -4471,8 +4558,8 @@ mod tests {
             memo: None,
         }];
 
-        let err =
-            verify_sol_transfers(&instructions, "PrimaryRecipient", 800000, &splits).unwrap_err();
+        let err = verify_sol_transfers(&instructions, "PrimaryRecipient", 800000, &splits, None)
+            .unwrap_err();
         assert!(err.message.contains("Missing split transfer"));
     }
 
@@ -4480,18 +4567,22 @@ mod tests {
     fn verify_sol_transfers_rejects_reusing_single_instruction_for_duplicate_splits() {
         let instructions = vec![
             serde_json::json!({
+                "program": "system",
                 "parsed": {
                     "type": "transfer",
                     "info": {
+                        "source": "PayerPubkey",
                         "destination": "PrimaryRecipient",
                         "lamports": 800000
                     }
                 }
             }),
             serde_json::json!({
+                "program": "system",
                 "parsed": {
                     "type": "transfer",
                     "info": {
+                        "source": "PayerPubkey",
                         "destination": "SplitRecipient",
                         "lamports": 100000
                     }
@@ -4516,8 +4607,8 @@ mod tests {
             },
         ];
 
-        let err =
-            verify_sol_transfers(&instructions, "PrimaryRecipient", 800000, &splits).unwrap_err();
+        let err = verify_sol_transfers(&instructions, "PrimaryRecipient", 800000, &splits, None)
+            .unwrap_err();
         assert!(err.message.contains("Missing split transfer"));
     }
 

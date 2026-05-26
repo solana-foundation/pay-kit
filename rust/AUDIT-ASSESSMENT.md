@@ -31,3 +31,22 @@ Legend for **Decision**:
 **Action:** Add a narrower server-side check that detects the *misconfiguration* shape — primary recipient in splits **with `ataCreationRequired: true`** — and reject only that combination at challenge build time, since fee-sponsored ATA creation for the top-level recipient is what makes the drain attack possible. Allow the primary recipient in splits otherwise.
 
 ---
+
+### #32 — Missing checks in `find_sol_transfer`
+**ID:** `923a9c9b` · **File:** `crates/mpp/src/server/charge.rs:1710`
+
+**Audit claim:** `find_sol_transfer` matched on `parsed.type == "transfer"` + `info.lamports` + `info.destination` only — no `programId` check and no `source` check. Defense-in-depth gap (parsed format is System-Program-specific in practice) plus a real risk that in fee-sponsored mode the server (fee payer) could end up bankrolling the value transfer.
+
+**Decision:** ✅ **accepted — fixed.**
+
+**Action taken:**
+- Added `programId == System Program` check via the existing `parsed_program_id()` helper.
+- Read `info.source` and reject when `source == fee_payer` (matches the policy of the lower-level `verify_sol_transfer_instructions:1485` — separation of duties: fee payer covers gas, not value).
+- Threaded `fee_payer: Option<&str>` through `verify_sol_transfers` and the parsed-credential caller (passes `expected_ata_payer`, which is `Some(fee_payer_key)` only in fee-sponsored mode).
+- Updated all 6 existing parsed-instruction tests to carry `program: "system"` + `info.source`. Added 2 new tests:
+  - `find_sol_transfer_rejects_non_system_program`
+  - `find_sol_transfer_rejects_source_equals_fee_payer`
+
+**Note on "source = expected payer":** the audit suggested checking source against the expected payer. The lower-level path's policy is asymmetric (forbid `source == fee_payer`, allow anything else). We mirrored that policy rather than tightening, so the two verification paths behave identically.
+
+---
