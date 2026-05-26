@@ -829,6 +829,7 @@ function settle_exact_payment(
     string $paymentHeader,
     ?callable $sender = null,
     ?callable $confirmer = null,
+    ?callable $transactionFetcher = null,
 ): string {
     $decoded = decode_payment_signature($paymentHeader);
     if (($decoded['x402Version'] ?? null) !== 2) {
@@ -845,8 +846,26 @@ function settle_exact_payment(
     if ($payload !== null && (!is_array($payload) || ($payload !== [] && array_is_list($payload)))) {
         throw new \RuntimeException('payment payload must be a JSON object');
     }
+    $payload = is_array($payload) ? $payload : [];
 
-    $transaction = is_array($payload) ? ($payload['transaction'] ?? null) : null;
+    // Canonical PaymentProof is an untagged enum (rust
+    // `protocol::schemes::exact::types::PaymentProof`): the payload carries
+    // either a base64 signed `transaction` for the facilitator to broadcast,
+    // or a base58 `signature` whose confirmed on-chain transaction the
+    // facilitator fetches and re-verifies. PHP must accept both shapes; only
+    // accepting `transaction` rejects honest clients that broadcast the
+    // transaction themselves and submit the resulting signature.
+    $signatureProof = $payload['signature'] ?? null;
+    if (is_string($signatureProof) && $signatureProof !== '') {
+        return settle_exact_payment_signature_mode(
+            $state,
+            $requirement,
+            $signatureProof,
+            $transactionFetcher,
+        );
+    }
+
+    $transaction = $payload['transaction'] ?? null;
     if (!is_string($transaction) || $transaction === '') {
         throw new \RuntimeException('payment payload is missing transaction');
     }
@@ -890,6 +909,320 @@ function settle_exact_payment(
     }
 
     return $signature;
+}
+
+/**
+ * Signature-mode settlement: the client has already broadcast and
+ * confirmed the payment transaction and submits only the resulting
+ * base58 signature. The facilitator fetches the confirmed transaction
+ * by signature, re-verifies the on-chain transferChecked instruction
+ * against the route's expected requirements, then applies the same
+ * replay marker as transaction-mode settlement.
+ *
+ * Mirrors the canonical Rust spine handler in
+ * `rust/crates/x402/src/server/exact.rs` (`PaymentProof::Signature`
+ * branch) plus `protocol::schemes::exact::verify::verify_transaction_details`.
+ */
+function settle_exact_payment_signature_mode(
+    array $state,
+    array $requirement,
+    string $signature,
+    ?callable $transactionFetcher = null,
+): string {
+    // The on-chain signature is what the network signs over; a syntactically
+    // invalid signature can never name a real transaction so reject it before
+    // a RPC roundtrip.
+    if (!is_valid_base58_signature($signature)) {
+        throw new \RuntimeException('payment payload signature is not a valid base58 signature');
+    }
+
+    $fetcher = $transactionFetcher ?? __NAMESPACE__ . '\\fetch_transaction_by_signature';
+    $confirmedTransaction = $fetcher($state, $signature);
+    if (!is_array($confirmedTransaction)) {
+        throw new \RuntimeException('invalid_exact_svm_payload_settlement_not_confirmed');
+    }
+
+    verify_transaction_details($confirmedTransaction, $requirement);
+
+    // Canonical L8 ordering: the transaction is already confirmed by virtue
+    // of getTransaction returning a result, so apply the replay marker now.
+    // Identical key namespace + non-release semantics as transaction-mode.
+    $replayKey = REPLAY_KEY_PREFIX . $signature;
+    if (!replay_put_if_absent($replayKey)) {
+        throw new \RuntimeException('signature_consumed');
+    }
+
+    return $signature;
+}
+
+/**
+ * Loose syntactic check for a base58-encoded Solana signature: 64 raw
+ * bytes encodes to 86-88 base58 characters. Reject non-base58 input
+ * before the RPC call.
+ */
+function is_valid_base58_signature(string $value): bool
+{
+    if ($value === '' || strlen($value) < 64 || strlen($value) > 96) {
+        return false;
+    }
+    if (strspn($value, BASE58_ALPHABET) !== strlen($value)) {
+        return false;
+    }
+    try {
+        $bytes = base58_decode_binary($value);
+    } catch (\Throwable $error) {
+        return false;
+    }
+
+    return strlen($bytes) === 64;
+}
+
+/**
+ * Re-verify a confirmed on-chain transaction against the route's
+ * payment requirements. Mirrors
+ * `rust/crates/x402/src/protocol/schemes/exact/verify.rs`
+ * (`verify_transaction_details` -> `verify_on_chain_transfer` /
+ * `matches_parsed_transfer` / `matches_raw_transfer`).
+ *
+ * Accepts the canonical `getTransaction` response under both
+ * `jsonParsed` and `json` (raw compiled) encodings.
+ */
+function verify_transaction_details(array $transaction, array $requirement): void
+{
+    // Reject explicit on-chain failures.
+    $meta = $transaction['meta'] ?? null;
+    if (is_array($meta) && ($meta['err'] ?? null) !== null) {
+        throw new \RuntimeException('invalid_exact_svm_payload_settlement_transaction_failed');
+    }
+
+    $expectedAmount = (string) ($requirement['amount'] ?? '');
+    if ($expectedAmount === '') {
+        throw new \RuntimeException('invalid_exact_svm_payload_amount_mismatch');
+    }
+    $expectedMint = (string) ($requirement['asset'] ?? '');
+    $expectedRecipient = (string) ($requirement['payTo'] ?? '');
+    $tokenProgram = (string) ($requirement['extra']['tokenProgram'] ?? DEFAULT_TOKEN_PROGRAM);
+
+    $expectedRecipientBytes = public_key_from_base58($expectedRecipient, 'payTo');
+    $expectedMintBytes = public_key_from_base58($expectedMint, 'asset');
+    $tokenProgramBytes = public_key_from_base58($tokenProgram, 'extra.tokenProgram');
+    $expectedDestination = base58_encode_binary(
+        associated_token_address($expectedRecipientBytes, $tokenProgramBytes, $expectedMintBytes),
+    );
+
+    $message = $transaction['transaction']['message'] ?? null;
+    if (!is_array($message)) {
+        throw new \RuntimeException('invalid_exact_svm_payload_no_transfer_instruction');
+    }
+    $instructions = $message['instructions'] ?? [];
+    if (!is_array($instructions)) {
+        throw new \RuntimeException('invalid_exact_svm_payload_no_transfer_instruction');
+    }
+
+    $accountKeys = [];
+    foreach (($message['accountKeys'] ?? []) as $key) {
+        // jsonParsed encoding may return objects (`{pubkey, signer, writable}`)
+        // or plain strings; raw encoding always returns strings.
+        if (is_array($key)) {
+            $accountKeys[] = (string) ($key['pubkey'] ?? '');
+        } else {
+            $accountKeys[] = (string) $key;
+        }
+    }
+
+    $matched = false;
+    foreach ($instructions as $instruction) {
+        if (!is_array($instruction)) {
+            continue;
+        }
+        if (matches_parsed_transfer($instruction, $expectedDestination, $expectedMint, $expectedAmount)
+            || matches_raw_transfer($instruction, $accountKeys, $expectedDestination, $expectedMint, $expectedAmount)
+        ) {
+            $matched = true;
+            break;
+        }
+    }
+
+    if (!$matched) {
+        throw new \RuntimeException('invalid_exact_svm_payload_no_transfer_instruction');
+    }
+
+    $expectedMemo = $requirement['extra']['memo'] ?? null;
+    if ($expectedMemo !== null) {
+        $memoInstructions = transaction_memo_strings($instructions, $accountKeys);
+        if (count($memoInstructions) !== 1) {
+            throw new \RuntimeException('invalid_exact_svm_payload_memo_count');
+        }
+        if ($memoInstructions[0] !== (string) $expectedMemo) {
+            throw new \RuntimeException('invalid_exact_svm_payload_memo_mismatch');
+        }
+    }
+}
+
+/**
+ * jsonParsed instruction match: spl-token / spl-token-2022 transferChecked
+ * with destination, mint, and amount equal to the route's expectations.
+ */
+function matches_parsed_transfer(array $instruction, string $expectedDestination, string $expectedMint, string $expectedAmount): bool
+{
+    $programId = (string) ($instruction['programId'] ?? '');
+    if ($programId !== DEFAULT_TOKEN_PROGRAM && $programId !== TOKEN_2022_PROGRAM) {
+        return false;
+    }
+    $parsed = $instruction['parsed'] ?? null;
+    if (!is_array($parsed)) {
+        return false;
+    }
+    if (($parsed['type'] ?? null) !== 'transferChecked') {
+        return false;
+    }
+    $info = $parsed['info'] ?? null;
+    if (!is_array($info)) {
+        return false;
+    }
+    $destination = (string) ($info['destination'] ?? '');
+    $mint = (string) ($info['mint'] ?? '');
+    $tokenAmount = $info['tokenAmount'] ?? null;
+    $amount = is_array($tokenAmount) ? (string) ($tokenAmount['amount'] ?? '') : '';
+
+    return $destination === $expectedDestination
+        && $mint === $expectedMint
+        && $amount === $expectedAmount;
+}
+
+/**
+ * Raw (compiled) instruction match: program is an SPL token program,
+ * data decodes to a transferChecked discriminator + u64 amount matching
+ * the route's expectations, and accounts[1]=mint, accounts[2]=destination
+ * resolve through `accountKeys` to the expected addresses.
+ */
+function matches_raw_transfer(array $instruction, array $accountKeys, string $expectedDestination, string $expectedMint, string $expectedAmount): bool
+{
+    $programIndex = $instruction['programIdIndex'] ?? null;
+    if (!is_int($programIndex)) {
+        return false;
+    }
+    $program = $accountKeys[$programIndex] ?? null;
+    if (!is_string($program) || ($program !== DEFAULT_TOKEN_PROGRAM && $program !== TOKEN_2022_PROGRAM)) {
+        return false;
+    }
+    $data = $instruction['data'] ?? null;
+    if (!is_string($data) || $data === '') {
+        return false;
+    }
+    // RPC returns the instruction data base58-encoded for raw encoding.
+    try {
+        $bytes = base58_decode_binary($data);
+    } catch (\Throwable $error) {
+        return false;
+    }
+    // transferChecked = discriminator 12 + u64 amount (8B) + decimals (1B) = 10 bytes.
+    if (strlen($bytes) !== 10 || ord($bytes[0]) !== 12) {
+        return false;
+    }
+    $amountBytes = substr($bytes, 1, 8);
+    if ($amountBytes !== decimal_to_u64_le($expectedAmount)) {
+        return false;
+    }
+    $accounts = $instruction['accounts'] ?? [];
+    if (!is_array($accounts) || count($accounts) < 4) {
+        return false;
+    }
+    $mint = $accountKeys[$accounts[1]] ?? null;
+    $destination = $accountKeys[$accounts[2]] ?? null;
+
+    return $mint === $expectedMint && $destination === $expectedDestination;
+}
+
+/**
+ * Extract memo strings from the confirmed transaction's instruction
+ * list. Mirrors the spine's memo extraction, which accepts both
+ * `jsonParsed` (`parsed.info.string` or top-level data) and raw
+ * (base58 program-data) shapes.
+ */
+function transaction_memo_strings(array $instructions, array $accountKeys): array
+{
+    $memos = [];
+    foreach ($instructions as $instruction) {
+        if (!is_array($instruction)) {
+            continue;
+        }
+        $programId = (string) ($instruction['programId'] ?? '');
+        if ($programId === MEMO_PROGRAM) {
+            $parsed = $instruction['parsed'] ?? null;
+            if (is_string($parsed)) {
+                $memos[] = $parsed;
+                continue;
+            }
+            if (is_array($parsed)) {
+                $info = $parsed['info'] ?? null;
+                if (is_array($info) && isset($info['string'])) {
+                    $memos[] = (string) $info['string'];
+                    continue;
+                }
+            }
+        }
+        // Raw encoding.
+        $programIndex = $instruction['programIdIndex'] ?? null;
+        if (is_int($programIndex)) {
+            $program = $accountKeys[$programIndex] ?? null;
+            if ($program === MEMO_PROGRAM) {
+                $data = $instruction['data'] ?? null;
+                if (is_string($data) && $data !== '') {
+                    try {
+                        $memos[] = base58_decode_binary($data);
+                    } catch (\Throwable $error) {
+                        // ignore undecodable memo data; spine rejects on mismatch later
+                    }
+                }
+            }
+        }
+    }
+
+    return $memos;
+}
+
+/**
+ * Fetch a confirmed transaction by base58 signature. Wraps RPC
+ * `getTransaction` with `jsonParsed` encoding and `confirmed`
+ * commitment. Returns the canonical `result` object, or `null` if the
+ * RPC could not locate the signature.
+ */
+function fetch_transaction_by_signature(array $state, string $signature): ?array
+{
+    $body = json_encode([
+        'jsonrpc' => '2.0',
+        'id' => 1,
+        'method' => 'getTransaction',
+        'params' => [
+            $signature,
+            [
+                'encoding' => 'jsonParsed',
+                'commitment' => 'confirmed',
+                'maxSupportedTransactionVersion' => 0,
+            ],
+        ],
+    ], JSON_THROW_ON_ERROR);
+
+    $response = file_get_contents($state['rpcUrl'], false, stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "content-type: application/json\r\n",
+            'content' => $body,
+            'timeout' => 15,
+        ],
+    ]));
+    if ($response === false) {
+        throw new \RuntimeException('getTransaction HTTP request failed');
+    }
+
+    $payload = json_decode($response, true, flags: JSON_THROW_ON_ERROR);
+    if (isset($payload['error'])) {
+        throw new \RuntimeException('getTransaction RPC error: ' . json_encode($payload['error']));
+    }
+
+    $result = $payload['result'] ?? null;
+    return is_array($result) ? $result : null;
 }
 
 function confirm_signature(array $state, string $signature, ?callable $statusFetcher = null): void
@@ -1051,7 +1384,7 @@ function response_for(string $path, array $headers, ?array $state): array
     };
 }
 
-function protected_response(array $headers, array $state, ?callable $sender = null, ?callable $confirmer = null): array
+function protected_response(array $headers, array $state, ?callable $sender = null, ?callable $confirmer = null, ?callable $transactionFetcher = null): array
 {
     $paymentSignature = header_value($headers, 'PAYMENT-SIGNATURE');
     if ($paymentSignature === null || $paymentSignature === '') {
@@ -1063,7 +1396,7 @@ function protected_response(array $headers, array $state, ?callable $sender = nu
     }
 
     try {
-        $settlement = settle_exact_payment($state, $paymentSignature, $sender, $confirmer);
+        $settlement = settle_exact_payment($state, $paymentSignature, $sender, $confirmer, $transactionFetcher);
         // Canonical x402 v2 PaymentResponse shape: { success, network, transaction }
         // Mirrors rust/crates/x402/src/bin/interop_server.rs L221-231 and
         // harness/src/fixtures/typescript/exact-server.ts L322-331. Header value

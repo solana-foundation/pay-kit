@@ -42,6 +42,8 @@ use function SolanaMpp\X402\Interop\settle_exact_payment;
 use function SolanaMpp\X402\Interop\replay_put_if_absent;
 use function SolanaMpp\X402\Interop\state_from_env;
 use function SolanaMpp\X402\Interop\verify_exact_transaction;
+use function SolanaMpp\X402\Interop\verify_transaction_details;
+use function SolanaMpp\X402\Interop\is_valid_base58_signature;
 
 function fail(string $message): never
 {
@@ -1590,6 +1592,142 @@ $intLow = read_u64_le_int("\x01\x00\x00\x00\x00\x00\x00\x00");
 if ($intLow !== 1) {
     fail('read_u64_le_int did not round-trip a small low-bit value');
 }
+
+// --- PaymentProof signature-mode regression tests ------------------------
+// Spine parity: the Rust canonical x402 server accepts both transaction-mode
+// (`payload.transaction`) AND signature-mode (`payload.signature`) credentials
+// (rust/crates/x402/src/server/exact.rs PaymentProof handler + verify.rs
+// verify_transaction_details). A client that broadcasts itself and submits
+// only the resulting signature MUST settle through PHP too.
+function build_confirmed_transaction_for_requirement(array $requirement): array
+{
+    $payTo = (string) $requirement['payTo'];
+    $mint = (string) $requirement['asset'];
+    $tokenProgram = (string) ($requirement['extra']['tokenProgram'] ?? SolanaMpp\X402\Interop\DEFAULT_TOKEN_PROGRAM);
+    $payToBytes = base58_decode_test($payTo);
+    $mintBytes = base58_decode_test($mint);
+    $tokenProgramBytes = base58_decode_test($tokenProgram);
+    $destination = SolanaMpp\X402\Interop\base58_encode_binary(
+        associated_token_address_test($payToBytes, $tokenProgramBytes, $mintBytes),
+    );
+
+    return [
+        'meta' => ['err' => null],
+        'transaction' => [
+            'message' => [
+                'accountKeys' => [],
+                'instructions' => [
+                    [
+                        'programId' => $tokenProgram,
+                        'parsed' => [
+                            'type' => 'transferChecked',
+                            'info' => [
+                                'destination' => $destination,
+                                'mint' => $mint,
+                                'tokenAmount' => [
+                                    'amount' => (string) $requirement['amount'],
+                                    'decimals' => (int) ($requirement['extra']['decimals'] ?? 6),
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ],
+    ];
+}
+
+// Base58 signature validation.
+if (!is_valid_base58_signature(str_repeat('1', 64))) {
+    fail('expected 64-character all-1 base58 to be accepted as a 64-byte signature');
+}
+if (is_valid_base58_signature('not-a-signature')) {
+    fail('expected non-base58 input to be rejected');
+}
+if (is_valid_base58_signature('')) {
+    fail('expected empty string to be rejected');
+}
+if (is_valid_base58_signature('1OIl0')) {
+    fail('expected base58 input containing forbidden characters to be rejected');
+}
+
+// Direct verifier: a confirmed transaction whose parsed transferChecked
+// matches the route is accepted.
+$sigModeRequirement = exact_requirement($unitState);
+$happyConfirmed = build_confirmed_transaction_for_requirement($sigModeRequirement);
+verify_transaction_details($happyConfirmed, $sigModeRequirement);
+
+// Direct verifier: wrong amount rejected.
+$wrongAmountConfirmed = $happyConfirmed;
+$wrongAmountConfirmed['transaction']['message']['instructions'][0]['parsed']['info']['tokenAmount']['amount'] = '999';
+assert_runtime_error('invalid_exact_svm_payload_no_transfer_instruction', static fn () => verify_transaction_details($wrongAmountConfirmed, $sigModeRequirement));
+
+// Direct verifier: wrong destination rejected.
+$wrongDestConfirmed = $happyConfirmed;
+$wrongDestConfirmed['transaction']['message']['instructions'][0]['parsed']['info']['destination'] = '11111111111111111111111111111111';
+assert_runtime_error('invalid_exact_svm_payload_no_transfer_instruction', static fn () => verify_transaction_details($wrongDestConfirmed, $sigModeRequirement));
+
+// Direct verifier: on-chain error rejected.
+$failedConfirmed = $happyConfirmed;
+$failedConfirmed['meta']['err'] = ['InstructionError' => [0, 'Custom']];
+assert_runtime_error('invalid_exact_svm_payload_settlement_transaction_failed', static fn () => verify_transaction_details($failedConfirmed, $sigModeRequirement));
+
+// settle_exact_payment routes to signature-mode and returns the on-chain
+// signature unchanged. Replay marker prevents a re-submit of the same sig.
+// 64 random-ish bytes encoded as base58 — yields ~87 base58 chars.
+$sigModeSignature = SolanaMpp\X402\Interop\base58_encode_binary(str_repeat("\x12", 64));
+$sigModePayment = [
+    'x402Version' => 2,
+    'accepted' => $sigModeRequirement,
+    'payload' => ['signature' => $sigModeSignature],
+];
+$sigModeFetcher = static fn (array $state, string $sig): array => build_confirmed_transaction_for_requirement($sigModeRequirement);
+$settled = settle_exact_payment(
+    $unitState,
+    encoded_payment($sigModePayment),
+    null,
+    null,
+    $sigModeFetcher,
+);
+if ($settled !== $sigModeSignature) {
+    fail('signature-mode settlement returned ' . $settled . ', expected ' . $sigModeSignature);
+}
+// Re-submit MUST hit signature_consumed via the replay marker.
+assert_runtime_error('signature_consumed', static fn () => settle_exact_payment(
+    $unitState,
+    encoded_payment($sigModePayment),
+    null,
+    null,
+    $sigModeFetcher,
+));
+
+// RPC returning null (signature not found) maps to settlement_not_confirmed.
+$missingSigPayment = $sigModePayment;
+$missingSigPayment['payload']['signature'] = SolanaMpp\X402\Interop\base58_encode_binary(str_repeat("\x34", 64));
+$nullFetcher = static fn (array $state, string $sig): ?array => null;
+assert_runtime_error('invalid_exact_svm_payload_settlement_not_confirmed', static fn () => settle_exact_payment(
+    $unitState,
+    encoded_payment($missingSigPayment),
+    null,
+    null,
+    $nullFetcher,
+));
+
+// Malformed signature is rejected before any RPC roundtrip.
+$badSigPayment = $sigModePayment;
+$badSigPayment['payload']['signature'] = 'not-a-valid-base58-signature!!!';
+$failingFetcher = static function (array $state, string $sig): array {
+    fail('fetcher must NOT be called for an invalid signature');
+};
+assert_runtime_error('payment payload signature is not a valid base58 signature', static fn () => settle_exact_payment(
+    $unitState,
+    encoded_payment($badSigPayment),
+    null,
+    null,
+    $failingFetcher,
+));
+
+echo "PHP signature-mode PaymentProof regression suite OK\n";
 
 echo "PHP interop server contract OK\n";
 
