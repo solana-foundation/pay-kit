@@ -824,7 +824,61 @@ class InteropServerTest < Minitest::Test
     assert JSON.parse(Base64.decode64(headers.fetch("PAYMENT-REQUIRED"))).fetch("accepts").any?
   end
 
+  def test_resource_path_and_settlement_header_env_overrides
+    # Cross-server scenarios drive route + header name via
+    # X402_INTEROP_RESOURCE_PATH and X402_INTEROP_SETTLEMENT_HEADER. The
+    # server MUST honor those overrides instead of hardcoding /protected
+    # and x-fixture-settlement.
+    state = build_state_with_overrides(
+      resource_path: "/protected/expensive",
+      settlement_header: "x-fixture-settlement-alt",
+      sender: ->(_state, _transaction) { "settlement-signature" }
+    )
+
+    # Default route no longer routes here.
+    status, _headers, body = X402::Interop::Server.response_for("/protected", {}, state)
+    assert_equal 404, status
+    assert_equal({error: "not_found"}, body)
+
+    # Challenge advertises the overridden resource URI.
+    status, headers, _body = X402::Interop::Server.response_for("/protected/expensive", {}, state)
+    assert_equal 402, status
+    challenge = JSON.parse(Base64.decode64(headers.fetch("PAYMENT-REQUIRED")))
+    assert_equal "/protected/expensive", challenge.fetch("resource").fetch("uri")
+
+    # Settlement emits the overridden header name and not the default.
+    payment_header = build_payment_header(state, resource: "/protected/expensive")
+    status, headers, body = X402::Interop::Server.response_for(
+      "/protected/expensive",
+      {"PAYMENT-SIGNATURE" => payment_header},
+      state
+    )
+    assert_equal 200, status
+    assert_equal "settlement-signature", headers.fetch("x-fixture-settlement-alt")
+    refute headers.key?("x-fixture-settlement"), "default settlement header must not be emitted when override is set"
+    assert_equal true, body.fetch(:paid)
+  end
+
   private
+
+  def build_state_with_overrides(resource_path:, settlement_header:, sender:)
+    env = {
+      "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
+      "X402_INTEROP_NETWORK" => NETWORK,
+      "X402_INTEROP_MINT" => ASSET,
+      "X402_INTEROP_PAY_TO" => PAY_TO,
+      "X402_INTEROP_FACILITATOR_SECRET_KEY" => JSON.generate(secret(65)),
+      "X402_INTEROP_PRICE" => "$0.001",
+      "X402_INTEROP_RESOURCE_PATH" => resource_path,
+      "X402_INTEROP_SETTLEMENT_HEADER" => settlement_header
+    }
+    X402::Interop::Server::State.new(
+      env: env,
+      transaction_sender: sender,
+      account_checker: ->(_state, _account) { true },
+      signature_confirmer: ->(_state, signature) { signature }
+    )
+  end
 
   def build_state(
     price: "$0.001",

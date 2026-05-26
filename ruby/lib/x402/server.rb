@@ -39,7 +39,8 @@ module X402
 
       class State
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer, :fee_payer_secret_key, :amount,
-          :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer
+          :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer,
+          :resource_path, :settlement_header
 
         def initialize(env: ENV, transaction_sender: nil, settlement_cache: nil, account_checker: nil, signature_confirmer: nil)
           @rpc_url = required_env(env, "X402_INTEROP_RPC_URL")
@@ -53,6 +54,15 @@ module X402
           @fee_payer_secret_key = required_env(env, "X402_INTEROP_FACILITATOR_SECRET_KEY")
           @fee_payer = Exact.private_key_from_json(@fee_payer_secret_key)
           @amount = Server.normalize_amount(env.fetch("X402_INTEROP_PRICE", DEFAULT_PRICE))
+          # Honor harness-canonical X402_INTEROP_RESOURCE_PATH and
+          # X402_INTEROP_SETTLEMENT_HEADER overrides so cross-server scenarios
+          # (e.g. cross-route replay, portability) can drive the route and
+          # header name without recompiling. Mirrors the TS fixture wiring at
+          # harness/src/fixtures/typescript/exact-shared.ts L62-64.
+          resource_path_value = env.fetch("X402_INTEROP_RESOURCE_PATH", DEFAULT_RESOURCE_PATH)
+          @resource_path = (resource_path_value.nil? || resource_path_value.empty?) ? DEFAULT_RESOURCE_PATH : resource_path_value
+          settlement_header_value = env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER)
+          @settlement_header = (settlement_header_value.nil? || settlement_header_value.empty?) ? DEFAULT_SETTLEMENT_HEADER : settlement_header_value
           @transaction_sender = transaction_sender || Server.method(:send_transaction)
           @settlement_cache = settlement_cache || SettlementCache.new
           @account_checker = account_checker || Server.method(:account_exists?)
@@ -160,7 +170,7 @@ module X402
           "x402Version" => 2,
           "resource" => {
             "type" => "http",
-            "uri" => resource || DEFAULT_RESOURCE_PATH
+            "uri" => resource || state.resource_path
           },
           "accepts" => exact_requirements(state, resource: resource)
         }
@@ -435,7 +445,7 @@ module X402
             {"PAYMENT-REQUIRED" => encode_payment_required(exact_challenge(state))},
             {error: "payment_required"}
           ]
-        when DEFAULT_RESOURCE_PATH
+        when state.resource_path
           payment_signature = header_value(headers, "PAYMENT-SIGNATURE")
           return payment_required_response(state, resource: path) if payment_signature.nil? || payment_signature.empty?
 
@@ -449,7 +459,7 @@ module X402
             [
               200,
               {
-                DEFAULT_SETTLEMENT_HEADER => settlement,
+                state.settlement_header => settlement,
                 PAYMENT_RESPONSE_HEADER => payment_response
               },
               {

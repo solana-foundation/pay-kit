@@ -66,7 +66,10 @@ if response.code.to_i == 402 &&
       status: paid_response.code.to_i,
       responseHeaders: paid_headers,
       responseBody: paid_body,
-      settlement: X402::Interop::Client.header_value(paid_headers, "x-fixture-settlement")
+      settlement: X402::Interop::Client.header_value(
+        paid_headers,
+        ENV.fetch("X402_INTEROP_SETTLEMENT_HEADER", "x-fixture-settlement")
+      )
     )
     exit 0
   rescue StandardError => e
