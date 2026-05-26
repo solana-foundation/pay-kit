@@ -2,7 +2,7 @@ import Foundation
 import SolanaMpp
 
 /// Swift interop adapter for the MPP charge harness. Mirrors the
-/// command-line shape of `rust/src/bin/interop_client.rs`:
+/// command-line shape of `rust/crates/mpp/src/bin/interop_client.rs`:
 ///
 /// - Reads `MPP_INTEROP_TARGET_URL`, `MPP_INTEROP_RPC_URL`, and
 ///   `MPP_INTEROP_CLIENT_SECRET_KEY` (JSON array of bytes).

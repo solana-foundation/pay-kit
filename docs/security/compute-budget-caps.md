@@ -38,8 +38,8 @@ this monorepo.
 
 | Language    | File                                                       | Constant                                  |
 | ----------- | ---------------------------------------------------------- | ----------------------------------------- |
-| Rust        | `rust/src/server/charge.rs:42`                             | `MAX_COMPUTE_UNIT_LIMIT`                  |
-| Rust        | `rust/src/server/charge.rs:43`                             | `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`    |
+| Rust        | `rust/crates/mpp/src/server/charge.rs:42`                  | `MAX_COMPUTE_UNIT_LIMIT`                  |
+| Rust        | `rust/crates/mpp/src/server/charge.rs:43`                  | `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`    |
 | TypeScript  | `typescript/packages/mpp/src/server/Charge.ts:233`         | `MAX_COMPUTE_UNIT_LIMIT`                  |
 | TypeScript  | `typescript/packages/mpp/src/server/Charge.ts:234`         | `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`    |
 | PHP         | `php/src/Server/SolanaChargeTransactionVerifier.php:42`    | `MAX_COMPUTE_UNIT_LIMIT`                  |

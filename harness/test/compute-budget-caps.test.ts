@@ -45,7 +45,7 @@ type Sdk = {
 const SDKS: Sdk[] = [
   {
     language: "rust",
-    file: "rust/src/server/charge.rs",
+    file: "rust/crates/mpp/src/server/charge.rs",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*:\s*u32\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*:\s*u64\s*=\s*([0-9_]+)/,
   },
