@@ -35,3 +35,4 @@ mpp-sdk-self-learning/
 .build/
 go/coverage.out
 notes/codex-review-*.md
+notes/codex-review/
