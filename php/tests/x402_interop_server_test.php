@@ -736,8 +736,12 @@ if (
     || ($paymentResponse['success'] ?? null) !== true
     || ($paymentResponse['network'] ?? null) !== $unitState['network']
     || ($paymentResponse['transaction'] ?? null) !== 'settled-success'
-    || ($paymentResponse['payer'] ?? null) !== exact_requirement($unitState)['extra']['feePayer']
-    || ($paymentResponse['payer'] ?? null) !== ($successBody['settlement']['payer'] ?? null)
+    // Canonical x402 v2 PAYMENT-RESPONSE shape is exactly
+    // { success, network, transaction } — no extra fields. Mirrors
+    // rust/crates/x402/src/bin/interop_server.rs L221-231.
+    || array_key_exists('payer', $paymentResponse)
+    || count($paymentResponse) !== 3
+    || ($successBody['settlement']['payer'] ?? null) !== exact_requirement($unitState)['extra']['feePayer']
     || ($successBody['settlement']['transaction'] ?? null) !== 'settled-success'
 ) {
     fail('PHP protected response did not expose settlement response headers: ' . json_encode([$successHeaders, $successBody]));

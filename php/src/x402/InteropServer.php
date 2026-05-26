@@ -1026,10 +1026,17 @@ function protected_response(array $headers, array $state, ?callable $sender = nu
 
     try {
         $settlement = settle_exact_payment($state, $paymentSignature, $sender, $confirmer);
+        // Canonical x402 v2 PaymentResponse shape: { success, network, transaction }
+        // Mirrors rust/crates/x402/src/bin/interop_server.rs L221-231 and
+        // harness/src/fixtures/typescript/exact-server.ts L322-331. Header value
+        // is raw JSON (not base64). The body's `settlement` block can carry
+        // richer fields (e.g. `payer`), but the header must match canonical.
         $paymentResponse = [
             'success' => true,
             'network' => $state['network'],
             'transaction' => $settlement,
+        ];
+        $settlementBody = $paymentResponse + [
             'payer' => base58_encode_binary($state['feePayerPublicKey']),
         ];
 
@@ -1042,7 +1049,7 @@ function protected_response(array $headers, array $state, ?callable $sender = nu
             [
                 'ok' => true,
                 'paid' => true,
-                'settlement' => $paymentResponse,
+                'settlement' => $settlementBody,
             ],
         ];
     } catch (\Throwable $error) {
