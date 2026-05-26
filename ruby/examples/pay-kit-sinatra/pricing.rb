@@ -25,24 +25,24 @@ class Pricing < PayKit::Pricing
     # SELLER nets $9.70, PLATFORM nets $0.30. x402 auto-disabled
     # because stock x402 facilitators settle to one address.
     gate :marketplace_sale,
-      amount:     usd("10.00"),
-      pay_to:     SELLER,
-      fee_within: { PLATFORM => usd("0.30") },
+      amount: usd("10.00"),
+      pay_to: SELLER,
+      fee_within: {PLATFORM => usd("0.30")},
       description: "Marketplace sale"
 
     # Surcharge pattern. Customer pays $10.50, SELLER nets $10.00,
     # PLATFORM nets $0.50.
     gate :ticket,
-      amount:     usd("10.00"),
-      pay_to:     SELLER,
-      fee_on_top: { PLATFORM => usd("0.50") },
+      amount: usd("10.00"),
+      pay_to: SELLER,
+      fee_on_top: {PLATFORM => usd("0.50")},
       description: "Ticket"
 
     # Dynamic pricing. The block runs per-request against the
     # incoming Rack request and uses the same setter DSL as the
     # static form.
     gate :tiered do |request|
-      amount usd(request.params["tier"] == "premium" ? "5.00" : "0.10")
+      amount usd((request.params["tier"] == "premium") ? "5.00" : "0.10")
     end
   end
 end
