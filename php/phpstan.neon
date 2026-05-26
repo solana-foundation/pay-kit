@@ -11,3 +11,5 @@ parameters:
         # Tracked under follow-up to add `@param`/`@return` annotations.
         - src/x402/*
         - tests/x402_interop_server_test.php
+        - tests/X402InteropTokenProgramTest.php
+        - tests/X402InteropSignatureModeTest.php
