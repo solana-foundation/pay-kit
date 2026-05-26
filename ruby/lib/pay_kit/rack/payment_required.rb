@@ -157,7 +157,7 @@ module PayKit
         method = ::Mpp::Protocol::Solana.charge(
           recipient: @config.pay_to || raise(::PayKit::ConfigurationError, "PayKit.config.pay_to not set"),
           currency: mint_for(@config.stablecoins.first, @config.network),
-          network: caip2_for(@config.network),
+          network: mpp_network_label_for(@config.network),
           rpc: @config.x402.facilitator || ""
         )
         ::Mpp.create(
@@ -167,13 +167,29 @@ module PayKit
         )
       end
 
+      # CAIP-2 IDs go on the x402 wire. Localnet has no CAIP-2 entry
+      # in the Solana registry, so the harness convention is to send
+      # devnet's CAIP-2 (Surfpool clones devnet) when the client says
+      # "localnet".
       def caip2_for(network)
         case network
         when :solana_mainnet then ::PayCore::Solana::Caip2::MAINNET
-        when :solana_devnet then ::PayCore::Solana::Caip2::DEVNET
-        when :solana_localnet then ::PayCore::Solana::Caip2::LOCALNET
+        when :solana_devnet, :solana_localnet then ::PayCore::Solana::Caip2::DEVNET
         else
           raise ::PayKit::ConfigurationError, "no CAIP-2 mapping for network #{network.inspect}"
+        end
+      end
+
+      # Plain network label for the MPP server (`mainnet`/`devnet`/
+      # `localnet`). MPP does not require CAIP-2 on the wire; the
+      # `Mpp::Protocol::Solana.charge` factory takes the plain name.
+      def mpp_network_label_for(network)
+        case network
+        when :solana_mainnet then "mainnet"
+        when :solana_devnet then "devnet"
+        when :solana_localnet then "localnet"
+        else
+          raise ::PayKit::ConfigurationError, "no MPP network label for #{network.inspect}"
         end
       end
 
@@ -185,9 +201,14 @@ module PayKit
         else
           raise ::PayKit::ConfigurationError, "no mint table for network #{network.inspect}"
         end
-        table = ::PayCore::Solana::Mints::MINTS.fetch(coin.to_s) do
-          raise ::PayKit::ConfigurationError, "unknown stablecoin #{coin.inspect}"
-        end
+        # Unknown symbol passes through as a literal mint pubkey. This
+        # lets the interop harness and other call sites supply mint
+        # addresses directly (`usd("1.00", "4zMMC9srt5...".to_sym)`)
+        # without forcing them through the symbol table.
+        coin_str = coin.to_s
+        table = ::PayCore::Solana::Mints::MINTS[coin_str]
+        return coin_str if table.nil?
+
         table.fetch(net_key) do
           raise ::PayKit::ConfigurationError, "stablecoin #{coin.inspect} not configured for network #{network.inspect}"
         end
