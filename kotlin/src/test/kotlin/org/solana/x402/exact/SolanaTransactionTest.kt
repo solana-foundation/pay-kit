@@ -74,6 +74,48 @@ class SolanaTransactionTest {
     }
 
     @Test
+    fun `builder uses signer as fee payer when challenge omits feePayer`() {
+        // Spine parity with rust/crates/x402/src/client/exact/payment.rs:
+        // when `requirements.fee_payer_key` is absent the signer pays its own
+        // network fees. The compiled v0 message must require exactly one
+        // signature (signer == feePayer) and place the signer first in the
+        // account-keys table.
+        val accepted = JsonObject().apply {
+            addProperty("scheme", "exact")
+            addProperty("network", ExactChallenge.DEFAULT_NETWORK)
+            addProperty("asset", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+            addProperty("amount", "1000")
+            addProperty("payTo", "11111111111111111111111111111115")
+            add(
+                "extra",
+                JsonObject().apply {
+                    addProperty("decimals", 6)
+                    addProperty("tokenProgram", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+                },
+            )
+        }
+        val payerKey = "11111111111111111111111111111112"
+        val request = SolanaExactPaymentRequest(
+            payer = payerKey,
+            network = ExactChallenge.DEFAULT_NETWORK,
+            asset = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            amount = "1000",
+            payTo = "11111111111111111111111111111115",
+            feePayer = null,
+            memo = null,
+            maxTimeoutSeconds = 60,
+            accepted = accepted,
+        )
+
+        val tx = DefaultSolanaExactTransactionBuilder(FixedRpc).buildUnsignedTransaction(request)
+
+        // One required signature (the payer doubles as fee payer).
+        assertEquals(1, tx.message[1].toInt())
+        assertEquals(1, tx.signatures.size)
+        assertEquals(0, tx.signerIndex)
+    }
+
+    @Test
     fun `compileV0Message dedupes accounts that appear in multiple instructions with different roles`() {
         // Regression for Greptile P2: independent role sets used to allow the same
         // pubkey to be emitted twice in accountKeys when two instructions reference

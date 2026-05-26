@@ -152,10 +152,16 @@ class DefaultSolanaExactTransactionBuilder(
 ) : SolanaExactTransactionBuilder {
     override fun buildUnsignedTransaction(request: SolanaExactPaymentRequest): UnsignedSolanaTransaction {
         val payer = SolanaPublicKey.fromBase58(request.payer)
-        val feePayer = SolanaPublicKey.fromBase58(request.feePayer)
+        // When the challenge does not supply a managed fee payer, the signer
+        // (payer) becomes the actual fee payer. Mirrors the rust spine fallback
+        // at rust/crates/x402/src/client/exact/payment.rs:
+        //   let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
+        val feePayer = request.feePayer?.let { SolanaPublicKey.fromBase58(it) } ?: payer
         val mint = SolanaPublicKey.fromBase58(request.asset)
         val recipient = SolanaPublicKey.fromBase58(request.payTo)
-        require(payer != feePayer) { "managed fee payer must not be the transfer authority" }
+        if (request.feePayer != null) {
+            require(payer != feePayer) { "managed fee payer must not be the transfer authority" }
+        }
 
         val metadata = rpc.tokenMetadata(request.asset)
         val tokenProgramId = request.accepted.string("tokenProgram")

@@ -14,7 +14,13 @@ data class SolanaExactPaymentRequest(
     val asset: String,
     val amount: String,
     val payTo: String,
-    val feePayer: String,
+    /**
+     * Optional managed fee payer. Mirrors the Rust spine client at
+     * rust/crates/x402/src/client/exact/payment.rs which falls back to the
+     * signer (`payer`) as the actual transaction fee payer when
+     * `requirements.fee_payer_key` is absent.
+     */
+    val feePayer: String?,
     val memo: String?,
     val maxTimeoutSeconds: Int?,
     val accepted: JsonObject,
@@ -132,21 +138,21 @@ class ExactPaymentClient(
         // ATAs are identical). Catch this on the client before any Base58 decoding,
         // ATA derivation, or RPC work happens.
         require(payTo != payer) { "payTo must differ from payer (self-transfer)" }
+        // Managed fee payer is optional. Rust spine
+        // (rust/crates/x402/src/client/exact/payment.rs) treats
+        // `requirements.fee_payer_key` as optional and falls back to the
+        // signer (`payer`) as the actual transaction fee payer when absent.
+        // When present, it must be operationally distinct from the transfer
+        // authority and the recipient — otherwise a malicious server
+        // challenge could either drain the user's wallet via fee
+        // attribution or create a self-pay loop.
         val feePayer = requirement.extra.string("feePayer")
-            ?: throw IllegalArgumentException(
-                "feePayer is required in paymentRequirements.extra for SVM transactions",
-            )
-        // Defensive client-side check against a malicious server challenge that
-        // sets the managed fee payer to the user's own wallet — the exact-svm
-        // scheme requires the fee payer to be operationally distinct from the
-        // transfer authority. Mirrors the deeper builder-level guard but fires
-        // before any Base58 decoding or RPC work happens.
-        require(feePayer != payer) {
-            "managed fee payer must differ from the transfer authority (payer)"
+        if (feePayer != null) {
+            require(feePayer != payer) {
+                "managed fee payer must differ from the transfer authority (payer)"
+            }
+            require(payTo != feePayer) { "payTo must differ from the managed fee payer" }
         }
-        // Mirror server-side defensive check: payTo must not collide with the
-        // fee payer (would create a self-pay loop) or with the payer wallet.
-        require(payTo != feePayer) { "payTo must differ from the managed fee payer" }
         // Reject server-supplied tokenProgram values that are not on the
         // canonical SPL allowlist (classic SPL Token or Token-2022). Otherwise
         // a malicious server can set extra.tokenProgram to an arbitrary

@@ -52,21 +52,25 @@ class ExactPaymentClientTest {
     }
 
     @Test
-    fun `rejects missing feePayer before constructing transaction`() {
+    fun `falls back to payer as fee payer when feePayer is absent`() {
+        // Spine parity: rust/crates/x402/src/client/exact/payment.rs
+        // computes `let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);`
+        // The Kotlin client mirrors this — when a challenge does not carry a
+        // managed `extra.feePayer`, the transfer authority (signer) pays its
+        // own network fees rather than the request being rejected.
         val builder = RecordingTransactionBuilder(byteArrayOf(1))
-        val signer = RecordingTransactionSigner(byteArrayOf(2))
+        val signer = RecordingTransactionSigner(ByteArray(64) { 5 })
         val client = ExactPaymentClient(builder, signer)
 
-        val error = assertFailsWith<IllegalArgumentException> {
-            client.createPaymentHeaders(
-                selected = selectedRequirement(extra = emptyMap()),
-                payer = "Payer11111111111111111111111111111111",
-            )
-        }
+        client.createPaymentHeaders(
+            selected = selectedRequirement(extra = emptyMap()),
+            payer = "Payer11111111111111111111111111111111",
+        )
 
-        assertEquals("feePayer is required in paymentRequirements.extra for SVM transactions", error.message)
-        assertEquals(0, builder.requests.size)
-        assertEquals(0, signer.inputs.size)
+        assertEquals(1, builder.requests.size)
+        val request = builder.requests.single()
+        assertEquals(null, request.feePayer)
+        assertEquals(1, signer.inputs.size)
     }
 
     @Test
