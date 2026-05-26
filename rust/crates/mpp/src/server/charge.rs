@@ -929,6 +929,7 @@ impl Mpp {
                 primary_amount,
                 splits,
                 Some(expected_token_program),
+                expected_ata_payer,
             )?;
             verify_parsed_memo_instructions(
                 &instructions,
@@ -1765,6 +1766,7 @@ fn verify_spl_transfers(
     primary_amount: u64,
     splits: &[Split],
     expected_token_program: Option<&str>,
+    fee_payer: Option<&str>,
 ) -> Result<HashSet<usize>, VerificationError> {
     let mut matched_instruction_indexes = HashSet::new();
     find_spl_transfer(
@@ -1773,6 +1775,7 @@ fn verify_spl_transfers(
         mint,
         primary_amount,
         expected_token_program,
+        fee_payer,
         &mut matched_instruction_indexes,
     )?;
     for split in splits {
@@ -1786,6 +1789,7 @@ fn verify_spl_transfers(
             mint,
             amt,
             expected_token_program,
+            fee_payer,
             &mut matched_instruction_indexes,
         )
         .map_err(|_| {
@@ -1804,8 +1808,10 @@ fn find_spl_transfer(
     expected_mint: &str,
     amount: u64,
     expected_token_program: Option<&str>,
+    fee_payer: Option<&str>,
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
+    let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
     for (index, ix) in instructions.iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
             continue;
@@ -1835,8 +1841,39 @@ fn find_spl_transfer(
                         .get("destination")
                         .and_then(|d| d.as_str())
                         .unwrap_or("");
+                    let source = info.get("source").and_then(|s| s.as_str()).unwrap_or("");
+                    let authority = info
+                        .get("authority")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("");
                     let mint = info.get("mint").and_then(|m| m.as_str()).unwrap_or("");
                     if mint == expected_mint && verify_ata_owner(dest, recipient, mint, program) {
+                        if let Some(fee_payer) = fee_payer {
+                            if authority == fee_payer {
+                                return Err(VerificationError::invalid_payload(
+                                    "Fee payer cannot authorize the SPL payment transfer",
+                                ));
+                            }
+                            if let (Ok(fee_payer_pk), Ok(mint_pk), Ok(program_pk)) = (
+                                Pubkey::from_str(fee_payer),
+                                Pubkey::from_str(mint),
+                                Pubkey::from_str(program),
+                            ) {
+                                let (fee_payer_ata, _) = Pubkey::find_program_address(
+                                    &[
+                                        fee_payer_pk.as_ref(),
+                                        program_pk.as_ref(),
+                                        mint_pk.as_ref(),
+                                    ],
+                                    &ata_program,
+                                );
+                                if source == fee_payer_ata.to_string() {
+                                    return Err(VerificationError::invalid_payload(
+                                        "Fee payer token account cannot fund the SPL payment transfer",
+                                    ));
+                                }
+                            }
+                        }
                         matched_instruction_indexes.insert(index);
                         return Ok(());
                     }
@@ -4820,9 +4857,16 @@ mod tests {
             }
         })];
 
-        assert!(
-            find_spl_transfer(&instructions, owner, mint, 1_000_000, None, &mut matched).is_ok()
-        );
+        assert!(find_spl_transfer(
+            &instructions,
+            owner,
+            mint,
+            1_000_000,
+            None,
+            None,
+            &mut matched
+        )
+        .is_ok());
     }
 
     #[test]
@@ -4846,6 +4890,7 @@ mod tests {
             "SomeOwner",
             "SomeMint",
             1_000_000,
+            None,
             None,
             &mut matched
         )
@@ -4873,6 +4918,7 @@ mod tests {
             "SomeOwner",
             "SomeMint",
             1_000_000,
+            None,
             None,
             &mut matched
         )
@@ -4915,6 +4961,7 @@ mod tests {
             owner,
             wrong_mint,
             1_000_000,
+            None,
             None,
             &mut matched
         )
@@ -4988,9 +5035,104 @@ mod tests {
             },
         ];
 
-        let err =
-            verify_spl_transfers(&instructions, owner, mint, 800000, &splits, None).unwrap_err();
+        let err = verify_spl_transfers(&instructions, owner, mint, 800000, &splits, None, None)
+            .unwrap_err();
         assert!(err.message.contains("Missing split SPL transfer"));
+    }
+
+    #[test]
+    fn find_spl_transfer_rejects_authority_equals_fee_payer() {
+        let mut matched = HashSet::new();
+        let owner = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let fee_payer = "9XHRopERTd4LfQ8b6e3p9bN2WhxgQzDxFRtbq1XwQ4mP";
+        let tp = programs::TOKEN_PROGRAM;
+
+        let owner_pk = Pubkey::from_str(owner).unwrap();
+        let mint_pk = Pubkey::from_str(mint).unwrap();
+        let tp_pk = Pubkey::from_str(tp).unwrap();
+        let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+        let (dest_ata, _) = Pubkey::find_program_address(
+            &[owner_pk.as_ref(), tp_pk.as_ref(), mint_pk.as_ref()],
+            &ata_program,
+        );
+
+        let instructions = vec![serde_json::json!({
+            "programId": tp,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "source": "SomeSourceAta1111111111111111111111111111111",
+                    "authority": fee_payer,
+                    "destination": dest_ata.to_string(),
+                    "mint": mint,
+                    "tokenAmount": { "amount": "1000000" }
+                }
+            }
+        })];
+
+        let err = find_spl_transfer(
+            &instructions,
+            owner,
+            mint,
+            1_000_000,
+            None,
+            Some(fee_payer),
+            &mut matched,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Fee payer cannot authorize"));
+    }
+
+    #[test]
+    fn find_spl_transfer_rejects_source_equals_fee_payer_ata() {
+        let mut matched = HashSet::new();
+        let owner = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let fee_payer = "9XHRopERTd4LfQ8b6e3p9bN2WhxgQzDxFRtbq1XwQ4mP";
+        let tp = programs::TOKEN_PROGRAM;
+
+        let owner_pk = Pubkey::from_str(owner).unwrap();
+        let fee_payer_pk = Pubkey::from_str(fee_payer).unwrap();
+        let mint_pk = Pubkey::from_str(mint).unwrap();
+        let tp_pk = Pubkey::from_str(tp).unwrap();
+        let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+        let (dest_ata, _) = Pubkey::find_program_address(
+            &[owner_pk.as_ref(), tp_pk.as_ref(), mint_pk.as_ref()],
+            &ata_program,
+        );
+        let (fee_payer_ata, _) = Pubkey::find_program_address(
+            &[fee_payer_pk.as_ref(), tp_pk.as_ref(), mint_pk.as_ref()],
+            &ata_program,
+        );
+
+        let instructions = vec![serde_json::json!({
+            "programId": tp,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "source": fee_payer_ata.to_string(),
+                    // Authority is a different account (e.g. a delegate) so the
+                    // first check passes; the source-ATA check must still fire.
+                    "authority": owner,
+                    "destination": dest_ata.to_string(),
+                    "mint": mint,
+                    "tokenAmount": { "amount": "1000000" }
+                }
+            }
+        })];
+
+        let err = find_spl_transfer(
+            &instructions,
+            owner,
+            mint,
+            1_000_000,
+            None,
+            Some(fee_payer),
+            &mut matched,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Fee payer token account cannot fund"));
     }
 
     #[test]
@@ -5031,7 +5173,8 @@ mod tests {
             }),
         ];
         let matched =
-            verify_spl_transfers(&instructions, owner, mint, 1_000_000, &[], Some(tp)).unwrap();
+            verify_spl_transfers(&instructions, owner, mint, 1_000_000, &[], Some(tp), None)
+                .unwrap();
         let allowed_ata_owners = HashSet::from([owner.to_string()]);
         let required_ata_owners = HashSet::new();
 

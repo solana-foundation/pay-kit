@@ -50,3 +50,22 @@ Legend for **Decision**:
 **Note on "source = expected payer":** the audit suggested checking source against the expected payer. The lower-level path's policy is asymmetric (forbid `source == fee_payer`, allow anything else). We mirrored that policy rather than tightening, so the two verification paths behave identically.
 
 ---
+
+### #29 — Push-mode SPL verification ignores the source ATA
+**ID:** `45c6d39f` · **File:** `crates/mpp/src/server/charge.rs:1801`
+
+**Audit claim:** `find_spl_transfer` matched `transferChecked` instructions on `info.mint`, `info.tokenAmount.amount`, and derived destination ATA only. It never read `info.source` or `info.authority`, so in fee-sponsored mode the server's fee-payer signature could be re-used to fund the value transfer via its own ATA — same drain shape as #32, but on the SPL side.
+
+**Decision:** ✅ **accepted — fixed.**
+
+**Action taken:** mirror the lower-level path (`verify_spl_transfer_instructions:1586`):
+- Read `info.authority` and reject when `authority == fee_payer`.
+- Read `info.source` and reject when `source == fee_payer's ATA` (PDA derived from `[fee_payer, token_program, mint]` against the ATA program). Required even when the authority is a delegate.
+- Threaded `fee_payer: Option<&str>` through `verify_spl_transfers` and the parsed-credential caller.
+- Updated the 4 existing SPL parsed tests to take the new arg (`None`). Added 2 new tests:
+  - `find_spl_transfer_rejects_authority_equals_fee_payer`
+  - `find_spl_transfer_rejects_source_equals_fee_payer_ata`
+
+**Note on alternative recommendation:** the audit also suggested deriving the *expected source ATA* (from the signer/payer) and rejecting anything else, gating arbitrary sources behind a flag. We didn't take this route because the model already accepts delegate/multisig flows by design, and forcing source = signer's ATA would break that. The fee-payer exclusion is the narrower, sufficient fix.
+
+---
