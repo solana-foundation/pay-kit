@@ -21,6 +21,15 @@ module X402
       DEFAULT_RESOURCE_PATH = "/protected"
       DEFAULT_PRICE = "$0.001"
       DEFAULT_SETTLEMENT_HEADER = "x-fixture-settlement"
+      # Canonical x402 v2 response header emitted on successful settlement.
+      # Mirrors the Rust spine (rust/crates/x402/src/bin/interop_server.rs
+      # L221-231) and the TS fixture (harness/src/fixtures/typescript/
+      # exact-server.ts L322-331). The header value is raw (non-base64)
+      # JSON carrying the canonical PaymentResponse fields:
+      # { success, network, transaction }. The fixture settlement header
+      # is preserved alongside because existing harness assertions rely
+      # on it.
+      PAYMENT_RESPONSE_HEADER = "PAYMENT-RESPONSE"
       DEFAULT_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
       DEFAULT_TOKEN_DECIMALS = 6
       DEFAULT_MAX_TIMEOUT_SECONDS = 60
@@ -432,9 +441,17 @@ module X402
 
           begin
             settlement = settle_exact_payment(state, payment_signature, resource: path)
+            payment_response = JSON.generate(
+              success: true,
+              network: state.network,
+              transaction: settlement
+            )
             [
               200,
-              {DEFAULT_SETTLEMENT_HEADER => settlement},
+              {
+                DEFAULT_SETTLEMENT_HEADER => settlement,
+                PAYMENT_RESPONSE_HEADER => payment_response
+              },
               {
                 ok: true,
                 paid: true,

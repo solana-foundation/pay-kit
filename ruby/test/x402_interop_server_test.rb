@@ -764,6 +764,17 @@ class InteropServerTest < Minitest::Test
     assert_equal true, body.fetch(:paid)
     assert_equal "settlement-signature", body.fetch(:settlement).fetch(:transaction)
     assert_equal NETWORK, body.fetch(:settlement).fetch(:network)
+    # Canonical x402 v2 PAYMENT-RESPONSE header. Mirrors Rust spine
+    # (rust/crates/x402/src/bin/interop_server.rs L221-231) and TS fixture
+    # (harness/src/fixtures/typescript/exact-server.ts L322-331).
+    # Header value is raw JSON (not base64) with exactly the canonical
+    # PaymentResponse shape: { success, network, transaction }.
+    payment_response_raw = headers.fetch("PAYMENT-RESPONSE")
+    payment_response = JSON.parse(payment_response_raw, symbolize_names: true)
+    assert_equal(
+      {success: true, network: NETWORK, transaction: "settlement-signature"},
+      payment_response
+    )
   end
 
   def test_server_rejects_cross_server_credential_with_canonical_token
