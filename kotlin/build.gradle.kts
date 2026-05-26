@@ -18,6 +18,12 @@ dependencies {
     // harness) ship in. The JDK Ed25519 provider does not expose that
     // wire-level seed import path on every JVM.
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    // multimult is the Base58 codec maintained by Solana Mobile and used
+    // by web3-solana and mobile-wallet-adapter-clientlib. Pulling it in
+    // lets the SDK share the exact same Bitcoin-alphabet Base58
+    // implementation as the rest of the Solana Mobile Kotlin stack
+    // instead of carrying a hand-rolled BigInteger-based codec.
+    implementation("io.github.funkatronics:multimult-jvm:0.2.3")
     // OkHttp is the canonical Kotlin/JVM HTTP client. Used by MppHttpClient
     // for 402-triggered credential build and retry.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
