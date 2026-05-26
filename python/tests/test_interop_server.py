@@ -33,6 +33,7 @@ from x402.interop.server import (
     DEFAULT_SETTLEMENT_HEADER,
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
     MEMO_PROGRAM_ID,
+    PAYMENT_RESPONSE_HEADER,
     REPLAY_KEY_PREFIX,
     InteropHandler,
     ServerState,
@@ -1018,8 +1019,43 @@ class InteropServerTest(unittest.TestCase):
 
         settle.assert_called_once()
         self.assertEqual(write["status"], 200)
-        self.assertEqual(write["headers"], {DEFAULT_SETTLEMENT_HEADER: "signature-1"})
+        self.assertIn(DEFAULT_SETTLEMENT_HEADER, write["headers"])
+        self.assertEqual(write["headers"][DEFAULT_SETTLEMENT_HEADER], "signature-1")
         self.assertEqual(write["body"]["settlement"]["transaction"], "signature-1")
+
+    def test_protected_route_emits_canonical_payment_response_header(self):
+        """Codex r8 P1 regression: on successful settlement the response
+        must carry the canonical ``PAYMENT-RESPONSE`` header alongside the
+        fixture settlement header. Mirrors Rust spine
+        (rust/crates/x402/src/bin/interop_server.rs L221-231) and the TS
+        fixture (harness/src/fixtures/typescript/exact-server.ts L322-331).
+        Header value is raw JSON (not base64) carrying the canonical
+        PaymentResponse shape: { success, network, transaction }.
+        """
+        state = State()
+        with patch(
+            "x402.interop.server.settle_exact_payment", return_value="signature-canonical"
+        ):
+            write = dispatch_get(
+                DEFAULT_RESOURCE_PATH,
+                headers={"payment-signature": "payment-header"},
+                state=state,
+            )
+
+        self.assertEqual(write["status"], 200)
+        headers = write["headers"]
+        self.assertIn(PAYMENT_RESPONSE_HEADER, headers)
+        self.assertIn(DEFAULT_SETTLEMENT_HEADER, headers)
+        self.assertEqual(headers[DEFAULT_SETTLEMENT_HEADER], "signature-canonical")
+        payload = json.loads(headers[PAYMENT_RESPONSE_HEADER])
+        self.assertEqual(
+            payload,
+            {
+                "success": True,
+                "network": state.network,
+                "transaction": "signature-canonical",
+            },
+        )
 
     def test_protected_route_returns_payment_error_on_settlement_failure(self):
         with patch(

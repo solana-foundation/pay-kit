@@ -29,6 +29,16 @@ CAPABILITY_PAYLOAD = {
 DEFAULT_RESOURCE_PATH = "/protected"
 DEFAULT_PRICE = "$0.001"
 DEFAULT_SETTLEMENT_HEADER = "x-fixture-settlement"
+# Canonical x402 v2 response header emitted on successful settlement.
+# Mirrors the Rust spine (rust/crates/x402/src/bin/interop_server.rs L221-231,
+# rust/crates/x402/src/protocol/schemes/exact/types.rs L579) and the TS
+# fixture (harness/src/fixtures/typescript/exact-server.ts L322-331). The
+# header value is a raw (non-base64) JSON document carrying the canonical
+# PaymentResponse fields: { success, network, transaction }. The fixture
+# settlement header (``DEFAULT_SETTLEMENT_HEADER``) is preserved alongside
+# because the existing interop harness asserts presence of that header on
+# the happy path.
+PAYMENT_RESPONSE_HEADER = "PAYMENT-RESPONSE"
 DEFAULT_TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 DEFAULT_TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 DEFAULT_TOKEN_DECIMALS = 6
@@ -679,6 +689,15 @@ class InteropHandler(BaseHTTPRequestHandler):
             )
             return
 
+        network = self.server.state.network  # pyright: ignore[reportAttributeAccessIssue]
+        payment_response = json.dumps(
+            {
+                "success": True,
+                "network": network,
+                "transaction": settlement,
+            },
+            separators=(",", ":"),
+        )
         self._write_json(
             200,
             {
@@ -687,10 +706,13 @@ class InteropHandler(BaseHTTPRequestHandler):
                 "settlement": {
                     "success": True,
                     "transaction": settlement,
-                    "network": self.server.state.network,  # pyright: ignore[reportAttributeAccessIssue]
+                    "network": network,
                 },
             },
-            headers={DEFAULT_SETTLEMENT_HEADER: settlement},
+            headers={
+                DEFAULT_SETTLEMENT_HEADER: settlement,
+                PAYMENT_RESPONSE_HEADER: payment_response,
+            },
         )
 
     def log_message(self, format: str, *args: object) -> None:
