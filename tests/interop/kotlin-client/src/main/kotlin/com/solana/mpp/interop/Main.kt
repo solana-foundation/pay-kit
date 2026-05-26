@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  * Interop adapter for the MPP Kotlin client.
  *
  * Reads the env-var contract documented at
- * tests/interop/README.md and skills/pay-sdk-implementation/references/interop-harness.md,
+ * harness/README.md and skills/pay-sdk-implementation/references/interop-harness.md,
  * pays the target URL, and emits exactly one `result` JSON line on
  * stdout. Anything else (BouncyCastle init chatter, OkHttp HTTP2
  * complaints, JVM warnings) must go to stderr so the harness parses a

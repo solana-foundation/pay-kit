@@ -105,7 +105,7 @@ coverage gate through Jacoco.
 ## Running the interop adapter
 
 ```sh
-cd tests/interop/kotlin-client
+cd harness/kotlin-client
 MPP_INTEROP_TARGET_URL=http://localhost:4570/paid \
 MPP_INTEROP_RPC_URL=http://localhost:8899 \
 MPP_INTEROP_CLIENT_SECRET_KEY='[1,2,3,...,64]' \
@@ -185,10 +185,10 @@ The XML and HTML reports land at
 
 ## Interop
 
-Adapter at `tests/interop/kotlin-client`. Focused harness commands:
+Adapter at `harness/kotlin-client`. Focused harness commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=kotlin MPP_INTEROP_SERVERS=typescript pnpm test
 ```
 

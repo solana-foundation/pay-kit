@@ -262,12 +262,12 @@ jobs:
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Start Surfnet
         working-directory: .
         run: |
-          node tests/interop/start-surfnet-proxy.mjs &
+          node harness/start-surfnet-proxy.mjs &
           ready=0
           for i in $(seq 1 50); do
             if curl -sf -X POST http://localhost:8899 \
@@ -302,12 +302,12 @@ jobs:
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Start Surfnet
         working-directory: .
         run: |
-          node tests/interop/start-surfnet-proxy.mjs &
+          node harness/start-surfnet-proxy.mjs &
           ready=0
           for i in $(seq 1 50); do
             if curl -sf -X POST http://localhost:8899 \
@@ -376,12 +376,12 @@ jobs:
         with:
           name: html-assets
       - name: Install Surfnet helper dependencies
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Start Surfnet
         working-directory: .
         run: |
-          node tests/interop/start-surfnet-proxy.mjs &
+          node harness/start-surfnet-proxy.mjs &
           ready=0
           for i in $(seq 1 50); do
             if curl -sf -X POST http://localhost:8899 \
@@ -451,7 +451,7 @@ jobs:
         working-directory: rust
         run: cargo build -p solana-mpp --bin interop_client --bin interop_server
       - name: Install interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - uses: ruby/setup-ruby@v1
         with:
@@ -459,34 +459,34 @@ jobs:
           bundler-cache: true
           working-directory: ruby
       - name: Typecheck interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm typecheck
       - name: Run Rust client interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: typescript
       - name: Run Rust server interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: rust
       - name: Run Rust end-to-end interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: rust
       - name: Run Ruby server interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: ruby
       - name: Run Rust client to Ruby server interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
         env:
           MPP_INTEROP_CLIENTS: rust

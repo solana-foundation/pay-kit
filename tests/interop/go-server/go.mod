@@ -1,4 +1,4 @@
-module github.com/solana-foundation/mpp-sdk/tests/interop/go-server
+module github.com/solana-foundation/mpp-sdk/harness/go-server
 
 go 1.26.1
 

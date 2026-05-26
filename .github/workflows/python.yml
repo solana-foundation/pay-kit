@@ -77,7 +77,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       # Critical order: install + build the TypeScript workspace BEFORE
-      # installing the interop harness. tests/interop has
+      # installing the interop harness. harness has
       # ``"@solana/mpp": "file:../../typescript/packages/mpp"`` which
       # pnpm copies into node_modules at install time. If the typescript
       # package has no dist/ at that moment, the TS interop client crashes
@@ -95,16 +95,16 @@ jobs:
         working-directory: rust
         run: cargo build -p solana-mpp --bin interop_client --bin interop_server
       - name: Install interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Focused TS-to-Python interop
-        working-directory: tests/interop
+        working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
       - name: Focused Rust-to-Python interop
-        working-directory: tests/interop
+        working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: python

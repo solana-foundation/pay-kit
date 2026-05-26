@@ -128,7 +128,7 @@ localnet fixture.
 ## Running the interop adapters
 
 ```bash
-cd tests/interop/go-server
+cd harness/go-server
 go run .   # starts a Surfpool-backed protected endpoint on a random port
 
 cd ../go-client
@@ -193,7 +193,7 @@ same structural transaction verifier as pull mode, consumes the
 signature through replay storage, and emits the same receipt shape.
 
 The direct Go interop server at
-[`tests/interop/go-server/main.go`](../tests/interop/go-server/main.go)
+[`harness/go-server/main.go`](../harness/go-server/main.go)
 exercises this end-to-end through Surfpool for both TypeScript and Rust
 clients.
 
@@ -258,15 +258,15 @@ The CI Go job runs the SDK packages with `-coverprofile` and enforces a
 
 ## Interop
 
-The cross-language interop harness lives in `../tests/interop`. The Go
-SDK ships both a client (`tests/interop/go-client`) and a server
-(`tests/interop/go-server`) adapter. Both are opt-in via the
+The cross-language interop harness lives in `../harness`. The Go
+SDK ships both a client (`harness/go-client`) and a server
+(`harness/go-server`) adapter. Both are opt-in via the
 `MPP_INTEROP_CLIENTS` and `MPP_INTEROP_SERVERS` env vars.
 
 Focused harness commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=go         MPP_INTEROP_SERVERS=rust pnpm test
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go   pnpm test
 MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=go   pnpm test

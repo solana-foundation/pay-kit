@@ -64,16 +64,16 @@ jobs:
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
       - name: Install interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Typecheck interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm typecheck
       - name: Pre-warm Gradle for the Kotlin interop client
-        working-directory: tests/interop/kotlin-client
+        working-directory: harness/kotlin-client
         run: gradle installDist --no-daemon
       - name: Run Kotlin client interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
         env:
           MPP_INTEROP_CLIENTS: kotlin

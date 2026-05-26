@@ -147,7 +147,7 @@ same structural transaction verifier as pull mode, consumes the
 signature through replay storage, and emits the same receipt shape.
 
 The direct `<language>` interop server at
-[`tests/interop/<lang>-server/server.<ext>`](../tests/interop/<lang>-server/server.<ext>)
+[`harness/<lang>-server/server.<ext>`](../harness/<lang>-server/server.<ext>)
 exercises this end-to-end through Surfpool in CI.
 
 ## Examples
@@ -210,7 +210,7 @@ State the harness adapter path and any focused harness commands the
 language ships in this pass:
 
 `​``bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=<lang> pnpm test
 MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=<lang> pnpm test
 `​``

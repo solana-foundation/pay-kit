@@ -30,8 +30,8 @@
   },
   "scripts": {
     "format:check": "php-cs-fixer fix --dry-run --diff --using-cache=no --sequential",
-    "lint:syntax": "find src tests examples ../tests/interop/php-server \\( -path examples/laravel -prune \\) -o -name '*.php' -print0 | xargs -0 -n1 php -l",
-    "lint:static": "phpstan analyse --level=max --debug --memory-limit=1G src tests examples/simple-server ../tests/interop/php-server",
+    "lint:syntax": "find src tests examples ../harness/php-server \\( -path examples/laravel -prune \\) -o -name '*.php' -print0 | xargs -0 -n1 php -l",
+    "lint:static": "phpstan analyse --level=max --debug --memory-limit=1G src tests examples/simple-server ../harness/php-server",
     "lint": [
       "@lint:syntax",
       "@format:check",

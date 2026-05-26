@@ -62,9 +62,9 @@ The interop harness can run a full client/server cross-product, but CI keeps the
 | Python | ![Python](https://img.shields.io/badge/coverage-87%25-green) | `just py-test` |
 | Lua | ![Lua](https://img.shields.io/badge/coverage-41_tests-blue) | `just lua-test` |
 | Ruby | ![Ruby](https://img.shields.io/badge/coverage-98%25-green) | `just rb-test-cover` |
-| Interop | ![Interop](https://img.shields.io/badge/interop-TypeScript_harness-brightgreen) | `cd tests/interop && pnpm test` |
+| Interop | ![Interop](https://img.shields.io/badge/interop-TypeScript_harness-brightgreen) | `cd harness && pnpm test` |
 
-See [`tests/interop/README.md`](tests/interop/README.md) for the process adapter contract used by the Surfpool-backed client/server matrix.
+See [`harness/README.md`](harness/README.md) for the process adapter contract used by the Surfpool-backed client/server matrix.
 
 ## Install
 

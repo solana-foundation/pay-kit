@@ -129,7 +129,7 @@ transactions on non-localnet networks, fee-payer co-sign (when configured),
 broadcast via `sendTransaction`, poll `getSignatureStatuses` to
 `confirmed`/`finalized`, and emit `payment-receipt` with the on-chain
 signature. The pure-PHP interop server at
-[`tests/interop/php-server/server.php`](../tests/interop/php-server/server.php)
+[`harness/php-server/server.php`](../harness/php-server/server.php)
 exercises this end-to-end through Surfpool in CI for both TypeScript and Rust
 clients.
 

@@ -188,7 +188,7 @@ signature in replay storage only after the on-chain shape is known to
 be correct, and emits the same receipt shape.
 
 The direct Python interop server at
-[`tests/interop/python-server/main.py`](../tests/interop/python-server/main.py)
+[`harness/python-server/main.py`](../harness/python-server/main.py)
 exercises this end to end through Surfpool in CI for both TypeScript
 and Rust clients.
 
@@ -270,7 +270,7 @@ percent, `_types` 99 percent, `_headers` 89 percent.
 ## Interop
 
 The Python server has a direct harness adapter at
-[`tests/interop/python-server/main.py`](../tests/interop/python-server/main.py)
+[`harness/python-server/main.py`](../harness/python-server/main.py)
 mirroring the Ruby and PHP adapters. It is server-side only in this
 pass (no client adapter; the Python client ships as a library and is
 exercised through unit tests in `python/tests/test_client_charge.py`).
@@ -278,7 +278,7 @@ exercised through unit tests in `python/tests/test_client_charge.py`).
 Focused harness commands:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=python pnpm test
 MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=python pnpm test
 ```

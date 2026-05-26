@@ -142,11 +142,11 @@ jobs:
         run: cargo build -p solana-mpp --bin interop_client
 
       - name: Install interop harness deps
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
 
       - name: TS-to-Lua focused matrix
-        working-directory: tests/interop
+        working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: lua
@@ -154,7 +154,7 @@ jobs:
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays lua server"
 
       - name: Rust-to-Lua focused matrix
-        working-directory: tests/interop
+        working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: lua

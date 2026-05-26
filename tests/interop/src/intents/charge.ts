@@ -66,7 +66,7 @@ export const chargeCanonicalJsonVectors: readonly CanonicalJsonVector[] = [
  * Reserved for a future cross-SDK harness loop that asserts each
  * implementation's encoder rejects these inputs; today the per-language
  * rejection coverage lives inline in each SDK's own unit suite plus the
- * reference encoder check in `tests/interop/test/canonical-json.test.ts`.
+ * reference encoder check in `harness/test/canonical-json.test.ts`.
  * Kept here so the spec-mandated reject set has a single source of truth.
  */
 export const chargeCanonicalJsonRejectVectors: readonly { id: string; reason: string }[] = [
@@ -118,7 +118,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // Server fixtures honour MPP_INTEROP_PAYMENT_MODE=push by omitting
     // the fee payer signer when constructing the charge method.
     // Excluded: lua and python ship push support in their SDKs but do
-    // not yet have an interop server fixture under tests/interop/.
+    // not yet have an interop server fixture under harness/.
     id: "charge-push",
     intent: "charge",
     paymentMode: "push",

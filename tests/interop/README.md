@@ -91,7 +91,7 @@ expected success/failure status, live in `src/contracts.ts`.
 
 1. Add a process adapter for the language.
 2. Register it in `src/implementations.ts` as a client, server, or both.
-3. Keep the adapter command relative to `tests/interop`.
+3. Keep the adapter command relative to `harness`.
 4. Make stdout emit only the `ready` or `result` JSON message.
 5. Run a focused matrix before enabling it by default:
 
@@ -156,13 +156,13 @@ install:
 cd ../../typescript
 pnpm --filter @solana/mpp build
 
-cd ../tests/interop
+cd ../harness
 pnpm install --force --frozen-lockfile
 pnpm test
 ```
 
 `@solana/mpp` is installed from a local `file:` dependency, so
-`tests/interop` needs to install after the TypeScript package has produced its
+`harness` needs to install after the TypeScript package has produced its
 `dist` files.
 
 The harness starts Surfpool through `start-surfnet-proxy.mjs`, funds the test

@@ -89,7 +89,7 @@ module Mpp
       # (verify_instruction_allowlist). The message originates as
       # "Unexpected program instruction ..." in the verifier and must
       # map to charge_request_mismatch to stay byte-identical with the
-      # TS/Rust/Lua canonical classifiers (tests/interop/src/canonical-codes.ts
+      # TS/Rust/Lua canonical classifiers (harness/src/canonical-codes.ts
       # and rust/src/bin/interop_server.rs::classify_canonical_code).
       # Without this entry the rescue chain in verify_transaction_payload
       # silently downgrades allowlist rejections to payment_invalid which

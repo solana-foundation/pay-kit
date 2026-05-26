@@ -70,23 +70,23 @@ jobs:
         working-directory: rust
         run: cargo build -p solana-mpp --bin interop_client
       - name: Install interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm install --frozen-lockfile
       - name: Install PHP interop dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
       - name: Typecheck interop harness
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm typecheck
       - name: Run PHP server interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: php
           MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
       - name: Run Rust client PHP server interop smoke
-        working-directory: tests/interop
+        working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
         env:
           MPP_INTEROP_CLIENTS: rust

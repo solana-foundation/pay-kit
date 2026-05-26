@@ -18,7 +18,7 @@ return (new Config())
                 __DIR__ . '/src',
                 __DIR__ . '/tests',
                 __DIR__ . '/examples',
-                __DIR__ . '/../tests/interop/php-server',
+                __DIR__ . '/../harness/php-server',
             ])
             ->exclude(['laravel'])
             ->ignoreVCS(true)

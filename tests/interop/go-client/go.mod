@@ -1,4 +1,4 @@
-module github.com/solana-foundation/pay-kit/tests/interop/go-client
+module github.com/solana-foundation/pay-kit/harness/go-client
 
 go 1.26.1
 

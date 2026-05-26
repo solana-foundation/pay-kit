@@ -174,7 +174,7 @@ beforeAll(async () => {
   // surfpool's RPC stops responding to subsequent simulate/broadcast
   // calls, which surfaces as a 120s adapter-output timeout on
   // charge-idempotent-resubmit (the matrix's tail scenario). The
-  // 1s cadence matches tests/interop/start-surfnet-proxy.mjs, which
+  // 1s cadence matches harness/start-surfnet-proxy.mjs, which
   // already does this for the proxy-mode launcher. See Ludo-7 / PR #102.
   surfnetDrainTimer = setInterval(() => {
     surfnet?.drainEvents();
