@@ -5,6 +5,7 @@ import os
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 from unittest.mock import patch
 
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
@@ -1178,7 +1179,7 @@ class InteropServerTest(unittest.TestCase):
         )
         self.assertEqual(body["error"], "signature_consumed")
         self.assertEqual(body["code"], "signature_consumed")
-        self.assertIn("signature_consumed", body["message"])
+        self.assertIn("signature_consumed", cast(str, body["message"]))
 
 
 class FeePayerAttackRegressionTest(unittest.TestCase):
