@@ -7,9 +7,15 @@ require "uri"
 
 require "pay_core/solana/mints"
 require "pay_core/solana/caip2"
-require "x402/exact"
+require "x402/interop/exact"
 
 module X402
+  # `X402::Interop` is fixture-only code that backs the x402 interop
+  # harness (`ruby/bin/x402-interop-server` and the cross-language test
+  # matrix in `harness/`). It is NOT part of the production x402 server
+  # surface; do not require it from application code. The production
+  # x402 server entry point lives outside this namespace and is not
+  # included in this PR.
   module Interop
     module Server
       module_function

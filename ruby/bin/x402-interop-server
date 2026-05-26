@@ -5,7 +5,7 @@ require "json"
 require "socket"
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
-require "x402/server"
+require "x402/interop/server"
 
 server = TCPServer.new("127.0.0.1", 0)
 running = true

@@ -3,8 +3,8 @@
 require "base64"
 require "json"
 require_relative "test_helper"
-require "x402/exact"
-require "x402/server"
+require "x402/interop/exact"
+require "x402/interop/server"
 
 class InteropServerTest < Minitest::Test
   NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
