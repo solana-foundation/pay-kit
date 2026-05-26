@@ -67,20 +67,9 @@ module X402
         end
       end
 
-      def build_exact_payment_signature_from_rpc(requirement:, client_secret_key:, rpc_url:, resource: nil)
-        blockhash = string_extra(requirement, "recentBlockhash", required: false)
-        if blockhash.nil? || blockhash.empty?
-          blockhash = Rpc.new(rpc_url).latest_blockhash
-        end
-
-        build_exact_payment_signature(
-          requirement: requirement,
-          client_secret_key: client_secret_key,
-          recent_blockhash: blockhash,
-          resource: resource
-        )
-      end
-
+      # Build a client-signed x402 payment envelope. Used by the server
+      # interop tests to construct fixture payloads; production client
+      # signing happens in the TS/Rust/Go/Python adapters, not Ruby.
       def build_exact_payment_signature(requirement:, client_secret_key:, recent_blockhash:, resource: nil)
         raise ArgumentError, "only exact payment requirements can be signed" unless requirement["scheme"] == "exact"
 
@@ -98,10 +87,6 @@ module X402
         envelope[:resource] = resource if resource.is_a?(Hash)
 
         Base64.strict_encode64(JSON.generate(envelope))
-      end
-
-      def public_key_base58(client_secret_key)
-        base58_encode(private_key_from_json(client_secret_key).raw_public_key)
       end
 
       def sign_transaction_with_fee_payer(transaction:, fee_payer_secret_key:)
@@ -170,10 +155,6 @@ module X402
 
       def accepted_requirement_matches?(left, right)
         left == right
-      end
-
-      def latest_blockhash(rpc_url)
-        Rpc.new(rpc_url).latest_blockhash
       end
 
       def build_transaction(requirement:, private_key:, recent_blockhash:)
