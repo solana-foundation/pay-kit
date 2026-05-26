@@ -1,28 +1,47 @@
 # frozen_string_literal: true
 
-# `solana-pay-kit` umbrella module. Mirrors the Rust spine layout
-# (solana-pay-core / solana-mpp / solana-x402 / solana-pay-kit):
+# `solana-pay-kit` umbrella. Loads the shared `PayCore` primitives, the
+# protocol layers (`Mpp`, `X402`), and the high-level `PayKit` v2 surface
+# that unifies them.
+#
+# Layout:
 #
 #  -----------------------------------------------------------
-# |                  solana-pay-kit                           |
+# |                  solana-pay-kit (PayKit v2)               |
 #  -----------------------------------------------------------
 # |   solana-mpp        |     solana-x402                     |
 #  -----------------------------------------------------------
 # |                  solana-pay-core                          |
 #  -----------------------------------------------------------
 #
-# Requiring `pay_kit` loads the shared `PayCore` primitives, then both
-# the `Mpp` and `X402` protocol layers, and exposes them under the
-# `PayKit` umbrella for callers that prefer one entry point.
+# v2 surface:
+#
+#   PayKit::Config              boot-time configuration (PayKit.configure)
+#   PayKit::Pricing             registry base class + gate DSL
+#   PayKit::Gate, ::Price, ...  frozen value objects (Data.define)
+#   PayKit::Schemes::{X402,MPP} protocol adapters
+#   PayKit::Rack::PaymentRequired   Rack middleware
+#   PayKit::Sinatra             opt-in via "solana_pay_kit/sinatra"
+#   PayKit::Controller          opt-in via "solana_pay_kit/rails"
+#
+# Framework shims are opt-in to keep require-time side effects to
+# zero (no auto-detect, no spooky load-order failures).
 
 require_relative "pay_core"
 require_relative "mpp"
 require_relative "x402"
 
-# Umbrella namespace re-exporting each layer under the `PayKit::*`
-# alias. Callers may continue to use the bare `Mpp`, `X402`, and
-# `PayCore` modules directly; `PayKit::Mpp` etc. exist for downstream
-# code that wants a single canonical entry point.
+require_relative "pay_kit/errors"
+require_relative "pay_kit/price"
+require_relative "pay_kit/fee"
+require_relative "pay_kit/gate"
+require_relative "pay_kit/dynamic_gate"
+require_relative "pay_kit/config"
+require_relative "pay_kit/pricing"
+require_relative "pay_kit/challenge"
+require_relative "pay_kit/schemes"
+require_relative "pay_kit/rack/payment_required"
+
 module PayKit
   Core = ::PayCore
   Mpp = ::Mpp
