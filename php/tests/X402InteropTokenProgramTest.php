@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SolanaMpp\Tests;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SolanaMpp\X402\Interop\Mints;
 
@@ -56,9 +57,7 @@ final class X402InteropTokenProgramTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider token2022MintsProvider
-     */
+    #[DataProvider('token2022MintsProvider')]
     public function testToken2022MintsResolveToToken2022Program(string $mint): void
     {
         self::assertTrue(
@@ -68,9 +67,7 @@ final class X402InteropTokenProgramTest extends TestCase
         self::assertSame(TOKEN_2022_PROGRAM, token_program_for_mint($mint));
     }
 
-    /**
-     * @dataProvider legacyTokenProgramMintsProvider
-     */
+    #[DataProvider('legacyTokenProgramMintsProvider')]
     public function testLegacyTokenProgramMintsResolveToClassicProgram(string $mint): void
     {
         self::assertFalse(
