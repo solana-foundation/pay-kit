@@ -58,12 +58,34 @@ const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
 const DEFAULT_REALM: &str = "MPP Payment";
 
+/// Minimum length, in bytes, for the HMAC-SHA256 key used to bind
+/// challenge IDs. NIST SP 800-107 recommends a key at least as long as
+/// the hash output (256 bits = 32 bytes); below that the key is the
+/// weakest link, not the hash.
+const MIN_SECRET_KEY_BYTES: usize = 32;
+
 fn detect_secret_key() -> Result<String, Error> {
     std::env::var(SECRET_KEY_ENV_VAR).map_err(|_| {
         Error::InvalidConfig(format!(
             "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass secret_key explicitly."
         ))
     })
+}
+
+/// Reject empty / short secret keys before they are used as the HMAC key
+/// for challenge IDs. Audit #24: a weak key lets an attacker forge
+/// challenges. We require at least `MIN_SECRET_KEY_BYTES` bytes of input;
+/// callers SHOULD pass ≥32 bytes of cryptographically-random data
+/// (e.g. `openssl rand -base64 32`).
+fn validate_secret_key(secret_key: &str) -> Result<(), Error> {
+    if secret_key.len() < MIN_SECRET_KEY_BYTES {
+        return Err(Error::InvalidConfig(format!(
+            "Secret key is too short ({} bytes): require at least {MIN_SECRET_KEY_BYTES} bytes \
+             of cryptographically-random data (e.g. `openssl rand -base64 32`)",
+            secret_key.len()
+        )));
+    }
+    Ok(())
 }
 
 fn default_rpc_url(network: &str) -> &'static str {
@@ -131,7 +153,12 @@ pub struct Config {
     pub network: String,
     /// RPC URL (overrides default for the network).
     pub rpc_url: Option<String>,
-    /// Server secret key for HMAC challenge IDs.
+    /// Server secret key for HMAC-SHA256 challenge IDs.
+    ///
+    /// MUST be at least 32 bytes of cryptographically-random data. Generate
+    /// with e.g. `openssl rand -base64 32`. Short or low-entropy keys are
+    /// rejected at `Mpp::new` time. If `None`, the value is read from the
+    /// `MPP_SECRET_KEY` environment variable.
     pub secret_key: Option<String>,
     /// Server realm.
     pub realm: Option<String>,
@@ -215,6 +242,7 @@ impl Mpp {
             .rpc_url
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
         let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
+        validate_secret_key(&secret_key)?;
         let realm = config.realm.unwrap_or_else(|| DEFAULT_REALM.to_string());
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
 
@@ -3518,7 +3546,7 @@ mod tests {
 
     // ── Helper: create an Mpp instance for testing ──
 
-    const TEST_SECRET: &str = "test-secret-key-for-unit-tests";
+    const TEST_SECRET: &str = "test-secret-key-for-unit-tests-with-32b-padding";
     const TEST_RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
 
     fn test_mpp() -> Mpp {
@@ -3560,7 +3588,7 @@ mod tests {
     fn new_missing_recipient_errors() {
         let err = Mpp::new(Config {
             recipient: String::new(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             ..Default::default()
         })
         .err()
@@ -3575,7 +3603,7 @@ mod tests {
     fn new_invalid_recipient_pubkey_errors() {
         let err = Mpp::new(Config {
             recipient: "not-a-valid-pubkey!!!".to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             ..Default::default()
         })
         .err()
@@ -3612,7 +3640,7 @@ mod tests {
     fn new_secret_key_from_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
-        unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "env-secret") };
+        unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "env-secret-key-long-enough-for-hmac-binding-32b") };
 
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
@@ -3631,6 +3659,67 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_empty_secret_key() {
+        // Audit #24: short keys weaken the HMAC binding.
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(String::new()),
+            ..Default::default()
+        })
+        .err()
+        .expect("should fail");
+        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+    }
+
+    #[test]
+    fn new_rejects_short_secret_key() {
+        // Just below the 32-byte minimum.
+        let short = "a".repeat(MIN_SECRET_KEY_BYTES - 1);
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(short),
+            ..Default::default()
+        })
+        .err()
+        .expect("should fail");
+        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+    }
+
+    #[test]
+    fn new_accepts_secret_key_at_minimum_length() {
+        let exact = "a".repeat(MIN_SECRET_KEY_BYTES);
+        let result = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(exact),
+            ..Default::default()
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_rejects_short_env_secret_key() {
+        // Env-var path must apply the same gate as the explicit-config path.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
+        unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "too-short") };
+
+        let result = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: None,
+            ..Default::default()
+        });
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, v) };
+        } else {
+            unsafe { std::env::remove_var(SECRET_KEY_ENV_VAR) };
+        }
+
+        let err = result.err().expect("should fail");
+        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+    }
+
+    #[test]
     fn new_valid_config_succeeds() {
         let mpp = test_mpp();
         assert_eq!(mpp.realm(), DEFAULT_REALM);
@@ -3643,7 +3732,7 @@ mod tests {
     fn new_custom_realm() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             realm: Some("Custom Realm".to_string()),
             ..Default::default()
         })
@@ -3656,7 +3745,7 @@ mod tests {
         // Should not fail — just verifying it accepts a custom RPC URL.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
             ..Default::default()
         });
@@ -3668,7 +3757,7 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             store: Some(store),
             ..Default::default()
         });
@@ -3681,7 +3770,7 @@ mod tests {
     fn new_resolves_token_program_for_sol_currency() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
             ..Default::default()
@@ -3703,7 +3792,7 @@ mod tests {
         // (the old bug), the regression is back.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             currency: "PYUSD".to_string(),
             network: "mainnet".to_string(),
             ..Default::default()
@@ -3718,7 +3807,7 @@ mod tests {
         // up front, never silently fall back to the legacy Token Program.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            secret_key: Some(TEST_SECRET.to_string()),
             currency: "not-a-symbol-or-mint!!".to_string(),
             ..Default::default()
         })

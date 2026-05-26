@@ -223,7 +223,7 @@ mod tests {
     use axum::http::Request;
 
     const TEST_RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
-    const TEST_SECRET: &str = "axum-extractor-test-secret-key";
+    const TEST_SECRET: &str = "axum-extractor-test-secret-key-with-32b-padding";
 
     fn test_mpp() -> Arc<Mpp> {
         Arc::new(

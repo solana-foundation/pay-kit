@@ -146,3 +146,21 @@ Legend for **Decision**:
 **Note on alternative (b):** the audit also suggested locking to exact `price=1, limit=200_000` (the client builder's values). We chose the tight-cap shape so non-default-tooling clients can still tune priority during congestion without lockstep changes to the server.
 
 ---
+
+### #24 — Weak secret key accepted
+**ID:** `b7c1edc5` · **File:** `crates/mpp/src/server/charge.rs` (`Mpp::new` / `detect_secret_key`)
+
+**Audit claim:** Both the `Config.secret_key` path and the `MPP_SECRET_KEY` env-var path accepted any string — empty, `"key"`, etc. That string is the HMAC-SHA256 key binding challenge IDs, so a weak key lets an attacker forge challenges.
+
+**Decision:** ✅ **accepted — fixed, strict 32-byte minimum.**
+
+**Action taken:**
+- Added `MIN_SECRET_KEY_BYTES = 32`, matching NIST SP 800-107 guidance for HMAC-SHA256 (key ≥ hash output length).
+- New `validate_secret_key()` runs in `Mpp::new` after the value is resolved from either `Config.secret_key` or the env var — both paths share the same gate.
+- Updated the `Config.secret_key` docstring to require ≥ 32 bytes of cryptographically-random data and reference `openssl rand -base64 32`.
+- Updated test secrets across `src/server/{charge,axum}.rs` and `tests/charge_integration.rs` to ≥ 32-byte strings; `"key"` literals in unit tests now use the existing `TEST_SECRET` constant.
+- New tests: `new_rejects_empty_secret_key`, `new_rejects_short_secret_key`, `new_accepts_secret_key_at_minimum_length`, `new_rejects_short_env_secret_key` (regression: the env-var path must apply the same gate).
+
+**Note on threshold choice:** the audit asked for "a documented minimum size" without a number. 32 bytes is the cryptographically right answer for HMAC-SHA256; a permissive 16-byte minimum would have spared a few test churn but locks in an under-strength default for years.
+
+---
