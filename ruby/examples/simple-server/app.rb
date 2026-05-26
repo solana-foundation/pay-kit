@@ -19,7 +19,7 @@ end
 # Configure the Solana charge method (recipient, currency, network, RPC, fee payer)
 # and build the MPP server. The method bundles every static knob; per-request
 # only amount + description are passed to server.charge.
-method = Mpp::Methods::Solana.charge(
+method = Mpp::Protocol::Solana.charge(
   recipient: ENV.fetch("MPP_PAY_TO", DEFAULT_PAY_TO),
   currency: ENV.fetch("MPP_CURRENCY", DEFAULT_CURRENCY),
   network: ENV.fetch("MPP_NETWORK", "localnet"),

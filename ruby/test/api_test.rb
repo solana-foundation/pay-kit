@@ -24,7 +24,7 @@ end
 class MethodsSolanaChargeTest < Minitest::Test
   def test_charge_factory_returns_a_method_with_static_config
     rpc = StubRpc.new
-    method = Mpp::Methods::Solana.charge(
+    method = Mpp::Protocol::Solana.charge(
       recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
       currency: "USDC",
       network: "mainnet",
@@ -32,7 +32,7 @@ class MethodsSolanaChargeTest < Minitest::Test
       decimals: 6
     )
 
-    assert_instance_of Mpp::Methods::Solana::ChargeMethod, method
+    assert_instance_of Mpp::Protocol::Solana::ChargeMethod, method
     assert_equal "USDC", method.currency
     assert_equal "mainnet", method.network
     assert_equal ::PayCore::Solana::Mints::TOKEN_PROGRAM, method.token_program
@@ -40,35 +40,35 @@ class MethodsSolanaChargeTest < Minitest::Test
   end
 
   def test_rpc_string_is_coerced_to_an_rpc_client
-    method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: "https://example.invalid")
+    method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: "https://example.invalid")
 
     assert_instance_of ::PayCore::Solana::Rpc, method.rpc
   end
 
   def test_blockhash_is_cached_for_a_short_window
     rpc = StubRpc.new
-    method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: rpc)
+    method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: rpc)
 
     3.times { method.latest_blockhash }
     assert_equal 1, rpc.calls
   end
 
   def test_decimals_are_derived_from_a_known_mint_symbol
-    method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new)
+    method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new)
     assert_equal 6, method.decimals
 
-    sol_method = Mpp::Methods::Solana.charge(recipient: "x", currency: "SOL", rpc: StubRpc.new)
+    sol_method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "SOL", rpc: StubRpc.new)
     assert_equal 9, sol_method.decimals
   end
 
   def test_decimals_can_be_overridden_explicitly
-    method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new, decimals: 9)
+    method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new, decimals: 9)
     assert_equal 9, method.decimals
   end
 
   def test_method_details_include_fee_payer_when_configured
     account = ::PayCore::Solana::Account.new(Array.new(64, 1))
-    method = Mpp::Methods::Solana.charge(
+    method = Mpp::Protocol::Solana.charge(
       recipient: "x",
       currency: "USDC",
       rpc: StubRpc.new,
@@ -85,11 +85,11 @@ end
 class MppCreateTest < Minitest::Test
   def test_create_returns_a_server_instance
     server = Mpp.create(
-      method: Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new),
+      method: Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new),
       secret_key: "secret"
     )
 
-    assert_instance_of Mpp::Server::Instance, server
+    assert_instance_of Mpp::Server::Charge, server
     assert_equal Mpp::DEFAULT_REALM, server.realm
   end
 
@@ -100,7 +100,7 @@ class MppCreateTest < Minitest::Test
 
     assert_instance_of Mpp::Challenge, result
     assert_equal 402, result.status
-    assert result.headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
+    assert result.headers.key?(Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
     assert_equal "payment_required", result.body["error"]
   end
 
@@ -114,7 +114,7 @@ class MppCreateTest < Minitest::Test
   end
 
   def test_method_details_can_be_built_for_an_alternate_currency
-    method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new)
+    method = Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new)
 
     usdt_details = method.method_details(currency: "USDT")
     assert_equal 6, usdt_details["decimals"]
@@ -127,7 +127,7 @@ class MppCreateTest < Minitest::Test
 
   def test_charge_accepts_a_different_currency_per_call
     server = Mpp.create(
-      method: Mpp::Methods::Solana.charge(
+      method: Mpp::Protocol::Solana.charge(
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         currency: "USDC",
         rpc: StubRpc.new
@@ -161,7 +161,7 @@ class MppCreateTest < Minitest::Test
 
   def build_server
     Mpp.create(
-      method: Mpp::Methods::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
+      method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
       secret_key: "secret",
       realm: "Test"
     )
@@ -196,7 +196,7 @@ class MiddlewareTest < Minitest::Test
     status, headers, _body = middleware.call({"PATH_INFO" => "/paid"})
 
     assert_equal 402, status
-    assert headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
+    assert headers.key?(Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
   end
 
   def test_settlement_result_merges_headers_into_app_response
@@ -229,7 +229,7 @@ class MiddlewareTest < Minitest::Test
   private
 
   def build_server
-    Mpp.create(method: Mpp::Methods::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret")
+    Mpp.create(method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret")
   end
 
   def free_app
@@ -252,7 +252,7 @@ end
 
 class SinatraHelperTest < Minitest::Test
   def test_mpp_charge_halts_with_402_when_auth_missing
-    server = Mpp.create(method: Mpp::Methods::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret", realm: "T")
+    server = Mpp.create(method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret", realm: "T")
     app = Class.new(Sinatra::Base) do
       helpers Mpp::Sinatra::Helpers
       set :mpp_server, server

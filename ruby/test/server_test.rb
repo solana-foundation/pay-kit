@@ -48,17 +48,17 @@ class ChargeServerTest < Minitest::Test
   include RubyMppTestHelpers
 
   def setup
-    @server = Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
+    @server = Mpp::Protocol::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def test_creates_and_verifies_expected_credential
     request = charge_request(external_id: "order-1")
     challenge = @server.create_challenge(request)
-    credential = Mpp::Core::Credential.new(
+    credential = Mpp::Protocol::Core::Credential.new(
       challenge: challenge.to_echo,
       payload: {"signature" => valid_signature}
     )
-    verifier = Mpp::Methods::Solana::Verifier.new
+    verifier = Mpp::Protocol::Solana::Verifier.new
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
@@ -72,7 +72,7 @@ class ChargeServerTest < Minitest::Test
 
   def test_blockhash_provider_injects_recent_blockhash_without_mutating_request
     request = charge_request
-    server = Mpp::Core::ChallengeStore.new(
+    server = Mpp::Protocol::Core::ChallengeStore.new(
       secret_key: "secret",
       realm: "api",
       blockhash_provider: -> { "recent-blockhash" }
@@ -89,11 +89,11 @@ class ChargeServerTest < Minitest::Test
     cheap = charge_request
     expensive = charge_request(method_details: {"network" => "localnet", "decimals" => 6, "splits" => [{"recipient" => pubkey(3), "amount" => "250"}]})
     challenge = @server.create_challenge(cheap)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Methods::Solana::Verifier.new,
+      verifier: Mpp::Protocol::Solana::Verifier.new,
       expected_request: expensive
     )
 
@@ -105,11 +105,11 @@ class ChargeServerTest < Minitest::Test
     cheap = charge_request(amount: "500")
     expensive = charge_request(amount: "1000")
     challenge = @server.create_challenge(cheap)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Methods::Solana::Verifier.new,
+      verifier: Mpp::Protocol::Solana::Verifier.new,
       expected_request: expensive
     )
 
@@ -120,11 +120,11 @@ class ChargeServerTest < Minitest::Test
   def test_rejects_expired_challenge
     request = charge_request
     challenge = @server.create_challenge(request, expires: "2020-01-01T00:00:00Z")
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
     result = @server.verify_authorization_header(
       credential.to_authorization_header,
-      verifier: Mpp::Methods::Solana::Verifier.new,
+      verifier: Mpp::Protocol::Solana::Verifier.new,
       expected_request: request
     )
 
@@ -134,32 +134,32 @@ class ChargeServerTest < Minitest::Test
 
   def test_rejects_wrong_secret_and_wrong_realm
     request = charge_request
-    issuer = Mpp::Core::ChallengeStore.new(secret_key: "other", realm: "api")
-    credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
+    issuer = Mpp::Protocol::Core::ChallengeStore.new(secret_key: "other", realm: "api")
+    credential = Mpp::Protocol::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
 
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/challenge verification failed/, result.reason)
 
-    issuer = Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "other")
-    credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    issuer = Mpp::Protocol::Core::ChallengeStore.new(secret_key: "secret", realm: "other")
+    credential = Mpp::Protocol::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/does not match this server|challenge verification failed/, result.reason)
   end
 
   def test_rejects_wrong_method_with_valid_hmac
     request = charge_request
-    challenge = Mpp::Core::Challenge.with_secret(
+    challenge = Mpp::Protocol::Core::Challenge.with_secret(
       secret_key: "secret",
       realm: "api",
       method: "stripe",
       intent: "charge",
       request: request.to_h
     )
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
 
     refute result.ok?
     assert_match(/method/, result.reason)
@@ -167,21 +167,21 @@ class ChargeServerTest < Minitest::Test
 
   def test_rejects_wrong_intent_currency_and_recipient_with_valid_hmac
     request = charge_request
-    challenge = Mpp::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "session", request: request.to_h)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    challenge = Mpp::Protocol::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "session", request: request.to_h)
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/intent/, result.reason)
 
     challenge = @server.create_challenge(charge_request(currency: "USDC"))
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/Currency mismatch/, result.reason)
 
     challenge = @server.create_challenge(charge_request(recipient: pubkey(3)))
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
-    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Protocol::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/Recipient mismatch/, result.reason)
   end
@@ -197,7 +197,7 @@ class TransactionVerifierTest < Minitest::Test
   include RubyMppTestHelpers
 
   def setup
-    @verifier = Mpp::Methods::Solana::Verifier.new
+    @verifier = Mpp::Protocol::Solana::Verifier.new
   end
 
   def test_verifies_sol_transfer_and_memo
@@ -292,8 +292,8 @@ class TransactionVerifierTest < Minitest::Test
   end
 
   def test_verifier_rejects_missing_payload_and_invalid_base64
-    challenge = Mpp::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "charge", request: charge_request.to_h)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {})
+    challenge = Mpp::Protocol::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "charge", request: charge_request.to_h)
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {})
 
     result = @verifier.verify(credential, challenge)
     refute result.ok?
@@ -311,8 +311,8 @@ class TransactionVerifierTest < Minitest::Test
       account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     )
-    challenge = Mpp::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "charge", request: charge_request.to_h)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"transaction" => tx})
+    challenge = Mpp::Protocol::Core::Challenge.with_secret(secret_key: "secret", realm: "api", method: "solana", intent: "charge", request: charge_request.to_h)
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"transaction" => tx})
     expected = charge_request(method_details: {"network" => "localnet", "decimals" => 6, "splits" => [{"recipient" => pubkey(3), "amount" => "250"}]})
 
     result = @verifier.verify(credential, challenge, expected_request: expected)
@@ -556,7 +556,7 @@ class TransactionVerifierTest < Minitest::Test
       account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     )
-    no_recipient = Mpp::Intent::ChargeRequest.new(amount: "1000", currency: "SOL")
+    no_recipient = Mpp::Protocol::Intents::ChargeRequest.new(amount: "1000", currency: "SOL")
     result = @verifier.verify_transaction_payload(tx, no_recipient)
     refute result.ok?
     assert_match(/recipient is required/, result.reason)
@@ -604,12 +604,12 @@ class ChargeHandlerTest < Minitest::Test
     response = handler.handle(nil, charge_request)
 
     assert_equal 402, response.status
-    assert response.headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
+    assert response.headers.key?(Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
   end
 
   def test_fee_payer_pubkey_and_missing_payload_response
     keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
-    handler = Mpp::Core::Handler.new(
+    handler = Mpp::Server::Charge::Handler.new(
       challenges: handler_challenges,
       rpc: FakeRpc.new,
       replay_store: Mpp::MemoryStore.new,
@@ -619,7 +619,7 @@ class ChargeHandlerTest < Minitest::Test
     assert_equal keypair.public_key.to_s, handler.fee_payer_pubkey
 
     request = charge_request
-    credential = Mpp::Core::Credential.new(challenge: handler_challenges.create_challenge(request).to_echo, payload: {})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: handler_challenges.create_challenge(request).to_echo, payload: {})
     response = handler.handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
     assert_match(/missing transaction or signature/, response.body["message"])
@@ -634,7 +634,7 @@ class ChargeHandlerTest < Minitest::Test
     rpc = FakeRpc.new(transaction_response: {"meta" => {"err" => nil}, "transaction" => [transaction, "base64"]})
     handler = handler_with(rpc)
     challenge = handler_challenges.create_challenge(request)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
     response = handler.handle(credential.to_authorization_header, request)
 
@@ -647,7 +647,7 @@ class ChargeHandlerTest < Minitest::Test
     store.put_if_absent("solana-charge:consumed:#{valid_signature}", true)
     handler = handler_with(FakeRpc.new(transaction_response: transaction_response), store: store)
     request = charge_request
-    credential = Mpp::Core::Credential.new(challenge: handler_challenges.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: handler_challenges.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
 
     response = handler.handle(credential.to_authorization_header, request)
 
@@ -658,7 +658,7 @@ class ChargeHandlerTest < Minitest::Test
   def test_push_mode_reports_transaction_lookup_failures
     request = charge_request
     challenge = handler_challenges.create_challenge(request)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"signature" => valid_signature})
 
     response = handler_with(SequenceRpc.new(responses: [nil]), attempts: 1).handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
@@ -684,7 +684,7 @@ class ChargeHandlerTest < Minitest::Test
       instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
     ))
     challenge = handler_challenges.create_challenge(request)
-    credential = Mpp::Core::Credential.new(challenge: challenge.to_echo, payload: {"transaction" => transaction})
+    credential = Mpp::Protocol::Core::Credential.new(challenge: challenge.to_echo, payload: {"transaction" => transaction})
 
     response = handler_with(FakeRpc.new(simulation_error: "boom"), attempts: 1).handle(credential.to_authorization_header, request)
     assert_equal 402, response.status
@@ -702,11 +702,11 @@ class ChargeHandlerTest < Minitest::Test
   private
 
   def handler_challenges
-    @handler_challenges ||= Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
+    @handler_challenges ||= Mpp::Protocol::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def handler_with(rpc, store: Mpp::MemoryStore.new, attempts: 40)
-    Mpp::Core::Handler.new(
+    Mpp::Server::Charge::Handler.new(
       challenges: handler_challenges,
       rpc: rpc,
       replay_store: store,

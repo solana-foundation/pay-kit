@@ -92,14 +92,14 @@ class ErrorCodesTest < Minitest::Test
   end
 
   def test_verification_result_failure_carries_code
-    result = Mpp::Methods::Solana::VerificationResult.failure("Amount mismatch", code: CODE_CHARGE_REQUEST_MISMATCH)
+    result = Mpp::Protocol::Solana::VerificationResult.failure("Amount mismatch", code: CODE_CHARGE_REQUEST_MISMATCH)
     refute result.ok?
     assert_equal "Amount mismatch", result.reason
     assert_equal CODE_CHARGE_REQUEST_MISMATCH, result.code
   end
 
   def test_verification_result_failure_code_defaults_to_nil
-    result = Mpp::Methods::Solana::VerificationResult.failure("oops")
+    result = Mpp::Protocol::Solana::VerificationResult.failure("oops")
     assert_nil result.code
   end
 end

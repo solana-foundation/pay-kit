@@ -48,7 +48,7 @@ unless splits.is_a?(Array)
 end
 
 server = Mpp.create(
-  method: Mpp::Methods::Solana.charge(
+  method: Mpp::Protocol::Solana.charge(
     recipient: pay_to,
     currency:  mint,
     network:   network,

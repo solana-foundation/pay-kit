@@ -8,7 +8,7 @@ require_relative "../../mpp"
 
 module PayKit
   module Schemes
-    # MPP adapter. Wraps `::Mpp::Server::Instance` for charge intent.
+    # MPP adapter. Wraps `::Mpp::Server::Charge` for charge intent.
     # The class-level `.charge` callable returns a frozen `SchemeRef`
     # so gates can opt in explicitly: `accept: PayKit::Schemes::MPP.charge`.
     class MPP
@@ -99,7 +99,7 @@ module PayKit
       # Convert a Price (decimal string like "0.10") into the SPL
       # smallest-units integer assuming 6-decimal USDC/USDT/EURC.
       # MPP currently uses fixed 6 decimals for stablecoin charges
-      # (mirrors `Mpp::Methods::Solana` defaults).
+      # (mirrors `Mpp::Protocol::Solana` defaults).
       def to_smallest_units(price)
         whole, _, fraction = price.amount.partition(".")
         fraction = fraction.ljust(6, "0")[0, 6]

@@ -73,7 +73,7 @@ module RubyMppTestHelpers
   end
 
   def charge_request(overrides = {})
-    Mpp::Intent::ChargeRequest.new(
+    Mpp::Protocol::Intents::ChargeRequest.new(
       amount: "1000",
       currency: "SOL",
       recipient: pubkey(2),

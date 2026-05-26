@@ -154,7 +154,7 @@ module PayKit
 
       def build_mpp_server
         secret = @config.mpp.secret || raise(::PayKit::ConfigurationError, "PayKit.config.mpp.secret not set")
-        method = ::Mpp::Methods::Solana.charge(
+        method = ::Mpp::Protocol::Solana.charge(
           recipient: @config.pay_to || raise(::PayKit::ConfigurationError, "PayKit.config.pay_to not set"),
           currency: mint_for(@config.stablecoins.first, @config.network),
           network: caip2_for(@config.network),

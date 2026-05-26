@@ -30,7 +30,7 @@ require "mpp/sinatra"
 class App < Sinatra::Base
   helpers Mpp::Sinatra::Helpers
   set :mpp_server, Mpp.create(
-    method: Mpp::Methods::Solana.charge(
+    method: Mpp::Protocol::Solana.charge(
       recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
       currency: "USDC",
       network: "localnet",
