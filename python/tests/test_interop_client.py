@@ -73,7 +73,7 @@ class SelectSvmRequirementTests(unittest.TestCase):
             "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
             "amount": "1000",
         }
-        resource = {"type": "http", "uri": "/protected"}
+        resource = {"url": "/protected"}
 
         self.assertEqual(
             select_svm_challenge(
@@ -602,7 +602,7 @@ class ExactRpcMetadataTests(unittest.TestCase):
                 requirement=requirement,
                 client_secret_key=client.to_json(),
                 rpc_url="http://rpc.test",
-                resource={"type": "http", "uri": "/protected"},
+                resource={"url": "/protected"},
             )
 
         fetch_metadata.assert_called_once_with(
@@ -610,7 +610,7 @@ class ExactRpcMetadataTests(unittest.TestCase):
             "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
         )
         envelope = json.loads(base64.b64decode(header).decode("utf-8"))
-        self.assertEqual(envelope["resource"], {"type": "http", "uri": "/protected"})
+        self.assertEqual(envelope["resource"], {"url": "/protected"})
 
     def test_build_exact_payment_signature_rejects_non_exact_scheme(self) -> None:
         with self.assertRaisesRegex(ValueError, "only exact payment requirements can be signed"):
@@ -745,7 +745,7 @@ class ClientMainTests(unittest.TestCase):
         }
         challenge = {
             "x402Version": 2,
-            "resource": {"type": "http", "uri": "/protected"},
+            "resource": {"url": "/protected"},
             "accepts": [requirement],
         }
         paid_body = {"ok": True}
@@ -776,7 +776,7 @@ class ClientMainTests(unittest.TestCase):
             requirement=requirement,
             client_secret_key=client_secret_key,
             rpc_url="http://rpc.test",
-            resource={"type": "http", "uri": "/protected"},
+            resource={"url": "/protected"},
         )
         paid_request = urlopen.call_args_list[1].args[0]
         self.assertEqual(paid_request.headers["Payment-signature"], "payment-header")

@@ -153,11 +153,18 @@ def exact_requirements(state: ServerState) -> list[dict[str, Any]]:
 
 
 def exact_challenge(state: ServerState) -> dict[str, Any]:
+    # Canonical envelope `resource` shape: ``ResourceInfo { url, description?,
+    # mimeType? }`` mirrored from
+    # ``rust/crates/x402/src/protocol/schemes/exact/types.rs`` (struct
+    # ``ResourceInfo`` and ``PaymentRequiredEnvelope.resource``). Emitting
+    # ``{type, uri}`` instead breaks Rust client envelope parse
+    # (``serde_json::from_slice::<PaymentRequiredEnvelope>``) before
+    # requirement selection, blocking the rust-x402 -> python-x402 pair in
+    # ``harness/test/x402-exact.e2e.test.ts`` default matrix.
     return {
         "x402Version": 2,
         "resource": {
-            "type": "http",
-            "uri": DEFAULT_RESOURCE_PATH,
+            "url": DEFAULT_RESOURCE_PATH,
         },
         "accepts": exact_requirements(state),
     }
