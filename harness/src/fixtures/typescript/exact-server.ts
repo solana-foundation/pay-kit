@@ -294,11 +294,16 @@ async function main() {
       return;
     }
 
-    // Cross-server portability check: when the client supplies a payload
-    // challengeId, it must be one this server issued (or this server
-    // never required HMAC issuance). The first paid request that didn't
-    // come from this server's 402 will be missing from `issued`.
-    if (issued.size > 0 && !issued.has(credentialKey)) {
+    // Cross-server portability check: the payload challengeId MUST be
+    // one this server issued. The previous guard was `issued.size > 0 &&
+    // ...`, which let a freshly started server settle any credential
+    // until it had issued its first 402. Codex r8 P2: a direct replay
+    // of another server's payment-signature to a brand-new TS server
+    // would settle successfully, which is the opposite of canonical
+    // Rust behavior (`challenge_verification_failed`). Drop the size
+    // gate so any unrecognised credential is rejected immediately,
+    // including the first request after startup.
+    if (!issued.has(credentialKey)) {
       response.writeHead(402, {
         "content-type": "application/json",
         [PAYMENT_REQUIRED_HEADER]: paymentRequiredHeader,
