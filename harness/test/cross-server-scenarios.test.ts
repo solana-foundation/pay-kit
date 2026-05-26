@@ -62,11 +62,16 @@ function extractCanonicalCode(body: unknown): string | undefined {
   if (body && typeof body === "object" && !Array.isArray(body)) {
     const record = body as Record<string, unknown>;
     if (typeof record.code === "string") return record.code;
-    const source =
-      (typeof record.error === "string" && record.error) ||
-      (typeof record.message === "string" && record.message) ||
-      undefined;
-    if (source) return classifyMessageToCanonicalCode(source);
+    // Codex r8 #133 P2: the Rust x402 interop server wraps verifier
+    // failures as `{ error: "payment_invalid", message: "<specific-
+    // verifier-token>" }`. Searching `error` first then `message`
+    // would resolve to the generic `payment_invalid` and discard the
+    // specific verifier token. Search both fields combined so the
+    // taxonomy classifier sees the richer string.
+    const errorPart = typeof record.error === "string" ? record.error : "";
+    const messagePart = typeof record.message === "string" ? record.message : "";
+    const combined = [errorPart, messagePart].filter(Boolean).join(" ");
+    if (combined) return classifyMessageToCanonicalCode(combined);
   }
   if (typeof body === "string") {
     return classifyMessageToCanonicalCode(body);
