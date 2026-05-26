@@ -11,7 +11,12 @@ export type X402InteropEnvironment = {
   price: string;
   resourcePath: string;
   settlementHeader: string;
-  facilitatorSecretKey: Uint8Array;
+  // Optional in the TS reference fixture because the stub credential
+  // path does not actually sign anything. Real-signing language
+  // adapters read their own keypair env. Kept on the type so any future
+  // wire-through (settlement signing on the facilitator side) remains
+  // backwards-compatible.
+  facilitatorSecretKey: Uint8Array | null;
   // Server-only. Comma-separated mint addresses advertised alongside the
   // primary currency. Read from `X402_INTEROP_EXTRA_OFFERED_MINTS`.
   extraOfferedMints: string[];
@@ -19,7 +24,9 @@ export type X402InteropEnvironment = {
 
 export type X402ClientEnvironment = X402InteropEnvironment & {
   targetUrl: string;
-  clientSecretKey: Uint8Array;
+  // Optional in the TS reference fixture (stub credential, no signing).
+  // Real-signing adapters require their own keypair env.
+  clientSecretKey: Uint8Array | null;
   // Comma-separated currency preference list (symbols or mints) read
   // from `X402_INTEROP_PREFER_CURRENCIES`. Empty when unset.
   preferredCurrencies: string[];
@@ -29,6 +36,14 @@ const DEFAULT_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const DEFAULT_RESOURCE_PATH = "/protected";
 const DEFAULT_PRICE = "0.001";
 const DEFAULT_SETTLEMENT_HEADER = "x-fixture-settlement";
+// TS reference fixture defaults: the negative-scenario suite runs the
+// verifier surface without a live RPC or funded keypair. The live
+// matrix overrides every one of these via env. Constants chosen to
+// match harness/fixtures/x402-exact/canonical-challenge.json so
+// hand-crafted credentials in the negative suite are wire-compatible.
+const DEFAULT_RPC_URL = "http://127.0.0.1:8899";
+const DEFAULT_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const DEFAULT_PAY_TO = "5xYbHvVQfTUyzCzKx5KjVxyqXqQ4Ujm5SbqQXJ5w8nVA";
 
 function readRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -44,6 +59,17 @@ function parseSecretKey(name: string): Uint8Array {
   return new Uint8Array(parsed);
 }
 
+function parseOptionalSecretKey(name: string): Uint8Array | null {
+  const raw = process.env[name];
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(raw) as number[];
+    return new Uint8Array(parsed);
+  } catch {
+    return null;
+  }
+}
+
 function parseCsv(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -54,15 +80,20 @@ function parseCsv(raw: string | undefined): string[] {
 
 function readBase(): X402InteropEnvironment {
   return {
-    rpcUrl: readRequiredEnv("X402_INTEROP_RPC_URL"),
+    rpcUrl: process.env.X402_INTEROP_RPC_URL ?? DEFAULT_RPC_URL,
     network: process.env.X402_INTEROP_NETWORK ?? DEFAULT_NETWORK,
-    mint: readRequiredEnv("X402_INTEROP_MINT"),
-    payTo: readRequiredEnv("X402_INTEROP_PAY_TO"),
+    mint: process.env.X402_INTEROP_MINT ?? DEFAULT_MINT,
+    payTo: process.env.X402_INTEROP_PAY_TO ?? DEFAULT_PAY_TO,
     price: process.env.X402_INTEROP_PRICE ?? DEFAULT_PRICE,
     resourcePath: process.env.X402_INTEROP_RESOURCE_PATH ?? DEFAULT_RESOURCE_PATH,
     settlementHeader:
       process.env.X402_INTEROP_SETTLEMENT_HEADER ?? DEFAULT_SETTLEMENT_HEADER,
-    facilitatorSecretKey: parseSecretKey("X402_INTEROP_FACILITATOR_SECRET_KEY"),
+    // TS reference fixture: credential is a stub blob, no on-chain
+    // signing. Real-signing adapters parse this env themselves via
+    // parseSecretKey. Keeping the parse optional unblocks the
+    // negative-scenario suite, which exercises the verifier surface
+    // without standing up a Surfpool RPC or a funded keypair.
+    facilitatorSecretKey: parseOptionalSecretKey("X402_INTEROP_FACILITATOR_SECRET_KEY"),
     extraOfferedMints: parseCsv(process.env.X402_INTEROP_EXTRA_OFFERED_MINTS),
   };
 }
@@ -76,7 +107,10 @@ export function readX402ClientEnvironment(): X402ClientEnvironment {
   return {
     ...base,
     targetUrl: readRequiredEnv("X402_INTEROP_TARGET_URL"),
-    clientSecretKey: parseSecretKey("X402_INTEROP_CLIENT_SECRET_KEY"),
+    // Same rationale as `facilitatorSecretKey`: TS reference client
+    // emits a stub credential and never signs. Real-signing adapters
+    // read this env via their own parser.
+    clientSecretKey: parseOptionalSecretKey("X402_INTEROP_CLIENT_SECRET_KEY"),
     preferredCurrencies: parseCsv(process.env.X402_INTEROP_PREFER_CURRENCIES),
   };
 }
