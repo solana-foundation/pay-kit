@@ -96,3 +96,32 @@ Legend for **Decision**:
 - New tests: `new_resolves_token_program_for_sol_currency`, `_for_usdc`, `_for_pyusd_token_2022` (regression for part 1), `new_rejects_unparseable_currency_without_rpc`. RPC-backed arbitrary-mint path is exercised by integration tests in `tests/charge_integration.rs` against the localnet.
 
 ---
+
+### #26 — Client signs arbitrary mint-address currencies (Token-2022 hook risk)
+**ID:** `5e1a1d39` · **Files:** `crates/mpp/src/client/charge.rs`, `crates/mpp/src/protocol/solana.rs`
+
+**Audit claim:** Spec §13.3 requires clients, if `currency` is a mint address, to verify it is a known token. Today the client passes any mint through and only checks the owner is `TOKEN_PROGRAM` or `TOKEN_2022_PROGRAM`. An arbitrary Token-2022 mint can ship **transfer hooks** that execute arbitrary code on every transfer; the server's pre-broadcast checks don't simulate inner instructions in pull mode.
+
+**Decision:** ✅ **accepted — two-tier gate, with opt-in.**
+
+**Rationale:** A pure allowlist breaks the "arbitrary mints first-class" story we just leaned into for #28 (server-side). But transfer hooks are the actual hostile surface, and they only exist on Token-2022. The vanilla Token Program has no hooks, so arbitrary mints there stay first-class.
+
+**Action taken:**
+- Added `BuildChargeTransactionOptions::allow_unknown_token_2022` and `SelectChargeChallengeOptions::allow_unknown_token_2022` (both `bool`, default `false`).
+- In `build_spl_instructions`: after `resolve_token_program`, if the token program is Token-2022 AND the mint is not in `is_known_stablecoin_mint`, refuse to sign unless the caller opted in.
+- In `select_charge_challenge`: a new `challenge_is_unknown_token_2022` helper rejects candidates whose currency is an unknown mint when `methodDetails.tokenProgram` is either Token-2022 or missing (we cannot prove it isn't Token-2022). Vanilla `Token Program` hint allows the candidate through.
+- Added `build_credential_header_with_options` so callers can opt in without dropping to the lower-level builder.
+- New tests:
+  - `build_spl_refuses_unknown_token_2022_without_opt_in`
+  - `build_spl_allows_unknown_token_2022_with_opt_in`
+  - `build_spl_allows_unknown_vanilla_token_mint`
+  - `build_spl_does_not_gate_known_token_2022_stablecoin`
+  - `select_charge_challenge_skips_unknown_token_2022_by_default`
+  - `select_charge_challenge_skips_unknown_mint_with_no_token_program_hint`
+  - `select_charge_challenge_accepts_unknown_vanilla_token_mint`
+  - `select_charge_challenge_allows_unknown_token_2022_with_opt_in`
+  - `select_charge_challenge_does_not_gate_known_token_2022_stablecoin`
+
+**Note on departing from the audit recommendation:** the audit asked for a plain allowlist with opt-in. We split it on the actual threat axis (Token-2022 vs. Token) so unknown plain-Token mints don't need an opt-in dance. The opt-in still exists for the unsafe case.
+
+---
