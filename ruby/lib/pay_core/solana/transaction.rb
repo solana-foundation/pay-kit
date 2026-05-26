@@ -10,10 +10,12 @@ module PayCore
     # Parsed legacy or v0 Solana transaction. Owns the binary codec; mirrors
     # the Rust spine `rust/crates/core/src/solana/transaction.rs`.
     #
-    # `sign_with` raises `PayCore::Solana::Transaction::SigningError` when
-    # the keypair is not eligible to sign. Higher layers (solana-mpp,
-    # solana-x402) may catch and re-raise as their protocol-specific error
-    # type without subclassing this class.
+    # `sign_with` raises `PayCore::Solana::Transaction::SigningError` by
+    # default. Higher layers (solana-mpp, solana-x402) subclass this class
+    # and override the private `signing_error_class` hook to plug in their
+    # own protocol-specific error type while reusing the canonical wire
+    # codec. See `Mpp::Methods::Solana::Transaction` for the in-tree
+    # example (raises `Mpp::VerificationError`).
     class Transaction
       # Raised when `sign_with` is asked to sign with a keypair that is not
       # a required signer of the parsed transaction.
