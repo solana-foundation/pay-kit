@@ -41,6 +41,18 @@ const METHOD_NAME: &str = "solana";
 const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
 const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
+/// Tighter price cap applied when the *server* is the fee payer.
+///
+/// In fee-sponsored pull mode the server signs the transaction before it is
+/// broadcast, so the priority fee is paid out of the merchant's wallet. The
+/// global cap above (5_000_000) is fine when the client pays its own gas,
+/// but at that ceiling an attacker could burn `ceil(5_000_000 * 200_000 /
+/// 1_000_000)` = 1_000_000 lamports of merchant SOL per "valid" charge.
+/// 10_000 caps the worst case at ~2_000 lamports per request — about 20% of
+/// the 5_000-lamport base fee per signature, which leaves enough headroom
+/// for honest clients to bump priority during congestion without letting
+/// the merchant be drained.
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
 const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
@@ -1373,7 +1385,7 @@ fn validate_instruction_allowlist(
             .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
 
         if program_id == &compute_budget_program {
-            validate_compute_budget_instruction(ix)?;
+            validate_compute_budget_instruction(ix, fee_payer.is_some())?;
             continue;
         }
 
@@ -1433,7 +1445,10 @@ fn validate_instruction_allowlist(
     Ok(())
 }
 
-fn validate_compute_budget_instruction(ix: &CompiledInstruction) -> Result<(), VerificationError> {
+fn validate_compute_budget_instruction(
+    ix: &CompiledInstruction,
+    fee_sponsored: bool,
+) -> Result<(), VerificationError> {
     if !ix.accounts.is_empty() {
         return Err(VerificationError::invalid_payload(
             "Compute budget instruction must not have accounts",
@@ -1452,9 +1467,14 @@ fn validate_compute_budget_instruction(ix: &CompiledInstruction) -> Result<(), V
         }
         Some(3) if ix.data.len() == 9 => {
             let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
-            if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
+            let max = if fee_sponsored {
+                MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+            } else {
+                MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+            };
+            if price > max {
                 return Err(VerificationError::invalid_payload(format!(
-                    "Compute unit price {price} exceeds maximum {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}"
+                    "Compute unit price {price} exceeds maximum {max}"
                 )));
             }
             Ok(())
@@ -2990,6 +3010,85 @@ mod tests {
 
         let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
         assert!(err.message.contains("Compute unit price"));
+    }
+
+    #[test]
+    fn compute_unit_price_fee_sponsored_under_tight_cap_passes() {
+        // Audit #25: in fee-sponsored mode the merchant pays the priority
+        // fee, so we apply MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+        // instead of the general cap. A price right at the tight cap is
+        // allowed.
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+                system_transfer_ix(&sender, &recipient, amount),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+
+        assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn compute_unit_price_fee_sponsored_above_tight_cap_rejected() {
+        // Audit #25: a price between the tight fee-sponsored cap and the
+        // general cap is what an attacker would use to drain the merchant.
+        // Must be rejected before the server co-signs.
+        let fee_payer = Pubkey::new_unique();
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED + 1),
+                system_transfer_ix(&sender, &recipient, amount),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("Compute unit price"));
+    }
+
+    #[test]
+    fn compute_unit_price_client_paid_above_tight_cap_passes() {
+        // The tight cap only applies when the server is the fee payer.
+        // Without fee-sponsorship the client is paying their own gas, so
+        // the general (5_000_000) cap still applies and a price just above
+        // the tight cap must be accepted.
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED + 1),
+                system_transfer_ix(&sender, &recipient, amount),
+            ],
+            &sender,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+
+        assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
     }
 
     #[test]

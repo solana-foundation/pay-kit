@@ -125,3 +125,24 @@ Legend for **Decision**:
 **Note on departing from the audit recommendation:** the audit asked for a plain allowlist with opt-in. We split it on the actual threat axis (Token-2022 vs. Token) so unknown plain-Token mints don't need an opt-in dance. The opt-in still exists for the unsafe case.
 
 ---
+
+### #25 — Fee-sponsored pull mode lets clients inflate priority fees
+**ID:** `b6791d00` · **Files:** `crates/mpp/src/server/charge.rs:42` (caps), `:1388` (caller), `:1448` (validator)
+
+**Audit claim:** Client builder emits `compute_unit_price=1, limit=200_000`. Server caps at `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS=5_000_000`. In fee-sponsored pull mode the server signs *before* broadcast, so an attacker can pick a price up to the cap and the merchant pays the priority fee. Per spec math `priority_fee_lamports = ceil(price × limit / 1_000_000)`, that's up to `1_000_000` lamports (0.001 SOL) per "valid" charge — ≈200× the base fee, run in a loop = drain.
+
+**Decision:** ✅ **accepted — tight cap in fee-sponsored mode, general cap untouched.**
+
+**Action taken:**
+- Added `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000` (worst-case priority fee `ceil(10_000 × 200_000 / 1_000_000) = 2_000 lamports`, ≈20% of the per-signature base fee — enough room for honest clients to bump priority during congestion).
+- `validate_compute_budget_instruction` now takes a `fee_sponsored: bool` and applies the tight cap when set.
+- `validate_instruction_allowlist` passes `fee_payer.is_some()` — `fee_payer` is `Some` precisely when the server is acting as the fee payer.
+- Client-paid mode (fee_payer not configured) keeps the 5_000_000 ceiling; the client is paying its own gas, no merchant risk.
+- New tests:
+  - `compute_unit_price_fee_sponsored_under_tight_cap_passes`
+  - `compute_unit_price_fee_sponsored_above_tight_cap_rejected`
+  - `compute_unit_price_client_paid_above_tight_cap_passes` (regression: tight cap MUST NOT apply when the client is paying).
+
+**Note on alternative (b):** the audit also suggested locking to exact `price=1, limit=200_000` (the client builder's values). We chose the tight-cap shape so non-default-tooling clients can still tune priority during congestion without lockstep changes to the server.
+
+---
