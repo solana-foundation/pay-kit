@@ -103,6 +103,11 @@ public struct ExactTransactionBuilder {
         let tokenProgram = try SolanaPublicKey(requirement.validatedTokenProgram())
         let sourceATA = try ataResolver.associatedTokenAddress(owner: signer.address, mint: mint, tokenProgram: tokenProgram)
         let destinationATA = try ataResolver.associatedTokenAddress(owner: payTo, mint: mint, tokenProgram: tokenProgram)
+        // Compute budget. The canonical SVM exact facilitator validates these
+        // by index, so the values are pinned to the Rust spine at
+        // rust/crates/x402/src/client/exact/payment.rs:55-57
+        // (`compute_unit_limit_ix(20_000)` then `compute_unit_price_ix(1)`).
+        // Tests below pin the serialized bytes so any drift surfaces in CI.
         let instructions = [
             computeUnitLimitInstruction(units: 20_000),
             computeUnitPriceInstruction(microLamports: 1),

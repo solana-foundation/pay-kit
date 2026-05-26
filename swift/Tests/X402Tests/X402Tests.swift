@@ -405,6 +405,53 @@ private let bothNetworksPyusdEnvelope = """
     #expect(requirement.asset == "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM")
 }
 
+@Test func paymentTransactionPinsCanonicalComputeBudgetBytes() async throws {
+    // Pin CU policy to the Rust spine at
+    // rust/crates/x402/src/client/exact/payment.rs:55-57.
+    // SetComputeUnitLimit discriminator = 2, units = 20_000 (u32 LE) = 0x20 0x4E 0x00 0x00.
+    // SetComputeUnitPrice discriminator = 3, micro_lamports = 1 (u64 LE).
+    // Any drift from these constants would change the raw instruction bytes
+    // and break canonical SVM exact facilitators that validate the compute
+    // budget instructions by index.
+    let signer = FixedSigner(
+        address: try SolanaPublicKey("11111111111111111111111111111112"),
+        signature: Data(repeating: 9, count: 64)
+    )
+    let builder = ExactTransactionBuilder(
+        signer: signer,
+        blockhashProvider: FixedBlockhashProvider(blockhash: "11111111111111111111111111111111"),
+        ataResolver: FixedATAResolver(
+            source: try SolanaPublicKey("11111111111111111111111111111113"),
+            destination: try SolanaPublicKey("11111111111111111111111111111114")
+        )
+    )
+    let requirement = PaymentRequirement(
+        scheme: "exact",
+        network: X402.solanaDevnet,
+        amount: "1000",
+        asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        payTo: "11111111111111111111111111111115",
+        maxTimeoutSeconds: 300,
+        extra: [
+            "feePayer": .string("11111111111111111111111111111111"),
+            "decimals": .number(6),
+        ]
+    )
+    let header = try await builder.buildPaymentHeader(for: requirement)
+    let decoded = try #require(Data(base64Encoded: header))
+    let object = try #require(JSONSerialization.jsonObject(with: decoded) as? [String: Any])
+    let payload = try #require(object["payload"] as? [String: Any])
+    let txBase64 = try #require(payload["transaction"] as? String)
+    let txBytes = try #require(Data(base64Encoded: txBase64))
+
+    // Canonical compute-budget instruction data byte sequences.
+    let setLimitData = Data([0x02, 0x20, 0x4E, 0x00, 0x00])
+    let setPriceData = Data([0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    #expect(txBytes.range(of: setLimitData) != nil, "missing canonical SetComputeUnitLimit(20_000) bytes")
+    #expect(txBytes.range(of: setPriceData) != nil, "missing canonical SetComputeUnitPrice(1) bytes")
+}
+
 @Test func challengeAcceptsCanonicalMaxAmountRequiredField() throws {
     // Regression: prior tip read only `amount`, which silently dropped every
     // spine-shaped challenge that uses the canonical `maxAmountRequired`
