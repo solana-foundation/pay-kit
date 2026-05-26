@@ -571,7 +571,7 @@ def settle_exact_payment(state: ServerState, payment_header: str) -> str:
         # Canonical cross-server reject token. Mirrors the Go interop server's
         # reject-body shape (go/cmd/interop-server/main.go ~L856:
         # `{"error": "payment_invalid", "message": err.Error()}`) and the
-        # canonical phrase enumerated in tests/interop cross-server-scenarios.
+        # canonical phrase enumerated in harness cross-server-scenarios.
         # Surfacing "No matching payment requirements" lets cross-server replay
         # tests detect that a credential issued for a different server's
         # accepted requirements was correctly rejected by this server.
@@ -634,7 +634,7 @@ class InteropHandler(BaseHTTPRequestHandler):
         # Mirrors the Go interop server reject body shape
         # (go/cmd/interop-server/main.go ~L855-L858): use `payment_invalid` as
         # the canonical error key so cross-server reject scenarios in
-        # tests/interop can match the body against the canonical token list
+        # harness can match the body against the canonical token list
         # (`payment_invalid`, `No matching payment requirements`, ...).
         # L8: signature_consumed gets the canonical code surfaced explicitly
         # so the harness ``canonical-codes.ts`` mapping resolves to

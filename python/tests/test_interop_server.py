@@ -1073,7 +1073,7 @@ class InteropServerTest(unittest.TestCase):
         whose `accepted` block targets a different server's pay-to / asset /
         amount, server B must reject (non-2xx) AND the response body must
         carry one of the canonical tokens recognised by the interop
-        cross-server-scenarios harness (see tests/interop). Mirrors Go's
+        cross-server-scenarios harness (see harness). Mirrors Go's
         reject body shape (go/cmd/interop-server/main.go ~L856:
         `{"error": "payment_invalid", "message": ...}`).
         """
