@@ -1,4 +1,4 @@
-# pay-kit Sinatra example
+# Sinatra example
 
 Demonstrates the `solana-pay-kit` v2 surface: a single Sinatra app
 that protects routes with either `x402:exact` or `mpp:charge`,
@@ -15,7 +15,7 @@ pay_kit.rb    PayKit.configure block + Pricing class + PayKit.pricing= assignmen
 ## Run
 
 ```sh
-cd ruby/examples/pay-kit-sinatra
+cd ruby/examples/sinatra
 bundle exec rackup -p 4567
 ```
 

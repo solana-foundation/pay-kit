@@ -167,22 +167,16 @@ verification live in the helper, not the middleware.
 This package ships server support only. Use a TypeScript, Rust, Go, or
 Python client to drive payment flows against a Ruby-hosted endpoint.
 
-## Examples
+## Example
 
-Two runnable examples ship with this package:
+[`examples/sinatra/`](examples/sinatra) is the runnable PayKit demo:
+registry, opportunistic gating, inline form, dynamic pricing,
+multi-recipient fees, before-filter, both protocols.
 
-- [`examples/pay-kit-sinatra/`](examples/pay-kit-sinatra) - the canonical
-  PayKit demo: registry, opportunistic gating, inline form, dynamic
-  pricing, multi-recipient fees, before-filter, both protocols.
-- [`examples/sinatra/`](examples/sinatra) and
-  [`examples/simple-server/`](examples/simple-server) - bare MPP-only
-  examples that drive `Mpp::Server::Charge` directly without the PayKit
-  surface, for callers that need the lower layer.
-
-### Run the pay-kit example
+### Run it
 
 ```bash
-cd ruby/examples/pay-kit-sinatra
+cd ruby/examples/sinatra
 bundle exec rackup -p 4567
 
 curl  http://127.0.0.1:4567/report   # 402 + WWW-Authenticate Payment
@@ -248,7 +242,7 @@ ruby/
 │   ├── protocol/schemes/exact/
 │   └── server/exact.rb
 ├── lib/pay_core/               # Shared Solana primitives (JCS, headers, base58, ...)
-├── examples/                   # pay-kit-sinatra (primary) + sinatra/simple-server (lower-level)
+├── examples/sinatra/            # Runnable PayKit demo
 └── test/                       # Minitest suite with line + branch coverage gates
 ```
 

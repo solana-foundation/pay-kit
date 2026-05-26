@@ -2,35 +2,69 @@
 
 require "json"
 require "sinatra/base"
-require_relative "server"
-require_relative "../../lib/mpp/sinatra"
 
-# Sinatra app with one MPP-protected endpoint.
-#
-#   GET /health  -> free, returns {"ok": true}
-#   GET /paid    -> gated by mpp_charge!. The helper inspects the
-#                   Authorization: Payment header, halts with a 402 if no
-#                   valid credential was supplied, and otherwise injects the
-#                   receipt + signature headers so the route can render any
-#                   body it likes.
-class RubyMppSinatraExample < Sinatra::Base
-  helpers Mpp::Sinatra::Helpers
+# Boot the gem and the opt-in Sinatra helpers. The second require is
+# explicit; the gem does NOT auto-detect Sinatra at load time.
+require_relative "../../lib/solana_pay_kit"
+require_relative "../../lib/solana_pay_kit/sinatra"
 
-  set :bind, SinatraExample::Config.host
-  set :port, SinatraExample::Config.port
+# Single setup file: PayKit.configure block + Pricing class +
+# PayKit.pricing= assignment. Mirrors a Rails initializer.
+require_relative "pay_kit"
+
+# One gem, one surface. x402 and MPP both gate the same routes; the
+# merchant doesn't care which protocol settled the request.
+class PayKitSinatraExample < Sinatra::Base
+  helpers PayKit::Sinatra
+  use PayKit::Rack::PaymentRequired
+
+  # Let PayKit's PaymentRequired/InvalidProof bubble up to the Rack
+  # middleware so it can serialize the 402.
   set :show_exceptions, false
-  set :mpp_server, SinatraExample.server
+  set :raise_errors, true
+
+  before "/admin/*" do
+    require_payment! :report # any registered gate works here
+  end
 
   get "/health" do
     content_type :json
     JSON.generate(ok: true)
   end
 
-  get "/paid" do
-    mpp_charge!(amount: SinatraExample::Config.amount, description: "Paid endpoint")
+  # Registry lookup. Halts with 402 if unpaid; on success `payment`
+  # is the verified proof.
+  get "/report" do
+    require_payment! :report
     content_type :json
-    JSON.generate(ok: true, message: "thanks for paying!")
+    JSON.generate(ok: true, paid_by: payment.protocol, scheme: payment.scheme)
   end
 
-  run! if app_file == $PROGRAM_NAME
+  # Opportunistic gating. `paid?` never halts; returns true if the
+  # client volunteered a valid proof for this gate.
+  get "/stats" do
+    content_type :json
+    JSON.generate(ok: true, premium: paid?(:report))
+  end
+
+  # Inline form. No registry entry, just an amount and a description.
+  get "/oneoff" do
+    require_payment! usd("0.25"), description: "One-off"
+    content_type :json
+    JSON.generate(ok: true)
+  end
+
+  # Dynamic pricing. The registry resolves the gate fresh per request.
+  get "/tiered" do
+    require_payment! :tiered
+    content_type :json
+    JSON.generate(ok: true, tier: params["tier"] || "basic")
+  end
+
+  # Multi-recipient via fee_within. MPP-only at the protocol level.
+  get "/marketplace/sale" do
+    require_payment! :marketplace_sale
+    content_type :json
+    JSON.generate(ok: true, paid_by: payment.protocol)
+  end
 end
