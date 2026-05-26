@@ -149,7 +149,16 @@ object ExactChallenge {
             val scheme = obj.string("scheme") ?: return@mapNotNull null
             val network = obj.string("network") ?: return@mapNotNull null
             val asset = obj.string("asset") ?: return@mapNotNull null
-            val amount = obj.string("amount") ?: return@mapNotNull null
+            // Accept both `amount` and the canonical x402 wire field
+            // `maxAmountRequired`. Rust spine canonicalises the same way at
+            // rust/crates/x402/src/protocol/schemes/exact/types.rs (see the
+            // `string_field(object, "amount").or_else(|| string_field(object,
+            // "maxAmountRequired"))` fallback). The TS fixture and other ports
+            // emit `maxAmountRequired`, so reading only `amount` would silently
+            // drop every spine-shaped challenge.
+            val amount = obj.string("amount")
+                ?: obj.string("maxAmountRequired")
+                ?: return@mapNotNull null
             PaymentRequirement(
                 scheme = scheme,
                 network = network,

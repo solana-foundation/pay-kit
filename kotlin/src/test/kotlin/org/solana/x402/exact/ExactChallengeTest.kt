@@ -239,5 +239,64 @@ class ExactChallengeTest {
             ExactChallenge.stablecoinMint("USDG", SolanaNetwork.Devnet),
         )
     }
+
+    @Test
+    fun `accepts canonical maxAmountRequired field when amount is absent`() {
+        // Regression: prior tip read only `amount`, which silently dropped every
+        // spine-shaped challenge that uses the canonical `maxAmountRequired`
+        // wire field (TS fixture, Rust spine output, Go/Python/PHP ports).
+        // Rust spine fallback lives at
+        // rust/crates/x402/src/protocol/schemes/exact/types.rs.
+        val body = """
+            {
+              "accepts": [
+                {
+                  "scheme": "exact",
+                  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                  "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                  "maxAmountRequired": "1500",
+                  "payTo": "5T388jBjovy7d8mQ3emHxMDTbUF8b7nWvAnSiP3EAdFL",
+                  "extra": { "feePayer": "HoCy8p5xxDDYTYWEbQZasEjVNM5rxvidx8AfyqA4ywBa" }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val selected = ExactChallenge.selectSvmChallenge(
+            headers = emptyMap(),
+            body = body,
+        )
+
+        assertNotNull(selected)
+        assertEquals("exact", selected.requirement.scheme)
+        assertEquals("1500", selected.requirement.amount)
+    }
+
+    @Test
+    fun `prefers amount over maxAmountRequired when both are present`() {
+        // When a challenge carries both fields, `amount` wins to preserve
+        // back-compat with adapters that emit both for transitional reasons.
+        val body = """
+            {
+              "accepts": [
+                {
+                  "scheme": "exact",
+                  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                  "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                  "amount": "1000",
+                  "maxAmountRequired": "9999"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val selected = ExactChallenge.selectSvmChallenge(
+            headers = emptyMap(),
+            body = body,
+        )
+
+        assertNotNull(selected)
+        assertEquals("1000", selected.requirement.amount)
+    }
 }
 
