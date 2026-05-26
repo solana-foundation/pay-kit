@@ -298,5 +298,69 @@ class ExactChallengeTest {
         assertNotNull(selected)
         assertEquals("1000", selected.requirement.amount)
     }
+
+    @Test
+    fun `skips native SOL offers and prefers SPL candidate`() {
+        // Rust spine `rust/crates/x402/src/client/exact/payment.rs` supports
+        // native SOL via System Program transfer. This Kotlin client is
+        // SPL-only; selection must skip `asset: "SOL"` offers rather than
+        // crash later at Base58.decode("SOL") inside the builder.
+        val body = """
+            {
+              "accepts": [
+                {
+                  "scheme": "exact",
+                  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                  "asset": "SOL",
+                  "amount": "1000",
+                  "payTo": "5T388jBjovy7d8mQ3emHxMDTbUF8b7nWvAnSiP3EAdFL"
+                },
+                {
+                  "scheme": "exact",
+                  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                  "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                  "amount": "2000",
+                  "payTo": "5T388jBjovy7d8mQ3emHxMDTbUF8b7nWvAnSiP3EAdFL",
+                  "extra": { "feePayer": "HoCy8p5xxDDYTYWEbQZasEjVNM5rxvidx8AfyqA4ywBa" }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val selected = ExactChallenge.selectSvmChallenge(
+            headers = emptyMap(),
+            body = body,
+        )
+
+        assertNotNull(selected)
+        assertEquals(
+            "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            selected.requirement.asset,
+        )
+    }
+
+    @Test
+    fun `returns null when only native SOL offer is available`() {
+        val body = """
+            {
+              "accepts": [
+                {
+                  "scheme": "exact",
+                  "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                  "asset": "SOL",
+                  "amount": "1000",
+                  "payTo": "5T388jBjovy7d8mQ3emHxMDTbUF8b7nWvAnSiP3EAdFL"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val selected = ExactChallenge.selectSvmChallenge(
+            headers = emptyMap(),
+            body = body,
+        )
+
+        assertNull(selected)
+    }
 }
 

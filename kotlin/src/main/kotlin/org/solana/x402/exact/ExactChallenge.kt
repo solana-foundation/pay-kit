@@ -87,6 +87,15 @@ object ExactChallenge {
             val candidates = accepts(envelope)
                 .filter { it.scheme == scheme && it.network == network }
                 .filter { it.asset.isNotBlank() && it.amount.isNotBlank() }
+                // Native SOL transfers are supported by the Rust spine
+                // (rust/crates/x402/src/client/exact/payment.rs builds a
+                // System Program transfer for `asset: "SOL"`) but this
+                // Kotlin client is SPL-only — the builder decodes `asset`
+                // as a base58 mint and emits transferChecked. Filter
+                // native SOL offers out at selection time so we fall
+                // through to a supported SPL candidate, or return null
+                // rather than crashing later inside Base58.decode("SOL").
+                .filter { !it.isNativeSol() }
 
             if (candidates.isEmpty()) {
                 continue
@@ -140,6 +149,8 @@ object ExactChallenge {
             null
         }
     }
+
+    private fun PaymentRequirement.isNativeSol(): Boolean = asset.equals("SOL", ignoreCase = true)
 
     private fun accepts(envelope: JsonObject): List<PaymentRequirement> {
         val accepts = envelope.get("accepts")?.asJsonArray ?: return emptyList()
