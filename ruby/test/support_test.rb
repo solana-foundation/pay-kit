@@ -162,11 +162,15 @@ class SupportTest < Minitest::Test
       end
     end
     fake_class.send(:undef_method, :write_timeout=) unless supports_write_timeout
-    Net::HTTP.define_singleton_method(:new) do |_host, _port|
+    Net::HTTP.define_singleton_method(:new) do |*_args, **_kwargs|
       fake_class.new(callable).tap { |client| clients << client }
     end
     yield clients
   ensure
-    Net::HTTP.define_singleton_method(:new) { |host, port| original.call(host, port) }
+    # Restore by forwarding the full arglist (Net::HTTP.new in stdlib
+    # takes host, port, p_addr, p_port, p_user, p_pass plus kwargs).
+    # The previous restore swallowed extra args and broke any caller
+    # that came later, e.g. PayKitHarnessAdapterTest using Net::HTTP.get.
+    Net::HTTP.define_singleton_method(:new) { |*args, **kwargs| original.call(*args, **kwargs) }
   end
 end

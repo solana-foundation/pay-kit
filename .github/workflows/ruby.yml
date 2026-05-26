@@ -44,3 +44,52 @@ jobs:
           name: surfpool-reports-ruby
           path: ruby/target/surfpool-reports/
           if-no-files-found: ignore
+
+  interop-pay-kit-server:
+    name: "Interop: PayKit dual-protocol server"
+    needs: test-ruby
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Install interop harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck interop harness
+        working-directory: harness
+        run: pnpm typecheck
+      # PayKit dual-protocol proof: same adapter binary serves x402:exact
+      # AND mpp:charge, picked per scenario by which env namespace the
+      # harness orchestrator sets.
+      - name: Run PayKit interop smoke (mpp charge)
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: ""
+          PAY_KIT_INTEROP_SERVERS: ruby-pay-kit-server
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby-pay-kit-server" --testTimeout 180000
+      - name: Run PayKit interop smoke (x402 exact)
+        working-directory: harness
+        env:
+          X402_INTEROP_CLIENTS: ts-x402
+          X402_INTEROP_SERVERS: ""
+          PAY_KIT_INTEROP_SERVERS: ruby-pay-kit-server
+        run: pnpm exec vitest run test/x402-exact.e2e.test.ts --testNamePattern "ruby-pay-kit-server" --testTimeout 180000

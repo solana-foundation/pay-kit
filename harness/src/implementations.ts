@@ -259,4 +259,24 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("ruby-x402-server", "X402_INTEROP_SERVERS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "ruby-pay-kit-server",
+    label: "Ruby PayKit server (dual protocol)",
+    role: "server",
+    // One adapter binary, two settle paths. The harness orchestrator
+    // sets either `X402_INTEROP_*` (for the x402-exact intent) or
+    // `MPP_INTEROP_*` (for the charge intent); pay-kit-server detects
+    // which one is active and routes through PayKit::Rack::Dispatcher.
+    // This is the cross-language proof of the dual-protocol PayKit
+    // surface.
+    command: [
+      "sh",
+      "-c",
+      "cd ../ruby && bundle exec ruby ../harness/pay-kit-server/server.rb",
+    ],
+    // Defaults off; opt-in via `PAY_KIT_INTEROP_SERVERS=ruby-pay-kit-server`.
+    // The CI workflow flips this on for both protocols.
+    enabled: isEnabled("ruby-pay-kit-server", "PAY_KIT_INTEROP_SERVERS", false),
+    intents: ["charge", "x402-exact"],
+  },
 ];
