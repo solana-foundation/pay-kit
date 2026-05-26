@@ -74,6 +74,22 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", false),
   },
   {
+    id: "kotlin",
+    label: "Kotlin HTTP client",
+    role: "client",
+    // Pre-warmed by `gradle installDist` in `.github/workflows/kotlin.yml`
+    // (the `interop-kotlin` job) so the script lands at this path. Local
+    // runs can prime it with `(cd harness/kotlin-client && gradle installDist)`.
+    command: [
+      "sh",
+      "-c",
+      "kotlin-client/build/install/kotlin-client/bin/kotlin-client",
+    ],
+    // Defaults off to match swift/php/ruby/go: opt-in via
+    // `MPP_INTEROP_CLIENTS=kotlin` (the interop-kotlin CI job sets this).
+    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", false),
+  },
+  {
     id: "ts-x402",
     label: "TypeScript x402 exact client",
     role: "client",
