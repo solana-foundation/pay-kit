@@ -82,6 +82,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    // multimult ships Base58 used by com.solana.mpp.crypto.Base58. The SDK
+    // sources are vendored into this Android module via sourceSets, so the
+    // dependency cannot be inherited from kotlin/build.gradle.kts and must
+    // be declared explicitly here. We pin the Android variant (not -jvm)
+    // because this module's target is Android.
+    implementation("io.github.funkatronics:multimult:0.2.3")
 
     // Solana Mobile Wallet Adapter client library. The demo delegates
     // transaction signing to a real wallet (Phantom, Solflare, Backpack,
