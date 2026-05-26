@@ -422,15 +422,18 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
     from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    message: Any
+    message: Any = None
+    message_instructions: list[Any] = []
     # Route v0 wire bytes straight to VersionedTransaction; the legacy
     # parser in solders is lenient and can mis-parse a signed v0 tx as a
     # degenerate legacy tx with bogus instructions (see _is_v0_wire_bytes).
-    prefer_versioned = _is_v0_wire_bytes(raw)
     parsed = False
-    if prefer_versioned:
+    if _is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
+        except Exception:
+            vtx = None
+        if vtx is not None:
             lookups = getattr(vtx.message, "address_table_lookups", None)
             if lookups:
                 raise PaymentError(
@@ -440,10 +443,6 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
             message = vtx.message
             message_instructions = list(vtx.message.instructions)
             parsed = True
-        except PaymentError:
-            raise
-        except Exception:
-            parsed = False
     if not parsed:
         try:
             tx = Transaction.from_bytes(raw)
@@ -833,18 +832,21 @@ def _validate_instruction_allowlist(
     from solders.transaction import Transaction, VersionedTransaction
 
     raw = base64.b64decode(transaction_b64)
-    message: Any
+    message: Any = None
+    message_instructions: list[Any] = []
     # Route v0 wire bytes straight to VersionedTransaction; the legacy
     # parser in solders is lenient and can mis-parse a signed v0 tx as a
     # degenerate legacy tx whose instructions point at random account
     # keys. The allowlist would then reject the legitimate v0 payment
     # with a misleading "unexpected program instruction" error sourced
     # from junk bytes. See _is_v0_wire_bytes.
-    prefer_versioned = _is_v0_wire_bytes(raw)
     parsed = False
-    if prefer_versioned:
+    if _is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
+        except Exception:
+            vtx = None
+        if vtx is not None:
             if getattr(vtx.message, "address_table_lookups", None):
                 raise PaymentError(
                     "v0 transactions with address lookup tables are not supported",
@@ -853,10 +855,6 @@ def _validate_instruction_allowlist(
             message = vtx.message
             message_instructions = list(vtx.message.instructions)
             parsed = True
-        except PaymentError:
-            raise
-        except Exception:
-            parsed = False
     if not parsed:
         try:
             tx = Transaction.from_bytes(raw)
