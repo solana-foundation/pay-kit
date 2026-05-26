@@ -254,3 +254,40 @@ end)
 t.test('REPLAY_KEY_PREFIX is x402-svm-exact:consumed:', function()
   t.assert_equal(exact_settle.REPLAY_KEY_PREFIX, 'x402-svm-exact:consumed:')
 end)
+
+-- ─── Duplicate-broadcast RPC error mapping ───────────────────────────────
+-- A second `sendTransaction` for an already-confirmed signature surfaces
+-- as an RPC error from Solana ("already been processed") BEFORE the L8
+-- replay store reservation gets a chance to fire. The classifier MUST
+-- match the canonical-code list so the interop server can raise a
+-- structured `signature_consumed` table-error instead of flattening the
+-- duplicate to a generic `payment_invalid`.
+
+t.test('is_duplicate_broadcast_error matches Solana already-processed messages', function()
+  t.assert_true(exact_settle.is_duplicate_broadcast_error(
+    'sendTransaction RPC error: This transaction has already been processed'),
+    'should match "already been processed"')
+  t.assert_true(exact_settle.is_duplicate_broadcast_error(
+    'sendTransaction RPC error: transaction already processed'),
+    'should match "transaction already processed"')
+  t.assert_true(exact_settle.is_duplicate_broadcast_error(
+    'sendTransaction RPC error: Signature already consumed for slot 12345'),
+    'should match "already consumed"')
+end)
+
+t.test('is_duplicate_broadcast_error is case-insensitive', function()
+  t.assert_true(exact_settle.is_duplicate_broadcast_error(
+    'ALREADY BEEN PROCESSED'))
+  t.assert_true(exact_settle.is_duplicate_broadcast_error(
+    'Already Been Processed'))
+end)
+
+t.test('is_duplicate_broadcast_error rejects unrelated errors', function()
+  t.assert_true(not exact_settle.is_duplicate_broadcast_error(
+    'sendTransaction RPC error: insufficient funds'))
+  t.assert_true(not exact_settle.is_duplicate_broadcast_error(
+    'getSignatureStatuses HTTP 500'))
+  t.assert_true(not exact_settle.is_duplicate_broadcast_error(''))
+  t.assert_true(not exact_settle.is_duplicate_broadcast_error(nil))
+  t.assert_true(not exact_settle.is_duplicate_broadcast_error({ code = 'oops' }))
+end)

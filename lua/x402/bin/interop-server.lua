@@ -678,6 +678,20 @@ local function parse_versioned_transaction(transaction)
 end
 
 local default_resource_path = "/protected"
+-- Harness-canonical override: cross-server scenarios drive route + header
+-- name via X402_INTEROP_RESOURCE_PATH and X402_INTEROP_SETTLEMENT_HEADER.
+-- Resolved at startup so a single process serves a single route. Mirrors
+-- the TS fixture wiring at harness/src/fixtures/typescript/exact-shared.ts
+-- L62-64.
+local function env_or(name, fallback)
+  local value = os.getenv(name)
+  if value == nil or value == "" then
+    return fallback
+  end
+  return value
+end
+local resource_path = env_or("X402_INTEROP_RESOURCE_PATH", default_resource_path)
+local settlement_header_name = env_or("X402_INTEROP_SETTLEMENT_HEADER", "x-fixture-settlement")
 local default_network = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 local default_mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 local default_amount = "1000"
@@ -821,7 +835,7 @@ local function exact_challenge_json()
   return json_object({
     { "x402Version", 2 },
     { "accepts", raw_json(exact_accepts_json()) },
-    { "resource", raw_json(json_object({ { "type", "http" }, { "uri", default_resource_path } })) }
+    { "resource", raw_json(json_object({ { "type", "http" }, { "uri", resource_path } })) }
   })
 end
 
@@ -1169,8 +1183,15 @@ local function verify_token_accounts_exist(parsed, requirement, transfer)
   end
 end
 
+-- Solana surfaces a duplicate-broadcast as a `sendTransaction` RPC error
+-- whose message contains "already been processed" (or "transaction already
+-- processed") BEFORE the L8 replay store reservation fires. Canonically
+-- this is the same outcome as a replay-store hit, so we map the RPC error
+-- to a structured `signature_consumed` table-error that `payment_error_response`
+-- preserves. The classifier lives in `x402/exact_settle.lua` so it's unit-
+-- testable; here we just consume it.
 local function send_transaction(transaction)
-  local result = post_json_rpc("sendTransaction", {
+  local ok, result = pcall(post_json_rpc, "sendTransaction", {
     base64_encode(transaction),
     {
       encoding = "base64",
@@ -1179,6 +1200,15 @@ local function send_transaction(transaction)
       maxRetries = 3,
     },
   })
+  if not ok then
+    if exact_settle.is_duplicate_broadcast_error(result) then
+      error({
+        code = "signature_consumed",
+        message = "Transaction signature already consumed: " .. tostring(result),
+      })
+    end
+    error(result)
+  end
   if type(result) ~= "string" or result == "" then
     error("sendTransaction returned empty signature")
   end
@@ -1263,7 +1293,7 @@ local function response_for(path, headers)
     return 200, "OK", "", json_object(capability_payload)
   elseif path == "/exact" then
     return 402, "Payment Required", "PAYMENT-REQUIRED: " .. exact_payment_required_header() .. "\r\n", json_object({ { "error", "payment_required" } })
-  elseif path == default_resource_path or path == "/protected" then
+  elseif path == resource_path then
     local payment_signature = header_value(headers, "PAYMENT-SIGNATURE")
     if not payment_signature or payment_signature == "" then
       return payment_required_response()
@@ -1287,7 +1317,7 @@ local function response_for(path, headers)
       network = network,
       transaction = settlement_or_error,
     }, "PAYMENT-RESPONSE")
-    local response_headers = "x-fixture-settlement: " .. settlement_or_error ..
+    local response_headers = settlement_header_name .. ": " .. settlement_or_error ..
       "\r\nPAYMENT-RESPONSE: " .. payment_response .. "\r\n"
     return 200, "OK", response_headers, json_object({
       { "ok", true },

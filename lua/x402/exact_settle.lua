@@ -29,6 +29,23 @@ local M = {}
 
 M.REPLAY_KEY_PREFIX = 'x402-svm-exact:consumed:'
 
+--- Detect Solana's duplicate-broadcast RPC error. A duplicate `sendTransaction`
+--- inside the blockhash window surfaces as an RPC error whose message contains
+--- "already been processed" (or a near-synonym) BEFORE the L8 replay-store
+--- reservation fires. Canonically this is the same outcome as a replay-store
+--- hit, so callers map it to `signature_consumed`. Mirrors the canonical-code
+--- classifier in `rust/crates/mpp/src/bin/interop_server.rs::classify_canonical_code`
+--- and `tests/interop/src/canonical-codes.ts`.
+function M.is_duplicate_broadcast_error(message)
+  if type(message) ~= 'string' then
+    return false
+  end
+  local lower = message:lower()
+  return lower:find('already been processed', 1, true) ~= nil
+    or lower:find('transaction already processed', 1, true) ~= nil
+    or lower:find('already consumed', 1, true) ~= nil
+end
+
 -- Default polling budget. Mirrors MPP charge_handler defaults (~30s of
 -- polling) but kept local so the interop server can override via config
 -- and the unit tests can drive zero-delay loops.
