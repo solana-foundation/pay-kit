@@ -6,9 +6,12 @@ if ENV["COVERAGE"] == "1"
   SimpleCov.start do
     add_filter "/test/"
     add_filter "/examples/"
-    # x402 port (lib/x402/) is excluded from the baseline branch-coverage gate
-    # while its dedicated test suite is being expanded. Tracked under the
-    # x402 follow-up; the suite still runs against these files.
+    # x402 production server helpers (`lib/x402/server/exact.rb` RPC
+    # methods + bin) are exercised through the cross-language interop
+    # harness rather than unit tests, so they remain excluded from
+    # the branch-coverage gate. Library types + verifier
+    # (`lib/x402/protocol/`, `lib/x402/constants.rb`, `lib/x402/error.rb`)
+    # are covered by `test/x402_server_exact_test.rb`.
     add_filter "/lib/x402/"
     # Cross-SDK baseline target is 90 percent branch coverage. Line
     # coverage stays at 92 since the suite already exceeds that.

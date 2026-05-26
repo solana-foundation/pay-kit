@@ -1,17 +1,28 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Thin interop adapter. All library logic lives in
+# `lib/x402/server/exact.rb`; this bin only reads the harness env vars,
+# spins a 127.0.0.1:0 TCP loop, and serializes
+# `X402::Server::Exact.response_for` tuples to HTTP/1.1.
+#
+# Mirrors the Rust spine adapter at
+# `rust/crates/x402/src/bin/interop_server.rs`.
+
 require "json"
 require "socket"
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
-require "x402/interop/server"
+require "x402"
 
 server = TCPServer.new("127.0.0.1", 0)
 running = true
 
-def interop_state
-  @interop_state ||= X402::Interop::Server::State.new
+def interop_config
+  # Env reads live in the bin (not in the library) so production
+  # callers can wire `X402::Server::Exact::Config` directly without
+  # the harness-specific X402_INTEROP_* prefixes.
+  @interop_config ||= X402::Server::Exact::Config.new
 end
 
 def read_headers(connection)
@@ -58,7 +69,7 @@ trap("TERM", &shutdown)
 trap("INT", &shutdown)
 
 puts JSON.generate(
-  X402::Interop::Server::CAPABILITY_PAYLOAD.merge(type: "ready", port: server.addr[1])
+  X402::Server::Exact::CAPABILITY_PAYLOAD.merge(type: "ready", port: server.addr[1])
 )
 $stdout.flush
 
@@ -75,7 +86,7 @@ while running
       path = (request_line.split[1] || "/").split("?", 2).first
       headers = read_headers(connection)
 
-      status, response_headers, body = X402::Interop::Server.response_for(path, headers, interop_state)
+      status, response_headers, body = X402::Server::Exact.response_for(path, headers, interop_config)
       write_response(connection, status, response_headers, body)
     rescue Errno::EPIPE, IOError => error
       warn "dropped connection: #{error.class}: #{error.message}"
