@@ -44,7 +44,7 @@ module PayKit
         result = perform(gate, request, authorization: nil)
         return {} unless result.is_a?(::Mpp::Challenge)
 
-        result.to_headers
+        result.headers
       end
 
       def verify_and_settle(gate, request)
