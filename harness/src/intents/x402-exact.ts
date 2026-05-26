@@ -87,10 +87,19 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     // credential it sent so the runner can replay it. The TS reference
     // client echoes `payment-signature-sent`; the Rust spine adapter does
     // not (and is preserved as the canonical settlement-signing path
-    // rather than a credential-capturing one). Pairs that use the TS
-    // client cover the asymmetric direction too: TS pays server A, then
-    // replays the captured credential against server B.
-    crossServerPairs: [["ts-x402", "rust-x402"]],
+    // rather than a credential-capturing one).
+    //
+    // We intentionally only pair `ts-x402 -> ts-x402` here. The TS
+    // fixture's `payload` is a stub envelope (`{ challengeId, resource }`)
+    // and does NOT deserialize into Rust's typed
+    // `PaymentProof::{transaction|signature}` enum, so replaying that
+    // header to the Rust spine produces `payment_invalid` (parse error)
+    // instead of the canonical `challenge_verification_failed` we want
+    // to assert. Rust's own portability semantics are covered by the
+    // rust/crates/x402 integration tests; we will add a real
+    // `ts -> rust-x402` pair once the TS fixture emits a typed
+    // PaymentProof payload.
+    crossServerPairs: [["ts-x402", "ts-x402"]],
   },
   {
     // Same-server idempotent resubmit. Client pays server A, then
