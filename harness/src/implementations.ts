@@ -115,7 +115,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../ruby && bundle exec ruby bin/x402-interop-client",
     ],
-    enabled: isEnabled("ruby-x402-client", "MPP_INTEROP_CLIENTS", false),
+    enabled: isEnabled("ruby-x402-client", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
 ];
@@ -252,7 +252,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../ruby && bundle exec ruby bin/x402-interop-server",
     ],
-    enabled: isEnabled("ruby-x402-server", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("ruby-x402-server", "X402_INTEROP_SERVERS", false),
     intents: ["x402-exact"],
   },
 ];
