@@ -13,4 +13,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "mpp-kotlin-interop-client"
-includeBuild("../../../kotlin")
+includeBuild("../../kotlin")
