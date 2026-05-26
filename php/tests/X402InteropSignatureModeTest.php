@@ -13,6 +13,7 @@ use function SolanaMpp\X402\Interop\associated_token_address;
 use function SolanaMpp\X402\Interop\public_key_from_base58;
 
 use const SolanaMpp\X402\Interop\DEFAULT_TOKEN_PROGRAM;
+use const SolanaMpp\X402\Interop\MEMO_PROGRAM;
 
 require_once __DIR__ . '/../src/x402/InteropServer.php';
 
@@ -145,6 +146,45 @@ final class X402InteropSignatureModeTest extends TestCase
         $confirmed['transaction']['message']['instructions'][0]['programId'] = '11111111111111111111111111111111';
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('invalid_exact_svm_payload_no_transfer_instruction');
+        verify_transaction_details($confirmed, $requirement);
+    }
+
+    /**
+     * RPC jsonParsed for the spl-memo program exposes the decoded payload as
+     * either (a) a top-level `parsed` string, (b) `parsed.info.memo`, or (c)
+     * `parsed.info.data`. Rust spine accepts all three at
+     * `rust/crates/x402/src/protocol/schemes/exact/verify.rs::parsed_memo_text`
+     * (L519-533). Each branch must match an expected memo.
+     */
+    public static function memoParsedShapesProvider(): array
+    {
+        return [
+            'top-level parsed string' => [['programId' => MEMO_PROGRAM, 'parsed' => 'route=42']],
+            'parsed.info.memo' => [['programId' => MEMO_PROGRAM, 'parsed' => ['info' => ['memo' => 'route=42']]]],
+            'parsed.info.data' => [['programId' => MEMO_PROGRAM, 'parsed' => ['info' => ['data' => 'route=42']]]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('memoParsedShapesProvider')]
+    public function testVerifyTransactionDetailsAcceptsMemoParsedShape(array $memoInstruction): void
+    {
+        [$requirement, $confirmed] = $this->fixtureRequirementAndConfirmedTransaction();
+        $requirement['extra']['memo'] = 'route=42';
+        $confirmed['transaction']['message']['instructions'][] = $memoInstruction;
+        verify_transaction_details($confirmed, $requirement);
+        self::assertTrue(true);
+    }
+
+    public function testVerifyTransactionDetailsRejectsMemoMismatch(): void
+    {
+        [$requirement, $confirmed] = $this->fixtureRequirementAndConfirmedTransaction();
+        $requirement['extra']['memo'] = 'route=42';
+        $confirmed['transaction']['message']['instructions'][] = [
+            'programId' => MEMO_PROGRAM,
+            'parsed' => ['info' => ['memo' => 'route=99']],
+        ];
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('invalid_exact_svm_payload_memo_mismatch');
         verify_transaction_details($confirmed, $requirement);
     }
 }

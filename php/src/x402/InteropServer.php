@@ -1172,9 +1172,20 @@ function transaction_memo_strings(array $instructions, array $accountKeys): arra
             }
             if (is_array($parsed)) {
                 $info = $parsed['info'] ?? null;
-                if (is_array($info) && isset($info['string'])) {
-                    $memos[] = (string) $info['string'];
-                    continue;
+                if (is_array($info)) {
+                    // Mirror rust/crates/x402/src/protocol/schemes/exact/verify.rs
+                    // (`parsed_memo_text`, L519-533): RPC jsonParsed for the
+                    // spl-memo program exposes the decoded payload under
+                    // `info.memo`, falling back to `info.data`. The prior key
+                    // `info.string` matches neither the Rust spine nor the
+                    // canonical spl-memo parser output and would silently
+                    // reject signature-mode settlements that carry a memo
+                    // when the RPC returned the parsed object form.
+                    $memoValue = $info['memo'] ?? $info['data'] ?? null;
+                    if (is_string($memoValue)) {
+                        $memos[] = $memoValue;
+                        continue;
+                    }
                 }
             }
         }
