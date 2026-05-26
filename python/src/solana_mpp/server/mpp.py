@@ -366,6 +366,50 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int) -> Non
     )
 
 
+def _is_v0_wire_bytes(raw: bytes) -> bool:
+    """Best-effort detection of a v0 ``VersionedTransaction`` on the wire.
+
+    SECURITY: ``solders.transaction.Transaction.from_bytes`` is lenient on
+    v0 wire bytes today: it can mis-parse a signed v0 transaction as a
+    degenerate legacy transaction whose ``instructions`` list points at
+    random ``account_keys`` entries. The downstream allowlist then rejects
+    a legitimate v0 payment with a misleading
+    ``unexpected program instruction in payment transaction: <pubkey>``
+    error sourced from the mis-parsed junk. This helper peeks at the
+    message-version prefix so callers can route v0 wire bytes straight to
+    ``VersionedTransaction.from_bytes`` instead of trusting the lenient
+    legacy parser.
+
+    Wire format: ``[shortvec sig_count] [64 * sig_count signatures] [message]``.
+    Legacy messages start with the header byte ``num_required_signatures``
+    which is always ``< 0x80`` in practice (the MSB encodes a version
+    prefix on v0). v0 messages start with ``0x80 | version`` so the high
+    bit is set. We accept multi-byte compact-u16 lengths but cap at three
+    bytes (Solana hard caps signatures well below ``128 * 128``).
+    """
+    if not raw:
+        return False
+    # Parse compact-u16 sig_count.
+    sig_count = 0
+    shift = 0
+    offset = 0
+    for _ in range(3):  # compact-u16 is at most 3 bytes
+        if offset >= len(raw):
+            return False
+        byte = raw[offset]
+        offset += 1
+        sig_count |= (byte & 0x7F) << shift
+        if (byte & 0x80) == 0:
+            break
+        shift += 7
+    msg_start = offset + sig_count * 64
+    if msg_start >= len(raw):
+        return False
+    # MessageV0 prefix is 0x80 | version; legacy header byte
+    # (num_required_signatures) never sets the MSB for any realistic tx.
+    return (raw[msg_start] & 0x80) != 0
+
+
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
     """Decode local transfer and memo instructions from a legacy or v0 transaction.
 
@@ -379,28 +423,50 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
 
     raw = base64.b64decode(transaction_b64)
     message: Any
-    try:
-        tx = Transaction.from_bytes(raw)
-        message = tx.message
-        message_instructions = list(tx.message.instructions)
-    except Exception:
+    # Route v0 wire bytes straight to VersionedTransaction; the legacy
+    # parser in solders is lenient and can mis-parse a signed v0 tx as a
+    # degenerate legacy tx with bogus instructions (see _is_v0_wire_bytes).
+    prefer_versioned = _is_v0_wire_bytes(raw)
+    parsed = False
+    if prefer_versioned:
         try:
             vtx = VersionedTransaction.from_bytes(raw)
-        except Exception as exc:
-            raise PaymentError(
-                "unsupported transaction shape for pre-broadcast verification",
-                code="invalid-payload-type",
-            ) from exc
-        # Reject v0 transactions that reference address lookup tables; the
-        # pre-broadcast verifier only sees static account keys.
-        lookups = getattr(vtx.message, "address_table_lookups", None)
-        if lookups:
-            raise PaymentError(
-                "v0 transactions with address lookup tables are not supported",
-                code="invalid-payload",
-            ) from None
-        message = vtx.message
-        message_instructions = list(vtx.message.instructions)
+            lookups = getattr(vtx.message, "address_table_lookups", None)
+            if lookups:
+                raise PaymentError(
+                    "v0 transactions with address lookup tables are not supported",
+                    code="invalid-payload",
+                ) from None
+            message = vtx.message
+            message_instructions = list(vtx.message.instructions)
+            parsed = True
+        except PaymentError:
+            raise
+        except Exception:
+            parsed = False
+    if not parsed:
+        try:
+            tx = Transaction.from_bytes(raw)
+            message = tx.message
+            message_instructions = list(tx.message.instructions)
+        except Exception:
+            try:
+                vtx = VersionedTransaction.from_bytes(raw)
+            except Exception as exc:
+                raise PaymentError(
+                    "unsupported transaction shape for pre-broadcast verification",
+                    code="invalid-payload-type",
+                ) from exc
+            # Reject v0 transactions that reference address lookup tables; the
+            # pre-broadcast verifier only sees static account keys.
+            lookups = getattr(vtx.message, "address_table_lookups", None)
+            if lookups:
+                raise PaymentError(
+                    "v0 transactions with address lookup tables are not supported",
+                    code="invalid-payload",
+                ) from None
+            message = vtx.message
+            message_instructions = list(vtx.message.instructions)
 
     account_keys = [str(key) for key in message.account_keys]
     instructions: list[dict[str, Any]] = []
@@ -768,25 +834,49 @@ def _validate_instruction_allowlist(
 
     raw = base64.b64decode(transaction_b64)
     message: Any
-    try:
-        tx = Transaction.from_bytes(raw)
-        message = tx.message
-        message_instructions = list(tx.message.instructions)
-    except Exception:
+    # Route v0 wire bytes straight to VersionedTransaction; the legacy
+    # parser in solders is lenient and can mis-parse a signed v0 tx as a
+    # degenerate legacy tx whose instructions point at random account
+    # keys. The allowlist would then reject the legitimate v0 payment
+    # with a misleading "unexpected program instruction" error sourced
+    # from junk bytes. See _is_v0_wire_bytes.
+    prefer_versioned = _is_v0_wire_bytes(raw)
+    parsed = False
+    if prefer_versioned:
         try:
             vtx = VersionedTransaction.from_bytes(raw)
-        except Exception as exc:
-            raise PaymentError(
-                "unsupported transaction shape for instruction allowlist",
-                code="invalid-payload-type",
-            ) from exc
-        if getattr(vtx.message, "address_table_lookups", None):
-            raise PaymentError(
-                "v0 transactions with address lookup tables are not supported",
-                code="invalid-payload",
-            ) from None
-        message = vtx.message
-        message_instructions = list(vtx.message.instructions)
+            if getattr(vtx.message, "address_table_lookups", None):
+                raise PaymentError(
+                    "v0 transactions with address lookup tables are not supported",
+                    code="invalid-payload",
+                ) from None
+            message = vtx.message
+            message_instructions = list(vtx.message.instructions)
+            parsed = True
+        except PaymentError:
+            raise
+        except Exception:
+            parsed = False
+    if not parsed:
+        try:
+            tx = Transaction.from_bytes(raw)
+            message = tx.message
+            message_instructions = list(tx.message.instructions)
+        except Exception:
+            try:
+                vtx = VersionedTransaction.from_bytes(raw)
+            except Exception as exc:
+                raise PaymentError(
+                    "unsupported transaction shape for instruction allowlist",
+                    code="invalid-payload-type",
+                ) from exc
+            if getattr(vtx.message, "address_table_lookups", None):
+                raise PaymentError(
+                    "v0 transactions with address lookup tables are not supported",
+                    code="invalid-payload",
+                ) from None
+            message = vtx.message
+            message_instructions = list(vtx.message.instructions)
 
     account_keys = [str(key) for key in message.account_keys]
     if not account_keys:

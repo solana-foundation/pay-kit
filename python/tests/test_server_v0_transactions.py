@@ -8,14 +8,18 @@ Python SDK can clear the 90 percent line-coverage gate that matches the
 other SDKs.
 
 Note: ``solders.transaction.Transaction.from_bytes`` is lenient on signed
-v0 wire bytes (it can mis-parse them as a degenerate legacy transaction
-with zero instructions), so the v0 fallback in the decoder / allowlist is
-not reachable from a real ``VersionedTransaction(msg, [signer])`` wire
-form in current ``solders``. The tests here exercise the v0 paths that
-ARE reachable today: cosign on an unsigned v0 wire form (hand-encoded so
-the legacy parse fails cleanly), the multi-signer rogue-fee-payer slot
-rejection, and the missing-account-keys rejection. These mirror the Rust
-spine's invariants in ``rust/src/server/charge.rs``.
+v0 wire bytes; it can mis-parse them as a degenerate legacy transaction
+with bogus instructions whose program_id_index points at random account
+keys. The decoder and allowlist guard against this with
+``_is_v0_wire_bytes`` (peeks at the v0 message-version prefix and routes
+to ``VersionedTransaction.from_bytes`` first). The tests here exercise
+the v0 paths reachable today: the version-prefix detector, the v0
+allowlist happy path under repeated random keypairs (which used to be a
+probabilistic mis-parse), cosign on an unsigned v0 wire form
+(hand-encoded so the legacy parse fails cleanly), the multi-signer
+rogue-fee-payer slot rejection, and the missing-account-keys rejection.
+These mirror the Rust spine's invariants in
+``rust/crates/mpp/src/server/charge.rs``.
 """
 
 from __future__ import annotations
@@ -38,9 +42,7 @@ TEST_BLOCKHASH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 
 
 def _v0_tx_b64(payer: Keypair, instructions, signers=None) -> str:
-    msg = MessageV0.try_compile(
-        payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH)
-    )
+    msg = MessageV0.try_compile(payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH))
     signers = signers or [payer]
     vtx = VersionedTransaction(msg, signers)
     return base64.b64encode(bytes(vtx)).decode("ascii")
@@ -48,9 +50,7 @@ def _v0_tx_b64(payer: Keypair, instructions, signers=None) -> str:
 
 def _v0_tx_unsigned_b64(payer: Keypair, instructions) -> str:
     """V0 with all-zero signature slots, suitable for cosign splice tests."""
-    msg = MessageV0.try_compile(
-        payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH)
-    )
+    msg = MessageV0.try_compile(payer.pubkey(), instructions, [], Hash.from_string(TEST_BLOCKHASH))
     num_required = int(msg.header.num_required_signatures)
     # Hand-encode wire form: [num_sigs (compact-u16, <128 so 1 byte)]
     # [num_required * 64 zero bytes] [message...]. This is rejected cleanly
@@ -79,9 +79,7 @@ def test_decode_v0_sol_transfer_is_surfaced():
     """
     payer = Keypair()
     dst = Keypair()
-    ix = transfer(
-        TransferParams(from_pubkey=payer.pubkey(), to_pubkey=dst.pubkey(), lamports=42)
-    )
+    ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=dst.pubkey(), lamports=42))
     tx_b64 = _v0_tx_b64(payer, [ix])
 
     out = M._decode_legacy_payment_instructions(tx_b64)
@@ -154,9 +152,7 @@ def test_cosign_v0_fee_payer_not_in_account_keys_rejected():
     payer = Keypair()
     recipient = Keypair()
     outsider = Keypair()
-    ix = transfer(
-        TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1)
-    )
+    ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1))
     tx_b64 = _v0_tx_b64(payer, [ix], signers=[payer])
 
     with pytest.raises(PaymentError, match="not present in transaction accounts"):
@@ -190,9 +186,7 @@ def test_allowlist_v0_native_transfer_accepted():
     """A signed v0 SOL transfer matches the expected amount: no leftovers."""
     payer = Keypair()
     recipient = Keypair()
-    ix = transfer(
-        TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1000)
-    )
+    ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1000))
     tx_b64 = _v0_tx_b64(payer, [ix])
 
     request, details = _native_charge(recipient.pubkey(), 1000)
@@ -200,6 +194,55 @@ def test_allowlist_v0_native_transfer_accepted():
     # System transfer (or sees zero instructions on the lenient legacy
     # parse path), and finishes with no leftovers.
     M._validate_instruction_allowlist(tx_b64, request, details)
+
+
+def test_allowlist_v0_native_transfer_accepted_no_lenient_misparse():
+    """Regression: signed v0 wire bytes must route to VersionedTransaction.
+
+    ``solders.transaction.Transaction.from_bytes`` is lenient on v0 wire
+    bytes and can mis-parse a signed v0 transaction as a degenerate legacy
+    transaction whose instructions point at random ``account_keys`` slots.
+    The allowlist would then reject the legitimate v0 payment with a
+    misleading ``unexpected program instruction in payment transaction:
+    <random pubkey>`` error. ``_is_v0_wire_bytes`` detects the v0 message
+    prefix and forces ``VersionedTransaction.from_bytes`` to take the
+    parse, so the allowlist sees the real System transfer.
+
+    A single iteration of the previous test can pass by chance; this loop
+    hammers the mis-parse path with fresh keypairs so any regression
+    surfaces with high probability.
+    """
+    for _ in range(200):
+        payer = Keypair()
+        recipient = Keypair()
+        ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1000))
+        tx_b64 = _v0_tx_b64(payer, [ix])
+
+        request, details = _native_charge(recipient.pubkey(), 1000)
+        M._validate_instruction_allowlist(tx_b64, request, details)
+
+
+def test_is_v0_wire_bytes_classifies_correctly():
+    """The v0-wire detector must accept v0 bytes and reject legacy bytes."""
+    from solders.message import Message
+    from solders.transaction import Transaction
+
+    payer = Keypair()
+    recipient = Keypair()
+    ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1))
+
+    v0_raw = base64.b64decode(_v0_tx_b64(payer, [ix]))
+    assert M._is_v0_wire_bytes(v0_raw) is True
+
+    blockhash = Hash.from_string(TEST_BLOCKHASH)
+    legacy_msg = Message.new_with_blockhash([ix], payer.pubkey(), blockhash)
+    legacy_tx = Transaction.new_unsigned(legacy_msg)
+    legacy_tx.sign([payer], blockhash)
+    legacy_raw = bytes(legacy_tx)
+    assert M._is_v0_wire_bytes(legacy_raw) is False
+
+    assert M._is_v0_wire_bytes(b"") is False
+    assert M._is_v0_wire_bytes(b"\x01") is False
 
 
 def test_allowlist_invalid_bytes_rejected_with_invalid_payload_type():
