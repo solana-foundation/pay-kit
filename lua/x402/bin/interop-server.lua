@@ -764,8 +764,22 @@ local function trim(value)
   return tostring(value):match("^%s*(.-)%s*$")
 end
 
+-- Token-2022 stablecoin mints. Mirrors
+-- `rust/crates/x402/src/protocol/schemes/exact/types.rs::stablecoin_uses_token_2022`
+-- which returns true for USDG, PYUSD, and CASH (across mainnet and devnet).
+-- Drifting from this set causes the Lua server to advertise/verify the
+-- legacy SPL Token program for Token-2022 mints, which the Rust verifier
+-- rejects.
+local token_2022_mints = {
+  ["2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"] = true, -- USDG mainnet
+  ["4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7"] = true, -- USDG devnet
+  ["2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"] = true, -- PYUSD mainnet
+  ["CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"] = true, -- PYUSD devnet
+  ["CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"] = true, -- CASH mainnet
+}
+
 local function token_program_for_mint(mint)
-  if mint == "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM" then
+  if token_2022_mints[mint] then
     return token_2022_program
   end
   return default_token_program
