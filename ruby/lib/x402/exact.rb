@@ -5,39 +5,45 @@ require "ed25519"
 require "json"
 require "securerandom"
 
-require "mpp/methods/solana/base58"
-require "mpp/methods/solana/mints"
-require "mpp/methods/solana/public_key"
-require "mpp/methods/solana/associated_token"
-require "mpp/methods/solana/rpc"
-require "mpp/methods/solana/transaction"
+require "pay_core/solana/base58"
+require "pay_core/solana/mints"
+require "pay_core/solana/programs"
+require "pay_core/solana/public_key"
+require "pay_core/solana/ata"
+require "pay_core/solana/rpc"
+require "pay_core/solana/transaction"
 
 module X402
   module Interop
     # x402 exact-scheme primitives. Protocol-specific structural validation
     # lives here; cryptography, Base58, ATA derivation, RPC, program IDs,
-    # and short_vec live in the shared `Mpp::Methods::Solana::*` core and
-    # are reused via the local aliases below.
+    # and short_vec live in the shared `PayCore::Solana::*` layer and are
+    # reused via the local aliases below.
     module Exact
       module_function
 
-      # Shared core aliases. All Solana primitives come from the gem-level
-      # `Mpp::Methods::Solana` core so that x402 does not redeclare or
-      # reimplement constants, Base58, ATA, PDA, RPC, or short_vec helpers.
-      Base58Core = ::Mpp::Methods::Solana::Base58
-      MintsCore = ::Mpp::Methods::Solana::Mints
-      PublicKeyCore = ::Mpp::Methods::Solana::PublicKey
-      AssociatedTokenCore = ::Mpp::Methods::Solana::AssociatedToken
-      RpcCore = ::Mpp::Methods::Solana::Rpc
-      TransactionCore = ::Mpp::Methods::Solana::Transaction
+      # Shared core aliases. All Solana primitives come from the
+      # gem-level `PayCore::Solana` layer so that x402 does not redeclare
+      # or reimplement constants, Base58, ATA, PDA, RPC, or short_vec
+      # helpers. Mirrors the Rust spine
+      # `rust/crates/x402/src/protocol/schemes/exact/types.rs` which
+      # likewise consumes `solana-pay-core` rather than redefining
+      # program IDs in the x402 crate.
+      Base58 = ::PayCore::Solana::Base58
+      Mints = ::PayCore::Solana::Mints
+      Programs = ::PayCore::Solana::Programs
+      PublicKey = ::PayCore::Solana::PublicKey
+      ATA = ::PayCore::Solana::ATA
+      Rpc = ::PayCore::Solana::Rpc
+      TransactionCodec = ::PayCore::Solana::Transaction
 
-      # Program IDs are sourced from the shared mint/program table.
-      COMPUTE_BUDGET_PROGRAM = MintsCore::COMPUTE_BUDGET_PROGRAM
-      MEMO_PROGRAM = MintsCore::MEMO_PROGRAM
-      ASSOCIATED_TOKEN_PROGRAM = MintsCore::ASSOCIATED_TOKEN_PROGRAM
-      SYSTEM_PROGRAM = MintsCore::SYSTEM_PROGRAM
-      TOKEN_2022_PROGRAM = MintsCore::TOKEN_2022_PROGRAM
-      LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
+      # Program IDs sourced from the shared Programs table.
+      COMPUTE_BUDGET_PROGRAM = Programs::COMPUTE_BUDGET_PROGRAM
+      MEMO_PROGRAM = Programs::MEMO_PROGRAM
+      ASSOCIATED_TOKEN_PROGRAM = Programs::ASSOCIATED_TOKEN_PROGRAM
+      SYSTEM_PROGRAM = Programs::SYSTEM_PROGRAM
+      TOKEN_2022_PROGRAM = Programs::TOKEN_2022_PROGRAM
+      LIGHTHOUSE_PROGRAM = Programs::LIGHTHOUSE_PROGRAM
 
       DEFAULT_COMPUTE_UNIT_LIMIT = 20_000
       DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1
@@ -64,7 +70,7 @@ module X402
       def build_exact_payment_signature_from_rpc(requirement:, client_secret_key:, rpc_url:, resource: nil)
         blockhash = string_extra(requirement, "recentBlockhash", required: false)
         if blockhash.nil? || blockhash.empty?
-          blockhash = RpcCore.new(rpc_url).latest_blockhash
+          blockhash = Rpc.new(rpc_url).latest_blockhash
         end
 
         build_exact_payment_signature(
@@ -167,7 +173,7 @@ module X402
       end
 
       def latest_blockhash(rpc_url)
-        RpcCore.new(rpc_url).latest_blockhash
+        Rpc.new(rpc_url).latest_blockhash
       end
 
       def build_transaction(requirement:, private_key:, recent_blockhash:)
@@ -519,11 +525,11 @@ module X402
       end
 
       # Derive the associated token account address as raw 32-byte pubkey.
-      # Delegates to `Mpp::Methods::Solana::AssociatedToken.derive` and
+      # Delegates to `PayCore::Solana::ATA.derive` and
       # decodes the resulting Base58 string back to the byte form x402's
       # transaction builder works in.
       def associated_token_address(wallet, token_program, mint)
-        ata_base58 = AssociatedTokenCore.derive(
+        ata_base58 = ATA.derive(
           owner: wallet,
           mint: mint,
           token_program: token_program
@@ -547,22 +553,22 @@ module X402
 
       # Base58 helpers delegate to the shared core module.
       def base58_decode(value)
-        Base58Core.decode(value)
+        Base58.decode(value)
       end
 
       def base58_encode(bytes)
-        Base58Core.encode(bytes)
+        Base58.encode(bytes)
       end
 
       # Solana short_vec helpers delegate to the shared core module
-      # (`Mpp::Methods::Solana::Transaction`), keeping a single canonical
+      # (`PayCore::Solana::Transaction`), keeping a single canonical
       # implementation of compact-u16 across MPP and x402.
       def short_vec(length)
-        TransactionCore.short_vec(length)
+        TransactionCodec.short_vec(length)
       end
 
       def read_short_vec(bytes, offset)
-        TransactionCore.read_short_vec(bytes, offset)
+        TransactionCodec.read_short_vec(bytes, offset)
       end
 
       def required_signer_index(message, public_key)

@@ -5,7 +5,8 @@ require "json"
 require "net/http"
 require "uri"
 
-require "mpp/methods/solana/mints"
+require "pay_core/solana/mints"
+require "pay_core/solana/caip2"
 require "x402/exact"
 
 module X402
@@ -31,15 +32,16 @@ module X402
       # is preserved alongside because existing harness assertions rely
       # on it.
       PAYMENT_RESPONSE_HEADER = "PAYMENT-RESPONSE"
-      # Token program + mint defaults come from the shared core mint table
-      # (`Mpp::Methods::Solana::Mints`) so x402 and MPP cannot drift on
-      # canonical SPL program IDs and devnet mint addresses.
-      DEFAULT_TOKEN_PROGRAM = ::Mpp::Methods::Solana::Mints::TOKEN_PROGRAM
-      DEFAULT_TOKEN_DECIMALS = ::Mpp::Methods::Solana::Mints::DEFAULT_DECIMALS
+      # Token program + mint defaults come from the shared core mint
+      # table (`PayCore::Solana::Mints`) so x402 and MPP cannot drift on
+      # canonical SPL program IDs and devnet mint addresses. CAIP-2
+      # network identifier comes from `PayCore::Solana::Caip2`.
+      DEFAULT_TOKEN_PROGRAM = ::PayCore::Solana::Mints::TOKEN_PROGRAM
+      DEFAULT_TOKEN_DECIMALS = ::PayCore::Solana::Mints::DEFAULT_DECIMALS
       DEFAULT_MAX_TIMEOUT_SECONDS = 60
-      DEFAULT_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
-      DEFAULT_MINT = ::Mpp::Methods::Solana::Mints::MINTS.fetch("USDC").fetch("devnet")
-      DEVNET_PYUSD_MINT = ::Mpp::Methods::Solana::Mints::MINTS.fetch("PYUSD").fetch("devnet")
+      DEFAULT_NETWORK = ::PayCore::Solana::Caip2::DEVNET
+      DEFAULT_MINT = ::PayCore::Solana::Mints::MINTS.fetch("USDC").fetch("devnet")
+      DEVNET_PYUSD_MINT = ::PayCore::Solana::Mints::MINTS.fetch("PYUSD").fetch("devnet")
 
       class State
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer, :fee_payer_secret_key, :amount,

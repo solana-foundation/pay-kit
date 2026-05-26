@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "pay_core"
+
 require_relative "mpp/version"
 require_relative "mpp/error"
 require_relative "mpp/error_codes"

@@ -3,25 +3,28 @@
 require "base64"
 require "json"
 
-require "mpp/methods/solana/mints"
+require "pay_core/solana/mints"
+require "pay_core/solana/caip2"
 
 module X402
   module Interop
     module Client
       module_function
 
-      # CAIP-2 indexed view of the canonical stablecoin mint table from the
-      # shared core (`Mpp::Methods::Solana::Mints::MINTS`). The shared table
-      # is keyed by Solana network name (`devnet` / `mainnet`); x402 wire
-      # network IDs use CAIP-2 form, so we project the devnet entries into
-      # the CAIP-2 namespace here rather than redeclaring mint addresses.
-      SOLANA_DEVNET_CAIP2 = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+      # CAIP-2 indexed view of the canonical stablecoin mint table from
+      # the shared core (`PayCore::Solana::Mints::MINTS`). The shared
+      # table is keyed by Solana network name (`devnet` / `mainnet`);
+      # x402 wire network IDs use CAIP-2 form, so we project the devnet
+      # entries into the CAIP-2 namespace here rather than redeclaring
+      # mint addresses. The CAIP-2 ID comes from
+      # `PayCore::Solana::Caip2::DEVNET`.
+      SOLANA_DEVNET_CAIP2 = ::PayCore::Solana::Caip2::DEVNET
       STABLECOIN_MINTS = {
         "USDC" => {
-          SOLANA_DEVNET_CAIP2 => ::Mpp::Methods::Solana::Mints::MINTS.fetch("USDC").fetch("devnet")
+          SOLANA_DEVNET_CAIP2 => ::PayCore::Solana::Mints::MINTS.fetch("USDC").fetch("devnet")
         },
         "PYUSD" => {
-          SOLANA_DEVNET_CAIP2 => ::Mpp::Methods::Solana::Mints::MINTS.fetch("PYUSD").fetch("devnet")
+          SOLANA_DEVNET_CAIP2 => ::PayCore::Solana::Mints::MINTS.fetch("PYUSD").fetch("devnet")
         }
       }.freeze
 

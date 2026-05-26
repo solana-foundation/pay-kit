@@ -357,12 +357,14 @@ class InteropClientTest < Minitest::Test
   end
 
   def test_latest_blockhash_rejects_http_failure
-    # After shared-core consolidation x402 delegates `latest_blockhash` to
-    # `Mpp::Methods::Solana::Rpc`, which raises the canonical `Mpp::Error`
-    # subclass of `StandardError` carrying a stable
-    # `getLatestBlockhash HTTP <code>` message on non-2xx responses.
+    # After the solana-pay-core extraction x402 consumes
+    # `PayCore::Solana::Rpc` directly. That client raises
+    # `PayCore::Solana::Rpc::RpcError` on non-2xx responses with a stable
+    # `getLatestBlockhash HTTP <code>` message; solana-mpp keeps its own
+    # `Mpp::Methods::Solana::Rpc` subclass that swaps the error class to
+    # `Mpp::Error` for callers in the charge-server path.
     with_net_http_response("service unavailable", code: "503", success: false) do
-      error = assert_raises(Mpp::Error) do
+      error = assert_raises(PayCore::Solana::Rpc::RpcError) do
         X402::Interop::Exact.latest_blockhash("http://127.0.0.1:8899")
       end
 
