@@ -17,11 +17,7 @@ struct InteropClient {
         let currencies = ProcessInfo.processInfo.environment["X402_INTEROP_PREFER_CURRENCIES"]
             .map { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
         let secret = try readSecretKey("X402_INTEROP_CLIENT_SECRET_KEY")
-        #if canImport(CryptoKit)
         let signer = try MemorySolanaSigner(secretKey: secret)
-        #else
-        throw X402Error.rpc("MemorySolanaSigner requires CryptoKit")
-        #endif
 
         // Scope note (M2): this interop client adapter is intentionally limited to
         // GET-only x402 protected routes. The harness fixture matrix is GET-only,

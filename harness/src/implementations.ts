@@ -128,14 +128,12 @@ export const clientImplementations: ImplementationDefinition[] = [
       "../../swift",
       "x402-interop-client",
     ],
-    // The Swift adapter requires CryptoKit and Apple's Swift toolchain. The
-    // public CI matrix runs interop on ubuntu-latest, which does not ship a
-    // Swift toolchain by default. Guard with a runtime OS check so accidentally
-    // enabling `swift-x402-client` in MPP_INTEROP_CLIENTS on Linux is a no-op
-    // rather than a hard failure during `swift run` bootstrap.
-    enabled:
-      isEnabled("swift-x402-client", "MPP_INTEROP_CLIENTS", false) &&
-      process.platform === "darwin",
+    // The Swift adapter uses SwiftCrypto (`import Crypto`), which builds on
+    // Linux as well as Apple platforms, so this entry is no longer
+    // Darwin-gated. CI runners without a Swift toolchain must still leave
+    // `swift-x402-client` out of `MPP_INTEROP_CLIENTS` — when Swift is
+    // missing, `swift run` fails loudly, which is the correct signal.
+    enabled: isEnabled("swift-x402-client", "MPP_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
 ];

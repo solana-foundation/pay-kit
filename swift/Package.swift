@@ -22,13 +22,24 @@ let package = Package(
             targets: ["X402InteropClient"]
         ),
     ],
+    dependencies: [
+        // SwiftCrypto provides Curve25519 (Ed25519) + SHA256 on Linux without a
+        // CryptoKit dependency, so the X402 client builds and runs on the same
+        // ubuntu-latest runners the rest of the interop harness uses.
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+    ],
     targets: [
         .target(name: "SolanaMpp"),
         .testTarget(
             name: "SolanaMppTests",
             dependencies: ["SolanaMpp"]
         ),
-        .target(name: "X402"),
+        .target(
+            name: "X402",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
         .executableTarget(
             name: "X402InteropClient",
             dependencies: ["X402"]

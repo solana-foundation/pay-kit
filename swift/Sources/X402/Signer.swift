@@ -1,14 +1,14 @@
 import Foundation
-#if canImport(CryptoKit)
-import CryptoKit
-#endif
+// SwiftCrypto (`Crypto`) is API-compatible with Apple's CryptoKit for
+// Curve25519 + SHA256 and ships on Linux, so the X402 client builds on
+// ubuntu-latest CI as well as Apple platforms.
+import Crypto
 
 public protocol SolanaSigner {
     var address: SolanaPublicKey { get }
     func sign(message: Data) async throws -> Data
 }
 
-#if canImport(CryptoKit)
 public struct MemorySolanaSigner: SolanaSigner {
     private let privateKey: Curve25519.Signing.PrivateKey
     public let address: SolanaPublicKey
@@ -37,4 +37,3 @@ public struct MemorySolanaSigner: SolanaSigner {
         try privateKey.signature(for: message)
     }
 }
-#endif

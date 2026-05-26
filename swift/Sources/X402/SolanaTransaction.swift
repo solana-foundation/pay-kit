@@ -1,7 +1,5 @@
 import Foundation
-#if canImport(CryptoKit)
-import CryptoKit
-#endif
+import Crypto
 
 public protocol RecentBlockhashProvider {
     func getLatestBlockhash() async throws -> String
@@ -15,7 +13,6 @@ public struct DefaultAssociatedTokenAddressResolver: AssociatedTokenAddressResol
     public init() {}
 
     public func associatedTokenAddress(owner: SolanaPublicKey, mint: SolanaPublicKey, tokenProgram: SolanaPublicKey) throws -> SolanaPublicKey {
-        #if canImport(CryptoKit)
         let program = try SolanaPublicKey(X402.associatedTokenProgram)
         for bump in stride(from: UInt8.max, through: 0, by: -1) {
             var seed = Data()
@@ -32,9 +29,6 @@ public struct DefaultAssociatedTokenAddressResolver: AssociatedTokenAddressResol
             }
         }
         throw X402Error.invalidBase58("unable to derive associated token account")
-        #else
-        throw X402Error.rpc("DefaultAssociatedTokenAddressResolver requires CryptoKit")
-        #endif
     }
 }
 

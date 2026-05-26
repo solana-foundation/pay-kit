@@ -1,9 +1,7 @@
 import Foundation
 import Testing
 @testable import X402
-#if canImport(CryptoKit)
-import CryptoKit
-#endif
+import Crypto
 
 private struct FixedSigner: SolanaSigner {
     let address: SolanaPublicKey
@@ -197,7 +195,6 @@ private struct FixedATAResolver: AssociatedTokenAddressResolver {
     #expect(Data(base64Encoded: tx) != nil)
 }
 
-#if canImport(CryptoKit)
 @Test func memorySignerRejectsMismatchedEmbeddedPublicKey() throws {
     let privateKey = Curve25519.Signing.PrivateKey()
     let seed = [UInt8](privateKey.rawRepresentation)
@@ -213,7 +210,6 @@ private struct FixedATAResolver: AssociatedTokenAddressResolver {
         _ = try MemorySolanaSigner(secretKey: seed + tampered)
     }
 }
-#endif
 
 @Test func challengeRejectsUnsupportedTokenProgram() throws {
     // A malicious server tries to pin extra.tokenProgram to an arbitrary executable
