@@ -1274,7 +1274,22 @@ local function response_for(path, headers)
       return payment_error_response(settlement_or_error)
     end
 
-    return 200, "OK", "x-fixture-settlement: " .. settlement_or_error .. "\r\n", json_object({
+    -- Canonical x402 v2 PAYMENT-RESPONSE header. Mirrors the Rust spine
+    -- (rust/crates/x402/src/bin/interop_server.rs L221-231) and TS fixture
+    -- (harness/src/fixtures/typescript/exact-server.ts L322-331). The
+    -- header value is raw (non-base64) JSON carrying the canonical
+    -- PaymentResponse fields: { success, network, transaction }. The
+    -- fixture x-fixture-settlement header is preserved alongside because
+    -- existing harness assertions rely on it.
+    local network = read_env("X402_INTEROP_NETWORK", default_network)
+    local payment_response = must_json_encode({
+      success = true,
+      network = network,
+      transaction = settlement_or_error,
+    }, "PAYMENT-RESPONSE")
+    local response_headers = "x-fixture-settlement: " .. settlement_or_error ..
+      "\r\nPAYMENT-RESPONSE: " .. payment_response .. "\r\n"
+    return 200, "OK", response_headers, json_object({
       { "ok", true },
       { "paid", true },
       { "settlement", settlement_or_error }
