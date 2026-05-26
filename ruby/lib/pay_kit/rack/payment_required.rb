@@ -170,7 +170,7 @@ module PayKit
       def caip2_for(network)
         case network
         when :solana_mainnet then ::PayCore::Solana::Caip2::MAINNET
-        when :solana_devnet  then ::PayCore::Solana::Caip2::DEVNET
+        when :solana_devnet then ::PayCore::Solana::Caip2::DEVNET
         when :solana_localnet then ::PayCore::Solana::Caip2::LOCALNET
         else
           raise ::PayKit::ConfigurationError, "no CAIP-2 mapping for network #{network.inspect}"
@@ -180,7 +180,7 @@ module PayKit
       def mint_for(coin, network)
         net_key = case network
         when :solana_mainnet then "mainnet"
-        when :solana_devnet  then "devnet"
+        when :solana_devnet then "devnet"
         when :solana_localnet then "localnet"
         else
           raise ::PayKit::ConfigurationError, "no mint table for network #{network.inspect}"

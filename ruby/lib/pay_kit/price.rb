@@ -48,18 +48,19 @@ module PayKit
 
     # The primary settlement coin (first preference). Used by
     # single-recipient flows where only the top choice matters.
+    # Settlements is guaranteed non-empty by `Price.new`.
     def primary_coin
-      settlements.first&.coin
+      settlements.first.coin
     end
 
     def to_s
-      "#{denom} #{amount} (#{settlements.map(&:coin).join(', ')})"
+      "#{denom} #{amount} (#{settlements.map(&:coin).join(", ")})"
     end
 
     # Numeric amount for fee math. BigDecimal-precise. Recomputed
     # per call so the frozen Price stays frozen.
     def to_d
-      raise ConfigurationError, "invalid amount: #{amount.inspect}" unless amount =~ /\A\d+(\.\d+)?\z/
+      raise ConfigurationError, "invalid amount: #{amount.inspect}" unless /\A\d+(\.\d+)?\z/.match?(amount)
 
       BigDecimal(amount)
     end
@@ -72,15 +73,6 @@ module PayKit
         amount: new_amount.to_s,
         settlements: settlements.map { |s| Settlement.new(coin: s.coin, amount: new_amount.to_s) }
       )
-    end
-
-    # Resolve any settlements with empty coins against config
-    # defaults. Called by the registry at boot once config is
-    # known. Returns a new frozen Price.
-    def resolve_defaults(default_coins)
-      return self unless settlements.empty? || settlements.any? { |s| s.coin.nil? }
-
-      Price.build(denom: denom, amount: amount, coins: default_coins)
     end
   end
 

@@ -9,8 +9,8 @@ module PayKit
     VALID_NETWORKS = %i[solana_mainnet solana_devnet solana_localnet].freeze
     VALID_SCHEMES = %i[x402 mpp].freeze
 
-    attr_accessor :pay_to, :network
-    attr_reader :accept, :stablecoins, :x402, :mpp
+    attr_accessor :pay_to
+    attr_reader :network, :accept, :stablecoins, :x402, :mpp
 
     def initialize
       @pay_to = nil
@@ -108,9 +108,7 @@ module PayKit
       @config ||= Config.new
     end
 
-    def pricing
-      @pricing
-    end
+    attr_reader :pricing
 
     # Assigning the registry freezes it. Mutating after this point
     # raises FrozenError at write sites.
