@@ -2,14 +2,14 @@
 
 Demonstrates the `solana-pay-kit` v2 surface: a single Sinatra app
 that protects routes with either `x402:exact` or `mpp:charge`,
-declared once in `pricing.rb`.
+declared once in `pay_kit.rb`.
 
 ## Layout
 
 ```
 config.ru     Rack entry
 app.rb        Sinatra::Base + PayKit::Sinatra helpers
-pricing.rb    PayKit::Pricing subclass (the gates registry)
+pay_kit.rb    PayKit.configure block + Pricing class + PayKit.pricing= assignment
 ```
 
 ## Run
