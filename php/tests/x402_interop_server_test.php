@@ -1729,6 +1729,64 @@ assert_runtime_error('payment payload signature is not a valid base58 signature'
 
 echo "PHP signature-mode PaymentProof regression suite OK\n";
 
+// --- env-driven resource path + settlement header regression -----------
+// X402_INTEROP_RESOURCE_PATH and X402_INTEROP_SETTLEMENT_HEADER are
+// honored end-to-end so the harness can include PHP in non-default x402
+// scenarios. Mirrors the Python/Lua/Ruby siblings.
+$customState = state_from_env([
+    'X402_INTEROP_RPC_URL' => 'http://127.0.0.1:8899',
+    'X402_INTEROP_NETWORK' => 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+    'X402_INTEROP_MINT' => '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    'X402_INTEROP_PAY_TO' => '11111111111111111111111111111112',
+    'X402_INTEROP_FACILITATOR_SECRET_KEY' => secret_json("\x05"),
+    'X402_INTEROP_PRICE' => '$0.001',
+    'X402_INTEROP_RESOURCE_PATH' => '/x402/widget',
+    'X402_INTEROP_SETTLEMENT_HEADER' => 'x-custom-settlement',
+]);
+if (($customState['resourcePath'] ?? null) !== '/x402/widget') {
+    fail('state_from_env did not honor X402_INTEROP_RESOURCE_PATH');
+}
+if (($customState['settlementHeader'] ?? null) !== 'x-custom-settlement') {
+    fail('state_from_env did not honor X402_INTEROP_SETTLEMENT_HEADER');
+}
+
+$customChallenge = exact_challenge($customState);
+if (($customChallenge['resource']['url'] ?? null) !== '/x402/widget') {
+    fail('exact_challenge did not honor custom resource path');
+}
+
+// response_for routes the custom resource path to protected_response and
+// rejects the canonical default when an override is configured.
+[$customStatus] = response_for('/x402/widget', [], $customState);
+if ($customStatus !== 402) {
+    fail('response_for did not 402 the custom resource path without PAYMENT-SIGNATURE');
+}
+[$defaultStatus] = response_for(SolanaMpp\X402\Interop\DEFAULT_RESOURCE_PATH, [], $customState);
+if ($defaultStatus !== 404) {
+    fail('response_for served the canonical default resource path when an override was configured');
+}
+
+// settle a canonical payment against the custom state and assert the
+// configured header name appears on the response.
+$customPayment = valid_exact_payment_shell($customState, "\x07");
+[$paidStatus, $paidHeaders] = protected_response(
+    ['PAYMENT-SIGNATURE' => encoded_payment($customPayment)],
+    $customState,
+    static fn (): string => 'sigA',
+    noop_confirmer(),
+);
+if ($paidStatus !== 200) {
+    fail('protected_response did not 200 with custom settlement header');
+}
+if (!array_key_exists('x-custom-settlement', $paidHeaders)) {
+    fail('protected_response did not emit the env-configured settlement header');
+}
+if (array_key_exists(SolanaMpp\X402\Interop\DEFAULT_SETTLEMENT_HEADER, $paidHeaders)) {
+    fail('protected_response leaked the canonical default settlement header when overridden');
+}
+
+echo "PHP env-driven resource path + settlement header regression suite OK\n";
+
 echo "PHP interop server contract OK\n";
 
 if ($coverageRequested) {

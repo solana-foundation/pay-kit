@@ -169,6 +169,15 @@ function state_from_env(array $env): array
     }
 
     $secretKey = secret_key_bytes((string) $env['X402_INTEROP_FACILITATOR_SECRET_KEY']);
+    $resourcePath = trim((string) ($env['X402_INTEROP_RESOURCE_PATH'] ?? ''));
+    if ($resourcePath === '') {
+        $resourcePath = DEFAULT_RESOURCE_PATH;
+    }
+    $settlementHeader = trim((string) ($env['X402_INTEROP_SETTLEMENT_HEADER'] ?? ''));
+    if ($settlementHeader === '') {
+        $settlementHeader = DEFAULT_SETTLEMENT_HEADER;
+    }
+
     return [
         'rpcUrl' => (string) $env['X402_INTEROP_RPC_URL'],
         'network' => (string) ($env['X402_INTEROP_NETWORK'] ?? DEFAULT_NETWORK),
@@ -178,6 +187,12 @@ function state_from_env(array $env): array
         'feePayerSecretKey' => $secretKey,
         'feePayerPublicKey' => substr($secretKey, 32, 32),
         'amount' => normalize_amount((string) ($env['X402_INTEROP_PRICE'] ?? DEFAULT_PRICE)),
+        // Resource path + settlement header are env-driven so the harness can
+        // include PHP in non-default x402 scenarios. Both fall back to the
+        // canonical defaults when the env vars are unset/blank. Mirrors the
+        // Python/Lua/Ruby siblings.
+        'resourcePath' => $resourcePath,
+        'settlementHeader' => $settlementHeader,
     ];
 }
 
@@ -262,12 +277,13 @@ function exact_requirements(array $state): array
 
 function exact_challenge(array $state): array
 {
+    $resourcePath = (string) ($state['resourcePath'] ?? DEFAULT_RESOURCE_PATH);
     return [
         'x402Version' => 2,
         'resource' => [
-            'url' => DEFAULT_RESOURCE_PATH,
+            'url' => $resourcePath,
             'type' => 'http',
-            'uri' => DEFAULT_RESOURCE_PATH,
+            'uri' => $resourcePath,
         ],
         'accepts' => exact_requirements($state),
     ];
@@ -1371,17 +1387,28 @@ function payment_required_header(array $challenge): string
 
 function response_for(string $path, array $headers, ?array $state): array
 {
-    return match ($path) {
-        '/health' => [200, [], ['ok' => true]],
-        '/capabilities' => [200, [], CAPABILITY_PAYLOAD],
-        '/exact' => [
+    if ($path === '/health') {
+        return [200, [], ['ok' => true]];
+    }
+    if ($path === '/capabilities') {
+        return [200, [], CAPABILITY_PAYLOAD];
+    }
+    if ($path === '/exact') {
+        $resolved = require_state($state);
+        return [
             402,
-            ['PAYMENT-REQUIRED' => payment_required_header(exact_challenge(require_state($state)))],
+            ['PAYMENT-REQUIRED' => payment_required_header(exact_challenge($resolved))],
             ['error' => 'payment_required'],
-        ],
-        DEFAULT_RESOURCE_PATH => protected_response($headers, require_state($state)),
-        default => [404, [], ['error' => 'not_found']],
-    };
+        ];
+    }
+    if ($state !== null && $path === (string) ($state['resourcePath'] ?? DEFAULT_RESOURCE_PATH)) {
+        return protected_response($headers, require_state($state));
+    }
+    if ($state === null && $path === DEFAULT_RESOURCE_PATH) {
+        return protected_response($headers, require_state($state));
+    }
+
+    return [404, [], ['error' => 'not_found']];
 }
 
 function protected_response(array $headers, array $state, ?callable $sender = null, ?callable $confirmer = null, ?callable $transactionFetcher = null): array
@@ -1411,10 +1438,12 @@ function protected_response(array $headers, array $state, ?callable $sender = nu
             'payer' => base58_encode_binary($state['feePayerPublicKey']),
         ];
 
+        $settlementHeaderName = (string) ($state['settlementHeader'] ?? DEFAULT_SETTLEMENT_HEADER);
+
         return [
             200,
             [
-                DEFAULT_SETTLEMENT_HEADER => $settlement,
+                $settlementHeaderName => $settlement,
                 PAYMENT_RESPONSE_HEADER => json_encode($paymentResponse, JSON_THROW_ON_ERROR),
             ],
             [

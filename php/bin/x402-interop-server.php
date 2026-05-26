@@ -5,7 +5,6 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/x402/InteropServer.php';
 
 use const SolanaMpp\X402\Interop\CAPABILITY_PAYLOAD;
-use const SolanaMpp\X402\Interop\DEFAULT_RESOURCE_PATH;
 use function SolanaMpp\X402\Interop\response_for;
 use function SolanaMpp\X402\Interop\state_from_env;
 
@@ -37,7 +36,8 @@ try {
 }
 
 $stateForPath = static function (string $path) use (&$state): ?array {
-    if (!in_array($path, ['/exact', DEFAULT_RESOURCE_PATH], true)) {
+    $resourcePath = (string) ($state['resourcePath'] ?? \SolanaMpp\X402\Interop\DEFAULT_RESOURCE_PATH);
+    if (!in_array($path, ['/exact', $resourcePath], true)) {
         return null;
     }
 
