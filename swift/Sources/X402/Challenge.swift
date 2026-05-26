@@ -19,6 +19,77 @@ public struct PaymentRequirement: Equatable, Codable {
     public let maxTimeoutSeconds: Int?
     public let extra: [String: JSONValue]?
 
+    private enum CodingKeys: String, CodingKey {
+        case scheme
+        case network
+        case amount
+        case maxAmountRequired
+        case asset
+        case payTo
+        case maxTimeoutSeconds
+        case extra
+    }
+
+    public init(
+        scheme: String,
+        network: String,
+        amount: String,
+        asset: String,
+        payTo: String,
+        maxTimeoutSeconds: Int? = nil,
+        extra: [String: JSONValue]? = nil
+    ) {
+        self.scheme = scheme
+        self.network = network
+        self.amount = amount
+        self.asset = asset
+        self.payTo = payTo
+        self.maxTimeoutSeconds = maxTimeoutSeconds
+        self.extra = extra
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.scheme = try container.decode(String.self, forKey: .scheme)
+        self.network = try container.decode(String.self, forKey: .network)
+        self.asset = try container.decode(String.self, forKey: .asset)
+        self.payTo = try container.decode(String.self, forKey: .payTo)
+        self.maxTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .maxTimeoutSeconds)
+        self.extra = try container.decodeIfPresent([String: JSONValue].self, forKey: .extra)
+        // Accept both `amount` and the canonical x402 wire field
+        // `maxAmountRequired`. Rust spine canonicalises the same way at
+        // rust/crates/x402/src/protocol/schemes/exact/types.rs (the
+        // `string_field(object, "amount").or_else(|| string_field(object,
+        // "maxAmountRequired"))` fallback). The TS fixture and other ports
+        // emit `maxAmountRequired`, so reading only `amount` would silently
+        // drop every spine-shaped challenge. When both fields are present,
+        // `amount` wins for back-compat with adapters that emit both.
+        if let amount = try container.decodeIfPresent(String.self, forKey: .amount) {
+            self.amount = amount
+        } else if let amount = try container.decodeIfPresent(String.self, forKey: .maxAmountRequired) {
+            self.amount = amount
+        } else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.amount,
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "PaymentRequirement requires either `amount` or `maxAmountRequired`."
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(scheme, forKey: .scheme)
+        try container.encode(network, forKey: .network)
+        try container.encode(amount, forKey: .amount)
+        try container.encode(asset, forKey: .asset)
+        try container.encode(payTo, forKey: .payTo)
+        try container.encodeIfPresent(maxTimeoutSeconds, forKey: .maxTimeoutSeconds)
+        try container.encodeIfPresent(extra, forKey: .extra)
+    }
+
     public var feePayer: String? {
         extra?["feePayer"]?.string ?? extra?["feePayerKey"]?.string
     }

@@ -405,6 +405,44 @@ private let bothNetworksPyusdEnvelope = """
     #expect(requirement.asset == "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM")
 }
 
+@Test func challengeAcceptsCanonicalMaxAmountRequiredField() throws {
+    // Regression: prior tip read only `amount`, which silently dropped every
+    // spine-shaped challenge that uses the canonical `maxAmountRequired`
+    // wire field (TS fixture, Rust spine output, Go/Kotlin/PHP ports).
+    // Rust spine fallback lives at
+    // rust/crates/x402/src/protocol/schemes/exact/types.rs.
+    let json = """
+    {"x402Version":2,"accepts":[
+      {"scheme":"exact","network":"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1","maxAmountRequired":"1500","asset":"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU","payTo":"11111111111111111111111111111111","extra":{"feePayer":"11111111111111111111111111111111","decimals":6}}
+    ]}
+    """
+    let parsed = try parseX402Challenge(
+        headers: [:],
+        body: Data(json.utf8),
+        selection: ChallengeSelection(network: "devnet")
+    )
+    let requirement = try #require(parsed)
+    #expect(requirement.amount == "1500")
+    #expect(requirement.scheme == "exact")
+}
+
+@Test func challengePrefersAmountOverMaxAmountRequiredWhenBothPresent() throws {
+    // When a challenge carries both fields, `amount` wins to preserve
+    // back-compat with adapters that emit both for transitional reasons.
+    let json = """
+    {"x402Version":2,"accepts":[
+      {"scheme":"exact","network":"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1","amount":"1000","maxAmountRequired":"9999","asset":"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU","payTo":"11111111111111111111111111111111","extra":{"feePayer":"11111111111111111111111111111111","decimals":6}}
+    ]}
+    """
+    let parsed = try parseX402Challenge(
+        headers: [:],
+        body: Data(json.utf8),
+        selection: ChallengeSelection(network: "devnet")
+    )
+    let requirement = try #require(parsed)
+    #expect(requirement.amount == "1000")
+}
+
 @Test func currencyMatchesRejectsUnknownSymbol() throws {
     // Preferences contain only an unknown symbol — selector must return nil
     // rather than silently falling through to a different stablecoin.
