@@ -219,8 +219,10 @@ private func canonicalNetwork(_ network: String) -> String {
 }
 
 /// Canonical stablecoin mint table.
-/// MUST mirror the TypeScript reference `STABLECOIN_MINTS` exactly.
-/// Source: typescript/packages/x402/src/protocol/schemes/exact/constants.ts lines 89-111.
+/// MUST mirror the canonical Rust spine `STABLECOIN_MINTS` table exactly.
+/// Canonical reference: rust/crates/x402/src/protocol/schemes/exact/constants.rs.
+/// Cross-checked against the TypeScript fixture stub at
+/// typescript/packages/x402/src/protocol/schemes/exact/constants.ts:89-111.
 enum StablecoinMints {
     // USDC — TS constants.ts:40-42
     static let usdcMainnet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -272,7 +274,9 @@ enum StablecoinMints {
 
 /// Match an offered mint address against an accepted currency symbol.
 /// Resolves the symbol through the canonical `STABLECOIN_MINTS` table
-/// (TS reference: typescript/packages/x402/src/protocol/schemes/exact/constants.ts:89-111)
+/// (Rust spine is canonical; TS fixture stub at
+/// typescript/packages/x402/src/protocol/schemes/exact/constants.ts:89-111
+/// is cross-referenced for parity)
 /// across mainnet/devnet/testnet. Falls back to direct equality so a caller
 /// that already passes a mint string still matches. Unknown symbols return
 /// `false` so the selector can fall through to the cheapest-offer branch.
