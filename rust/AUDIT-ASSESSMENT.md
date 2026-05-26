@@ -193,3 +193,25 @@ Same flag, both modes. Updated `build_spl_with_splits` and `build_spl_with_split
 **Honest-flow impact:** servers that need clients to fund split ATAs MUST now set `ataCreationRequired: true` per split. Servers that forget the flag will see the receiving transfer fail on-chain instead of silently charging the client — clearer failure mode.
 
 ---
+
+### #19 — Full `ChargeRequest` signed without validation
+**ID:** `0fe8cced` · **File:** `crates/mpp/src/server/charge.rs:432`
+
+**Audit claim:** `charge_challenge_with_options` HMAC-signed a caller-supplied `ChargeRequest` directly. Nothing checked `amount`, `currency`, `recipient`, `network`, `decimals`, `feePayer`, `tokenProgram`, or `splits`, so a buggy or hostile caller could produce a *cryptographically-valid* challenge with malformed or off-route contents.
+
+**Decision:** ✅ **accepted — validate, both internally and against `self`.**
+
+**Action taken:** added `Mpp::validate_charge_request` and call it at the top of `charge_challenge_with_options`. The check enforces:
+- `amount` parses as `u64` (reuses `ChargeRequest::parse_amount`).
+- `currency` matches `self.currency` (case-insensitive).
+- `recipient` is `Some(..)` and parses as a `Pubkey`.
+- `methodDetails` (if present) deserializes as `MethodDetails` and each pinned field matches `self`: `network`, `decimals`, `tokenProgram` (against the boot-resolved `self.token_program`).
+- Each `split` carries a parseable recipient `Pubkey` and a `u64` amount.
+
+`fee_payer`/`feePayerKey` are left untouched — the high-level path already accepts a per-request fee-payer override (`options.fee_payer || self.fee_payer`), and audit #11 (`#1335d2de`) handles the orthogonal `feePayer=true` with no signer case.
+
+Callers who legitimately need to issue challenges for a *different* route still have `PaymentChallenge::with_secret_key_full` as a public escape hatch — the trusted construction path the audit's recommendation refers to.
+
+**New tests:** `charge_challenge_rejects_mismatched_currency`, `_missing_recipient`, `_invalid_recipient`, `_unparseable_amount`, `_mismatched_network_in_method_details`, `_mismatched_token_program`, `_invalid_split_recipient`.
+
+---

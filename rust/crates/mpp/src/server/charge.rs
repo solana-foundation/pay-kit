@@ -429,12 +429,23 @@ impl Mpp {
     }
 
     /// Generate a charge challenge from a full request with options.
+    ///
+    /// The override-point on the high-level `charge_with_options` path:
+    /// the caller supplies a fully-formed `ChargeRequest` and we issue a
+    /// challenge against *this* server's route. Audit #19: the request
+    /// is validated for internal consistency AND against the server's
+    /// own configuration before HMAC-signing, so a malformed or
+    /// off-route request cannot produce a cryptographically-valid
+    /// challenge. Callers who need to issue challenges for an unrelated
+    /// route should construct a `PaymentChallenge` directly via
+    /// `PaymentChallenge::with_secret_key_full`.
     pub fn charge_challenge_with_options(
         &self,
         request: &ChargeRequest,
         expires: Option<&str>,
         description: Option<&str>,
     ) -> Result<PaymentChallenge, Error> {
+        self.validate_charge_request(request)?;
         let encoded = Base64UrlJson::from_typed(request)?;
         let default_expires = crate::expires::minutes(5);
         let expires = expires.unwrap_or(&default_expires);
@@ -450,6 +461,79 @@ impl Mpp {
             description,
             None,
         ))
+    }
+
+    /// Audit #19: ensure a caller-built `ChargeRequest` parses and binds
+    /// to this server's route before we HMAC-sign it. Fields covered:
+    /// `amount`, `currency`, `recipient`, and the `methodDetails`
+    /// fragments that pin the server-side configuration
+    /// (`network`, `decimals`, `tokenProgram`, splits).
+    fn validate_charge_request(&self, request: &ChargeRequest) -> Result<(), Error> {
+        request.parse_amount()?;
+
+        if !request.currency.eq_ignore_ascii_case(&self.currency) {
+            return Err(Error::InvalidConfig(format!(
+                "ChargeRequest.currency `{}` does not match server-configured currency `{}`",
+                request.currency, self.currency
+            )));
+        }
+
+        let recipient = request
+            .recipient
+            .as_deref()
+            .ok_or_else(|| Error::InvalidConfig("ChargeRequest.recipient is required".into()))?;
+        Pubkey::from_str(recipient)
+            .map_err(|e| Error::InvalidConfig(format!("Invalid recipient pubkey: {e}")))?;
+
+        if let Some(md_value) = &request.method_details {
+            let md: MethodDetails = serde_json::from_value(md_value.clone())
+                .map_err(|e| Error::InvalidConfig(format!("Invalid methodDetails: {e}")))?;
+
+            if let Some(network) = md.network.as_deref() {
+                if network != self.network {
+                    return Err(Error::InvalidConfig(format!(
+                        "methodDetails.network `{network}` does not match server-configured network `{}`",
+                        self.network
+                    )));
+                }
+            }
+
+            if let Some(decimals) = md.decimals {
+                if u32::from(decimals) != self.decimals {
+                    return Err(Error::InvalidConfig(format!(
+                        "methodDetails.decimals {decimals} does not match server-configured decimals {}",
+                        self.decimals
+                    )));
+                }
+            }
+
+            if let Some(tp) = md.token_program.as_deref() {
+                if Some(tp) != self.token_program {
+                    return Err(Error::InvalidConfig(format!(
+                        "methodDetails.tokenProgram `{tp}` does not match server-resolved token program {:?}",
+                        self.token_program
+                    )));
+                }
+            }
+
+            if let Some(splits) = md.splits.as_deref() {
+                for (idx, split) in splits.iter().enumerate() {
+                    Pubkey::from_str(&split.recipient).map_err(|e| {
+                        Error::InvalidConfig(format!(
+                            "Invalid split[{idx}] recipient pubkey: {e}"
+                        ))
+                    })?;
+                    split.amount.parse::<u64>().map_err(|_| {
+                        Error::InvalidConfig(format!(
+                            "Invalid split[{idx}] amount `{}`",
+                            split.amount
+                        ))
+                    })?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // ── Verification ──
@@ -4044,6 +4128,120 @@ mod tests {
 
         assert_eq!(challenge.expires.as_deref(), Some(custom_expires.as_str()));
         assert_eq!(challenge.description.as_deref(), Some("Premium access"));
+    }
+
+    // ── charge_challenge validation (audit #19) ──
+
+    #[test]
+    fn charge_challenge_rejects_mismatched_currency() {
+        let mpp = test_mpp(); // USDC
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDT".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("does not match server-configured currency"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_missing_recipient() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDC".to_string(),
+            recipient: None,
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("recipient is required"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_invalid_recipient() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some("not-a-pubkey!!".to_string()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("Invalid recipient pubkey"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_unparseable_amount() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "abc".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("Invalid amount"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_mismatched_network_in_method_details() {
+        let mpp = test_mpp(); // network: devnet
+        let md = MethodDetails {
+            network: Some("mainnet-beta".to_string()),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::to_value(md).unwrap()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("does not match server-configured network"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_mismatched_token_program() {
+        let mpp = test_mpp(); // USDC -> TOKEN_PROGRAM
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::to_value(md).unwrap()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("does not match server-resolved token program"));
+    }
+
+    #[test]
+    fn charge_challenge_rejects_invalid_split_recipient() {
+        let mpp = test_mpp();
+        let md = MethodDetails {
+            splits: Some(vec![Split {
+                recipient: "not-a-pubkey!!".to_string(),
+                amount: "10".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "100".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::to_value(md).unwrap()),
+            ..Default::default()
+        };
+        let err = mpp.charge_challenge(&request).unwrap_err();
+        assert!(format!("{err}").contains("Invalid split[0] recipient"));
     }
 
     // ── Challenge HMAC verification tests ──
