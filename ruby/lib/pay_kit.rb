@@ -1,20 +1,20 @@
 # frozen_string_literal: true
 
 # `solana-pay-kit` umbrella. Loads the shared `PayCore` primitives, the
-# protocol layers (`Mpp`, `X402`), and the high-level `PayKit` v2 surface
+# protocol layers (`Mpp`, `X402`), and the high-level `PayKit` surface
 # that unifies them.
 #
 # Layout:
 #
 #  -----------------------------------------------------------
-# |                  solana-pay-kit (PayKit v2)               |
+# |                  solana-pay-kit (PayKit)                  |
 #  -----------------------------------------------------------
 # |   solana-mpp        |     solana-x402                     |
 #  -----------------------------------------------------------
 # |                  solana-pay-core                          |
 #  -----------------------------------------------------------
 #
-# v2 surface:
+# Surface:
 #
 #   PayKit::Config              boot-time configuration (PayKit.configure)
 #   PayKit::Pricing             registry base class + gate DSL

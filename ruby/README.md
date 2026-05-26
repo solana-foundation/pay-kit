@@ -228,7 +228,7 @@ plus the x402 exact scheme on Solana.
 ```text
 ruby/
 ├── lib/solana_pay_kit.rb       # Gem entry (require "solana_pay_kit")
-├── lib/pay_kit/                # PayKit v2 surface
+├── lib/pay_kit/                # PayKit surface
 │   ├── config.rb, pricing.rb, gate.rb, price.rb, fee.rb, ...
 │   ├── protocols/{x402,mpp}.rb # Protocol adapters
 │   └── rack/payment_required.rb

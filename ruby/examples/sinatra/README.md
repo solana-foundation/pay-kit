@@ -1,6 +1,6 @@
 # Sinatra example
 
-Demonstrates the `solana-pay-kit` v2 surface: a single Sinatra app
+Demonstrates the `solana-pay-kit` surface: a single Sinatra app
 that protects routes with either `x402:exact` or `mpp:charge`,
 declared once in `pay_kit.rb`.
 
