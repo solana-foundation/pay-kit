@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ADAPTER = _REPO_ROOT / "tests" / "interop" / "python-server" / "main.py"
+_ADAPTER = _REPO_ROOT / "harness" / "python-server" / "main.py"
 
 
 def _wait_for_port(port: int, timeout: float = 5.0) -> None:
