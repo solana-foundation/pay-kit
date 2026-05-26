@@ -106,18 +106,6 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
-  {
-    id: "ruby-x402-client",
-    label: "Ruby x402 exact client",
-    role: "client",
-    command: [
-      "sh",
-      "-c",
-      "cd ../ruby && bundle exec ruby bin/x402-interop-client",
-    ],
-    enabled: isEnabled("ruby-x402-client", "X402_INTEROP_CLIENTS", false),
-    intents: ["x402-exact"],
-  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [

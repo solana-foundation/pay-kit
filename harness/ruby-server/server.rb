@@ -22,7 +22,7 @@ end
 
 # Build a Solana account from the harness byte-array format.
 def account_from_env(name)
-  Mpp::Methods::Solana::Account.from_json_array(require_env(name))
+  ::PayCore::Solana::Account.from_json_array(require_env(name))
 end
 
 rpc_url           = require_env("MPP_INTEROP_RPC_URL")

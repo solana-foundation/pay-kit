@@ -20,8 +20,9 @@ to keep `mpp.solana.rpc` itself test-only and pure-Lua.
 Network and protocol errors surface as Lua `error()` values shaped like
 `{ code = 'rpc-error'|'transport-error'|'protocol-error', message = '...' }`
 so callers can distinguish socket-level failures from JSON-RPC errors. This
-mirrors the wrapping discipline in Ruby `Mpp::Methods::Solana::Rpc`, which
-catches `Errno::ECONNREFUSED` and friends and raises `Mpp::Error`.
+mirrors the wrapping discipline in Ruby `PayCore::Solana::Rpc`, which
+catches `Errno::ECONNREFUSED` and friends and raises
+`PayCore::Solana::Rpc::RpcError`.
 ]]
 
 local json = require('mpp.util.json')
