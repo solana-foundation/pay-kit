@@ -4,6 +4,10 @@ require "date"
 require "openssl"
 require "time"
 
+require "pay_core/base64_url"
+require "pay_core/json"
+require "pay_core/rfc3339_parser"
+
 module Mpp
   module Core
     # Payment challenge from a `WWW-Authenticate` header.
@@ -30,8 +34,8 @@ module Mpp
 
       # Create a stateless HMAC-bound challenge.
       def self.with_secret(secret_key:, realm:, method:, intent:, request:, expires: nil, description: nil, digest: nil, opaque: nil)
-        request_json = Json.canonical_generate(request)
-        encoded_request = Base64Url.encode(request_json)
+        request_json = ::PayCore::Json.canonical_generate(request)
+        encoded_request = ::PayCore::Base64Url.encode(request_json)
         new(
           id: compute_id(
             secret_key: secret_key,
@@ -57,7 +61,7 @@ module Mpp
       # Compute the HMAC challenge ID used by the Rust reference.
       def self.compute_id(secret_key:, realm:, method:, intent:, request:, expires: nil, digest: nil, opaque: nil)
         input = [realm, method, intent, request, expires.to_s, digest.to_s, opaque.to_s].join("|")
-        Base64Url.encode(OpenSSL::HMAC.digest("sha256", secret_key, input))
+        ::PayCore::Base64Url.encode(OpenSSL::HMAC.digest("sha256", secret_key, input))
       end
 
       # Verify this challenge was issued with `secret_key`.
@@ -80,7 +84,7 @@ module Mpp
       def expired?(now: Time.now.utc)
         return false if expires.nil?
 
-        parsed = Rfc3339Parser.parse(expires)
+        parsed = ::PayCore::Rfc3339Parser.parse(expires)
         return true if parsed.nil?
 
         parsed <= now
@@ -88,7 +92,7 @@ module Mpp
 
       # Decode the base64url canonical JSON request.
       def decode_request
-        Json.parse(Base64Url.decode(request))
+        ::PayCore::Json.parse(::PayCore::Base64Url.decode(request))
       end
 
       # Convert to the credential challenge echo shape.

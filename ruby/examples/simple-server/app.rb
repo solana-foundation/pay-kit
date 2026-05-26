@@ -13,7 +13,7 @@ def fee_payer_from_env
   secret = ENV["MPP_FEE_PAYER_SECRET_KEY"]
   return nil if secret.nil? || secret.empty?
 
-  Mpp::Methods::Solana::Account.from_json_array(secret)
+  ::PayCore::Solana::Account.from_json_array(secret)
 end
 
 # Configure the Solana charge method (recipient, currency, network, RPC, fee payer)

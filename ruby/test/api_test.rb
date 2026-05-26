@@ -35,14 +35,14 @@ class MethodsSolanaChargeTest < Minitest::Test
     assert_instance_of Mpp::Methods::Solana::ChargeMethod, method
     assert_equal "USDC", method.currency
     assert_equal "mainnet", method.network
-    assert_equal Mpp::Methods::Solana::Mints::TOKEN_PROGRAM, method.token_program
+    assert_equal ::PayCore::Solana::Mints::TOKEN_PROGRAM, method.token_program
     assert_nil method.fee_payer_pubkey
   end
 
   def test_rpc_string_is_coerced_to_an_rpc_client
     method = Mpp::Methods::Solana.charge(recipient: "x", currency: "USDC", rpc: "https://example.invalid")
 
-    assert_instance_of Mpp::Methods::Solana::Rpc, method.rpc
+    assert_instance_of ::PayCore::Solana::Rpc, method.rpc
   end
 
   def test_blockhash_is_cached_for_a_short_window
@@ -67,7 +67,7 @@ class MethodsSolanaChargeTest < Minitest::Test
   end
 
   def test_method_details_include_fee_payer_when_configured
-    account = Mpp::Methods::Solana::Account.new(Array.new(64, 1))
+    account = ::PayCore::Solana::Account.new(Array.new(64, 1))
     method = Mpp::Methods::Solana.charge(
       recipient: "x",
       currency: "USDC",
@@ -100,7 +100,7 @@ class MppCreateTest < Minitest::Test
 
     assert_instance_of Mpp::Challenge, result
     assert_equal 402, result.status
-    assert result.headers.key?(Mpp::Core::Headers::WWW_AUTHENTICATE)
+    assert result.headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
     assert_equal "payment_required", result.body["error"]
   end
 
@@ -118,11 +118,11 @@ class MppCreateTest < Minitest::Test
 
     usdt_details = method.method_details(currency: "USDT")
     assert_equal 6, usdt_details["decimals"]
-    assert_equal Mpp::Methods::Solana::Mints::TOKEN_PROGRAM, usdt_details["tokenProgram"]
+    assert_equal ::PayCore::Solana::Mints::TOKEN_PROGRAM, usdt_details["tokenProgram"]
 
     # Token-2022 currencies use a different SPL program:
     pyusd_details = method.method_details(currency: "PYUSD")
-    assert_equal Mpp::Methods::Solana::Mints::TOKEN_2022_PROGRAM, pyusd_details["tokenProgram"]
+    assert_equal ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM, pyusd_details["tokenProgram"]
   end
 
   def test_charge_accepts_a_different_currency_per_call
@@ -196,7 +196,7 @@ class MiddlewareTest < Minitest::Test
     status, headers, _body = middleware.call({"PATH_INFO" => "/paid"})
 
     assert_equal 402, status
-    assert headers.key?(Mpp::Core::Headers::WWW_AUTHENTICATE)
+    assert headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
   end
 
   def test_settlement_result_merges_headers_into_app_response

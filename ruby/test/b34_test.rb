@@ -22,7 +22,7 @@ class B34Test < Minitest::Test
 
     refute result.ok?
     assert_match(/push-mode credentials are not allowed/i, result.reason)
-    assert_equal Mpp::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH, result.code
+    assert_equal ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH, result.code
   end
 
   def test_accepts_signature_credential_when_fee_payer_absent

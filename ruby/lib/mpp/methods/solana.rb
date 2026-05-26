@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "pay_core/solana/rpc"
+require "pay_core/solana/mints"
+
 module Mpp
   module Methods
     module Solana
@@ -21,9 +24,9 @@ module Mpp
           recipient: recipient,
           currency: currency,
           network: network,
-          rpc: rpc.is_a?(String) ? Rpc.new(rpc) : rpc,
+          rpc: rpc.is_a?(String) ? ::PayCore::Solana::Rpc.new(rpc) : rpc,
           fee_payer: fee_payer,
-          decimals: decimals || Mints.decimals_for(currency, network)
+          decimals: decimals || ::PayCore::Solana::Mints.decimals_for(currency, network)
         )
       end
 
@@ -53,7 +56,7 @@ module Mpp
 
         # Default SPL token program for this method's currency+network pair.
         def token_program
-          Mints.token_program_for(currency, network)
+          ::PayCore::Solana::Mints.token_program_for(currency, network)
         end
 
         # Short-window blockhash cache: every protected request would otherwise
@@ -76,8 +79,8 @@ module Mpp
         def method_details(currency: self.currency)
           details = {
             "network" => network,
-            "decimals" => (currency == self.currency) ? decimals : Mints.decimals_for(currency, network),
-            "tokenProgram" => Mints.token_program_for(currency, network),
+            "decimals" => (currency == self.currency) ? decimals : ::PayCore::Solana::Mints.decimals_for(currency, network),
+            "tokenProgram" => ::PayCore::Solana::Mints.token_program_for(currency, network),
             "recentBlockhash" => latest_blockhash
           }
           if fee_payer

@@ -34,7 +34,7 @@ class ExpiresRfc3339Test < Minitest::Test
   # Rfc3339Parser parser-error branches (cover the explicit nil-returning
   # arms so SimpleCov branch coverage stays >= 90 cross-SDK baseline).
   def test_rfc3339_parser_explicit_error_branches
-    parser = Mpp::Core::Rfc3339Parser
+    parser = ::PayCore::Rfc3339Parser
     assert_nil parser.parse(123) # non-string input
     assert_nil parser.parse("not-a-timestamp")
     assert_nil parser.parse("2099-13-01T00:00:00Z") # month > 12
@@ -50,7 +50,7 @@ class ExpiresRfc3339Test < Minitest::Test
   end
 
   def test_rfc3339_parser_accepts_valid_variants
-    parser = Mpp::Core::Rfc3339Parser
+    parser = ::PayCore::Rfc3339Parser
     refute_nil parser.parse("2099-01-01t00:00:00z") # lowercase t/z
     refute_nil parser.parse("2099-01-01T00:00:00.123456789Z") # 9 fractional digits
     refute_nil parser.parse("2099-12-31T23:59:60Z") # leap second

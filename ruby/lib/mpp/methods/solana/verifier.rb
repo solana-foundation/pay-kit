@@ -1,5 +1,11 @@
 # frozen_string_literal: true
 
+require "pay_core/error_codes"
+require "pay_core/solana/base58"
+require "pay_core/solana/mints"
+require "pay_core/solana/ata"
+require "pay_core/solana/transaction"
+
 module Mpp
   module Methods
     module Solana
@@ -16,7 +22,7 @@ module Mpp
           end
 
           signature = credential.payload["signature"]
-          return VerificationResult.failure("missing transaction or signature payload", code: ErrorCodes::CODE_PAYMENT_INVALID) unless signature.is_a?(String) && !signature.empty?
+          return VerificationResult.failure("missing transaction or signature payload", code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID) unless signature.is_a?(String) && !signature.empty?
 
           # B34: reject push-mode (type=signature) credentials when the
           # challenge requires a server-side fee payer. A signature-only
@@ -30,7 +36,7 @@ module Mpp
           if details["feePayer"] == true
             return VerificationResult.failure(
               "Push-mode credentials are not allowed when the route uses a server-side fee payer",
-              code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH
+              code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH
             )
           end
 
@@ -43,7 +49,7 @@ module Mpp
 
         # Verify a standard-base64 transaction payload against a request.
         def verify_transaction_payload(transaction_base64, request)
-          transaction = Transaction.from_base64(transaction_base64)
+          transaction = ::PayCore::Solana::Transaction.from_base64(transaction_base64)
           verify_transaction(transaction, request)
           VerificationResult.success(reference: "")
         rescue ArgumentError, Error => error
@@ -54,7 +60,7 @@ module Mpp
         def validate_signature(signature)
           raise ArgumentError, "invalid signature length" unless signature.length.between?(87, 88)
 
-          decoded = Base58.decode(signature)
+          decoded = ::PayCore::Solana::Base58.decode(signature)
           raise ArgumentError, "invalid signature length" unless decoded.bytesize == 64
         end
 
@@ -83,8 +89,8 @@ module Mpp
             validate_allowlist(transaction, matched, expected_mint: nil, expected_token_program: nil, fee_payer: fee_payer, splits: splits)
           else
             network = details["network"] || "mainnet"
-            mint = Mints.resolve(request.currency, network)
-            token_program = details["tokenProgram"] || Mints.token_program_for(request.currency, network)
+            mint = ::PayCore::Solana::Mints.resolve(request.currency, network)
+            token_program = details["tokenProgram"] || ::PayCore::Solana::Mints.token_program_for(request.currency, network)
             if splits.any? { |split| split["ataCreationRequired"] == true } && mint != request.currency
               raise VerificationError, "ataCreationRequired requires currency to be an SPL token mint address"
             end
@@ -117,7 +123,7 @@ module Mpp
           found = false
           transaction.message.instructions.each_with_index do |ix, index|
             next if matched[index]
-            next unless program_id(transaction, ix) == Mints::SYSTEM_PROGRAM
+            next unless program_id(transaction, ix) == ::PayCore::Solana::Mints::SYSTEM_PROGRAM
             next unless ix.data.bytesize >= 12
             next unless u32_le(ix.data.byteslice(0, 4)) == 2
             next unless u64_le(ix.data.byteslice(4, 8)) == amount
@@ -142,7 +148,7 @@ module Mpp
             next if matched[index]
 
             instruction_program = program_id(transaction, ix)
-            next unless [Mints::TOKEN_PROGRAM, Mints::TOKEN_2022_PROGRAM].include?(instruction_program)
+            next unless [::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(instruction_program)
             next unless instruction_program == token_program
             next unless ix.data.bytesize >= 10 && ix.data.getbyte(0) == 12
             next unless u64_le(ix.data.byteslice(1, 8)) == amount
@@ -154,10 +160,10 @@ module Mpp
             authority = account_key(transaction, ix.accounts[3], "authority")
             if fee_payer
               raise VerificationError, "fee payer cannot authorize the SPL payment transfer" if authority == fee_payer
-              fee_payer_ata = AssociatedToken.derive(owner: fee_payer, mint: mint, token_program: token_program)
+              fee_payer_ata = ::PayCore::Solana::ATA.derive(owner: fee_payer, mint: mint, token_program: token_program)
               raise VerificationError, "fee payer token account cannot fund the SPL payment transfer" if source_ata == fee_payer_ata
             end
-            expected_ata = AssociatedToken.derive(owner: recipient, mint: mint, token_program: token_program)
+            expected_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: token_program)
             next unless destination_ata == expected_ata
 
             matched[index] = true
@@ -178,7 +184,7 @@ module Mpp
 
             found = transaction.message.instructions.each_with_index.any? do |ix, index|
               next false if matched[index]
-              next false unless program_id(transaction, ix) == Mints::MEMO_PROGRAM
+              next false unless program_id(transaction, ix) == ::PayCore::Solana::Mints::MEMO_PROGRAM
               next false unless ix.data.b == memo.b
 
               matched[index] = true
@@ -196,11 +202,11 @@ module Mpp
 
           transaction.message.instructions.each_with_index do |ix, index|
             program = program_id(transaction, ix)
-            if program == Mints::COMPUTE_BUDGET_PROGRAM
+            if program == ::PayCore::Solana::Mints::COMPUTE_BUDGET_PROGRAM
               validate_compute_budget(ix)
-            elsif [Mints::MEMO_PROGRAM, Mints::SYSTEM_PROGRAM, Mints::TOKEN_PROGRAM, Mints::TOKEN_2022_PROGRAM].include?(program)
+            elsif [::PayCore::Solana::Mints::MEMO_PROGRAM, ::PayCore::Solana::Mints::SYSTEM_PROGRAM, ::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(program)
               raise VerificationError, "Unexpected program instruction in payment transaction: #{program}" unless matched[index]
-            elsif program == Mints::ASSOCIATED_TOKEN_PROGRAM
+            elsif program == ::PayCore::Solana::Mints::ASSOCIATED_TOKEN_PROGRAM
               owner = validate_ata_create(transaction, ix, expected_mint, allowed_owners, expected_token_program, expected_ata_payer)
               created_owners[owner] = true
             else
@@ -226,11 +232,11 @@ module Mpp
           raise VerificationError, "ATA payer must match the transaction fee payer" unless payer == expected_payer
           raise VerificationError, "ATA creation mint does not match the charge currency" unless mint == expected_mint
           raise VerificationError, "ATA creation owner is not authorized by the challenge" unless allowed_owners.include?(owner)
-          raise VerificationError, "ATA creation must reference the System Program" unless system_program == Mints::SYSTEM_PROGRAM
-          raise VerificationError, "ATA creation uses an unsupported token program" unless [Mints::TOKEN_PROGRAM, Mints::TOKEN_2022_PROGRAM].include?(token_program)
+          raise VerificationError, "ATA creation must reference the System Program" unless system_program == ::PayCore::Solana::Mints::SYSTEM_PROGRAM
+          raise VerificationError, "ATA creation uses an unsupported token program" unless [::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(token_program)
           raise VerificationError, "ATA creation token program does not match methodDetails.tokenProgram" if expected_token_program && token_program != expected_token_program
 
-          expected_ata = AssociatedToken.derive(owner: owner, mint: mint, token_program: token_program)
+          expected_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: token_program)
           raise VerificationError, "ATA creation address does not match owner/mint/token program" unless ata == expected_ata
 
           owner

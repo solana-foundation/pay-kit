@@ -22,10 +22,10 @@ require "minitest/autorun"
 require "mpp"
 
 module RubyMppTestHelpers
-  PROGRAMS = Mpp::Methods::Solana::Mints
+  PROGRAMS = ::PayCore::Solana::Mints
 
   def base58(bytes)
-    Mpp::Methods::Solana::Base58.encode(bytes.pack("C*"))
+    ::PayCore::Solana::Base58.encode(bytes.pack("C*"))
   end
 
   def pubkey(byte)
@@ -33,7 +33,7 @@ module RubyMppTestHelpers
   end
 
   def compact_u16(value)
-    Mpp::Methods::Solana::Transaction.compact_u16(value)
+    ::PayCore::Solana::Transaction.compact_u16(value)
   end
 
   def u32(value)
@@ -49,12 +49,12 @@ module RubyMppTestHelpers
   end
 
   def legacy_transaction(account_keys:, instructions:, recent_blockhash: pubkey(9), signatures: nil)
-    keys = account_keys.map { |key| Mpp::Methods::Solana::Base58.decode(key) }
+    keys = account_keys.map { |key| ::PayCore::Solana::Base58.decode(key) }
     message = +""
     message << [signatures&.length || 1, 0, 0].pack("C*")
     message << compact_u16(keys.length)
     keys.each { |key| message << key }
-    message << Mpp::Methods::Solana::Base58.decode(recent_blockhash)
+    message << ::PayCore::Solana::Base58.decode(recent_blockhash)
     message << compact_u16(instructions.length)
     instructions.each { |ix| message << ix }
     sigs = signatures || ["\x00".b * 64]

@@ -2,10 +2,10 @@
 
 module Mpp
   # Protocol-level error raised by the Ruby MPP SDK. Carries an optional
-  # canonical structured error code (see Mpp::ErrorCodes) so a 402 response
+  # canonical structured error code (see PayCore::ErrorCodes) so a 402 response
   # body can surface a stable machine-readable identifier on every failure
   # class. `code` is optional; when nil, the response builder classifies the
-  # message into a canonical code via Mpp::ErrorCodes.canonical_code.
+  # message into a canonical code via PayCore::ErrorCodes.canonical_code.
   class Error < StandardError
     attr_reader :code
 

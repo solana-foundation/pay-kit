@@ -361,7 +361,7 @@ class InteropClientTest < Minitest::Test
     # `PayCore::Solana::Rpc` directly. That client raises
     # `PayCore::Solana::Rpc::RpcError` on non-2xx responses with a stable
     # `getLatestBlockhash HTTP <code>` message; solana-mpp keeps its own
-    # `Mpp::Methods::Solana::Rpc` subclass that swaps the error class to
+    # `::PayCore::Solana::Rpc` subclass that swaps the error class to
     # `Mpp::Error` for callers in the charge-server path.
     with_net_http_response("service unavailable", code: "503", success: false) do
       error = assert_raises(PayCore::Solana::Rpc::RpcError) do
@@ -601,7 +601,7 @@ class InteropClientTest < Minitest::Test
     # x402 entry points hit Net::HTTP via two distinct shapes: the legacy
     # x402 procedural client used `Net::HTTP.start(host, port, opts)` (class
     # method) and the post-shared-core path delegates to
-    # `Mpp::Methods::Solana::Rpc#perform_request`, which builds a
+    # `::PayCore::Solana::Rpc#perform_request`, which builds a
     # `Net::HTTP` instance and calls `http.start { client.request(req) }`.
     # Stub both shapes so a single test helper covers either implementation.
     singleton = class << Net::HTTP; self; end

@@ -2,6 +2,10 @@
 
 require "base64"
 
+require "pay_core/error_codes"
+require "pay_core/solana/transaction"
+require "pay_core/solana/rpc"
+
 module Mpp
   module Internal
     # High-level Solana charge orchestrator: verify, settle, consume, receipt.
@@ -51,11 +55,11 @@ module Mpp
           signature: signature,
           receipt_header: receipt,
           headers: {
-            Core::Headers::PAYMENT_RECEIPT => receipt,
+            ::Mpp::Headers::PAYMENT_RECEIPT => receipt,
             settlement_header => signature
           }
         )
-      rescue ArgumentError, Error => error
+      rescue ArgumentError, Error, ::PayCore::Solana::Rpc::RpcError, ::PayCore::Solana::Transaction::SigningError => error
         code = error.respond_to?(:code) ? error.code : nil
         @challenges.payment_required_response(request, reason: error.message, code: code)
       end
@@ -77,7 +81,7 @@ module Mpp
       end
 
       def settle_pull(transaction_base64)
-        transaction = Methods::Solana::Transaction.from_base64(transaction_base64)
+        transaction = ::PayCore::Solana::Transaction.from_base64(transaction_base64)
         check_network_blockhash(transaction.message.recent_blockhash)
         transaction.sign_with(fee_payer) if fee_payer
         signed_base64 = transaction.to_base64
@@ -141,14 +145,14 @@ module Mpp
       def consume_signature(signature)
         key = "solana-charge:consumed:#{signature}"
         inserted = @replay_store.put_if_absent(key, true)
-        raise VerificationError.new("Transaction signature already consumed", code: ErrorCodes::CODE_SIGNATURE_CONSUMED) unless inserted
+        raise VerificationError.new("Transaction signature already consumed", code: ::PayCore::ErrorCodes::CODE_SIGNATURE_CONSUMED) unless inserted
       end
 
       def check_network_blockhash(blockhash)
         return unless blockhash.start_with?(SURFPOOL_BLOCKHASH_PREFIX)
         return if network == "localnet"
 
-        raise VerificationError.new("Signed against localnet but the server expects #{network}. Switch your client RPC to #{network} and re-sign.", code: ErrorCodes::CODE_WRONG_NETWORK)
+        raise VerificationError.new("Signed against localnet but the server expects #{network}. Switch your client RPC to #{network} and re-sign.", code: ::PayCore::ErrorCodes::CODE_WRONG_NETWORK)
       end
     end
   end

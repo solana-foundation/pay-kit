@@ -27,7 +27,7 @@ module Mpp
         end
 
         # Create a failed verification result. The optional `code` carries the
-        # canonical L6 error code (see Mpp::ErrorCodes); when nil, the response
+        # canonical L6 error code (see PayCore::ErrorCodes); when nil, the response
         # builder classifies the reason string into a canonical code.
         def self.failure(reason, code: nil)
           new(ok: false, reason: reason, code: code)

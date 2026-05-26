@@ -3,7 +3,7 @@
 require_relative "test_helper"
 
 class ErrorCodesTest < Minitest::Test
-  include Mpp::ErrorCodes
+  include ::PayCore::ErrorCodes
 
   def test_canonical_codes_are_exposed
     assert_equal "charge_request_mismatch", CODE_CHARGE_REQUEST_MISMATCH
@@ -17,7 +17,7 @@ class ErrorCodesTest < Minitest::Test
 
   def test_canonical_code_passes_through_canonical_inputs
     CANONICAL_CODES.each do |code|
-      assert_equal code, Mpp::ErrorCodes.canonical_code(code)
+      assert_equal code, ::PayCore::ErrorCodes.canonical_code(code)
     end
   end
 
@@ -35,43 +35,43 @@ class ErrorCodesTest < Minitest::Test
       "transaction-not-found" => CODE_PAYMENT_INVALID,
       "no-transfer" => CODE_PAYMENT_INVALID
     }.each do |legacy, canonical|
-      assert_equal canonical, Mpp::ErrorCodes.canonical_code(legacy)
+      assert_equal canonical, ::PayCore::ErrorCodes.canonical_code(legacy)
     end
   end
 
   def test_canonical_code_classifies_signature_consumed_message
-    assert_equal CODE_SIGNATURE_CONSUMED, Mpp::ErrorCodes.canonical_code("Transaction signature already consumed")
+    assert_equal CODE_SIGNATURE_CONSUMED, ::PayCore::ErrorCodes.canonical_code("Transaction signature already consumed")
   end
 
   def test_canonical_code_classifies_challenge_messages
-    assert_equal CODE_CHALLENGE_VERIFICATION_FAILED, Mpp::ErrorCodes.canonical_code("challenge verification failed")
-    assert_equal CODE_CHALLENGE_EXPIRED, Mpp::ErrorCodes.canonical_code("challenge expired")
+    assert_equal CODE_CHALLENGE_VERIFICATION_FAILED, ::PayCore::ErrorCodes.canonical_code("challenge verification failed")
+    assert_equal CODE_CHALLENGE_EXPIRED, ::PayCore::ErrorCodes.canonical_code("challenge expired")
   end
 
   def test_canonical_code_classifies_wrong_network_message
     msg = "Signed against localnet but the server expects mainnet. Switch your client RPC to mainnet and re-sign."
-    assert_equal CODE_WRONG_NETWORK, Mpp::ErrorCodes.canonical_code(msg)
+    assert_equal CODE_WRONG_NETWORK, ::PayCore::ErrorCodes.canonical_code(msg)
   end
 
   def test_canonical_code_classifies_mismatch_messages
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("Amount mismatch: credential has 100 but endpoint expects 200")
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("Currency mismatch: credential has USDC but endpoint expects USDT")
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("Recipient mismatch")
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("Method details mismatch")
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("split amounts exceed total amount")
-    assert_equal CODE_CHARGE_REQUEST_MISMATCH, Mpp::ErrorCodes.canonical_code("too many splits")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Amount mismatch: credential has 100 but endpoint expects 200")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Currency mismatch: credential has USDC but endpoint expects USDT")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Recipient mismatch")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Method details mismatch")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("split amounts exceed total amount")
+    assert_equal CODE_CHARGE_REQUEST_MISMATCH, ::PayCore::ErrorCodes.canonical_code("too many splits")
   end
 
   def test_canonical_code_classifies_route_mismatch_messages
-    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, Mpp::ErrorCodes.canonical_code("Credential method does not match this server")
-    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, Mpp::ErrorCodes.canonical_code("Credential intent is not a charge")
-    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, Mpp::ErrorCodes.canonical_code("Credential realm does not match this server")
+    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Credential method does not match this server")
+    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Credential intent is not a charge")
+    assert_equal CODE_CHALLENGE_ROUTE_MISMATCH, ::PayCore::ErrorCodes.canonical_code("Credential realm does not match this server")
   end
 
   def test_canonical_code_falls_back_to_payment_invalid
-    assert_equal CODE_PAYMENT_INVALID, Mpp::ErrorCodes.canonical_code("some unrecognised error")
-    assert_equal CODE_PAYMENT_INVALID, Mpp::ErrorCodes.canonical_code(nil)
-    assert_equal CODE_PAYMENT_INVALID, Mpp::ErrorCodes.canonical_code("")
+    assert_equal CODE_PAYMENT_INVALID, ::PayCore::ErrorCodes.canonical_code("some unrecognised error")
+    assert_equal CODE_PAYMENT_INVALID, ::PayCore::ErrorCodes.canonical_code(nil)
+    assert_equal CODE_PAYMENT_INVALID, ::PayCore::ErrorCodes.canonical_code("")
   end
 
   def test_mpp_error_carries_code

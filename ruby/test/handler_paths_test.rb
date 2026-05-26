@@ -99,6 +99,6 @@ class HandlerPathsTest < Minitest::Test
   end
 
   def valid_signature
-    Mpp::Methods::Solana::Base58.encode(("b" * 64).b)
+    ::PayCore::Solana::Base58.encode(("b" * 64).b)
   end
 end

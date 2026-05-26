@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "pay_core/error_codes"
+
 module Mpp
   module Internal
     # Low-level charge challenge issuer and credential verifier.
@@ -28,7 +30,7 @@ module Mpp
 
       # Create the `WWW-Authenticate` header value for a charge request.
       def create_challenge_header(request, expires: Expires.minutes(5), description: nil)
-        Core::Headers.format_www_authenticate(create_challenge(request, expires: expires, description: description))
+        ::Mpp::Headers.format_www_authenticate(create_challenge(request, expires: expires, description: description))
       end
 
       # Return a 402 response for a charge request.
@@ -38,7 +40,7 @@ module Mpp
       # not been verified yet so there is nothing to classify.
       #
       # When `reason` is present the body carries:
-      # - `code`: canonical L6 code (`Mpp::ErrorCodes::CODE_*`)
+      # - `code`: canonical L6 code (`PayCore::ErrorCodes::CODE_*`)
       # - `error`: alias of `code` for backward compatibility
       # - `message`: human-readable reason string
       #
@@ -49,7 +51,7 @@ module Mpp
         body = if reason.nil?
           {"error" => "payment_required"}
         else
-          canonical = code || ErrorCodes.canonical_code(reason)
+          canonical = code || ::PayCore::ErrorCodes.canonical_code(reason)
           {"code" => canonical, "error" => canonical, "message" => reason}
         end
         Challenge.new(www_authenticate: header, body: body, reason: reason)
@@ -69,8 +71,8 @@ module Mpp
           opaque: credential.challenge.opaque
         )
 
-        return Methods::Solana::VerificationResult.failure("challenge verification failed", code: ErrorCodes::CODE_CHALLENGE_VERIFICATION_FAILED) unless challenge.verify?(secret_key)
-        return Methods::Solana::VerificationResult.failure("challenge expired", code: ErrorCodes::CODE_CHALLENGE_EXPIRED) if challenge.expired?(now: now)
+        return Methods::Solana::VerificationResult.failure("challenge verification failed", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_VERIFICATION_FAILED) unless challenge.verify?(secret_key)
+        return Methods::Solana::VerificationResult.failure("challenge expired", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_EXPIRED) if challenge.expired?(now: now)
 
         result = verify_pinned_fields(challenge, expected_request)
         return result unless result.ok?
@@ -96,26 +98,26 @@ module Mpp
           challenge_id: challenge.id,
           external_id: external_id
         )
-        Core::Headers.format_receipt(receipt)
+        ::Mpp::Headers.format_receipt(receipt)
       end
 
       private
 
       def verify_pinned_fields(challenge, expected)
-        return Methods::Solana::VerificationResult.failure("Credential method does not match this server", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.method == "solana"
-        return Methods::Solana::VerificationResult.failure("Credential intent is not a charge", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.intent.casecmp("charge").zero?
-        return Methods::Solana::VerificationResult.failure("Credential realm does not match this server", code: ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.realm == realm
-        return Methods::Solana::VerificationResult.failure("Endpoint currency is required", code: ErrorCodes::CODE_PAYMENT_INVALID) if expected.currency.to_s.empty?
-        return Methods::Solana::VerificationResult.failure("Credential recipient does not match this server", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) if expected.recipient.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential method does not match this server", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.method == "solana"
+        return Methods::Solana::VerificationResult.failure("Credential intent is not a charge", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.intent.casecmp("charge").zero?
+        return Methods::Solana::VerificationResult.failure("Credential realm does not match this server", code: ::PayCore::ErrorCodes::CODE_CHALLENGE_ROUTE_MISMATCH) unless challenge.realm == realm
+        return Methods::Solana::VerificationResult.failure("Endpoint currency is required", code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID) if expected.currency.to_s.empty?
+        return Methods::Solana::VerificationResult.failure("Credential recipient does not match this server", code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) if expected.recipient.to_s.empty?
 
         Methods::Solana::VerificationResult.success
       end
 
       def verify_expected(decoded, expected)
-        return Methods::Solana::VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.amount == expected.amount
-        return Methods::Solana::VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.currency == expected.currency
-        return Methods::Solana::VerificationResult.failure("Recipient mismatch", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.recipient == expected.recipient
-        return Methods::Solana::VerificationResult.failure("Method details mismatch", code: ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
+        return Methods::Solana::VerificationResult.failure("Amount mismatch: credential has #{decoded.amount} but endpoint expects #{expected.amount}", code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.amount == expected.amount
+        return Methods::Solana::VerificationResult.failure("Currency mismatch: credential has #{decoded.currency} but endpoint expects #{expected.currency}", code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.currency == expected.currency
+        return Methods::Solana::VerificationResult.failure("Recipient mismatch", code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless decoded.recipient == expected.recipient
+        return Methods::Solana::VerificationResult.failure("Method details mismatch", code: ::PayCore::ErrorCodes::CODE_CHARGE_REQUEST_MISMATCH) unless comparable_method_details(decoded.method_details) == comparable_method_details(expected.method_details)
 
         Methods::Solana::VerificationResult.success
       end

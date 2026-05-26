@@ -20,7 +20,7 @@ module Mpp
     end
 
     def headers
-      {Core::Headers::WWW_AUTHENTICATE => www_authenticate}
+      {::Mpp::Headers::WWW_AUTHENTICATE => www_authenticate}
     end
   end
 end

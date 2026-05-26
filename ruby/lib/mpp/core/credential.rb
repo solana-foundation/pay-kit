@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "pay_core/base64_url"
+require "pay_core/json"
+
 module Mpp
   module Core
     # Payment credential carried by the `Authorization` header.
@@ -28,7 +31,7 @@ module Mpp
 
       # Format as `Authorization: Payment ...` value.
       def to_authorization_header
-        "Payment #{Base64Url.encode(Json.canonical_generate(to_h))}"
+        "Payment #{::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate(to_h))}"
       end
 
       # Parse an `Authorization` header value.
@@ -37,7 +40,7 @@ module Mpp
         raise ArgumentError, "expected Payment scheme" if token.nil?
         raise ArgumentError, "token exceeds maximum length" if token.bytesize > MAX_TOKEN_LENGTH
 
-        decoded = Json.parse(Base64Url.decode(token))
+        decoded = ::PayCore::Json.parse(::PayCore::Base64Url.decode(token))
         new(
           challenge: ChallengeEcho.from_h(decoded.fetch("challenge")),
           payload: decoded.fetch("payload"),

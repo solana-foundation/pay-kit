@@ -189,7 +189,7 @@ class ChargeServerTest < Minitest::Test
   private
 
   def valid_signature
-    Mpp::Methods::Solana::Base58.encode(("a" * 64).b)
+    ::PayCore::Solana::Base58.encode(("a" * 64).b)
   end
 end
 
@@ -355,8 +355,8 @@ class TransactionVerifierTest < Minitest::Test
     owner = pubkey(1)
     recipient = pubkey(2)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM],
       instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
@@ -373,9 +373,9 @@ class TransactionVerifierTest < Minitest::Test
     recipient = pubkey(2)
     split_owner = pubkey(3)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = ::PayCore::Solana::ATA.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, PROGRAMS::ASSOCIATED_TOKEN_PROGRAM, split_owner, split_ata, PROGRAMS::SYSTEM_PROGRAM],
       instructions: [
@@ -406,9 +406,9 @@ class TransactionVerifierTest < Minitest::Test
     recipient = pubkey(2)
     split_owner = pubkey(3)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = ::PayCore::Solana::ATA.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, split_ata],
       instructions: [
@@ -445,10 +445,10 @@ class TransactionVerifierTest < Minitest::Test
     wrong_program = pubkey(8)
     unsupported_token_program = pubkey(9)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    dest_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    split_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    unauthorized_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: unauthorized_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    dest_ata = ::PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    split_ata = ::PayCore::Solana::ATA.derive(owner: split_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    unauthorized_ata = ::PayCore::Solana::ATA.derive(owner: unauthorized_owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     keys = [owner, source_ata, mint, dest_ata, PROGRAMS::TOKEN_PROGRAM, PROGRAMS::ASSOCIATED_TOKEN_PROGRAM, split_owner, split_ata, PROGRAMS::SYSTEM_PROGRAM, wrong_payer, wrong_ata, wrong_mint, wrong_program, unsupported_token_program, PROGRAMS::TOKEN_2022_PROGRAM, unauthorized_owner, unauthorized_ata]
     base_request = charge_request(
       amount: "1000",
@@ -570,8 +570,8 @@ class TransactionVerifierTest < Minitest::Test
     owner = pubkey(1)
     recipient = pubkey(2)
     mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    source_ata = Mpp::Methods::Solana::AssociatedToken.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
-    wrong_dest = Mpp::Methods::Solana::AssociatedToken.derive(owner: pubkey(3), mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    source_ata = ::PayCore::Solana::ATA.derive(owner: owner, mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
+    wrong_dest = ::PayCore::Solana::ATA.derive(owner: pubkey(3), mint: mint, token_program: PROGRAMS::TOKEN_PROGRAM)
     tx = tx_base64(
       account_keys: [owner, source_ata, mint, wrong_dest, PROGRAMS::TOKEN_PROGRAM],
       instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
@@ -604,11 +604,11 @@ class ChargeHandlerTest < Minitest::Test
     response = handler.handle(nil, charge_request)
 
     assert_equal 402, response.status
-    assert response.headers.key?(Mpp::Core::Headers::WWW_AUTHENTICATE)
+    assert response.headers.key?(Mpp::Headers::WWW_AUTHENTICATE)
   end
 
   def test_fee_payer_pubkey_and_missing_payload_response
-    keypair = Mpp::Methods::Solana::Account.new(Array.new(64, 1))
+    keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
     handler = Mpp::Internal::Handler.new(
       challenges: handler_challenges,
       rpc: FakeRpc.new,
@@ -717,7 +717,7 @@ class ChargeHandlerTest < Minitest::Test
   end
 
   def valid_signature
-    Mpp::Methods::Solana::Base58.encode(("a" * 64).b)
+    ::PayCore::Solana::Base58.encode(("a" * 64).b)
   end
 
   def transaction_response
