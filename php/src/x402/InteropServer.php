@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace SolanaMpp\X402\Interop;
 
+// Mints lives in the same namespace so a `use` is unnecessary; require the
+// class file here so procedural callers (e.g. the standalone interop binary
+// + the regression script in tests/x402_interop_server_test.php) that load
+// `InteropServer.php` directly via `require_once` rather than through the
+// Composer autoloader still resolve `Mints::*` constants used below.
+require_once __DIR__ . '/Interop/Mints.php';
+
 const CAPABILITY_PAYLOAD = [
     'implementation' => 'php',
     'role' => 'server',
@@ -26,7 +33,6 @@ const DEFAULT_NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 // fail-closed (returns null on unknown pairs) so callers never silently
 // mis-bind devnet challenges to mainnet mints.
 const DEFAULT_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
-const PYUSD_DEVNET_MINT = 'CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM';
 const SETTLEMENT_CACHE_TTL_MS = 120_000;
 // Canonical x402-svm-exact replay namespace. The on-chain signature is the
 // only identity the network signs over, so we key the replay marker by the
@@ -183,9 +189,47 @@ function offered_mints_from_env(string $raw): array
     ));
 }
 
+/**
+ * Resolve the token program (legacy SPL or Token-2022) for a given mint
+ * address. Mirrors `rust/crates/x402/src/protocol/schemes/exact/types.rs`
+ * (`stablecoin_uses_token_2022` + `default_token_program_for_currency`):
+ * USDG, PYUSD, and CASH mints across mainnet/devnet/testnet use the SPL
+ * Token-2022 program; everything else falls back to the legacy SPL Token
+ * program. Hard-coding only PYUSD devnet (the prior behaviour) advertised
+ * the wrong token program for USDG, CASH, and PYUSD mainnet/testnet paths
+ * and broke honest payments for those accepted currencies.
+ */
 function token_program_for_mint(string $mint): string
 {
-    return $mint === PYUSD_DEVNET_MINT ? TOKEN_2022_PROGRAM : DEFAULT_TOKEN_PROGRAM;
+    return mint_uses_token_2022($mint) ? TOKEN_2022_PROGRAM : DEFAULT_TOKEN_PROGRAM;
+}
+
+/**
+ * Token-2022 mint allowlist mirroring the Rust spine's stablecoin mints
+ * table (`mints::USDG_*`, `mints::PYUSD_*`, `mints::CASH_MAINNET`).
+ */
+function token_2022_mints(): array
+{
+    static $mints = null;
+    if ($mints === null) {
+        $mints = [
+            Mints::USDG_MAINNET,
+            Mints::USDG_DEVNET,
+            // USDG_TESTNET aliases USDG_DEVNET in spine; included via dedupe.
+            Mints::PYUSD_MAINNET,
+            Mints::PYUSD_DEVNET,
+            // PYUSD_TESTNET aliases PYUSD_DEVNET in spine; included via dedupe.
+            Mints::CASH_MAINNET,
+        ];
+        $mints = array_values(array_unique($mints));
+    }
+
+    return $mints;
+}
+
+function mint_uses_token_2022(string $mint): bool
+{
+    return in_array($mint, token_2022_mints(), true);
 }
 
 function exact_requirement(array $state, ?string $mint = null): array
