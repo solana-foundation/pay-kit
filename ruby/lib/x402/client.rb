@@ -36,10 +36,7 @@ module X402
         accepts.concat(accepts_from_envelope(body_envelope).map { |entry| [entry, resource_from_envelope(body_envelope)] })
 
         selected = accepts.find do |requirement, _resource|
-          requirement["scheme"] == scheme &&
-            requirement["network"] == network &&
-            requirement["asset"].is_a?(String) &&
-            requirement["amount"].is_a?(String)
+          selected_requirement?(requirement, network, scheme)
         end
         return [nil, nil] unless selected
 
@@ -57,10 +54,16 @@ module X402
       end
 
       def selected_requirement?(requirement, network, scheme)
+        # Accept both canonical Rust-spine `amount` and the TS reference
+        # fixture's `maxAmountRequired`. Rust deserializes either field at
+        # rust/crates/x402/src/protocol/schemes/exact/types.rs:337-339, so
+        # we match that tolerance to stay interop-compatible with the TS
+        # exact server.
+        amount_value = requirement["amount"] || requirement["maxAmountRequired"]
         requirement["scheme"] == scheme &&
           requirement["network"] == network &&
           requirement["asset"].is_a?(String) &&
-          requirement["amount"].is_a?(String)
+          amount_value.is_a?(String)
       end
 
       def matches_currency?(requirement, currency, network)
@@ -101,7 +104,17 @@ module X402
         return nil unless envelope.is_a?(Hash)
 
         resource = envelope["resource"]
-        resource if resource.is_a?(Hash)
+        # Rust spine carries top-level `resource` as a typed `ResourceInfo`
+        # object (rust/crates/x402/src/protocol/schemes/exact/types.rs:491)
+        # but the TS reference fixture emits it as a bare URL string
+        # (harness/src/fixtures/typescript/exact-server.ts:85). Tolerate
+        # both shapes so the Ruby client can interoperate with either
+        # server fixture; normalise the string form into the canonical
+        # `{ url: <string> }` hash downstream consumers expect.
+        case resource
+        when Hash then resource
+        when String then resource.empty? ? nil : {"url" => resource}
+        end
       end
 
       def header_value(headers, name)

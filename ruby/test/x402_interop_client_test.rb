@@ -73,6 +73,54 @@ class InteropClientTest < Minitest::Test
     assert_equal solana, selected
   end
 
+  def test_selects_requirement_with_ts_fixture_max_amount_required_field
+    # The TypeScript reference fixture
+    # (harness/src/fixtures/typescript/exact-server.ts) emits offers
+    # using `maxAmountRequired` rather than the canonical Rust-spine
+    # `amount` field. Rust accepts either at types.rs:337-339; Ruby
+    # must too for cross-spine interop.
+    requirement = {
+      "scheme" => "exact",
+      "network" => NETWORK,
+      "asset" => ASSET,
+      "maxAmountRequired" => "1000"
+    }
+    encoded = Base64.strict_encode64(JSON.generate("x402Version" => 2, "accepts" => [requirement]))
+
+    selected = X402::Interop::Client.select_svm_requirement(
+      headers: {"PAYMENT-REQUIRED" => encoded},
+      body: "",
+      network: NETWORK
+    )
+
+    assert_equal requirement, selected
+  end
+
+  def test_selects_challenge_resource_when_envelope_carries_string_url
+    # Rust spine carries `resource` as a typed ResourceInfo object, but
+    # the TS fixture emits it as a bare URL string. The Ruby client
+    # normalises the string form into `{ "url" => <string> }` so
+    # downstream consumers always see a hash.
+    requirement = {
+      "scheme" => "exact",
+      "network" => NETWORK,
+      "asset" => ASSET,
+      "amount" => "1000"
+    }
+    encoded = Base64.strict_encode64(
+      JSON.generate("x402Version" => 2, "resource" => "/protected", "accepts" => [requirement])
+    )
+
+    selected, selected_resource = X402::Interop::Client.select_svm_challenge(
+      headers: {"PAYMENT-REQUIRED" => encoded},
+      body: "",
+      network: NETWORK
+    )
+
+    assert_equal requirement, selected
+    assert_equal({"url" => "/protected"}, selected_resource)
+  end
+
   def test_ignores_malformed_payment_required_header_and_body
     selected = X402::Interop::Client.select_svm_requirement(
       headers: {"PAYMENT-REQUIRED" => "not-json"},
