@@ -34,3 +34,4 @@ tests/interop/go-client/go-client
 mpp-sdk-self-learning/
 .build/
 go/coverage.out
+notes/codex-review/
