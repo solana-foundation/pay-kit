@@ -220,7 +220,7 @@ module X402
           # responds with `{"error":"payment_invalid"}` for this class of
           # reject. The canonical token "No matching payment requirements" is
           # included in the raised message so the cross-server scenarios
-          # harness (tests/interop/test/cross-server-scenarios.test.ts) can
+          # harness (harness/test/cross-server-scenarios.test.ts) can
           # detect it via substring match on the HTTP body.
           raise "No matching payment requirements: accepted payment requirement does not match server challenge"
         end
