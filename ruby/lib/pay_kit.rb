@@ -19,7 +19,7 @@
 #   PayKit::Config              boot-time configuration (PayKit.configure)
 #   PayKit::Pricing             registry base class + gate DSL
 #   PayKit::Gate, ::Price, ...  frozen value objects (Data.define)
-#   PayKit::Schemes::{X402,MPP} protocol adapters
+#   PayKit::Protocols::{X402,MPP} protocol adapters
 #   PayKit::Rack::PaymentRequired   Rack middleware
 #   PayKit::Sinatra             opt-in via "solana_pay_kit/sinatra"
 #   PayKit::Controller          opt-in via "solana_pay_kit/rails"
@@ -39,7 +39,7 @@ require_relative "pay_kit/dynamic_gate"
 require_relative "pay_kit/config"
 require_relative "pay_kit/pricing"
 require_relative "pay_kit/challenge"
-require_relative "pay_kit/schemes"
+require_relative "pay_kit/protocols"
 require_relative "pay_kit/rack/payment_required"
 
 module PayKit

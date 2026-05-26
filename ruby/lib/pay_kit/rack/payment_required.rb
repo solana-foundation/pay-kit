@@ -6,7 +6,7 @@ require "json"
 require_relative "../errors"
 require_relative "../challenge"
 require_relative "../pricing"
-require_relative "../schemes"
+require_relative "../protocols"
 
 module PayKit
   module Rack
@@ -128,14 +128,14 @@ module PayKit
       end
 
       def x402_adapter
-        @x402_adapter ||= ::PayKit::Schemes::X402.new(
+        @x402_adapter ||= ::PayKit::Protocols::X402.new(
           config: @config,
           exact_config_for: ->(gate, request) { build_x402_config(gate, request) }
         )
       end
 
       def mpp_adapter
-        @mpp_adapter ||= ::PayKit::Schemes::MPP.new(server: build_mpp_server)
+        @mpp_adapter ||= ::PayKit::Protocols::MPP.new(server: build_mpp_server)
       end
 
       private

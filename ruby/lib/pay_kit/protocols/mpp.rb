@@ -7,12 +7,12 @@ require_relative "../challenge"
 require_relative "../../mpp"
 
 module PayKit
-  module Schemes
+  module Protocols
     # MPP adapter. Wraps `::Mpp::Server::Charge` for charge intent.
-    # The class-level `.charge` callable returns a frozen `SchemeRef`
-    # so gates can opt in explicitly: `accept: PayKit::Schemes::MPP.charge`.
+    # The class-level `.charge` callable returns a frozen `ProtocolRef`
+    # so gates can opt in explicitly: `accept: PayKit::Protocols::MPP.charge`.
     class MPP
-      CHARGE_REF = SchemeRef.new(protocol: :mpp, scheme: :charge).freeze
+      CHARGE_REF = ProtocolRef.new(protocol: :mpp, scheme: :charge).freeze
       def self.charge = CHARGE_REF
 
       def initialize(server:)

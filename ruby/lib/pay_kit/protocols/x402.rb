@@ -5,16 +5,16 @@ require_relative "../challenge"
 require_relative "../../x402/server/exact"
 
 module PayKit
-  module Schemes
+  module Protocols
     # x402 adapter. Wraps `::X402::Server::Exact` for verification and
     # settlement; produces `accepts[]` entries from `Gate` instances.
     #
-    # The class-level `.exact` callable returns a frozen `SchemeRef`
+    # The class-level `.exact` callable returns a frozen `ProtocolRef`
     # so gates can name the scheme explicitly:
     #
-    #   accept: PayKit::Schemes::X402.exact   # equivalent to accept: :x402
+    #   accept: PayKit::Protocols::X402.exact   # equivalent to accept: :x402
     class X402
-      EXACT_REF = SchemeRef.new(protocol: :x402, scheme: :exact).freeze
+      EXACT_REF = ProtocolRef.new(protocol: :x402, scheme: :exact).freeze
       def self.exact = EXACT_REF
 
       # x402 cannot route multi-recipient settlement, so gates with
