@@ -90,7 +90,24 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     // rather than a credential-capturing one). Pairs that use the TS
     // client cover the asymmetric direction too: TS pays server A, then
     // replays the captured credential against server B.
-    crossServerPairs: [["ts-x402", "rust-x402"]],
+    //
+    // Symmetry: the TS-to-TS pair is the control case — two independent
+    // TS reference server instances issue disjoint challenge id sets, so
+    // server B rejects A's credential with `challenge_verification_failed`
+    // through the same code path real adapters exercise. The TS-to-Rust
+    // pair widens the assertion onto the rust spine (which classifies
+    // the stub credential at the proof layer; the harness accepts any
+    // canonical 402 reject token for that pair via its message
+    // classifier). The reverse Rust-to-TS direction requires a credential
+    // capture path that the Rust spine adapter intentionally does not
+    // expose (settlement-signing only, not credential-echoing); the
+    // canonical Rust→TS portability assertion lives in the live matrix
+    // (`x402-exact.live.matrix.test.ts`) where a real signed transaction
+    // is exchanged end-to-end.
+    crossServerPairs: [
+      ["ts-x402", "ts-x402"],
+      ["ts-x402", "rust-x402"],
+    ],
   },
   {
     // Same-server idempotent resubmit. Client pays server A, then
