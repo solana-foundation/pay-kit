@@ -45,7 +45,7 @@ class HandlerPathsTest < Minitest::Test
     handler = handler_with(FakeRpc.new, network: "devnet")
 
     error = assert_raises(Mpp::VerificationError) do
-      handler.send(:check_network_blockhash, Mpp::Internal::Handler::SURFPOOL_BLOCKHASH_PREFIX + "abc")
+      handler.send(:check_network_blockhash, Mpp::Core::Handler::SURFPOOL_BLOCKHASH_PREFIX + "abc")
     end
     assert_match(/Signed against localnet/, error.message)
   end
@@ -84,11 +84,11 @@ class HandlerPathsTest < Minitest::Test
   private
 
   def challenges
-    @challenges ||= Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
+    @challenges ||= Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def handler_with(rpc, network: "localnet", attempts: 40)
-    Mpp::Internal::Handler.new(
+    Mpp::Core::Handler.new(
       challenges: challenges,
       rpc: rpc,
       replay_store: Mpp::MemoryStore.new,

@@ -7,9 +7,9 @@ require "pay_core/solana/transaction"
 require "pay_core/solana/rpc"
 
 module Mpp
-  module Internal
+  module Core
     # High-level Solana charge orchestrator: verify, settle, consume, receipt.
-    # Not part of the public API — drive this through Mpp.create + Server#charge.
+    # Not part of the public API. Drive this through Mpp.create + Server#charge.
     class Handler
       SURFPOOL_BLOCKHASH_PREFIX = "SURFNETxSAFEHASH"
       DEFAULT_SETTLEMENT_HEADER = "x-payment-settlement-signature"

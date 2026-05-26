@@ -48,7 +48,7 @@ class ChargeServerTest < Minitest::Test
   include RubyMppTestHelpers
 
   def setup
-    @server = Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
+    @server = Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def test_creates_and_verifies_expected_credential
@@ -72,7 +72,7 @@ class ChargeServerTest < Minitest::Test
 
   def test_blockhash_provider_injects_recent_blockhash_without_mutating_request
     request = charge_request
-    server = Mpp::Internal::ChallengeStore.new(
+    server = Mpp::Core::ChallengeStore.new(
       secret_key: "secret",
       realm: "api",
       blockhash_provider: -> { "recent-blockhash" }
@@ -134,14 +134,14 @@ class ChargeServerTest < Minitest::Test
 
   def test_rejects_wrong_secret_and_wrong_realm
     request = charge_request
-    issuer = Mpp::Internal::ChallengeStore.new(secret_key: "other", realm: "api")
+    issuer = Mpp::Core::ChallengeStore.new(secret_key: "other", realm: "api")
     credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
 
     result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
     assert_match(/challenge verification failed/, result.reason)
 
-    issuer = Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "other")
+    issuer = Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "other")
     credential = Mpp::Core::Credential.new(challenge: issuer.create_challenge(request).to_echo, payload: {"signature" => valid_signature})
     result = @server.verify_authorization_header(credential.to_authorization_header, verifier: Mpp::Methods::Solana::Verifier.new, expected_request: request)
     refute result.ok?
@@ -609,7 +609,7 @@ class ChargeHandlerTest < Minitest::Test
 
   def test_fee_payer_pubkey_and_missing_payload_response
     keypair = ::PayCore::Solana::Account.new(Array.new(64, 1))
-    handler = Mpp::Internal::Handler.new(
+    handler = Mpp::Core::Handler.new(
       challenges: handler_challenges,
       rpc: FakeRpc.new,
       replay_store: Mpp::MemoryStore.new,
@@ -702,11 +702,11 @@ class ChargeHandlerTest < Minitest::Test
   private
 
   def handler_challenges
-    @handler_challenges ||= Mpp::Internal::ChallengeStore.new(secret_key: "secret", realm: "api")
+    @handler_challenges ||= Mpp::Core::ChallengeStore.new(secret_key: "secret", realm: "api")
   end
 
   def handler_with(rpc, store: Mpp::MemoryStore.new, attempts: 40)
-    Mpp::Internal::Handler.new(
+    Mpp::Core::Handler.new(
       challenges: handler_challenges,
       rpc: rpc,
       replay_store: store,

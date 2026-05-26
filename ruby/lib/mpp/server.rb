@@ -15,14 +15,14 @@ module Mpp
     class Instance
       attr_reader :method, :realm
 
-      def initialize(method:, secret_key:, realm:, replay_store:, settlement_header: Internal::Handler::DEFAULT_SETTLEMENT_HEADER)
+      def initialize(method:, secret_key:, realm:, replay_store:, settlement_header: Core::Handler::DEFAULT_SETTLEMENT_HEADER)
         @method = method
         @realm = realm
-        @challenge_store = Internal::ChallengeStore.new(
+        @challenge_store = Core::ChallengeStore.new(
           secret_key: secret_key,
           realm: realm
         )
-        @handler = Internal::Handler.new(
+        @handler = Core::Handler.new(
           challenges: @challenge_store,
           rpc: method.rpc,
           replay_store: replay_store,

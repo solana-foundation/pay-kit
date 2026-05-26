@@ -3,7 +3,7 @@
 require "pay_core/error_codes"
 
 module Mpp
-  module Internal
+  module Core
     # Low-level charge challenge issuer and credential verifier.
     # Not part of the public API.
     class ChallengeStore
@@ -54,7 +54,7 @@ module Mpp
           canonical = code || ::PayCore::ErrorCodes.canonical_code(reason)
           {"code" => canonical, "error" => canonical, "message" => reason}
         end
-        Challenge.new(www_authenticate: header, body: body, reason: reason)
+        ::Mpp::Challenge.new(www_authenticate: header, body: body, reason: reason)
       end
 
       # Verify a Payment authorization header.
