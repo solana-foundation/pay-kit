@@ -241,6 +241,69 @@ class ExactPaymentClientTest {
         assertEquals(0, builder.requests.size)
         assertEquals(0, signer.inputs.size)
     }
+
+    @Test
+    fun `canonical accepted strips deprecated wire aliases before signing`() {
+        // The Rust spine's `find_matching_requirement` round-trips the
+        // credential's `accepted` through the typed `PaymentRequirements`
+        // serializer and structurally compares the result against the
+        // route's offered requirement. Echoing the raw offered object
+        // verbatim (with deprecated aliases like `maxAmountRequired`,
+        // `currency`, `recipient`) would cause the structural match to
+        // fail even though the underlying values agree. Mirror
+        // `to_accepted_value` at
+        // rust/crates/x402/src/protocol/schemes/exact/types.rs by
+        // stripping those aliases and emitting canonical fields only.
+        val builder = RecordingTransactionBuilder(byteArrayOf(1))
+        val signer = RecordingTransactionSigner(ByteArray(64) { 7 })
+        val client = ExactPaymentClient(builder, signer)
+
+        // Build a requirement whose `raw` carries the legacy aliases as well.
+        val raw = JsonObject().apply {
+            addProperty("scheme", "exact")
+            addProperty("network", ExactChallenge.DEFAULT_NETWORK)
+            addProperty("asset", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+            addProperty("currency", "USDC")
+            addProperty("amount", "1000")
+            addProperty("maxAmountRequired", "1000")
+            addProperty("payTo", "PayTo111111111111111111111111111111111")
+            addProperty("recipient", "PayTo111111111111111111111111111111111")
+            addProperty("maxTimeoutSeconds", 60)
+            add(
+                "extra",
+                JsonObject().apply {
+                    addProperty("feePayer", "FeePayer1111111111111111111111111111")
+                },
+            )
+        }
+        val selected = SelectedChallenge(
+            requirement = PaymentRequirement(
+                scheme = "exact",
+                network = ExactChallenge.DEFAULT_NETWORK,
+                asset = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+                amount = "1000",
+                payTo = "PayTo111111111111111111111111111111111",
+                maxTimeoutSeconds = 60,
+                extra = raw["extra"].asJsonObject.entrySet().associate { it.key to it.value },
+                raw = raw,
+            ),
+            resource = null,
+        )
+
+        val encoded = client.createPaymentHeaderValue(
+            selected = selected,
+            payer = "Payer11111111111111111111111111111111",
+        )
+        val envelope = JsonParser.parseString(
+            String(Base64.getDecoder().decode(encoded), Charsets.UTF_8),
+        ).asJsonObject
+        val accepted = envelope["accepted"].asJsonObject
+
+        assertEquals("1000", accepted["amount"].asString)
+        assertTrue(!accepted.has("maxAmountRequired"), "maxAmountRequired must be stripped")
+        assertTrue(!accepted.has("currency"), "currency must be stripped")
+        assertTrue(!accepted.has("recipient"), "recipient must be stripped")
+    }
 }
 
 private class RecordingTransactionBuilder(

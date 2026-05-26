@@ -173,7 +173,22 @@ class ExactPaymentClient(
     }
 
     private fun PaymentRequirement.toAcceptedJson(): JsonObject {
+        // Canonical v2 accepted shape. Mirrors rust spine
+        // `PaymentRequirements::to_accepted_value` at
+        // rust/crates/x402/src/protocol/schemes/exact/types.rs so the
+        // credential's `accepted` round-trips identically when the rust
+        // server re-serialises both sides via the same Serialize impl
+        // inside `find_matching_requirement`. Echoing the raw offered
+        // object verbatim would leak deprecated aliases (`maxAmountRequired`,
+        // `currency`, `recipient`) into the credential and cause the
+        // structural-equality match to fail even though the underlying
+        // values agree.
         val accepted = raw.deepCopy()
+        // Strip deprecated wire aliases that we have already promoted to
+        // canonical field names on the typed `PaymentRequirement`.
+        accepted.remove("maxAmountRequired")
+        accepted.remove("currency")
+        accepted.remove("recipient")
         accepted.addProperty("scheme", scheme)
         accepted.addProperty("network", network)
         accepted.addProperty("asset", asset)
