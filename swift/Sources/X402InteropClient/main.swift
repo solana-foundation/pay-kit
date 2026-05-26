@@ -19,13 +19,13 @@ struct InteropClient {
         let secret = try readSecretKey("X402_INTEROP_CLIENT_SECRET_KEY")
         let signer = try MemorySolanaSigner(secretKey: secret)
 
-        // Scope note (M2): this interop client adapter is intentionally limited to
+        // Scope note: this interop client adapter is intentionally limited to
         // GET-only x402 protected routes. The harness fixture matrix is GET-only,
         // and using `URLSession.shared.data(from:)` here keeps the discovery
         // request and the subsequent paid request on the same HTTP verb (GET),
         // which is the only verb the fixture servers expose. Non-GET routes
         // (POST/PUT/DELETE with bodies, multipart, streaming, etc.) are out of
-        // scope for this milestone — supporting them requires re-issuing the
+        // scope for this adapter — supporting them requires re-issuing the
         // original method+body on the paid retry and is tracked separately.
         let (challengeData, challengeResponse) = try await URLSession.shared.data(from: target)
         let headers = (challengeResponse as? HTTPURLResponse)?.allHeaderFields.reduce(into: [String: String]()) { partial, entry in
