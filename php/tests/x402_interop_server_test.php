@@ -560,12 +560,26 @@ $feePayerAuthorityPayment = mutate_payment_transaction($validCanonicalPayment, s
 });
 assert_rejects_payment($unitState, encoded_payment($feePayerAuthorityPayment), 'invalid_exact_svm_payload_transaction_fee_payer_transferring_funds');
 
+// Spine-parity: an optional Memo (or Lighthouse) instruction whose
+// account slots reference the managed fee-payer MUST be accepted. The
+// canonical Rust + TS spines accept Memo/Lighthouse by program-id alone
+// (`rust/.../exact/verify.rs:266`, `ts .../exact/scheme.ts:300`); a
+// broad scan over instruction account slots was protocol drift in
+// earlier PHP revs and rejected Phantom/Solflare-style transactions.
 $feePayerInMemoPayment = mutate_payment_transaction($validCanonicalPayment, static function (string $transaction): string {
     $instructions = transaction_instruction_offsets($transaction);
     $transaction = substr_replace($transaction, short_vec(1) . chr(0), $instructions[3]['accountsOffset'] - 1, 1);
     return $transaction;
 });
-assert_rejects_payment($unitState, encoded_payment($feePayerInMemoPayment), 'invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts');
+$feePayerInMemoSettlement = settle_exact_payment(
+    $unitState,
+    encoded_payment($feePayerInMemoPayment),
+    static fn (): string => 'settled-signature-memo-fee-payer',
+    noop_confirmer(),
+);
+if ($feePayerInMemoSettlement !== 'settled-signature-memo-fee-payer') {
+    fail('expected memo-fee-payer payment to settle, got: ' . $feePayerInMemoSettlement);
+}
 
 // Codex PR #19 r3 P1 regression: the optional-instruction allowlist must
 // mirror the Rust + TS spines and accept only Memo + Lighthouse. The
@@ -1006,7 +1020,12 @@ $drainKeys = [$serverPub, $clientPub, $srcAta, $mintBytes, $dstAta, $computeProg
 $systemTransferData = pack('V', 2) . u64_le_test(1_000_000);
 $drainIx = compiled_instruction_test(7, [0, 8], $systemTransferData);
 $drainTx = build_attack_transaction($attackState, $drainKeys, [$validComputeLimitIx, $validComputePriceIx, $validTransferIx, $drainIx]);
-assert_runtime_error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts', static fn () => verify_exact_transaction($drainTx, $attackRequirement, [$serverPub]));
+// Spine parity (rust/.../exact/verify.rs verify_exact_instructions): the
+// drain instruction lives in the optional slot (index 3) and runs the
+// system program, which is not on the Memo/Lighthouse allowlist, so the
+// canonical reason is `unknown_fourth_instruction` (not the old PHP-only
+// broad fee-payer scan).
+assert_runtime_error('invalid_exact_svm_payload_unknown_fourth_instruction', static fn () => verify_exact_transaction($drainTx, $attackRequirement, [$serverPub]));
 // Positive control: same shape minus the drain instruction is accepted.
 $drainControlKeysFixed = [$serverPub, $clientPub, $srcAta, $mintBytes, $dstAta, $computeProgramBytes, $tokenProgramBytes, $memoProgramBytes];
 $drainControlTx = build_attack_transaction($attackState, $drainControlKeysFixed, [$validComputeLimitIx, $validComputePriceIx, $validTransferIx, compiled_instruction_test(7, [], 'control-memo')]);
@@ -1018,7 +1037,12 @@ $splDrainKeys = [$serverPub, $clientPub, $srcAta, $mintBytes, $dstAta, $computeP
 // Putting feePayerAta at source and fee-payer pubkey (idx 0) as authority drains via SPL.
 $splDrainIx = compiled_instruction_test(6, [7, 3, 8, 0], chr(12) . u64_le_test(1_000) . $decimalsByte);
 $splDrainTx = build_attack_transaction($attackState, $splDrainKeys, [$validComputeLimitIx, $validComputePriceIx, $validTransferIx, $splDrainIx]);
-assert_runtime_error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts', static fn () => verify_exact_transaction($splDrainTx, $attackRequirement, [$serverPub]));
+// SPL transferChecked instruction at slot 3 runs the SPL Token program,
+// which is also not on the optional Memo/Lighthouse allowlist, so the
+// canonical reason is `unknown_fourth_instruction`. (Note: the spine's
+// transfer-instruction guard at slot 2 also rejects fee-payer at the
+// source/authority slot directly; this attack uses slot 3 instead.)
+assert_runtime_error('invalid_exact_svm_payload_unknown_fourth_instruction', static fn () => verify_exact_transaction($splDrainTx, $attackRequirement, [$serverPub]));
 // Positive control: drop the drain instruction.
 $splControlKeys = [$serverPub, $clientPub, $srcAta, $mintBytes, $dstAta, $computeProgramBytes, $tokenProgramBytes, $memoProgramBytes];
 $splControlTx = build_attack_transaction($attackState, $splControlKeys, [$validComputeLimitIx, $validComputePriceIx, $validTransferIx, compiled_instruction_test(7, [], 'spl-control-memo')]);
@@ -1034,7 +1058,9 @@ $slotTransferIx = compiled_instruction_test(7, [3, 4, 5, 2], chr(12) . $amountBy
 // Attacker instruction referencing server at idx 1 (would harvest server's signature as authority).
 $slotAttackIx = compiled_instruction_test(8, [1, 0], pack('V', 2) . u64_le_test(1));
 $slotTx = build_attack_transaction($attackState, $slotKeys, [$slotComputeLimitIx, $slotComputePriceIx, $slotTransferIx, $slotAttackIx], 2);
-assert_runtime_error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts', static fn () => verify_exact_transaction($slotTx, $attackRequirement, [$serverPub]));
+// Slot-shift attack is also at instruction[3], system program, rejected
+// by the optional allowlist as `unknown_fourth_instruction`.
+assert_runtime_error('invalid_exact_svm_payload_unknown_fourth_instruction', static fn () => verify_exact_transaction($slotTx, $attackRequirement, [$serverPub]));
 
 // Attack 4: Tampered details.fee_payer — accepted requirement carries an ATTACKER pubkey
 // in extra.feePayer, but the server-context managed-signer list still names the SERVER.
@@ -1042,7 +1068,8 @@ assert_runtime_error('invalid_exact_svm_payload_transaction_fee_payer_in_instruc
 // any drain instruction targeting the SERVER pubkey is still rejected.
 $tamperedRequirement = $attackRequirement;
 $tamperedRequirement['extra']['feePayer'] = SolanaMpp\X402\Interop\base58_encode_binary($attackerPub);
-assert_runtime_error('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts', static fn () => verify_exact_transaction($drainTx, $tamperedRequirement, [$serverPub]));
+// Same drain transaction; the optional-slot allowlist still rejects it.
+assert_runtime_error('invalid_exact_svm_payload_unknown_fourth_instruction', static fn () => verify_exact_transaction($drainTx, $tamperedRequirement, [$serverPub]));
 // Positive control: legitimate canonical payment passes even when details.fee_payer is tampered,
 // because server-context drain detection ignores the client-supplied hint.
 $tamperedHappyTx = base64_decode(canonical_versioned_transaction_for_exact_payment($attackState), true);
@@ -1470,6 +1497,63 @@ foreach (
     }
     verify_exact_transaction($tx, $lighthouseRequirement, [$lighthouseState['feePayerPublicKey']]);
 }
+
+// Spine-parity bug fix: a Lighthouse instruction whose account slots
+// reference the managed fee-payer (e.g. a balance assertion that hashes
+// fee-payer state) MUST pass through, matching the Rust + TS spines
+// which accept Lighthouse by program-id alone. The prior PHP server
+// ran a broad `verify_fee_payer_not_in_instruction_accounts` scan over
+// every instruction and incorrectly rejected such Lighthouse
+// passthroughs. Canonical Phantom/Solflare wallets emit them on
+// mainnet, so this is real protocol drift, not a hypothetical edge case.
+function build_lighthouse_referencing_fee_payer_transaction(array $state): string
+{
+    $requirement = exact_requirement($state);
+    $clientPublicKey = substr(secret_key_bytes(secret_json("\x06")), 32, 32);
+    $mint = base58_decode_test($requirement['asset']);
+    $payTo = base58_decode_test($requirement['payTo']);
+    $tokenProgram = base58_decode_test($requirement['extra']['tokenProgram']);
+    $source = associated_token_address_test($clientPublicKey, $tokenProgram, $mint);
+    $destination = associated_token_address_test($payTo, $tokenProgram, $mint);
+    $computeProgram = base58_decode_test('ComputeBudget111111111111111111111111111111');
+    $lighthouseProgram = base58_decode_test('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95');
+    $accountKeys = [
+        $state['feePayerPublicKey'], // 0 — managed signer
+        $clientPublicKey,            // 1
+        $source,                     // 2
+        $mint,                       // 3
+        $destination,                // 4
+        $computeProgram,             // 5
+        $tokenProgram,               // 6
+        $lighthouseProgram,          // 7
+    ];
+    $instructions = [
+        compiled_instruction_test(5, [], chr(2) . pack('V', 20_000)),
+        compiled_instruction_test(5, [], chr(3) . u64_le_test(1)),
+        compiled_instruction_test(6, [2, 3, 4, 1], chr(12) . u64_le_test((int) $requirement['amount']) . chr((int) $requirement['extra']['decimals'])),
+        // Lighthouse balance-assert-style instruction whose account slot
+        // references the fee-payer (idx 0) directly.
+        compiled_instruction_test(7, [0], str_repeat("\x42", 64)),
+    ];
+    $message = "\x80"
+        . "\x02"
+        . "\x01"
+        . "\x04"
+        . short_vec(count($accountKeys))
+        . implode('', $accountKeys)
+        . str_repeat("\x99", 32)
+        . short_vec(count($instructions))
+        . implode('', $instructions)
+        . short_vec(0);
+
+    return base64_encode(short_vec(2) . str_repeat("\x00", 128) . $message);
+}
+
+$lighthouseFeePayerTx = base64_decode(build_lighthouse_referencing_fee_payer_transaction($lighthouseState), true);
+if ($lighthouseFeePayerTx === false) {
+    fail('lighthouse fee-payer parity transaction is not base64');
+}
+verify_exact_transaction($lighthouseFeePayerTx, $lighthouseRequirement, [$lighthouseState['feePayerPublicKey']]);
 
 echo "PHP lighthouse spine-parity regression suite OK\n";
 

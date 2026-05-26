@@ -511,7 +511,15 @@ function verify_exact_transaction(string $transaction, array $requirement, array
     verify_compute_limit_instruction($instructions[0], $accountKeys);
     verify_compute_price_instruction($instructions[1], $accountKeys);
     $transfer = verify_transfer_instruction($instructions[2], $accountKeys, $requirement, $managedSigners);
-    verify_fee_payer_not_in_instruction_accounts($instructions, $accountKeys, $managedSigners);
+    // No broad fee-payer-in-instruction-accounts scan: the Rust spine
+    // (`rust/crates/x402/src/protocol/schemes/exact/verify.rs`,
+    // verify_exact_instructions) only protects the fee-payer inside the
+    // transfer instruction (source/authority slots, guarded above) and
+    // otherwise accepts optional Lighthouse instructions by program-id
+    // alone -- including ones whose account slots reference the managed
+    // fee-payer (the canonical Phantom/Solflare emit Lighthouse account
+    // assertions that hash fee-payer state). A broader scan rejected
+    // those valid Lighthouse passthroughs and was protocol drift.
     verify_optional_instructions(array_slice($instructions, 3), $accountKeys, $requirement);
 
     return $transfer;
@@ -595,20 +603,6 @@ function verify_transfer_instruction(array $instruction, array $accountKeys, arr
         'destination' => $destination,
         'tokenProgram' => $program,
     ];
-}
-
-function verify_fee_payer_not_in_instruction_accounts(array $instructions, array $accountKeys, array $managedSigners): void
-{
-    foreach ($instructions as $instruction) {
-        foreach ($instruction['accounts'] as $accountIndex) {
-            $account = account_key_for_index($accountIndex, $accountKeys);
-            foreach ($managedSigners as $managedSigner) {
-                if ($account === $managedSigner) {
-                    throw new \RuntimeException('invalid_exact_svm_payload_transaction_fee_payer_in_instruction_accounts');
-                }
-            }
-        }
-    }
 }
 
 function verify_optional_instructions(array $instructions, array $accountKeys, array $requirement): void
