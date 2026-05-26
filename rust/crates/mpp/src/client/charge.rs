@@ -491,11 +491,17 @@ fn build_spl_instructions(
             .amount
             .parse()
             .map_err(|_| Error::Other(format!("Invalid split amount: {}", split.amount)))?;
+        // Audit #20: only create the split ATA when the challenge
+        // explicitly flags it. The old behaviour auto-created in
+        // client-paid mode, letting a hostile server drain the client
+        // with N dust splits × ATA rent. Spec §7.2 says the client MUST
+        // include the ATA-create ix when `ataCreationRequired` is true;
+        // it does not authorize creation otherwise.
         add_spl_transfer(
             instructions,
             &split_recipient,
             split_amount,
-            fee_payer.is_none() || split.ata_creation_required == Some(true),
+            split.ata_creation_required == Some(true),
         )?;
         push_memo_instruction(instructions, split.memo.as_deref())?;
     }
@@ -1764,6 +1770,8 @@ mod tests {
 
     #[test]
     fn build_spl_with_splits() {
+        // Audit #20: with ata_creation_required=None the client must NOT
+        // emit the ATA-create instruction (even in client-paid mode).
         let signer_pk = Pubkey::new_unique();
         let recipient = Pubkey::from_str(RECIPIENT).unwrap();
         let split_recipient = Pubkey::new_unique();
@@ -1785,7 +1793,36 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
         )
         .unwrap();
-        // Primary recipient ATA creation is out of scope; split ATA creation is allowed.
+        // 1 primary transfer + 1 split transfer. No split ATA create.
+        assert_eq!(ixs.len(), 2);
+    }
+
+    #[test]
+    fn build_spl_creates_split_ata_only_when_flagged() {
+        // Audit #20: ata_creation_required = Some(true) means the client
+        // MUST include the ATA-create ix.
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let split_recipient = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: split_recipient.to_string(),
+            amount: "1000".to_string(),
+            ata_creation_required: Some(true),
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+        )
+        .unwrap();
+        // 1 primary transfer + 1 ATA create + 1 split transfer.
         assert_eq!(ixs.len(), 3);
     }
 
@@ -1813,13 +1850,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(ixs.len(), 4);
+        // 1 primary transfer + 1 split transfer + 1 split memo (no ATA create).
+        assert_eq!(ixs.len(), 3);
         assert_eq!(
-            ixs[3].program_id,
+            ixs[2].program_id,
             Pubkey::from_str(programs::MEMO_PROGRAM).unwrap()
         );
-        assert!(ixs[3].accounts.is_empty());
-        assert_eq!(ixs[3].data, b"platform fee");
+        assert!(ixs[2].accounts.is_empty());
+        assert_eq!(ixs[2].data, b"platform fee");
     }
 
     #[test]

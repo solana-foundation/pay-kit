@@ -164,3 +164,32 @@ Legend for **Decision**:
 **Note on threshold choice:** the audit asked for "a documented minimum size" without a number. 32 bytes is the cryptographically right answer for HMAC-SHA256; a permissive 16-byte minimum would have spared a few test churn but locks in an under-strength default for years.
 
 ---
+
+### #20 — Implicit client-funded split ATA creation
+**ID:** `8d8dab0e` · **File:** `crates/mpp/src/client/charge.rs:498`
+
+**Audit claim:** In client-paid mode the client builder auto-created ATAs for every split, ignoring `ataCreationRequired`. A hostile server could attach N dust splits to a challenge and force the client to pay N × ~0.002 SOL of ATA rent.
+
+**Spec position (re-verified against draft-solana-charge-00):**
+- §7.2 — "When `ataCreationRequired` is `true`, the client MUST include an idempotent ATA-create instruction…"
+- §9.5 — "Clients MUST NOT include **fee-payer-funded** ATA creation instructions for the top-level `recipient`, unmarked split recipients, or arbitrary owners."
+
+So the spec mandates creation only when flagged; the §9.5 ban is narrower than the audit suggested (it only restricts fee-payer-funded creation), but the *threat* — silent rent drain on the client — is real regardless of mode.
+
+**Decision:** ✅ **accepted, client-only fix.**
+
+**Action taken:** changed the create-ATA gate at `client/charge.rs:498` from
+```
+create_ata = fee_payer.is_none() || split.ata_creation_required == Some(true)
+```
+to
+```
+create_ata = split.ata_creation_required == Some(true)
+```
+Same flag, both modes. Updated `build_spl_with_splits` and `build_spl_with_split_memo` to reflect the new behaviour (no auto-create, fewer ixs); added `build_spl_creates_split_ata_only_when_flagged` to lock in the positive case.
+
+**Why client-only:** Server-side `expected_ata_creation_policy` is permissive in client-paid mode (`allowed_owners = all split owners`), which is consistent with the spec (it only forbids *fee-payer-funded* ATA creation). Tightening the server would break integrators with legitimate auto-create flows on their own clients. The drain attack the audit identified is closed once *our* SDK client refuses to emit unflagged ATA-creates.
+
+**Honest-flow impact:** servers that need clients to fund split ATAs MUST now set `ataCreationRequired: true` per split. Servers that forget the flag will see the receiving transfer fail on-chain instead of silently charging the client — clearer failure mode.
+
+---
