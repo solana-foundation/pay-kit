@@ -24,7 +24,9 @@ dependencies = {
 }
 build = {
   type = "builtin",
-  modules = {},
+  modules = {
+    ["x402.exact_settle"] = "x402/exact_settle.lua",
+  },
   install = {
     bin = {
       ["x402-interop-server"] = "x402/bin/interop-server.lua",

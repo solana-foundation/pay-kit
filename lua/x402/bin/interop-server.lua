@@ -195,7 +195,7 @@ end
 --
 -- This block exists only to support independent Associated Token Account PDA
 -- derivation, which mirrors the canonical Rust spine in
--- `rust/src/protocol/schemes/exact/verify.rs::get_associated_token_address`
+-- `rust/crates/x402/src/protocol/schemes/exact/verify.rs::get_associated_token_address`
 -- and the Solana Ed25519 `find_program_address` algorithm. luasodium does not
 -- expose `crypto_core_ed25519_is_valid_point` in our pinned package surface
 -- (see `rockspec` and `luasodium 2.4.x` modules), so we implement Edwards
@@ -537,7 +537,7 @@ local function ed25519_on_curve(point_bytes)
 end
 
 -- Mirrors Solana's `Pubkey::find_program_address` (and the Rust spine helper
--- `get_associated_token_address` in `rust/src/protocol/schemes/exact/verify.rs`
+-- `get_associated_token_address` in `rust/crates/x402/src/protocol/schemes/exact/verify.rs`
 -- at the line that calls `Pubkey::find_program_address(seeds, &ata_program)`).
 -- Iterates bump from 255 downward, hashing
 -- `concat(seeds) || bump || program_id || "ProgramDerivedAddress"`, and
@@ -558,7 +558,7 @@ end
 
 -- Independently re-derives the expected destination Associated Token Account
 -- for `(payTo, tokenProgram, mint)`. Equivalent to the Rust spine helper
--- `get_associated_token_address` in `rust/src/protocol/schemes/exact/verify.rs`
+-- `get_associated_token_address` in `rust/crates/x402/src/protocol/schemes/exact/verify.rs`
 -- which uses seeds `[owner.as_ref(), token_program.as_ref(), mint.as_ref()]`
 -- with the SPL Associated Token Account program id.
 local function derive_associated_token_address(pay_to_bytes, token_program_bytes, mint_bytes, ata_program_bytes)
@@ -740,16 +740,20 @@ local function read_env(name, fallback)
 end
 
 local function normalize_amount(price)
-  local value = tostring(price):match("^%s*(.-)%s*$")
+  local raw = tostring(price)
+  local value = raw:match("^%s*(.-)%s*$")
   value = value:gsub("^%$", "")
   value = value:match("^(%S+)") or value
 
+  -- Fail-fast on malformed prices to keep parity with the Rust x402 spine,
+  -- which rejects unparseable amounts rather than advertising/verifying a
+  -- silent fallback that does not match the requested configuration.
   local whole, fraction = value:match("^(%d+)%.?(%d*)$")
   if not whole then
-    return default_amount
+    error("invalid X402_INTEROP_PRICE: " .. raw)
   end
   if #fraction > 6 then
-    return default_amount
+    error("invalid X402_INTEROP_PRICE (more than 6 decimals): " .. raw)
   end
 
   fraction = fraction .. string.rep("0", 6 - #fraction)
@@ -835,7 +839,13 @@ local function exact_challenge_json()
   return json_object({
     { "x402Version", 2 },
     { "accepts", raw_json(exact_accepts_json()) },
-    { "resource", raw_json(json_object({ { "type", "http" }, { "uri", resource_path } })) }
+    -- Canonical x402 v2 PaymentRequiredEnvelope.resource is `ResourceInfo {
+    -- url, description?, mimeType? }` (see rust/crates/x402
+    -- protocol/schemes/exact/types.rs::ResourceInfo). Rust clients parse the
+    -- PAYMENT-REQUIRED header with serde and the whole envelope is dropped
+    -- if `url` is missing, so an alternate shape like `{ type, uri }` breaks
+    -- Rust client to Lua server interop.
+    { "resource", raw_json(json_object({ { "url", resource_path } })) }
   })
 end
 
@@ -961,7 +971,7 @@ local function verify_optional_instructions(instructions, account_keys, requirem
       end
     elseif program == base58_decode(lighthouse_program) then
       -- Intentional spine parity: the Rust spine
-      -- (`rust/src/protocol/schemes/exact/verify.rs:266`) and the TypeScript
+      -- (`rust/crates/x402/src/protocol/schemes/exact/verify.rs:266`) and the TypeScript
       -- spine (`typescript/packages/x402/src/facilitator/exact/scheme.ts:300`)
       -- both pass Lighthouse through unconditionally — no discriminator
       -- allowlist, no account-count cap. Adding one here would reject
@@ -984,7 +994,7 @@ local function verify_optional_instructions(instructions, account_keys, requirem
 end
 
 -- Mirror the canonical Rust spine sweep in
--- `rust/src/protocol/schemes/exact/verify.rs::verify_managed_signers_not_instruction_accounts`
+-- `rust/crates/x402/src/protocol/schemes/exact/verify.rs::verify_managed_signers_not_instruction_accounts`
 -- (introduced in commit 498a6ed, "fix(exact): reject fee payer instruction accounts").
 -- Every instruction account position across every instruction MUST NOT name
 -- the server's fee-payer. The only legitimate exception is the ATA-create

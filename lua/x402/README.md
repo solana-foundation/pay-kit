@@ -11,7 +11,7 @@ This package is a server-only Lua adapter for Solana x402 exact interop probes.
 - `/exact` builds the Solana SVM challenge from the interop environment (`X402_INTEROP_NETWORK`, `X402_INTEROP_MINT`, `X402_INTEROP_EXTRA_OFFERED_MINTS`, `X402_INTEROP_PRICE`, `X402_INTEROP_PAY_TO`, and `X402_INTEROP_FEE_PAYER`).
 - When a payment envelope is present, the server decodes the x402 envelope, validates the versioned Solana transaction shape, patches the fee-payer signature, checks duplicate settlements, and submits the signed transaction through JSON-RPC.
 
-The Lua rockspec declares `lua >= 5.4`, `luasocket`, `dkjson`, `luasodium`, and `luazen`.
+The Lua rockspec declares `lua >= 5.4`, `luasocket`, `luasec` (required for HTTPS RPC), `dkjson`, `luasodium`, and `luazen`.
 
 ## Runtime decision
 
@@ -31,4 +31,4 @@ Remaining hardening items:
 - Keep Lua dependency choices narrow and documented.
 - Keep Lua exact server interop optional in default CI until the maintainer environment has LuaRocks dependencies available.
 - Add deeper negative-path probes for malformed transaction shape, wrong token program, wrong mint, wrong amount, fee-payer-as-authority, duplicate settlement, and network mismatch.
-- Associated Token Account PDA derivation is now performed independently in pure Lua (`derive_associated_token_address` + `ed25519_on_curve`), mirroring the canonical Rust spine in `rust/src/protocol/schemes/exact/verify.rs::get_associated_token_address`. The fee-payer sweep across all instruction accounts mirrors `verify_managed_signers_not_instruction_accounts` from the same file. Lighthouse instructions are passed through without an allowlist to preserve parity with the Rust and TypeScript spines (see `notes/lighthouse-allowlist-tracking.md`).
+- Associated Token Account PDA derivation is now performed independently in pure Lua (`derive_associated_token_address` + `ed25519_on_curve`), mirroring the canonical Rust spine in `rust/crates/x402/src/protocol/schemes/exact/verify.rs::get_associated_token_address`. The fee-payer sweep across all instruction accounts mirrors `verify_managed_signers_not_instruction_accounts` from the same file. Lighthouse instructions are passed through without an allowlist to preserve parity with the Rust and TypeScript spines (see `notes/lighthouse-allowlist-tracking.md`).
