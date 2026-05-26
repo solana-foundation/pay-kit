@@ -69,6 +69,37 @@ module Mpp
           end
           bytes.pack("C*")
         end
+
+        # Encode an unsigned integer as Solana short_vec (compact-u16) bytes.
+        # Alias of `compact_u16` kept under the canonical spine name so
+        # x402 and other consumers can share the encoder rather than
+        # redeclaring it.
+        def self.short_vec(value)
+          compact_u16(value)
+        end
+
+        # Decode a Solana short_vec starting at `offset`, returning
+        # `[value, next_offset]`. Mirrors the canonical spine helper
+        # exposed by the Rust crate in
+        # `rust/crates/x402/src/protocol/schemes/exact/types.rs` and lets
+        # x402 byte-level parsers reuse one shared implementation.
+        def self.read_short_vec(bytes, offset)
+          value = 0
+          shift = 0
+          index = offset
+          loop do
+            raise ArgumentError, "short vec extends beyond input" if index >= bytes.bytesize
+
+            byte = bytes.getbyte(index)
+            value |= (byte & 0x7f) << shift
+            index += 1
+            break if (byte & 0x80).zero?
+
+            shift += 7
+            raise ArgumentError, "short vec is too long" if shift > 28
+          end
+          [value, index]
+        end
       end
 
       # Parsed Solana transaction message.

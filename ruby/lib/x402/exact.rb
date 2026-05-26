@@ -1,54 +1,71 @@
 # frozen_string_literal: true
 
 require "base64"
-require "digest"
+require "ed25519"
 require "json"
-require "net/http"
 require "securerandom"
-require "uri"
+
+require "mpp/methods/solana/base58"
+require "mpp/methods/solana/mints"
+require "mpp/methods/solana/public_key"
+require "mpp/methods/solana/associated_token"
+require "mpp/methods/solana/rpc"
+require "mpp/methods/solana/transaction"
 
 module X402
   module Interop
+    # x402 exact-scheme primitives. Protocol-specific structural validation
+    # lives here; cryptography, Base58, ATA derivation, RPC, program IDs,
+    # and short_vec live in the shared `Mpp::Methods::Solana::*` core and
+    # are reused via the local aliases below.
     module Exact
       module_function
 
-      BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-      COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
-      MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+      # Shared core aliases. All Solana primitives come from the gem-level
+      # `Mpp::Methods::Solana` core so that x402 does not redeclare or
+      # reimplement constants, Base58, ATA, PDA, RPC, or short_vec helpers.
+      Base58Core = ::Mpp::Methods::Solana::Base58
+      MintsCore = ::Mpp::Methods::Solana::Mints
+      PublicKeyCore = ::Mpp::Methods::Solana::PublicKey
+      AssociatedTokenCore = ::Mpp::Methods::Solana::AssociatedToken
+      RpcCore = ::Mpp::Methods::Solana::Rpc
+      TransactionCore = ::Mpp::Methods::Solana::Transaction
+
+      # Program IDs are sourced from the shared mint/program table.
+      COMPUTE_BUDGET_PROGRAM = MintsCore::COMPUTE_BUDGET_PROGRAM
+      MEMO_PROGRAM = MintsCore::MEMO_PROGRAM
+      ASSOCIATED_TOKEN_PROGRAM = MintsCore::ASSOCIATED_TOKEN_PROGRAM
+      SYSTEM_PROGRAM = MintsCore::SYSTEM_PROGRAM
+      TOKEN_2022_PROGRAM = MintsCore::TOKEN_2022_PROGRAM
       LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
-      ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-      SYSTEM_PROGRAM = "11111111111111111111111111111111"
-      TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+
       DEFAULT_COMPUTE_UNIT_LIMIT = 20_000
       DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1
       MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
       MAX_MEMO_BYTES = 256
-      ED25519_P = (2**255) - 19
-      ED25519_D = (-121_665 * 121_666.pow(ED25519_P - 2, ED25519_P)) % ED25519_P
-      ED25519_I = 2.pow((ED25519_P - 1) / 4, ED25519_P)
-      ED25519_L = (2**252) + 277_423_177_773_723_535_358_519_377_908_836_484_93
-      ED25519_BASE_X = 151_122_213_495_354_007_725_011_514_095_885_315_114_540_126_930_418_572_060_461_132_839_498_477_622_02
-      ED25519_BASE_Y = 463_168_356_949_264_781_694_283_940_034_751_631_413_079_938_662_562_256_157_830_336_031_652_518_559_60
-      PROGRAM_DERIVED_ADDRESS_MARKER = "ProgramDerivedAddress"
 
+      # Thin Ed25519 signer adapter: builds an `Ed25519::SigningKey` from a
+      # 32-byte Solana seed and exposes the raw public key plus a `sign`
+      # method whose shape matches the spine ed25519 signer interface
+      # (sign raw message bytes, no pre-hashing).
       class Ed25519PrivateKey
-        def initialize(seed)
-          @seed = seed
-          @public_key = X402::Interop::Exact.public_key_from_seed(seed)
-        end
+        attr_reader :raw_public_key
 
-        def raw_public_key
-          @public_key
+        def initialize(seed)
+          @signing_key = ::Ed25519::SigningKey.new(seed)
+          @raw_public_key = @signing_key.verify_key.to_bytes
         end
 
         def sign(_digest, message)
-          X402::Interop::Exact.sign_ed25519(@seed, @public_key, message)
+          @signing_key.sign(message)
         end
       end
 
       def build_exact_payment_signature_from_rpc(requirement:, client_secret_key:, rpc_url:, resource: nil)
         blockhash = string_extra(requirement, "recentBlockhash", required: false)
-        blockhash = latest_blockhash(rpc_url) if blockhash.nil? || blockhash.empty?
+        if blockhash.nil? || blockhash.empty?
+          blockhash = RpcCore.new(rpc_url).latest_blockhash
+        end
 
         build_exact_payment_signature(
           requirement: requirement,
@@ -150,19 +167,7 @@ module X402
       end
 
       def latest_blockhash(rpc_url)
-        uri = URI(rpc_url)
-        request = Net::HTTP::Post.new(uri)
-        request["content-type"] = "application/json"
-        request.body = JSON.generate(jsonrpc: "2.0", id: 1, method: "getLatestBlockhash")
-        response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") do |http|
-          http.request(request)
-        end
-        raise "getLatestBlockhash HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
-
-        payload = JSON.parse(response.body)
-        raise "getLatestBlockhash RPC error: #{payload["error"]}" if payload["error"]
-
-        payload.fetch("result").fetch("value").fetch("blockhash")
+        RpcCore.new(rpc_url).latest_blockhash
       end
 
       def build_transaction(requirement:, private_key:, recent_blockhash:)
@@ -310,7 +315,7 @@ module X402
         # ATA-create-payer-slot carve-out in
         # `reject_fee_payer_in_instruction_accounts!`. Matches the Go and Lua
         # ports; tightening to spine parity is a protocol-wide decision that
-        # must land in the Rust spine first — tracked at
+        # must land in the Rust spine first, tracked at
         # `notes/lighthouse-allowlist-tracking.md`.
         instructions.drop(3).each_with_index do |instruction, index|
           program = instruction_program(instruction, account_keys)
@@ -357,11 +362,11 @@ module X402
       # Sweep every instruction's account list and reject any whose accounts
       # name a facilitator-managed signer (the fee payer). This closes the
       # ATA-drain vector where a malicious client appends an extra instruction
-      # — TransferChecked, SystemProgram::Transfer, or any program — that
+      # (TransferChecked, SystemProgram::Transfer, or any program) that
       # references the fee-payer pubkey as a signer or source. Mirrors the
       # Rust spine's `authority` check on the canonical transfer
       # (`rust/crates/x402/src/protocol/schemes/exact/verify.rs:382`) but
-      # extends it to every instruction so optional/auxiliary instructions
+      # extends it to every instruction so optional or auxiliary instructions
       # cannot quietly drain managed-signer balances after the facilitator
       # co-signs.
       #
@@ -402,10 +407,10 @@ module X402
 
       def ata_create_data?(data)
         # Associated Token Account program instruction discriminator:
-        # - empty data           → Create (legacy variant)
-        # - single byte 0x00     → Create
-        # - single byte 0x01     → CreateIdempotent
-        # Any other shape is RecoverNested or a future variant — reject the
+        # - empty data           -> Create (legacy variant)
+        # - single byte 0x00     -> Create
+        # - single byte 0x01     -> CreateIdempotent
+        # Any other shape is RecoverNested or a future variant; reject the
         # carve-out so we don't leak the fee-payer slot into unknown shapes.
         return true if data.bytesize.zero?
         return false unless data.bytesize == 1
@@ -513,219 +518,51 @@ module X402
         Ed25519PrivateKey.new(seed)
       end
 
+      # Derive the associated token account address as raw 32-byte pubkey.
+      # Delegates to `Mpp::Methods::Solana::AssociatedToken.derive` and
+      # decodes the resulting Base58 string back to the byte form x402's
+      # transaction builder works in.
       def associated_token_address(wallet, token_program, mint)
-        program_id = base58_decode(ASSOCIATED_TOKEN_PROGRAM)
-        find_program_address([wallet, token_program, mint], program_id)
-      end
-
-      def find_program_address(seeds, program_id)
-        255.downto(0) do |bump|
-          candidate = Digest::SHA256.digest(seeds.join + [bump].pack("C") + program_id + PROGRAM_DERIVED_ADDRESS_MARKER)
-          return candidate unless ed25519_on_curve?(candidate)
-        end
-
-        raise "unable to find a viable program address"
-      end
-
-      def ed25519_on_curve?(bytes)
-        return false unless bytes.bytesize == 32
-
-        sign = bytes.bytes.last >> 7
-        y_bytes = bytes.bytes
-        y_bytes[-1] &= 0x7f
-        y = y_bytes.reverse.reduce(0) { |acc, byte| (acc << 8) | byte }
-        return false if y >= ED25519_P
-
-        y2 = (y * y) % ED25519_P
-        numerator = (y2 - 1) % ED25519_P
-        denominator = ((ED25519_D * y2) + 1) % ED25519_P
-        return false if denominator.zero?
-
-        x2 = (numerator * mod_inverse(denominator, ED25519_P)) % ED25519_P
-        x = mod_sqrt(x2, ED25519_P)
-        return false if x.nil?
-
-        x = ED25519_P - x if (x & 1) != sign
-        ((x * x - x2) % ED25519_P).zero?
-      end
-
-      def public_key_from_seed(seed)
-        encoded_prefix = Digest::SHA512.digest(seed)
-        scalar = prune_scalar(encoded_prefix.byteslice(0, 32))
-        encode_point(scalar_mult(scalar, [ED25519_BASE_X, ED25519_BASE_Y]))
-      end
-
-      def sign_ed25519(seed, public_key, message)
-        expanded = Digest::SHA512.digest(seed)
-        scalar = prune_scalar(expanded.byteslice(0, 32))
-        prefix = expanded.byteslice(32, 32)
-        r = bytes_to_int_le(Digest::SHA512.digest(prefix + message)) % ED25519_L
-        encoded_r = encode_point(scalar_mult(r, [ED25519_BASE_X, ED25519_BASE_Y]))
-        k = bytes_to_int_le(Digest::SHA512.digest(encoded_r + public_key + message)) % ED25519_L
-        s = (r + (k * scalar)) % ED25519_L
-        encoded_r + int_to_32_le(s)
+        ata_base58 = AssociatedTokenCore.derive(
+          owner: wallet,
+          mint: mint,
+          token_program: token_program
+        )
+        base58_decode(ata_base58)
       end
 
       # Verify an Ed25519 signature against a message and public key.
-      # Returns true if the signature is valid, false otherwise.
+      # Returns true if the signature is valid, false otherwise. Backed by
+      # the `ed25519` runtime gem already pinned in `solana-pay-kit.gemspec`
+      # rather than a pure-Ruby reimplementation.
       def verify_ed25519(public_key, message, signature)
         return false unless signature.is_a?(String) && signature.bytesize == 64
         return false unless public_key.is_a?(String) && public_key.bytesize == 32
 
-        encoded_r = signature.byteslice(0, 32)
-        s = bytes_to_int_le(signature.byteslice(32, 32))
-        return false if s >= ED25519_L
-
-        big_a = decode_point(public_key)
-        return false if big_a.nil?
-        big_r = decode_point(encoded_r)
-        return false if big_r.nil?
-
-        k = bytes_to_int_le(Digest::SHA512.digest(encoded_r + public_key + message)) % ED25519_L
-        left = scalar_mult(s, [ED25519_BASE_X, ED25519_BASE_Y])
-        right = point_add(big_r, scalar_mult(k, big_a))
-        left == right
+        ::Ed25519::VerifyKey.new(public_key).verify(signature, message)
+        true
+      rescue ::Ed25519::VerifyError
+        false
       end
 
-      def decode_point(bytes)
-        return nil unless bytes.bytesize == 32
-
-        y_bytes = bytes.bytes
-        sign = y_bytes[-1] >> 7
-        y_bytes[-1] &= 0x7f
-        y = y_bytes.reverse.reduce(0) { |acc, byte| (acc << 8) | byte }
-        return nil if y >= ED25519_P
-
-        y2 = (y * y) % ED25519_P
-        numerator = (y2 - 1) % ED25519_P
-        denominator = ((ED25519_D * y2) + 1) % ED25519_P
-        return nil if denominator.zero?
-
-        x2 = (numerator * mod_inverse(denominator, ED25519_P)) % ED25519_P
-        x = mod_sqrt(x2, ED25519_P)
-        return nil if x.nil?
-
-        x = ED25519_P - x if (x & 1) != sign
-        return nil unless ((x * x - x2) % ED25519_P).zero?
-
-        [x, y]
-      end
-
-      def prune_scalar(bytes)
-        scalar_bytes = bytes.bytes
-        scalar_bytes[0] &= 248
-        scalar_bytes[31] &= 63
-        scalar_bytes[31] |= 64
-        bytes_to_int_le(scalar_bytes.pack("C*"))
-      end
-
-      def scalar_mult(scalar, point)
-        result = [0, 1]
-        addend = point
-        value = scalar
-        while value.positive?
-          result = point_add(result, addend) if value.odd?
-          addend = point_add(addend, addend)
-          value >>= 1
-        end
-        result
-      end
-
-      def point_add(first, second)
-        x1, y1 = first
-        x2, y2 = second
-        common = (ED25519_D * x1 * x2 * y1 * y2) % ED25519_P
-        x3 = ((x1 * y2 + x2 * y1) * mod_inverse((1 + common) % ED25519_P, ED25519_P)) % ED25519_P
-        y3 = ((y1 * y2 + x1 * x2) * mod_inverse((1 - common) % ED25519_P, ED25519_P)) % ED25519_P
-        [x3, y3]
-      end
-
-      def encode_point(point)
-        x, y = point
-        bytes = int_to_32_le(y).bytes
-        bytes[31] |= 0x80 if x.odd?
-        bytes.pack("C*")
-      end
-
-      def bytes_to_int_le(bytes)
-        bytes.bytes.each_with_index.reduce(0) do |acc, (byte, index)|
-          acc + (byte << (8 * index))
-        end
-      end
-
-      def int_to_32_le(value)
-        Array.new(32) { |index| (value >> (8 * index)) & 0xff }.pack("C*")
-      end
-
-      def mod_sqrt(value, modulus)
-        return 0 if value.zero?
-
-        x = mod_pow(value, (modulus + 3) / 8, modulus)
-        x = (x * ED25519_I) % modulus unless ((x * x - value) % modulus).zero?
-        return nil unless ((x * x - value) % modulus).zero?
-
-        x
-      end
-
+      # Base58 helpers delegate to the shared core module.
       def base58_decode(value)
-        number = 0
-        value.each_char do |char|
-          index = BASE58_ALPHABET.index(char)
-          raise ArgumentError, "invalid base58 character #{char.inspect}" if index.nil?
-
-          number = (number * 58) + index
-        end
-
-        bytes = []
-        while number.positive?
-          bytes.unshift(number & 0xff)
-          number >>= 8
-        end
-        leading_zeroes = value.each_char.take_while { |char| char == "1" }.length
-        ("\x00".b * leading_zeroes) + bytes.pack("C*")
+        Base58Core.decode(value)
       end
 
       def base58_encode(bytes)
-        number = bytes.bytes.reduce(0) { |acc, byte| (acc << 8) | byte }
-        encoded = +""
-        while number.positive?
-          number, remainder = number.divmod(58)
-          encoded.prepend(BASE58_ALPHABET[remainder])
-        end
-        leading_zeroes = bytes.bytes.take_while(&:zero?).length
-        ("1" * leading_zeroes) + (encoded.empty? ? "" : encoded)
+        Base58Core.encode(bytes)
       end
 
+      # Solana short_vec helpers delegate to the shared core module
+      # (`Mpp::Methods::Solana::Transaction`), keeping a single canonical
+      # implementation of compact-u16 across MPP and x402.
       def short_vec(length)
-        value = length
-        output = "".b
-        loop do
-          byte = value & 0x7f
-          value >>= 7
-          byte |= 0x80 if value.positive?
-          output << [byte].pack("C")
-          break unless value.positive?
-        end
-        output
+        TransactionCore.short_vec(length)
       end
 
       def read_short_vec(bytes, offset)
-        shift = 0
-        value = 0
-        index = offset
-        loop do
-          raise ArgumentError, "short vec extends beyond input" if index >= bytes.bytesize
-
-          byte = bytes.getbyte(index)
-          value |= (byte & 0x7f) << shift
-          index += 1
-          break if (byte & 0x80).zero?
-
-          shift += 7
-          raise ArgumentError, "short vec is too long" if shift > 28
-        end
-
-        [value, index]
+        TransactionCore.read_short_vec(bytes, offset)
       end
 
       def required_signer_index(message, public_key)
@@ -762,14 +599,6 @@ module X402
         raise ArgumentError, "payment requirement has invalid extra.#{key}" if required
 
         nil
-      end
-
-      def mod_inverse(value, modulus)
-        mod_pow(value, modulus - 2, modulus)
-      end
-
-      def mod_pow(base, exponent, modulus)
-        base.pow(exponent, modulus)
       end
     end
   end

@@ -39,6 +39,8 @@ module Mpp
         # Call a Solana JSON-RPC method.
         def call(method, params = [])
           response = perform_request(JSON.generate({jsonrpc: "2.0", id: next_request_id, method: method, params: params}))
+          raise Error, "#{method} HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
           body = JSON.parse(response.body)
           raise Error, "#{method}: #{body["error"]["message"]}" if body["error"]
 

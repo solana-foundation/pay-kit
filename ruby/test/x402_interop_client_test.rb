@@ -357,8 +357,12 @@ class InteropClientTest < Minitest::Test
   end
 
   def test_latest_blockhash_rejects_http_failure
+    # After shared-core consolidation x402 delegates `latest_blockhash` to
+    # `Mpp::Methods::Solana::Rpc`, which raises the canonical `Mpp::Error`
+    # subclass of `StandardError` carrying a stable
+    # `getLatestBlockhash HTTP <code>` message on non-2xx responses.
     with_net_http_response("service unavailable", code: "503", success: false) do
-      error = assert_raises(RuntimeError) do
+      error = assert_raises(Mpp::Error) do
         X402::Interop::Exact.latest_blockhash("http://127.0.0.1:8899")
       end
 
@@ -592,12 +596,24 @@ class InteropClientTest < Minitest::Test
     fake_http = Object.new
     fake_http.define_singleton_method(:request) { |_request| response }
 
+    # x402 entry points hit Net::HTTP via two distinct shapes: the legacy
+    # x402 procedural client used `Net::HTTP.start(host, port, opts)` (class
+    # method) and the post-shared-core path delegates to
+    # `Mpp::Methods::Solana::Rpc#perform_request`, which builds a
+    # `Net::HTTP` instance and calls `http.start { client.request(req) }`.
+    # Stub both shapes so a single test helper covers either implementation.
     singleton = class << Net::HTTP; self; end
     original_start = Net::HTTP.method(:start)
-    singleton.define_method(:start, ->(_hostname, _port, _options, &block) { block.call(fake_http) })
+    singleton.define_method(:start, ->(_hostname, _port, *_args, &block) { block.call(fake_http) })
+
+    instance_singleton = Net::HTTP
+    original_instance_start = instance_singleton.instance_method(:start)
+    instance_singleton.define_method(:start) { |&block| block.call(fake_http) }
+
     yield
   ensure
-    singleton.define_method(:start, original_start)
+    singleton.define_method(:start, original_start) if original_start
+    instance_singleton.define_method(:start, original_instance_start) if original_instance_start
   end
 
   def exact_requirement

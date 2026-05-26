@@ -145,7 +145,20 @@ class SupportTest < Minitest::Test
       end
 
       def request(request)
-        @callable.call(request)
+        raw = @callable.call(request)
+        return raw if raw.respond_to?(:code) && raw.respond_to?(:is_a?) && raw.is_a?(Net::HTTPResponse)
+
+        # Wrap the canned Struct body in a stand-in that satisfies the
+        # `Net::HTTPSuccess` guard added to
+        # `Mpp::Methods::Solana::Rpc#call` after shared-core consolidation.
+        body = raw.respond_to?(:body) ? raw.body : raw
+        response = Object.new
+        response.define_singleton_method(:body) { body }
+        response.define_singleton_method(:code) { "200" }
+        response.define_singleton_method(:is_a?) do |klass|
+          klass == Net::HTTPSuccess || klass == Net::HTTPResponse
+        end
+        response
       end
     end
     fake_class.send(:undef_method, :write_timeout=) unless supports_write_timeout
