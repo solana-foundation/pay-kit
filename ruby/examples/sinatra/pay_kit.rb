@@ -8,18 +8,13 @@
 
 PayKit.configure do |c|
   c.pay_to = ENV.fetch("PAY_KIT_PAY_TO", "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
-  c.network = ENV.fetch("PAY_KIT_NETWORK", "solana_devnet").to_sym
+  c.network = :solana_localnet
   # Default to mpp-only so the demo boots without a real Solana
   # facilitator keypair. Set PAY_KIT_ACCEPT="x402,mpp" once
   # PAY_KIT_X402_FACILITATOR_KEY holds a valid 64-byte JSON array.
   c.accept = ENV.fetch("PAY_KIT_ACCEPT", "mpp").split(",").map(&:to_sym)
-  c.stablecoins = ENV.fetch("PAY_KIT_STABLECOINS", "USDC").split(",").map(&:to_sym)
-
   c.x402.facilitator = ENV.fetch("PAY_KIT_X402_FACILITATOR", "https://402.surfnet.dev:8899")
   c.x402.facilitator_secret_key = ENV.fetch("PAY_KIT_X402_FACILITATOR_KEY", "[]")
-  c.x402.scheme = :exact
-
-  c.mpp.realm = ENV.fetch("PAY_KIT_MPP_REALM", "PayKit Demo")
   c.mpp.secret = ENV.fetch("PAY_KIT_MPP_SECRET", "demo-secret-do-not-use-in-prod")
 end
 

@@ -24,11 +24,8 @@ require "solana_pay_kit/sinatra"
 
 PayKit.configure do |c|
   c.pay_to = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj"
-  c.network = :solana_devnet
-  c.accept = %i[x402 mpp]
-  c.stablecoins = %i[USDC]
+  c.network = :solana_localnet
   c.x402.facilitator = ENV.fetch("FACILITATOR_URL")
-  c.mpp.realm = "MyApp"
   c.mpp.secret = ENV.fetch("MPP_SECRET")
 end
 
