@@ -181,14 +181,11 @@ class DefaultSolanaExactTransactionBuilder(
         }
         val amount = request.amount.toULongOrNull()
             ?: throw IllegalArgumentException("amount must be an unsigned integer string")
-        // The downstream instruction builder takes a signed Long because Kotlin's
-        // JVM target lowers ULong to Long under the hood for arithmetic. SPL token
-        // amounts above Long.MAX_VALUE (≈9.2 × 10¹⁸) would narrow to a negative
-        // Long here even though they are valid u64 values, producing a corrupted
-        // transferChecked instruction. Fail closed rather than emit silent garbage.
-        require(amount <= Long.MAX_VALUE.toULong()) {
-            "amount $amount is outside the signed-u64 range this builder can encode safely"
-        }
+        // Spine parity: rust/crates/x402/src/protocol/schemes/exact/verify.rs
+        // parses the amount as `u64`, so the full unsigned-64-bit range
+        // (including values above Long.MAX_VALUE) is valid on the wire. The
+        // instruction encoder writes 8 little-endian bytes for the ULong, so
+        // there is no signed-Long narrowing in the transferChecked data.
 
         val sourceAta = associatedTokenAddress(owner = payer, mint = mint, tokenProgram = tokenProgram)
         val destinationAta = associatedTokenAddress(owner = recipient, mint = mint, tokenProgram = tokenProgram)
@@ -203,7 +200,7 @@ class DefaultSolanaExactTransactionBuilder(
                 mint = mint,
                 destination = destinationAta,
                 owner = payer,
-                amount = amount.toLong(),
+                amount = amount,
                 decimals = decimals,
             ),
             memoInstruction(request.memo ?: randomMemo()),
@@ -355,7 +352,7 @@ private fun transferCheckedInstruction(
     mint: SolanaPublicKey,
     destination: SolanaPublicKey,
     owner: SolanaPublicKey,
-    amount: Long,
+    amount: ULong,
     decimals: Int,
 ): SolanaInstruction =
     SolanaInstruction(
@@ -366,7 +363,7 @@ private fun transferCheckedInstruction(
             AccountMeta(destination, signer = false, writable = true),
             AccountMeta(owner, signer = true, writable = false),
         ),
-        data = byteArrayOf(12) + amount.toULong().toLittleEndianBytes() + byteArrayOf(decimals.toByte()),
+        data = byteArrayOf(12) + amount.toLittleEndianBytes() + byteArrayOf(decimals.toByte()),
     )
 
 private fun memoInstruction(memo: String): SolanaInstruction {

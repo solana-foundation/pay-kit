@@ -120,11 +120,12 @@ class SolanaTransactionTest {
     }
 
     @Test
-    fun `builder rejects amounts above signed-u64 range`() {
-        // Regression for the dead `amount <= ULong.MAX_VALUE` guard. The real
-        // hazard is the downstream Long narrowing — values above Long.MAX_VALUE
-        // must be rejected explicitly rather than silently producing a negative
-        // Long and corrupting the transferChecked payload.
+    fun `builder encodes full u64 amount range above Long MAX_VALUE`() {
+        // Spine parity: rust/crates/x402/src/protocol/schemes/exact/verify.rs
+        // parses amount as u64. The Kotlin builder previously rejected any
+        // value above Long.MAX_VALUE; now the ULong is encoded directly as 8
+        // little-endian bytes inside the transferChecked instruction data so
+        // the full u64 range is valid.
         val accepted = JsonObject().apply {
             addProperty("scheme", "exact")
             addProperty("network", ExactChallenge.DEFAULT_NETWORK)
@@ -140,12 +141,13 @@ class SolanaTransactionTest {
                 },
             )
         }
-        val boundary = (Long.MAX_VALUE.toULong() + 1u).toString()
+        // u64::MAX = 18446744073709551615 — well above Long.MAX_VALUE.
+        val u64Max = ULong.MAX_VALUE.toString()
         val request = SolanaExactPaymentRequest(
             payer = "11111111111111111111111111111112",
             network = ExactChallenge.DEFAULT_NETWORK,
             asset = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-            amount = boundary,
+            amount = u64Max,
             payTo = "11111111111111111111111111111115",
             feePayer = "11111111111111111111111111111111",
             memo = null,
@@ -153,13 +155,15 @@ class SolanaTransactionTest {
             accepted = accepted,
         )
 
-        val error = assertFailsWith<IllegalArgumentException> {
-            DefaultSolanaExactTransactionBuilder(FixedRpc).buildUnsignedTransaction(request)
+        val unsigned = DefaultSolanaExactTransactionBuilder(FixedRpc).buildUnsignedTransaction(request)
+        // u64::MAX encodes to eight 0xFF bytes in little-endian. Search the
+        // compiled message bytes for the transferChecked discriminator (0x0c)
+        // followed by 0xFF * 8 + decimals=6.
+        val needle = byteArrayOf(12) + ByteArray(8) { 0xFF.toByte() } + byteArrayOf(6)
+        val found = (0..unsigned.message.size - needle.size).any { offset ->
+            (0 until needle.size).all { i -> unsigned.message[offset + i] == needle[i] }
         }
-        assertTrue(
-            error.message?.contains("signed-u64", ignoreCase = true) == true,
-            "expected signed-u64 overflow guard, got: ${error.message}",
-        )
+        assertTrue(found, "expected transferChecked amount 0xFF*8 (u64::MAX) + decimals=6 in compiled message")
     }
 
     @Test
