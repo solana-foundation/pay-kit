@@ -51,10 +51,10 @@ pay curl http://localhost:4567/paid
 
 ## Interop
 
-The cross-language interop harness lives in `../tests/interop`.
+The cross-language interop harness lives in `../harness`.
 
 ```bash
-cd ../tests/interop
+cd ../harness
 pnpm install
 pnpm test
 ```

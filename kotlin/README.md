@@ -26,7 +26,7 @@ kotlin/
 │   ├── SolanaTransaction.kt    # v0 message codec, instruction layout,
 │   │                           # ATA derivation, signature framing
 │   └── InteropClient.kt        # Command-line interop driver consumed by
-│                               # tests/interop
+│                               # harness
 └── src/test/kotlin/org/solana/x402/exact/
     ├── ExactChallengeTest.kt
     ├── ExactPaymentClientTest.kt
@@ -195,15 +195,15 @@ separately.
 ## Interop
 
 The Kotlin x402 client runs against the interop harness at
-`tests/interop`, driven by the JVM entry point
+`harness`, driven by the JVM entry point
 `org.solana.x402.exact.InteropClientKt` exposed through the
 `runInteropClient` Gradle task. Adapter registration lives alongside
-the other client adapters in `tests/interop/src/`.
+the other client adapters in `harness/src/`.
 
 Focused matrix command:
 
 ```bash
-cd tests/interop
+cd harness
 MPP_INTEROP_CLIENTS=kotlin MPP_INTEROP_SERVERS=rust pnpm exec vitest run
 ```
 

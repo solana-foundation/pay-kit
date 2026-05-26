@@ -11,7 +11,7 @@ mpp-sdk/
 ├── python/
 ├── lua/
 ├── <new-lang>/  ← what you are creating
-├── tests/interop/
+├── harness/
 │   └── <new-lang>-client/   ← interop adapter (see interop-harness.md)
 ├── .github/workflows/ci.yml ← add a job (see ci-quality-coverage.md)
 └── justfile     ← add recipes (see "justfile recipes" below)

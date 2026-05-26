@@ -201,5 +201,5 @@ Integration test:
   splits with ATA creation, fee-payer mode.
 
 Interop scenario: `charge-basic` and `charge-split-ata` in
-`tests/interop/src/contracts.ts`. Both must pass against the Rust
+`harness/src/contracts.ts`. Both must pass against the Rust
 server before the new SDK is enabled by default.

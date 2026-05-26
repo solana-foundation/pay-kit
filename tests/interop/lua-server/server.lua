@@ -1,7 +1,7 @@
 #!/usr/bin/env luajit
 -- Lua MPP interop adapter for the cross-language harness.
 --
--- Mirrors `tests/interop/ruby-server/server.rb`: a raw TCP loop that
+-- Mirrors `harness/ruby-server/server.rb`: a raw TCP loop that
 -- gates `interopScenario.resourcePath` behind a `charge` challenge and
 -- settles the credential on Surfpool. The harness drives this binary by
 -- the contract in `skills/pay-sdk-implementation/references/interop-harness.md`:
@@ -16,7 +16,7 @@
 --
 -- Run manually:
 --   cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
---   MPP_INTEROP_RPC_URL=... MPP_INTEROP_PAY_TO=... ... luajit ../tests/interop/lua-server/server.lua
+--   MPP_INTEROP_RPC_URL=... MPP_INTEROP_PAY_TO=... ... luajit ../harness/lua-server/server.lua
 
 package.path = table.concat({
   './?.lua',

@@ -67,9 +67,9 @@ the directory skeleton and CI from earlier ones.
    Rust file paths cited in the leaf to disambiguate anything that's
    under-specified.
 6. **Add the interop adapter.** Read `references/interop-harness.md`,
-   create `tests/interop/<lang>-client/` (and a `bin/interop_server` if
+   create `harness/<lang>-client/` (and a `bin/interop_server` if
    you're shipping a server), and register it in
-   `tests/interop/src/implementations.ts`. Run the focused matrix
+   `harness/src/implementations.ts`. Run the focused matrix
    (`MPP_INTEROP_CLIENTS=<lang> MPP_INTEROP_SERVERS=rust pnpm test` and
    the inverse) before flipping `enabled: true`.
 7. **Write the README last.** Read `references/readme-template.md` and

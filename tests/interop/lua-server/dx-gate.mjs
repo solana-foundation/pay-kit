@@ -7,7 +7,7 @@
 // surfpool RPC stays available for the manual DX run.
 //
 // Run:
-//   cd tests/interop && node lua-server/dx-gate.mjs
+//   cd harness && node lua-server/dx-gate.mjs
 // In another terminal, copy-paste the printed env vars and run:
 //   cd lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
 //   <printed env> luajit examples/simple-server.lua
@@ -96,7 +96,7 @@ process.on("SIGTERM", shutdown);
 // Drain surfnet events on a 100 ms timer so the Rust worker keeps
 // advancing; otherwise the surfpool instance stalls and the upstream
 // RPC stops responding. Mirrors the pattern in
-// `tests/interop/start-surfnet-proxy.mjs`.
+// `harness/start-surfnet-proxy.mjs`.
 setInterval(() => {
   try {
     surfnet.drainEvents();

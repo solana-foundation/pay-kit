@@ -206,6 +206,6 @@ Integration:
 Interop:
 
 - The harness does not have session scenarios shipped today. Add one
-  to `tests/interop/src/contracts.ts` (intent `session`) before
+  to `harness/src/contracts.ts` (intent `session`) before
   enabling the cell. Pattern after `charge-basic`; reuse the same
   Surfpool fixtures.
