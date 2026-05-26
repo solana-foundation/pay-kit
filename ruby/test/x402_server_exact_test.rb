@@ -783,16 +783,13 @@ class X402ServerExactTest < Minitest::Test
     # the interop cross-server scenarios harness searches for.
     server_a = build_state
     other_pay_to = "11111111111111111111111111111113"
-    server_b_env = {
-      "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
-      "X402_INTEROP_NETWORK" => NETWORK,
-      "X402_INTEROP_MINT" => ASSET,
-      "X402_INTEROP_PAY_TO" => other_pay_to,
-      "X402_INTEROP_FACILITATOR_SECRET_KEY" => JSON.generate(secret(65)),
-      "X402_INTEROP_PRICE" => "$0.001"
-    }
     server_b = X402::Server::Exact::Config.new(
-      env: server_b_env,
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: ASSET,
+      pay_to: other_pay_to,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: "$0.001",
       transaction_sender: ->(_state, _transaction) { "settlement-signature" },
       account_checker: ->(_state, _account) { true }
     )
@@ -861,18 +858,15 @@ class X402ServerExactTest < Minitest::Test
   private
 
   def build_state_with_overrides(resource_path:, settlement_header:, sender:)
-    env = {
-      "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
-      "X402_INTEROP_NETWORK" => NETWORK,
-      "X402_INTEROP_MINT" => ASSET,
-      "X402_INTEROP_PAY_TO" => PAY_TO,
-      "X402_INTEROP_FACILITATOR_SECRET_KEY" => JSON.generate(secret(65)),
-      "X402_INTEROP_PRICE" => "$0.001",
-      "X402_INTEROP_RESOURCE_PATH" => resource_path,
-      "X402_INTEROP_SETTLEMENT_HEADER" => settlement_header
-    }
     X402::Server::Exact::Config.new(
-      env: env,
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: ASSET,
+      pay_to: PAY_TO,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: "$0.001",
+      resource_path: resource_path,
+      settlement_header: settlement_header,
       transaction_sender: sender,
       account_checker: ->(_state, _account) { true },
       signature_confirmer: ->(_state, signature) { signature }
@@ -887,23 +881,22 @@ class X402ServerExactTest < Minitest::Test
     signature_confirmer: ->(_state, signature) { signature },
     settlement_cache: nil
   )
-    env = {
-      "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
-      "X402_INTEROP_NETWORK" => NETWORK,
-      "X402_INTEROP_MINT" => ASSET,
-      "X402_INTEROP_PAY_TO" => PAY_TO,
-      "X402_INTEROP_FACILITATOR_SECRET_KEY" => JSON.generate(secret(65)),
-      "X402_INTEROP_PRICE" => price
-    }
-    env["X402_INTEROP_EXTRA_OFFERED_MINTS"] = extra_offered_mints unless extra_offered_mints.nil?
-
-    X402::Server::Exact::Config.new(
-      env: env,
+    kwargs = {
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: ASSET,
+      pay_to: PAY_TO,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: price,
       transaction_sender: sender,
       account_checker: account_checker,
       signature_confirmer: signature_confirmer,
       settlement_cache: settlement_cache
-    )
+    }
+    unless extra_offered_mints.nil?
+      kwargs[:extra_offered_mints] = extra_offered_mints.split(",").map(&:strip).reject(&:empty?)
+    end
+    X402::Server::Exact::Config.new(**kwargs)
   end
 
   def build_payment_header(state, resource: nil)

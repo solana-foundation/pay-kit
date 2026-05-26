@@ -19,10 +19,11 @@ server = TCPServer.new("127.0.0.1", 0)
 running = true
 
 def interop_config
-  # Env reads live in the bin (not in the library) so production
-  # callers can wire `X402::Server::Exact::Config` directly without
-  # the harness-specific X402_INTEROP_* prefixes.
-  @interop_config ||= X402::Server::Exact::Config.new
+  # The harness-specific X402_INTEROP_* env vars are parsed via
+  # `Config.from_interop_env`; production callers wire
+  # `X402::Server::Exact::Config.new(rpc_url: ..., pay_to: ..., ...)`
+  # with typed kwargs directly.
+  @interop_config ||= X402::Server::Exact::Config.from_interop_env
 end
 
 def read_headers(connection)

@@ -103,39 +103,70 @@ module X402
       # `Config` mirrors `rust/crates/x402/src/server/exact.rs:21`
       # (the spine `Config` struct). Holds resolved RPC URL,
       # facilitator signer, accepted mints, pay-to, and the replay
-      # store. Resolved from env in the interop bin; constructed
-      # directly by production callers.
+      # store. Constructed directly with typed kwargs; harness-
+      # specific env-var parsing (X402_INTEROP_*) lives in the
+      # interop bin, not in this library.
       class Config
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer,
           :fee_payer_secret_key, :amount, :resource_path, :settlement_header
 
         attr_accessor :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer
 
-        def initialize(env: ENV, transaction_sender: nil, settlement_cache: nil, account_checker: nil, signature_confirmer: nil)
-          @rpc_url = required_env(env, "X402_INTEROP_RPC_URL")
-          @network = env.fetch("X402_INTEROP_NETWORK", DEFAULT_NETWORK)
-          @mint = env.fetch("X402_INTEROP_MINT", DEFAULT_MINT)
-          @extra_offered_mints = env.fetch("X402_INTEROP_EXTRA_OFFERED_MINTS", "")
-            .split(",")
-            .map(&:strip)
-            .reject(&:empty?)
-          @pay_to = required_env(env, "X402_INTEROP_PAY_TO")
-          @fee_payer_secret_key = required_env(env, "X402_INTEROP_FACILITATOR_SECRET_KEY")
+        def initialize(
+          rpc_url:,
+          pay_to:,
+          facilitator_secret_key:,
+          amount:,
+          network: DEFAULT_NETWORK,
+          mint: DEFAULT_MINT,
+          extra_offered_mints: [],
+          resource_path: DEFAULT_RESOURCE_PATH,
+          settlement_header: DEFAULT_SETTLEMENT_HEADER,
+          transaction_sender: nil,
+          settlement_cache: nil,
+          account_checker: nil,
+          signature_confirmer: nil
+        )
+          raise ArgumentError, "rpc_url is required" if rpc_url.nil? || rpc_url.empty?
+          raise ArgumentError, "pay_to is required" if pay_to.nil? || pay_to.empty?
+          raise ArgumentError, "facilitator_secret_key is required" if facilitator_secret_key.nil? || facilitator_secret_key.empty?
+
+          @rpc_url = rpc_url
+          @network = network
+          @mint = mint
+          @extra_offered_mints = extra_offered_mints
+          @pay_to = pay_to
+          @fee_payer_secret_key = facilitator_secret_key
           @fee_payer = Types.private_key_from_json(@fee_payer_secret_key)
-          @amount = Exact.normalize_amount(env.fetch("X402_INTEROP_PRICE", DEFAULT_PRICE))
-          resource_path_value = env.fetch("X402_INTEROP_RESOURCE_PATH", DEFAULT_RESOURCE_PATH)
-          @resource_path = (resource_path_value.nil? || resource_path_value.empty?) ? DEFAULT_RESOURCE_PATH : resource_path_value
-          settlement_header_value = env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER)
-          @settlement_header = (settlement_header_value.nil? || settlement_header_value.empty?) ? DEFAULT_SETTLEMENT_HEADER : settlement_header_value
+          @amount = (amount.is_a?(String) && amount.start_with?("$")) ? Exact.normalize_amount(amount) : amount.to_s
+          @resource_path = (resource_path.nil? || resource_path.empty?) ? DEFAULT_RESOURCE_PATH : resource_path
+          @settlement_header = (settlement_header.nil? || settlement_header.empty?) ? DEFAULT_SETTLEMENT_HEADER : settlement_header
           @transaction_sender = transaction_sender || Exact.method(:send_transaction)
           @settlement_cache = settlement_cache || SettlementCache.new
           @account_checker = account_checker || Exact.method(:account_exists?)
           @signature_confirmer = signature_confirmer || Exact.method(:await_confirmation)
         end
 
-        private
+        # Build a `Config` from the interop harness env vars
+        # (X402_INTEROP_*). Only used by `bin/x402-interop-server`;
+        # production callers should call `.new(...)` with typed
+        # kwargs directly.
+        def self.from_interop_env(env = ENV)
+          new(
+            rpc_url: required_env(env, "X402_INTEROP_RPC_URL"),
+            pay_to: required_env(env, "X402_INTEROP_PAY_TO"),
+            facilitator_secret_key: required_env(env, "X402_INTEROP_FACILITATOR_SECRET_KEY"),
+            amount: env.fetch("X402_INTEROP_PRICE", DEFAULT_PRICE),
+            network: env.fetch("X402_INTEROP_NETWORK", DEFAULT_NETWORK),
+            mint: env.fetch("X402_INTEROP_MINT", DEFAULT_MINT),
+            extra_offered_mints: env.fetch("X402_INTEROP_EXTRA_OFFERED_MINTS", "")
+              .split(",").map(&:strip).reject(&:empty?),
+            resource_path: env.fetch("X402_INTEROP_RESOURCE_PATH", DEFAULT_RESOURCE_PATH),
+            settlement_header: env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER)
+          )
+        end
 
-        def required_env(env, name)
+        def self.required_env(env, name)
           value = env[name]
           raise "#{name} is required" if value.nil? || value.empty?
 
