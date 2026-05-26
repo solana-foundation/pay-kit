@@ -6,8 +6,11 @@ Carried from `solana-foundation/x402-sdk` PR #26, tip `36c5e9c`.
 
 - **Real P1 findings**: 0
 - **Confidence**: 4/5
-- **Scope**: client-only, darwin-only (requires CryptoKit + Apple Swift toolchain)
-- **Tests**: 20 XCTest cases passing on darwin (`swift test`)
+- **Scope**: client-only, cross-platform (SwiftCrypto `Crypto` module, no
+  CryptoKit dependency, builds on Linux + Apple platforms with a Swift
+  toolchain). Initial r4 landing was darwin-only/CryptoKit; the
+  SwiftCrypto migration happened in a later commit on the same PR.
+- **Tests**: 23 Swift Testing cases passing (`swift test --filter X402Tests`).
 
 ## Source provenance
 
@@ -29,8 +32,8 @@ only:
 
 - Challenge `decimals` validation throws on NaN, Inf, negative, fractional,
   or `> 255` values.
-- `MemorySolanaSigner` pubkey verify — CryptoKit derive of the public key from
-  the secret seed, mismatch throws `publicKeyMismatch`.
+- `MemorySolanaSigner` pubkey verify — SwiftCrypto derives the public key
+  from the secret seed, mismatch throws `publicKeyMismatch`.
 - Ed25519 non-canonical fixture (32-byte `y = p` and `y = p + 1`) plus
   `count == 32` assertion in `Ed25519CompressedPoint`.
 - `x402Version` validation throws `unsupportedX402Version` for mismatched
@@ -53,11 +56,12 @@ only:
 ## CI placement
 
 The harness entry `swift-x402-client` in
-`tests/interop/src/implementations.ts` is darwin-gated via
-`process.platform === "darwin"`. The public CI matrix runs interop on
-`ubuntu-latest`, which does not ship Swift by default — enabling
-`swift-x402-client` in `MPP_INTEROP_CLIENTS` on Linux is a no-op rather
-than a hard `swift run` bootstrap failure.
+`tests/interop/src/implementations.ts` is no longer Darwin-gated after
+the SwiftCrypto migration; it runs on any platform that has a Swift
+toolchain. The public CI matrix runs interop on `ubuntu-latest` which
+does not ship Swift by default, so the adapter stays opt-in via
+`MPP_INTEROP_CLIENTS` and `swift run` fails loudly when the toolchain
+is missing.
 
 ## Interop matrix evidence
 

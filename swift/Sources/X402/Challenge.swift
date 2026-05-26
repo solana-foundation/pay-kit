@@ -219,29 +219,30 @@ private func canonicalNetwork(_ network: String) -> String {
 }
 
 /// Canonical stablecoin mint table.
-/// MUST mirror the canonical Rust spine `STABLECOIN_MINTS` table exactly.
-/// Canonical reference: rust/crates/x402/src/protocol/schemes/exact/constants.rs.
-/// Cross-checked against the TypeScript fixture stub at
-/// typescript/packages/x402/src/protocol/schemes/exact/constants.ts:89-111.
+/// Source of truth: rust/crates/x402/src/protocol/schemes/exact/types.rs
+/// `mod mints` (lines 67-78) and `resolve_mint` (lines 95-110). Any change
+/// here MUST be matched in the Rust spine first; the TypeScript fixture
+/// stub is non-authoritative.
 enum StablecoinMints {
-    // USDC — TS constants.ts:40-42
+    // USDC — spine types.rs:68-70
     static let usdcMainnet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     static let usdcDevnet  = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     static let usdcTestnet = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-    // USDT — TS constants.ts:43
+    // USDT — spine types.rs:71
     static let usdtMainnet = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-    // USDG — TS constants.ts:44-46
+    // USDG — spine types.rs:72-74
     static let usdgMainnet = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
     static let usdgDevnet  = "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7"
     static let usdgTestnet = "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7"
-    // PYUSD — TS constants.ts:47-49
+    // PYUSD — spine types.rs:75-77
     static let pyusdMainnet = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
     static let pyusdDevnet  = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
     static let pyusdTestnet = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
-    // CASH (mainnet only) — TS constants.ts:50
+    // CASH (mainnet only) — spine types.rs:78
     static let cashMainnet = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
 
-    /// Per-network resolution mirroring TS `STABLECOIN_MINTS` (constants.ts:89-111).
+    /// Per-network resolution mirroring the Rust spine `resolve_mint`
+    /// (rust/crates/x402/src/protocol/schemes/exact/types.rs:95-110).
     static func mints(forSymbol symbol: String) -> [String: String] {
         switch symbol.uppercased() {
         case "USDC":
@@ -274,9 +275,8 @@ enum StablecoinMints {
 
 /// Match an offered mint address against an accepted currency symbol.
 /// Resolves the symbol through the canonical `STABLECOIN_MINTS` table
-/// (Rust spine is canonical; TS fixture stub at
-/// typescript/packages/x402/src/protocol/schemes/exact/constants.ts:89-111
-/// is cross-referenced for parity)
+/// pinned to the Rust spine
+/// (rust/crates/x402/src/protocol/schemes/exact/types.rs:67-110)
 /// across mainnet/devnet/testnet. Falls back to direct equality so a caller
 /// that already passes a mint string still matches. Unknown symbols return
 /// `false` so the selector can fall through to the cheapest-offer branch.
