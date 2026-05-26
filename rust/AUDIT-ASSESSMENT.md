@@ -69,3 +69,30 @@ Legend for **Decision**:
 **Note on alternative recommendation:** the audit also suggested deriving the *expected source ATA* (from the signer/payer) and rejecting anything else, gating arbitrary sources behind a flag. We didn't take this route because the model already accepts delegate/multisig flows by design, and forcing source = signer's ATA would break that. The fee-payer exclusion is the narrower, sufficient fix.
 
 ---
+
+### #28 — Incorrect default fallback resolving mint to token program
+**ID:** `048bfd43` · **Files:** `crates/mpp/src/protocol/solana.rs`, `crates/mpp/src/server/charge.rs`
+
+**Audit claim, two parts:**
+1. `default_token_program_for_currency` only recognized `CASH` as Token-2022; PYUSD (also Token-2022) fell back to legacy Token.
+2. Server falls back to the same guess instead of fetching the mint owner on-chain (spec §7.2), so a challenge generated for an arbitrary Token-2022 mint will go out with the wrong `tokenProgram`.
+
+**Status when reviewed:**
+- Part 1: **already fixed in prior work.** `stablecoin_uses_token_2022` now covers PYUSD/USDG (mainnet+devnet) and CASH.
+- Part 2: still valid for arbitrary mint addresses outside the known list.
+
+**Decision:** ✅ **accepted — fixed, resolved at boot rather than per-challenge.**
+
+**Action taken:**
+- Added `is_known_stablecoin_mint()` helper in `protocol/solana.rs` to distinguish the static-table path from arbitrary mints.
+- Added `resolve_server_token_program(rpc, currency, network)` in `server/charge.rs`:
+  - `SOL` → `None`.
+  - Known stablecoin symbol/mint → answer from the static table.
+  - Arbitrary mint address → parse as `Pubkey`, fetch the mint account, return its owner. Reject if the owner is not the Token Program or the Token-2022 Program. Reject if the currency parses as neither a known symbol nor a valid pubkey.
+- Resolution runs once in `Mpp::new` and the result is cached on `Mpp.token_program: Option<&'static str>`. No per-challenge RPC fan-out; servers fail fast at boot if the mint is unreachable or has an unexpected owner.
+- Challenge generation now emits `tokenProgram` straight from `self.token_program` (omits it for SOL).
+- The parsed-credential verifier no longer falls back to `default_token_program_for_currency` when `methodDetails.tokenProgram` is missing — it prefers the embedded value, then `self.token_program`, then errors out.
+- Updated the docstring on `default_token_program_for_currency` to warn that it is the static-table path only and callers handling arbitrary mints MUST go through the RPC-backed resolver.
+- New tests: `new_resolves_token_program_for_sol_currency`, `_for_usdc`, `_for_pyusd_token_2022` (regression for part 1), `new_rejects_unparseable_currency_without_rpc`. RPC-backed arbitrary-mint path is exercised by integration tests in `tests/charge_integration.rs` against the localnet.
+
+---

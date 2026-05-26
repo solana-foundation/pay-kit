@@ -74,7 +74,28 @@ fn stablecoin_uses_token_2022(mint: &str) -> bool {
     )
 }
 
+/// Whether `mint` is one of the well-known stablecoin mints whose token
+/// program is hardcoded. Returning `false` for an arbitrary mint means
+/// callers must do an on-chain mint-owner lookup to find the program.
+pub fn is_known_stablecoin_mint(mint: &str) -> bool {
+    matches!(
+        mint,
+        mints::USDC_MAINNET
+            | mints::USDC_DEVNET
+            | mints::USDT_MAINNET
+            | mints::USDG_MAINNET
+            | mints::USDG_DEVNET
+            | mints::PYUSD_MAINNET
+            | mints::PYUSD_DEVNET
+            | mints::CASH_MAINNET
+    )
+}
+
 /// Default token program for a currency or mint.
+///
+/// Only valid for well-known stablecoins. Callers handling arbitrary mints
+/// MUST resolve the token program via an on-chain mint-owner lookup
+/// (spec §7.2) rather than relying on this fallback.
 pub fn default_token_program_for_currency(currency: &str, network: Option<&str>) -> &'static str {
     match resolve_stablecoin_mint(currency, network) {
         Some(mint) if stablecoin_uses_token_2022(mint) => programs::TOKEN_2022_PROGRAM,

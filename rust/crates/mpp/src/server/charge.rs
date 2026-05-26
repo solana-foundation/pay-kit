@@ -62,6 +62,48 @@ fn default_rpc_url(network: &str) -> &'static str {
     }
 }
 
+/// Resolve the SPL token program governing `currency`, once, at server
+/// boot. Returns `None` for native SOL. For well-known stablecoins the
+/// answer comes from the static table; for an arbitrary mint address the
+/// owner is fetched on-chain and validated, per spec §7.2 (rather than
+/// silently falling back to the legacy Token Program).
+fn resolve_server_token_program(
+    rpc: &RpcClient,
+    currency: &str,
+    network: Option<&str>,
+) -> Result<Option<&'static str>, Error> {
+    if currency.eq_ignore_ascii_case("SOL") {
+        return Ok(None);
+    }
+
+    if let Some(mint) = crate::protocol::solana::resolve_stablecoin_mint(currency, network) {
+        if crate::protocol::solana::is_known_stablecoin_mint(mint) {
+            return Ok(Some(
+                crate::protocol::solana::default_token_program_for_currency(currency, network),
+            ));
+        }
+    }
+
+    let mint_pk = Pubkey::from_str(currency).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "Currency {currency} is neither a known symbol nor a valid mint address: {e}"
+        ))
+    })?;
+    let account = rpc.get_account(&mint_pk).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "Failed to fetch mint account for currency {currency}: {e}"
+        ))
+    })?;
+    let owner = account.owner.to_string();
+    match owner.as_str() {
+        programs::TOKEN_PROGRAM => Ok(Some(programs::TOKEN_PROGRAM)),
+        programs::TOKEN_2022_PROGRAM => Ok(Some(programs::TOKEN_2022_PROGRAM)),
+        _ => Err(Error::InvalidConfig(format!(
+            "Mint {currency} is owned by unsupported program {owner}; expected the Token or Token-2022 program"
+        ))),
+    }
+}
+
 // ── Configuration ──
 
 /// Server configuration.
@@ -133,6 +175,12 @@ pub struct Mpp {
     realm: String,
     secret_key: String,
     currency: String,
+    /// Token program governing `currency`. `None` for native SOL. Resolved
+    /// once at `Mpp::new` time — either from the hardcoded stablecoin table
+    /// or via an on-chain mint-owner lookup for arbitrary mint addresses
+    /// (spec §7.2). Reused at challenge generation and at verification so
+    /// the two sides stay in lockstep.
+    token_program: Option<&'static str>,
     recipient: String,
     decimals: u32,
     network: String,
@@ -158,12 +206,17 @@ impl Mpp {
         let realm = config.realm.unwrap_or_else(|| DEFAULT_REALM.to_string());
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
 
+        let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
+        let token_program =
+            resolve_server_token_program(&rpc, &config.currency, Some(&config.network))?;
+
         Ok(Mpp {
-            rpc: Arc::new(RpcClient::new(rpc_url.clone())),
+            rpc,
             rpc_url,
             realm,
             secret_key,
             currency: config.currency,
+            token_program,
             recipient: config.recipient,
             decimals: config.decimals as u32,
             network: config.network,
@@ -249,14 +302,10 @@ impl Mpp {
         }
 
         // Include token program so the client doesn't need to look up the mint account.
-        if self.currency.to_uppercase() != "SOL" {
-            details.insert(
-                "tokenProgram".into(),
-                serde_json::json!(crate::protocol::solana::default_token_program_for_currency(
-                    &self.currency,
-                    Some(&self.network),
-                )),
-            );
+        // For arbitrary mints this was resolved on-chain at Mpp::new time and
+        // cached on the struct — never guessed from the currency string.
+        if let Some(token_program) = self.token_program {
+            details.insert("tokenProgram".into(), serde_json::json!(token_program));
         }
 
         // Embed payment splits so the client can build multi-transfer transactions.
@@ -915,13 +964,20 @@ impl Mpp {
                     "ataCreationRequired requires currency to be an SPL token mint address",
                 ));
             }
-            let expected_token_program =
-                method_details.token_program.as_deref().unwrap_or_else(|| {
-                    crate::protocol::solana::default_token_program_for_currency(
-                        &request.currency,
-                        method_details.network.as_deref(),
+            // Prefer the challenge's tokenProgram hint. If the credential
+            // came from a challenge we didn't sign (or one missing the
+            // hint), fall back to the boot-time resolution we did against
+            // our own currency — never to a guess based on the currency
+            // string (spec §7.2).
+            let expected_token_program = method_details
+                .token_program
+                .as_deref()
+                .or(self.token_program)
+                .ok_or_else(|| {
+                    VerificationError::invalid_payload(
+                        "Missing tokenProgram and server has no resolved token program for this currency",
                     )
-                });
+                })?;
             let mut matched = verify_spl_transfers(
                 &instructions,
                 recipient,
@@ -3518,6 +3574,61 @@ mod tests {
             ..Default::default()
         });
         assert!(result.is_ok());
+    }
+
+    // ── resolve_server_token_program tests (sync branches only) ──
+
+    #[test]
+    fn new_resolves_token_program_for_sol_currency() {
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some("key".to_string()),
+            currency: "SOL".to_string(),
+            decimals: 9,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(mpp.token_program, None);
+    }
+
+    #[test]
+    fn new_resolves_token_program_for_usdc() {
+        // Default config is USDC.
+        let mpp = test_mpp();
+        assert_eq!(mpp.token_program, Some(programs::TOKEN_PROGRAM));
+    }
+
+    #[test]
+    fn new_resolves_token_program_for_pyusd_token_2022() {
+        // PYUSD is Token-2022; if this returns the legacy Token Program
+        // (the old bug), the regression is back.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some("key".to_string()),
+            currency: "PYUSD".to_string(),
+            network: "mainnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(mpp.token_program, Some(programs::TOKEN_2022_PROGRAM));
+    }
+
+    #[test]
+    fn new_rejects_unparseable_currency_without_rpc() {
+        // Not a known symbol and not a valid base58 pubkey — must reject
+        // up front, never silently fall back to the legacy Token Program.
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some("key".to_string()),
+            currency: "not-a-symbol-or-mint!!".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("should fail");
+        assert!(
+            err.to_string().contains("neither a known symbol nor"),
+            "got: {err}"
+        );
     }
 
     // ── default_rpc_url tests ──
