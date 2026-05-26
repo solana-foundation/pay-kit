@@ -311,7 +311,7 @@ describe("mpp interop", () => {
   const socketAwareIt = socketSupport ? it : it.skip;
 
   for (const scenario of activeScenarios) {
-    // M1: cross-server portability and idempotent-resubmit scenarios
+    // Cross-server portability and idempotent-resubmit scenarios
     // run in a dedicated block below; skip them here so the standard
     // pair-iteration does not try to drive them with the wrong runner.
     if (
@@ -448,7 +448,7 @@ describe("mpp interop", () => {
     }
   }
 
-  // M1 cross-server credential portability + same-server idempotent
+  // Cross-server credential portability + same-server idempotent
   // resubmit. These run outside the per-pair matrix because they
   // either need two distinct servers (portability) or assert a 402
   // canonical reject on a credential that was already settled

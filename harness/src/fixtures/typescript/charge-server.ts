@@ -83,7 +83,7 @@ async function main() {
     constructError = error instanceof Error ? error : new Error(message);
   }
 
-  // M1: capture the underlying SDK error message that mppx logs but
+  // Capture the underlying SDK error message that mppx logs but
   // strips from the wire response. The TS Mppx wraps any non-PaymentError
   // thrown by `verify` into a generic `VerificationFailedError` (see
   // mppx/src/server/Mppx.ts:425) and only emits `console.error('mppx:
@@ -172,7 +172,7 @@ async function main() {
         // into canonical codes at the response boundary so the harness
         // fault matrix has something to assert on.
         const challengeBody = await challenge.text();
-        // M1: enrich the 402 body with the captured SDK-internal error
+        // Enrich the 402 body with the captured SDK-internal error
         // message so injectCanonicalCode can classify replay-store hits
         // and HMAC mismatches that mppx otherwise generalizes to
         // "Payment verification failed."
@@ -206,7 +206,7 @@ async function main() {
       response.end(await paid.text());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // M1 cross-server portability / idempotent resubmit: the TS SDK
+      // Cross-server portability / idempotent resubmit: the TS SDK
       // surfaces replay-store hits and HMAC mismatches as thrown errors
       // during settlement rather than as a structured 402. The harness
       // expects a canonical 402 for these classes, so we translate any

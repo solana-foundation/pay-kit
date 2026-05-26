@@ -235,7 +235,7 @@ upstream error shapes (observed against Surfpool 1.1.1).
 
 This SDK follows the
 [`skills.sh/mindrally/skills/python`](https://skills.sh/mindrally/skills/python)
-best-practice skill selected for the M1g port. The implementation pass
+best-practice skill selected for the port. The implementation pass
 focuses on small modules, explicit error types with canonical L6
 codes, deterministic wire serialization (RFC 8785 canonical JSON),
 defensive payment verification (instruction allowlist + memo v2
@@ -283,7 +283,7 @@ MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=python pnpm test
 MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=python pnpm test
 ```
 
-Both matrices are green at the M1g closure: 11 + 9 = 20 scenarios
+Both matrices are green: 11 + 9 = 20 scenarios
 across TS-to-Python and Rust-to-Python.
 
 ## Spec

@@ -50,7 +50,7 @@ const LEGACY_TO_CANONICAL: Record<string, CanonicalErrorCode> = {
 const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[] = [
   { pattern: /already consumed/i, code: "signature_consumed" },
   { pattern: /signature.*consumed/i, code: "signature_consumed" },
-  // M1: in pull mode the L4 replay-store reservation sits after the
+  // In pull mode the L4 replay-store reservation sits after the
   // broadcast call, so a same-credential resubmit lands on the RPC's
   // "already been processed" error before the store check fires.
   // Treat the RPC duplicate-broadcast signal as canonically equivalent

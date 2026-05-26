@@ -46,7 +46,7 @@ kotlin/
 │       └── Transaction.kt     # legacy + v0 Solana wire codec
 ├── src/test/kotlin/com/solana/mpp/{client,protocol,crypto}/
 │                                # tests mirror the main source layout
-└── examples/                  # Sample clients (M2: Solana Seeker demo app)
+└── examples/                  # Sample clients (Solana Seeker demo app)
 ```
 
 Mirrors the Rust layout (`rust/src/{client,protocol}/`) so cross-language
@@ -128,7 +128,7 @@ diffable across SDKs.
 | `x402/batch-settlement` | — |
 | `mpp/charge/pull` | implemented |
 | `mpp/charge/push` | — |
-| `mpp/session` | planned (M3) |
+| `mpp/session` | planned |
 | `mpp/subscription` | — |
 
 ## Server compatibility matrix

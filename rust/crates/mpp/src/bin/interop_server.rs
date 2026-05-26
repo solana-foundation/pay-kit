@@ -382,7 +382,7 @@ fn classify_canonical_code(message: &str) -> &'static str {
     let lower = message.to_ascii_lowercase();
     if lower.contains("already consumed")
         || lower.contains("signature already consumed")
-        // M1: pull-mode replay surfaces as the RPC's "already been
+        // Pull-mode replay surfaces as the RPC's "already been
         // processed" error before the L4 replay-store reservation
         // fires. Canonically the same outcome as a replay-store hit.
         || lower.contains("already been processed")
