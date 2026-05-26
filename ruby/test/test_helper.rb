@@ -13,6 +13,14 @@ if ENV["COVERAGE"] == "1"
     # (`lib/x402/protocol/`, `lib/x402/constants.rb`, `lib/x402/error.rb`)
     # are covered by `test/x402_server_exact_test.rb`.
     add_filter "/lib/x402/"
+    # `lib/pay_kit/rack/` and `lib/pay_kit/schemes/` wrap live Solana
+    # RPC + signing through `X402::Server::Exact` and `Mpp::Server` and
+    # are exercised through the Sinatra example (manual curl DX) plus
+    # the cross-language interop harness; unit-testing them in isolation
+    # would require mocking out the entire SVM client stack, so they
+    # follow the same exclusion as `lib/x402/server/exact.rb`.
+    add_filter "/lib/pay_kit/rack/"
+    add_filter "/lib/pay_kit/schemes/"
     # Cross-SDK baseline target is 90 percent branch coverage. Line
     # coverage stays at 92 since the suite already exceeds that.
     minimum_coverage line: 92, branch: 90
