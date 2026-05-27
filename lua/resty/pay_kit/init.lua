@@ -41,8 +41,9 @@ M._VERSION = '0.1.0'
 -- Sub-module re-exports. `signer` and `kms` ship in P1; the rest
 -- arrive in P2-P6 and the existing `require` calls in this file
 -- update as each phase lands.
-local config_mod = require('resty.pay_kit.config')
-local price_mod  = require('resty.pay_kit.price')
+local config_mod   = require('resty.pay_kit.config')
+local price_mod    = require('resty.pay_kit.price')
+local registry_mod = require('resty.pay_kit.registry')
 
 M.signer   = require('resty.pay_kit.signer')
 M.kms      = require('resty.pay_kit.kms')
@@ -53,10 +54,12 @@ M.operator = require('resty.pay_kit.operator')
 function M.configure(opts) return config_mod.configure(opts) end
 function M.config() return config_mod.current() end
 function M.usd(amount, ...) return price_mod.usd(amount, ...) end
+function M.gate(name, opts_or_fn) return registry_mod.register(name, opts_or_fn) end
 
 -- Test-only escape hatch; production callers never use this.
 function M._reset_for_tests()
   config_mod._reset_for_tests()
+  registry_mod._unfreeze_for_tests()
   require('resty.pay_kit.signer.demo').reset_for_tests()
 end
 

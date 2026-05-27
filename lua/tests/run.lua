@@ -39,5 +39,6 @@ require('tests.pay_kit.signer_spec')
 require('tests.pay_kit.operator_spec')
 require('tests.pay_kit.price_spec')
 require('tests.pay_kit.config_spec')
+require('tests.pay_kit.gate_spec')
 
 require('tests.test_helper').run()
