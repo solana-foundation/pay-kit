@@ -32,6 +32,8 @@ require_relative "mpp"
 require_relative "x402"
 
 require_relative "pay_kit/errors"
+require_relative "pay_kit/signer"
+require_relative "pay_kit/kms"
 require_relative "pay_kit/price"
 require_relative "pay_kit/fee"
 require_relative "pay_kit/gate"
@@ -46,4 +48,17 @@ module PayKit
   Core = ::PayCore
   Mpp = ::Mpp
   X402 = ::X402
+
+  # Logger used by demo-signer warnings and any other library-level
+  # diagnostic output. Defaults to a `$stderr`-backed `::Logger` the
+  # first time it is referenced. Apps that integrate Rails/Sinatra can
+  # assign their own logger to keep PayKit messages alongside the rest
+  # of the application log.
+  class << self
+    attr_writer :logger
+
+    def logger
+      @logger ||= nil
+    end
+  end
 end

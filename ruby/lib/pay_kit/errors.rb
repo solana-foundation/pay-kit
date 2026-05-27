@@ -46,4 +46,27 @@ module PayKit
       super("no Pricing registry configured. Set PayKit.pricing = MyPricing.new at boot.")
     end
   end
+
+  # Raised by `PayKit.configure` when `c.network = :solana_mainnet` is
+  # combined with the demo signer (`PayKit::Signer.demo`). The demo
+  # keypair is published in the gem source and would otherwise let a
+  # misconfigured production app receive real funds to a publicly known
+  # address. Switch to a real keypair (`PayKit::Signer.env`,
+  # `Signer.file`, etc.) or change the network.
+  class DemoSignerOnMainnetError < ConfigurationError
+    def initialize(pubkey)
+      super(
+        "PayKit::Signer.demo (#{pubkey}) cannot be used on :solana_mainnet. " \
+        "Configure a real signer via PayKit::Signer.env / .file / .json / .base58 / .hex, " \
+        "or switch c.network to :solana_devnet or :solana_localnet."
+      )
+    end
+  end
+
+  # Raised when an API surface is reserved but not yet implemented. Used
+  # for `PayKit::Kms.*` factories and (currently) the x402 delegated
+  # facilitator client until the HTTP /verify + /settle path lands in a
+  # follow-up release. Loud failure on purpose: silent fallback would
+  # mask production misconfiguration.
+  class NotImplementedError < Error; end
 end
