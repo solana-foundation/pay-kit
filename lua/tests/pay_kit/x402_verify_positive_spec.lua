@@ -18,7 +18,7 @@ local base64 = require('mpp.util.base64_std')
 local base58 = require('mpp.util.base58')
 local tx_mod = require('mpp.methods.solana.transaction')
 local ata    = require('mpp.methods.solana.ata')
-local x402_verify = require('resty.pay_kit.protocols.x402.exact.verify')
+local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 
 -- --- bincode-style serializers --------------------------------------
 

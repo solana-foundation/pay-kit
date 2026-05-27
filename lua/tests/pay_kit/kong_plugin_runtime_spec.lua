@@ -48,8 +48,8 @@ local kong_stub = {
 _G.kong = kong_stub
 
 helper.test('Kong bootstrap configures pay_kit from env without posix', function()
-  package.loaded['kong.plugins.pay-kit.init'] = nil
-  local pay_kit = require('resty.pay_kit')
+  package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
+  local pay_kit = require('pay_kit')
   pay_kit._reset_for_tests()
   patch_env({
     PAY_KIT_NETWORK              = 'solana_devnet',
@@ -60,7 +60,7 @@ helper.test('Kong bootstrap configures pay_kit from env without posix', function
     PAY_KIT_MPP_REALM            = 'TestKongRealm',
     PAY_KIT_MPP_EXPIRES_IN       = '120',
   })
-  local bootstrap = require('kong.plugins.pay-kit.init')
+  local bootstrap = require('plugins.kong.plugins.pay-kit.init')
   bootstrap.setup()
   restore_env()
   local cfg = pay_kit.config()
@@ -70,8 +70,8 @@ helper.test('Kong bootstrap configures pay_kit from env without posix', function
 end)
 
 helper.test('Kong bootstrap honours empty / blank env defaults', function()
-  package.loaded['kong.plugins.pay-kit.init'] = nil
-  local pay_kit = require('resty.pay_kit')
+  package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
+  local pay_kit = require('pay_kit')
   pay_kit._reset_for_tests()
   patch_env({
     -- PAY_KIT_NETWORK unset -> falls to 'solana_devnet'.
@@ -81,7 +81,7 @@ helper.test('Kong bootstrap honours empty / blank env defaults', function()
     PAY_KIT_STABLECOINS          = '   ,  ',   -- blank entries -> trimmed
     PAY_KIT_MPP_EXPIRES_IN       = 'not-a-number',
   })
-  require('kong.plugins.pay-kit.init').setup()
+  require('plugins.kong.plugins.pay-kit.init').setup()
   restore_env()
   local cfg = pay_kit.config()
   helper.assert_equal(cfg.network, 'solana_devnet')
@@ -90,15 +90,15 @@ helper.test('Kong bootstrap honours empty / blank env defaults', function()
 end)
 
 helper.test('Kong bootstrap surfaces configure() error via error()', function()
-  package.loaded['kong.plugins.pay-kit.init'] = nil
-  require('resty.pay_kit')._reset_for_tests()
+  package.loaded['plugins.kong.plugins.pay-kit.init'] = nil
+  require('pay_kit')._reset_for_tests()
   patch_env({
     -- Invalid network slug -> configure() rejects.
     PAY_KIT_NETWORK = 'not-a-real-network',
     PAY_KIT_OPERATOR_RECIPIENT = 'Recipient00000000000000000000000000000000',
     PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'k',
   })
-  local boot = require('kong.plugins.pay-kit.init')
+  local boot = require('plugins.kong.plugins.pay-kit.init')
   local ok, err = pcall(boot.setup)
   restore_env()
   helper.assert_true(not ok, 'expected setup to raise on invalid network')
@@ -106,36 +106,36 @@ helper.test('Kong bootstrap surfaces configure() error via error()', function()
 end)
 
 helper.test('Kong handler access(conf) emits 402 on unpaid', function()
-  package.loaded['kong.plugins.pay-kit.handler'] = nil
-  require('resty.pay_kit')._reset_for_tests()
+  package.loaded['plugins.kong.plugins.pay-kit.handler'] = nil
+  require('pay_kit')._reset_for_tests()
   patch_env({
     PAY_KIT_NETWORK = 'solana_devnet',
     PAY_KIT_OPERATOR_RECIPIENT = 'KongAccessRecipient0000000000000000000000',
     PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'access-test',
   })
-  require('kong.plugins.pay-kit.init').setup()
+  require('plugins.kong.plugins.pay-kit.init').setup()
   restore_env()
 
   exit_calls = {}
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   handler:access({amount = '0.001', stablecoins = {'USDC'}})
   helper.assert_equal(#exit_calls, 1)
   helper.assert_equal(exit_calls[1].status, 402)
 end)
 
 helper.test('Kong handler access rejects invalid plugin config with 500', function()
-  package.loaded['kong.plugins.pay-kit.handler'] = nil
-  require('resty.pay_kit')._reset_for_tests()
+  package.loaded['plugins.kong.plugins.pay-kit.handler'] = nil
+  require('pay_kit')._reset_for_tests()
   patch_env({
     PAY_KIT_NETWORK = 'solana_devnet',
     PAY_KIT_OPERATOR_RECIPIENT = 'KongAccessRecipient0000000000000000000000',
     PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 's',
   })
-  require('kong.plugins.pay-kit.init').setup()
+  require('plugins.kong.plugins.pay-kit.init').setup()
   restore_env()
 
   exit_calls = {}
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   -- amount=garbage -> pay_kit.usd fails -> 500.
   handler:access({amount = 'not-a-decimal', stablecoins = {'USDC'}})
   helper.assert_equal(#exit_calls, 1)
@@ -143,7 +143,7 @@ helper.test('Kong handler access rejects invalid plugin config with 500', functi
 end)
 
 helper.test('Kong handler header_filter stamps settlement headers', function()
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   set_headers = {}
   kong_stub.ctx.shared.pay_kit_payment = {
     settlement_headers = {['x-payment-settlement-signature'] = 'abc123'},
@@ -154,7 +154,7 @@ helper.test('Kong handler header_filter stamps settlement headers', function()
 end)
 
 helper.test('Kong handler header_filter / log no-ops when no payment in ctx', function()
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   kong_stub.ctx.shared.pay_kit_payment = nil
   handler:header_filter({})
   handler:log({})
@@ -169,8 +169,8 @@ helper.test('Kong plugin schema loads with stubbed typedefs', function()
     protocols_http = {type = 'set', elements = {type = 'string'}},
     no_consumer    = {type = 'boolean', eq = true},
   }
-  package.loaded['kong.plugins.pay-kit.schema'] = nil
-  local schema = require('kong.plugins.pay-kit.schema')
+  package.loaded['plugins.kong.plugins.pay-kit.schema'] = nil
+  local schema = require('plugins.kong.plugins.pay-kit.schema')
   helper.assert_equal(schema.name, 'pay-kit')
   helper.assert_true(type(schema.fields) == 'table')
   helper.assert_true(#schema.fields >= 3)

@@ -4,7 +4,7 @@ ordered settlement preference list.
 ]]
 
 local helper = require('tests.test_helper')
-local pay_kit = require('resty.pay_kit')
+local pay_kit = require('pay_kit')
 
 helper.test('usd parses "0.10" to 100000 micro-units', function()
   local p = assert(pay_kit.usd('0.10'))

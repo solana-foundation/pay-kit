@@ -5,7 +5,7 @@ shared_dict path is exercised by the existing
 ]]
 
 local helper = require('tests.test_helper')
-local store_mod = require('resty.pay_kit.store')
+local store_mod = require('pay_kit.store')
 
 helper.test('memory store put_if_absent returns true on first call', function()
   local s = store_mod.memory()

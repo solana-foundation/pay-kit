@@ -21,7 +21,7 @@ local set_headers = {}
 package.loaded['apisix.core'].response.set_header =
   function(k, v) set_headers[k] = v end
 
-local pay_kit = require('resty.pay_kit')
+local pay_kit = require('pay_kit')
 
 helper.test('APISIX access(conf,ctx) returns 402 on unpaid', function()
   pay_kit._reset_for_tests()
@@ -33,7 +33,7 @@ helper.test('APISIX access(conf,ctx) returns 402 on unpaid', function()
     mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
   })
 
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   local ctx = {var = {uri = '/api/v1'}}
   local status, body = plugin.access(
     {amount = '0.001', stablecoins = {'USDC'}}, ctx)
@@ -50,7 +50,7 @@ helper.test('APISIX access returns 500 on invalid amount', function()
     operator = {recipient = 'ApisixRecipient000000000000000000000000000'},
     mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
   })
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   local status = plugin.access({amount = 'not-decimal', stablecoins = {'USDC'}},
                                {var = {uri = '/'}})
   helper.assert_equal(status, 500)
@@ -66,13 +66,13 @@ helper.test('APISIX access with named gate dispatches to dispatcher', function()
     mpp = {realm = 'APISIX', challenge_binding_secret = 'apx-secret'},
   })
   pay_kit.gate('report', {amount = pay_kit.usd('0.05', 'USDC')})
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   local status = plugin.access({gate = 'report'}, {var = {uri = '/report'}})
   helper.assert_equal(status, 402)
 end)
 
 helper.test('APISIX header_filter stamps settlement headers onto response', function()
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   set_headers = {}
   local ctx = {
     pay_kit_settlement_headers = {
@@ -84,13 +84,13 @@ helper.test('APISIX header_filter stamps settlement headers onto response', func
 end)
 
 helper.test('APISIX header_filter no-ops without ctx.pay_kit_settlement_headers', function()
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   set_headers = {}
   plugin.header_filter({}, {})
   helper.assert_true(next(set_headers) == nil)
 end)
 
 helper.test('APISIX check_schema accepts well-formed config', function()
-  local plugin = require('apisix.plugins.pay-kit')
+  local plugin = require('plugins.apisix.plugins.pay-kit')
   helper.assert_true(plugin.check_schema({amount = '0.01', stablecoins = {'USDC'}}))
 end)

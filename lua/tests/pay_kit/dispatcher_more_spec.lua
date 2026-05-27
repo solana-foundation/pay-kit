@@ -6,8 +6,8 @@ for both x402 and mpp detect branches via header injection.
 
 local helper = require('tests.test_helper')
 
-local pay_kit = require('resty.pay_kit')
-local errors  = require('resty.pay_kit.errors')
+local pay_kit = require('pay_kit')
+local errors  = require('pay_kit.errors')
 
 local function reset_and_configure()
   pay_kit._reset_for_tests()

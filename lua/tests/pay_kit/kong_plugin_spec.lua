@@ -23,7 +23,7 @@ _G.kong = _G.kong or {
 }
 
 helper.test('Kong plugin handler exposes PRIORITY + VERSION constants', function()
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   helper.assert_equal(type(handler.PRIORITY), 'number')
   helper.assert_equal(handler.VERSION, '0.1.0')
   helper.assert_true(handler.PRIORITY >= 900 and handler.PRIORITY <= 1100,
@@ -31,16 +31,16 @@ helper.test('Kong plugin handler exposes PRIORITY + VERSION constants', function
 end)
 
 helper.test('Kong plugin handler defines access / header_filter / log', function()
-  local handler = require('kong.plugins.pay-kit.handler')
+  local handler = require('plugins.kong.plugins.pay-kit.handler')
   helper.assert_equal(type(handler.access), 'function')
   helper.assert_equal(type(handler.header_filter), 'function')
   helper.assert_equal(type(handler.log), 'function')
   helper.assert_equal(type(handler.init_worker), 'function')
 end)
 
-helper.test('Kong bootstrap wires resty.pay_kit.configure from env', function()
+helper.test('Kong bootstrap wires pay_kit.configure from env', function()
   -- Reset shim so the spec is order-independent.
-  local pay_kit = require('resty.pay_kit')
+  local pay_kit = require('pay_kit')
   pay_kit._reset_for_tests()
 
   -- Stub posix.setenv if available so configure() reads the right
@@ -52,7 +52,7 @@ helper.test('Kong bootstrap wires resty.pay_kit.configure from env', function()
   posix.setenv('PAY_KIT_OPERATOR_RECIPIENT', 'KongRecipient00000000000000000000000000000')
   posix.setenv('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET', 'kong-test')
 
-  local bootstrap = require('kong.plugins.pay-kit.init')
+  local bootstrap = require('plugins.kong.plugins.pay-kit.init')
   bootstrap.setup()
 
   local cfg = pay_kit.config()

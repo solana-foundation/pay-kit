@@ -4,9 +4,9 @@ once-per-worker enforcement, deprecation shims, accessor methods.
 ]]
 
 local helper = require('tests.test_helper')
-local pay_kit = require('resty.pay_kit')
-local signer_mod = require('resty.pay_kit.signer')
-local errors = require('resty.pay_kit.errors')
+local pay_kit = require('pay_kit')
+local signer_mod = require('pay_kit.signer')
+local errors = require('pay_kit.errors')
 
 local function fresh_signer()
   local bytes = {}

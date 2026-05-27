@@ -8,8 +8,8 @@ Mirrors Ruby PR #142's config_test.rb additions.
 ]]
 
 local helper    = require('tests.test_helper')
-local preflight = require('resty.pay_kit.preflight')
-local signer    = require('resty.pay_kit.signer')
+local preflight = require('pay_kit.preflight')
+local signer    = require('pay_kit.signer')
 
 -- Build a fake config table that satisfies the preflight contract:
 --   .network, .stablecoins[], .operator (with .signer().pubkey(),
@@ -52,11 +52,11 @@ local function install_rpc_stub(fixture)
       }
     end,
   }
-  package.loaded['resty.pay_kit.preflight'] = nil
+  package.loaded['pay_kit.preflight'] = nil
 end
 local function restore_rpc()
   package.loaded['mpp.solana.rpc']           = nil
-  package.loaded['resty.pay_kit.preflight']  = nil
+  package.loaded['pay_kit.preflight']  = nil
 end
 
 helper.test('preflight: should_run respects PAY_KIT_DISABLE_PREFLIGHT', function()
@@ -92,7 +92,7 @@ helper.test('preflight raises ConfigurationError on low fee-payer balance off lo
     stablecoins = {'USDC'},
     operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)), sgn),
   }
-  local pf = require('resty.pay_kit.preflight')
+  local pf = require('pay_kit.preflight')
   local ok, err = pcall(pf.run, cfg)
   restore_rpc()
   helper.assert_true(not ok)
@@ -111,7 +111,7 @@ helper.test('preflight raises ConfigurationError on missing recipient ATA off lo
     stablecoins = {'USDC'},
     operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)), sgn),
   }
-  local pf = require('resty.pay_kit.preflight')
+  local pf = require('pay_kit.preflight')
   local ok, err = pcall(pf.run, cfg)
   restore_rpc()
   helper.assert_true(not ok)
@@ -133,7 +133,7 @@ helper.test('preflight auto-funds the fee-payer on localnet with demo signer', f
     operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
                              make_signer()),  -- demo
   }
-  local pf = require('resty.pay_kit.preflight')
+  local pf = require('pay_kit.preflight')
   local ok = pcall(pf.run, cfg)
   restore_rpc()
   helper.assert_true(ok)
@@ -154,7 +154,7 @@ helper.test('preflight auto-provisions a missing ATA on localnet with demo signe
     operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
                              make_signer()),  -- demo
   }
-  local pf = require('resty.pay_kit.preflight')
+  local pf = require('pay_kit.preflight')
   local ok = pcall(pf.run, cfg)
   restore_rpc()
   helper.assert_true(ok)
@@ -173,7 +173,7 @@ helper.test('preflight downgrades RPC failure to warning (no raise)', function()
     operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
                              make_signer()),
   }
-  local pf = require('resty.pay_kit.preflight')
+  local pf = require('pay_kit.preflight')
   local ok = pcall(pf.run, cfg)
   restore_rpc()
   helper.assert_true(ok, 'preflight must not raise on RPC failure')

@@ -7,7 +7,7 @@ runs through the interop harness (a real Solana tx fixture).
 
 local helper = require('tests.test_helper')
 local base64 = require('mpp.util.base64_std')
-local x402_verify = require('resty.pay_kit.protocols.x402.exact.verify')
+local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 
 local SELLER = 'SeLLeRWaLLeT111111111111111111111111111111'
 

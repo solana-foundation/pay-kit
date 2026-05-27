@@ -38,7 +38,7 @@ http {
   lua_shared_dict pay_kit_replay 10m;
 
   init_by_lua_block {
-    local pay_kit = require('resty.pay_kit')
+    local pay_kit = require('pay_kit')
     assert(pay_kit.configure({ network = 'solana_localnet' }))
     pay_kit.gate('report', { amount = pay_kit.usd('0.10') })
   }
@@ -46,7 +46,7 @@ http {
   server {
     listen 4570;
     location = /report {
-      access_by_lua_block { require('resty.pay_kit').require_payment('report') }
+      access_by_lua_block { require('pay_kit').require_payment('report') }
       default_type application/json;
       return 200 '{"ok":true}';
     }
@@ -54,7 +54,7 @@ http {
 }
 ```
 
-`require('resty.pay_kit')` is the umbrella. `require_payment(name)`
+`require('pay_kit')` is the umbrella. `require_payment(name)`
 halts the request with a 402 if no valid payment was sent, or sets
 `ngx.ctx.pay_kit_payment` and returns control to the content phase
 if one was.
@@ -79,7 +79,7 @@ http {
   lua_package_path './?.lua;;';
 
   init_by_lua_block {
-    local pay_kit = require('resty.pay_kit')
+    local pay_kit = require('pay_kit')
     assert(pay_kit.configure({ network = 'solana_localnet' }))
     require('pricing')  -- registers every gate
   }
@@ -87,11 +87,11 @@ http {
   server {
     listen 4570;
     location = /report {
-      access_by_lua_block { require('resty.pay_kit').require_payment('report') }
+      access_by_lua_block { require('pay_kit').require_payment('report') }
       return 200 '{"premium":"report"}';
     }
     location = /api/data {
-      access_by_lua_block { require('resty.pay_kit').require_payment('api_call') }
+      access_by_lua_block { require('pay_kit').require_payment('api_call') }
       return 200 '{"data":[]}';
     }
   }
@@ -100,7 +100,7 @@ http {
 
 ```lua
 -- pricing.lua
-local pay_kit = require('resty.pay_kit')
+local pay_kit = require('pay_kit')
 
 pay_kit.gate('report',   { amount = pay_kit.usd('0.10'),
                            description = 'Premium report' })
@@ -131,8 +131,8 @@ http {
   lua_package_path './?.lua;;';
 
   init_by_lua_block {
-    local pay_kit = require('resty.pay_kit')
-    local signer  = require('resty.pay_kit.signer')
+    local pay_kit = require('pay_kit')
+    local signer  = require('pay_kit.signer')
 
     local PLATFORM = 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY'
 
@@ -161,8 +161,8 @@ http {
 
   server {
     listen 4570;
-    location = /report          { access_by_lua_block { require('resty.pay_kit').require_payment('report') }          return 200 '{"premium":"report"}'; }
-    location = /marketplace/buy { access_by_lua_block { require('resty.pay_kit').require_payment('marketplace_sale') } return 200 '{"sold":true}'; }
+    location = /report          { access_by_lua_block { require('pay_kit').require_payment('report') }          return 200 '{"premium":"report"}'; }
+    location = /marketplace/buy { access_by_lua_block { require('pay_kit').require_payment('marketplace_sale') } return 200 '{"sold":true}'; }
   }
 }
 ```
@@ -192,7 +192,7 @@ hosted Surfpool sandbox.
 ```bash
 git clone https://github.com/solana-foundation/pay-kit
 cd pay-kit/lua/examples/openresty
-luarocks --lua-version=5.1 --tree=../../lua_modules install lua-resty-pay-kit
+luarocks --lua-version=5.1 --tree=../../lua_modules install pay-kit
 openresty -p . -c nginx.conf
 ```
 
@@ -318,8 +318,8 @@ the gate name and pass an options table directly:
 ```lua
 location = /oneoff {
   access_by_lua_block {
-    require('resty.pay_kit').require_payment({
-      amount = require('resty.pay_kit').usd('0.25'),
+    require('pay_kit').require_payment({
+      amount = require('pay_kit').usd('0.25'),
       description = 'One-off',
     })
   }
@@ -333,7 +333,7 @@ Each gate is a frozen value object with an amount, an ordered list of
 accepted protocols, and zero or more named fees.
 
 ```lua
-local pay_kit = require('resty.pay_kit')
+local pay_kit = require('pay_kit')
 
 local SELLER   = 'Ay...'
 local PLATFORM = 'CX...'
@@ -378,9 +378,10 @@ Boot-time validations (all raise from `gate()`):
 
 ## OpenResty-first
 
-The Kong plugin (`kong/plugins/pay-kit/`, `PRIORITY = 1010`) and the
-APISIX plugin (`apisix/plugins/pay-kit.lua`, `priority = 2520`) are
-~100-line shims over `resty.pay_kit`. Kong sits between
+The Kong plugin (`plugins/kong/plugins/pay-kit/`, `PRIORITY = 1010`)
+and the APISIX plugin (`plugins/apisix/plugins/pay-kit.lua`,
+`priority = 2520`) are
+~100-line shims over `pay_kit`. Kong sits between
 `basic-auth` (1001) and OpenID Connect (1050); APISIX sits just
 above `jwt-auth` (2510). Both call `pay_kit.try_payment` from the
 access phase and stamp `payment.settlement_headers` from the header-filter
@@ -390,14 +391,28 @@ phase.
 # Raw OpenResty
 http {
   lua_shared_dict pay_kit_replay 10m;
-  init_by_lua_block { require('resty.pay_kit').configure({ ... }) }
+  init_by_lua_block { require('pay_kit').configure({ ... }) }
   server {
     location /paid {
-      access_by_lua_block { require('resty.pay_kit').require_payment('paid') }
+      access_by_lua_block { require('pay_kit').require_payment('paid') }
       proxy_pass http://backend;
     }
   }
 }
+```
+
+Kong and APISIX both resolve their plugins via `lua_package_path`.
+Add the `plugins/` subtree to the path and their loaders will find
+the gateway-specific entry-points at their conventional require
+names (`kong.plugins.pay-kit.*`, `apisix.plugins.pay-kit`):
+
+```bash
+# Kong
+KONG_LUA_PACKAGE_PATH='./lua/plugins/?.lua;./lua/?.lua;;'
+KONG_PLUGINS='bundled,pay-kit'
+
+# APISIX
+apisix_lua_package_path: './lua/plugins/?.lua;./lua/?.lua;;'
 ```
 
 The shared dict `pay_kit_replay` is the cross-worker replay store.
@@ -414,7 +429,7 @@ Resolves at module load:
 2. **luasodium** (fallback). Plain LuaJIT dev environments without
    OpenResty or OpenSSL still get a working signer.
 
-`require('resty.pay_kit.util.ed25519').backend()` returns `'openssl'`,
+`require('pay_kit.util.ed25519').backend()` returns `'openssl'`,
 `'luasodium'`, or `'none'` so operators can log which path is hot.
 
 ---
@@ -468,7 +483,7 @@ plus the [x402 v2 exact scheme](https://x402.org) on Solana.
 
 ```text
 lua/
-├── resty/pay_kit/                          # PayKit umbrella
+├── pay_kit/                          # PayKit umbrella
 │   ├── init.lua                            # configure / gate / usd / require_payment ...
 │   ├── errors.lua                          # canonical error strings
 │   ├── signer.lua + signer/{demo,local}    # signer factory family
@@ -483,8 +498,10 @@ lua/
 │   │       └── exact/verify.lua            # 11-rule SVM-exact structural verifier
 │   ├── store.lua                           # memory() + shared_dict(name)
 │   └── internal/{config,dispatcher,fee,gate,operator,price,registry}.lua
-├── kong/plugins/pay-kit/                   # Kong custom plugin
-├── apisix/plugins/pay-kit.lua              # APISIX custom plugin
+├── plugins/                                # framework wrappers
+│   ├── resty/pay-kit.lua                   # OpenResty re-export
+│   ├── kong/plugins/pay-kit/               # Kong plugin (loader path-pinned)
+│   └── apisix/plugins/pay-kit.lua          # APISIX plugin (loader path-pinned)
 ├── mpp/                                    # MPP protocol layer (challenge build, headers, signer, charge_handler)
 ├── examples/openresty/                     # runnable PayKit demo
 └── tests/                                  # luaunit suite + luacov gate

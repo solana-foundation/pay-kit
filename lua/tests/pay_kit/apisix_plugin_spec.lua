@@ -18,7 +18,7 @@ package.loaded['apisix.core'] = {
 }
 
 helper.test('APISIX plugin exposes the expected shape', function()
-  local mod = require('apisix.plugins.pay-kit')
+  local mod = require('plugins.apisix.plugins.pay-kit')
   helper.assert_equal(type(mod.version), 'number')
   helper.assert_equal(type(mod.priority), 'number')
   helper.assert_equal(mod.name, 'pay-kit')

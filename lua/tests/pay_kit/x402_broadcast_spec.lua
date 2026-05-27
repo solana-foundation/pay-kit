@@ -20,7 +20,7 @@ local helper = require('tests.test_helper')
 
 -- Run only when luasodium is available - we need a real keypair to
 -- match the operator's pubkey to account_keys[0].
-local ed25519 = require('resty.pay_kit.util.ed25519')
+local ed25519 = require('pay_kit.util.ed25519')
 local secret = ed25519.generate()
 if not secret then return end  -- soft-skip in pure-openssl env
 
@@ -49,14 +49,14 @@ package.loaded['mpp.solana.rpc'] = {
   DEFAULT_COMMITMENT = 'confirmed',
 }
 -- Evict downstream modules so they re-bind to the stubbed rpc when
--- the next require happens through resty.pay_kit.configure().
-package.loaded['resty.pay_kit.protocols.x402']   = nil
-package.loaded['resty.pay_kit.internal.dispatcher'] = nil
-package.loaded['resty.pay_kit']                = nil
-package.loaded['resty.pay_kit.solana.rpc']     = nil
+-- the next require happens through pay_kit.configure().
+package.loaded['pay_kit.protocols.x402']   = nil
+package.loaded['pay_kit.internal.dispatcher'] = nil
+package.loaded['pay_kit']                = nil
+package.loaded['pay_kit.solana.rpc']     = nil
 
-local pay_kit = require('resty.pay_kit')
-local signer  = require('resty.pay_kit.signer')
+local pay_kit = require('pay_kit')
+local signer  = require('pay_kit.signer')
 
 -- --- helpers (mirror x402_verify_positive_spec) -------------------
 

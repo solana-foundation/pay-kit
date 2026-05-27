@@ -46,7 +46,7 @@ jobs:
         working-directory: lua
         run: |
           luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
-          luarocks --lua-version=5.1 lint lua-resty-pay-kit-dev-1.rockspec
+          luarocks --lua-version=5.1 lint pay-kit-dev-1.rockspec
           luarocks --lua-version=5.1 lint kong-plugin-pay-kit-dev-1.rockspec
           luarocks --lua-version=5.1 lint apisix-plugin-pay-kit-dev-1.rockspec
 
@@ -54,7 +54,7 @@ jobs:
         working-directory: lua
         run: |
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
-          luacheck mpp/ resty/ kong/ apisix/ tests/
+          luacheck mpp/ pay_kit/ plugins/ tests/
 
       - name: Run tests with coverage
         working-directory: lua

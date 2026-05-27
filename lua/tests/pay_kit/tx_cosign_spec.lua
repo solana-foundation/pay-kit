@@ -9,8 +9,8 @@ local helper = require('tests.test_helper')
 local base58 = require('mpp.util.base58')
 local base64 = require('mpp.util.base64_std')
 local tx_mod = require('mpp.methods.solana.transaction')
-local tx_cosign = require('resty.pay_kit.util.tx_cosign')
-local ed25519 = require('resty.pay_kit.util.ed25519')
+local tx_cosign = require('pay_kit.solana.tx_cosign')
+local ed25519 = require('pay_kit.util.ed25519')
 
 -- Synthesize a minimal v0 transaction. The cosigner's public key sits
 -- at account_keys[0] (the single required signer); the message

@@ -4,9 +4,9 @@ signer-pubkey + strict signer / fee_payer validation.
 ]]
 
 local helper = require('tests.test_helper')
-local operator = require('resty.pay_kit.internal.operator')
-local signer_mod = require('resty.pay_kit.signer')
-local demo_signer = require('resty.pay_kit.signer.demo')
+local operator = require('pay_kit.internal.operator')
+local signer_mod = require('pay_kit.signer')
+local demo_signer = require('pay_kit.signer.demo')
 
 local function fresh_signer()
   local bytes = {}

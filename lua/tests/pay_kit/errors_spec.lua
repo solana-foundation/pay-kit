@@ -4,7 +4,7 @@ prefix and are stable constants apps can compare against.
 ]]
 
 local helper = require('tests.test_helper')
-local errors = require('resty.pay_kit.errors')
+local errors = require('pay_kit.errors')
 
 helper.test('every exported error string carries the pay_kit prefix', function()
   for name, value in pairs(errors) do

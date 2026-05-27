@@ -24,8 +24,8 @@ package.path = table.concat({
 
 local socket = require('socket')
 local cjson  = require('cjson.safe')
-local pay_kit = require('resty.pay_kit')
-local signer  = require('resty.pay_kit.signer')
+local pay_kit = require('pay_kit')
+local signer  = require('pay_kit.signer')
 
 local function log(msg)
   io.stderr:write('lua-server: ' .. msg .. '\n')
@@ -173,7 +173,7 @@ if #splits_decoded > 0 then
     if s.memo then entry.memo = s.memo end
     override[#override + 1] = entry
   end
-  require('resty.pay_kit.protocols.mpp').set_splits_override('paid', override)
+  require('pay_kit.protocols.mpp').set_splits_override('paid', override)
 end
 
 -- --- HTTP loop -----------------------------------------------------

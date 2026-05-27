@@ -5,7 +5,7 @@ of which backend the host loaded.
 ]]
 
 local helper = require('tests.test_helper')
-local ed25519 = require('resty.pay_kit.util.ed25519')
+local ed25519 = require('pay_kit.util.ed25519')
 
 local function fresh_secret()
   local secret, err = ed25519.generate()

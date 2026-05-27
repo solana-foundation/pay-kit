@@ -6,7 +6,7 @@ skipped.
 ]]
 
 local helper = require('tests.test_helper')
-local signer = require('resty.pay_kit.signer')
+local signer = require('pay_kit.signer')
 
 helper.test('signer.json rejects non-string input', function()
   local s, err = signer.json(42)

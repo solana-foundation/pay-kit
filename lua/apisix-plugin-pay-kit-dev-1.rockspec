@@ -6,7 +6,7 @@ source = {
 description = {
   summary = 'Apache APISIX plugin that gates routes via PayKit (x402 + MPP).',
   detailed = [[
-    Single-file APISIX plugin shim over the lua-resty-pay-kit library.
+    Single-file APISIX plugin shim over the pay-kit core library.
     Priority 2520 sits just above APISIX's bundled jwt-auth (2510)
     so payment gates the paid tier on top of identity authentication.
   ]],
@@ -15,11 +15,14 @@ description = {
 }
 dependencies = {
   'lua >= 5.1',
-  'lua-resty-pay-kit >= dev-1',
+  'pay-kit >= dev-1',
 }
 build = {
   type = 'builtin',
   modules = {
-    ['apisix.plugins.pay-kit'] = 'apisix/plugins/pay-kit.lua',
+    -- APISIX loads `apisix.plugins.<name>`. With
+    --   lua_package_path './lua/plugins/?.lua;./lua/?.lua;;'
+    -- it resolves to lua/plugins/apisix/plugins/pay-kit.lua.
+    ['apisix.plugins.pay-kit'] = 'plugins/apisix/plugins/pay-kit.lua',
   },
 }

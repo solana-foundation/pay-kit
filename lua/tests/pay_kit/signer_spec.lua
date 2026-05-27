@@ -9,8 +9,8 @@ nil-as-no-opinion behaviour on `from_env`.
 ]]
 
 local helper = require('tests.test_helper')
-local signer = require('resty.pay_kit.signer')
-local demo_signer = require('resty.pay_kit.signer.demo')
+local signer = require('pay_kit.signer')
+local demo_signer = require('pay_kit.signer.demo')
 
 -- 64-byte non-demo test secret. Distinct from the published demo
 -- keypair so factory paths cover the non-demo branch too.

@@ -5,8 +5,8 @@ there is no ngx.exit to call).
 ]]
 
 local helper = require('tests.test_helper')
-local pay_kit = require('resty.pay_kit')
-local errors  = require('resty.pay_kit.errors')
+local pay_kit = require('pay_kit')
+local errors  = require('pay_kit.errors')
 
 local SELLER = 'SeLLeRWaLLeT111111111111111111111111111111'
 

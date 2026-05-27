@@ -5,7 +5,7 @@ a silent nil.
 ]]
 
 local helper = require('tests.test_helper')
-local kms = require('resty.pay_kit.kms')
+local kms = require('pay_kit.kms')
 
 helper.test('kms.gcp returns not-implemented', function()
   local sgn, err = kms.gcp({key_name = 'projects/...'})
