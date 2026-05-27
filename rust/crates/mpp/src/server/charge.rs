@@ -966,9 +966,27 @@ impl Mpp {
                 _ => std::thread::sleep(std::time::Duration::from_millis(200)),
             }
         }
-        Err(VerificationError::network_error(
-            "Transaction not confirmed within timeout".to_string(),
-        ))
+
+        // Audit #3: the polling RPC may be lagging or load-balanced behind an
+        // endpoint that hasn't observed the signature yet, while the tx is
+        // actually on-chain. Do one definitive status check before declaring
+        // a timeout — otherwise we'd return network_error for a payment the
+        // user has already made (the signature is reserved in the replay
+        // store, so a retry would also fail).
+        let final_status = self
+            .rpc
+            .get_signature_status(&signature)
+            .map(|opt| opt.map(|inner| inner.map_err(|e| e.to_string())))
+            .map_err(|e| e.to_string());
+        let result = interpret_post_timeout_status(final_status);
+        if result.is_ok() {
+            tracing::info!(
+                elapsed_ms = %t0.elapsed().as_millis(),
+                step = "confirmed_via_status_recovery",
+                "await_pull_confirmation"
+            );
+        }
+        result
     }
 
     /// Push mode: fetch tx by signature, verify on-chain.
@@ -1410,6 +1428,29 @@ fn expected_ata_creation_policy(
         allowed_owners,
         required_owners,
     })
+}
+
+/// Audit #3: interpret a post-timeout `get_signature_status` result.
+///
+/// Pulled out as a pure function so the four cases — landed, landed-but-failed,
+/// not-found, RPC-error — can be unit-tested without needing a live RPC.
+/// Errors are stringified at the call site so this helper stays free of
+/// `solana-rpc-client` types.
+fn interpret_post_timeout_status(
+    status: Result<Option<Result<(), String>>, String>,
+) -> Result<(), VerificationError> {
+    match status {
+        Ok(Some(Ok(()))) => Ok(()),
+        Ok(Some(Err(on_chain_err))) => Err(VerificationError::transaction_failed(format!(
+            "Transaction landed on-chain but failed: {on_chain_err}"
+        ))),
+        Ok(None) => Err(VerificationError::network_error(
+            "Transaction not confirmed within timeout".to_string(),
+        )),
+        Err(rpc_err) => Err(VerificationError::network_error(format!(
+            "Transaction not confirmed within timeout; final status check failed: {rpc_err}"
+        ))),
+    }
 }
 
 fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), VerificationError> {
@@ -2708,6 +2749,72 @@ mod tests {
         // The structured code is still available on the field for
         // callers that need to branch on it programmatically.
         assert_eq!(err.code, Some("wrong-network"));
+    }
+
+    // ── Audit #3: post-timeout status recovery ──
+
+    #[test]
+    fn interpret_post_timeout_status_landed_returns_ok() {
+        // Polling timed out but the final status check shows the tx landed
+        // successfully — recover and report success.
+        assert!(interpret_post_timeout_status(Ok(Some(Ok(())))).is_ok());
+    }
+
+    #[test]
+    fn interpret_post_timeout_status_landed_with_onchain_err_returns_failed() {
+        // Tx landed on-chain but the runtime rejected it. This is a real
+        // transaction failure, not a timeout — surface the on-chain error.
+        let err = interpret_post_timeout_status(Ok(Some(Err("InsufficientFundsForFee".into()))))
+            .err()
+            .expect("on-chain failure should be reported");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("landed on-chain but failed"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("InsufficientFundsForFee"),
+            "expected on-chain error to be propagated: {msg}"
+        );
+    }
+
+    #[test]
+    fn interpret_post_timeout_status_not_found_returns_timeout() {
+        // Final check confirms the tx is genuinely not on-chain — keep the
+        // timeout error.
+        let err = interpret_post_timeout_status(Ok(None))
+            .err()
+            .expect("not-found should still error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not confirmed within timeout"),
+            "unexpected error: {msg}"
+        );
+        // Must NOT claim landed-but-failed.
+        assert!(!msg.contains("landed on-chain"), "wrong shape: {msg}");
+    }
+
+    #[test]
+    fn interpret_post_timeout_status_rpc_error_returns_timeout_with_detail() {
+        // The final status call itself failed (e.g. RPC unreachable). We
+        // can't tell whether the tx landed, so we keep the timeout error
+        // but include the RPC failure in the message for ops.
+        let err = interpret_post_timeout_status(Err("connection refused".into()))
+            .err()
+            .expect("rpc failure should error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not confirmed within timeout"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("final status check failed"),
+            "expected detail about the status RPC failure: {msg}"
+        );
+        assert!(
+            msg.contains("connection refused"),
+            "expected underlying RPC error to be propagated: {msg}"
+        );
     }
 
     #[test]

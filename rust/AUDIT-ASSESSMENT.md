@@ -254,3 +254,41 @@ Callers who legitimately need to issue challenges for a *different* route still 
 - `build_credential_header_accepts_future_expiry`
 
 ---
+
+### #3 — Replay state recorded after broadcast
+**ID:** `91c89aa6` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `verify_pull` waits for confirmation before recording the signature in the replay store. On confirmation timeout, the verifier bails with a network error and the consumed signature is never inserted, leaving a confirmed payment without a successful receipt and without replay state.
+
+**Status when reviewed:** the *ordering* half of the claim is **already mitigated** (PR #85 / audit gap G05). `server/charge.rs:728-755` reserves the signature *between* broadcast and confirmation polling:
+```rust
+let signature = self.broadcast_pull(...).await?;
+self.consume_signature(&signature).await?;
+self.await_pull_confirmation(&signature)?;
+```
+So the replay-state side of the bug is closed.
+
+**What was still live:** `await_pull_confirmation` exits with a network_error after 30 polls × 200 ms = 6 s. If the polling RPC is lagging or load-balanced and hasn't observed the signature yet, but the tx is actually on-chain, the verifier reports a timeout. The signature is reserved, so retrying the same credential fails with "already consumed" — user pays, never gets the resource, and can't recover.
+
+**Decision:** ✅ **accepted — narrow fix only.**
+
+**Rationale:** The pre-broadcast / two-phase / challenge-id-keyed reservation refactor the audit suggested as a Cadillac fix would touch the Store trait and the verify state machine for a marginal extra mitigation. The user-visible bug is the false-negative timeout, and a one-shot definitive status check after the poll loop closes it without churn.
+
+**Action taken:**
+- After the 30-poll loop in `await_pull_confirmation`, call `rpc.get_signature_status(&signature)` once. Interpret the four possible outcomes:
+  - `Ok(Some(Ok(())))` — tx landed cleanly: return `Ok(())` and log `confirmed_via_status_recovery`.
+  - `Ok(Some(Err(e)))` — tx landed but failed on-chain: return `VerificationError::transaction_failed("Transaction landed on-chain but failed: …")`. Distinct from a polling timeout — we now know the payment didn't go through.
+  - `Ok(None)` — definitively not on-chain: keep the original `"Transaction not confirmed within timeout"` network_error.
+  - `Err(_)` — the recovery RPC itself failed: still network_error, but include the RPC failure detail for ops triage.
+- Pulled the four-case interpretation into a free function `interpret_post_timeout_status` so the cases are unit-testable without a live RPC. The RPC call site does `.map(|opt| opt.map(|inner| inner.map_err(|e| e.to_string())))` so the helper stays free of `solana-rpc-client` types.
+- No `Store` trait change, no key-shape change, no two-phase commit. The signature is still reserved before confirmation polling; this just rescues the recovery path.
+
+**Note on retry idempotency (Medium-shape we didn't take):** if a caller retries the same credential after a successful recovery, `consume_signature` still returns `signature_consumed`. We treat that as the correct outcome — the SDK doesn't store receipts indexed by signature, so we can't replay one. Adding that capability is a separate change, and a well-behaved caller does the recovery on the first attempt now that the status check rescues it.
+
+**New tests** (against the pure helper):
+- `interpret_post_timeout_status_landed_returns_ok`
+- `interpret_post_timeout_status_landed_with_onchain_err_returns_failed`
+- `interpret_post_timeout_status_not_found_returns_timeout`
+- `interpret_post_timeout_status_rpc_error_returns_timeout_with_detail`
+
+---
