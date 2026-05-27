@@ -130,7 +130,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     settlementHeader: "x-fixture-settlement",
     expectedStatus: 200,
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "php", "ruby", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "rust", "php", "ruby"],
   },
   {
     id: "charge-network-mismatch",
@@ -149,7 +149,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // PR adds its server id here.
     expectedCode: "wrong_network",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "rust", "ruby"],
   },
   {
     id: "charge-cross-route-replay",
@@ -172,7 +172,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // match the route's expected charge).
     expectedCode: "charge_request_mismatch",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "rust", "ruby"],
   },
   {
     // Symbol mode: harness sends the literal string "USDC" as currency,
@@ -238,10 +238,10 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // `price * 10^decimals`, which diverges from the TS fixture's
     // env-driven amount. Restricting to TS plus env-driven adapters
     // keeps the assertion's primary delta aligned with the on-wire
-    // amount. ruby-pay-kit-server reads MPP_INTEROP_AMOUNT directly
+    // amount. ruby reads MPP_INTEROP_AMOUNT directly
     // and threads MPP_INTEROP_DECIMALS into the SDK, so it inherits
     // the TS-compatible shape.
-    serverIds: ["typescript", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "ruby"],
     expectedStatus: 200,
   },
   {
@@ -312,10 +312,10 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // Only the TS server fixture currently threads currency="sol"
     // through the env. Rust/Ruby/PHP server fixtures default decimals
     // to 6 and pass MPP_INTEROP_MINT straight to the SDK.
-    // ruby-pay-kit-server reads MPP_INTEROP_ASSET_KIND and maps "sol"
+    // ruby reads MPP_INTEROP_ASSET_KIND and maps "sol"
     // to currency="SOL" + MPP_INTEROP_DECIMALS=9, so it joins the
     // SOL-native pair list too.
-    serverIds: ["typescript", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "ruby"],
     expectedStatus: 200,
   },
   {
@@ -391,12 +391,12 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "challenge_verification_failed",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "rust", "ruby"],
     crossServerPairs: [
       ["typescript", "rust"],
       ["rust", "typescript"],
-      ["typescript", "ruby-pay-kit-server"],
-      ["ruby-pay-kit-server", "typescript"],
+      ["typescript", "ruby"],
+      ["ruby", "typescript"],
     ],
   },
   {
@@ -421,6 +421,6 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "signature_consumed",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby-pay-kit-server"],
+    serverIds: ["typescript", "rust", "ruby"],
   },
 ] as const;

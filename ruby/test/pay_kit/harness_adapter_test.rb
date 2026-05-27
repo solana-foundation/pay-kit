@@ -6,14 +6,14 @@ require "socket"
 require "net/http"
 require "timeout"
 
-# Drives `harness/pay-kit-server/server.rb` as a subprocess to prove the
+# Drives `harness/ruby-server/server.rb` as a subprocess to prove the
 # dual-protocol adapter boots correctly under both env namespaces.
 # Full settlement (RPC + chain) is exercised by the cross-language
 # interop matrix in CI; this test pins the adapter's boot contract and
 # the 402 challenge shape so a regression in the harness adapter is
 # caught at the gem-test level.
 class PayKitHarnessAdapterTest < Minitest::Test
-  ADAPTER = File.expand_path("../../../harness/pay-kit-server/server.rb", __dir__)
+  ADAPTER = File.expand_path("../../../harness/ruby-server/server.rb", __dir__)
 
   COMMON_ENV = {
     "PAY_TO" => "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj",
@@ -90,7 +90,7 @@ class PayKitHarnessAdapterTest < Minitest::Test
     assert ready_line, "adapter did not emit ready line"
     ready = JSON.parse(ready_line)
     assert_equal "ready", ready["type"]
-    assert_equal "ruby-pay-kit-server", ready["implementation"]
+    assert_equal "ruby", ready["implementation"]
     port = ready["port"]
     assert_kind_of Integer, port
 

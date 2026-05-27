@@ -615,7 +615,7 @@ function environmentForScenario(
   }
   if (scenario.intent === "x402-exact") {
     // Adapters that auto-detect protocol by env namespace
-    // (e.g. ruby-pay-kit-server) prefer this explicit hint - the
+    // (e.g. the Ruby adapter) prefer this explicit hint - the
     // matrix populates both MPP_INTEROP_* and X402_INTEROP_* shadows
     // from the same surfpool fixtures, so namespace probing alone
     // is ambiguous.
