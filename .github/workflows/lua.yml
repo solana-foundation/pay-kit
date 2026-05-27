@@ -28,7 +28,7 @@ jobs:
           key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
           restore-keys: ${{ runner.os }}-luarocks-v2-
 
-      - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec)
+      - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
         if: steps.cache-rocks.outputs.cache-hit != 'true'
         working-directory: lua
         run: |
@@ -39,16 +39,22 @@ jobs:
           luarocks --lua-version=5.1 install --tree lua_modules luasocket
           luarocks --lua-version=5.1 install --tree lua_modules luasodium
           luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+          luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
+          luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
 
-      - name: Validate rockspec
+      - name: Validate rockspecs
         working-directory: lua
-        run: luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
+        run: |
+          luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
+          luarocks --lua-version=5.1 lint lua-resty-pay-kit-dev-1.rockspec
+          luarocks --lua-version=5.1 lint kong-plugin-pay-kit-dev-1.rockspec
+          luarocks --lua-version=5.1 lint apisix-plugin-pay-kit-dev-1.rockspec
 
       - name: Lint
         working-directory: lua
         run: |
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
-          luacheck mpp/ tests/
+          luacheck mpp/ resty/ kong/ apisix/ tests/
 
       - name: Run tests with coverage
         working-directory: lua
