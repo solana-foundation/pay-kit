@@ -67,6 +67,31 @@ class PayKitDispatcherTest < Minitest::Test
     end
   end
 
+  def test_operator_fee_payer_true_wires_signer_account_into_mpp_method
+    PayKitTestHelpers.with_config do
+      with_dispatcher do |_middleware, dispatcher|
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        server = dispatcher.send(:mpp_server_for, gate)
+        # The Solana method stores the PayCore::Solana::Account so its
+        # public key surfaces as feePayerKey when method_details is
+        # serialised at request time (the blockhash call is what we
+        # avoid here; the pubkey is computed locally).
+        assert_equal PayKit.config.operator.signer.pubkey, server.method.fee_payer_pubkey
+      end
+    end
+  end
+
+  def test_operator_fee_payer_false_leaves_mpp_method_fee_payer_nil
+    PayKitTestHelpers.with_config(fee_payer: false) do
+      with_dispatcher do |_middleware, dispatcher|
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        server = dispatcher.send(:mpp_server_for, gate)
+        assert_nil server.method.fee_payer, "fee_payer Account must be nil when operator.fee_payer? is false"
+        assert_nil server.method.fee_payer_pubkey
+      end
+    end
+  end
+
   def test_mpp_method_cache_threads_expires_in_into_challenge_store
     PayKitTestHelpers.with_config(mpp_expires_in: 42) do
       with_dispatcher do |_middleware, dispatcher|

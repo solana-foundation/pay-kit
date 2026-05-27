@@ -55,6 +55,15 @@ module PayKit
       def to_json_array
         JSON.generate(@secret_bytes)
       end
+
+      # The underlying PayCore::Solana::Account used for low-level chain
+      # primitives (signing transactions, computing the fee-payer
+      # pubkey for MPP method_details). Exposed only for PayKit's own
+      # protocol adapters; ordinary app code consumes the duck-typed
+      # signer interface (#pubkey, #sign, #fee_payer?).
+      def to_pay_core_account
+        @account
+      end
     end
   end
 end
