@@ -64,7 +64,26 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
 const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
-const DEFAULT_REALM: &str = "MPP Payment";
+/// Audit #15: derive a per-app default realm from the recipient pubkey.
+///
+/// `realm` is part of the HMAC ID input. With a fixed default of
+/// `"MPP Payment"`, two services that shared `MPP_SECRET_KEY` and both
+/// kept the default would participate in one shared credential namespace,
+/// enabling cross-service credential replay. Deriving from `recipient`
+/// (a Solana pubkey, unique per merchant) means two services with the
+/// same secret but different recipients automatically get different
+/// realms, so cross-service replay fails at HMAC verification.
+///
+/// Format: `"App Id - #<8-digit decimal>"`. Decimal is `u32::from_be_bytes`
+/// over the first 4 bytes of `SHA-256(recipient)`, modulo 10^8 for a
+/// compact display. Deterministic for a given recipient.
+fn derive_default_realm(recipient: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(recipient.as_bytes());
+    let first_four = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
+    let app_id = first_four % 100_000_000;
+    format!("App Id - #{app_id}")
+}
 
 /// Minimum length, in bytes, for the HMAC-SHA256 key used to bind
 /// challenge IDs. NIST SP 800-107 recommends a key at least as long as
@@ -260,7 +279,15 @@ impl Mpp {
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
         let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
         validate_secret_key(&secret_key)?;
-        let realm = config.realm.unwrap_or_else(|| DEFAULT_REALM.to_string());
+        let realm = match config.realm {
+            Some(r) if r.is_empty() => {
+                return Err(Error::InvalidConfig(
+                    "Config.realm must be non-empty when provided".into(),
+                ));
+            }
+            Some(r) => r,
+            None => derive_default_realm(&config.recipient),
+        };
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
 
         let rpc = Arc::new(RpcClient::new(rpc_url.clone()));
@@ -4115,7 +4142,8 @@ mod tests {
     #[test]
     fn new_valid_config_succeeds() {
         let mpp = test_mpp();
-        assert_eq!(mpp.realm(), DEFAULT_REALM);
+        // Audit #15: default realm now derives from recipient.
+        assert_eq!(mpp.realm(), derive_default_realm(TEST_RECIPIENT));
         assert_eq!(mpp.currency(), "USDC");
         assert_eq!(mpp.recipient(), TEST_RECIPIENT);
         assert_eq!(mpp.decimals(), 6);
@@ -4131,6 +4159,62 @@ mod tests {
         })
         .unwrap();
         assert_eq!(mpp.realm(), "Custom Realm");
+    }
+
+    // ── Audit #15: derived default realm ──
+
+    #[test]
+    fn new_default_realm_format() {
+        // The derived default looks like "App Id - #<digits>" (max 8).
+        let realm = derive_default_realm(TEST_RECIPIENT);
+        assert!(
+            realm.starts_with("App Id - #"),
+            "unexpected realm format: {realm}"
+        );
+        let digits = realm.trim_start_matches("App Id - #");
+        assert!(digits.chars().all(|c| c.is_ascii_digit()), "got: {realm}");
+        assert!(!digits.is_empty() && digits.len() <= 8, "got: {realm}");
+    }
+
+    #[test]
+    fn new_default_realm_deterministic_for_same_recipient() {
+        // Restart-safe: same recipient must always derive to the same realm,
+        // otherwise in-flight challenges would fail to verify after a deploy.
+        let a = derive_default_realm(TEST_RECIPIENT);
+        let b = derive_default_realm(TEST_RECIPIENT);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn new_default_realm_differs_across_recipients() {
+        // Two servers with shared secret but different recipients must end
+        // up with different default realms — closes the audit threat shape
+        // (shared MPP_SECRET_KEY + shared default realm == shared
+        // credential namespace).
+        let other = "8tNDNRkk3JG1WK9NSRwUjytkGwY6Jq6gqQwNFmKt3pkP";
+        assert_ne!(
+            derive_default_realm(TEST_RECIPIENT),
+            derive_default_realm(other),
+        );
+    }
+
+    #[test]
+    fn new_rejects_empty_realm() {
+        // Explicitly providing an empty realm bypasses the derivation —
+        // reject so an operator can't reintroduce the audit threat with a
+        // typo.
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            realm: Some(String::new()),
+            ..Default::default()
+        })
+        .err()
+        .expect("empty realm should be rejected");
+        assert!(
+            err.to_string().contains("realm must be non-empty"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4340,7 +4424,7 @@ mod tests {
         let mpp = test_mpp();
         let challenge = mpp.charge("0.10").unwrap();
 
-        assert_eq!(challenge.realm, DEFAULT_REALM);
+        assert_eq!(challenge.realm, derive_default_realm(TEST_RECIPIENT));
         assert_eq!(challenge.method.as_str(), "solana");
         assert_eq!(challenge.intent.as_str(), "charge");
         assert!(!challenge.id.is_empty());

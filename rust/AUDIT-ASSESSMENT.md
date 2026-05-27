@@ -511,3 +511,35 @@ So the replay-state side of the bug is closed.
 - `charge_options_fee_payer_succeeds_when_signer_configured` (happy path; asserts `feePayerKey` is populated)
 
 ---
+
+### #15 — Default `realm` shares credential namespace across servers
+**ID:** `8d1c4a72` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `DEFAULT_REALM = "MPP Payment"`. Realm is part of the HMAC ID input, so two services that share `MPP_SECRET_KEY` and both keep the default realm participate in one shared credential namespace — a credential paid against service A passes HMAC verification on service B.
+
+**Decision:** ✅ **accepted — derive default from recipient pubkey.**
+
+**Rationale:** The audit gives two options ("require non-empty realm" *or* "derive a unique default from an application identifier/origin"). Requiring an explicit realm would force 41 callsite updates (tests, examples, integration) for marginal gain over a derived default that already differs per-app. The `recipient` is a Solana pubkey, unique per merchant, and already mandatory in `Config` — perfect as the app identity. Two services with the same secret but different recipients now automatically get different realms; HMAC IDs differ; cross-service replay broken.
+
+**Action taken:**
+- Removed `const DEFAULT_REALM: &str = "MPP Payment"`.
+- Added `fn derive_default_realm(recipient: &str) -> String` that hashes the recipient with SHA-256, takes the first 4 bytes as `u32::from_be_bytes` mod 10^8, and formats as `"App Id - #<digits>"`. Human-friendly and deterministic.
+- `Mpp::new` resolves the realm via a small `match` that:
+  - rejects explicit `Some("")` with `Error::InvalidConfig` (closes the bypass where an operator could re-introduce the audit threat with a typo),
+  - uses the supplied non-empty realm if provided,
+  - else derives from `config.recipient`.
+- Updated two pre-existing tests that asserted `realm == DEFAULT_REALM` to use `derive_default_realm(TEST_RECIPIENT)`.
+
+**What I didn't do:**
+- Didn't fold the realm into the type system (e.g., `enum Realm { Derived, Explicit(String) }`) — the runtime check + derivation is enough to close the audit's threat without an ergonomic refactor.
+- Didn't change the realm shape for explicit overrides; operators who set `realm: Some("Acme API")` keep getting `"Acme API"`.
+
+**Note on wire-format impact:** the realm appears in `WWW-Authenticate` headers and binds HMAC IDs. Servers upgrading from the previous SDK release will see in-flight challenges (issued with the old `"MPP Payment"` realm) fail to verify under the new derived realm. Default TTL is 5 minutes; the rollout window closes quickly.
+
+**New tests:**
+- `new_default_realm_format` — asserts the `"App Id - #<digits>"` shape with up to 8 digits.
+- `new_default_realm_deterministic_for_same_recipient` — restart-safe (same recipient → same realm).
+- `new_default_realm_differs_across_recipients` — closes the audit threat shape.
+- `new_rejects_empty_realm` — explicit empty string rejected.
+
+---
