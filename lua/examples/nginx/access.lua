@@ -9,12 +9,12 @@
 -- the follow-up Lua PR B; this file uses a stub `verify_payment`
 -- that always rejects so the example demonstrates challenge issuance
 -- without claiming settlement support PR A does not own. Once PR B
--- lands, swap the stub for `mpp.server.solana_verify.new_signature_verifier`
+-- lands, swap the stub for `pay_kit.protocols.mpp.server.solana_verify.new_signature_verifier`
 -- and `pay curl http://127.0.0.1:4570/paid` returns 200.
 
 local mpp = require('mpp')
-local json = require('mpp.util.json')
-local headers = require('mpp.protocol.core.headers')
+local json = require('pay_kit.util.json')
+local headers = require('pay_kit.protocol.core.headers')
 
 local function env(name, default)
   local value = os.getenv(name)

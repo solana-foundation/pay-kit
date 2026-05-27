@@ -1,6 +1,6 @@
 local t = require('tests.test_helper')
-local mpp = require('mpp')
-local html = require('mpp.server.html')
+local mpp = require('tests._mpp')
+local html = require('pay_kit.protocols.mpp.server.html')
 
 local function new_server(overrides)
   overrides = overrides or {}

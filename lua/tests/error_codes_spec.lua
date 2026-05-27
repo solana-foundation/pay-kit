@@ -1,7 +1,7 @@
 local helper = require('tests.test_helper')
-local mpp = require('mpp')
-local error_codes = require('mpp.protocol.core.error_codes')
-local network_check = require('mpp.server.network_check')
+local mpp = require('tests._mpp')
+local error_codes = require('pay_kit.protocol.core.error_codes')
+local network_check = require('pay_kit.protocols.mpp.server.network_check')
 
 -- Drive every code path that the Lua server's 402 surface emits and
 -- assert each rejection carries the right canonical code. Mirrors the

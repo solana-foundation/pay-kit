@@ -1,9 +1,9 @@
 local helper = require('tests.test_helper')
-local transaction = require('mpp.methods.solana.transaction')
-local verifier = require('mpp.methods.solana.verifier')
-local base58 = require('mpp.util.base58')
-local ata = require('mpp.methods.solana.ata')
-local instructions = require('mpp.methods.solana.instructions')
+local transaction = require('pay_kit.solana.transaction')
+local verifier = require('pay_kit.solana.verifier')
+local base58 = require('pay_kit.solana.base58')
+local ata = require('pay_kit.solana.ata')
+local instructions = require('pay_kit.solana.instructions')
 
 local function le_u64(value)
   local bytes = {}
@@ -322,7 +322,7 @@ helper.test('verifier verify_transaction_base64 round-trips a wire payload', fun
   local ix = encode_instruction(2, { 0, 1 }, data)
   local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
   local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
-  local b64 = require('mpp.util.base64_std').encode(raw)
+  local b64 = require('pay_kit.util.base64_std').encode(raw)
   verifier.verify_transaction_base64(b64, {
     amount = '7', currency = 'SOL', recipient = recipient_pub,
     methodDetails = {},
@@ -338,7 +338,7 @@ helper.test('verifier new_callback wraps verify_transaction_base64 with a reques
   local ix = encode_instruction(2, { 0, 1 }, data)
   local message = build_message(account_keys, string.rep('\xc3', 32), { ix }, 1)
   local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
-  local b64 = require('mpp.util.base64_std').encode(raw)
+  local b64 = require('pay_kit.util.base64_std').encode(raw)
   local callback = verifier.new_callback()
   callback(b64, {
     amount = '11', currency = 'SOL', recipient = recipient_pub,
@@ -353,7 +353,7 @@ helper.test('verifier new_blockhash_extractor returns the parsed blockhash', fun
   local account_keys = { payer_bytes, recipient_bytes, SYSTEM_PROGRAM_BYTES }
   local message = build_message(account_keys, blockhash_bytes, {}, 1)
   local raw = table.concat({ transaction.compact_u16(1), string.rep('\0', 64), message })
-  local b64 = require('mpp.util.base64_std').encode(raw)
+  local b64 = require('pay_kit.util.base64_std').encode(raw)
   local extractor = verifier.new_blockhash_extractor()
   helper.assert_equal(extractor(b64), base58.encode(blockhash_bytes))
 end)

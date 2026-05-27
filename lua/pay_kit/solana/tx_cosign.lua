@@ -1,7 +1,7 @@
 --[[
 Cosign a base64-encoded Solana transaction with a 64-byte secret.
 
-The legacy `mpp.methods.solana.signer:cosign_base64` does the same
+The legacy `pay_kit.solana.local_signer:cosign_base64` does the same
 thing but routes the actual Ed25519 sign through luasodium. This
 helper goes through `pay_kit.util.ed25519` so the backend
 choice (openssl preferred, luasodium fallback) is consistent across
@@ -12,8 +12,8 @@ matches the cosigner's public key, sign the message bytes, overwrite
 that signature slot, re-serialize to base64.
 ]]
 
-local base58 = require('mpp.util.base58')
-local tx_mod = require('mpp.methods.solana.transaction')
+local base58 = require('pay_kit.solana.base58')
+local tx_mod = require('pay_kit.solana.transaction')
 local ed25519 = require('pay_kit.util.ed25519')
 
 local M = {}

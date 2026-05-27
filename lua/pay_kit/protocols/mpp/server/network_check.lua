@@ -23,7 +23,7 @@ module exposes a pure check that callback authors must invoke once they
 have the blockhash in hand.
 ]]
 
-local error_codes = require('mpp.protocol.core.error_codes')
+local error_codes = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 

@@ -40,9 +40,9 @@ this handler either by passing `verify_payment = handler:as_callback()` to
 expected request.
 ]]
 
-local json = require('mpp.util.json')
-local network_check = require('mpp.server.network_check')
-local error_codes = require('mpp.protocol.core.error_codes')
+local json = require('pay_kit.util.json')
+local network_check = require('pay_kit.protocols.mpp.server.network_check')
+local error_codes = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 
@@ -90,7 +90,7 @@ end
 --
 -- @param config table
 --   url and transport-bearing keys:
---     rpc                              required `mpp.solana.rpc.Rpc` instance
+--     rpc                              required `pay_kit.solana.rpc.Rpc` instance
 --   identity / settlement:
 --     network                          server-configured network slug (default 'mainnet')
 --     replay_store                     replay store with `put_if_absent(key, value)`
@@ -223,7 +223,7 @@ function Handler:settle_pull(transaction_base64, request)
   if simulation == nil then
     verifier_error('Simulation failed: empty simulation result')
   end
-  -- `mpp.util.json` decodes JSON `null` as `json.null` (a table sentinel),
+  -- `pay_kit.util.json` decodes JSON `null` as `json.null` (a table sentinel),
   -- not Lua `nil`. Solana JSON-RPC returns `"err": null` on success, so
   -- comparing against both nil and the sentinel is required to recognize
   -- a successful simulation.
@@ -323,7 +323,7 @@ function Handler:await_confirmation(signature)
     local statuses = self.rpc:signature_statuses({ signature })
     local status = statuses and statuses[1]
     if type(status) == 'table' then
-      -- Solana JSON-RPC returns `"err": null` on success; mpp.util.json
+      -- Solana JSON-RPC returns `"err": null` on success; pay_kit.util.json
       -- decodes that as `json.null`, not Lua `nil`. Treat both as success.
       if status.err ~= nil and status.err ~= json.null then
         verifier_error('Transaction ' .. signature .. ' failed: ' .. tostring(status.err))

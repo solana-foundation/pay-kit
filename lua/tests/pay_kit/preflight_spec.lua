@@ -38,12 +38,12 @@ local function make_operator(recipient, sgn)
 end
 
 -- Build a minimal config and a stub RPC by overriding the
--- mpp.solana.rpc module in package.loaded BEFORE re-requiring the
+-- pay_kit.solana.rpc module in package.loaded BEFORE re-requiring the
 -- preflight module. Earlier specs in the suite may have already
--- monkey-patched mpp.solana.rpc with a different shape, so we evict
+-- monkey-patched pay_kit.solana.rpc with a different shape, so we evict
 -- the preflight module too to force it to re-bind to our fixture.
 local function install_rpc_stub(fixture)
-  package.loaded['mpp.solana.rpc'] = {
+  package.loaded['pay_kit.solana.rpc'] = {
     new = function(_)
       return {
         call = function(_, method, params)
@@ -55,7 +55,7 @@ local function install_rpc_stub(fixture)
   package.loaded['pay_kit.preflight'] = nil
 end
 local function restore_rpc()
-  package.loaded['mpp.solana.rpc']           = nil
+  package.loaded['pay_kit.solana.rpc']           = nil
   package.loaded['pay_kit.preflight']  = nil
 end
 
@@ -90,7 +90,7 @@ helper.test('preflight raises ConfigurationError on low fee-payer balance off lo
     network = 'solana_devnet',
     rpc_url = 'https://devnet.example.com',
     stablecoins = {'USDC'},
-    operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)), sgn),
+    operator = make_operator(require('pay_kit.solana.base58').encode(string.rep('\5', 32)), sgn),
   }
   local pf = require('pay_kit.preflight')
   local ok, err = pcall(pf.run, cfg)
@@ -109,7 +109,7 @@ helper.test('preflight raises ConfigurationError on missing recipient ATA off lo
     network = 'solana_devnet',
     rpc_url = 'https://devnet.example.com',
     stablecoins = {'USDC'},
-    operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)), sgn),
+    operator = make_operator(require('pay_kit.solana.base58').encode(string.rep('\5', 32)), sgn),
   }
   local pf = require('pay_kit.preflight')
   local ok, err = pcall(pf.run, cfg)
@@ -130,7 +130,7 @@ helper.test('preflight auto-funds the fee-payer on localnet with demo signer', f
     network = 'solana_localnet',
     rpc_url = 'https://402.surfnet.dev:8899',
     stablecoins = {'USDC'},
-    operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
+    operator = make_operator(require('pay_kit.solana.base58').encode(string.rep('\5', 32)),
                              make_signer()),  -- demo
   }
   local pf = require('pay_kit.preflight')
@@ -151,7 +151,7 @@ helper.test('preflight auto-provisions a missing ATA on localnet with demo signe
     network = 'solana_localnet',
     rpc_url = 'https://402.surfnet.dev:8899',
     stablecoins = {'USDC'},
-    operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
+    operator = make_operator(require('pay_kit.solana.base58').encode(string.rep('\5', 32)),
                              make_signer()),  -- demo
   }
   local pf = require('pay_kit.preflight')
@@ -170,7 +170,7 @@ helper.test('preflight downgrades RPC failure to warning (no raise)', function()
     network = 'solana_devnet',
     rpc_url = 'https://unreachable.example.com',
     stablecoins = {'USDC'},
-    operator = make_operator(require('mpp.util.base58').encode(string.rep('\5', 32)),
+    operator = make_operator(require('pay_kit.solana.base58').encode(string.rep('\5', 32)),
                              make_signer()),
   }
   local pf = require('pay_kit.preflight')

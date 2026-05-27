@@ -1,5 +1,5 @@
 local t = require('tests.test_helper')
-local nc = require('mpp.server.network_check')
+local nc = require('pay_kit.protocols.mpp.server.network_check')
 
 -- Pure-function tests for the Surfpool-prefix-vs-non-localnet check.
 -- The check is asymmetric: a Surfpool-prefixed blockhash is only valid

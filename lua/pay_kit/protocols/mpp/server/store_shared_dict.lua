@@ -23,12 +23,12 @@ Usage in a Kong handler / OpenResty access phase:
 
   -- nginx.conf:    lua_shared_dict mpp_replay 10m;
   local dict = ngx.shared.mpp_replay
-  local replay_store = require('mpp.server.store_shared_dict').new(dict)
+  local replay_store = require('pay_kit.protocols.mpp.server.store_shared_dict').new(dict)
   -- Then pass `replay_store` to both mpp.server.new({store = ...})
-  -- and mpp.server.charge_handler.new({replay_store = ...}) so the two
+  -- and pay_kit.protocols.mpp.server.charge_handler.new({replay_store = ...}) so the two
   -- replay surfaces share the same cross-worker view.
 
-The store deliberately serializes values with the same `mpp.util.json`
+The store deliberately serializes values with the same `pay_kit.util.json`
 helper the in-memory store uses, so callers can swap implementations
 without touching the value shapes they store. Shared dict size and TTL
 are owner-controlled because they vary with deployment shape (10MB and
@@ -36,7 +36,7 @@ no TTL is the simple-server default; large deployments should size by
 expected QPS * challenge_lifetime).
 ]]
 
-local json = require('mpp.util.json')
+local json = require('pay_kit.util.json')
 
 local SharedDictStore = {}
 SharedDictStore.__index = SharedDictStore

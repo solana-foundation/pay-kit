@@ -28,7 +28,7 @@ local RAW_SECRET_STRING = chars_from_bytes(RAW_BYTES)
 -- the inner signer uses, so we can assert pubkey shape without
 -- duplicating Ed25519 derivation in the test.
 local function pubkey_of(secret_string)
-  local mpp_signer = require('mpp.methods.solana.signer')
+  local mpp_signer = require('pay_kit.solana.local_signer')
   return mpp_signer.from_bytes(secret_string).public_key
 end
 local RAW_PUBKEY = pubkey_of(RAW_SECRET_STRING)
@@ -144,7 +144,7 @@ helper.test('signer.hex rejects non-hex characters', function()
 end)
 
 helper.test('signer.base58 accepts the base58 encoding of the 64-byte secret', function()
-  local base58 = require('mpp.util.base58')
+  local base58 = require('pay_kit.solana.base58')
   local sgn, err = signer.base58(base58.encode(RAW_SECRET_STRING))
   helper.assert_true(sgn and not err, err)
   helper.assert_equal(sgn:pubkey(), RAW_PUBKEY)

@@ -1,6 +1,6 @@
 local t = require('tests.test_helper')
-local charge_handler = require('mpp.server.charge_handler')
-local store = require('mpp.store')
+local charge_handler = require('pay_kit.protocols.mpp.server.charge_handler')
+local store = require('pay_kit.protocols.mpp.store')
 
 -- A fake RPC that returns scripted responses for each method and records every
 -- call so tests can assert ordering. Each `responses[<method>]` is a list of
@@ -111,7 +111,7 @@ t.test('settle_pull happy path: verify → simulate → send → consume → awa
 end)
 
 t.test('settle_pull accepts json.null err sentinels through full lifecycle', function()
-  -- Regression for the JSON null sentinel handling. mpp.util.json decodes
+  -- Regression for the JSON null sentinel handling. pay_kit.util.json decodes
   -- JSON `null` as `json.null` (a table), not Lua `nil`. Solana JSON-RPC
   -- returns `"err": null` on success in simulateTransaction,
   -- getSignatureStatuses, and getTransaction. The previous code compared
@@ -121,7 +121,7 @@ t.test('settle_pull accepts json.null err sentinels through full lifecycle', fun
   -- trip in production. fake_rpc usually hands back Lua tables directly
   -- (bypassing the JSON codec), so this test forces the sentinel values
   -- the production codec would actually produce.
-  local json = require('mpp.util.json')
+  local json = require('pay_kit.util.json')
   local handler, rpc = new_handler({
     rpc = fake_rpc({
       simulateTransaction = { { result = { err = json.null, logs = { 'ok' } } } },
@@ -351,7 +351,7 @@ t.test('settle_push treats json.null transaction result as "not yet observed"', 
   -- (the wire encoding for an unobserved signature) must drive the retry
   -- loop, not fall into the meta-check branch and fail with
   -- "missing transaction metadata".
-  local json = require('mpp.util.json')
+  local json = require('pay_kit.util.json')
   local handler, rpc = new_handler({
     confirmation_attempts = 3,
     rpc = fake_rpc({
@@ -486,7 +486,7 @@ end)
 --   1. first valid settlement returns a receipt (no signature_consumed)
 --   2. resubmission of the same signature is rejected as signature_consumed
 t.test('Kong-style shared replay_store does not double-consume on first payment', function()
-  local mpp = require('mpp')
+  local mpp = require('tests._mpp')
   local SECRET = 'kong-test-secret'
   local RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
 

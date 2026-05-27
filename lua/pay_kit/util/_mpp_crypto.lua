@@ -1,5 +1,5 @@
-local bit = require('mpp.util.bit')
-local base64url = require('mpp.util.base64url')
+local bit = require('pay_kit.util.bit')
+local base64url = require('pay_kit.util.base64url')
 
 local M = {}
 local UINT32 = 4294967296

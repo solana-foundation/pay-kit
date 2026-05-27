@@ -120,7 +120,7 @@ helper.test('encode_payment_required is base64 of JSON', function()
   local ch = x402._private.exact_challenge(pay_kit.config(), gate, '/paid')
   local encoded = x402._private.encode_payment_required(ch)
   -- Decode and verify roundtrip.
-  local base64 = require('mpp.util.base64_std')
+  local base64 = require('pay_kit.util.base64_std')
   local decoded = base64.decode(encoded)
   helper.assert_true(decoded ~= nil)
   local parsed = cjson.decode(decoded)
@@ -136,14 +136,14 @@ helper.test('decode_payment_signature rejects empty header', function()
 end)
 
 helper.test('decode_payment_signature rejects unsupported version', function()
-  local base64 = require('mpp.util.base64_std')
+  local base64 = require('pay_kit.util.base64_std')
   local encoded = base64.encode(cjson.encode({x402Version = 1}))
   local _, err = x402._private.decode_payment_signature(encoded)
   helper.assert_true(err and err:find('unsupported x402Version', 1, true), err)
 end)
 
 helper.test('decode_payment_signature accepts v2 envelope', function()
-  local base64 = require('mpp.util.base64_std')
+  local base64 = require('pay_kit.util.base64_std')
   local body = {x402Version = 2, accepted = {}, payload = {}}
   local encoded = base64.encode(cjson.encode(body))
   local env = assert(x402._private.decode_payment_signature(encoded))
@@ -156,7 +156,7 @@ helper.test('verify_and_settle rejects unmatched accepted', function()
   setup()
   local gate = make_gate('0.001')
   local adapter = assert(x402.new({config_resolver = pay_kit.config}))
-  local base64 = require('mpp.util.base64_std')
+  local base64 = require('pay_kit.util.base64_std')
   local cred = {
     x402Version = 2,
     accepted    = {scheme = 'exact', network = 'solana:wrong', asset = 'wrong', payTo = 'wrong'},

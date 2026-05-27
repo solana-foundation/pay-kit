@@ -13,9 +13,9 @@ bytes that come out of the Solana CLI / web3.js `Keypair` work here
 without re-derivation.
 ]]
 
-local base58 = require('mpp.util.base58')
-local transaction = require('mpp.methods.solana.transaction')
-local json = require('mpp.util.json')
+local base58 = require('pay_kit.solana.base58')
+local transaction = require('pay_kit.solana.transaction')
+local json = require('pay_kit.util.json')
 
 local M = {}
 

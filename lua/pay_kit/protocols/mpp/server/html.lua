@@ -1,6 +1,6 @@
-local assets = require('mpp.server.html_assets.gen')
-local base64url = require('mpp.util.base64url')
-local json = require('mpp.util.json')
+local assets = require('pay_kit.protocols.mpp.server.html_assets.gen')
+local base64url = require('pay_kit.util.base64url')
+local json = require('pay_kit.util.json')
 
 local M = {}
 

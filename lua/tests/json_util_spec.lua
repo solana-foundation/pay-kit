@@ -1,5 +1,5 @@
--- Exhaustive coverage for mpp.util.json (encoder + parser branches).
-local json = require('mpp.util.json')
+-- Exhaustive coverage for pay_kit.util.json (encoder + parser branches).
+local json = require('pay_kit.util.json')
 local helpers = require('tests.test_helper')
 
 local function assert_throws(fn, pattern)

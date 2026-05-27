@@ -28,6 +28,7 @@ dependencies = {
 build = {
   type = 'builtin',
   modules = {
+    -- Umbrella surface
     ['pay_kit']                          = 'pay_kit/init.lua',
     ['pay_kit.errors']                   = 'pay_kit/errors.lua',
     ['pay_kit.kms']                      = 'pay_kit/kms.lua',
@@ -37,23 +38,52 @@ build = {
     ['pay_kit.signer.local']             = 'pay_kit/signer/local.lua',
     ['pay_kit.store']                    = 'pay_kit/store.lua',
 
-    -- Solana-flavoured helpers: base58 + cosocket RPC + tx cosign.
+    -- Solana primitives
+    ['pay_kit.solana.ata']               = 'pay_kit/solana/ata.lua',
     ['pay_kit.solana.base58']            = 'pay_kit/solana/base58.lua',
+    ['pay_kit.solana.instructions']      = 'pay_kit/solana/instructions.lua',
+    ['pay_kit.solana.local_signer']      = 'pay_kit/solana/local_signer.lua',
+    ['pay_kit.solana.mints']             = 'pay_kit/solana/mints.lua',
     ['pay_kit.solana.rpc']               = 'pay_kit/solana/rpc.lua',
+    ['pay_kit.solana.rpc_transport']     = 'pay_kit/solana/rpc_transport.lua',
+    ['pay_kit.solana.rpc_transport_resty'] = 'pay_kit/solana/rpc_transport_resty.lua',
+    ['pay_kit.solana.transaction']       = 'pay_kit/solana/transaction.lua',
     ['pay_kit.solana.tx_cosign']         = 'pay_kit/solana/tx_cosign.lua',
+    ['pay_kit.solana.verifier']          = 'pay_kit/solana/verifier.lua',
 
-    -- Generic util surface.
+    -- Generic util surface
+    ['pay_kit.util.base64_std']          = 'pay_kit/util/base64_std.lua',
     ['pay_kit.util.base64url']           = 'pay_kit/util/base64url.lua',
-    ['pay_kit.util.json']                = 'pay_kit/util/json.lua',
+    ['pay_kit.util.bit']                 = 'pay_kit/util/bit.lua',
     ['pay_kit.util.crypto']              = 'pay_kit/util/crypto.lua',
+    ['pay_kit.util._mpp_crypto']         = 'pay_kit/util/_mpp_crypto.lua',
     ['pay_kit.util.ed25519']             = 'pay_kit/util/ed25519.lua',
+    ['pay_kit.util.json']                = 'pay_kit/util/json.lua',
+    ['pay_kit.util.uint']                = 'pay_kit/util/uint.lua',
 
-    -- Protocol adapters, split per protocol then per scheme/intent.
-    ['pay_kit.protocols.mpp']                  = 'pay_kit/protocols/mpp/init.lua',
-    ['pay_kit.protocols.x402']                 = 'pay_kit/protocols/x402/init.lua',
-    ['pay_kit.protocols.x402.exact.verify']    = 'pay_kit/protocols/x402/exact/verify.lua',
+    -- Protocol-agnostic core (wire format + canonical error codes)
+    ['pay_kit.protocol.core.challenge']    = 'pay_kit/protocol/core/challenge.lua',
+    ['pay_kit.protocol.core.error_codes']  = 'pay_kit/protocol/core/error_codes.lua',
+    ['pay_kit.protocol.core.headers']      = 'pay_kit/protocol/core/headers.lua',
+    ['pay_kit.protocol.core.types']        = 'pay_kit/protocol/core/types.lua',
 
-    -- Internal implementation modules (callers use the umbrella).
+    -- Protocol adapters: per-protocol then per-scheme/intent
+    ['pay_kit.protocols.mpp']              = 'pay_kit/protocols/mpp/init.lua',
+    ['pay_kit.protocols.mpp.charge']       = 'pay_kit/protocols/mpp/charge.lua',
+    ['pay_kit.protocols.mpp.error']        = 'pay_kit/protocols/mpp/error.lua',
+    ['pay_kit.protocols.mpp.expires']      = 'pay_kit/protocols/mpp/expires.lua',
+    ['pay_kit.protocols.mpp.store']        = 'pay_kit/protocols/mpp/store.lua',
+    ['pay_kit.protocols.mpp.server']                  = 'pay_kit/protocols/mpp/server/init.lua',
+    ['pay_kit.protocols.mpp.server.charge_handler']   = 'pay_kit/protocols/mpp/server/charge_handler.lua',
+    ['pay_kit.protocols.mpp.server.html']             = 'pay_kit/protocols/mpp/server/html.lua',
+    ['pay_kit.protocols.mpp.server.html_assets.gen']  = 'pay_kit/protocols/mpp/server/html_assets/gen.lua',
+    ['pay_kit.protocols.mpp.server.network_check']    = 'pay_kit/protocols/mpp/server/network_check.lua',
+    ['pay_kit.protocols.mpp.server.solana_verify']    = 'pay_kit/protocols/mpp/server/solana_verify.lua',
+    ['pay_kit.protocols.mpp.server.store_shared_dict'] = 'pay_kit/protocols/mpp/server/store_shared_dict.lua',
+    ['pay_kit.protocols.x402']                = 'pay_kit/protocols/x402/init.lua',
+    ['pay_kit.protocols.x402.exact.verify']   = 'pay_kit/protocols/x402/exact/verify.lua',
+
+    -- Internal implementation modules
     ['pay_kit.internal.config']     = 'pay_kit/internal/config.lua',
     ['pay_kit.internal.dispatcher'] = 'pay_kit/internal/dispatcher.lua',
     ['pay_kit.internal.fee']        = 'pay_kit/internal/fee.lua',

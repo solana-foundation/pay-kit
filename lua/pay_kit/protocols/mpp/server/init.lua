@@ -1,12 +1,12 @@
-local challenge = require('mpp.protocol.core.challenge')
-local error_codes = require('mpp.protocol.core.error_codes')
-local html_module = require('mpp.server.html')
-local intents = require('mpp.protocol.intents.charge')
-local protocol = require('mpp.protocol.solana')
-local solana_verify = require('mpp.server.solana_verify')
-local store = require('mpp.store')
-local types = require('mpp.protocol.core.types')
-local uint = require('mpp.util.uint')
+local challenge = require('pay_kit.protocol.core.challenge')
+local error_codes = require('pay_kit.protocol.core.error_codes')
+local html_module = require('pay_kit.protocols.mpp.server.html')
+local intents = require('pay_kit.protocols.mpp.charge')
+local protocol = require('pay_kit.solana.mints')
+local solana_verify = require('pay_kit.protocols.mpp.server.solana_verify')
+local store = require('pay_kit.protocols.mpp.store')
+local types = require('pay_kit.protocol.core.types')
+local uint = require('pay_kit.util.uint')
 
 local M = {}
 

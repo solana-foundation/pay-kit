@@ -1,5 +1,5 @@
 local t = require('tests.test_helper')
-local mpp = require('mpp')
+local mpp = require('tests._mpp')
 
 t.test('www-authenticate round trip', function()
   local request = mpp.NewBase64URLJSONValue({ amount = '1000', currency = 'sol' })

@@ -1,7 +1,7 @@
-local crypto = require('mpp.util.crypto')
-local expires = require('mpp.expires')
-local json = require('mpp.util.json')
-local types = require('mpp.protocol.core.types')
+local crypto = require('pay_kit.util._mpp_crypto')
+local expires = require('pay_kit.protocols.mpp.expires')
+local json = require('pay_kit.util.json')
+local types = require('pay_kit.protocol.core.types')
 
 local M = {}
 

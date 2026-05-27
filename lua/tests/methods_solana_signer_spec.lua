@@ -1,7 +1,7 @@
 local helper = require('tests.test_helper')
-local signer = require('mpp.methods.solana.signer')
-local transaction = require('mpp.methods.solana.transaction')
-local base58 = require('mpp.util.base58')
+local signer = require('pay_kit.solana.local_signer')
+local transaction = require('pay_kit.solana.transaction')
+local base58 = require('pay_kit.solana.base58')
 
 local sodium = require('luasodium')
 

@@ -1,8 +1,8 @@
 --[[
-Non-blocking HTTP transport for `mpp.solana.rpc`, intended for use
+Non-blocking HTTP transport for `pay_kit.solana.rpc`, intended for use
 inside the OpenResty / Kong access phase.
 
-The companion `mpp.solana.rpc_transport` module uses `socket.http` /
+The companion `pay_kit.solana.rpc_transport` module uses `socket.http` /
 `ssl.https` from LuaSocket / LuaSec, which are synchronous, OS-thread
 blocking calls. Running them inside an nginx worker would block the
 entire worker for the full RPC round trip and starve every other
@@ -17,9 +17,9 @@ progress while the Solana RPC call is in flight.
 Usage (inside an OpenResty / Kong context, after declaring
 `lua_shared_dict` for the replay store):
 
-  local rpc = require('mpp.solana.rpc').new({
+  local rpc = require('pay_kit.solana.rpc').new({
     url = 'https://api.mainnet-beta.solana.com',
-    transport = require('mpp.solana.rpc_transport_resty').new(),
+    transport = require('pay_kit.solana.rpc_transport_resty').new(),
   })
 
 `resty.http` is shipped by `lua-resty-http`
@@ -52,10 +52,10 @@ local function in_cosocket_context()
     or phase == 'ssl_cert' or phase == 'ssl_session_fetch'
 end
 
---- Build a transport function suitable for `mpp.solana.rpc.new({ transport = ... })`.
+--- Build a transport function suitable for `pay_kit.solana.rpc.new({ transport = ... })`.
 -- The returned closure accepts `(url, body)` and returns the response body
 -- string, or raises a typed transport-error table matching the surface of
--- `mpp.solana.rpc_transport`.
+-- `pay_kit.solana.rpc_transport`.
 --
 -- `opts.timeout` is in seconds (matching the blocking transport). It is
 -- applied to connect / send / read via `set_timeouts`.

@@ -7,7 +7,7 @@ no test requires the shim.
 
 local helper = require('tests.test_helper')
 
-helper.test('pay_kit.solana.base58 re-exports the legacy mpp.util.base58', function()
+helper.test('pay_kit.solana.base58 re-exports the legacy pay_kit.solana.base58', function()
   local b58 = require('pay_kit.solana.base58')
   helper.assert_equal(type(b58.encode), 'function')
   helper.assert_equal(type(b58.decode), 'function')

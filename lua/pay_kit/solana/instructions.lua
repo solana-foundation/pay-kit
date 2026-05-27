@@ -11,12 +11,12 @@ typed table the verifier can match against the challenge request:
   - Compute Budget                       (SetComputeUnitLimit / Price)
 
 Amounts come back as decimal strings so they can be compared with
-`mpp.util.uint.compare` without forcing the caller through Lua's
+`pay_kit.util.uint.compare` without forcing the caller through Lua's
 double-precision number type (which only carries 53 significant bits
 and would silently truncate large u64 lamport values).
 ]]
 
-local uint = require('mpp.util.uint')
+local uint = require('pay_kit.util.uint')
 
 local M = {}
 
@@ -159,7 +159,7 @@ function M.parse_compute_budget(ix)
     if #data ~= 5 then
       error('Unsupported compute budget instruction')
     end
-    -- Compare decimal strings via mpp.util.uint so u32 / u64 values above
+    -- Compare decimal strings via pay_kit.util.uint so u32 / u64 values above
     -- 2^53 (Lua double mantissa boundary) still compare exactly. The u32
     -- compute-unit-limit field never exceeds 2^32 so the precision risk is
     -- nil here, but keeping the comparison string-based aligns with the
@@ -179,7 +179,7 @@ function M.parse_compute_budget(ix)
     -- Lua doubles only carry 53 significant bits, so the cast collapses
     -- distinct u64 values to the same float and the cap check would fire
     -- on the wrong side of the boundary. Compare the exact decimal strings
-    -- through mpp.util.uint so a future cap raise above 2^53 still rejects
+    -- through pay_kit.util.uint so a future cap raise above 2^53 still rejects
     -- genuinely over-cap transactions.
     local price_str = decode_le_uint(data, 2, 8)
     if uint.compare(price_str, tostring(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) > 0 then
@@ -191,7 +191,7 @@ function M.parse_compute_budget(ix)
   --   0 = RequestUnits (deprecated)
   --   1 = RequestHeapFrame
   --   4 = SetLoadedAccountsDataSizeLimit
-  -- The hooks-based verifier path in `mpp.server.solana_verify` accepts
+  -- The hooks-based verifier path in `pay_kit.protocols.mpp.server.solana_verify` accepts
   -- these as harmless pass-through, so the real verifier path must
   -- behave identically to avoid a behavioral split where a transaction
   -- whose wallet inserts disc 1 or 4 verifies under hooks but is

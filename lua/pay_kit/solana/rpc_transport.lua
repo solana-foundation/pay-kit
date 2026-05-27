@@ -1,5 +1,5 @@
 --[[
-Reference HTTP transport for `mpp.solana.rpc`.
+Reference HTTP transport for `pay_kit.solana.rpc`.
 
 The RPC client deliberately takes the transport as a function so it can
 be unit-tested without depending on a network stack. Production callers
@@ -10,9 +10,9 @@ schemes and raises a clean error if a request needs HTTPS without
 luasec being present.
 
 Usage:
-  local rpc = require('mpp.solana.rpc').new({
+  local rpc = require('pay_kit.solana.rpc').new({
     url = 'https://402.surfnet.dev:8899',
-    transport = require('mpp.solana.rpc_transport').new(),
+    transport = require('pay_kit.solana.rpc_transport').new(),
   })
 ]]
 
@@ -42,7 +42,7 @@ local function load_ltn12()
   return ltn12
 end
 
---- Build a transport function suitable for `mpp.solana.rpc.new({ transport = ... })`.
+--- Build a transport function suitable for `pay_kit.solana.rpc.new({ transport = ... })`.
 --- The returned closure accepts `(url, body)` and returns `(response_body)`
 --- or raises a transport-error table.
 function M.new(opts)

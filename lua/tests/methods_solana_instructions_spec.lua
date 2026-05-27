@@ -1,5 +1,5 @@
 local helper = require('tests.test_helper')
-local instructions = require('mpp.methods.solana.instructions')
+local instructions = require('pay_kit.solana.instructions')
 
 local function build_ix(data, accounts)
   return { data = data, accounts = accounts or {}, program_id_index = 0 }
@@ -96,7 +96,7 @@ helper.test('parse_compute_budget rejects accounts and unknown discriminators', 
 end)
 
 helper.test('parse_compute_budget accepts disc 0/1/4 as non-cap pass-through', function()
-  -- The hooks-based verifier in `mpp.server.solana_verify` accepts
+  -- The hooks-based verifier in `pay_kit.protocols.mpp.server.solana_verify` accepts
   -- discriminators 0 (RequestUnits, deprecated), 1 (RequestHeapFrame),
   -- and 4 (SetLoadedAccountsDataSizeLimit) without enforcing compute
   -- caps. The real verifier path here must match that behavior so a

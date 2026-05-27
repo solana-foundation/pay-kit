@@ -28,22 +28,22 @@ Usage in `kong.conf` (or the equivalent declarative configuration):
 ]]
 
 local mpp = require('mpp')
-local headers = require('mpp.protocol.core.headers')
-local solana_verify = require('mpp.server.solana_verify')
-local charge_handler_module = require('mpp.server.charge_handler')
-local rpc_module = require('mpp.solana.rpc')
+local headers = require('pay_kit.protocol.core.headers')
+local solana_verify = require('pay_kit.protocols.mpp.server.solana_verify')
+local charge_handler_module = require('pay_kit.protocols.mpp.server.charge_handler')
+local rpc_module = require('pay_kit.solana.rpc')
 -- The Kong / OpenResty access phase MUST use a cosocket-based transport.
--- The blocking `mpp.solana.rpc_transport` (LuaSocket / LuaSec) would
+-- The blocking `pay_kit.solana.rpc_transport` (LuaSocket / LuaSec) would
 -- block the entire nginx worker for the full RPC round-trip and starve
 -- every other concurrent request on that worker; codex PR #103 review
 -- flagged that as a P1 worker-starvation risk. `rpc_transport_resty`
 -- wraps `lua-resty-http`, which yields to the nginx event loop on I/O.
-local rpc_transport_resty = require('mpp.solana.rpc_transport_resty')
-local signer_module = require('mpp.methods.solana.signer')
-local store_shared_dict = require('mpp.server.store_shared_dict')
-local error_codes = require('mpp.protocol.core.error_codes')
-local intents = require('mpp.protocol.intents.charge')
-local json = require('mpp.util.json')
+local rpc_transport_resty = require('pay_kit.solana.rpc_transport_resty')
+local signer_module = require('pay_kit.solana.local_signer')
+local store_shared_dict = require('pay_kit.protocols.mpp.server.store_shared_dict')
+local error_codes = require('pay_kit.protocol.core.error_codes')
+local intents = require('pay_kit.protocols.mpp.charge')
+local json = require('pay_kit.util.json')
 
 local plugin = {
   PRIORITY = 1000,

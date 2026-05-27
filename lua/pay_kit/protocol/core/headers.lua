@@ -1,6 +1,6 @@
-local challenge = require('mpp.protocol.core.challenge')
-local types = require('mpp.protocol.core.types')
-local json = require('mpp.util.json')
+local challenge = require('pay_kit.protocol.core.challenge')
+local types = require('pay_kit.protocol.core.types')
+local json = require('pay_kit.util.json')
 
 local M = {
   WWW_AUTHENTICATE_HEADER = 'www-authenticate',

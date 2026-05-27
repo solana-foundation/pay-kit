@@ -21,10 +21,10 @@ adapter so repeated calls within a request reuse the inner state. The
 dispatcher (P6) owns the across-request cache.
 ]]
 
-local mpp_server = require('mpp.server')
-local mpp_intents = require('mpp.protocol.intents.charge')
-local mpp_protocol = require('mpp.protocol.solana')
-local error_codes  = require('mpp.protocol.core.error_codes')
+local mpp_server = require('pay_kit.protocols.mpp.server')
+local mpp_intents = require('pay_kit.protocols.mpp.charge')
+local mpp_protocol = require('pay_kit.solana.mints')
+local error_codes  = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 local Adapter = {}
@@ -44,7 +44,7 @@ end
 -- Build a per-gate MPP server. The legacy `mpp.server.new(config)`
 -- requires a `verify_payment` callback that runs the settlement
 -- lifecycle (decode tx, simulate, broadcast, consume signature,
--- confirm). Wire that up from `mpp.server.charge_handler` so the
+-- confirm). Wire that up from `pay_kit.protocols.mpp.server.charge_handler` so the
 -- inner server can settle - without it, mpp.server raises
 -- "verify_payment callback is required" at construct time.
 local function build_mpp_server(config, gate, store)
@@ -55,15 +55,15 @@ local function build_mpp_server(config, gate, store)
   if config.operator:fee_payer() and type(sgn._secret_key_bytes) == 'function' then
     -- Build a legacy mpp signer from the operator's raw bytes so the
     -- charge_handler's pull_transaction_signer hook can cosign.
-    local mpp_signer = require('mpp.methods.solana.signer')
+    local mpp_signer = require('pay_kit.solana.local_signer')
     fee_payer_signer = mpp_signer.from_bytes(sgn:_secret_key_bytes())
   end
 
-  local rpc_mod = require('mpp.solana.rpc')
-  local rpc_transport_mod = require('mpp.solana.rpc_transport')
-  local charge_handler = require('mpp.server.charge_handler')
-  local solana_verify  = require('mpp.server.solana_verify')
-  local store_mod      = require('mpp.store')
+  local rpc_mod = require('pay_kit.solana.rpc')
+  local rpc_transport_mod = require('pay_kit.solana.rpc_transport')
+  local charge_handler = require('pay_kit.protocols.mpp.server.charge_handler')
+  local solana_verify  = require('pay_kit.protocols.mpp.server.solana_verify')
+  local store_mod      = require('pay_kit.protocols.mpp.store')
 
   local rpc = rpc_mod.new({url = config.rpc_url, transport = rpc_transport_mod.new()})
   local verifier_bundle = solana_verify.new_real_verifier({pull_signer = fee_payer_signer})
@@ -208,7 +208,7 @@ function Adapter:challenge_headers(gate, _req)
     -- response stays well-formed.
     return {}
   end
-  local headers_mod = require('mpp.protocol.core.headers')
+  local headers_mod = require('pay_kit.protocol.core.headers')
   return {
     ['www-authenticate'] = headers_mod.format_www_authenticate(challenge),
   }
@@ -225,11 +225,11 @@ function Adapter:verify_and_settle(gate, req)
     return nil, 'pay_kit: payment required'
   end
 
-  -- mpp.protocol.core.headers parses "Payment <base64>" into a
+  -- pay_kit.protocol.core.headers parses "Payment <base64>" into a
   -- Credential the inner server consumes. The adapter does this
   -- decode here so the umbrella's dispatcher never touches the
   -- legacy mpp parsing surface directly.
-  local headers_mod = require('mpp.protocol.core.headers')
+  local headers_mod = require('pay_kit.protocol.core.headers')
   local credential, parse_err = headers_mod.parse_authorization(authorization)
   if not credential then
     return nil, 'pay_kit: invalid proof: ' .. tostring(parse_err)
@@ -244,7 +244,7 @@ function Adapter:verify_and_settle(gate, req)
     return server:verify_credential_with_expected(credential, expected)
   end)
   if not ok then
-    -- mpp.protocol.core.error_codes.raise throws `{code, message}`
+    -- pay_kit.protocol.core.error_codes.raise throws `{code, message}`
     -- tables; surface the structured `message` if present so the
     -- 402 body shows the readable reason instead of `table: 0x...`.
     if type(result_or_err) == 'table' and result_or_err.message then

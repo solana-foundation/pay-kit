@@ -16,7 +16,7 @@ The Ed25519 surface lives in `pay_kit.util.ed25519`; this
 module re-exports it under the design-named path so a single
 `require('pay_kit.util.crypto')` brings every crypto primitive
 along. HMAC + constant-time-equal stay on the legacy
-`mpp.util.crypto` (pure Lua; will swap to `resty.openssl.mac` when
+`pay_kit.util._mpp_crypto` (pure Lua; will swap to `resty.openssl.mac` when
 the OpenResty crypto migration lands).
 ]]
 
@@ -24,7 +24,7 @@ local M = {}
 
 M.ed25519 = require('pay_kit.util.ed25519')
 
-local mpp_crypto = require('mpp.util.crypto')
+local mpp_crypto = require('pay_kit.util._mpp_crypto')
 M.hmac_sha256          = mpp_crypto.hmac_sha256
 M.constant_time_equal  = mpp_crypto.constant_eq
 

@@ -1,5 +1,5 @@
 local helper = require('tests.test_helper')
-local ata = require('mpp.methods.solana.ata')
+local ata = require('pay_kit.solana.ata')
 
 -- Known fixture: derive the ATA for a USDC mainnet mint and a randomly
 -- chosen owner. The expected value below is cross-checked against the
@@ -45,7 +45,7 @@ helper.test('on-curve check matches known reference vectors after the bignum cle
   --     reference at ruby/lib/mpp/methods/solana/public_key.rb#on_curve?,
   --     which returns false for the same input.
   local internals = ata._internals
-  local base58 = require('mpp.util.base58')
+  local base58 = require('pay_kit.solana.base58')
   helper.assert_equal(internals.is_on_curve(string.rep('\0', 32)), true)
   helper.assert_equal(
     internals.is_on_curve(base58.decode('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')),

@@ -25,7 +25,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
           restore-keys: ${{ runner.os }}-luarocks-v2-
 
       - name: Install dev rocks (luacheck + luacov + luasocket + luasodium + luasec + lua-resty-openssl + cjson)
@@ -45,7 +45,6 @@ jobs:
       - name: Validate rockspecs
         working-directory: lua
         run: |
-          luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
           luarocks --lua-version=5.1 lint pay-kit-dev-1.rockspec
           luarocks --lua-version=5.1 lint kong-plugin-pay-kit-dev-1.rockspec
           luarocks --lua-version=5.1 lint apisix-plugin-pay-kit-dev-1.rockspec
@@ -54,7 +53,7 @@ jobs:
         working-directory: lua
         run: |
           eval "$(luarocks --lua-version=5.1 --tree lua_modules path)"
-          luacheck mpp/ pay_kit/ plugins/ tests/
+          luacheck pay_kit/ plugins/ tests/
 
       - name: Run tests with coverage
         working-directory: lua
@@ -67,7 +66,7 @@ jobs:
           luacov
           ./scripts/check_coverage.sh ../luacov.report.out 90
 
-      # Codex PR #103 P3: the coverage gate excludes mpp/methods/solana/ata
+      # Codex PR #103 P3: the coverage gate excludes pay_kit/solana/ata
       # because luacov disables LuaJIT trace recording and the on-curve check
       # becomes ~100x slower under coverage. Run the suite a second time
       # WITHOUT luacov so the protocol-critical ATA fixture spec
@@ -112,7 +111,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: lua/lua_modules
-          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/mpp-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
           restore-keys: ${{ runner.os }}-luarocks-v2-
 
       - name: Install runtime rocks

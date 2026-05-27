@@ -29,7 +29,7 @@ end
 local function uninstall()
   _G.ngx = real_ngx
   package.loaded['resty.http'] = real_resty_http
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
 end
 
 local function install_resty_stub(behavior)
@@ -57,8 +57,8 @@ end
 helper.test('rpc_transport_resty refuses to run outside a cosocket phase', function()
   install_ngx_stub('init')
   install_resty_stub({})
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   helper.assert_error(function()
     resty.new()('https://api.mainnet-beta.solana.com', '{}')
   end, 'cosocket')
@@ -68,8 +68,8 @@ end)
 helper.test('rpc_transport_resty refuses to run with no ngx at all', function()
   _G.ngx = nil
   install_resty_stub({})
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   helper.assert_error(function()
     resty.new()('https://api.mainnet-beta.solana.com', '{}')
   end, 'cosocket')
@@ -80,8 +80,8 @@ helper.test('rpc_transport_resty forwards POST + body + headers via cosocket', f
   install_ngx_stub('access')
   local behavior = { body = '{"jsonrpc":"2.0","result":"hi","id":1}' }
   install_resty_stub(behavior)
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   local response = resty.new()('https://api.example.com', '{"jsonrpc":"2.0"}')
   helper.assert_equal(response, '{"jsonrpc":"2.0","result":"hi","id":1}')
   helper.assert_equal(behavior.last_url, 'https://api.example.com')
@@ -97,8 +97,8 @@ end)
 helper.test('rpc_transport_resty raises typed transport-error on connect failure', function()
   install_ngx_stub('access')
   install_resty_stub({ connect_err = 'connection refused' })
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   helper.assert_error(function()
     resty.new()('http://localhost:1/', '{}')
   end, 'http request failed')
@@ -108,8 +108,8 @@ end)
 helper.test('rpc_transport_resty raises typed transport-error on 5xx', function()
   install_ngx_stub('access')
   install_resty_stub({ status = 503 })
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   helper.assert_error(function()
     resty.new()('http://localhost/', '{}')
   end, 'http request returned 503')
@@ -125,8 +125,8 @@ helper.test('rpc_transport_resty raises a clear error when resty.http is missing
   package.preload['resty.http'] = function()
     error('resty.http rock is not installed')
   end
-  package.loaded['mpp.solana.rpc_transport_resty'] = nil
-  local resty = require('mpp.solana.rpc_transport_resty')
+  package.loaded['pay_kit.solana.rpc_transport_resty'] = nil
+  local resty = require('pay_kit.solana.rpc_transport_resty')
   helper.assert_error(function()
     resty.new()('http://localhost/', '{}')
   end, 'resty.http is required')

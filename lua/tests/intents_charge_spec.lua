@@ -1,5 +1,5 @@
--- Coverage for mpp.protocol.intents.charge helpers.
-local charge = require('mpp.protocol.intents.charge')
+-- Coverage for pay_kit.protocols.mpp.charge helpers.
+local charge = require('pay_kit.protocols.mpp.charge')
 local helpers = require('tests.test_helper')
 
 local function assert_throws(fn, pattern)

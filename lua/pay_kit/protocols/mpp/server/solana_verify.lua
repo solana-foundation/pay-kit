@@ -1,6 +1,6 @@
-local uint = require('mpp.util.uint')
-local protocol = require('mpp.protocol.solana')
-local error_codes = require('mpp.protocol.core.error_codes')
+local uint = require('pay_kit.util.uint')
+local protocol = require('pay_kit.solana.mints')
+local error_codes = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 
@@ -538,7 +538,7 @@ end
 ---   pull_transaction_signer  function(base64) -> signed_b64 (when opts.pull_signer set)
 function M.new_real_verifier(opts)
   opts = opts or {}
-  local real = require('mpp.methods.solana.verifier')
+  local real = require('pay_kit.solana.verifier')
   local out = {
     transaction_verifier = real.new_callback(),
     pull_blockhash_extractor = real.new_blockhash_extractor(),

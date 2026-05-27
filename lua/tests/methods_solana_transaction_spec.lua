@@ -1,7 +1,7 @@
 local helper = require('tests.test_helper')
-local transaction = require('mpp.methods.solana.transaction')
-local base58 = require('mpp.util.base58')
-local base64_std = require('mpp.util.base64_std')
+local transaction = require('pay_kit.solana.transaction')
+local base58 = require('pay_kit.solana.base58')
+local base64_std = require('pay_kit.util.base64_std')
 
 -- Helper: build a minimal legacy transaction wire payload with one signature,
 -- one account key, the System Program implicit recipient, a known blockhash,

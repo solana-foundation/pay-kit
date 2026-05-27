@@ -100,7 +100,7 @@ function M.base58(s)
   if type(s) ~= 'string' or #s == 0 then
     return nil, 'pay_kit: signer.base58: expected a non-empty string'
   end
-  local base58 = require('mpp.util.base58')
+  local base58 = require('pay_kit.solana.base58')
   local ok, bytes_or_err = pcall(base58.decode, s)
   if not ok then
     return nil, 'pay_kit: signer.base58: invalid base58: ' .. tostring(bytes_or_err)

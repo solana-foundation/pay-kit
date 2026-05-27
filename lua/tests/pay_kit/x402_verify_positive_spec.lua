@@ -14,10 +14,10 @@ Negative paths live in `x402_verify_spec.lua`.
 ]]
 
 local helper = require('tests.test_helper')
-local base64 = require('mpp.util.base64_std')
-local base58 = require('mpp.util.base58')
-local tx_mod = require('mpp.methods.solana.transaction')
-local ata    = require('mpp.methods.solana.ata')
+local base64 = require('pay_kit.util.base64_std')
+local base58 = require('pay_kit.solana.base58')
+local tx_mod = require('pay_kit.solana.transaction')
+local ata    = require('pay_kit.solana.ata')
 local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 
 -- --- bincode-style serializers --------------------------------------

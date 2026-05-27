@@ -6,9 +6,9 @@ from a 64-byte secret (sk[33..64] is the Ed25519 public key).
 ]]
 
 local helper = require('tests.test_helper')
-local base58 = require('mpp.util.base58')
-local base64 = require('mpp.util.base64_std')
-local tx_mod = require('mpp.methods.solana.transaction')
+local base58 = require('pay_kit.solana.base58')
+local base64 = require('pay_kit.util.base64_std')
+local tx_mod = require('pay_kit.solana.transaction')
 local tx_cosign = require('pay_kit.solana.tx_cosign')
 local ed25519 = require('pay_kit.util.ed25519')
 

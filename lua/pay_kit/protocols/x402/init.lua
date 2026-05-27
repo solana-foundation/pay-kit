@@ -8,7 +8,7 @@ Ports the Ruby gem's `X402::Server::Exact` flow to LuaJIT / OpenResty:
   via identity tuple (scheme/network/asset/payTo + canonical extras).
 - Verifies the transaction's structural shape against the offer.
 - Signs as facilitator (operator.signer fills the facilitator slot).
-- Broadcasts via the cosocket-aware mpp.solana.rpc client.
+- Broadcasts via the cosocket-aware pay_kit.solana.rpc client.
 - Marks the signature consumed in the replay store.
 
 Delegated mode (`config.x402.facilitator_url` set) is NOT implemented
@@ -23,14 +23,14 @@ dispatch shape.
 ]]
 
 local cjson_safe = require('cjson.safe')
-local base64_std = require('mpp.util.base64_std')
+local base64_std = require('pay_kit.util.base64_std')
 local errors     = require('pay_kit.errors')
-local rpc_mod    = require('mpp.solana.rpc')
-local rpc_transport = require('mpp.solana.rpc_transport')
+local rpc_mod    = require('pay_kit.solana.rpc')
+local rpc_transport = require('pay_kit.solana.rpc_transport')
 local tx_cosign  = require('pay_kit.solana.tx_cosign')
 local x402_verify = require('pay_kit.protocols.x402.exact.verify')
-local tx_mod     = require('mpp.methods.solana.transaction')
-local network_check = require('mpp.server.network_check')
+local tx_mod     = require('pay_kit.solana.transaction')
+local network_check = require('pay_kit.protocols.mpp.server.network_check')
 
 local M = {}
 local Adapter = {}

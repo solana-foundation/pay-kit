@@ -21,8 +21,8 @@ multiply, modular inverse via Fermat's little theorem, and Tonelli /
 sqrt over the Edwards prime.
 ]]
 
-local base58 = require('mpp.util.base58')
-local crypto = require('mpp.util.crypto')
+local base58 = require('pay_kit.solana.base58')
+local crypto = require('pay_kit.util._mpp_crypto')
 
 local M = {}
 

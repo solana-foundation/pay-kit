@@ -1,7 +1,7 @@
 local t = require('tests.test_helper')
-local verify = require('mpp.server.solana_verify')
-local mpp = require('mpp')
-local MEMO_PROGRAM = mpp.protocol.solana.MEMO_PROGRAM
+local verify = require('pay_kit.protocols.mpp.server.solana_verify')
+local mpp = require('tests._mpp')
+local MEMO_PROGRAM = require('pay_kit.solana.mints').MEMO_PROGRAM
 
 local function signature_context(overrides)
   local base = {

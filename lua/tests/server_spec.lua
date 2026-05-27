@@ -1,5 +1,5 @@
 local t = require('tests.test_helper')
-local mpp = require('mpp')
+local mpp = require('tests._mpp')
 
 local function new_server()
   return mpp.server.new({

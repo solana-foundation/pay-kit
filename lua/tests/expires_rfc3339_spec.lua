@@ -6,7 +6,7 @@
 local t = require('tests.test_helper')
 
 t.test('expires parser is strict RFC 3339', function()
-  local expires = require('mpp.expires')
+  local expires = require('pay_kit.protocols.mpp.expires')
   t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00Z') ~= nil)
   t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00+00:00') ~= nil)
   t.assert_true(expires.parse_rfc3339('2099-01-01T00:00:00.123Z') ~= nil)
@@ -20,7 +20,7 @@ end)
 
 t.test('expires parser rejects bare fractional dot (RFC 3339 sec 5.6)', function()
   -- Codex P3 on PR #102. The dot must be followed by at least one digit.
-  local expires = require('mpp.expires')
+  local expires = require('pay_kit.protocols.mpp.expires')
   t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.Z') == nil)
   t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.+00:00') == nil)
   -- A normal fractional value still parses.

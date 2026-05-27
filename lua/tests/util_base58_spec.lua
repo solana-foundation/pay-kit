@@ -1,5 +1,5 @@
 local helper = require('tests.test_helper')
-local base58 = require('mpp.util.base58')
+local base58 = require('pay_kit.solana.base58')
 
 local function from_hex(hex)
   local out = {}

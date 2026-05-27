@@ -1,7 +1,7 @@
 --[[
 Standard padded Base64 codec.
 
-Separate from `mpp.util.base64url` because the Solana JSON-RPC wire format
+Separate from `pay_kit.util.base64url` because the Solana JSON-RPC wire format
 uses the standard alphabet with '+', '/' and '=' padding for the
 `sendTransaction` and `getTransaction` payloads. The existing base64url
 helper strips padding and substitutes the URL-safe alphabet, which would

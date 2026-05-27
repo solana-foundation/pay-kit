@@ -483,26 +483,31 @@ plus the [x402 v2 exact scheme](https://x402.org) on Solana.
 
 ```text
 lua/
-├── pay_kit/                          # PayKit umbrella
+├── pay_kit/                                # PayKit core (no resty/ or mpp/ prefix)
 │   ├── init.lua                            # configure / gate / usd / require_payment ...
 │   ├── errors.lua                          # canonical error strings
-│   ├── signer.lua + signer/{demo,local}    # signer factory family
 │   ├── kms.lua                             # post-v1 reserved namespace
 │   ├── preflight.lua                       # boot-time soundness + surfnet cheatcodes
-│   ├── solana/rpc.lua                      # cosocket RPC re-export
-│   ├── util/{base58,base64url,json,crypto,ed25519,tx_cosign}.lua
-│   ├── protocols/                          # protocol adapters, split per protocol then per scheme
-│   │   ├── mpp/init.lua                    # MPP wrapper (charge intent via mpp/server)
+│   ├── signer.lua + signer/{demo,local}    # signer factory family
+│   ├── store.lua                           # memory() + shared_dict(name) replay store
+│   ├── solana/                             # Solana primitives + cosocket RPC
+│   │   ├── ata.lua, base58.lua, instructions.lua, transaction.lua
+│   │   ├── local_signer.lua, mints.lua, tx_cosign.lua, verifier.lua
+│   │   └── rpc.lua, rpc_transport.lua, rpc_transport_resty.lua
+│   ├── util/                               # generic util (base64, bit, crypto, ed25519, json, uint)
+│   ├── protocol/core/                      # wire format (headers, types, challenge, error_codes)
+│   ├── protocols/                          # per-protocol adapters
+│   │   ├── mpp/
+│   │   │   ├── init.lua, charge.lua, expires.lua, error.lua, store.lua
+│   │   │   └── server/                     # MPP server (charge_handler, network_check, ...)
 │   │   └── x402/
 │   │       ├── init.lua                    # x402 adapter (offer + cosign + broadcast)
 │   │       └── exact/verify.lua            # 11-rule SVM-exact structural verifier
-│   ├── store.lua                           # memory() + shared_dict(name)
 │   └── internal/{config,dispatcher,fee,gate,operator,price,registry}.lua
 ├── plugins/                                # framework wrappers
 │   ├── resty/pay-kit.lua                   # OpenResty re-export
 │   ├── kong/plugins/pay-kit/               # Kong plugin (loader path-pinned)
 │   └── apisix/plugins/pay-kit.lua          # APISIX plugin (loader path-pinned)
-├── mpp/                                    # MPP protocol layer (challenge build, headers, signer, charge_handler)
 ├── examples/openresty/                     # runnable PayKit demo
 └── tests/                                  # luaunit suite + luacov gate
 ```

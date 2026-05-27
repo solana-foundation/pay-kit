@@ -1,5 +1,5 @@
 local t = require('tests.test_helper')
-local mpp = require('mpp')
+local mpp = require('tests._mpp')
 
 local TEST_RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
 local TEST_SECRET = 'cross-route-replay-test-secret-key'

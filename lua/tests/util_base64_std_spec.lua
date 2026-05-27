@@ -1,5 +1,5 @@
 local helper = require('tests.test_helper')
-local base64_std = require('mpp.util.base64_std')
+local base64_std = require('pay_kit.util.base64_std')
 
 helper.test('base64_std encode handles the canonical RFC 4648 vectors', function()
   helper.assert_equal(base64_std.encode(''), '')

@@ -1,6 +1,6 @@
 local t = require('tests.test_helper')
-local rpc = require('mpp.solana.rpc')
-local json = require('mpp.util.json')
+local rpc = require('pay_kit.solana.rpc')
+local json = require('pay_kit.util.json')
 
 --- Build a fake transport that returns canned responses in order. Each
 --- response can be a string (returned verbatim) or a table that is

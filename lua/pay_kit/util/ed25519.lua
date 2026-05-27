@@ -8,7 +8,7 @@ Two backends, picked at module load time:
    1.5.1), available via luarocks on APISIX / OpenResty. No system
    libsodium needed.
 
-2. luasodium (fallback): the legacy `mpp.methods.solana.signer`
+2. luasodium (fallback): the legacy `pay_kit.solana.local_signer`
    backend. Kept so callers on plain LuaJIT environments without
    OpenResty/Kong still get a working signer. The Ruby/Rust SDKs
    both moved off libsodium for the same reason - it is an extra

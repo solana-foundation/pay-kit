@@ -1,5 +1,5 @@
 --[[
-x402 broadcast-path coverage. Stubs mpp.solana.rpc with an in-memory
+x402 broadcast-path coverage. Stubs pay_kit.solana.rpc with an in-memory
 mock so we can drive schemes/x402.lua:verify_and_settle end-to-end
 without a real Solana RPC. The mock returns a known signature on
 sendTransaction; we then assert that the adapter:
@@ -24,16 +24,16 @@ local ed25519 = require('pay_kit.util.ed25519')
 local secret = ed25519.generate()
 if not secret then return end  -- soft-skip in pure-openssl env
 
-local base58 = require('mpp.util.base58')
-local base64 = require('mpp.util.base64_std')
-local tx_mod = require('mpp.methods.solana.transaction')
-local ata    = require('mpp.methods.solana.ata')
+local base58 = require('pay_kit.solana.base58')
+local base64 = require('pay_kit.util.base64_std')
+local tx_mod = require('pay_kit.solana.transaction')
+local ata    = require('pay_kit.solana.ata')
 local cjson  = require('cjson.safe')
 
--- --- mpp.solana.rpc stub: install AND evict downstream caches ---
+-- --- pay_kit.solana.rpc stub: install AND evict downstream caches ---
 
 local broadcast_calls = {}
-package.loaded['mpp.solana.rpc'] = {
+package.loaded['pay_kit.solana.rpc'] = {
   new = function(_)
     return {
       send_raw_transaction = function(_self, tx_b64)
@@ -50,10 +50,12 @@ package.loaded['mpp.solana.rpc'] = {
 }
 -- Evict downstream modules so they re-bind to the stubbed rpc when
 -- the next require happens through pay_kit.configure().
-package.loaded['pay_kit.protocols.x402']   = nil
+-- Evict downstream modules so they re-bind to the stubbed rpc when
+-- the next require happens through pay_kit.configure(). Do NOT evict
+-- the stub itself; package.loaded[...] must keep pointing at it.
+package.loaded['pay_kit.protocols.x402']      = nil
 package.loaded['pay_kit.internal.dispatcher'] = nil
-package.loaded['pay_kit']                = nil
-package.loaded['pay_kit.solana.rpc']     = nil
+package.loaded['pay_kit']                     = nil
 
 local pay_kit = require('pay_kit')
 local signer  = require('pay_kit.signer')
@@ -198,7 +200,7 @@ helper.test('x402 verify_and_settle: SIGNATURE_CONSUMED on duplicate submit', fu
   -- consume_signature returning false.
   pay_kit._reset_for_tests()
   -- Re-install the same stub since reset clears the dispatcher.
-  package.loaded['mpp.solana.rpc'] = {
+  package.loaded['pay_kit.solana.rpc'] = {
     new = function()
       return {
         send_raw_transaction = function() return 'fakeSignatureBase58' end,

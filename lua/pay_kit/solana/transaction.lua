@@ -12,8 +12,8 @@ Solana uses for signature counts, account-key counts, instruction
 counts, and the inner per-instruction account / data lengths.
 ]]
 
-local base58 = require('mpp.util.base58')
-local base64_std = require('mpp.util.base64_std')
+local base58 = require('pay_kit.solana.base58')
+local base64_std = require('pay_kit.util.base64_std')
 
 local M = {}
 

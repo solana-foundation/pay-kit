@@ -18,7 +18,7 @@ contract with cosocket I/O on `:sign`. OpenResty cosockets cooperate
 with the event loop automatically, so call sites do not change.
 ]]
 
-local base58 = require('mpp.util.base58')
+local base58 = require('pay_kit.solana.base58')
 local ed25519 = require('pay_kit.util.ed25519')
 
 local M = {}
@@ -63,7 +63,7 @@ end
 
 -- Internal: hand back the raw 64-byte secret. Used by the MPP
 -- adapter when it still funnels a JSON-array secret into the legacy
--- mpp.methods.solana.signer for the cosign-transaction path.
+-- pay_kit.solana.local_signer for the cosign-transaction path.
 function Signer:_secret_key_bytes()
   return self._secret_bytes
 end

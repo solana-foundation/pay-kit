@@ -7,22 +7,22 @@ transaction the client posted as the `Authorization: Payment`
 credential, decodes it through the codec / instruction parsers / ATA
 derivation modules this PR ships, and rejects on the first shape
 mismatch the Rust spine rejects. The accepting path returns silently
-and the surrounding `mpp.server.charge_handler` proceeds with cosign /
+and the surrounding `pay_kit.protocols.mpp.server.charge_handler` proceeds with cosign /
 simulate / broadcast / consume / await.
 
 The verifier replaces the hooks-based shape in
-`mpp.server.solana_verify.new_signature_verifier`, which delegates
+`pay_kit.protocols.mpp.server.solana_verify.new_signature_verifier`, which delegates
 parsing to caller-supplied hooks. The hooks-based path is preserved
 for backward compatibility; callers opt into the real verifier with
-`mpp.server.solana_verify.new_real_verifier(opts)`.
+`pay_kit.protocols.mpp.server.solana_verify.new_real_verifier(opts)`.
 ]]
 
-local uint = require('mpp.util.uint')
-local transaction = require('mpp.methods.solana.transaction')
-local instructions = require('mpp.methods.solana.instructions')
-local ata = require('mpp.methods.solana.ata')
-local protocol = require('mpp.protocol.solana')
-local error_codes = require('mpp.protocol.core.error_codes')
+local uint = require('pay_kit.util.uint')
+local transaction = require('pay_kit.solana.transaction')
+local instructions = require('pay_kit.solana.instructions')
+local ata = require('pay_kit.solana.ata')
+local protocol = require('pay_kit.solana.mints')
+local error_codes = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 
@@ -37,7 +37,7 @@ local COMPUTE_BUDGET_PROGRAM = instructions.COMPUTE_BUDGET_PROGRAM
 -- transaction failed one of the verifier's structural checks (mint, amount,
 -- ATA, memo, fee payer, compute budget). The challenge itself already
 -- verified upstream in `mpp.server.init.lua`. Network mismatches and
--- consume conflicts are tagged separately in `mpp.server.charge_handler`.
+-- consume conflicts are tagged separately in `pay_kit.protocols.mpp.server.charge_handler`.
 local function verifier_error(message)
   error({ code = error_codes.PAYMENT_INVALID, message = message })
 end
@@ -350,7 +350,7 @@ function M.verify_transaction_base64(transaction_base64, request)
 end
 
 --- Build a `transaction_verifier` callback suitable for
---- `mpp.server.charge_handler.new({transaction_verifier = ...})`.
+--- `pay_kit.protocols.mpp.server.charge_handler.new({transaction_verifier = ...})`.
 function M.new_callback()
   return function(transaction_base64, request)
     M.verify_transaction_base64(transaction_base64, request)
@@ -358,7 +358,7 @@ function M.new_callback()
 end
 
 --- Build a `pull_blockhash_extractor` callback suitable for
---- `mpp.server.charge_handler.new({pull_blockhash_extractor = ...})`.
+--- `pay_kit.protocols.mpp.server.charge_handler.new({pull_blockhash_extractor = ...})`.
 --- Returns the recent_blockhash base58 string so the handler's network
 --- gate can run without re-parsing the transaction.
 function M.new_blockhash_extractor()

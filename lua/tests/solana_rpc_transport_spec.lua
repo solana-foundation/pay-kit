@@ -43,8 +43,8 @@ end
 
 helper.test('rpc_transport routes http:// through luasocket', function()
   install_http_stub(200)
-  package.loaded['mpp.solana.rpc_transport'] = nil
-  local rpc_transport = require('mpp.solana.rpc_transport')
+  package.loaded['pay_kit.solana.rpc_transport'] = nil
+  local rpc_transport = require('pay_kit.solana.rpc_transport')
   fake_http_called = nil
   local _ok, _err = pcall(rpc_transport.new(), 'http://localhost:8899', '{"jsonrpc":"2.0"}')
   helper.assert_true(fake_http_called ~= nil, 'luasocket request was called')
@@ -55,8 +55,8 @@ end)
 
 helper.test('rpc_transport raises a typed error on 5xx', function()
   install_http_stub(500)
-  package.loaded['mpp.solana.rpc_transport'] = nil
-  local rpc_transport = require('mpp.solana.rpc_transport')
+  package.loaded['pay_kit.solana.rpc_transport'] = nil
+  local rpc_transport = require('pay_kit.solana.rpc_transport')
   helper.assert_error(function()
     rpc_transport.new()('http://localhost/', '{}')
   end, 'http request returned 500')
@@ -65,8 +65,8 @@ end)
 
 helper.test('rpc_transport raises when the request fails outright', function()
   package.loaded['socket.http'] = { request = function(_) return nil, 'econnrefused' end }
-  package.loaded['mpp.solana.rpc_transport'] = nil
-  local rpc_transport = require('mpp.solana.rpc_transport')
+  package.loaded['pay_kit.solana.rpc_transport'] = nil
+  local rpc_transport = require('pay_kit.solana.rpc_transport')
   helper.assert_error(function()
     rpc_transport.new()('http://localhost/', '{}')
   end, 'http request failed')
@@ -76,8 +76,8 @@ end)
 if real_https then
   helper.test('rpc_transport routes https:// through luasec when available', function()
     install_https_stub('{"jsonrpc":"2.0","result":"https","id":1}')
-    package.loaded['mpp.solana.rpc_transport'] = nil
-    local rpc_transport = require('mpp.solana.rpc_transport')
+    package.loaded['pay_kit.solana.rpc_transport'] = nil
+    local rpc_transport = require('pay_kit.solana.rpc_transport')
     local response = rpc_transport.new()('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
     helper.assert_true(response:match('https') ~= nil, 'response carries the stubbed payload')
     package.loaded['ssl.https'] = real_https
@@ -85,9 +85,9 @@ if real_https then
 
   helper.test('rpc_transport enables luasec peer cert verification by default', function()
     install_https_stub('{"jsonrpc":"2.0","result":"x","id":1}')
-    package.loaded['mpp.solana.rpc_transport'] = nil
+    package.loaded['pay_kit.solana.rpc_transport'] = nil
     fake_https_called = nil
-    local rpc_transport = require('mpp.solana.rpc_transport')
+    local rpc_transport = require('pay_kit.solana.rpc_transport')
     rpc_transport.new()('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
     helper.assert_true(fake_https_called ~= nil, 'luasec request was called')
     helper.assert_equal(fake_https_called.verify, 'peer')
@@ -98,9 +98,9 @@ if real_https then
 
   helper.test('rpc_transport allows opts.ssl_verify override for explicit insecure callers', function()
     install_https_stub('{"jsonrpc":"2.0","result":"x","id":1}')
-    package.loaded['mpp.solana.rpc_transport'] = nil
+    package.loaded['pay_kit.solana.rpc_transport'] = nil
     fake_https_called = nil
-    local rpc_transport = require('mpp.solana.rpc_transport')
+    local rpc_transport = require('pay_kit.solana.rpc_transport')
     rpc_transport.new({ ssl_verify = 'none' })('https://api.mainnet-beta.solana.com', '{"jsonrpc":"2.0"}')
     helper.assert_equal(fake_https_called.verify, 'none')
     package.loaded['ssl.https'] = real_https

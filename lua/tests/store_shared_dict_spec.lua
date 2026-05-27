@@ -20,7 +20,7 @@
 -- 4. Non-collision errors raise rather than silently returning false.
 
 local t = require('tests.test_helper')
-local store_shared_dict = require('mpp.server.store_shared_dict')
+local store_shared_dict = require('pay_kit.protocols.mpp.server.store_shared_dict')
 
 -- Fake `ngx.shared.<name>` instance. The real implementation lives
 -- inside nginx's shared memory zone; the test fake keeps a single

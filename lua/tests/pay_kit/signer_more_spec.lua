@@ -27,7 +27,7 @@ helper.test('signer.base58 rejects empty string', function()
 end)
 
 helper.test('signer.base58 rejects invalid base58 chars', function()
-  -- '0' is not in the bitcoin base58 alphabet; mpp.util.base58 raises.
+  -- '0' is not in the bitcoin base58 alphabet; pay_kit.solana.base58 raises.
   local s, err = signer.base58('0000000000000')
   helper.assert_true(s == nil)
   helper.assert_true(err ~= nil)
@@ -35,7 +35,7 @@ end)
 
 helper.test('signer.base58 rejects decoded-length != 64', function()
   -- Short base58 string that decodes to fewer than 64 bytes.
-  local base58 = require('mpp.util.base58')
+  local base58 = require('pay_kit.solana.base58')
   local short = base58.encode(string.rep('\1', 16))
   local s, err = signer.base58(short)
   helper.assert_true(s == nil)
@@ -94,7 +94,7 @@ helper.test('signer.from_env auto-detects hex shape (128 chars)', function()
 end)
 
 helper.test('signer.from_env falls back to base58 detect', function()
-  local base58 = require('mpp.util.base58')
+  local base58 = require('pay_kit.solana.base58')
   local sk_bytes = {}
   for i = 1, 64 do sk_bytes[#sk_bytes + 1] = string.char((i * 13) % 256) end
   local b58 = base58.encode(table.concat(sk_bytes))

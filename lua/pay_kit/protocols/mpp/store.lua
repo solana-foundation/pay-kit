@@ -1,4 +1,4 @@
-local json = require('mpp.util.json')
+local json = require('pay_kit.util.json')
 
 local MemoryStore = {}
 MemoryStore.__index = MemoryStore

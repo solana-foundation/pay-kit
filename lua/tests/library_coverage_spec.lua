@@ -9,12 +9,12 @@ local assert_equal = helper.assert_equal
 local assert_true = helper.assert_true
 local assert_error = helper.assert_error
 
-local mpp_error = require('mpp.error')
-local charge = require('mpp.protocol.intents.charge')
-local network_check = require('mpp.server.network_check')
-local types = require('mpp.protocol.core.types')
-local store = require('mpp.store')
-local expires = require('mpp.expires')
+local mpp_error = require('pay_kit.protocols.mpp.error')
+local charge = require('pay_kit.protocols.mpp.charge')
+local network_check = require('pay_kit.protocols.mpp.server.network_check')
+local types = require('pay_kit.protocol.core.types')
+local store = require('pay_kit.protocols.mpp.store')
+local expires = require('pay_kit.protocols.mpp.expires')
 
 -- mpp.error -------------------------------------------------------------------
 
@@ -35,7 +35,7 @@ test('mpp.error.raise throws a table error', function()
   assert_equal(err.message, 'kaput')
 end)
 
--- mpp.protocol.intents.charge -------------------------------------------------
+-- pay_kit.protocols.mpp.charge -------------------------------------------------
 
 test('charge.parse_units rejects empty amount', function()
   assert_error(function() charge.parse_units('', 6) end, 'amount is required')
@@ -87,7 +87,7 @@ test('charge.validate_max_amount rejects non-numeric max', function()
   end, 'invalid max amount')
 end)
 
--- mpp.server.network_check ----------------------------------------------------
+-- pay_kit.protocols.mpp.server.network_check ----------------------------------------------------
 
 test('network_check.assert_network_blockhash passes for clean blockhash', function()
   network_check.assert_network_blockhash('mainnet', 'NormalBlockhash1234567890')
@@ -105,7 +105,7 @@ test('network_check.assert_network_blockhash raises on surfpool against mainnet'
   end, 'mainnet')
 end)
 
--- mpp.protocol.core.types -----------------------------------------------------
+-- pay_kit.protocol.core.types -----------------------------------------------------
 
 test('types Base64URLJSON:is_empty reports empty raw', function()
   local empty = types.new_base64url_json_raw('')

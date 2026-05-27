@@ -20,10 +20,10 @@ connection problem on the first request.
 Opt-out: `c.preflight = false` or `PAY_KIT_DISABLE_PREFLIGHT=1`.
 ]]
 
-local rpc_mod       = require('mpp.solana.rpc')
-local rpc_transport = require('mpp.solana.rpc_transport')
-local ata_mod       = require('mpp.methods.solana.ata')
-local solana_mod    = require('mpp.protocol.solana')
+local rpc_mod       = require('pay_kit.solana.rpc')
+local rpc_transport = require('pay_kit.solana.rpc_transport')
+local ata_mod       = require('pay_kit.solana.ata')
+local solana_mod    = require('pay_kit.solana.mints')
 
 local M = {}
 
