@@ -55,7 +55,7 @@ module PayKit
         status, headers, body = @app.call(env)
 
         if (settled = env[ENV_PAYMENT_KEY])
-          settled.settlement_headers.each { |name, value| headers[name] ||= value }
+          settled.settlement_headers.each { |name, value| headers[name.to_s.downcase] ||= value }
         end
 
         [status, headers, body]
@@ -67,9 +67,17 @@ module PayKit
 
       private
 
+      # Rack 3 requires response header names to be lowercase. The
+      # x402/MPP wire constants are upper/mixed case to match the spec
+      # and the Rust spine — downcase only at this boundary so the
+      # wire constants stay canonical.
+      def normalize_headers(headers)
+        headers.each_with_object({}) { |(k, v), h| h[k.to_s.downcase] = v }
+      end
+
       def render_402(challenge)
         body = JSON.generate(challenge.to_h)
-        headers = {"content-type" => "application/json"}.merge(challenge.headers)
+        headers = {"content-type" => "application/json"}.merge(normalize_headers(challenge.headers))
         [402, headers, [body]]
       end
 
