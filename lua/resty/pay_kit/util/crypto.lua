@@ -26,6 +26,9 @@ M.ed25519 = require('resty.pay_kit.util.ed25519')
 
 local mpp_crypto = require('mpp.util.crypto')
 M.hmac_sha256          = mpp_crypto.hmac_sha256
-M.constant_time_equal  = mpp_crypto.constant_time_equal
+-- Legacy module names this `constant_eq`; expose under the public
+-- DESIGN.md name. Keep both for one release so the shim is forgiving.
+M.constant_time_equal  = mpp_crypto.constant_eq
+M.constant_eq          = mpp_crypto.constant_eq
 
 return M
