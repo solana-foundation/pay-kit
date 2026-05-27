@@ -485,7 +485,7 @@ lua/
 │   └── internal/{config,dispatcher,fee,gate,operator,price,registry}.lua
 ├── kong/plugins/pay-kit/                   # Kong custom plugin
 ├── apisix/plugins/pay-kit.lua              # APISIX custom plugin
-├── mpp/                                    # legacy MPP-only surface (deprecation shim)
+├── mpp/                                    # MPP protocol layer (challenge build, headers, signer, charge_handler)
 ├── examples/openresty/                     # runnable PayKit demo
 └── tests/                                  # luaunit suite + luacov gate
 ```
