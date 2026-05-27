@@ -543,3 +543,34 @@ So the replay-state side of the bug is closed.
 - `new_rejects_empty_realm` — explicit empty string rejected.
 
 ---
+
+### #37 — Unconditional default to mainnet, plus naming inconsistency
+**ID:** `1d5ea7b2` · **Files:** `crates/mpp/src/{server,client}/charge.rs`, `protocol/solana.rs`, `server/html.rs`
+
+**Audit claim:** the codebase silently treated any network slug other than `"devnet"`/`"localnet"` as mainnet-beta (e.g. in `default_rpc_url`), contradicting the spec's "MUST be one of mainnet/devnet/localnet". Two copies of `default_rpc_url` (one private, one public) drifted independently. The audit also asked us to decide between `"mainnet"` and `"mainnet-beta"` as the canonical slug.
+
+**Decision:** ✅ **accepted — allowlist at server boot, canonicalize on `"mainnet"`, consolidate.**
+
+Ludo's call: `"mainnet"` is the canonical slug. `"mainnet-beta"` is the Solana RPC hostname convention only.
+
+**Action taken:**
+- Added `NETWORK_MAINNET`/`NETWORK_DEVNET`/`NETWORK_LOCALNET` constants and `DEFAULT_NETWORK = NETWORK_MAINNET` in `protocol/solana.rs`.
+- Added `validate_network(&str) -> Result<(), Error>` in `protocol/solana.rs`. Rejects everything outside the allowlist; explicit empty-string handling for a cleaner error.
+- `Mpp::new` calls `validate_network(&config.network)?` next to the other boot-time guards (#16, #15, #24). Misconfig like `Config { network: "mainnet-beta" }` or `"testnet"` fails at boot, before any RPC client is built.
+- Removed the private `default_rpc_url` in `server/charge.rs`; the single callsite (`Mpp::new`) now uses `crate::protocol::solana::default_rpc_url`. Tests for the helper live next to the public copy.
+- Client `select_charge_challenge` → `matches_network` no longer falls back to `"mainnet-beta"` when `methodDetails.network` is `None`; uses `DEFAULT_NETWORK` (= `"mainnet"`) per spec §7.2.
+- Docstrings on `Config.network`, `SelectChargeChallengeOptions::network`, and the `protocol/solana.rs` constants updated to reflect the canonical slug.
+- Test fixtures across `client/charge.rs` and `server/html.rs` that used `"mainnet-beta"` as a network slug → `"mainnet"`. (RPC hostname strings like `https://api.mainnet-beta.solana.com` are unchanged — that's a Solana hostname, separate concern.)
+
+**What I didn't bundle in this finding:**
+- `server/session.rs` / `protocol/intents/session.rs` still carry `"mainnet-beta"` as a session-flow network slug. Different intent (session, not charge), separate audit scope; consciously skipped to keep the diff tight.
+- `x402` crate has its own network handling with `"mainnet-beta"` references — that's a sibling protocol, not in scope for MPP audit #37.
+- Didn't refactor `Config.network` to an `enum Network { Mainnet, Devnet, Localnet }`. Cleaner but a larger ergonomic change; the runtime allowlist closes the audit threat as-is.
+
+**New tests:**
+- `new_accepts_canonical_networks` — loop over `{mainnet, devnet, localnet}`, all succeed.
+- `new_rejects_unknown_network` — `"testnet"` → error.
+- `new_rejects_empty_network` — distinct error message for empty input.
+- `new_rejects_mainnet_beta_slug` — explicitly locks in the canonicalization decision.
+
+---

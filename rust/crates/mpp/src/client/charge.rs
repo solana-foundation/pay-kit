@@ -76,7 +76,9 @@ pub struct SelectChargeChallengeOptions<'a> {
     pub currency: Option<&'a str>,
     /// Currency symbols or mint addresses in client preference order.
     pub currency_preferences: &'a [&'a str],
-    /// Solana network identifier, e.g. "mainnet-beta", "devnet", or "localnet".
+    /// Solana network identifier, one of "mainnet", "devnet", or "localnet"
+    /// (spec §7.2). The legacy "mainnet-beta" name is the RPC hostname, not
+    /// a canonical slug.
     pub network: Option<&'a str>,
     /// Opt-in: select challenges whose currency is an unknown Token-2022 mint.
     /// See `BuildChargeTransactionOptions::allow_unknown_token_2022` for the
@@ -689,9 +691,17 @@ fn decode_charge_challenge(
 }
 
 fn matches_network(method_details: &MethodDetails, network: Option<&str>) -> bool {
+    // Audit #37: when methodDetails omits `network`, spec §7.2 says it
+    // defaults to `mainnet` — not the legacy "mainnet-beta" RPC hostname.
     match network {
         None => true,
-        Some(expected) => method_details.network.as_deref().unwrap_or("mainnet-beta") == expected,
+        Some(expected) => {
+            method_details
+                .network
+                .as_deref()
+                .unwrap_or(crate::protocol::solana::DEFAULT_NETWORK)
+                == expected
+        }
     }
 }
 
@@ -817,12 +827,7 @@ mod tests {
     #[test]
     fn select_charge_challenge_honors_client_currency_preference_order() {
         let challenges = vec![
-            selection_challenge(
-                "mainnet-usdc",
-                "solana",
-                mints::USDC_MAINNET,
-                "mainnet-beta",
-            ),
+            selection_challenge("mainnet-usdc", "solana", mints::USDC_MAINNET, "mainnet"),
             selection_challenge("devnet-usdc", "solana", mints::USDC_DEVNET, "devnet"),
         ];
 
@@ -843,12 +848,7 @@ mod tests {
     fn select_charge_challenge_returns_none_when_no_candidate_matches() {
         let challenges = vec![
             selection_challenge("stripe", "stripe", mints::USDC_DEVNET, "devnet"),
-            selection_challenge(
-                "usdc-mainnet",
-                "solana",
-                mints::USDC_MAINNET,
-                "mainnet-beta",
-            ),
+            selection_challenge("usdc-mainnet", "solana", mints::USDC_MAINNET, "mainnet"),
         ];
 
         let selected = select_charge_challenge(
@@ -871,7 +871,7 @@ mod tests {
         const UNKNOWN_MINT: &str = "9XHRopERTd4LfQ8b6e3p9bN2WhxgQzDxFRtbq1XwQ4mP";
         let details = MethodDetails {
             decimals: Some(6),
-            network: Some("mainnet-beta".to_string()),
+            network: Some("mainnet".to_string()),
             token_program: token_program.map(|s| s.to_string()),
             ..Default::default()
         };
@@ -950,12 +950,12 @@ mod tests {
             "pyusd-mainnet",
             "solana",
             mints::PYUSD_MAINNET,
-            "mainnet-beta",
+            "mainnet",
         )];
         let selected = select_charge_challenge(
             &challenges,
             SelectChargeChallengeOptions {
-                network: Some("mainnet-beta"),
+                network: Some("mainnet"),
                 ..Default::default()
             },
         )

@@ -115,13 +115,9 @@ fn validate_secret_key(secret_key: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn default_rpc_url(network: &str) -> &'static str {
-    match network {
-        "devnet" => "https://api.devnet.solana.com",
-        "localnet" => "http://localhost:8899",
-        _ => "https://api.mainnet-beta.solana.com",
-    }
-}
+// Audit #37: this used to be a private duplicate of the same function
+// in `protocol/solana.rs`. Consolidated — callers in this file now use
+// the public one via `crate::protocol::solana::default_rpc_url`.
 
 /// Resolve the SPL token program governing `currency`, once, at server
 /// boot. Returns `None` for native SOL. For well-known stablecoins the
@@ -176,7 +172,9 @@ pub struct Config {
     pub currency: String,
     /// Token decimals (default: 6 for USDC-like tokens).
     pub decimals: u8,
-    /// Solana network: mainnet-beta, devnet, or localnet.
+    /// Solana network: one of "mainnet", "devnet", "localnet" (spec §7.2).
+    /// Validated at `Mpp::new` time. "mainnet-beta" is the RPC hostname,
+    /// not a canonical slug.
     pub network: String,
     /// RPC URL (overrides default for the network).
     pub rpc_url: Option<String>,
@@ -274,9 +272,17 @@ impl Mpp {
             ));
         }
 
+        // Audit #37: spec §7.2 allows only `mainnet`, `devnet`, `localnet`.
+        // Rejecting `mainnet-beta`/`testnet`/typos at boot keeps the wire
+        // format canonical and stops the silent "everything unknown
+        // defaults to mainnet" behaviour that used to live in default_rpc_url.
+        crate::protocol::solana::validate_network(&config.network)?;
+
         let rpc_url = config
             .rpc_url
-            .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
+            .unwrap_or_else(|| {
+                crate::protocol::solana::default_rpc_url(&config.network).to_string()
+            });
         let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
         validate_secret_key(&secret_key)?;
         let realm = match config.realm {
@@ -4217,6 +4223,65 @@ mod tests {
         );
     }
 
+    // ── Audit #37: network allowlist + mainnet canonicalization ──
+
+    #[test]
+    fn new_accepts_canonical_networks() {
+        for net in ["mainnet", "devnet", "localnet"] {
+            Mpp::new(Config {
+                recipient: TEST_RECIPIENT.to_string(),
+                secret_key: Some(TEST_SECRET.to_string()),
+                network: net.to_string(),
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| panic!("{net} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn new_rejects_unknown_network() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            network: "testnet".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("testnet should be rejected");
+        assert!(err.to_string().contains("Unknown network"), "got: {err}");
+    }
+
+    #[test]
+    fn new_rejects_empty_network() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            network: String::new(),
+            ..Default::default()
+        })
+        .err()
+        .expect("empty network should be rejected");
+        assert!(
+            err.to_string().contains("network must not be empty"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn new_rejects_mainnet_beta_slug() {
+        // Audit #37: canonicalize on "mainnet" — the legacy "mainnet-beta"
+        // is an RPC hostname, not a wire-format slug.
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            network: "mainnet-beta".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("mainnet-beta should be rejected as a slug");
+        assert!(err.to_string().contains("Unknown network"), "got: {err}");
+    }
+
     #[test]
     fn new_custom_rpc_url() {
         // Should not fail — just verifying it accepts a custom RPC URL.
@@ -4389,33 +4454,10 @@ mod tests {
         assert!(details.fee_payer_key.is_some(), "feePayerKey must be set");
     }
 
-    // ── default_rpc_url tests ──
-
-    #[test]
-    fn default_rpc_url_devnet() {
-        assert_eq!(default_rpc_url("devnet"), "https://api.devnet.solana.com");
-    }
-
-    #[test]
-    fn default_rpc_url_localnet() {
-        assert_eq!(default_rpc_url("localnet"), "http://localhost:8899");
-    }
-
-    #[test]
-    fn default_rpc_url_mainnet() {
-        assert_eq!(
-            default_rpc_url("mainnet-beta"),
-            "https://api.mainnet-beta.solana.com"
-        );
-    }
-
-    #[test]
-    fn default_rpc_url_unknown_defaults_to_mainnet() {
-        assert_eq!(
-            default_rpc_url("anything"),
-            "https://api.mainnet-beta.solana.com"
-        );
-    }
+    // ── default_rpc_url ──
+    //
+    // The previous private duplicate is gone; tests for the canonical
+    // implementation live next to it in `protocol/solana.rs`.
 
     // ── charge() and charge_with_options() tests ──
 
@@ -4734,7 +4776,7 @@ mod tests {
     fn charge_challenge_rejects_mismatched_network_in_method_details() {
         let mpp = test_mpp(); // network: devnet
         let md = MethodDetails {
-            network: Some("mainnet-beta".to_string()),
+            network: Some("mainnet".to_string()),
             ..Default::default()
         };
         let request = ChargeRequest {

@@ -225,9 +225,9 @@ mod tests {
         let html = challenge_to_html(
             &challenge,
             "https://api.mainnet-beta.solana.com",
-            "mainnet-beta",
+            "mainnet",
         );
-        assert!(html.contains("\"network\":\"mainnet-beta\""));
+        assert!(html.contains("\"network\":\"mainnet\""));
     }
 
     #[test]

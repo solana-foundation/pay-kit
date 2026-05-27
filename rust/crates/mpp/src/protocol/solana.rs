@@ -27,11 +27,44 @@ pub mod mints {
     pub const CASH_MAINNET: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
 }
 
-/// Default RPC URLs per network.
+/// Canonical Solana network slugs per spec §7.2.
+///
+/// `mainnet` is the canonical form. The literal `mainnet-beta` is a Solana
+/// RPC hostname convention and MUST NOT appear as a wire-format network
+/// slug — `validate_network` rejects it explicitly to prevent the
+/// non-canonical name from drifting back in.
+pub const NETWORK_MAINNET: &str = "mainnet";
+pub const NETWORK_DEVNET: &str = "devnet";
+pub const NETWORK_LOCALNET: &str = "localnet";
+
+/// Default network when callers omit it. Matches the spec's "defaults to
+/// mainnet if omitted" guidance.
+pub const DEFAULT_NETWORK: &str = NETWORK_MAINNET;
+
+/// Audit #37: allowlist the network slug per spec §7.2. Rejects anything
+/// that isn't `mainnet`, `devnet`, or `localnet`, so a typo or stale name
+/// (e.g. `mainnet-beta`, `testnet`) surfaces at the boundary instead of
+/// silently mapping to a default cluster.
+pub fn validate_network(network: &str) -> Result<(), crate::error::Error> {
+    match network {
+        NETWORK_MAINNET | NETWORK_DEVNET | NETWORK_LOCALNET => Ok(()),
+        "" => Err(crate::error::Error::InvalidConfig(
+            "network must not be empty (one of `mainnet`, `devnet`, `localnet`)".into(),
+        )),
+        other => Err(crate::error::Error::InvalidConfig(format!(
+            "Unknown network `{other}` (allowed: `mainnet`, `devnet`, `localnet`)"
+        ))),
+    }
+}
+
+/// Default RPC URLs per network. Inputs are expected to be canonical
+/// slugs (see `validate_network`); unknown slugs fall through to the
+/// mainnet RPC for backwards compatibility, but `validate_network` at
+/// `Mpp::new` ensures servers can never reach the fallback path.
 pub fn default_rpc_url(network: &str) -> &'static str {
     match network {
-        "devnet" => "https://api.devnet.solana.com",
-        "localnet" => "http://localhost:8899",
+        NETWORK_DEVNET => "https://api.devnet.solana.com",
+        NETWORK_LOCALNET => "http://localhost:8899",
         _ => "https://api.mainnet-beta.solana.com",
     }
 }
