@@ -51,6 +51,15 @@ class PayKitPricingTest < Minitest::Test
     PayKit.reset!
   end
 
+  def test_dynamic_gate_does_not_define_fees_predicate
+    PayKitTestHelpers.with_config do
+      pricing = MyPricing.new
+      refute_respond_to pricing[:dyn], :fees?,
+        "DynamicGate must not pretend to answer fees? without a request - " \
+        "callers must materialize first"
+    end
+  end
+
   def test_gate_pay_to_override_wins_over_operator_default
     explicit = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP"
     klass = Class.new(PayKit::Pricing) do

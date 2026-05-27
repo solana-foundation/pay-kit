@@ -37,9 +37,14 @@ module PayKit
       )
     end
 
-    def fees?
-      true
-    end
+    # NOTE: `fees?` deliberately not defined here. A DynamicGate can't
+    # answer "do I have fees?" without a request to evaluate the
+    # builder block against. Callers must materialize first (the
+    # Sinatra helper at `resolve_gate` does this automatically, and
+    # `Dispatcher#materialize` is the explicit hook). The previous
+    # `fees? = true` shortcut was a defensive lie that silently
+    # disabled x402 for every dynamic gate, even those that resolve
+    # to zero fees on a given request.
 
     # Setter sink used inside the dynamic block. The block calls
     # `amount usd("0.10")`, `pay_to ALICE`, etc.; reads back via
