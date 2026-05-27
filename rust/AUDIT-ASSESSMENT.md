@@ -363,3 +363,29 @@ So the replay-state side of the bug is closed.
 - `_ignores_recent_blockhash` (regression: blockhash divergence must NOT fail comparison)
 
 ---
+
+## Low severity
+
+### #39 — `parse_units` can overflow
+**ID:** `4f8d51a3` · **File:** `crates/mpp/src/protocol/intents/mod.rs:18`
+
+**Audit claim:** the integer branch of `parse_units` computes `10u128.pow(decimals) * value` with neither input bound and neither operation checked. Depending on build mode that's a panic or a silent wrap.
+
+**Decision:** ✅ **accepted — cap + checked arithmetic.**
+
+**Action taken:**
+- Added `MAX_DECIMALS: u8 = 18`. Solana SPL convention is 0–9 per the protocol spec; 18 gives ERC-20-style headroom while staying well below the 39-where-`10.pow`-overflows cliff. Single rejection site so any callsite that hasn't validated upstream gets a clear error.
+- `parse_units` rejects `decimals > MAX_DECIMALS` up-front.
+- `10u128.pow(decimals)` → `checked_pow(...)` with explicit overflow error.
+- `value * factor` → `checked_mul(...)` with explicit overflow error.
+- Decimal-branch (`"1.5"` etc.) is string concatenation — no arithmetic to overflow; the cap still applies for consistency.
+
+**Note on scope:** the `Mpp::Config.decimals: u32` → `as u8` truncation at the callsite is a latent boot-time issue but belongs with the audit #16 batch (boot-time footgun guards). Not bundled here to keep this fix surgical.
+
+**New tests:**
+- `parse_units_rejects_decimals_above_max`
+- `parse_units_at_max_decimals_succeeds`
+- `parse_units_rejects_value_times_factor_overflow`
+- `parse_units_huge_value_zero_decimals_no_overflow` (boundary at `u128::MAX`)
+
+---
