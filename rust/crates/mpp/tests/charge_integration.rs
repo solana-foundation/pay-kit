@@ -52,6 +52,23 @@ async fn wait_for_surfnet(surfnet: &Surfnet) {
     panic!("surfnet rpc did not become ready in time");
 }
 
+/// Build the `expected` ChargeRequest for an integration test from its
+/// known static configuration. Mirrors how SDK consumers should construct
+/// the expected request from their route configuration rather than from
+/// the credential itself (audit #2).
+fn expected_charge(
+    amount_base_units: &str,
+    currency: &str,
+    recipient: &str,
+) -> solana_mpp::ChargeRequest {
+    solana_mpp::ChargeRequest {
+        amount: amount_base_units.to_string(),
+        currency: currency.to_string(),
+        recipient: Some(recipient.to_string()),
+        ..Default::default()
+    }
+}
+
 // ─── SOL charge flow ───────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -90,9 +107,13 @@ async fn sol_charge_full_flow() {
 
     assert!(auth_header.starts_with("Payment "));
 
-    // Verify credential.
+    // Verify credential. `expected` mirrors the route's static config.
+    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
     let receipt = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth_header).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth_header).unwrap(),
+            &expected,
+        )
         .await
         .expect("verify credential");
     assert_eq!(receipt.status.to_string(), "success");
@@ -148,8 +169,12 @@ async fn sol_charge_wrong_amount_rejected_before_broadcast() {
     let auth = format_authorization(&credential).unwrap();
 
     // Server should reject BEFORE broadcasting.
+    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
     let err = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -221,8 +246,12 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
     let credential = PaymentCredential::new(challenge.to_echo(), payload);
     let auth = format_authorization(&credential).unwrap();
 
+    let expected = expected_charge("1000000", "SOL", &real_recipient.pubkey().to_string());
     let err = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -262,8 +291,12 @@ async fn sol_charge_replay_rejected() {
         .unwrap();
 
     // First: success.
+    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
     let receipt = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap();
     assert_eq!(receipt.status.to_string(), "success");
@@ -271,7 +304,10 @@ async fn sol_charge_replay_rejected() {
     // Replay: rejected — either by the replay store (signature-consumed)
     // or by the network itself (duplicate transaction).
     let err = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -322,8 +358,12 @@ async fn sol_charge_expired_challenge_rejected() {
         .await
         .unwrap();
 
+    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
     let err = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap_err();
     assert!(
@@ -373,8 +413,12 @@ async fn sol_charge_www_authenticate_roundtrip() {
         .await
         .unwrap();
 
+    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
     let receipt = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap();
     assert_eq!(receipt.status.to_string(), "success");
@@ -446,8 +490,12 @@ async fn usdc_charge_full_flow() {
         .await
         .expect("build USDC credential");
 
+    let expected = expected_charge("1000000", "USDC", &recipient.pubkey().to_string());
     let receipt = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .expect("verify USDC credential");
     assert_eq!(receipt.status.to_string(), "success");
@@ -543,8 +591,12 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
     let credential = PaymentCredential::new(challenge.to_echo(), payload);
     let auth = format_authorization(&credential).unwrap();
 
+    let expected = expected_charge("1000000", "USDC", &recipient.pubkey().to_string());
     let err = mpp
-        .verify_credential(&solana_mpp::parse_authorization(&auth).unwrap())
+        .verify_credential_with_expected(
+            &solana_mpp::parse_authorization(&auth).unwrap(),
+            &expected,
+        )
         .await
         .unwrap_err();
     assert!(

@@ -25,9 +25,16 @@
 //! let challenge = mpp.charge("0.10")?;
 //! let header = challenge.to_header()?;
 //!
-//! // Verify a credential from Authorization header
+//! // Verify a credential from Authorization header. The expected
+//! // ChargeRequest pins this route's amount/currency/recipient (audit #2).
 //! let credential = PaymentCredential::from_header(&auth_header)?;
-//! let receipt = mpp.verify_credential(&credential).await?;
+//! let expected = ChargeRequest {
+//!     amount: "100000".to_string(),
+//!     currency: "USDC".to_string(),
+//!     recipient: Some("CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string()),
+//!     ..Default::default()
+//! };
+//! let receipt = mpp.verify_credential_with_expected(&credential, &expected).await?;
 //! ```
 
 pub mod error;

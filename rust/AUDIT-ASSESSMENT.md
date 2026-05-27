@@ -292,3 +292,31 @@ So the replay-state side of the bug is closed.
 - `interpret_post_timeout_status_rpc_error_returns_timeout_with_detail`
 
 ---
+
+### #2 — Credential verification uses echoed request
+**ID:** `2a3fd1f3` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `verify_credential` decodes `ChargeRequest` from `credential.challenge.request` and verifies the payment against *that*. The HMAC tier confirms the challenge was issued by this server, and `verify_pinned_fields` pins currency/recipient against `self`, but **nothing pins the amount or other per-route economics**. A server that issues challenges for multiple priced routes (the common case for any non-trivial API) will see `verify_credential` accept a $1 credential against a $100 route.
+
+**Decision:** ✅ **accepted — delete the unsafe method outright. Breaking change accepted.**
+
+**Rationale:** The simple `verify_credential` API is safe only for servers that serve exactly one priced resource. The audit's recommendation was "reserve `verify_credential` for flows where the echoed challenge fully defines the payable resource," but pure documentation is a soft control — the footgun stays available. With breaking changes permitted at this stage, the strongest enforcement is removing the method so every caller is forced through `verify_credential_with_expected` with an explicit expected `ChargeRequest`.
+
+**Action taken:**
+- Deleted `Mpp::verify_credential` from `server/charge.rs`.
+- Updated `verify_credential_with_expected`'s rustdoc to be the canonical entry point and to call out audit #2 explicitly.
+- Updated the rustdoc examples in `src/lib.rs` and the top of `src/server/charge.rs` to construct an `expected: ChargeRequest` from a route's static configuration.
+- Migrated 6 unit tests (1 HMAC tier-1 + 5 tier-2 pinned-field tests) to call `verify(&cred, &request)` directly — that's the lowest-level public API and exercises the same layers the deleted method used.
+- Migrated 9 integration test callsites in `tests/charge_integration.rs` to construct `expected` from the test's known configuration and call `verify_credential_with_expected`. Added a tiny `expected_charge(amount, currency, recipient)` helper that mirrors how SDK consumers should build the expected request from their own static config (not from the credential).
+- No production callsite changed — `axum.rs` already used `verify_credential_with_expected`.
+
+**Note on `verify` still being public:** the lowest-level `verify(&self, &credential, &request)` remains public. A caller who really wants "trust the echoed request" can still write `let req = cred.challenge.request.decode()?; mpp.verify(&cred, &req).await`. We keep that escape hatch because `verify` takes an *explicit* request — the caller is now visibly choosing what to verify against, which is what the audit's spirit asks for.
+
+**Note on the future rename:** `verify_credential_with_expected` is wordy. After audit #1 tightens its internals (it still uses the credential-decoded request to populate most fields during settlement), I'd like to rename it back to `verify_credential`. Not done in this commit so the long name keeps signalling "expected required" while #1 is open.
+
+**Tests** (no new tests authored — the existing security boundary tests were migrated to the surviving APIs without loss of coverage):
+- HMAC: `verify_rejects_tampered_id` (renamed from `verify_credential_rejects_tampered_id`)
+- Tier-2 pinned-field: `tier2_rejects_tampered_realm`, `_currency`, `_recipient`, `_method`, `_non_charge_intent` (all migrated to `verify`)
+- The pre-existing `verify_credential_with_expected_*` tests still cover the expected-comparison layer.
+
+---
