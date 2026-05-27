@@ -41,38 +41,89 @@ local function map_pay_kit_network(network)
   return mapping[network] or 'localnet'
 end
 
--- Build a per-gate MPP server. The legacy `mpp.server.new(config)` is
--- bound to one (recipient, currency, decimals, secret_key, realm)
--- tuple; gates with distinct pay_to or currency need distinct server
--- instances. The dispatcher caches these per (recipient, currency,
--- network) tuple.
+-- Build a per-gate MPP server. The legacy `mpp.server.new(config)`
+-- requires a `verify_payment` callback that runs the settlement
+-- lifecycle (decode tx, simulate, broadcast, consume signature,
+-- confirm). Wire that up from `mpp.server.charge_handler` so the
+-- inner server can settle - without it, mpp.server raises
+-- "verify_payment callback is required" at construct time.
 local function build_mpp_server(config, gate, store)
   local primary_coin = gate:amount():primary_coin()
-  local opts = {
-    recipient   = gate:pay_to(),
-    currency    = primary_coin,
-    decimals    = 6,                                -- USDC/USDT/EURC default
-    secret_key  = config.mpp.challenge_binding_secret,
-    realm       = config.mpp.realm,
-    network     = map_pay_kit_network(config.network),
-    rpc_url     = config.rpc_url,
-    fee_payer_key = nil,                            -- pull-mode: client pays
-    store       = store,
-  }
+  local network = map_pay_kit_network(config.network)
+  local fee_payer_signer
   local sgn = config.operator:signer()
   if config.operator:fee_payer() and type(sgn._secret_key_bytes) == 'function' then
-    -- Operator's signer doubles as fee payer; pass the raw 64-byte
-    -- secret so the inner mpp server can cosign.
-    opts.fee_payer_signer_bytes = sgn:_secret_key_bytes()
+    -- Build a legacy mpp signer from the operator's raw bytes so the
+    -- charge_handler's pull_transaction_signer hook can cosign.
+    local mpp_signer = require('mpp.methods.solana.signer')
+    fee_payer_signer = mpp_signer.from_bytes(sgn:_secret_key_bytes())
+  end
+
+  local rpc_mod = require('mpp.solana.rpc')
+  local rpc_transport_mod = require('mpp.solana.rpc_transport')
+  local charge_handler = require('mpp.server.charge_handler')
+  local solana_verify  = require('mpp.server.solana_verify')
+  local store_mod      = require('mpp.store')
+
+  local rpc = rpc_mod.new({url = config.rpc_url, transport = rpc_transport_mod.new()})
+  local verifier_bundle = solana_verify.new_real_verifier({pull_signer = fee_payer_signer})
+  -- The legacy mpp.store expects (key, value) semantics on
+  -- put_if_absent (it stores arbitrary values keyed by signature).
+  -- resty.pay_kit.store uses (key, ttl) for the x402 replay path, so
+  -- they are NOT interchangeable - bind the mpp handler to its own
+  -- store. The `store` argument from the dispatcher is reserved for
+  -- the x402 adapter.
+  local _ = store
+  local handler = charge_handler.new({
+    rpc                       = rpc,
+    network                   = network,
+    replay_store              = store_mod.memory(),
+    transaction_verifier      = verifier_bundle.transaction_verifier,
+    pull_transaction_signer   = verifier_bundle.pull_transaction_signer,
+    pull_blockhash_extractor  = verifier_bundle.pull_blockhash_extractor,
+  })
+
+  local opts = {
+    recipient      = gate:pay_to(),
+    currency       = primary_coin,
+    decimals       = 6,
+    secret_key     = config.mpp.challenge_binding_secret,
+    realm          = config.mpp.realm,
+    network        = network,
+    rpc_url        = config.rpc_url,
+    verify_payment = handler:as_callback(),
+  }
+  if fee_payer_signer then
+    opts.fee_payer = true
+    opts.fee_payer_key = fee_payer_signer.public_key
   end
   return mpp_server.new(opts)
 end
 
--- Build an empty splits[] for now (P5 ships the wire-format only;
--- multi-recipient splits with the verifier-aligned exclusion of the
--- primary recipient land in P6 when the dispatcher wires gate.fees).
-local function splits_for(_)
-  return nil
+-- Build the MPP splits[] field from a gate's fees. The verifier
+-- computes `primary = total - sum(splits)` and matches a transfer of
+-- `primary` to `request.recipient`, so splits[] must contain ONLY
+-- the fee recipients (verifier-aligned; mirrors the Ruby PR #138
+-- fix to the splits primary exclusion).
+-- Interop side-channel: allow the harness (or any adapter wiring) to
+-- inject the literal splits[] payload (carrying ataCreationRequired,
+-- memo, etc.) per gate name. The pay_kit gate model doesn't carry
+-- ataCreationRequired natively because it's an MPP wire concern, not
+-- a pricing concern.
+local SPLITS_OVERRIDE = {}
+function M.set_splits_override(gate_name, splits)
+  SPLITS_OVERRIDE[gate_name] = splits
+end
+
+local function splits_for(gate)
+  local override = SPLITS_OVERRIDE[gate:name()]
+  if override and #override > 0 then return override end
+  if not gate:has_fees() then return nil end
+  local out = {}
+  for _, fee in ipairs(gate:fees()) do
+    out[#out + 1] = {recipient = fee:recipient(), amount = tostring(fee:units())}
+  end
+  return out
 end
 
 -- New adapter. `config_resolver` is a `function() return config end`
@@ -141,11 +192,22 @@ end
 
 -- Emit the `WWW-Authenticate: Payment` header carrying the signed
 -- challenge. Calls into the legacy server's challenge issuance and
--- formats per RFC 9110.
+-- formats per RFC 9110. mpp.server:charge() takes the HUMAN-decimal
+-- amount (e.g. "0.001") and multiplies by 10^decimals internally;
+-- the gate.amount's `amount_string()` already carries that form.
 function Adapter:challenge_headers(gate, _req)
   local server, _config = self:_server_for(gate)
-  local amount_units = tostring(gate:total_units())
-  local challenge = server:charge(amount_units)
+  local display_amount = gate:amount():amount_string()
+  local options = {}
+  local splits = splits_for(gate)
+  if splits then options.splits = splits end
+  local ok, challenge = pcall(server.charge_with_options, server, display_amount, options)
+  if not ok then
+    -- Server-side rejection at challenge time (e.g. splits > 8 or
+    -- splits sum >= amount). Emit a no-challenge 402 so the caller's
+    -- response stays well-formed.
+    return {}
+  end
   local headers_mod = require('mpp.protocol.core.headers')
   return {
     ['www-authenticate'] = headers_mod.format_www_authenticate(challenge),
@@ -163,15 +225,31 @@ function Adapter:verify_and_settle(gate, req)
     return nil, 'pay_kit: payment required'
   end
 
+  -- mpp.protocol.core.headers parses "Payment <base64>" into a
+  -- Credential the inner server consumes. The adapter does this
+  -- decode here so the umbrella's dispatcher never touches the
+  -- legacy mpp parsing surface directly.
+  local headers_mod = require('mpp.protocol.core.headers')
+  local credential, parse_err = headers_mod.parse_authorization(authorization)
+  if not credential then
+    return nil, 'pay_kit: invalid proof: ' .. tostring(parse_err)
+  end
+
   local expected = {
     amount    = tostring(gate:total_units()),
     currency  = gate:amount():primary_coin(),
     recipient = gate:pay_to(),
   }
   local ok, result_or_err = pcall(function()
-    return server:verify_credential_with_expected(authorization, expected)
+    return server:verify_credential_with_expected(credential, expected)
   end)
   if not ok then
+    -- mpp.protocol.core.error_codes.raise throws `{code, message}`
+    -- tables; surface the structured `message` if present so the
+    -- 402 body shows the readable reason instead of `table: 0x...`.
+    if type(result_or_err) == 'table' and result_or_err.message then
+      return nil, 'pay_kit: ' .. tostring(result_or_err.message)
+    end
     return nil, tostring(result_or_err)
   end
   if type(result_or_err) ~= 'table' or not result_or_err.reference then
