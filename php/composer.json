@@ -11,6 +11,7 @@
   ],
   "require": {
     "php": "^8.1",
+    "brick/math": "^0.13",
     "solana-php/solana-sdk": "dev-master"
   },
   "require-dev": {

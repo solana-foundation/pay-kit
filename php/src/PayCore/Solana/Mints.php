@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\PayCore\Solana;
 
+use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 
 /**
@@ -118,6 +119,17 @@ final class Mints
         return $symbol !== null && in_array($symbol, self::TOKEN_2022_SYMBOLS, true)
             ? TokenProgram::TOKEN_2022_PROGRAM_ID
             : TokenProgram::PROGRAM_ID;
+    }
+
+    /**
+     * Derive the Associated Token Account address for (owner, mint,
+     * tokenProgram). Used by the boot-time preflight to assert the
+     * recipient owns an ATA for each accepted stablecoin.
+     */
+    public static function deriveAta(string $owner, string $mint, string $tokenProgram): string
+    {
+        [$ata] = AssociatedTokenProgram::findAssociatedTokenAddress($owner, $mint, $tokenProgram);
+        return $ata;
     }
 
     /**
