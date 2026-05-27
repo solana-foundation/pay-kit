@@ -306,7 +306,10 @@ module PayKit
         table = ::PayCore::Solana::Mints::MINTS[coin_str]
         return coin_str if table.nil?
 
-        table.fetch(net_key) do
+        # MINTS has no `localnet` row — local validators (Surfpool) clone
+        # mainnet, so fall back to the mainnet mint. Matches
+        # `PayCore::Solana::Mints.resolve` and the Rust spine.
+        table[net_key] || table.fetch("mainnet") do
           raise ::PayKit::ConfigurationError, "stablecoin #{coin.inspect} not configured for network #{network.inspect}"
         end
       end
