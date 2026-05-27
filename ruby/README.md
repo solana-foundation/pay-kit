@@ -1,83 +1,275 @@
 <p align="center">
-  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-ruby-dark.png" alt="solana-pay-kit" width="100%" />
 </p>
 
-# solana-pay-kit
-
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Ruby.
+Charge stablecoins (USDC, USDT, PYUSD, …) for any HTTP endpoint, in Ruby.
 One gem, one surface, two protocols underneath: [x402](https://x402.org)
-and the [Machine Payments Protocol](https://mpp.dev). Sinatra and Rails
-sit on top of a pure Rack middleware.
-
-You do not need to know anything about Solana to use this library: pick a
-currency, give it your wallet address, and gate a route in two lines.
+and the [Machine Payments Protocol](https://paymentauth.org). Sinatra and
+Rails ride on top of a pure Rack middleware.
 
 [![Ruby](https://img.shields.io/badge/ruby-3.2%2B-red)]()
 [![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-90%25-brightgreen)]()
 
+---
+
 ## Quick start
 
+Three progressively-realistic snippets. Each one runs as-is — copy, paste,
+hit the URL. Sinatra is the framework here; the same surface works in
+Rails and bare Rack.
+
+### 1. Smallest possible app
+
+Gate one route with an inline price. Save the snippet as `config.ru`
+and boot with `bundle exec rackup`. Zero-config: the gem uses a
+published demo keypair as the recipient and the hosted Surfpool
+sandbox at `https://402.surfnet.dev:8899` as the RPC.
+
 ```ruby
+# config.ru
 require "sinatra/base"
 require "solana_pay_kit"
 
-PayKit.configure do |c|
-  c.mpp.challenge_binding_secret = ENV.fetch("MPP_SECRET")
+class App < Sinatra::Base
+  get("/report") do
+    require_payment! usd("0.10")
+    "premium content"
+  end
 end
 
-class App < Sinatra::Base
-  get("/report") { require_payment!(usd("0.10")); "ok" }
-end
+run App
 ```
 
-That is the whole demo. Zero-config boot uses the published demo
-signer as recipient and fee-payer (the gem refuses to start with it
-on `:solana_mainnet`); the gem auto-detects Sinatra and mounts the
-`PayKit::Sinatra` helpers plus `PayKit::Rack::PaymentRequired`
-middleware in both load orders.
+`require "solana_pay_kit"` auto-detects Sinatra and mounts the helpers
+plus middleware. `require_payment!` halts the request with a 402 if no
+valid payment was sent, or returns the verified proof if one was.
 
-Production apps name an operator, point at a private RPC, and lift
-gate definitions into a `PayKit::Pricing` class - the full walkthrough
-is below.
+Hit `/report` with [`pay curl`](#run-the-example) and the customer walks
+through Touch ID and a USDC payment.
 
-Three primitives, mirroring Clearance's `require_login` / `signed_in?` /
-`current_user`:
+### 2. Multiple gates via a registry
 
-| Method | Purpose |
-|--------|---------|
-| `require_payment! :gate_name` | bang form, halts with 402 if unpaid |
-| `paid? :gate_name`            | predicate, never halts |
-| `payment`                     | the verified `PayKit::Payment` proof, `nil` until paid |
+When more than one route is paid, lift the prices into a single
+`PayKit::Pricing` class — the same pattern as CanCanCan's `Ability` or
+Clearance's `current_user`. Routes reference gates by symbol.
+
+```ruby
+# config.ru
+require "sinatra/base"
+require "solana_pay_kit"
+
+class Pricing < PayKit::Pricing
+  def build_gates
+    gate :report,   amount: usd("0.10"), description: "Premium report"
+    gate :api_call, amount: usd("0.001"), accept: :x402
+  end
+end
+PayKit.pricing = Pricing.new
+
+class App < Sinatra::Base
+  get("/report")    { require_payment! :report;   "premium content" }
+  get("/api/data")  { require_payment! :api_call; '{"data":[]}' }
+end
+
+run App
+```
+
+Gates are validated at boot — wrong currency, missing recipient,
+fee math that doesn't add up — so configuration errors surface before
+any traffic. `accept:` is an allowlist; the `:api_call` gate here
+refuses to settle over MPP.
+
+### 3. Production-shape config
+
+Snippet 2's demo recipient and public Sandbox Network are fine for poking
+around. Production wants explicit keys, a dedicated RPC, and a list of
+accepted stablecoins. The Sinatra app is unchanged — only the
+`PayKit.configure` block grows.
+
+```ruby
+# config.ru — same `class App < Sinatra::Base` block as snippet 2.
+require "sinatra/base"
+require "solana_pay_kit"
+
+PLATFORM = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+
+PayKit.configure do |c|
+  c.network     = :solana_mainnet
+  c.stablecoins = %i[USDC PYUSD]
+  c.operator do |op|
+    op.signer = PayKit::Signer.file("config/operator.json")
+  end
+  c.rpc_url = "https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_KEY"
+end
+
+class Pricing < PayKit::Pricing
+  def build_gates
+    gate :report, amount: usd("0.10"), description: "Premium report"
+
+    # Platform-fee pattern: 
+    # Customer pays $10.00,
+    # Operator nets $9.70, PLATFORM nets $0.30.
+    gate :marketplace_sale,
+      amount:     usd("10.00"),
+      fee_within: { PLATFORM => usd("0.30") }
+  end
+end
+PayKit.pricing = Pricing.new
+```
+
+Two safety rails fire at boot:
+
+- `:solana_mainnet` plus the published demo signer raises — no real
+  funds get routed to a publicly known address by accident.
+- Missing `c.mpp.challenge_binding_secret`? Preflight generates one
+  and writes it to `./.env` so the HMAC stays stable across restarts.
+  Override via `PAY_KIT_MPP_CHALLENGE_BINDING_SECRET` to control it
+  from your secret manager.
+
+---
+
+## Run the example
+
+The runnable demo lives at [`examples/sinatra/`](examples/sinatra) —
+registry, inline pricing, dynamic pricing, multi-recipient fees, both protocols.
+
+**Boot the server:**
+
+```bash
+git clone https://github.com/solana-foundation/pay-kit
+cd ruby/examples/sinatra
+bundle install
+bundle exec rackup -p 4567
+```
+
+The server logs preflight output as it boots — it provisions the demo
+recipient's USDC account on Surfpool via cheatcodes the first time,
+then settles real on-chain payments after that.
+
+**Consume with `pay curl`:**
+
+```bash
+# Install the pay CLI:
+brew install pay
+# or npm install -g @solana/pay
+
+# Fail with 402 - payment required
+curl -i http://127.0.0.1:4567/report
+
+# Succeed with 200 - payment provided
+pay curl -i http://127.0.0.1:4567/report
+```
+
+---
+
+## x402
+
+[x402](https://x402.org) revives HTTP `402 Payment Required` as a
+client-server payment handshake. Your server gates a route; a paying
+client receives the 402 with payment instructions, signs a Solana
+transaction off-chain, and replays the same request with a
+`PAYMENT-SIGNATURE` header. The Ruby server verifies the signature,
+broadcasts the transaction, and returns the original response with a
+`PAYMENT-RESPONSE` header carrying the on-chain settlement signature.
+
+x402 is **single-recipient by design**: the server's facilitator pays
+the network fees, the customer's signed transaction settles funds to
+`pay_to`. Gates with `fee_within:` or `fee_on_top:` recipients
+auto-disable x402 because stock x402 facilitators settle to one
+address.
+
+Supported on the Ruby server:
+
+| Scheme  | Status |
+|---------|--------|
+| `exact` | ✅      |
+| `upto`  | —      |
+| `batch` | —      |
+
+## MPP
+
+The [Machine Payments Protocol](https://paymentauth.org) is the broader
+HTTP Payment Authentication scheme — same 402 handshake, but the
+challenge carries a richer intent shape that supports multi-recipient
+splits, server-side fee accounting, and a separate fee-payer signer.
+
+Use MPP when:
+- Your gate has a platform or gateway fee (Stripe-Connect "application
+  fee" pattern).
+- You want the server to subsidize the customer's network fee.
+- You want one challenge per gate instead of per-mint-quoted offers.
+
+Supported on the Ruby server:
+
+| Scheme        | Status |
+|---------------|--------|
+| `charge/pull` | ✅      |
+| `charge/push` | ✅      |
+| `session`     | —      |
+
+---
+
+## Server-only
+
+This gem ships **server support only**. The pay-kit server emits
+challenges, verifies proofs, and broadcasts settlement transactions —
+it does not pay. Drive the client side from:
+
+- `pay curl` ([install](https://github.com/solana-foundation/pay))
+- The Rust, TypeScript, Go, or Python pay-kit client SDKs
+
+---
 
 ## Vocabulary
 
-| Term         | Meaning                                                              |
-|--------------|----------------------------------------------------------------------|
-| **gate**     | A protected unit. Has an amount, optional fees, accepted protocols.  |
-| **amount**   | The base amount a gate charges, before any `fee_on_top`.             |
-| **total**    | What the customer pays: `amount + sum(fee_on_top)`. Derived.         |
-| **price**    | Value object returned by `usd(...)`: number + denom + settlement.    |
-| **fee_within** | Fee taken out of the amount. `pay_to` recipient nets less.         |
-| **fee_on_top** | Fee added to the amount. Customer pays more; `pay_to` nets full.   |
-| **payment**  | Proof submitted by the client to pass a gate.                        |
-| **protocol** | `:x402` or `:mpp` (top-level dispatch).                              |
-| **scheme**   | x402 sub-form: `:exact`. MPP sub-form: `:charge`.                    |
-| **accept**   | Ordered preference list (protocols and stablecoins both).            |
-| **denom**    | Fiat unit a price is quoted in (`:USD`, `:EUR`).                     |
-| **settlement** | On-chain asset that actually transfers (`:USDC`, `:USDT`).         |
+| Term         | Meaning |
+|--------------|---------|
+| **gate**     | A protected unit. Has an amount, optional fees, accepted protocols. |
+| **amount**   | The base amount a gate charges, before any `fee_on_top`. |
+| **total**    | What the customer pays: `amount + sum(fee_on_top)`. Derived. |
+| **price**    | Value object returned by `usd(…)`: number + denom + settlement. |
+| **fee_within** | Fee taken out of the amount. `pay_to` nets less. |
+| **fee_on_top** | Fee added to the amount. Customer pays more; `pay_to` nets full. |
+| **payment**  | Proof submitted by the client to pass a gate. |
+| **protocol** | `:x402` or `:mpp` (top-level dispatch). |
+| **scheme**   | x402 sub-form: `:exact`. MPP sub-form: `:charge`. |
+| **accept**   | Ordered preference list (protocols and stablecoins both). |
+| **denom**    | Fiat unit a price is quoted in (`:USD`, `:EUR`). |
+| **settlement** | On-chain asset that actually transfers (`:USDC`, `:USDT`). |
 
-## Gates
+## Three primitives
 
-The `Pricing` class is the registry. Each gate is a frozen value object
-with a fixed amount, an ordered list of accepted protocols, and zero or
-more named fees.
+Mirrors Clearance's `require_login` / `signed_in?` / `current_user`:
+
+| Method | Purpose |
+|--------|---------|
+| `require_payment! :gate_name` | Bang form, halts with 402 if unpaid |
+| `paid? :gate_name`            | Predicate, never halts |
+| `payment`                     | The verified `PayKit::Payment` proof, `nil` until paid |
+
+## Inline pricing
+
+For one-off endpoints that don't warrant a registry entry, skip the
+gate name and pass a price directly:
+
+```ruby
+get "/oneoff" do
+  require_payment! usd("0.25"), description: "One-off"
+  content_type :json
+  JSON.generate(ok: true)
+end
+```
+
+## Gate DSL
+
+Each gate is a frozen value object with an amount, an ordered list of
+accepted protocols, and zero or more named fees.
 
 ```ruby
 class Pricing < PayKit::Pricing
-  SELLER   = "Ay..."
-  PLATFORM = "CX..."
-  GATEWAY  = "9r..."
+  SELLER   = "Ay…"
+  PLATFORM = "CX…"
 
   def build_gates
     # Simple. Customer pays $0.10, pay_to nets $0.10.
@@ -86,9 +278,8 @@ class Pricing < PayKit::Pricing
     # x402-only.
     gate :api_call, amount: usd("0.001"), accept: :x402
 
-    # Stripe Connect "application fee" pattern. Customer pays $10.00,
-    # SELLER nets $9.70, PLATFORM nets $0.30. x402 auto-disabled because
-    # stock x402 facilitators settle to one address.
+    # Stripe-Connect "application fee". Customer pays $10.00,
+    # SELLER nets $9.70, PLATFORM nets $0.30. x402 auto-disabled.
     gate :marketplace_sale,
       amount:     usd("10.00"),
       pay_to:     SELLER,
@@ -108,35 +299,23 @@ class Pricing < PayKit::Pricing
 end
 ```
 
-Boot validations (all `PayKit::ConfigurationError`):
+Boot-time validations (all raise `PayKit::ConfigurationError`):
 
-- `pay_to` is required (gate kwarg or `PayKit.config.pay_to`).
+- `pay_to` is required (gate kwarg or `c.operator.recipient`).
 - Fee recipient must differ from `pay_to`. Fold the fee into the amount instead.
 - All fee prices share one denomination with the amount.
 - `sum(fee_within) <= amount`.
-- `accept: :x402` on a fee-bearing gate raises (defense in depth above the silent strip).
-
-## Inline pricing
-
-For one-off endpoints that do not warrant a registry entry:
-
-```ruby
-get "/oneoff" do
-  require_payment! usd("0.25"), description: "One-off"
-  content_type :json
-  JSON.generate(ok: true)
-end
-```
+- `accept: :x402` on a fee-bearing gate raises.
 
 ## Rack-first
 
 The Sinatra helper is a thin shim over `PayKit::Rack::PaymentRequired`.
 Rails uses the same middleware with `include PayKit::Controller` (a
-generator scaffolds the initializer and pricing files). The Sinatra
-auto-detect at gem boot calls `helpers PayKit::Sinatra` and
-`use PayKit::Rack::PaymentRequired` on `Sinatra::Base` for you; you
-only mount the middleware by hand when you bypass the helpers (raw
-Rack, a non-Sinatra framework, or a hand-rolled controller layer).
+generator scaffolds the initializer and pricing files). The auto-detect
+at gem boot calls `helpers PayKit::Sinatra` and `use PayKit::Rack::PaymentRequired`
+on `Sinatra::Base` for you. You only mount the middleware by hand when
+bypassing the helpers — raw Rack, a non-Sinatra framework, or a
+hand-rolled controller layer.
 
 ```ruby
 # Raw Rack
@@ -144,59 +323,13 @@ use PayKit::Rack::PaymentRequired
 ```
 
 The middleware installs a per-request dispatcher on `env`, rescues
-`PayKit::PaymentRequired` into 402, and merges settlement headers from
-a verified `Payment` into the success response. Gate selection and
-verification live in the helper, not the middleware. Long-lived state
-that survives across requests (the x402 SettlementCache and the MPP
-method cache keyed on recipient/currency/network/rpc/secret/realm
-/expires_in/fee_payer) lives on the middleware instance, so two
-requests through the same `use` line share both caches.
+`PayKit::PaymentRequired` into 402, and merges settlement headers
+from a verified `Payment` into the success response. Long-lived state
+that survives across requests (the x402 settlement cache, the MPP
+method cache) lives on the middleware instance, so requests through
+the same `use` line share both caches.
 
-## Protocol compatibility
-
-| Protocol  | Scheme        | Server | Notes |
-|-----------|---------------|:------:|-------|
-| `mpp`     | `charge/pull` | pass   | Full lifecycle: challenge, verify, broadcast, confirm, receipt. |
-| `mpp`     | `charge/push` | pass   | Server fetches the on-chain transaction by signature, consumes through replay store. |
-| `mpp`     | `session`     | ---    | Out of scope; mpp client/server session lives in the Rust spine for now. |
-| `x402`    | `exact`       | pass   | Verifies the 11-rule spine verifier, broadcasts via the configured facilitator, namespaced replay key. |
-| `x402`    | `upto`        | ---    | Pending the spine binding decision. |
-| `x402`    | `batch`       | ---    | Pending the spine binding decision. |
-
-This package ships server support only. Use a TypeScript, Rust, Go, or
-Python client to drive payment flows against a Ruby-hosted endpoint.
-
-## Example
-
-[`examples/sinatra/`](examples/sinatra) is the runnable PayKit demo:
-registry, opportunistic gating, inline form, dynamic pricing,
-multi-recipient fees, before-filter, both protocols.
-
-### Run it
-
-```bash
-cd ruby/examples/sinatra
-bundle exec rackup -p 4567
-
-curl  http://127.0.0.1:4567/report   # 402 + WWW-Authenticate Payment
-pay curl http://127.0.0.1:4567/report # pays and succeeds
-```
-
-`pay curl` is available via `brew install pay`. The example boots
-zero-config on the published demo signer (recipient = signer pubkey,
-fee_payer = true). Override either via env:
-
-```bash
-PAY_KIT_PAY_TO="<your recipient>" \
-PAY_KIT_OPERATOR_KEY="[1,2,...,64]" \
-PAY_KIT_RPC_URL="https://api.devnet.solana.com" \
-bundle exec rackup -p 4567
-```
-
-`PAY_KIT_OPERATOR_KEY` accepts the Solana CLI keypair JSON array, a
-base58 string, or 128-char hex. `PayKit::Signer.env(name)` auto-detects
-the format and treats unset/empty as no-op so partial overrides leave
-the demo defaults in place.
+---
 
 ## Coverage
 
@@ -211,17 +344,17 @@ just test-cover
 enforces the local coverage gates, and refreshes the README badges from
 `coverage/.resultset.json`.
 
-Coverage gates:
+Gates:
 
-- line coverage: at least 92 percent
-- branch coverage: at least 90 percent
+- Line coverage: at least 92 percent
+- Branch coverage: at least 90 percent
 
-## Interop
+## Harness
 
 The Ruby server has direct harness adapters at
-[`harness/ruby-server/server.rb`](../harness/ruby-server/server.rb)
-(MPP) and [`bin/x402-interop-server`](bin/x402-interop-server)
-(x402 exact). Focused harness commands:
+[`harness/ruby-server/server.rb`](../harness/ruby-server/server.rb) (MPP)
+and [`harness/ruby-x402-server/server.rb`](../harness/ruby-x402-server/server.rb) (x402 exact).
+Focused harness commands:
 
 ```bash
 cd harness
@@ -232,9 +365,12 @@ X402_INTEROP_SERVERS=ruby-x402-server pnpm test
 
 ## Spec
 
-This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
-for the [HTTP Payment Authentication Scheme](https://paymentauth.org)
+This SDK implements the
+[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
 plus the x402 exact scheme on Solana.
+
+---
 
 ## Repo layout
 
@@ -242,17 +378,14 @@ plus the x402 exact scheme on Solana.
 ruby/
 ├── lib/solana_pay_kit.rb       # Gem entry (require "solana_pay_kit")
 ├── lib/pay_kit/                # PayKit surface
-│   ├── config.rb, pricing.rb, gate.rb, price.rb, fee.rb, ...
+│   ├── config.rb, pricing.rb, gate.rb, price.rb, fee.rb, …
+│   ├── preflight.rb            # Boot-time soundness check + autobootstrap
 │   ├── protocols/{x402,mpp}.rb # Protocol adapters
 │   └── rack/payment_required.rb
 ├── lib/mpp/                    # MPP layer (Mpp.create + protocol/server/sinatra)
-│   ├── protocol/{core,intents,solana}/
-│   └── server/{charge,middleware,decorator}.rb
 ├── lib/x402/                   # x402 layer (X402::Server::Exact)
-│   ├── protocol/schemes/exact/
-│   └── server/exact.rb
-├── lib/pay_core/               # Shared Solana primitives (JCS, headers, base58, ...)
-├── examples/sinatra/            # Runnable PayKit demo
+├── lib/pay_core/               # Shared Solana primitives (JCS, headers, base58, …)
+├── examples/sinatra/           # Runnable PayKit demo
 └── test/                       # Minitest suite with line + branch coverage gates
 ```
 

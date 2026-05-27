@@ -12,7 +12,6 @@
 #   lib/x402/protocol/schemes/exact/types.rb     -> protocol/schemes/exact/types.rs
 #   lib/x402/protocol/schemes/exact/verify.rb    -> protocol/schemes/exact/verify.rs
 #   lib/x402/server/exact.rb                     -> server/exact.rs
-#   bin/x402-interop-server                      -> bin/interop_server.rs
 #
 # Ruby is server-only: no client surface is exposed.
 

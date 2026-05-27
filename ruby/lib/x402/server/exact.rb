@@ -176,10 +176,10 @@ module X402
         end
         private :fetch_recent_blockhash
 
-        # Build a `Config` from the interop harness env vars
-        # (X402_INTEROP_*). Only used by `bin/x402-interop-server`;
-        # production callers should call `.new(...)` with typed
-        # kwargs directly.
+        # Build a `Config` from the harness env vars
+        # (X402_INTEROP_*). Only used by the harness x402 adapter at
+        # `harness/ruby-x402-server/server.rb`; production callers
+        # should call `.new(...)` with typed kwargs directly.
         def self.from_interop_env(env = ENV)
           new(
             rpc_url: required_env(env, "X402_INTEROP_RPC_URL"),

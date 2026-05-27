@@ -261,7 +261,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../ruby && bundle exec ruby bin/x402-interop-server",
+      "cd ../ruby && bundle exec ruby ../harness/ruby-x402-server/server.rb",
     ],
     enabled: isEnabled("ruby-x402-server", "X402_INTEROP_SERVERS", false),
     intents: ["x402-exact"],

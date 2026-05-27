@@ -1,18 +1,19 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Thin interop adapter. All library logic lives in
-# `lib/x402/server/exact.rb`; this bin only reads the harness env vars,
-# spins a 127.0.0.1:0 TCP loop, and serializes
+# Thin harness adapter. All library logic lives in
+# `ruby/lib/x402/server/exact.rb`; this adapter only reads the
+# harness env vars, spins a 127.0.0.1:0 TCP loop, and serializes
 # `X402::Server::Exact.response_for` tuples to HTTP/1.1.
 #
 # Mirrors the Rust spine adapter at
-# `rust/crates/x402/src/bin/interop_server.rs`.
+# `rust/crates/x402/src/bin/interop_server.rs`. Sister adapter for
+# the PayKit umbrella surface lives at `harness/ruby-server/server.rb`.
 
 require "json"
 require "socket"
 
-$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+$LOAD_PATH.unshift(File.expand_path("../../ruby/lib", __dir__))
 require "x402"
 
 server = TCPServer.new("127.0.0.1", 0)
