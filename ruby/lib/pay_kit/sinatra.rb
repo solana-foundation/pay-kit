@@ -31,14 +31,18 @@ module PayKit
       gate = resolve_gate(arg, inline_opts)
       request.env[::PayKit::Rack::PaymentRequired::ENV_EXPECTED_GATE_KEY] = gate
 
-      proof = dispatcher.verify(gate, request)
+      proof = begin
+        dispatcher.verify(gate, request)
+      rescue ::PayKit::InvalidProof => e
+        halt_with_payment_response(::PayKit::Rack::PaymentRequired.render_invalid(e))
+      end
       if proof
         request.env[::PayKit::Rack::PaymentRequired::ENV_PAYMENT_KEY] = proof
         return proof
       end
 
       challenge = dispatcher.challenge_for(gate, request)
-      raise ::PayKit::PaymentRequired.new(challenge)
+      halt_with_payment_response(::PayKit::Rack::PaymentRequired.render_402(challenge))
     end
 
     def paid?(arg, **inline_opts)
@@ -59,6 +63,19 @@ module PayKit
     end
 
     private
+
+    # 402 responses go through Sinatra's `halt` rather than `raise` so
+    # the exception never bubbles up to Sinatra's `handle_exception!`,
+    # which otherwise misclassifies non-Sinatra::Error exceptions as
+    # 500s and fires `dump_errors!` (a noisy backtrace per gated
+    # request). The Rack middleware retains its own
+    # `rescue PayKit::PaymentRequired` for non-Sinatra mounts and any
+    # path that raises outside a route handler.
+    def halt_with_payment_response(rack_tuple)
+      status, headers, body = rack_tuple
+      headers.each { |name, value| response.headers[name] = value }
+      halt(status, body.first)
+    end
 
     def dispatcher
       request.env[::PayKit::Rack::PaymentRequired::ENV_DISPATCHER_KEY] ||

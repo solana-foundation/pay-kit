@@ -6,6 +6,13 @@ module PayKit
   # Raised when middleware needs to halt a request with 402. The
   # response builder reads `#challenge` to produce the 402 body and
   # protocol-specific headers.
+  #
+  # `#http_status` returns 402 so Sinatra's `handle_exception!` treats
+  # this as a normal client error: it skips `dump_errors!` (no noisy
+  # backtrace on every gated request) and dispatches to the Sinatra
+  # error handler registered in `solana_pay_kit.rb`. Without this,
+  # Sinatra would default to a 500 server-error path, log the trace,
+  # and re-raise before the registered handler runs.
   class PaymentRequired < Error
     attr_reader :challenge
 
@@ -13,12 +20,18 @@ module PayKit
       @challenge = challenge
       super(message || "payment required")
     end
+
+    def http_status
+      402
+    end
   end
 
   # Raised when an inbound payment proof is structurally valid but
   # fails verification (wrong amount, wrong destination, expired,
   # replayed, signature mismatch, ...). Mapped to 402 by middleware
   # so the client can retry with a fresh challenge.
+  #
+  # See `PaymentRequired#http_status` for why this method exists.
   class InvalidProof < Error
     attr_reader :detail, :code, :spec_code
 
@@ -32,6 +45,10 @@ module PayKit
       @detail = detail
       @spec_code = spec_code
       super(detail || code.to_s)
+    end
+
+    def http_status
+      402
     end
   end
 
