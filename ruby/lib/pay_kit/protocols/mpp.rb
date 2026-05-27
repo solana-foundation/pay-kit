@@ -15,8 +15,17 @@ module PayKit
       CHARGE_REF = ProtocolRef.new(protocol: :mpp, scheme: :charge).freeze
       def self.charge = CHARGE_REF
 
-      def initialize(server:)
-        @server = server
+      # `server_for` is a `->(gate) { Mpp::Server::Charge }` callback
+      # supplied by the dispatcher. The dispatcher owns a per-recipient
+      # MPP method cache so different gates (different `gate.pay_to`)
+      # route to different servers without rebuilding `Mpp.create` per
+      # request. The legacy fixed-server form (`server: ...`) is kept
+      # for tests that fake the server.
+      def initialize(server_for: nil, server: nil)
+        raise ArgumentError, "MPP adapter needs server_for: or server:" if server_for.nil? && server.nil?
+
+        @server_for = server_for
+        @fixed_server = server
         freeze
       end
 
@@ -71,7 +80,7 @@ module PayKit
 
       def perform(gate, _request, authorization:)
         amount_units = to_smallest_units(gate.total)
-        @server.charge(
+        server_for(gate).charge(
           authorization,
           amount: amount_units,
           description: gate.description,
@@ -79,6 +88,11 @@ module PayKit
         )
       rescue ::Mpp::Error => e
         raise InvalidProof.new(:payment_invalid, e.message)
+      end
+
+      def server_for(gate)
+        return @fixed_server if @fixed_server
+        @server_for.call(gate)
       end
 
       def splits_for(gate, total_units)

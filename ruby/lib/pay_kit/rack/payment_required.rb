@@ -35,10 +35,22 @@ module PayKit
         @app = app
         @config = config || PayKit.config
         @pricing = pricing
+        # Long-lived caches shared across every request this middleware
+        # instance handles. x402's SettlementCache prevents the same
+        # signature from being broadcast twice; the MPP method cache
+        # avoids rebuilding `Mpp.create(...)` for every gate hit (the
+        # underlying ChallengeStore allocates buffers on construction).
+        @x402_settlement_cache = ::X402::Server::Exact::SettlementCache.new
+        @mpp_method_cache = MppMethodCache.new
       end
 
       def call(env)
-        env[ENV_DISPATCHER_KEY] = Dispatcher.new(config: @config, pricing: @pricing)
+        env[ENV_DISPATCHER_KEY] = Dispatcher.new(
+          config: @config,
+          pricing: @pricing,
+          x402_settlement_cache: @x402_settlement_cache,
+          mpp_method_cache: @mpp_method_cache
+        )
 
         status, headers, body = @app.call(env)
 
@@ -67,13 +79,41 @@ module PayKit
       end
     end
 
+    # Long-lived, thread-safe cache of `Mpp::Server::Charge` instances
+    # keyed by the tuple that defines a charge method: recipient +
+    # currency + network + rpc URL + secret + realm + expires_in. Two
+    # gates with the same tuple share a server (and its underlying
+    # ChallengeStore allocations); gates that differ on any field get
+    # their own. Lives on the Rack middleware so it survives across
+    # requests.
+    class MppMethodCache
+      def initialize
+        @entries = {}
+        @mutex = Mutex.new
+      end
+
+      def fetch(key)
+        @mutex.synchronize do
+          @entries[key] ||= yield
+        end
+      end
+
+      def size
+        @mutex.synchronize { @entries.size }
+      end
+    end
+
     # Per-request dispatcher. Holds the resolved adapters so the
     # helper can build challenges and verify proofs without touching
-    # the underlying server constructors.
+    # the underlying server constructors. The shared caches
+    # (`x402_settlement_cache`, `mpp_method_cache`) are owned by the
+    # Rack middleware and threaded in here.
     class Dispatcher
-      def initialize(config:, pricing:)
+      def initialize(config:, pricing:, x402_settlement_cache: nil, mpp_method_cache: nil)
         @config = config
         @pricing_override = pricing
+        @x402_settlement_cache = x402_settlement_cache || ::X402::Server::Exact::SettlementCache.new
+        @mpp_method_cache = mpp_method_cache || MppMethodCache.new
       end
 
       def pricing(env)
@@ -135,7 +175,9 @@ module PayKit
       end
 
       def mpp_adapter
-        @mpp_adapter ||= ::PayKit::Protocols::MPP.new(server: build_mpp_server)
+        @mpp_adapter ||= ::PayKit::Protocols::MPP.new(
+          server_for: ->(gate) { mpp_server_for(gate) }
+        )
       end
 
       private
@@ -150,24 +192,42 @@ module PayKit
           amount: gate.total.amount,
           network: caip2_for(@config.network),
           mint: mint_for(gate.amount.primary_coin, @config.network),
-          resource_path: request.path
+          resource_path: request.path,
+          settlement_cache: @x402_settlement_cache
         )
       end
 
-      def build_mpp_server
+      # Per-gate MPP server built once, cached on the middleware. The
+      # cache key is the full tuple that defines the on-chain charge
+      # intent — two gates with the same recipient/currency/network/rpc
+      # share a server; gates that differ on any field (e.g. a
+      # different `gate.pay_to`) get their own server with its own
+      # ChallengeStore. `Mpp.create(...)` allocates per-instance HMAC
+      # state, so this is meaningful work to avoid per request.
+      def mpp_server_for(gate)
         secret = @config.mpp.challenge_binding_secret ||
           raise(::PayKit::ConfigurationError, "PayKit.config.mpp.challenge_binding_secret not set")
-        method = ::Mpp::Protocol::Solana.charge(
-          recipient: @config.operator.effective_recipient,
-          currency: mint_for(@config.stablecoins.first, @config.network),
-          network: mpp_network_label_for(@config.network),
-          rpc: @config.effective_rpc_url
-        )
-        ::Mpp.create(
-          method: method,
-          secret_key: secret,
-          realm: @config.mpp.realm
-        )
+        recipient = gate.pay_to || @config.operator.effective_recipient
+        currency = mint_for(gate.amount.primary_coin, @config.network)
+        network = mpp_network_label_for(@config.network)
+        rpc = @config.effective_rpc_url
+        realm = @config.mpp.realm
+
+        key = [recipient, currency, network, rpc, secret, realm].freeze
+
+        @mpp_method_cache.fetch(key) do
+          method = ::Mpp::Protocol::Solana.charge(
+            recipient: recipient,
+            currency: currency,
+            network: network,
+            rpc: rpc
+          )
+          ::Mpp.create(
+            method: method,
+            secret_key: secret,
+            realm: realm
+          )
+        end
       end
 
       # CAIP-2 IDs go on the x402 wire. Localnet has no CAIP-2 entry
