@@ -74,8 +74,9 @@ module PayKit
       end
 
       def render_invalid(error)
-        body = JSON.generate(error: error.code.to_s, message: error.detail)
-        [402, {"content-type" => "application/json"}, [body]]
+        payload = {error: error.code.to_s, message: error.detail}
+        payload[:spec_code] = error.spec_code if error.spec_code
+        [402, {"content-type" => "application/json"}, [JSON.generate(payload)]]
       end
     end
 

@@ -83,6 +83,35 @@ class PayKitMppAdapterTest < Minitest::Test
     end
   end
 
+  def test_invalid_proof_carries_spec_code_from_mpp_challenge_body
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [],
+        accept: %i[mpp]
+      )
+
+      challenge_with_code = ::Mpp::Challenge.new(
+        www_authenticate: "Payment realm=\"X\"",
+        body: {"code" => "challenge_expired", "error" => "challenge_expired", "message" => "challenge expired"},
+        reason: "challenge expired"
+      )
+
+      fake_server = Object.new
+      fake_server.define_singleton_method(:charge) { |_authorization, **_kwargs| challenge_with_code }
+
+      adapter = ::PayKit::Protocols::MPP.new(server: fake_server)
+
+      env = ::Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Payment fake")
+      request = ::Rack::Request.new(env)
+      err = assert_raises(::PayKit::InvalidProof) { adapter.verify_and_settle(gate, request) }
+      assert_equal :payment_required, err.code
+      assert_equal "challenge_expired", err.spec_code
+    end
+  end
+
   def test_perform_forwards_external_id_to_mpp_server
     PayKitTestHelpers.with_config do
       gate = ::PayKit::Gate.new(

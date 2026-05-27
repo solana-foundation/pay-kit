@@ -20,11 +20,17 @@ module PayKit
   # replayed, signature mismatch, ...). Mapped to 402 by middleware
   # so the client can retry with a fresh challenge.
   class InvalidProof < Error
-    attr_reader :detail, :code
+    attr_reader :detail, :code, :spec_code
 
-    def initialize(code, detail = nil)
+    # `code` is the PayKit-level error symbol (e.g. :payment_required,
+    # :payment_invalid). `spec_code` is the canonical L6 wire code from
+    # the underlying protocol (e.g. "challenge_expired", "replay",
+    # "amount_mismatch"). Both are surfaced on the 402 body so clients
+    # can branch on either layer.
+    def initialize(code, detail = nil, spec_code: nil)
       @code = code
       @detail = detail
+      @spec_code = spec_code
       super(detail || code.to_s)
     end
   end

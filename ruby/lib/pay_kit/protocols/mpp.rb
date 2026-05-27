@@ -70,7 +70,8 @@ module PayKit
             raw: authorization
           )
         when ::Mpp::Challenge
-          raise InvalidProof.new(:payment_required, result.reason || "payment required")
+          spec_code = result.body.is_a?(Hash) ? result.body["code"] : nil
+          raise InvalidProof.new(:payment_required, result.reason || "payment required", spec_code: spec_code)
         else
           raise InvalidProof.new(:payment_invalid, "unexpected MPP response: #{result.class}")
         end
