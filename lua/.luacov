@@ -11,6 +11,10 @@ return {
   include = {
     "mpp$",
     "mpp/.+",
+    "resty/pay_kit$",
+    "resty/pay_kit/.+",
+    "kong/plugins/pay%-kit/.+",
+    "apisix/plugins/pay%-kit$",
   },
   exclude = {
     "tests/.+",
@@ -28,6 +32,9 @@ return {
   },
   includeuntestedfiles = {
     "mpp",
+    "resty/pay_kit",
+    "kong/plugins/pay-kit",
+    "apisix/plugins",
   },
   runreport = false,
   deletestats = false,
