@@ -10,22 +10,24 @@ module PayKit
   # and human description. Dynamic gates wrap a Proc instead of being
   # frozen here (see DynamicGate).
   class Gate
-    attr_reader :name, :amount, :pay_to, :fees, :accept, :description
+    attr_reader :name, :amount, :pay_to, :fees, :accept, :description, :external_id
 
-    def initialize(name:, amount:, pay_to:, fees:, accept:, description: nil)
+    def initialize(name:, amount:, pay_to:, fees:, accept:, description: nil, external_id: nil)
       @name = name
       @amount = amount
       @pay_to = pay_to
       @fees = fees
       @accept = accept
       @description = description
+      @external_id = external_id
       freeze
     end
 
     # Build a Gate with full boot validation. `accept_default` and
     # `default_pay_to` come from PayKit.config when the DSL omits them.
     def self.build(name:, amount:, pay_to: nil, fee_within: nil, fee_on_top: nil,
-      accept: nil, description: nil, accept_default: nil, default_pay_to: nil)
+      accept: nil, description: nil, external_id: nil,
+      accept_default: nil, default_pay_to: nil)
       raise ConfigurationError, "gate name must be a Symbol, got #{name.inspect}" unless name.is_a?(Symbol)
       raise ConfigurationError, "gate #{name.inspect}: amount must be a Price (use usd/eur/gbp)" unless amount.is_a?(Price)
 
@@ -50,7 +52,8 @@ module PayKit
         pay_to: resolved_pay_to,
         fees: fees,
         accept: resolved_accept,
-        description: description
+        description: description,
+        external_id: external_id
       )
     end
 

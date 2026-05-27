@@ -63,7 +63,7 @@ module PayKit
     #     amount usd(req.params[:tier] == "premium" ? "5.00" : "0.10")
     #   end
     def gate(name, amount: nil, pay_to: nil, fee_within: nil, fee_on_top: nil,
-      accept: nil, description: nil, &block)
+      accept: nil, description: nil, external_id: nil, &block)
       sym = name.to_sym
       raise ConfigurationError, "duplicate gate #{sym.inspect}" if @gates.key?(sym)
 
@@ -89,6 +89,7 @@ module PayKit
           fee_on_top: fee_on_top,
           accept: accept,
           description: description,
+          external_id: external_id,
           default_pay_to: defaults[:pay_to],
           accept_default: defaults[:accept]
         )
@@ -115,6 +116,7 @@ module PayKit
           pay_to: inline_defaults[:pay_to] || PayKit.config.operator.effective_recipient,
           accept: inline_defaults[:accept],
           description: inline_defaults[:description],
+          external_id: inline_defaults[:external_id],
           default_pay_to: PayKit.config.operator.effective_recipient,
           accept_default: PayKit.config.accept
         )

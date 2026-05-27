@@ -4,6 +4,7 @@ require_relative "test_helper"
 
 class PayKitConfigTest < Minitest::Test
   def setup
+    PayKit.reset!
     @captured_logs = []
     PayKit.logger = capture_logger(@captured_logs)
     PayKit::Config.reset_deprecation_memo!

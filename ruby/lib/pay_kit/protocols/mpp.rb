@@ -84,6 +84,7 @@ module PayKit
           authorization,
           amount: amount_units,
           description: gate.description,
+          external_id: gate.external_id,
           splits: splits_for(gate, amount_units)
         )
       rescue ::Mpp::Error => e

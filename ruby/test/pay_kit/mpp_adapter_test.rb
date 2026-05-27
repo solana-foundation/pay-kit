@@ -83,6 +83,65 @@ class PayKitMppAdapterTest < Minitest::Test
     end
   end
 
+  def test_perform_forwards_external_id_to_mpp_server
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :order_42,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [],
+        accept: %i[mpp],
+        external_id: "order:42"
+      )
+
+      captured = {}
+      fake_server = Object.new
+      fake_server.define_singleton_method(:charge) do |authorization, **kwargs|
+        captured[:authorization] = authorization
+        captured[:kwargs] = kwargs
+        nil
+      end
+
+      adapter = ::PayKit::Protocols::MPP.new(server: fake_server)
+      adapter.send(:perform, gate, nil, authorization: "Payment fake")
+
+      assert_equal "order:42", captured[:kwargs][:external_id]
+      assert_equal 100_000, captured[:kwargs][:amount]
+    end
+  end
+
+  def test_gate_external_id_defaults_to_nil
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [],
+        accept: %i[mpp]
+      )
+      assert_nil gate.external_id
+    end
+  end
+
+  def test_dynamic_gate_resolves_external_id_from_block
+    klass = Class.new(::PayKit::Pricing) do
+      define_method(:build_gates) do
+        gate :order do |req|
+          amount usd("0.10")
+          external_id req.params["order_id"]
+        end
+      end
+    end
+
+    PayKitTestHelpers.with_config do
+      pricing = klass.new
+      dyn = pricing[:order]
+      mock = Struct.new(:params).new({"order_id" => "abc-123"})
+      resolved = dyn.resolve(mock)
+      assert_equal "abc-123", resolved.external_id
+    end
+  end
+
   def test_accepts_entry_exposes_primary_via_pay_to_not_splits
     PayKitTestHelpers.with_config do
       gate = ::PayKit::Gate.new(

@@ -32,6 +32,7 @@ module PayKit
         fee_on_top: ctx._fee_on_top,
         accept: accept,
         description: description,
+        external_id: ctx._external_id,
         default_pay_to: @defaults[:pay_to],
         accept_default: @defaults[:accept]
       )
@@ -52,7 +53,7 @@ module PayKit
     class DynamicContext
       include Helpers::Pricing
 
-      attr_reader :_amount, :_pay_to, :_fee_within, :_fee_on_top
+      attr_reader :_amount, :_pay_to, :_fee_within, :_fee_on_top, :_external_id
 
       def amount(price)
         @_amount = price
@@ -68,6 +69,14 @@ module PayKit
 
       def fee_on_top(hash)
         @_fee_on_top = hash
+      end
+
+      # Per-request external identifier (order ID, invoice number, etc).
+      # Surfaced on the MPP charge so receipts and downstream audit
+      # systems can correlate the on-chain settlement with the merchant's
+      # own record. Optional; nil when not set.
+      def external_id(value)
+        @_external_id = value
       end
 
       def apply(request, &block)
