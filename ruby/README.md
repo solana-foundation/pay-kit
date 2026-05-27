@@ -132,16 +132,25 @@ end
 
 The Sinatra helper is a thin shim over `PayKit::Rack::PaymentRequired`.
 Rails uses the same middleware with `include PayKit::Controller` (a
-generator scaffolds the initializer and pricing files).
+generator scaffolds the initializer and pricing files). The Sinatra
+auto-detect at gem boot calls `helpers PayKit::Sinatra` and
+`use PayKit::Rack::PaymentRequired` on `Sinatra::Base` for you; you
+only mount the middleware by hand when you bypass the helpers (raw
+Rack, a non-Sinatra framework, or a hand-rolled controller layer).
 
 ```ruby
+# Raw Rack
 use PayKit::Rack::PaymentRequired
 ```
 
 The middleware installs a per-request dispatcher on `env`, rescues
 `PayKit::PaymentRequired` into 402, and merges settlement headers from
 a verified `Payment` into the success response. Gate selection and
-verification live in the helper, not the middleware.
+verification live in the helper, not the middleware. Long-lived state
+that survives across requests (the x402 SettlementCache and the MPP
+method cache keyed on recipient/currency/network/rpc/secret/realm
+/expires_in/fee_payer) lives on the middleware instance, so two
+requests through the same `use` line share both caches.
 
 ## Protocol compatibility
 
@@ -173,10 +182,21 @@ curl  http://127.0.0.1:4567/report   # 402 + WWW-Authenticate Payment
 pay curl http://127.0.0.1:4567/report # pays and succeeds
 ```
 
-`pay curl` is available via `brew install pay`. The example defaults to
-mpp-only so it boots without a real Solana facilitator keypair; set
-`PAY_KIT_X402_FACILITATOR_KEY` plus `PAY_KIT_ACCEPT="x402,mpp"` to
-enable x402.
+`pay curl` is available via `brew install pay`. The example boots
+zero-config on the published demo signer (recipient = signer pubkey,
+fee_payer = true). Override either via env:
+
+```bash
+PAY_KIT_PAY_TO="<your recipient>" \
+PAY_KIT_OPERATOR_KEY="[1,2,...,64]" \
+PAY_KIT_RPC_URL="https://api.devnet.solana.com" \
+bundle exec rackup -p 4567
+```
+
+`PAY_KIT_OPERATOR_KEY` accepts the Solana CLI keypair JSON array, a
+base58 string, or 128-char hex. `PayKit::Signer.env(name)` auto-detects
+the format and treats unset/empty as no-op so partial overrides leave
+the demo defaults in place.
 
 ## Coverage
 
