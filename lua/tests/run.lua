@@ -34,6 +34,7 @@ require('tests.json_util_spec')
 -- PayKit umbrella suites (P1+).
 require('tests.pay_kit.errors_spec')
 require('tests.pay_kit.kms_spec')
+require('tests.pay_kit.ed25519_spec')
 require('tests.pay_kit.signer_spec')
 require('tests.pay_kit.operator_spec')
 require('tests.pay_kit.price_spec')

@@ -151,18 +151,16 @@ function M.from_env(name)
   return M.base58(trimmed)
 end
 
--- Generate a fresh ephemeral keypair. Test-only; throws if the
--- underlying crypto layer is unavailable.
+-- Generate a fresh ephemeral keypair. Test-only; returns
+-- `(nil, err)` when no keypair-generation backend is available
+-- (the openssl-only environments cannot synthesise a Solana
+-- 64-byte secret without seed derivation - production callers
+-- load from files or env vars instead).
 function M.generate()
-  local ok, sodium = pcall(require, 'luasodium')
-  if not ok then
-    return nil, 'pay_kit: signer.generate: luasodium not available'
-  end
-  local pk, sk = sodium.crypto_sign_ed25519_keypair()
-  if not pk or not sk then
-    return nil, 'pay_kit: signer.generate: keypair generation failed'
-  end
-  return local_signer.new(sk)
+  local ed25519 = require('resty.pay_kit.util.ed25519')
+  local secret, err = ed25519.generate()
+  if not secret then return nil, err end
+  return local_signer.new(secret)
 end
 
 return M

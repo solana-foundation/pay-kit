@@ -1,76 +1,76 @@
 --[[
 Local in-process Ed25519 signer.
 
-Wraps the existing `mpp.methods.solana.signer` (luasodium-backed) so
-PayKit avoids re-implementing the Ed25519 primitives that already live
-in the MPP layer. The public duck-type contract — `:pubkey()`, `:sign()`,
-`:fee_payer()`, `:demo()` — is what every PayKit code path consumes;
-future remote signers under `resty.pay_kit.kms` will satisfy the same
-contract with cosocket I/O on `:sign()`.
+Two backends can power the signing primitive (see
+`resty.pay_kit.util.ed25519`): `lua-resty-openssl` when available
+(Kong / APISIX / OpenResty production path) and `luasodium` as the
+plain-LuaJIT fallback. The choice is transparent to callers - this
+file only sees the `ed25519.sign / .derive_public` surface.
 
-Per Decision #7 in the design notes, the crypto backend will migrate
-from luasodium to `lua-resty-openssl` in a follow-up so Kong / APISIX
-operators do not need libsodium installed system-wide. The interface
-this module exposes does not change with that swap.
+Public contract (the duck type every PayKit code path consumes):
+- `:pubkey()`    base58 Solana public key (44-character string)
+- `:sign(msg)`   64-byte detached Ed25519 signature
+- `:fee_payer()` true for local signers
+- `:demo()`      true only for the published demo singleton
+
+Future remote signers under `resty.pay_kit.kms` satisfy the same
+contract with cosocket I/O on `:sign`. OpenResty cosockets cooperate
+with the event loop automatically, so call sites do not change.
 ]]
 
-local mpp_signer = require('mpp.methods.solana.signer')
+local base58 = require('mpp.util.base58')
+local ed25519 = require('resty.pay_kit.util.ed25519')
 
 local M = {}
 local Signer = {}
 Signer.__index = Signer
 
 -- Build a Local signer from a 64-byte secret-key string (Solana's
--- canonical layout: 32-byte seed || 32-byte public key). Raises an
--- error for the wrong length so a bad key dies at construct-time,
--- not at first sign.
+-- canonical layout: 32-byte seed || 32-byte public key). Raises on
+-- wrong length so a bad key dies at construct-time, not at first
+-- sign.
 function M.new(secret_key_bytes)
   if type(secret_key_bytes) ~= 'string' or #secret_key_bytes ~= 64 then
     error('pay_kit.signer: secret must be a 64-byte binary string')
   end
-  local inner = mpp_signer.from_bytes(secret_key_bytes)
+  local public_bytes, derive_err = ed25519.derive_public(secret_key_bytes)
+  if not public_bytes then error(derive_err) end
   return setmetatable({
-    _inner = inner,
     _secret_bytes = secret_key_bytes,
+    _public_bytes = public_bytes,
+    _public_base58 = base58.encode(public_bytes),
     _is_demo = false,
   }, Signer)
 end
 
--- Base58 Solana public key (44-character string).
 function Signer:pubkey()
-  return self._inner.public_key
+  return self._public_base58
 end
 
--- Sign raw message bytes; returns a 64-byte detached Ed25519 signature.
--- Mirrors the design's `(result, err)` contract by never raising on
--- normal control flow - the inner luasodium call is wrapped in pcall.
+-- Sign raw message bytes. Returns a 64-byte detached Ed25519
+-- signature on success or `(nil, err)` on backend failure.
 function Signer:sign(message)
-  local ok, sig_or_err = pcall(function() return self._inner:sign(message) end)
-  if not ok then
-    return nil, 'pay_kit: signer failed to sign: ' .. tostring(sig_or_err)
-  end
-  return sig_or_err
+  return ed25519.sign(self._secret_bytes, message)
 end
 
--- Whether this signer should pay Solana network fees on settlement
--- transactions. True for local signers; remote / KMS signers may flip
--- this off when fees come from elsewhere.
 function Signer:fee_payer()
   return true
 end
 
--- Subclasses (`resty.pay_kit.signer.demo`) override this to return
--- true. `pay_kit.configure` reads it to enforce the mainnet refusal
--- rule for the published demo keypair.
 function Signer:demo()
   return self._is_demo
 end
 
--- Internal: hand back the raw secret bytes. Used by the MPP / x402
--- adapters that still want a `secret_key` for the underlying mpp
--- protocol layer during the transition. Not part of the public API.
+-- Internal: hand back the raw 64-byte secret. Used by the MPP
+-- adapter when it still funnels a JSON-array secret into the legacy
+-- mpp.methods.solana.signer for the cosign-transaction path.
 function Signer:_secret_key_bytes()
   return self._secret_bytes
+end
+
+-- Internal: hand back the 32-byte public key bytes (pre-base58).
+function Signer:_public_key_bytes()
+  return self._public_bytes
 end
 
 -- Internal: marker for the demo singleton so the demo factory can
@@ -78,13 +78,6 @@ end
 function Signer:_mark_demo()
   self._is_demo = true
   return self
-end
-
--- Internal: hand back the underlying mpp-layer signer (the luasodium
--- wrapper). Used by adapters that need `sign_transaction` for the MPP
--- charge handler's cosign path.
-function Signer:_inner_mpp_signer()
-  return self._inner
 end
 
 return M
