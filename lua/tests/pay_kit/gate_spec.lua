@@ -6,7 +6,7 @@ registration time.
 
 local helper   = require('tests.test_helper')
 local pay_kit  = require('resty.pay_kit')
-local registry = require('resty.pay_kit.registry')
+local registry = require('resty.pay_kit.internal.registry')
 local errors   = require('resty.pay_kit.errors')
 
 local SELLER   = 'SeLLeRWaLLeT111111111111111111111111111111'
@@ -106,7 +106,7 @@ helper.test('rule 3: mixed denominations rejected', function()
   -- their denominations differ and this rule fires. For now we test
   -- the validator directly via a synthetic Fee/Price.
   setup()
-  local fee_mod = require('resty.pay_kit.fee')
+  local fee_mod = require('resty.pay_kit.internal.fee')
   -- Hand-build a Price-like with a different denomination.
   local fake_eur = setmetatable({}, {__index = {
     units        = function() return 10 end,
@@ -116,7 +116,7 @@ helper.test('rule 3: mixed denominations rejected', function()
     primary_coin = function() return 'USDC' end,
   }})
   local fake_fee = assert(fee_mod.new(PLATFORM, fake_eur, 'within'))
-  local gate_mod = require('resty.pay_kit.gate')
+  local gate_mod = require('resty.pay_kit.internal.gate')
   local _, err = gate_mod.build({
     name = 'mixed',
     amount = assert(pay_kit.usd('1.00')),

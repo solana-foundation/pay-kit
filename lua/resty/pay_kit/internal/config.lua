@@ -35,7 +35,7 @@ returns the "already configured" error. Test suites call `_reset()`
 to clear the cached state.
 ]]
 
-local operator_mod = require('resty.pay_kit.operator')
+local operator_mod = require('resty.pay_kit.internal.operator')
 local errors       = require('resty.pay_kit.errors')
 
 local M = {}

@@ -41,15 +41,15 @@ M._VERSION = '0.1.0'
 -- Sub-module re-exports. `signer` and `kms` ship in P1; the rest
 -- arrive in P2-P6 and the existing `require` calls in this file
 -- update as each phase lands.
-local config_mod     = require('resty.pay_kit.config')
-local price_mod      = require('resty.pay_kit.price')
-local registry_mod   = require('resty.pay_kit.registry')
-local dispatcher_mod = require('resty.pay_kit.dispatcher')
+local config_mod     = require('resty.pay_kit.internal.config')
+local price_mod      = require('resty.pay_kit.internal.price')
+local registry_mod   = require('resty.pay_kit.internal.registry')
+local dispatcher_mod = require('resty.pay_kit.internal.dispatcher')
 
 M.signer   = require('resty.pay_kit.signer')
 M.kms      = require('resty.pay_kit.kms')
 M.errors   = require('resty.pay_kit.errors')
-M.operator = require('resty.pay_kit.operator')
+M.operator = require('resty.pay_kit.internal.operator')
 
 -- Top-level surface.
 function M.configure(opts) return config_mod.configure(opts) end

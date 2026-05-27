@@ -25,7 +25,7 @@ local function make_gate(price_str)
     amount = assert(pay_kit.usd(price_str or '0.001',
       '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU')),
   }))
-  return assert(require('resty.pay_kit.registry').materialize('paid'))
+  return assert(require('resty.pay_kit.internal.registry').materialize('paid'))
 end
 
 -- --- detect ---------------------------------------------------------

@@ -31,23 +31,36 @@ dependencies = {
 build = {
   type = 'builtin',
   modules = {
-    -- Umbrella + sub-modules.
-    ['resty.pay_kit']              = 'resty/pay_kit/init.lua',
-    ['resty.pay_kit.config']       = 'resty/pay_kit/config.lua',
-    ['resty.pay_kit.dispatcher']   = 'resty/pay_kit/dispatcher.lua',
-    ['resty.pay_kit.errors']       = 'resty/pay_kit/errors.lua',
-    ['resty.pay_kit.fee']          = 'resty/pay_kit/fee.lua',
-    ['resty.pay_kit.gate']         = 'resty/pay_kit/gate.lua',
-    ['resty.pay_kit.kms']          = 'resty/pay_kit/kms.lua',
-    ['resty.pay_kit.operator']     = 'resty/pay_kit/operator.lua',
-    ['resty.pay_kit.price']        = 'resty/pay_kit/price.lua',
-    ['resty.pay_kit.registry']     = 'resty/pay_kit/registry.lua',
-    ['resty.pay_kit.signer']       = 'resty/pay_kit/signer.lua',
-    ['resty.pay_kit.signer.demo']  = 'resty/pay_kit/signer/demo.lua',
-    ['resty.pay_kit.signer.local'] = 'resty/pay_kit/signer/local.lua',
-    ['resty.pay_kit.store']        = 'resty/pay_kit/store.lua',
-    ['resty.pay_kit.util.ed25519'] = 'resty/pay_kit/util/ed25519.lua',
-    ['resty.pay_kit.schemes.mpp']  = 'resty/pay_kit/schemes/mpp.lua',
-    ['resty.pay_kit.schemes.x402'] = 'resty/pay_kit/schemes/x402.lua',
+    -- Umbrella + public surface (matches issue #140 Layers section).
+    ['resty.pay_kit']                   = 'resty/pay_kit/init.lua',
+    ['resty.pay_kit.errors']            = 'resty/pay_kit/errors.lua',
+    ['resty.pay_kit.kms']               = 'resty/pay_kit/kms.lua',
+    ['resty.pay_kit.signer']            = 'resty/pay_kit/signer.lua',
+    ['resty.pay_kit.signer.demo']       = 'resty/pay_kit/signer/demo.lua',
+    ['resty.pay_kit.signer.local']      = 'resty/pay_kit/signer/local.lua',
+    ['resty.pay_kit.store']             = 'resty/pay_kit/store.lua',
+    ['resty.pay_kit.solana.rpc']        = 'resty/pay_kit/solana/rpc.lua',
+    ['resty.pay_kit.util.base58']       = 'resty/pay_kit/util/base58.lua',
+    ['resty.pay_kit.util.base64url']    = 'resty/pay_kit/util/base64url.lua',
+    ['resty.pay_kit.util.json']         = 'resty/pay_kit/util/json.lua',
+    ['resty.pay_kit.util.crypto']       = 'resty/pay_kit/util/crypto.lua',
+    ['resty.pay_kit.util.ed25519']      = 'resty/pay_kit/util/ed25519.lua',
+    ['resty.pay_kit.util.tx_cosign']    = 'resty/pay_kit/util/tx_cosign.lua',
+    ['resty.pay_kit.schemes.mpp']       = 'resty/pay_kit/schemes/mpp.lua',
+    ['resty.pay_kit.schemes.x402']      = 'resty/pay_kit/schemes/x402.lua',
+    ['resty.pay_kit.schemes.x402_verify'] = 'resty/pay_kit/schemes/x402_verify.lua',
+
+    -- Internal implementation modules (not part of the public API;
+    -- callers use the umbrella surface above). Listed in the rockspec
+    -- so `luarocks install` lays them on disk for the umbrella to
+    -- require, but `resty.pay_kit.internal.*` paths are subject to
+    -- change without a deprecation cycle.
+    ['resty.pay_kit.internal.config']     = 'resty/pay_kit/internal/config.lua',
+    ['resty.pay_kit.internal.dispatcher'] = 'resty/pay_kit/internal/dispatcher.lua',
+    ['resty.pay_kit.internal.fee']        = 'resty/pay_kit/internal/fee.lua',
+    ['resty.pay_kit.internal.gate']       = 'resty/pay_kit/internal/gate.lua',
+    ['resty.pay_kit.internal.operator']   = 'resty/pay_kit/internal/operator.lua',
+    ['resty.pay_kit.internal.price']      = 'resty/pay_kit/internal/price.lua',
+    ['resty.pay_kit.internal.registry']   = 'resty/pay_kit/internal/registry.lua',
   },
 }

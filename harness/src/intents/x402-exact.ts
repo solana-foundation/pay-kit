@@ -40,7 +40,7 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "wrong_network",
     clientIds: ["ts-x402", "rust-x402"],
-    serverIds: ["ts-x402", "rust-x402"],
+    serverIds: ["ts-x402", "rust-x402", "lua"],
   },
   {
     // Cross-route replay: credential issued for /protected/cheap is
@@ -63,7 +63,7 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "charge_request_mismatch",
     clientIds: ["ts-x402"],
-    serverIds: ["ts-x402", "rust-x402"],
+    serverIds: ["ts-x402", "rust-x402", "lua"],
   },
   {
     // Cross-server credential portability. Client pays server A and
@@ -82,7 +82,10 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "challenge_verification_failed",
     clientIds: ["ts-x402"],
-    serverIds: ["ts-x402", "rust-x402"],
+    // The wire-only ts-x402 client cannot pair with a real-settling
+    // server (lua/rust-x402) for the cross-server portability test;
+    // crossServerPairs gates the matrix to ts-x402<->ts-x402 only.
+    serverIds: ["ts-x402"],
     // Cross-server portability requires the client adapter to expose the
     // credential it sent so the runner can replay it. The TS reference
     // client echoes `payment-signature-sent`; the Rust spine adapter does
@@ -123,6 +126,6 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     // client's stub payload. Rust server coverage of `signature_consumed`
     // lives in the Rust crate's own integration tests.
     clientIds: ["ts-x402"],
-    serverIds: ["ts-x402"],
+    serverIds: ["ts-x402", "lua"],
   },
 ] as const;

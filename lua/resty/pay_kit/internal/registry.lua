@@ -13,7 +13,7 @@ behaviour from late registrations against a partially-warmed worker.
 Test suites unfreeze via `_unfreeze_for_tests()`.
 ]]
 
-local gate_mod = require('resty.pay_kit.gate')
+local gate_mod = require('resty.pay_kit.internal.gate')
 local errors   = require('resty.pay_kit.errors')
 
 local M = {}
@@ -25,7 +25,7 @@ local frozen = false
 -- Defaults for gate.build come from the active config. Lazy-resolved
 -- to avoid cyclic require with `resty.pay_kit.config`.
 local function build_defaults()
-  local config_mod = require('resty.pay_kit.config')
+  local config_mod = require('resty.pay_kit.internal.config')
   local cfg = config_mod.current()
   if not cfg then return {} end
   return {

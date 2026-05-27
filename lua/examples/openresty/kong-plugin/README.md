@@ -31,7 +31,7 @@ Activate via `kong.conf` or env:
 
 ```bash
 KONG_PLUGINS=bundled,pay-kit
-KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK="require('kong.plugins.pay-kit.bootstrap').setup()"
+KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK="require('kong.plugins.pay-kit.init').setup()"
 ```
 
 ## Configure (env vars)

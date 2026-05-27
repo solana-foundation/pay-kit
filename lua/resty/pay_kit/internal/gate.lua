@@ -18,7 +18,7 @@ Rules (validated at `Gate.build`, return `(nil, err)` on violation):
 Mirrors the Ruby gem's `PayKit::Gate` (ruby/lib/pay_kit/gate.rb).
 ]]
 
-local fee_mod = require('resty.pay_kit.fee')
+local fee_mod = require('resty.pay_kit.internal.fee')
 local errors  = require('resty.pay_kit.errors')
 
 local M = {}

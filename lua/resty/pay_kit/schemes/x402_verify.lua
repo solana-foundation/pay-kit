@@ -217,14 +217,14 @@ function M.verify(transaction_b64, requirement, managed_signers)
   if not ok then error('invalid_exact_svm_payload_transaction_parse') end
   local parsed = parsed_or_err
 
-  local instructions = parsed.instructions
+  local instructions = parsed.message.instructions
   if #instructions < 3 or #instructions > 6 then
     error('invalid_exact_svm_payload_transaction_instructions_length')
   end
 
-  verify_compute_limit(instructions[1], parsed.account_keys)
-  verify_compute_price(instructions[2], parsed.account_keys)
-  local transfer = verify_transfer(instructions[3], parsed.account_keys,
+  verify_compute_limit(instructions[1], parsed.message.account_keys)
+  verify_compute_price(instructions[2], parsed.message.account_keys)
+  local transfer = verify_transfer(instructions[3], parsed.message.account_keys,
                                    requirement, managed_signers)
 
   -- Rule 9: slots 3..6 allowlist.
@@ -236,12 +236,12 @@ function M.verify(transaction_b64, requirement, managed_signers)
   }
   for i = 4, #instructions do
     local ix = instructions[i]
-    local program = program_of(parsed.account_keys, ix)
+    local program = program_of(parsed.message.account_keys, ix)
     local slot_index = i - 4  -- 0-based offset within slots 3..5
     local allowed = (program == MEMO_PROGRAM) or
       (slot_index < 2 and program == LIGHTHOUSE_PROGRAM)
     if not allowed and slot_index < 2 and
-        valid_ata_create(ix, parsed.account_keys, requirement, transfer) then
+        valid_ata_create(ix, parsed.message.account_keys, requirement, transfer) then
       destination_create_ata = true
       allowed = true
     end
@@ -253,7 +253,7 @@ function M.verify(transaction_b64, requirement, managed_signers)
   -- Rule 10: memo binding.
   local expected_memo = string_extra(requirement, 'memo', false)
   if expected_memo and expected_memo ~= '' then
-    find_memo_match(parsed.account_keys, instructions, expected_memo)
+    find_memo_match(parsed.message.account_keys, instructions, expected_memo)
   end
 
   transfer.destination_create_ata = destination_create_ata

@@ -52,7 +52,7 @@ helper.test('Kong bootstrap wires resty.pay_kit.configure from env', function()
   posix.setenv('PAY_KIT_OPERATOR_RECIPIENT', 'KongRecipient00000000000000000000000000000')
   posix.setenv('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET', 'kong-test')
 
-  local bootstrap = require('kong.plugins.pay-kit.bootstrap')
+  local bootstrap = require('kong.plugins.pay-kit.init')
   bootstrap.setup()
 
   local cfg = pay_kit.config()

@@ -120,9 +120,31 @@ function M.detect(opts)
   return setmetatable({_entries = {}, _size = 0}, Memory), 'memory'
 end
 
--- Test-only constructor of the in-memory backend (skips ngx probe).
+-- Construct the in-memory backend (skips the ngx probe). Useful for
+-- single-worker dev setups and pure-Lua hosts; the dispatcher prefers
+-- `detect()` so production OpenResty deployments land on the shared
+-- dict automatically.
 function M.memory()
   return setmetatable({_entries = {}, _size = 0}, Memory)
+end
+
+-- Construct a shared-dict-backed store explicitly. Public surface per
+-- issue #140 Layers: `resty.pay_kit.store.shared_dict("name")`.
+-- Errors if ngx is not available or the named dict was not declared
+-- in nginx.conf via `lua_shared_dict <name> <size>`.
+function M.shared_dict(name)
+  if type(name) ~= 'string' or name == '' then
+    return nil, 'pay_kit: store.shared_dict expects a dict name'
+  end
+  local ngx_ref = rawget(_G, 'ngx')
+  if not ngx_ref or not ngx_ref.shared then
+    return nil, 'pay_kit: store.shared_dict requires OpenResty (ngx.shared)'
+  end
+  local dict = ngx_ref.shared[name]
+  if not dict then
+    return nil, 'pay_kit: shared dict ' .. name .. ' not declared in nginx.conf'
+  end
+  return setmetatable({_dict = dict}, SharedDict)
 end
 
 return M

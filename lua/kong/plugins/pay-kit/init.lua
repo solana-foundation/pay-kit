@@ -2,7 +2,7 @@
 Kong master-init bootstrap.
 
 Wired via:
-  KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK="require('kong.plugins.pay-kit.bootstrap').setup()"
+  KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK="require('kong.plugins.pay-kit.init').setup()"
 
 Reads the canonical PAY_KIT_* env vars and calls
 `resty.pay_kit.configure()` exactly once at master init so all workers
