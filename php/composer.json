@@ -1,6 +1,6 @@
 {
-  "name": "solana/pay-sdk",
-  "description": "Server-side PHP helpers for the MPP protocol.",
+  "name": "solana/pay-kit",
+  "description": "Server-side PayKit SDK for PHP (x402 + MPP).",
   "type": "library",
   "license": "MIT",
   "repositories": [
@@ -20,12 +20,12 @@
   },
   "autoload": {
     "psr-4": {
-      "SolanaMpp\\": "src/"
+      "PayKit\\": "src/"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "SolanaMpp\\Tests\\": "tests/"
+      "PayKit\\Tests\\": "tests/"
     }
   },
   "scripts": {

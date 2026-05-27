@@ -8,9 +8,9 @@ declare(strict_types=1);
 error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
-use SolanaMpp\Intent\ChargeRequest;
-use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\SolanaChargeHandler;
+use PayKit\Schemes\Mpp\Intent\ChargeRequest;
+use PayKit\Schemes\Mpp\Server\ChargeServer;
+use PayKit\Schemes\Mpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
 require_once __DIR__ . '/../../vendor/autoload.php';

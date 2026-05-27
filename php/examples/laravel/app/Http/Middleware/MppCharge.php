@@ -6,11 +6,11 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use SolanaMpp\Intent\ChargeRequest;
-use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\ChargeSettlement;
-use SolanaMpp\Server\PaymentRequiredResponse;
-use SolanaMpp\Server\SolanaChargeHandler;
+use PayKit\Schemes\Mpp\Intent\ChargeRequest;
+use PayKit\Schemes\Mpp\Server\ChargeServer;
+use PayKit\Schemes\Mpp\Server\ChargeSettlement;
+use PayKit\Schemes\Mpp\Server\PaymentRequiredResponse;
+use PayKit\Schemes\Mpp\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 use Symfony\Component\HttpFoundation\Response;
 

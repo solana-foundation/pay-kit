@@ -47,9 +47,9 @@ tokens not in the table.
 ### Raw SDK usage
 
 ```php
-use SolanaMpp\Intent\ChargeRequest;
-use SolanaMpp\Server\ChargeServer;
-use SolanaMpp\Server\SolanaChargeHandler;
+use PayKit\Intent\ChargeRequest;
+use PayKit\Server\ChargeServer;
+use PayKit\Server\SolanaChargeHandler;
 use SolanaPhpSdk\Rpc\RpcClient;
 
 $rpc = new RpcClient('https://402.surfnet.dev:8899');

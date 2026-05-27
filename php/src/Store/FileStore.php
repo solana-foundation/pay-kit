@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace SolanaMpp\Store;
+namespace PayKit\Store;
 
 use RuntimeException;
 
