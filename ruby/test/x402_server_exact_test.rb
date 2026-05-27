@@ -68,7 +68,7 @@ class X402ServerExactTest < Minitest::Test
     # unreachable. The challenge must still be served — the client
     # falls back to its own `getLatestBlockhash`, which is the
     # historical behaviour.
-    state = build_state(recent_blockhash_provider: -> { nil })
+    state = build_state(recent_blockhash_provider: -> {})
     requirement = X402::Server::Exact.exact_requirement(state)
 
     refute requirement.fetch("extra").key?("recentBlockhash")
@@ -918,7 +918,7 @@ class X402ServerExactTest < Minitest::Test
     account_checker: ->(_state, _account) { true },
     signature_confirmer: ->(_state, signature) { signature },
     settlement_cache: nil,
-    recent_blockhash_provider: -> { nil }
+    recent_blockhash_provider: -> {}
   )
     kwargs = {
       rpc_url: "http://127.0.0.1:8899",

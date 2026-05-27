@@ -169,13 +169,12 @@ module X402
           provider.call
         end
 
-        private
-
         def fetch_recent_blockhash
           ::PayCore::Solana::Rpc.new(@rpc_url).latest_blockhash
         rescue ::PayCore::Solana::Rpc::RpcError
           nil
         end
+        private :fetch_recent_blockhash
 
         # Build a `Config` from the interop harness env vars
         # (X402_INTEROP_*). Only used by `bin/x402-interop-server`;
