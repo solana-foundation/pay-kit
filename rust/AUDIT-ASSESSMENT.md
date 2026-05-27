@@ -222,3 +222,35 @@ Callers who legitimately need to issue challenges for a *different* route still 
 **New tests:** `charge_challenge_rejects_mismatched_currency`, `_missing_recipient`, `_invalid_recipient`, `_unparseable_amount`, `_mismatched_network_in_method_details`, `_mismatched_token_program`, `_invalid_split_recipient`.
 
 ---
+
+### #10 — Client signs untrusted charge challenges
+**ID:** `ad99fed8` · **File:** `crates/mpp/src/client/charge.rs`
+
+**Audit claim:** `build_credential_header` / `build_charge_transaction` decode the challenge and produce a signed transaction with no client-side policy enforcement (max amount, expected recipient/currency/network, expiry, split shape). Safe only when the caller has already validated the challenge; *unsafe* for auto-pay integrations where the server effectively controls what gets signed against the user's wallet.
+
+**Decision:** ✅ **accepted — narrow opt-in gates, plus always-on expiry.**
+
+**Rationale:** The protocol's working trust model assumes a human reviews the challenge before signing. Auto-pay agents break that, and that's the case the audit is calling out. We give the auto-pay caller a way to bind what we'll sign, without forcing the UI caller to plumb anything (all gates default to "no constraint"). Scope kept tight: amount cap, network pin, and an always-on expiry refusal. Recipient/currency match and split-shape policies are not in scope for this finding — auto-pay callers already control those values when they call our `select_charge_challenge` helper, so duplicating them in the builder didn't pull its weight.
+
+**Action taken:**
+- Added two opt-in fields to `BuildChargeTransactionOptions`:
+  - `max_amount_base_units: Option<u64>` — reject when `request.amount > cap` (parsed as base units, matches how the server reasons about it).
+  - `expected_network: Option<String>` — reject when `methodDetails.network` does not match.
+  - Both checks run at the top of `build_charge_transaction_with_options`, before any signing or instruction building.
+- Always-on expiry refusal in `build_credential_header_with_options`: if `challenge.is_expired()` returns `true`, refuse to sign. Reuses the existing fail-closed RFC3339 parser. Challenges with `expires == None` are still accepted (the protocol allows omitting it; we have no client-side anchor to check against).
+- Expiry lives on `PaymentChallenge` (not in the decoded `ChargeRequest`), so the gate is in the `build_credential_header` path. Lower-level callers who construct a transaction directly from `MethodDetails` without a challenge skip this check — there's no challenge to check.
+
+**Note on what we didn't add:**
+- No `expected_recipient` / `expected_currency` options. The auto-pay caller selects the challenge via `select_charge_challenge` (or by hand); the builder doesn't need to re-check fields the caller just picked.
+- No split policy options. Splits are bounded by the existing `Error::TooManySplits` gate (`splits.len() > 8`), and the spec already constrains amounts to be a subset of the total. Adding per-recipient allowlists felt like over-policy for what the auto-pay threat model actually needs.
+- No client-side check that the recipient is *a* valid pubkey beyond what `build_charge_transaction_with_options` already does (it parses on its own).
+
+**New tests:**
+- `build_charge_transaction_rejects_amount_above_max`
+- `build_charge_transaction_accepts_amount_at_max` (equal-to-cap is allowed)
+- `build_charge_transaction_rejects_unexpected_network`
+- `build_charge_transaction_accepts_matching_network`
+- `build_credential_header_rejects_expired_challenge`
+- `build_credential_header_accepts_future_expiry`
+
+---

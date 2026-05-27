@@ -53,6 +53,20 @@ pub struct BuildChargeTransactionOptions {
     /// explicitly accepts that risk by setting this flag. The vanilla Token
     /// Program has no hooks, so arbitrary mints there are always allowed.
     pub allow_unknown_token_2022: bool,
+    /// Audit #10: client-side cap on what the wallet will sign.
+    ///
+    /// When set, the builder refuses to sign a challenge whose `amount`
+    /// (in base units) exceeds this value. Intended for auto-pay
+    /// integrations where the user can't review each challenge by hand
+    /// and the server is therefore implicitly untrusted.
+    pub max_amount_base_units: Option<u64>,
+    /// Audit #10: client-side pin on the network the wallet will sign for.
+    ///
+    /// When set, the builder refuses to sign a challenge whose
+    /// `methodDetails.network` does not match this value. Prevents an
+    /// auto-pay agent meant for one network from being lured into
+    /// signing a transaction for another.
+    pub expected_network: Option<String>,
 }
 
 /// Options for selecting one Solana charge challenge from a challenge set.
@@ -85,6 +99,24 @@ pub async fn build_charge_transaction_with_options(
     let total_amount: u64 = amount
         .parse()
         .map_err(|_| Error::Other(format!("Invalid amount: {amount}")))?;
+
+    // Audit #10: client-side policy gates. Run before any signing work so
+    // we never produce a signature for an out-of-policy challenge.
+    if let Some(cap) = options.max_amount_base_units {
+        if total_amount > cap {
+            return Err(Error::Other(format!(
+                "Challenge amount {total_amount} exceeds client max_amount_base_units {cap}"
+            )));
+        }
+    }
+    if let Some(expected) = options.expected_network.as_deref() {
+        let actual = method_details.network.as_deref().unwrap_or("");
+        if actual != expected {
+            return Err(Error::Other(format!(
+                "Challenge network `{actual}` does not match client expected_network `{expected}`"
+            )));
+        }
+    }
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > 8 {
@@ -222,6 +254,15 @@ pub async fn build_credential_header_with_options(
     challenge: &PaymentChallenge,
     mut options: BuildChargeTransactionOptions,
 ) -> Result<String, Error> {
+    // Audit #10: refuse to sign expired challenges. The protocol allows
+    // `expires` to be absent — when it is, we let the challenge through
+    // (no client-side anchor to check against).
+    if challenge.is_expired() {
+        return Err(Error::Other(
+            "Challenge has expired; refusing to sign".into(),
+        ));
+    }
+
     // Decode the request to get Solana-specific fields.
     let request: crate::protocol::intents::ChargeRequest = challenge
         .request
@@ -2235,6 +2276,184 @@ mod tests {
         let err = build_credential_header(signer.as_ref(), &rpc, &challenge).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("No recipient"));
+    }
+
+    // ── Audit #10: client-side policy gates ──
+
+    #[tokio::test]
+    async fn build_charge_transaction_rejects_amount_above_max() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "5000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                max_amount_base_units: Some(1_000_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .err()
+        .expect("amount above cap should be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("exceeds client max_amount_base_units"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_charge_transaction_accepts_amount_at_max() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                max_amount_base_units: Some(1_000_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("amount equal to cap should be allowed");
+    }
+
+    #[tokio::test]
+    async fn build_charge_transaction_rejects_unexpected_network() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            network: Some("mainnet".to_string()),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                expected_network: Some("devnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .err()
+        .expect("network mismatch should be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("does not match client expected_network"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_charge_transaction_accepts_matching_network() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            network: Some("devnet".to_string()),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "SOL",
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions {
+                expected_network: Some("devnet".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("matching network should be allowed");
+    }
+
+    #[tokio::test]
+    async fn build_credential_header_rejects_expired_challenge() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        let mut challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "charge", request_b64);
+        // RFC3339 timestamp in the distant past.
+        challenge.expires = Some("1970-01-01T00:00:00Z".to_string());
+
+        let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .err()
+            .expect("expired challenge should be rejected");
+        assert!(
+            format!("{err}").contains("expired"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_credential_header_accepts_future_expiry() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        let mut challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "charge", request_b64);
+        challenge.expires = Some("2999-01-01T00:00:00Z".to_string());
+
+        build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .expect("future expiry should be accepted");
     }
 
     #[tokio::test]
