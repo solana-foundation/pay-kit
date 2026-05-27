@@ -485,7 +485,14 @@ fn build_spl_instructions(
         )));
     }
 
-    let decimals = method_details.decimals.unwrap_or(6);
+    // Audit #42: spec §7.2 requires `decimals` to be present when `currency`
+    // is a mint address (i.e. always on this SPL path). Defaulting to 6
+    // silently produced wrong-decimals transfers for non-6-decimal tokens.
+    let decimals = method_details.decimals.ok_or_else(|| {
+        Error::Other(
+            "methodDetails.decimals is required for SPL charges (spec §7.2)".into(),
+        )
+    })?;
 
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
 
@@ -1741,6 +1748,40 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ixs.len(), 1);
+    }
+
+    #[test]
+    fn build_spl_rejects_missing_decimals() {
+        // Audit #42: spec §7.2 requires `decimals` for SPL challenges;
+        // we now error instead of silently defaulting to 6.
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: None, // missing — must reject
+            ..Default::default()
+        };
+        let mut ixs = vec![];
+        let err = build_spl_instructions(
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &[],
+            None,
+            false,
+        )
+        .err()
+        .expect("missing decimals should be rejected");
+        assert!(
+            format!("{err}").contains("decimals is required"),
+            "got: {err}"
+        );
     }
 
     #[test]

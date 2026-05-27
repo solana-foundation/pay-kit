@@ -2575,11 +2575,16 @@ fn diagnose_balances(
                     &[payer.as_ref(), token_program.as_ref(), mint.as_ref()],
                     &ata_program,
                 );
+                // Audit #42: spec mandates `decimals` on SPL challenges;
+                // pretending 6 would silently lie. Skip the diagnostic
+                // instead — fee-payer SOL hint below still runs.
                 // Audit #8: skip the token-balance hint when the divisor
                 // can't be represented — see `to_ui_amount` for the why.
-                let decimals = method_details.decimals.unwrap_or(6);
                 let needed_base = request.amount.parse::<u64>().unwrap_or(0);
-                if let Some(needed) = to_ui_amount(needed_base, decimals) {
+                if let Some(needed) = method_details
+                    .decimals
+                    .and_then(|d| to_ui_amount(needed_base, d))
+                {
                     match rpc.get_token_account_balance(&ata) {
                         Ok(bal) => {
                             let actual: f64 = bal.ui_amount.unwrap_or(0.0);

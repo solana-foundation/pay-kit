@@ -468,3 +468,24 @@ So the replay-state side of the bug is closed.
 - `parse_www_authenticate_accepts_at_max_request_size` (regression: at-cap shouldn't fire the size gate)
 
 ---
+
+### #42 — Decimal management contradicts the specs
+**ID:** `7a1c2e4f` · **Files:** `crates/mpp/src/client/charge.rs`, `server/charge.rs`
+
+**Audit claim:** spec §7.2 marks `decimals` as conditionally required (MUST be present for SPL, MUST be absent for SOL). Two callsites used `method_details.decimals.unwrap_or(6)`, silently defaulting non-6-decimal SPL flows to a wrong divisor.
+
+**Decision:** ✅ **accepted — asymmetric fix.**
+
+**Rationale:** The two callsites have different audiences. The client builder is user-facing and produces signed transactions — silent wrong-decimals output is the worst possible failure mode, error out. The server's `diagnose_balances` is a post-failure best-effort hint — falsely confident output is worse than no output, silently skip (same shape as the audits #8 and #13 fixes for the same function).
+
+**Action taken:**
+- **Client `build_spl_instructions`:** `unwrap_or(6)` → `ok_or(Error::Other("methodDetails.decimals is required for SPL charges (spec §7.2)"))?`. Path only runs when `currency` resolves to a mint (we're inside the SPL branch), so the spec's "MUST be present for mint" is the active rule.
+- **Server `diagnose_balances`:** wrapped the token-balance diagnostic in `if let Some(needed) = method_details.decimals.and_then(|d| to_ui_amount(...))` — missing decimals now silently omits the line rather than guessing 6. Fee-payer SOL diagnostic still runs.
+
+**Note on `Mpp::charge` (server challenge issuer):** unchanged — it already populates `decimals` from `self.decimals` for every challenge this server issues. The `None` path in `diagnose_balances` is the lower-level-construction edge case.
+
+**New tests:**
+- Client: `build_spl_rejects_missing_decimals`.
+- Server: no new test — diagnose_balances is private + RPC-bound; the silent-skip branch is the same shape proven by the #8 tests.
+
+---
