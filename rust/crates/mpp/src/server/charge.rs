@@ -455,6 +455,12 @@ impl Mpp {
             ));
         }
 
+        // Audit #21: validate the splits up-front so malformed entries
+        // (bad pubkey, unparseable/zero amount, overflowing aggregate,
+        // duplicate recipients, too many splits) fail at challenge issuance
+        // instead of at on-chain settlement.
+        crate::protocol::solana::validate_splits(&options.splits)?;
+
         // Audit #38: spec §9.5 forbids fee-payer-funded ATA creation for the
         // top-level recipient. A split that names the primary recipient AND
         // sets `ataCreationRequired: true` is the misconfig shape that, in
@@ -592,20 +598,12 @@ impl Mpp {
                 }
             }
 
+            // Audit #21: shared split validation with the
+            // `charge_with_options` path. Failure modes (bad pubkey,
+            // unparseable/zero amount, overflowing aggregate, duplicate
+            // recipients, too many splits) all surface here.
             if let Some(splits) = md.splits.as_deref() {
-                for (idx, split) in splits.iter().enumerate() {
-                    Pubkey::from_str(&split.recipient).map_err(|e| {
-                        Error::InvalidConfig(format!(
-                            "Invalid split[{idx}] recipient pubkey: {e}"
-                        ))
-                    })?;
-                    split.amount.parse::<u64>().map_err(|_| {
-                        Error::InvalidConfig(format!(
-                            "Invalid split[{idx}] amount `{}`",
-                            split.amount
-                        ))
-                    })?;
-                }
+                crate::protocol::solana::validate_splits(splits)?;
             }
         }
 
@@ -4534,16 +4532,21 @@ mod tests {
     #[test]
     fn charge_with_options_splits() {
         let mpp = test_mpp();
+        // Audit #21: split recipients must be parseable pubkeys; the old
+        // fixture strings were placeholders and now correctly fail
+        // validation. Use real base58 keypairs.
+        let vendor = Pubkey::new_unique().to_string();
+        let processor = Pubkey::new_unique().to_string();
         let splits = vec![
             crate::protocol::solana::Split {
-                recipient: "VendorPayoutsWaLLetxxxxxxxxxxxxxxxxxxxxxx1111".to_string(),
+                recipient: vendor.clone(),
                 amount: "500000".to_string(),
                 ata_creation_required: None,
                 label: None,
                 memo: Some("Vendor payout".to_string()),
             },
             crate::protocol::solana::Split {
-                recipient: "ProcessorFeeWaLLetxxxxxxxxxxxxxxxxxxxxxxx1111".to_string(),
+                recipient: processor.clone(),
                 amount: "29000".to_string(),
                 ata_creation_required: None,
                 label: None,
@@ -4570,6 +4573,95 @@ mod tests {
         assert_eq!(splits_arr[0]["amount"], "500000");
         assert_eq!(splits_arr[0]["memo"], "Vendor payout");
         assert_eq!(splits_arr[1]["amount"], "29000");
+    }
+
+    // ── Audit #21: split validation wired into both server entry points ──
+
+    fn split_helper(recipient: &str, amount: &str) -> crate::protocol::solana::Split {
+        crate::protocol::solana::Split {
+            recipient: recipient.to_string(),
+            amount: amount.to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: None,
+        }
+    }
+
+    #[test]
+    fn charge_with_options_rejects_invalid_split_recipient() {
+        let mpp = test_mpp();
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![split_helper("not-a-pubkey!!", "1000")],
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("invalid split recipient should be rejected");
+        assert!(
+            format!("{err}").contains("invalid recipient pubkey"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn charge_with_options_rejects_zero_split_amount() {
+        let mpp = test_mpp();
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![split_helper(&Pubkey::new_unique().to_string(), "0")],
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("zero split amount should be rejected");
+        assert!(
+            format!("{err}").contains("greater than zero"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn charge_with_options_rejects_duplicate_split_recipient() {
+        let mpp = test_mpp();
+        let dup = Pubkey::new_unique().to_string();
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![split_helper(&dup, "100"), split_helper(&dup, "200")],
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("duplicate split recipient should be rejected");
+        assert!(
+            format!("{err}").contains("duplicate recipient"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn charge_with_options_rejects_too_many_splits() {
+        let mpp = test_mpp();
+        let splits: Vec<_> = (0..(crate::protocol::solana::MAX_SPLITS + 1))
+            .map(|_| split_helper(&Pubkey::new_unique().to_string(), "1"))
+            .collect();
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits,
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("too many splits should be rejected");
+        assert!(matches!(err, Error::TooManySplits));
     }
 
     #[test]
@@ -4829,7 +4921,11 @@ mod tests {
             ..Default::default()
         };
         let err = mpp.charge_challenge(&request).unwrap_err();
-        assert!(format!("{err}").contains("Invalid split[0] recipient"));
+        // Audit #21 unified the error string via the shared validate_splits helper.
+        assert!(
+            format!("{err}").contains("splits[0]: invalid recipient pubkey"),
+            "got: {err}"
+        );
     }
 
     // ── Challenge HMAC verification tests ──

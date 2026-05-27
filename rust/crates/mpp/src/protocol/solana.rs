@@ -475,6 +475,99 @@ mod tests {
         let splits: [Split; 0] = [];
         assert_eq!(checked_sum_split_amounts(&splits), Some(0));
     }
+
+    // ── Audit #21: validate_splits ──
+
+    fn split(recipient: &str, amount: &str) -> Split {
+        Split {
+            recipient: recipient.to_string(),
+            amount: amount.to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: None,
+        }
+    }
+
+    fn unique_pubkey() -> String {
+        solana_pubkey::Pubkey::new_unique().to_string()
+    }
+
+    #[test]
+    fn validate_splits_accepts_valid_set() {
+        let splits = vec![
+            split(&unique_pubkey(), "100"),
+            split(&unique_pubkey(), "200"),
+            split(&unique_pubkey(), "300"),
+        ];
+        validate_splits(&splits).expect("valid splits should be accepted");
+    }
+
+    #[test]
+    fn validate_splits_accepts_empty() {
+        let splits: Vec<Split> = vec![];
+        validate_splits(&splits).expect("empty list is allowed");
+    }
+
+    #[test]
+    fn validate_splits_rejects_count_above_max() {
+        let splits: Vec<Split> = (0..(MAX_SPLITS + 1))
+            .map(|_| split(&unique_pubkey(), "1"))
+            .collect();
+        let err = validate_splits(&splits).err().expect("too many splits");
+        assert!(matches!(err, crate::error::Error::TooManySplits));
+    }
+
+    #[test]
+    fn validate_splits_rejects_invalid_recipient() {
+        let splits = vec![split("not-a-pubkey!!", "100")];
+        let err = validate_splits(&splits).err().expect("bad recipient");
+        assert!(
+            format!("{err}").contains("splits[0]: invalid recipient pubkey"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_splits_rejects_unparseable_amount() {
+        let splits = vec![split(&unique_pubkey(), "not-a-number")];
+        let err = validate_splits(&splits).err().expect("bad amount");
+        assert!(
+            format!("{err}").contains("is not a valid u64"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_splits_rejects_zero_amount() {
+        let splits = vec![split(&unique_pubkey(), "0")];
+        let err = validate_splits(&splits).err().expect("zero amount");
+        assert!(
+            format!("{err}").contains("amount must be greater than zero"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_splits_rejects_overflowing_aggregate() {
+        let near_max = (u64::MAX / 2) + 1;
+        let splits = vec![
+            split(&unique_pubkey(), &near_max.to_string()),
+            split(&unique_pubkey(), &near_max.to_string()),
+        ];
+        let err = validate_splits(&splits).err().expect("aggregate overflow");
+        assert!(format!("{err}").contains("overflows u64"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_splits_rejects_duplicate_recipient() {
+        let dup = unique_pubkey();
+        let splits = vec![split(&dup, "100"), split(&dup, "200")];
+        let err = validate_splits(&splits).err().expect("duplicate recipient");
+        assert!(
+            format!("{err}").contains("duplicate recipient"),
+            "got: {err}"
+        );
+    }
 }
 
 /// Solana-specific method details in the challenge request.
@@ -534,6 +627,66 @@ pub struct Split {
 /// guidance from the MPP spec. Single source of truth for both client-side
 /// (pre-build) and server-side (pre-broadcast) cap checks.
 pub const MAX_SPLITS: usize = 8;
+
+/// Audit #21: validate a list of payment splits at challenge issuance.
+///
+/// Single source of truth for both server entry points (`charge_with_options`
+/// and `charge_challenge_with_options`). Without this gate, malformed
+/// splits would otherwise only surface at the chain — too late for the
+/// merchant to recover and bad UX for the payer.
+///
+/// Checks (each callsite gets the same error shape):
+/// 1. `splits.len() <= MAX_SPLITS`.
+/// 2. Each `split.recipient` parses as a `Pubkey`.
+/// 3. Each `split.amount` parses as `u64` AND is non-zero.
+/// 4. The aggregate sum fits in `u64` (`checked_sum_split_amounts` is `Some`).
+/// 5. No duplicate `recipient` across splits.
+///
+/// Application-level recipient allowlists are out of scope — an SDK
+/// shouldn't bake in domain-specific policy.
+pub fn validate_splits(splits: &[Split]) -> Result<(), crate::error::Error> {
+    use crate::error::Error;
+    use std::collections::HashSet;
+    use std::str::FromStr;
+
+    if splits.len() > MAX_SPLITS {
+        return Err(Error::TooManySplits);
+    }
+
+    let mut seen_recipients: HashSet<&str> = HashSet::with_capacity(splits.len());
+    for (idx, split) in splits.iter().enumerate() {
+        solana_pubkey::Pubkey::from_str(&split.recipient).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "splits[{idx}]: invalid recipient pubkey: {e}"
+            ))
+        })?;
+        let amount = split.amount.parse::<u64>().map_err(|_| {
+            Error::InvalidConfig(format!(
+                "splits[{idx}]: amount `{}` is not a valid u64",
+                split.amount
+            ))
+        })?;
+        if amount == 0 {
+            return Err(Error::InvalidConfig(format!(
+                "splits[{idx}]: amount must be greater than zero"
+            )));
+        }
+        if !seen_recipients.insert(split.recipient.as_str()) {
+            return Err(Error::InvalidConfig(format!(
+                "splits[{idx}]: duplicate recipient `{}`",
+                split.recipient
+            )));
+        }
+    }
+
+    if checked_sum_split_amounts(splits).is_none() {
+        return Err(Error::InvalidConfig(
+            "Sum of split amounts overflows u64".into(),
+        ));
+    }
+
+    Ok(())
+}
 
 /// Audit #30: sum split amounts in base units with overflow detection.
 ///

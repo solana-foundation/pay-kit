@@ -574,3 +574,39 @@ Ludo's call: `"mainnet"` is the canonical slug. `"mainnet-beta"` is the Solana R
 - `new_rejects_mainnet_beta_slug` — explicitly locks in the canonicalization decision.
 
 ---
+
+### #21 — Incomplete split validation at challenge creation
+**ID:** `3a8f7c91` · **Files:** `crates/mpp/src/{protocol/solana.rs,server/charge.rs}`
+
+**Audit claim:** `validate_charge_options` ran additional split checks only when at least one split had `ataCreationRequired = true`. For all other splits, `charge_with_options` embedded them into `methodDetails` with no parseability check, no positive-amount check, no dedup, and no count cap at challenge issuance. Invalid splits then surfaced only at on-chain settlement.
+
+**Decision:** ✅ **accepted — shared helper, both server entry points validate.**
+
+**Action taken:**
+- Added `validate_splits(&[Split]) -> Result<(), Error>` in `protocol/solana.rs` next to the existing `checked_sum_split_amounts` and `MAX_SPLITS`. Single source of truth.
+- Enforces: count ≤ `MAX_SPLITS`, recipient parses as `Pubkey`, amount parses as `u64` and is `> 0`, aggregate sum doesn't overflow `u64` (reuses `checked_sum_split_amounts`), no duplicate recipients.
+- Called from both `validate_charge_options` (per-call path) and `validate_charge_request` (the lower-level `charge_challenge_with_options` path).
+- Removed the duplicated per-split loop in `validate_charge_request`; the helper handles it.
+- One pre-existing test (`charge_with_options_splits`) used placeholder strings as recipient pubkeys that never parsed as base58 — now uses `Pubkey::new_unique()`. The other pre-existing test (`charge_challenge_rejects_invalid_split_recipient`) had its assertion text updated to match the unified helper's error string.
+
+**What I didn't do:**
+- **No application-level recipient allowlist.** The audit's `Consider` for this was a domain-specific policy that doesn't belong in the SDK — applications can wrap.
+- **No client-side change.** Splits originate from the server; the client only consumes them via `methodDetails`.
+
+**New tests** (in `protocol::solana::tests`):
+- `validate_splits_accepts_valid_set`
+- `validate_splits_accepts_empty`
+- `validate_splits_rejects_count_above_max`
+- `validate_splits_rejects_invalid_recipient`
+- `validate_splits_rejects_unparseable_amount`
+- `validate_splits_rejects_zero_amount`
+- `validate_splits_rejects_overflowing_aggregate`
+- `validate_splits_rejects_duplicate_recipient`
+
+**New entry-point regression tests** (in `server::charge::tests`):
+- `charge_with_options_rejects_invalid_split_recipient`
+- `charge_with_options_rejects_zero_split_amount`
+- `charge_with_options_rejects_duplicate_split_recipient`
+- `charge_with_options_rejects_too_many_splits`
+
+---
