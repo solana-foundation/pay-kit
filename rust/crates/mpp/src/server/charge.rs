@@ -246,6 +246,15 @@ impl Mpp {
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::InvalidConfig(format!("Invalid recipient pubkey: {e}")))?;
 
+        // Audit #16: spec §7.2 requires `feePayerKey` when `feePayer` is
+        // true. Reject the boot-time misconfig at the source so
+        // `charge_with_options` can never emit a spec-violating challenge.
+        if config.fee_payer && config.fee_payer_signer.is_none() {
+            return Err(Error::InvalidConfig(
+                "Config.fee_payer is true but fee_payer_signer is None (spec §7.2 requires feePayerKey)".into(),
+            ));
+        }
+
         let rpc_url = config
             .rpc_url
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
@@ -402,6 +411,17 @@ impl Mpp {
     }
 
     fn validate_charge_options(&self, options: &ChargeOptions<'_>) -> Result<(), Error> {
+        // Audit #16: per-call fee-payer override is only honorable when a
+        // signer is configured on this server. Mpp::new already enforces
+        // the invariant for `self.fee_payer`; this catches the override
+        // case where Config.fee_payer is false but ChargeOptions.fee_payer
+        // is true.
+        if options.fee_payer && self.fee_payer_signer.is_none() {
+            return Err(Error::InvalidConfig(
+                "ChargeOptions.fee_payer is true but this server has no fee_payer_signer configured".into(),
+            ));
+        }
+
         // Audit #38: spec §9.5 forbids fee-payer-funded ATA creation for the
         // top-level recipient. A split that names the primary recipient AND
         // sets `ataCreationRequired: true` is the misconfig shape that, in
@@ -4192,6 +4212,99 @@ mod tests {
         );
     }
 
+    // ── Audit #16: fee_payer without signer ──
+
+    #[test]
+    fn new_rejects_fee_payer_true_without_signer() {
+        let err = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            fee_payer: true,
+            fee_payer_signer: None,
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .err()
+        .expect("fee_payer=true without signer should be rejected");
+        assert!(
+            err.to_string().contains("fee_payer_signer is None"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn new_accepts_fee_payer_false_without_signer() {
+        // Regression: the default config has no signer and fee_payer=false;
+        // it must keep working.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            fee_payer: false,
+            fee_payer_signer: None,
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .expect("default fee_payer=false should be accepted");
+        assert!(!mpp.fee_payer);
+    }
+
+    #[test]
+    fn charge_options_rejects_fee_payer_without_signer() {
+        // Mpp is configured fee_payer=false, no signer. A per-call
+        // ChargeOptions.fee_payer = true override must be rejected.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            fee_payer: false,
+            fee_payer_signer: None,
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    fee_payer: true,
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("per-call fee_payer without signer should be rejected");
+        assert!(
+            err.to_string().contains("no fee_payer_signer"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn charge_options_fee_payer_succeeds_when_signer_configured() {
+        // Happy path: server has a signer, per-call override works.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            fee_payer: false,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    fee_payer: true,
+                    ..Default::default()
+                },
+            )
+            .expect("per-call fee_payer with signer should succeed");
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let details: MethodDetails =
+            serde_json::from_value(request.method_details.unwrap()).unwrap();
+        assert_eq!(details.fee_payer, Some(true));
+        assert!(details.fee_payer_key.is_some(), "feePayerKey must be set");
+    }
+
     // ── default_rpc_url tests ──
 
     #[test]
@@ -6786,6 +6899,8 @@ mod tests {
             recipient: TEST_RECIPIENT.to_string(),
             secret_key: Some(TEST_SECRET.to_string()),
             fee_payer: true,
+            // Audit #16: signer is now required alongside fee_payer = true.
+            fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
             ..Default::default()
         })
@@ -6800,7 +6915,16 @@ mod tests {
 
     #[test]
     fn charge_options_fee_payer_flag() {
-        let mpp = test_mpp();
+        // Audit #16: per-call ChargeOptions.fee_payer requires the server
+        // to have a signer configured.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
         let challenge = mpp
             .charge_with_options(
                 "1.00",

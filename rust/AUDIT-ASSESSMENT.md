@@ -489,3 +489,25 @@ So the replay-state side of the bug is closed.
 - Server: no new test — diagnose_balances is private + RPC-bound; the silent-skip branch is the same shape proven by the #8 tests.
 
 ---
+
+### #16 — `PaymentChallenge` instances can be created with `feePayer = true` and `fee_payer_signer = None`
+**ID:** `9e3b1c47` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** spec §7.2 requires `feePayerKey` to be present when `feePayer = true`. `Mpp::new` accepted `Config { fee_payer: true, fee_payer_signer: None }` without complaint, and `charge_with_options` then emitted a spec-violating challenge (`"feePayer": true` with no `"feePayerKey"`).
+
+**Decision:** ✅ **accepted — two gates, both call paths covered.**
+
+**Action taken:**
+- **`Mpp::new`:** reject when `config.fee_payer && config.fee_payer_signer.is_none()`. After this gate the invariant `self.fee_payer` implies `self.fee_payer_signer.is_some()` holds for the server's static config.
+- **`validate_charge_options`:** reject when `options.fee_payer && self.fee_payer_signer.is_none()`. Catches the per-call override where `Config.fee_payer == false` but a route sets `ChargeOptions.fee_payer = true`.
+- Two pre-existing tests (`charge_with_fee_payer_includes_method_details`, `charge_options_fee_payer_flag`) constructed misconfigured Mpps that fell into the audit's exact shape; updated them to provide `test_fee_payer_signer()` so the assertions now exercise the spec-compliant path.
+
+**Note on alternative:** the type-level refactor (fold `fee_payer` + `fee_payer_signer` into a single `Option<FeePayerConfig>` enum that makes the invariant unrepresentable) is the more durable fix but a bigger ergonomic change. Not bundled — the runtime gates close the audit shape today.
+
+**New tests:**
+- `new_rejects_fee_payer_true_without_signer`
+- `new_accepts_fee_payer_false_without_signer` (regression: default no-signer config keeps working)
+- `charge_options_rejects_fee_payer_without_signer`
+- `charge_options_fee_payer_succeeds_when_signer_configured` (happy path; asserts `feePayerKey` is populated)
+
+---
