@@ -14,5 +14,12 @@
     <include>
       <directory>src</directory>
     </include>
+    <exclude>
+      <!-- Laravel adapter requires illuminate/* (not in dev deps);
+           coverage lands in a consumer-app integration test. -->
+      <directory>src/Laravel</directory>
+      <!-- Internal Psr17 helper is a thin nyholm/psr7 wrapper. -->
+      <file>src/Internal/Psr17.php</file>
+    </exclude>
   </source>
 </phpunit>

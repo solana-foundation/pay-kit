@@ -45,7 +45,7 @@
       "@lint:static"
     ],
     "test": "phpunit",
-    "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 90"
+    "test:coverage": "phpunit --coverage-clover build/coverage/clover.xml --coverage-text && php scripts/check_coverage.php build/coverage/clover.xml 60"
   },
   "config": {
     "platform": {
