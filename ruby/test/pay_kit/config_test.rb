@@ -313,7 +313,56 @@ class PayKitConfigTest < Minitest::Test
     end
   end
 
+  # --- preflight knob --------------------------------------------------
+
+  def test_preflight_skipped_when_disabled_via_setter
+    # `c.preflight = false` short-circuits `run_preflight` before it ever
+    # tries to load `lib/pay_kit/preflight.rb` or open an RPC socket.
+    preflight_called = false
+    stub_preflight(captured: -> { preflight_called = true }) do
+      with_env("PAY_KIT_DISABLE_PREFLIGHT" => nil) do
+        PayKit.configure { |c| c.preflight = false }
+      end
+    end
+    refute preflight_called, "Preflight.run must not be invoked when c.preflight = false"
+  end
+
+  def test_preflight_runs_when_env_opt_out_absent
+    # The env-var opt-out is for the gem's own test suite (`test_helper`
+    # sets `PAY_KIT_DISABLE_PREFLIGHT=1`). When the env var is absent
+    # and `c.preflight` stays at its default `true`, `run_preflight`
+    # falls through to `Preflight.run`.
+    preflight_called = false
+    stub_preflight(captured: -> { preflight_called = true }) do
+      with_env("PAY_KIT_DISABLE_PREFLIGHT" => nil) do
+        PayKit.configure { |_c| }
+      end
+    end
+    assert preflight_called, "Preflight.run must run when neither flag opts out"
+  end
+
   private
+
+  # Replace `PayKit::Preflight.run` with a no-op spy for the duration of
+  # the block. Hides the live RPC call behind a deterministic stub so
+  # the coverage tests do not need network access.
+  def stub_preflight(captured:)
+    require_relative "../../lib/pay_kit/preflight"
+    original = PayKit::Preflight.method(:run)
+    PayKit::Preflight.define_singleton_method(:run) { |_config| captured.call }
+    yield
+  ensure
+    PayKit::Preflight.define_singleton_method(:run, original) if original
+  end
+
+  def with_env(overrides)
+    previous = overrides.transform_values { |_| nil }
+    overrides.each_key { |k| previous[k] = ENV[k] }
+    overrides.each { |k, v| ENV[k] = v }
+    yield
+  ensure
+    previous.each { |k, v| ENV[k] = v }
+  end
 
   # Captures every line passed to the logger so individual tests can
   # assert on warning emission without polluting test output.

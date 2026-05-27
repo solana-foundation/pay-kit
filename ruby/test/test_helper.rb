@@ -21,6 +21,13 @@ if ENV["COVERAGE"] == "1"
     # follow the same exclusion as `lib/x402/server/exact.rb`.
     add_filter "/lib/pay_kit/rack/"
     add_filter "/lib/pay_kit/protocols/"
+    # `lib/pay_kit/preflight.rb` issues live RPC calls (`getBalance`,
+    # `getAccountInfo`) and Surfnet cheatcodes against the configured
+    # endpoint at `PayKit.configure` time. Unit-testing it in isolation
+    # would require mocking the entire RPC stack; the integration
+    # behaviour is exercised through the Sinatra example. Follows the
+    # same pattern as `/lib/pay_kit/rack/` + `/lib/pay_kit/protocols/`.
+    add_filter "/lib/pay_kit/preflight.rb"
     # Cross-SDK baseline target is 90 percent branch coverage. Line
     # coverage stays at 92 since the suite already exceeds that.
     minimum_coverage line: 92, branch: 90
