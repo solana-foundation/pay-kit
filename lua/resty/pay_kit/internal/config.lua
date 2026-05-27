@@ -187,6 +187,10 @@ function M.configure(opts)
     return nil, 'pay_kit: mpp.expires_in must be a positive number'
   end
 
+  -- Preflight opt-out: default true, opt out via opts.preflight = false.
+  local preflight_enabled = opts.preflight
+  if preflight_enabled == nil then preflight_enabled = true end
+
   current_config = {
     network                  = network,
     accept                   = accept,
@@ -194,6 +198,8 @@ function M.configure(opts)
     rpc_url                  = rpc_url,
     using_public_rpc_default = using_public_default,
     operator                 = op,
+    preflight                = preflight_enabled,
+    recent_blockhash_provider = opts.recent_blockhash_provider,
     x402 = {
       scheme           = x402_scheme,
       facilitator_url  = x402_facilitator_url,
@@ -213,6 +219,19 @@ function M.configure(opts)
   end
   function current_config.effective_recipient(self)
     return self.operator:effective_recipient()
+  end
+
+  -- Boot-time preflight. Mirrors Ruby PR #142: checks fee-payer SOL
+  -- balance + recipient ATA, auto-bootstraps on localnet+demo via
+  -- surfnet cheatcodes. Opt-out via opts.preflight=false or
+  -- PAY_KIT_DISABLE_PREFLIGHT=1.
+  local preflight = require('resty.pay_kit.preflight')
+  if preflight.should_run(current_config) then
+    local ok, err = pcall(preflight.run, current_config)
+    if not ok then
+      current_config = nil  -- so a follow-up configure() can retry
+      return nil, tostring(err)
+    end
   end
 
   return true
