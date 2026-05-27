@@ -73,6 +73,11 @@ module PayCore
     # rust/src/bin/interop_server.rs::classify_canonical_code.
     MESSAGE_PATTERNS = [
       [/already consumed/i, CODE_SIGNATURE_CONSUMED],
+      # Solana RPC's own duplicate-signature reject text. Surfaces when
+      # an idempotent-resubmit reaches the RPC's per-blockhash signature
+      # uniqueness check before (or instead of) the local replay store -
+      # the matrix's charge-idempotent-resubmit pins this.
+      [/already been processed/i, CODE_SIGNATURE_CONSUMED],
       [/challenge verification failed/i, CODE_CHALLENGE_VERIFICATION_FAILED],
       [/challenge expired/i, CODE_CHALLENGE_EXPIRED],
       [/signed against localnet but the server expects/i, CODE_WRONG_NETWORK],
