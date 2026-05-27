@@ -67,6 +67,17 @@ class PayKitDispatcherTest < Minitest::Test
     end
   end
 
+  def test_mpp_method_cache_threads_expires_in_into_challenge_store
+    PayKitTestHelpers.with_config(mpp_expires_in: 42) do
+      with_dispatcher do |_middleware, dispatcher|
+        gate = make_gate(name: :report, pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
+        server = dispatcher.send(:mpp_server_for, gate)
+        store = server.instance_variable_get(:@challenge_store)
+        assert_equal 42, store.default_expires_seconds
+      end
+    end
+  end
+
   def test_mpp_method_cache_survives_across_dispatchers_on_the_same_middleware
     PayKitTestHelpers.with_config do
       middleware = ::PayKit::Rack::PaymentRequired.new(->(_env) { [200, {}, [""]] }, config: PayKit.config)

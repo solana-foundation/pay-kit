@@ -212,8 +212,9 @@ module PayKit
         network = mpp_network_label_for(@config.network)
         rpc = @config.effective_rpc_url
         realm = @config.mpp.realm
+        expires_in = @config.mpp.expires_in
 
-        key = [recipient, currency, network, rpc, secret, realm].freeze
+        key = [recipient, currency, network, rpc, secret, realm, expires_in].freeze
 
         @mpp_method_cache.fetch(key) do
           method = ::Mpp::Protocol::Solana.charge(
@@ -225,7 +226,8 @@ module PayKit
           ::Mpp.create(
             method: method,
             secret_key: secret,
-            realm: realm
+            realm: realm,
+            expires_in: expires_in
           )
         end
       end

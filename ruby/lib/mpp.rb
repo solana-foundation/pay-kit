@@ -36,13 +36,15 @@ module Mpp
   #     realm:      "My App",
   #   )
   def self.create(method:, secret_key:, realm: DEFAULT_REALM, replay_store: MemoryStore.new,
-    settlement_header: Server::Charge::Handler::DEFAULT_SETTLEMENT_HEADER)
+    settlement_header: Server::Charge::Handler::DEFAULT_SETTLEMENT_HEADER,
+    expires_in: Protocol::Core::ChallengeStore::DEFAULT_EXPIRES_SECONDS)
     Server::Charge.new(
       method: method,
       secret_key: secret_key,
       realm: realm,
       replay_store: replay_store,
-      settlement_header: settlement_header
+      settlement_header: settlement_header,
+      expires_in: expires_in
     )
   end
 end

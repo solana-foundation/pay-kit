@@ -24,12 +24,14 @@ module Mpp
       attr_reader :method, :realm
 
       def initialize(method:, secret_key:, realm:, replay_store:,
-        settlement_header: Handler::DEFAULT_SETTLEMENT_HEADER)
+        settlement_header: Handler::DEFAULT_SETTLEMENT_HEADER,
+        expires_in: ::Mpp::Protocol::Core::ChallengeStore::DEFAULT_EXPIRES_SECONDS)
         @method = method
         @realm = realm
         @challenge_store = ::Mpp::Protocol::Core::ChallengeStore.new(
           secret_key: secret_key,
-          realm: realm
+          realm: realm,
+          default_expires_seconds: expires_in
         )
         @handler = Handler.new(
           challenges: @challenge_store,

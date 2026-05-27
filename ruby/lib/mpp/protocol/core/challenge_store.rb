@@ -8,29 +8,36 @@ module Mpp
       # Low-level charge challenge issuer and credential verifier.
       # Not part of the public API.
       class ChallengeStore
-        attr_reader :secret_key, :realm, :blockhash_provider
+        DEFAULT_EXPIRES_SECONDS = 300
 
-        def initialize(secret_key:, realm: "MPP Payment", blockhash_provider: nil)
+        attr_reader :secret_key, :realm, :blockhash_provider, :default_expires_seconds
+
+        def initialize(secret_key:, realm: "MPP Payment", blockhash_provider: nil,
+          default_expires_seconds: DEFAULT_EXPIRES_SECONDS)
           @secret_key = secret_key
           @realm = realm
           @blockhash_provider = blockhash_provider
+          @default_expires_seconds = default_expires_seconds
         end
 
-        # Create an MPP charge challenge.
-        def create_challenge(request, expires: Expires.minutes(5), description: nil)
+        # Create an MPP charge challenge. When `expires:` is omitted the
+        # store's `default_expires_seconds` is applied freshly per call
+        # so the timestamp always reflects "now + N", not the moment the
+        # store was constructed.
+        def create_challenge(request, expires: nil, description: nil)
           Core::Challenge.with_secret(
             secret_key: secret_key,
             realm: realm,
             method: "solana",
             intent: "charge",
             request: request_payload(request),
-            expires: expires,
+            expires: expires || Expires.seconds(default_expires_seconds),
             description: description
           )
         end
 
         # Create the `WWW-Authenticate` header value for a charge request.
-        def create_challenge_header(request, expires: Expires.minutes(5), description: nil)
+        def create_challenge_header(request, expires: nil, description: nil)
           ::Mpp::Protocol::Core::Headers.format_www_authenticate(create_challenge(request, expires: expires, description: description))
         end
 
