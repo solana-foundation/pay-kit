@@ -200,12 +200,28 @@ module PayKit
           rpc_url: @config.effective_rpc_url,
           pay_to: gate.pay_to,
           facilitator_secret_key: signer.to_json_array,
-          amount: gate.total.amount,
+          # x402 v2 wire format expects amount in smallest-units integer
+          # string (the Rust spine parses requirement.amount as u64;
+          # decimal forms like "0.001" trip "Invalid amount" on the
+          # client). PayKit's Gate carries the human-readable decimal,
+          # so convert here using the gate's currency decimals.
+          amount: to_smallest_units_string(gate.total),
           network: caip2_for(@config.network),
           mint: mint_for(gate.amount.primary_coin, @config.network),
           resource_path: request.path,
           settlement_cache: @x402_settlement_cache
         )
+      end
+
+      # Convert a Price (decimal "0.001") into the SPL smallest-units
+      # integer string ("1000"). 6 decimals is the canonical default for
+      # USDC/USDT/EURC; if a future gate carries a non-6-decimal coin
+      # this needs to look up decimals_for(coin, network) instead.
+      def to_smallest_units_string(price)
+        whole, _, fraction = price.amount.partition(".")
+        fraction = fraction.ljust(6, "0")[0, 6]
+        units = (Integer(whole, 10) * 1_000_000) + Integer(fraction.empty? ? "0" : fraction, 10)
+        units.to_s
       end
 
       # Per-gate MPP server built once, cached on the middleware. The

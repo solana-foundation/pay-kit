@@ -213,7 +213,14 @@ module X402
             "scheme" => Constants::EXACT_SCHEME,
             "network" => config.network,
             "asset" => mint,
+            # Emit both `amount` (spine canonical, also what
+            # Types#accepted_requirement_matches?  identity tuple
+            # checks) and `maxAmountRequired` (what the ts-x402
+            # client adapter reads via `offer.maxAmountRequired`).
+            # Rust spine's parser accepts either spelling
+            # (rust/crates/x402/src/protocol/schemes/exact/types.rs:337-339).
             "amount" => config.amount,
+            "maxAmountRequired" => config.amount,
             "payTo" => config.pay_to,
             "maxTimeoutSeconds" => DEFAULT_MAX_TIMEOUT_SECONDS,
             "extra" => extra
@@ -229,8 +236,13 @@ module X402
         def exact_challenge(config, resource: nil)
           {
             "x402Version" => Constants::X402_VERSION_V2,
+            # Rust spine deserialises this into `ResourceInfo {url,
+            # description?, mimeType?}` and the TS server fixture emits
+            # the URI as a top-level string. Emit both `url` and `uri`
+            # so either client parser accepts the envelope.
             "resource" => {
               "type" => "http",
+              "url" => resource || config.resource_path,
               "uri" => resource || config.resource_path
             },
             "accepts" => exact_requirements(config, resource: resource)
