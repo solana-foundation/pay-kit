@@ -1,198 +1,255 @@
 <p align="center">
-  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
+  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="solana-pay-kit" width="100%" />
 </p>
 
-# solana/pay-kit
+Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in
+PHP. One package, one surface, two protocols underneath:
+[x402](https://x402.org) and the
+[Machine Payments Protocol](https://paymentauth.org). Laravel and
+Symfony ride on top of a pure PSR-15 middleware.
 
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in PHP.
-Implements the Solana payment method for the
-[Machine Payments Protocol](https://mpp.dev) and ships a drop-in Laravel
-middleware for `402 Payment Required` flows.
+[![PHP](https://img.shields.io/badge/php-8.2%2B-blue)]()
+[![Coverage](https://img.shields.io/badge/coverage-pending-yellow)]()
+[![Tests](https://img.shields.io/badge/tests-219-brightgreen)]()
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library: pick a
-currency, give it your wallet address, and gate a route in two lines.
-
-[![PHP](https://img.shields.io/badge/PHP-8.1%2B-blue)]()
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)]()
+---
 
 ## Quick start
 
-Gate a Laravel route with the `mpp.charge` middleware (from
-[`examples/laravel/routes/api.php`](examples/laravel/routes/api.php)):
+Three progressively-realistic snippets. Each one runs as-is, copy,
+paste, hit the URL. Laravel is the framework here; the same surface
+works in Slim, Mezzio, Symfony, and any other PSR-15-aware host.
+
+### 1. Smallest possible app
+
+Gate one route with an inline price. Zero-config: the package uses a
+published demo keypair as the recipient and the hosted Surfpool
+sandbox at `https://402.surfnet.dev:8899` as the RPC.
 
 ```php
-<?php
-
+// routes/api.php
+use PayKit\Gate;
+use PayKit\Price;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/paid', function () {
-    return response()->json(['ok' => true, 'paid' => true]);
-})->middleware('mpp.charge');
+Route::get('/report', fn () => ['premium' => 'report'])
+    ->middleware(['paykit:inline'])
+    ->defaults('paykit.gate', new Gate(amount: Price::usd('0.10')));
 ```
 
-The `MppCharge` middleware (see
-[`examples/laravel/app/Http/Middleware/MppCharge.php`](examples/laravel/app/Http/Middleware/MppCharge.php))
-constructs a `SolanaChargeHandler`, inspects the `Authorization: Payment`
-header, returns a 402 with a signed `WWW-Authenticate` challenge when no
-valid credential is supplied, and otherwise lets the route render any
-body it likes while emitting the `Payment-Receipt` header.
+`PayKitServiceProvider` mounts the package; the `paykit:<name>` route
+middleware halts the request with a 402 if no valid payment is sent,
+or sets the verified `Payment` on the request and forwards to the
+route handler if one is.
 
-`currency` accepts a symbol like `"USDC"`, `"USDT"`, `"USDG"`, `"PYUSD"`,
-or `"CASH"`. The SDK looks up the mint address, token program, and
-decimals from a built-in table. You can also pass a raw mint pubkey for
-tokens not in the table.
+Hit `/report` with [`pay curl`](#run-the-example) and the customer
+walks through Touch ID and a USDC payment.
 
-### Raw SDK usage
+### 2. Multiple gates via a Pricing class
+
+Lift the prices into a `Pricing` subclass; routes reference gates by
+property name.
 
 ```php
-use PayKit\Intent\ChargeRequest;
-use PayKit\Server\ChargeServer;
-use PayKit\Server\SolanaChargeHandler;
-use SolanaPhpSdk\Rpc\RpcClient;
+// app/Pricing.php
+namespace App;
 
-$rpc = new RpcClient('https://402.surfnet.dev:8899');
-$handler = new SolanaChargeHandler(
-    challenges: new ChargeServer(
-        secretKey: 'local-dev-secret',
-        realm: 'api',
-        blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
-    ),
-    rpc: $rpc,
-    network: 'localnet',
-);
-$request = new ChargeRequest(
-    amount: '1000',
-    currency: 'USDC',
-    recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-    methodDetails: ['network' => 'localnet', 'decimals' => 6],
-);
+use PayKit\Gate;
+use PayKit\Price;
+use PayKit\Scheme;
 
-$result = $handler->handle($_SERVER['HTTP_AUTHORIZATION'] ?? null, $request);
+final class Pricing extends \PayKit\Pricing
+{
+    public readonly Gate $report;
+    public readonly Gate $apiCall;
+
+    public function __construct()
+    {
+        $this->report  = new Gate(amount: Price::usd('0.10'), description: 'Premium report');
+        $this->apiCall = new Gate(amount: Price::usd('0.001'), accept: [Scheme::X402]);
+    }
+}
 ```
 
-`SolanaChargeHandler::handle()` returns either a `PaymentRequiredResponse`
-(402) or a `ChargeSettlement` (200) with the on-chain signature. Both
-expose the same `status` / `headers` / `body` properties so the HTTP
-layer can project either path uniformly.
+```php
+// routes/api.php
+Route::get('/report',   fn () => ['premium' => 'report'])->middleware('paykit:report');
+Route::get('/api/data', fn () => ['data' => []])->middleware('paykit:apiCall');
+```
 
-## Protocol compatibility matrix
+Gates are validated at boot. Wrong currency, missing recipient, fee
+math that does not add up - all raise from `new Gate(...)` before any
+request lands.
 
-### MPP
+### 3. Production-shape config
 
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `mpp/charge/pull` | --- | pass |
-| `mpp/charge/push` | --- | planned |
-| `mpp/session` | --- | --- |
-| `mpp/subscription` | --- | --- |
+```php
+// config/paykit.php
+return [
+    'network'     => 'solana_mainnet',
+    'rpc_url'     => env('PAY_KIT_RPC_URL'),
+    'accept'      => ['x402', 'mpp'],
+    'stablecoins' => ['USDC', 'PYUSD'],
+    'operator' => [
+        'recipient' => 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj',
+        'key'       => env('PAY_KIT_OPERATOR_KEY'),
+        'fee_payer' => true,
+    ],
+    'mpp_challenge_binding_secret' => env('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
+];
+```
 
-### x402
+```php
+// app/Pricing.php — same shape, with a fee-bearing gate
+final class Pricing extends \PayKit\Pricing
+{
+    public readonly Gate $marketplaceSale;
 
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `x402/exact` | --- | --- |
-| `x402/upto` | --- | --- |
-| `x402/batch-settlement` | --- | --- |
+    public function __construct()
+    {
+        // Customer pays $10.00 ; SELLER nets $9.70 ; PLATFORM nets $0.30
+        $this->marketplaceSale = new Gate(
+            amount:    Price::usd('10.00'),
+            feeWithin: ['CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY' => Price::usd('0.30')],
+        );
+    }
+}
+```
 
-This package ships server support only. Use a TypeScript, Rust, Go,
-Python, Kotlin, or Swift client to drive payment flows against a
-PHP-hosted endpoint.
+Two safety rails fire at boot:
 
-For `mpp/charge/pull`: `SolanaChargeHandler` owns the full lifecycle. It
-issues signed challenges with a pre-fetched `recentBlockhash`, parses
-and validates the `Authorization: Payment` credential, pins the echoed
-`ChargeRequest`, decodes the client-signed transaction and checks
-recipient, amount, mint, splits, ATA, memos, and compute budget, rejects
-Surfpool-signed transactions on non-localnet networks, optionally
-fee-payer co-signs, broadcasts via `sendTransaction`, polls
-`getSignatureStatuses` to `confirmed` / `finalized`, and emits
-`payment-receipt` with the on-chain signature.
+- `solana_mainnet` plus the demo signer raises `DemoSignerOnMainnetException`.
+- Missing `mpp_challenge_binding_secret` - Preflight surfaces the gap and
+  points at `PAY_KIT_MPP_CHALLENGE_BINDING_SECRET` as the env override.
 
-Push mode and the `x402/*` server surface are out of scope for this
-package today.
+---
 
-## Examples
-
-Two runnable examples ship with this package:
-
-- [`examples/simple-server/`](examples/simple-server/index.php) - a
-  single-file PHP script demonstrating the raw protocol on top of the
-  SDK helpers.
-- [`examples/laravel/`](examples/laravel/README.md) - a Laravel 12 app
-  that registers `MppCharge` as a route middleware.
-
-### Run the Laravel example
+## Run the example
 
 ```bash
-cd php/examples/laravel
+git clone https://github.com/solana-foundation/pay-kit
+cd pay-kit/php/examples/laravel
 composer install
-cp .env.example .env
-php -S 127.0.0.1:4567 -t public
+php artisan serve --port=4567
 ```
 
-### Drive it from a client
+On `solana_localnet` with the demo signer, the package provisions the
+recipient's USDC account on Surfpool via cheatcodes the first time,
+then settles real on-chain payments after that.
 
 ```bash
-brew install pay
-curl  http://127.0.0.1:4567/paid       # 402 payment required
-pay curl http://127.0.0.1:4567/paid    # pays and succeeds
+brew install pay     # or: npm install -g @solana/pay
+
+curl -i http://127.0.0.1:4567/api/paid     # 402 - payment required
+pay curl -i http://127.0.0.1:4567/api/paid # 200 - payment provided
 ```
 
-The Laravel example defaults to Surfpool localnet
-(`https://402.surfnet.dev:8899`), `USDC`, and a local example recipient.
-Override `MPP_RPC_URL`, `MPP_CURRENCY`, `MPP_PAY_TO`, `MPP_AMOUNT`, or
-`MPP_FEE_PAYER_SECRET_KEY` for a different localnet fixture. See
-[`examples/laravel/README.md`](examples/laravel/README.md) for how the
-middleware is wired and how to apply it to your own routes.
+---
 
-## Solana dependencies
+## x402
 
-| Dependency | Why | Version |
-|---|---|---|
-| PHP standard library | server-side 402 helpers and HMAC challenge signing | 8.1+ |
-| `solana-php/solana-sdk` | Solana transaction decode plus SPL Token, ATA, Memo, and System program primitives | `dev-master` |
-| `phpunit/phpunit` | tests and coverage gate | `^10.0 || ^11.0` |
-| `phpstan/phpstan` | static analysis at max level | `^2.1` |
-| `friendsofphp/php-cs-fixer` | PSR-12-compatible format checks | `^3.89` |
-| Ed25519 verifier | server-side voucher verification | --- |
-| RFC 8785 canonical JSON | request field pre-base64url | local implementation |
+[x402](https://x402.org) revives HTTP `402 Payment Required` as a
+client-server payment handshake. x402 is single-recipient by design;
+gates with `feeWithin` or `feeOnTop` auto-disable x402.
 
-The PHP SDK keeps Solana dependencies intentionally small.
-`solana-php/solana-sdk` supplies Solana wire primitives only; MPP still
-owns the payment verification semantics.
+| Scheme  | Status |
+|---------|--------|
+| `exact` | -- (Phase 5 follow-up: 11-rule verifier port) |
+| `upto`  | --     |
+| `batch` | --     |
 
-## Coding convention
+## MPP
 
-This SDK follows PHP 8.1+, PSR-4 autoloading, PSR-12-compatible
-formatting, and the
-[`php-best-practices`](https://skills.sh/asyrafhussin/agent-skills/php-best-practices)
-skill. The pass focuses on strict types, parameter and return types,
-typed readonly properties, small focused classes, explicit exceptions,
-and input validation before parsing payment credentials.
+The [Machine Payments Protocol](https://paymentauth.org) supports
+multi-recipient splits, server-side fee accounting, and a separate
+fee-payer signer. Use MPP when your gate has a platform fee or the
+server subsidises the customer's network fee.
 
-The repo-level `pay-sdk-implementation` skill remains the protocol source
-of truth: Rust / spec wire format first, PHP idioms second.
+| Scheme        | Status |
+|---------------|--------|
+| `charge/pull` | passing |
+| `charge/push` | passing |
+| `session`     | --     |
 
-## Code coverage
+---
+
+## Server-only
+
+This package ships server support only. Drive the client side from:
+
+- [`pay curl`](https://github.com/solana-foundation/pay)
+- The Rust, TypeScript, Go, Python, Ruby, Kotlin, Swift, or Lua
+  pay-kit client SDKs (sibling READMEs in this repo)
+
+---
+
+## Vocabulary
+
+| Term            | Meaning                                                              |
+|-----------------|----------------------------------------------------------------------|
+| **operator**    | Merchant identity: recipient + signer + fee-payer flag.              |
+| **gate**        | A protected unit. Amount, optional fees, accepted schemes.           |
+| **amount**      | Base amount a gate charges, before any `feeOnTop`.                   |
+| **total**       | What the customer pays: `amount + sum(feeOnTop)`. Derived.           |
+| **price**       | Value object: number + denom + settlement preference list.           |
+| **feeWithin**   | Fee taken out of the amount. `payTo` recipient nets less.            |
+| **feeOnTop**    | Fee added to the amount. Customer pays more; `payTo` nets full.      |
+| **payment**     | Proof submitted by the client to pass a gate.                        |
+| **scheme**      | `Scheme::X402` or `Scheme::Mpp`.                                     |
+| **accept**      | Ordered preference list (schemes and stablecoins both).              |
+
+## Three primitives
+
+Namespace functions under `PayKit\Http\`. Import per file:
+
+```php
+use function PayKit\Http\{payment, isPaid, isPaidFor, requirePayment};
+```
+
+| Function                                  | Returns       | On failure                    |
+|-------------------------------------------|---------------|-------------------------------|
+| `RequirePayment` (PSR-15 middleware)      | next handler  | 402 response                  |
+| `payment($request)`                       | `?Payment`    | `null` if unauthenticated     |
+| `isPaid($request)`                        | `bool`        | never                         |
+| `isPaidFor($request, $gate)`              | `bool`        | never                         |
+| `requirePayment($request)`                | `Payment`     | throws PaymentRequiredException |
+
+## Inline pricing
+
+```php
+$app->get('/oneoff', $handler)
+    ->add(new \PayKit\Http\RequirePayment($client, new Gate(amount: Price::usd('0.25'))));
+```
+
+## Gate DSL
+
+Boot-time validations (all raise from `new Gate(...)`):
+
+- `payTo` is required (gate kwarg or `operator.recipient`)
+- All fee prices share one denomination with the amount
+- `sum(feeWithin) <= amount`
+- `accept: [Scheme::X402]` on a fee-bearing gate raises `SchemeIncompatibleException`
+
+## PSR-15-first
+
+The core middleware is `PayKit\Http\RequirePayment`. Slim and Mezzio
+mount it directly; Laravel and Symfony adapters are thin shims over
+the same class. The Laravel `paykit` route-middleware alias bridges
+the framework request to PSR-7 via `symfony/psr-http-message-bridge`
+and delegates to `RequirePayment` so both stacks share one code path.
+
+---
+
+## Coverage
 
 ```bash
 cd php
+composer install
 composer run lint
-composer test
-composer run test:coverage
+vendor/bin/phpunit
 ```
 
-CI runs the linter and `composer run test:coverage` with `pcov`. The
-coverage command enforces a 90% line coverage gate and uploads
-`php/build/coverage/clover.xml`.
-
-## Interop
-
-The PHP server has a direct harness adapter at
-[`harness/php-server/server.php`](../harness/php-server/server.php).
-Focused harness commands:
+## Harness
 
 ```bash
 cd harness
@@ -202,19 +259,46 @@ MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=php pnpm test
 
 ## Spec
 
-This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
-for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
+This SDK implements the
+[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
+plus the [x402 v2 exact scheme](https://x402.org) on Solana (x402
+verifier port to PHP is a Phase 5 follow-up on this branch).
+
+---
 
 ## Repo layout
 
 ```text
 php/
-├── src/Core/     # Payment headers, credentials, receipts, base64url JSON
-├── src/Intent/   # Charge intent request model
-├── src/Server/   # 402 challenge issuance + credential verification
-├── examples/     # Simple-server script and Laravel middleware example
-└── tests/        # PHPUnit unit tests
+├── src/
+│   ├── Config.php, Client.php, Operator.php, Signer.php, Gate.php, Price.php,
+│   │   Fee.php, Pricing.php, Payment.php, Preflight.php   # umbrella surface
+│   ├── Scheme.php, Stablecoin.php, Network.php, Denom.php # backed enums
+│   ├── Signer/{Demo, LocalSigner}.php                      # signer factory + impl
+│   ├── Exception/                                          # typed exceptions
+│   ├── Http/{RequirePayment, functions}.php                # PSR-15 middleware + ns fns
+│   ├── Schemes/
+│   │   ├── Mpp/{Adapter, MppConfig, Intent, Server/...}    # MPP protocol layer
+│   │   └── X402/{Adapter, X402Config, Exact/...}           # x402 protocol layer
+│   ├── PayCore/                                            # shared wire primitives
+│   │   ├── Base64Url, Json, Headers, Challenge, ChallengeEcho,
+│   │   │   Credential, Receipt, Rfc3339Parser.php
+│   │   └── Solana/Mints.php
+│   ├── Store/{Store, MemoryStore, FileStore}.php           # replay store
+│   ├── Internal/Psr17.php                                  # PSR-17 factory helper
+│   └── Laravel/{PayKitServiceProvider, RequirePaymentMiddleware,
+│       config/paykit.php}                                  # Laravel adapter
+├── examples/{laravel, simple-server}/
+└── tests/                                                  # PHPUnit suite
 ```
+
+## Coding convention
+
+PSR-1, PSR-12, PER-CS for code style. `php-cs-fixer` + `phpstan
+--level=max` in CI. `strict_types=1` on every file. Constructor
+property promotion everywhere. `readonly` classes for value objects.
+`brick/math` `BigDecimal` for money - never `float`.
 
 ## License
 

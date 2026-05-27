@@ -1,0 +1,87 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PayKit\Tests;
+
+use PayKit\Exception\InvalidKeyException;
+use PayKit\Signer;
+use PayKit\Signer\Demo;
+use PHPUnit\Framework\TestCase;
+
+final class SignerTest extends TestCase
+{
+    public function testDemoReturnsCanonicalPubkey(): void
+    {
+        $sgn = Signer::demo();
+        $this->assertTrue($sgn->isDemo());
+        $this->assertSame(Demo::PUBKEY, $sgn->pubkey());
+        $this->assertSame(Demo::PUBKEY, $sgn->pubkey()); // cached
+    }
+
+    public function testGenerateProducesValidKeypair(): void
+    {
+        $sgn = Signer::generate();
+        $this->assertFalse($sgn->isDemo());
+        $this->assertSame(64, strlen($sgn->secretKey()));
+        $this->assertNotEmpty($sgn->pubkey());
+    }
+
+    public function testBytesAcceptsArrayOfInts(): void
+    {
+        $arr = array_fill(0, 64, 1);
+        $sgn = Signer::bytes($arr);
+        $this->assertNotEmpty($sgn->pubkey());
+    }
+
+    public function testBytesRejectsWrongLength(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::bytes(array_fill(0, 32, 1));
+    }
+
+    public function testBytesRejectsOutOfRange(): void
+    {
+        $arr = array_fill(0, 64, 1);
+        $arr[10] = 999;
+        $this->expectException(InvalidKeyException::class);
+        Signer::bytes($arr);
+    }
+
+    public function testJsonAcceptsCliFormat(): void
+    {
+        $bytes = array_fill(0, 64, 7);
+        $sgn = Signer::json(json_encode($bytes, JSON_THROW_ON_ERROR));
+        $this->assertNotEmpty($sgn->pubkey());
+    }
+
+    public function testJsonRejectsEmpty(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::json('');
+    }
+
+    public function testHexAcceptsValidHex(): void
+    {
+        $hex = str_repeat('aa', 64);
+        $sgn = Signer::hex($hex);
+        $this->assertNotEmpty($sgn->pubkey());
+    }
+
+    public function testHexRejectsWrongLength(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::hex('abc');
+    }
+
+    public function testEnvReturnsNullForUnset(): void
+    {
+        $this->assertNull(Signer::env('PAY_KIT_UNSET_X9Y8Z7'));
+    }
+
+    public function testEnvRejectsEmptyName(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::env('');
+    }
+}

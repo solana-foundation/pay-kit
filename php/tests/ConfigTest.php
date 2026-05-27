@@ -1,0 +1,80 @@
+<?php
+
+declare(strict_types=1);
+
+namespace PayKit\Tests;
+
+use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
+use PayKit\Exception\DemoSignerOnMainnetException;
+use PayKit\Network;
+use PayKit\Operator;
+use PayKit\Scheme;
+use PayKit\Signer;
+use PayKit\Stablecoin;
+use PHPUnit\Framework\TestCase;
+
+final class ConfigTest extends TestCase
+{
+    public function testZeroConfigUsesLocalnetDefaultsAndDemoSigner(): void
+    {
+        $cfg = new Config(preflight: false);
+        $this->assertSame(Network::SolanaLocalnet, $cfg->network);
+        $this->assertSame('https://402.surfnet.dev:8899', $cfg->rpcUrl);
+        $this->assertTrue($cfg->operator->signer?->isDemo());
+        // Recipient cascades to signer->pubkey().
+        $this->assertSame(Signer::demo()->pubkey(), $cfg->effectiveRecipient());
+    }
+
+    public function testDevnetAndMainnetDefaults(): void
+    {
+        $cfg = new Config(network: Network::SolanaDevnet, preflight: false);
+        $this->assertSame('https://api.devnet.solana.com', $cfg->rpcUrl);
+    }
+
+    public function testCustomRpcUrlHonoured(): void
+    {
+        $cfg = new Config(
+            network: Network::SolanaDevnet,
+            rpcUrl: 'https://my-helius.example.com',
+            preflight: false,
+        );
+        $this->assertSame('https://my-helius.example.com', $cfg->rpcUrl);
+    }
+
+    public function testMainnetWithDemoSignerRejected(): void
+    {
+        $this->expectException(DemoSignerOnMainnetException::class);
+        new Config(network: Network::SolanaMainnet, preflight: false);
+    }
+
+    public function testEmptyAcceptRejected(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        new Config(accept: [], preflight: false);
+    }
+
+    public function testStablecoinAndAcceptOrderPreserved(): void
+    {
+        $cfg = new Config(
+            accept:      [Scheme::Mpp, Scheme::X402],
+            stablecoins: [Stablecoin::Usdt, Stablecoin::Usdc],
+            preflight:   false,
+        );
+        $this->assertSame(Scheme::Mpp, $cfg->accept[0]);
+        $this->assertSame(Stablecoin::Usdt, $cfg->stablecoins[0]);
+    }
+
+    public function testExplicitOperatorOverridesDefaults(): void
+    {
+        $sgn = Signer::generate();
+        $cfg = new Config(
+            network: Network::SolanaDevnet,
+            operator: new Operator(recipient: 'CustomRecipient', signer: $sgn, feePayer: false),
+            preflight: false,
+        );
+        $this->assertSame('CustomRecipient', $cfg->effectiveRecipient());
+        $this->assertSame($sgn->pubkey(), $cfg->operator->signer?->pubkey());
+        $this->assertFalse($cfg->operator->feePayer);
+    }
+}

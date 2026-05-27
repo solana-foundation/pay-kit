@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\PayCore\Solana;
 
+use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
 
@@ -128,8 +129,12 @@ final class Mints
      */
     public static function deriveAta(string $owner, string $mint, string $tokenProgram): string
     {
-        [$ata] = AssociatedTokenProgram::findAssociatedTokenAddress($owner, $mint, $tokenProgram);
-        return $ata;
+        [$ata] = AssociatedTokenProgram::findAssociatedTokenAddress(
+            new PublicKey($owner),
+            new PublicKey($mint),
+            new PublicKey($tokenProgram),
+        );
+        return (string) $ata;
     }
 
     /**
