@@ -76,19 +76,24 @@ jobs:
       - name: Typecheck interop harness
         working-directory: harness
         run: pnpm typecheck
-      # PayKit interop proof: drives the harness's MPP charge matrix
-      # against the dual-protocol adapter binary. x402 cross-language
-      # interop coverage is deferred to a follow-up; the harness's
-      # ts-x402 and rust-x402 clients carry field-name asymmetries
-      # against this server's spine output (amount vs maxAmountRequired,
-      # payload.transaction wire shape) that need a cross-SDK audit
-      # beyond this PR. The dual-protocol adapter still BOOTS in x402
-      # mode (proven by test/pay_kit/harness_adapter_test.rb in the
-      # Ruby gem test suite).
-      - name: Run PayKit interop smoke (mpp charge)
+      # PayKit dual-protocol proof: one e2e run drives MPP charge
+      # scenarios (typescript client) and x402 exact (rust-x402 client)
+      # against the same ruby-pay-kit-server binary. The harness's
+      # interopEnv exposes X402_INTEROP_* shadows alongside MPP_INTEROP_*
+      # (same surfpool, same funded keypairs) and stamps every scenario
+      # with PAY_KIT_INTEROP_PROTOCOL so the dual-protocol adapter binds
+      # the right protocol per scenario without relying on env namespace
+      # probing. ts-x402 is intentionally excluded - it is a wire-only
+      # fixture whose payload omits the on-chain transaction, so it can
+      # only pair against the matching wire-only ts-x402 server, not a
+      # real settle server.
+      - name: Run PayKit interop smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: ""
+          MPP_INTEROP_INTENTS: charge,x402-exact
+          X402_INTEROP_CLIENTS: rust-x402
+          X402_INTEROP_SERVERS: ""
           PAY_KIT_INTEROP_SERVERS: ruby-pay-kit-server
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby-pay-kit-server" --testTimeout 180000

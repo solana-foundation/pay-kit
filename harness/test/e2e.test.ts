@@ -282,6 +282,14 @@ beforeAll(async () => {
     MPP_INTEROP_FEE_PAYER_SECRET_KEY: JSON.stringify(
       Array.from(surfnet.payerSecretKey),
     ),
+    // x402-shaped twins of the same surfpool fixtures so x402 scenarios
+    // can reuse the matrix's funded keypairs.
+    X402_INTEROP_RPC_URL: surfnet.rpcUrl,
+    X402_INTEROP_PAY_TO: payTo.publicKey,
+    X402_INTEROP_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
+    X402_INTEROP_FACILITATOR_SECRET_KEY: JSON.stringify(
+      Array.from(surfnet.payerSecretKey),
+    ),
   };
 });
 
@@ -320,22 +328,19 @@ describe("mpp interop", () => {
     ) {
       continue;
     }
-    // The x402-exact intent has its own runner in
-    // `test/x402-exact.e2e.test.ts` that emits `X402_INTEROP_*` env vars.
-    // The legacy MPP runner builds `MPP_INTEROP_*` env, which the x402
-    // adapters do not consume, so we hard-skip the new intent here even
-    // when MPP_INTEROP_INTENTS explicitly selects it.
-    if (scenario.intent === "x402-exact") {
-      continue;
-    }
+    // The x402-exact intent reuses this matrix's surfpool + funded
+    // keypairs. `environmentForScenario` emits X402_INTEROP_* shadows
+    // alongside MPP_INTEROP_* (same fixtures), and the pair filter
+    // below gates on `impl.intents.includes(scenario.intent)` so
+    // charge-only adapters skip x402 scenarios automatically.
     const scenarioServers = activeServers.filter(
       (implementation) =>
-        (!implementation.intents || implementation.intents.includes(scenario.intent)) &&
+        (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
         (!scenario.serverIds || scenario.serverIds.includes(implementation.id)),
     );
     const scenarioClients = activeClients.filter(
       (implementation) =>
-        (!implementation.intents || implementation.intents.includes(scenario.intent)) &&
+        (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
         (!scenario.clientIds || scenario.clientIds.includes(implementation.id)),
     );
 
@@ -607,6 +612,22 @@ function environmentForScenario(
   }
   if (typeof scenario.clientComputeUnitPrice === "string") {
     env.MPP_INTEROP_COMPUTE_UNIT_PRICE = scenario.clientComputeUnitPrice;
+  }
+  if (scenario.intent === "x402-exact") {
+    // Adapters that auto-detect protocol by env namespace
+    // (e.g. ruby-pay-kit-server) prefer this explicit hint - the
+    // matrix populates both MPP_INTEROP_* and X402_INTEROP_* shadows
+    // from the same surfpool fixtures, so namespace probing alone
+    // is ambiguous.
+    env.PAY_KIT_INTEROP_PROTOCOL = "x402";
+    env.X402_INTEROP_AMOUNT = scenario.amount;
+    env.X402_INTEROP_MINT = scenario.asset;
+    env.X402_INTEROP_NETWORK = scenario.network;
+    env.X402_INTEROP_PRICE = scenario.price;
+    env.X402_INTEROP_RESOURCE_PATH = scenario.resourcePath;
+    env.X402_INTEROP_SETTLEMENT_HEADER = scenario.settlementHeader;
+  } else {
+    env.PAY_KIT_INTEROP_PROTOCOL = "mpp";
   }
   return env;
 }

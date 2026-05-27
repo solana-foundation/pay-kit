@@ -40,11 +40,26 @@ end
 
 # --- detect intent -----------------------------------------------------
 
-x402_active = !ENV["X402_INTEROP_RPC_URL"].to_s.empty?
-mpp_active  = !ENV["MPP_INTEROP_RPC_URL"].to_s.empty?
-if x402_active == mpp_active
-  warn "pay-kit-server: set exactly one of X402_INTEROP_RPC_URL or MPP_INTEROP_RPC_URL"
-  exit 2
+# When the harness orchestrator sets PAY_KIT_INTEROP_PROTOCOL the
+# adapter trusts that hint (the cross-language matrix populates both
+# X402_INTEROP_* and MPP_INTEROP_* from the same surfpool fixtures, so
+# namespace probing alone is ambiguous). Otherwise the adapter falls
+# back to "exactly one namespace must be populated".
+explicit_protocol = ENV["PAY_KIT_INTEROP_PROTOCOL"].to_s.strip.downcase
+case explicit_protocol
+when "x402"
+  x402_active = true
+  mpp_active = false
+when "mpp", "charge"
+  x402_active = false
+  mpp_active = true
+else
+  x402_active = !ENV["X402_INTEROP_RPC_URL"].to_s.empty?
+  mpp_active  = !ENV["MPP_INTEROP_RPC_URL"].to_s.empty?
+  if x402_active == mpp_active
+    warn "pay-kit-server: set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or set PAY_KIT_INTEROP_PROTOCOL=x402|mpp"
+    exit 2
+  end
 end
 protocol = x402_active ? :x402 : :mpp
 
