@@ -87,6 +87,34 @@ end
 
 -- --- offer construction --------------------------------------------
 
+-- Fetch a recent blockhash from the server's RPC and stamp it into
+-- the challenge's `extra.recentBlockhash` so clients sign against
+-- the same chain state the server will broadcast to. Mirrors Ruby
+-- PR #142 follow-up: useful on localnet / forked-mainnet (Surfpool)
+-- where the client and server can disagree on `latest_blockhash`,
+-- and harmless on real networks because the RPC always agrees with
+-- itself.
+--
+-- Scope: this is currently only consumed by the pay-kit Rust client;
+-- canonical x402 SDKs ignore `accepted.extra.recentBlockhash` and
+-- call `getLatestBlockhash` against their own RPC. Spec discussion
+-- to promote `recentBlockhash` (or equivalent) into the canonical
+-- `accepted.extra` shape is tracked upstream.
+local function fetch_server_blockhash(config)
+  if type(config.recent_blockhash_provider) == 'function' then
+    local ok, bh = pcall(config.recent_blockhash_provider)
+    if ok and type(bh) == 'string' and bh ~= '' then return bh end
+    return nil
+  end
+  if not config.rpc_url or config.rpc_url == '' then return nil end
+  local ok_rpc, rpc = pcall(rpc_mod.new,
+    {url = config.rpc_url, transport = rpc_transport.new()})
+  if not ok_rpc or not rpc then return nil end
+  local ok_call, blockhash = pcall(function() return rpc:latest_blockhash() end)
+  if not ok_call or type(blockhash) ~= 'string' or blockhash == '' then return nil end
+  return blockhash
+end
+
 local function exact_requirement(config, gate, resource_path, mint)
   local op_signer = config:effective_x402_signer()
   local extra = {
@@ -95,6 +123,8 @@ local function exact_requirement(config, gate, resource_path, mint)
     tokenProgram = TOKEN_PROGRAM_BASE58,
     memo         = resource_path,
   }
+  local blockhash = fetch_server_blockhash(config)
+  if blockhash then extra.recentBlockhash = blockhash end
   local amount = tostring(gate:total_units())
   return {
     scheme              = 'exact',
