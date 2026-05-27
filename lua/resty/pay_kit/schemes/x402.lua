@@ -27,7 +27,8 @@ local base64_std = require('mpp.util.base64_std')
 local errors     = require('resty.pay_kit.errors')
 local rpc_mod    = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
-local tx_mod     = require('mpp.methods.solana.transaction')
+local tx_cosign  = require('resty.pay_kit.util.tx_cosign')
+local x402_verify = require('resty.pay_kit.schemes.x402_verify')
 
 local M = {}
 local Adapter = {}
@@ -147,12 +148,22 @@ end
 -- offer. Edge rules (Token-2022 program id distinction, ATA presence
 -- check, sol-native branching) are tracked as follow-up.
 
-local function verify_transaction_shape(_envelope, _offer, _payload_tx_bytes)
-  -- Placeholder: in the absence of a full port, accept the credential
-  -- and let the broadcast step surface RPC-level rejection. P5 ships
-  -- the wire-level adapter; the structural verifier port lands in a
-  -- focused follow-up since it is ~280 LOC of Solana semantics.
-  return true
+-- Run the 11-rule structural verifier + client-signature check. The
+-- facilitator key (operator's signer) is the only managed signer; the
+-- verifier refuses to accept a credential whose transfer authority or
+-- source matches the facilitator (so a malicious credential cannot
+-- "spend the facilitator's funds").
+local function verify_transaction_shape(transaction_b64, offer, facilitator_b58)
+  local managed = {facilitator_b58}
+  local ok, transfer = pcall(x402_verify.verify, transaction_b64, offer, managed)
+  if not ok then return nil, transfer end
+  -- Client signatures must validate against the message bytes BEFORE
+  -- the facilitator cosigns, otherwise a malformed envelope leaks
+  -- back to a malformed-envelope attacker.
+  local sig_ok, sig_err = pcall(x402_verify.verify_client_signatures,
+                                transaction_b64, managed)
+  if not sig_ok then return nil, sig_err end
+  return transfer
 end
 
 -- --- broadcast helpers ---------------------------------------------
@@ -228,31 +239,33 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.INVALID_PROOF .. ': payment payload missing transaction'
   end
 
-  local tx_bytes = base64_std.decode(payload.transaction)
-  if not tx_bytes then
+  if not base64_std.decode(payload.transaction) then
     return nil, errors.INVALID_PROOF .. ': transaction base64 decode failed'
   end
-  local ok = verify_transaction_shape(credential, offer, tx_bytes)
-  if not ok then
-    return nil, errors.INVALID_PROOF .. ': transaction shape verification failed'
+  local signer = config:effective_x402_signer()
+  local transfer, verify_err = verify_transaction_shape(payload.transaction,
+    offer, signer:pubkey())
+  if not transfer then
+    return nil, errors.INVALID_PROOF .. ': ' .. tostring(verify_err)
   end
 
   -- Sign as facilitator. The operator's signer fills the facilitator
   -- slot. The transaction is already partially signed by the client;
   -- the facilitator inserts its signature at the matching account
   -- index, then broadcasts.
-  local signer = config:effective_x402_signer()
   local secret_bytes = signer._secret_key_bytes and signer:_secret_key_bytes()
   if not secret_bytes then
     return nil, errors.OPERATOR_SIGNER_MISSING ..
       ' (the facilitator slot needs a Local signer with raw bytes)'
   end
 
-  local cosigned, cosign_err = tx_mod.sign_as_account(tx_bytes, secret_bytes)
-  if not cosigned then
+  local cosign_ok, cosigned_or_err = pcall(tx_cosign.cosign_base64,
+    payload.transaction, secret_bytes)
+  if not cosign_ok then
     return nil, errors.INVALID_PROOF .. ': facilitator cosign failed: ' ..
-      tostring(cosign_err)
+      tostring(cosigned_or_err)
   end
+  local cosigned = cosigned_or_err
 
   -- Broadcast + consume + confirm.
   local rpc = build_rpc(config)
