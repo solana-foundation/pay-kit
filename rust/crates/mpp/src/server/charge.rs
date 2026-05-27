@@ -588,21 +588,7 @@ impl Mpp {
             .decode()
             .map_err(|e| VerificationError::new(format!("Failed to decode request: {e}")))?;
 
-        if request.amount != expected.amount {
-            return Err(VerificationError::credential_mismatch(format!(
-                "Amount mismatch: credential has {} but endpoint expects {}",
-                request.amount, expected.amount
-            )));
-        }
-        if request.currency != expected.currency {
-            return Err(VerificationError::credential_mismatch(format!(
-                "Currency mismatch: credential has {} but endpoint expects {}",
-                request.currency, expected.currency
-            )));
-        }
-        if request.recipient != expected.recipient {
-            return Err(VerificationError::credential_mismatch("Recipient mismatch"));
-        }
+        compare_expected_to_request(&request, expected)?;
 
         // Pass the route's expected request — not the credential-decoded one —
         // through to `verify`. From this point on, on-chain settlement checks
@@ -1434,6 +1420,122 @@ fn expected_ata_creation_policy(
     Ok(AtaCreationPolicy {
         allowed_owners,
         required_owners,
+    })
+}
+
+/// Audit #1: exhaustively compare the credential's decoded request against
+/// the route's expected request before any settlement work.
+///
+/// Why up-front (when `verify_credential_with_expected` already passes
+/// `expected` to `verify` and on-chain settlement checks against it):
+/// 1. Earlier, clearer failure — `splits mismatch` beats `no matching SPL
+///    transferChecked instruction` for an operator chasing a bug.
+/// 2. Defense in depth — any field added to `ChargeRequest` or `MethodDetails`
+///    in the future is forced into this comparison, so a divergence cannot
+///    silently slip past the settlement layer.
+///
+/// `recent_blockhash` is deliberately *not* compared: it's per-challenge
+/// state, not per-route policy, and an `expected` built from a route's
+/// static config carries no blockhash.
+fn compare_expected_to_request(
+    request: &ChargeRequest,
+    expected: &ChargeRequest,
+) -> Result<(), VerificationError> {
+    if request.amount != expected.amount {
+        return Err(VerificationError::credential_mismatch(format!(
+            "Amount mismatch: credential has {} but endpoint expects {}",
+            request.amount, expected.amount
+        )));
+    }
+    if request.currency != expected.currency {
+        return Err(VerificationError::credential_mismatch(format!(
+            "Currency mismatch: credential has {} but endpoint expects {}",
+            request.currency, expected.currency
+        )));
+    }
+    if request.recipient != expected.recipient {
+        return Err(VerificationError::credential_mismatch("Recipient mismatch"));
+    }
+    if request.external_id != expected.external_id {
+        return Err(VerificationError::credential_mismatch(
+            "externalId mismatch",
+        ));
+    }
+    if request.description != expected.description {
+        return Err(VerificationError::credential_mismatch(
+            "description mismatch",
+        ));
+    }
+
+    let request_md = parse_method_details_for_compare(&request.method_details, "credential")?;
+    let expected_md = parse_method_details_for_compare(&expected.method_details, "expected")?;
+
+    if request_md.network != expected_md.network {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.network mismatch",
+        ));
+    }
+    if request_md.decimals != expected_md.decimals {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.decimals mismatch",
+        ));
+    }
+    if request_md.token_program != expected_md.token_program {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.tokenProgram mismatch",
+        ));
+    }
+    if request_md.fee_payer != expected_md.fee_payer {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.feePayer mismatch",
+        ));
+    }
+    if request_md.fee_payer_key != expected_md.fee_payer_key {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.feePayerKey mismatch",
+        ));
+    }
+    // Splits compared element-wise (order-sensitive). A route that pins
+    // `[A, B]` will reject a credential carrying `[B, A]`.
+    if !splits_eq(
+        request_md.splits.as_deref(),
+        expected_md.splits.as_deref(),
+    ) {
+        return Err(VerificationError::credential_mismatch(
+            "methodDetails.splits mismatch",
+        ));
+    }
+    // recent_blockhash intentionally NOT compared — see helper docstring.
+
+    Ok(())
+}
+
+fn parse_method_details_for_compare(
+    md: &Option<serde_json::Value>,
+    label: &str,
+) -> Result<MethodDetails, VerificationError> {
+    match md {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            VerificationError::credential_mismatch(format!(
+                "Invalid {label} methodDetails: {e}"
+            ))
+        }),
+        None => Ok(MethodDetails::default()),
+    }
+}
+
+fn splits_eq(a: Option<&[Split]>, b: Option<&[Split]>) -> bool {
+    let a = a.unwrap_or(&[]);
+    let b = b.unwrap_or(&[]);
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        x.recipient == y.recipient
+            && x.amount == y.amount
+            && x.ata_creation_required == y.ata_creation_required
+            && x.label == y.label
+            && x.memo == y.memo
     })
 }
 
@@ -4684,6 +4786,262 @@ mod tests {
         assert!(err.message.contains("Currency mismatch"));
     }
 
+    // Audit #1: every payment-constraining field comparison.
+
+    fn expected_from_challenge(challenge: &PaymentChallenge) -> ChargeRequest {
+        challenge.request.decode().unwrap()
+    }
+
+    fn mutate_method_details(
+        req: &mut ChargeRequest,
+        f: impl FnOnce(&mut crate::protocol::solana::MethodDetails),
+    ) {
+        use crate::protocol::solana::MethodDetails;
+        let mut md: MethodDetails = req
+            .method_details
+            .as_ref()
+            .map(|v| serde_json::from_value(v.clone()).unwrap_or_default())
+            .unwrap_or_default();
+        f(&mut md);
+        req.method_details = Some(serde_json::to_value(&md).unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_external_id_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp
+            .charge_with_options(
+                "0.10",
+                ChargeOptions {
+                    external_id: Some("order-1"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        expected.external_id = Some("order-2".to_string());
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("externalId mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_description_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp
+            .charge_with_options(
+                "0.10",
+                ChargeOptions {
+                    description: Some("A"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        expected.description = Some("B".to_string());
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("description mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_network_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| md.network = Some("mainnet".into()));
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.network mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_decimals_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| md.decimals = Some(9));
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.decimals mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_token_program_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| {
+            md.token_program = Some("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".into())
+        });
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.tokenProgram mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_fee_payer_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| md.fee_payer = Some(true));
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.feePayer mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_fee_payer_key_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| {
+            md.fee_payer_key = Some(Pubkey::new_unique().to_string())
+        });
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.feePayerKey mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_splits_mismatch() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        mutate_method_details(&mut expected, |md| {
+            md.splits = Some(vec![crate::protocol::solana::Split {
+                recipient: Pubkey::new_unique().to_string(),
+                amount: "1".to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }])
+        });
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("methodDetails.splits mismatch"),
+            "got: {err:?}"
+        );
+    }
+
+    /// Audit #1: `recent_blockhash` is per-challenge state, not per-route
+    /// policy. A mismatch must NOT trigger a rejection, otherwise honest
+    /// flows (where the route's expected has no blockhash and the
+    /// credential's request has a fresh one) would break.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_ignores_recent_blockhash() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let mut expected = expected_from_challenge(&challenge);
+        // Strip the blockhash from `expected` even though the credential
+        // carries one. The comparison must pass; downstream `verify` will
+        // fail on the dummy signature payload, which is fine — we only care
+        // that we got *past* the comparison layer.
+        mutate_method_details(&mut expected, |md| md.recent_blockhash = None);
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        let msg = format!("{}", err.message);
+        assert!(
+            !msg.contains("recentBlockhash mismatch")
+                && !msg.contains("recent_blockhash mismatch"),
+            "comparison should not reject on blockhash, got: {err:?}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn verify_credential_with_expected_recipient_mismatch() {
         let mpp = test_mpp();
@@ -4734,8 +5092,12 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
+        // Audit #1 now catches the bad expected.method_details at the
+        // up-front comparison layer (before settlement); the error string
+        // changed accordingly. The point of the test still holds: `expected`
+        // (not the credential's request) is being parsed.
         assert!(
-            err.message.contains("Invalid method details"),
+            err.message.contains("Invalid expected methodDetails"),
             "expected `expected` request to be parsed, got: {err:?}"
         );
     }

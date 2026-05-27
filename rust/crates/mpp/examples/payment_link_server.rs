@@ -17,15 +17,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 const ROUTE_PRICE: &str = "0.01";
+const ROUTE_DESCRIPTION: &str = "Open a fortune cookie";
 
 /// Build the route's expected charge request. Threading this into
 /// `verify_credential_with_expected` is what protects against cross-route
 /// credential replay — without it, a credential issued for a cheaper route
 /// (or different recipient/currency) on the same server would be accepted.
+///
+/// Important: the options here MUST match the options used when the route
+/// issues its user-facing challenge. Audit #1 compares every
+/// payment-constraining field (including description), so a mismatch here
+/// would reject every honest credential.
 fn expected_request_for_route(mpp: &Mpp) -> Option<ChargeRequest> {
-    mpp.charge(ROUTE_PRICE)
-        .ok()
-        .and_then(|challenge| challenge.request.decode().ok())
+    mpp.charge_with_options(
+        ROUTE_PRICE,
+        solana_mpp::server::ChargeOptions {
+            description: Some(ROUTE_DESCRIPTION),
+            ..Default::default()
+        },
+    )
+    .ok()
+    .and_then(|challenge| challenge.request.decode().ok())
 }
 
 const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'";
@@ -85,12 +97,13 @@ async fn fortune(
             .into_response();
     }
 
-    // Generate challenge.
+    // Generate challenge. Options here must match `expected_request_for_route`
+    // exactly — audit #1 compares every payment-constraining field.
     let challenge = mpp
         .charge_with_options(
             ROUTE_PRICE,
             solana_mpp::server::ChargeOptions {
-                description: Some("Open a fortune cookie"),
+                description: Some(ROUTE_DESCRIPTION),
                 ..Default::default()
             },
         )

@@ -320,3 +320,46 @@ So the replay-state side of the bug is closed.
 - The pre-existing `verify_credential_with_expected_*` tests still cover the expected-comparison layer.
 
 ---
+
+### #1 — Partial expected charge validation
+**ID:** `4e2a4d2d` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim, two parts:**
+1. `verify_credential_with_expected` compared only `amount`, `currency`, `recipient` between the credential's decoded request and the expected request — leaving `externalId`, `description`, `methodDetails.splits`, `feePayer`, `feePayerKey`, `tokenProgram`, `network`, `decimals`, `recentBlockhash` unchecked.
+2. After the partial comparison, the function called `verify` with the credential's decoded request rather than the expected request, so unchecked fields flowed into on-chain settlement.
+
+**Status when reviewed:**
+- Part 2 was **already fixed**. The current code passes `expected` (not the credential's request) into `verify`, as proven by the existing `verify_credential_with_expected_routes_expected_into_verify` test. The marketplace-route attack the audit describes is already closed at on-chain verification.
+- Part 1 was still live.
+
+**Decision:** ✅ **accepted — exhaustive up-front comparison, with one principled exception.**
+
+**Rationale:** Adding the up-front comparison gives earlier, clearer failure (`splits mismatch` beats `no matching SPL transferChecked instruction` for operators chasing a bug), and provides defense-in-depth: any field added to `ChargeRequest` or `MethodDetails` in the future is forced through this layer, so a divergence cannot silently slip past the settlement check.
+
+**Action taken:**
+- Extracted a new helper `compare_expected_to_request(&request, &expected)` at module level. The helper compares every payment-constraining field exhaustively. Called from `verify_credential_with_expected` right after the credential's request is decoded.
+- Fields compared:
+  - top level: `amount`, `currency`, `recipient`, `external_id`, `description`
+  - `method_details`: `network`, `decimals`, `token_program`, `fee_payer`, `fee_payer_key`, `splits`
+- Splits compared element-wise (order-sensitive). A route that pins `[A, B]` will reject a credential carrying `[B, A]`.
+- `method_details` parsing reuses `MethodDetails`; if either side has malformed `methodDetails` we return `credential_mismatch` with the source labeled (`"Invalid credential methodDetails: …"` vs `"Invalid expected methodDetails: …"`).
+- The pre-existing `_routes_expected_into_verify` test had to update its assertion text — my new comparison catches the malformed `expected.method_details` *before* `verify` is called, so the failure surface moved from settlement to comparison. The test's intent (proving `expected` is the source of truth) is preserved.
+
+**Note on `recent_blockhash`:** deliberately *not* compared. It's per-challenge state (fresh from the RPC at challenge generation time), not per-route policy. Routes build `expected` from static config and have no blockhash to pin. Strict comparison would break the normal happy path. Added a regression test `verify_credential_with_expected_ignores_recent_blockhash` to lock this in.
+
+**Note on `description`:** the audit lists `description` as a payment-constraining field even though it has no on-chain effect. We compare it strictly for consistency with the audit's recommendation. This surfaced a latent bug in the `payment_link_server` example: it issued challenges with `description = Some("Open a fortune cookie")` but built `expected` with no description, so every honest credential would have been rejected after this change. Fixed the example to use a `ROUTE_DESCRIPTION` constant in both places. (Audit value: this finding's strict comparison catches integrator drift between "what challenges we issue" and "what we expect to verify against" — exactly the audit's defense-in-depth intent.)
+
+**Note on alternative ("soft default") we did not take:** an "if `expected.<field>.is_none()` accept anything" variant would have made the comparison friendlier for routes that don't pin every field, but it's exactly the soft-default that lets the audit's attack through — routes that *meant* to pin a field but forgot would silently accept any value. Strict comparison forces the route to fully describe its accepted charge shape.
+
+**New tests** (added to the existing `verify_credential_with_expected_*` suite):
+- `_external_id_mismatch`
+- `_description_mismatch`
+- `_network_mismatch`
+- `_decimals_mismatch`
+- `_token_program_mismatch`
+- `_fee_payer_mismatch`
+- `_fee_payer_key_mismatch`
+- `_splits_mismatch`
+- `_ignores_recent_blockhash` (regression: blockhash divergence must NOT fail comparison)
+
+---
