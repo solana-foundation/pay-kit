@@ -115,11 +115,27 @@ module X402
           signed
         end
 
-        # Construct an accepted payment requirement hash. Mirrors the
-        # canonical v2 shape returned by spine `to_accepted_value` at
-        # `rust/crates/x402/src/protocol/schemes/exact/types.rs:236-250`.
+        # Match on identifying fields only (scheme/network/asset/payTo
+        # and the canonical `extra` knobs feePayer/tokenProgram/memo).
+        # Amount and maxTimeoutSeconds are intentionally excluded: the
+        # TS reference server (harness/src/fixtures/typescript/
+        # exact-server.ts:141-143) only matches scheme/network/asset
+        # and the v2 client leaves `amount` out of `accepted` to allow
+        # a per-request facilitator to fill it in. Comparing them
+        # strictly broke cross-language interop ("No matching payment
+        # requirements" against structurally compatible payloads).
+        REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
+        REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer tokenProgram memo].freeze
+
         def accepted_requirement_matches?(left, right)
-          left == right
+          return false unless left.is_a?(Hash) && right.is_a?(Hash)
+          return false unless REQUIREMENT_IDENTITY_KEYS.all? { |key| left[key] == right[key] }
+
+          left_extra = left["extra"] || {}
+          right_extra = right["extra"] || {}
+          REQUIREMENT_EXTRA_IDENTITY_KEYS.all? do |key|
+            !right_extra.key?(key) || left_extra[key] == right_extra[key]
+          end
         end
 
         def build_transaction(requirement:, private_key:, recent_blockhash:)

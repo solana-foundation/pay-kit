@@ -92,30 +92,45 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
   end
 
-  def test_settlement_rejects_accepted_extra_drift
+  def test_settlement_tolerates_unknown_keys_in_accepted_extra
+    # Unknown extra keys (drift) must not break matching: clients ship
+    # extension fields the server doesn't recognise, the server still
+    # has to honour the credential if scheme/network/asset/payTo and
+    # the canonical extra identity keys (feePayer/tokenProgram/memo)
+    # all agree. Mirrors the TS reference behaviour at
+    # harness/src/fixtures/typescript/exact-server.ts:141-143 and the
+    # spine `accepted_requirement_matches?` semantics in
+    # rust/crates/x402/src/protocol/schemes/exact/types.rs.
     state = build_state
     envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
     envelope.fetch("accepted").fetch("extra")["unexpected"] = "drift"
     payment_header = Base64.strict_encode64(JSON.generate(envelope))
 
-    error = assert_raises(RuntimeError) do
+    # No raise expected. Settlement progresses past matching; a later
+    # stage (signature/transaction verification) governs the outcome
+    # for this test's signature-less fixture, so we just assert
+    # matching did not block.
+    begin
       X402::Server::Exact.settle_exact_payment(state, payment_header)
+    rescue RuntimeError => err
+      refute_equal "No matching payment requirements: accepted payment requirement does not match server challenge", err.message
     end
-
-    assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
   end
 
-  def test_settlement_rejects_accepted_max_timeout_drift
+  def test_settlement_tolerates_accepted_max_timeout_drift
+    # maxTimeoutSeconds is informational and not part of the identity
+    # tuple a client must echo. The Rust/TS references both ignore it
+    # during matching; Ruby follows suit.
     state = build_state
     envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
     envelope["accepted"]["maxTimeoutSeconds"] = 30
     payment_header = Base64.strict_encode64(JSON.generate(envelope))
 
-    error = assert_raises(RuntimeError) do
+    begin
       X402::Server::Exact.settle_exact_payment(state, payment_header)
+    rescue RuntimeError => err
+      refute_equal "No matching payment requirements: accepted payment requirement does not match server challenge", err.message
     end
-
-    assert_equal "No matching payment requirements: accepted payment requirement does not match server challenge", error.message
   end
 
   def test_settlement_rejects_malformed_payment_signature_encoding
