@@ -141,10 +141,12 @@ module PayKit
       private
 
       def build_x402_config(gate, request)
+        signer = @config.x402.effective_signer ||
+          raise(::PayKit::ConfigurationError, "PayKit.config.operator.signer not set")
         ::X402::Server::Exact::Config.new(
-          rpc_url: @config.x402.facilitator || raise(::PayKit::ConfigurationError, "PayKit.config.x402.facilitator not set"),
+          rpc_url: @config.effective_rpc_url,
           pay_to: gate.pay_to,
-          facilitator_secret_key: @config.x402.facilitator_secret_key,
+          facilitator_secret_key: signer.to_json_array,
           amount: gate.total.amount,
           network: caip2_for(@config.network),
           mint: mint_for(gate.amount.primary_coin, @config.network),
@@ -153,12 +155,13 @@ module PayKit
       end
 
       def build_mpp_server
-        secret = @config.mpp.secret || raise(::PayKit::ConfigurationError, "PayKit.config.mpp.secret not set")
+        secret = @config.mpp.challenge_binding_secret ||
+          raise(::PayKit::ConfigurationError, "PayKit.config.mpp.challenge_binding_secret not set")
         method = ::Mpp::Protocol::Solana.charge(
-          recipient: @config.pay_to || raise(::PayKit::ConfigurationError, "PayKit.config.pay_to not set"),
+          recipient: @config.operator.effective_recipient,
           currency: mint_for(@config.stablecoins.first, @config.network),
           network: mpp_network_label_for(@config.network),
-          rpc: @config.x402.facilitator || ""
+          rpc: @config.effective_rpc_url
         )
         ::Mpp.create(
           method: method,
@@ -213,14 +216,6 @@ module PayKit
           raise ::PayKit::ConfigurationError, "stablecoin #{coin.inspect} not configured for network #{network.inspect}"
         end
       end
-    end
-  end
-
-  # Hoist Config attribute so the dispatcher can read facilitator
-  # secret without a separate accessor.
-  class Config
-    class X402Config
-      attr_accessor :facilitator_secret_key
     end
   end
 end
