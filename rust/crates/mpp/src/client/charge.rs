@@ -119,14 +119,12 @@ pub async fn build_charge_transaction_with_options(
     }
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
-    if splits.len() > 8 {
+    if splits.len() > crate::protocol::solana::MAX_SPLITS {
         return Err(Error::TooManySplits);
     }
 
-    let splits_total: u64 = splits
-        .iter()
-        .filter_map(|s| s.amount.parse::<u64>().ok())
-        .sum();
+    let splits_total = crate::protocol::solana::checked_sum_split_amounts(splits)
+        .ok_or(Error::SplitsExceedAmount)?;
     let primary_amount = total_amount
         .checked_sub(splits_total)
         .ok_or(Error::SplitsExceedAmount)?;

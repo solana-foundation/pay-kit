@@ -1029,10 +1029,8 @@ impl Mpp {
         })?;
 
         let splits = method_details.splits.as_deref().unwrap_or(&[]);
-        let splits_total: u64 = splits
-            .iter()
-            .filter_map(|s| s.amount.parse::<u64>().ok())
-            .sum();
+        let splits_total = crate::protocol::solana::checked_sum_split_amounts(splits)
+            .ok_or_else(|| VerificationError::invalid_amount("Split amounts overflow u64"))?;
         let primary_amount = total_amount.checked_sub(splits_total).ok_or_else(|| {
             VerificationError::invalid_amount("Split amounts exceed total amount")
         })?;
@@ -1237,20 +1235,19 @@ fn verify_versioned_transaction_pre_broadcast(
     reject_address_lookup_tables(tx)?;
 
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
-    if splits.len() > 8 {
+    if splits.len() > crate::protocol::solana::MAX_SPLITS {
         return Err(VerificationError::too_many_splits(format!(
-            "Too many splits: {} (maximum 8)",
-            splits.len()
+            "Too many splits: {} (maximum {})",
+            splits.len(),
+            crate::protocol::solana::MAX_SPLITS,
         )));
     }
 
     let total_amount: u64 = request.amount.parse().map_err(|_| {
         VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
     })?;
-    let splits_total: u64 = splits
-        .iter()
-        .filter_map(|s| s.amount.parse::<u64>().ok())
-        .sum();
+    let splits_total = crate::protocol::solana::checked_sum_split_amounts(splits)
+        .ok_or_else(|| VerificationError::invalid_amount("Split amounts overflow u64"))?;
     let primary_amount = total_amount
         .checked_sub(splits_total)
         .ok_or_else(|| VerificationError::invalid_amount("Split amounts exceed total amount"))?;

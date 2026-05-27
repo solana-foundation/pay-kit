@@ -391,6 +391,57 @@ mod tests {
         let deserialized: Split = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.ata_creation_required, Some(true));
     }
+
+    // ── Audit #30: checked_sum_split_amounts ──
+
+    fn split_with_amount(amt: &str) -> Split {
+        Split {
+            recipient: "R".to_string(),
+            amount: amt.to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: None,
+        }
+    }
+
+    #[test]
+    fn checked_sum_split_amounts_within_u64_sums_correctly() {
+        let splits = [
+            split_with_amount("100"),
+            split_with_amount("200"),
+            split_with_amount("3"),
+        ];
+        assert_eq!(checked_sum_split_amounts(&splits), Some(303));
+    }
+
+    #[test]
+    fn checked_sum_split_amounts_overflows_returns_none() {
+        let near_max = (u64::MAX / 2) + 1;
+        let splits = [
+            split_with_amount(&near_max.to_string()),
+            split_with_amount(&near_max.to_string()),
+        ];
+        // Sum would be u64::MAX + 1 — must report overflow.
+        assert_eq!(checked_sum_split_amounts(&splits), None);
+    }
+
+    #[test]
+    fn checked_sum_split_amounts_unparseable_treated_as_zero() {
+        // Strict parseability is audit #21's concern; here we just check
+        // that an unparseable amount doesn't break the arithmetic.
+        let splits = [
+            split_with_amount("100"),
+            split_with_amount("not-a-number"),
+            split_with_amount("50"),
+        ];
+        assert_eq!(checked_sum_split_amounts(&splits), Some(150));
+    }
+
+    #[test]
+    fn checked_sum_split_amounts_empty_is_zero() {
+        let splits: [Split; 0] = [];
+        assert_eq!(checked_sum_split_amounts(&splits), Some(0));
+    }
 }
 
 /// Solana-specific method details in the challenge request.
@@ -414,7 +465,7 @@ pub struct MethodDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_payer_key: Option<String>,
 
-    /// Additional payment splits (max 8).
+    /// Additional payment splits (max `MAX_SPLITS`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub splits: Option<Vec<Split>>,
 
@@ -442,6 +493,27 @@ pub struct Split {
     /// Optional memo (max 566 bytes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,
+}
+
+/// Maximum number of payment splits per challenge.
+///
+/// Mirrors the upper bound enforced by the TS SDK and the wire-format
+/// guidance from the MPP spec. Single source of truth for both client-side
+/// (pre-build) and server-side (pre-broadcast) cap checks.
+pub const MAX_SPLITS: usize = 8;
+
+/// Audit #30: sum split amounts in base units with overflow detection.
+///
+/// Returns `None` if the running total would overflow `u64`. Unparseable
+/// `amount` strings are treated as 0 — strict parseability is audit #21's
+/// concern; here we only address the *arithmetic* overflow shape so a
+/// stuffed split list cannot panic (debug) or wrap (release) downstream
+/// callers that derive the primary amount via `total - splits_total`.
+pub fn checked_sum_split_amounts(splits: &[Split]) -> Option<u64> {
+    splits
+        .iter()
+        .map(|s| s.amount.parse::<u64>().unwrap_or(0))
+        .try_fold(0u64, |acc, x| acc.checked_add(x))
 }
 
 /// Credential payload — what the client sends in the Authorization header.

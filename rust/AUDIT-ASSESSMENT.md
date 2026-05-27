@@ -389,3 +389,23 @@ So the replay-state side of the bug is closed.
 - `parse_units_huge_value_zero_decimals_no_overflow` (boundary at `u128::MAX`)
 
 ---
+
+### #30 — Summing split amounts exposed to overflows
+**ID:** `7e2b1c5e` · **Files:** `crates/mpp/src/{protocol/solana.rs,server/charge.rs,client/charge.rs,error.rs}`
+
+**Audit claim:** three callsites (`build_charge_transaction_with_options`, `verify_on_chain`, `verify_versioned_transaction_pre_broadcast`) summed split amounts via `.sum::<u64>()` which panics on overflow in debug and wraps in release. Spec: `sum(splits) ≤ amount`.
+
+**Decision:** ✅ **accepted — extract helper, use checked arithmetic, centralize the count cap.**
+
+**Action taken:**
+- Added `checked_sum_split_amounts(splits: &[Split]) -> Option<u64>` in `protocol/solana.rs` (next to `Split`). Uses `try_fold` + `checked_add`. Unparseable amounts treated as `0` for now — strict parseability is audit #21's concern.
+- Migrated all 3 callsites to the helper, mapping `None` to the existing error type at each callsite (client `Error::SplitsExceedAmount`, server `VerificationError::invalid_amount`).
+- **Bonus centralization (per Ludo): added `pub const MAX_SPLITS: usize = 8`** in `protocol/solana.rs` and replaced the two hardcoded `8`s (client `splits.len() > 8`, server `verify_versioned_transaction_pre_broadcast`). The `thiserror`-generated `Error::TooManySplits` message now interpolates `MAX_SPLITS` so the displayed count stays in sync if the cap ever changes. The `MethodDetails::splits` rustdoc now references the constant rather than the literal.
+
+**New tests:**
+- `checked_sum_split_amounts_within_u64_sums_correctly`
+- `checked_sum_split_amounts_overflows_returns_none`
+- `checked_sum_split_amounts_unparseable_treated_as_zero`
+- `checked_sum_split_amounts_empty_is_zero`
+
+---
