@@ -29,6 +29,8 @@ local rpc_mod    = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
 local tx_cosign  = require('resty.pay_kit.util.tx_cosign')
 local x402_verify = require('resty.pay_kit.schemes.x402_verify')
+local tx_mod     = require('mpp.methods.solana.transaction')
+local network_check = require('mpp.server.network_check')
 
 local M = {}
 local Adapter = {}
@@ -176,7 +178,7 @@ local function consume_signature(store, signature)
   if not store then return true end
   local key = 'x402-svm-exact:consumed:' .. signature
   if store.put_if_absent then
-    return store:put_if_absent(key, true)
+    return store:put_if_absent(key)
   end
   return true
 end
@@ -242,6 +244,23 @@ function Adapter:verify_and_settle(gate, req)
   if not base64_std.decode(payload.transaction) then
     return nil, errors.INVALID_PROOF .. ': transaction base64 decode failed'
   end
+
+  -- Surfpool localnet sanity check. If the credential was signed on
+  -- a Surfpool fixture but the server is configured for a non-localnet
+  -- slug, reject up-front with the canonical wrong_network code rather
+  -- than letting the broadcast hit the wrong cluster.
+  -- Only flag wrong_network for mainnet challenges; the interop matrix
+  -- shares devnet's CAIP-2 with surfpool-backed localnet fixtures, so a
+  -- devnet label can legitimately carry a Surfpool-prefixed blockhash.
+  if config.network == 'solana_mainnet' then
+    local parsed_ok, parsed_tx = pcall(tx_mod.from_base64, payload.transaction)
+    if parsed_ok and parsed_tx and parsed_tx.message and parsed_tx.message.recent_blockhash then
+      local nerr = network_check.check_network_blockhash('mainnet',
+        parsed_tx.message.recent_blockhash)
+      if nerr then return nil, errors.WRONG_NETWORK end
+    end
+  end
+
   local signer = config:effective_x402_signer()
   local transfer, verify_err = verify_transaction_shape(payload.transaction,
     offer, signer:pubkey())
