@@ -48,7 +48,7 @@ class PayKitConfigTest < Minitest::Test
     {
       solana_mainnet: "https://api.mainnet-beta.solana.com",
       solana_devnet: "https://api.devnet.solana.com",
-      solana_localnet: "http://localhost:8899"
+      solana_localnet: "https://402.surfnet.dev:8899"
     }.each do |network, expected|
       PayKit.reset!
       PayKit.configure do |c|

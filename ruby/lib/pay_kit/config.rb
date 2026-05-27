@@ -21,7 +21,7 @@ module PayKit
     PUBLIC_RPC_URLS = {
       solana_mainnet: "https://api.mainnet-beta.solana.com",
       solana_devnet: "https://api.devnet.solana.com",
-      solana_localnet: "http://localhost:8899"
+      solana_localnet: "https://402.surfnet.dev:8899"
     }.freeze
 
     attr_reader :network, :accept, :stablecoins, :x402, :mpp
