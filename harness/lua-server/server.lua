@@ -66,7 +66,7 @@ local protocol = x402_active and 'x402' or 'mpp'
 -- --- per-protocol env read -----------------------------------------
 
 local rpc_url, pay_to, amount_units, mint, resource_path, network_raw
-local facilitator_secret_json, mpp_secret, settlement_header
+local facilitator_secret_json, mpp_secret, settlement_header, mpp_fee_payer_json
 
 if x402_active then
   rpc_url       = require_env('X402_INTEROP_RPC_URL')
@@ -88,7 +88,15 @@ else
   resource_path = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid')
   settlement_header = optional_env('MPP_INTEROP_SETTLEMENT_HEADER',
                                    'x-payment-settlement-signature')
+  mpp_fee_payer_json = optional_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY', nil)
 end
+
+local splits_raw = optional_env('MPP_INTEROP_SPLITS', '[]')
+local splits_decoded = (function()
+  local ok, parsed = pcall(cjson.decode, splits_raw)
+  if not ok or type(parsed) ~= 'table' then return {} end
+  return parsed
+end)()
 
 -- --- map network ---------------------------------------------------
 
@@ -121,10 +129,19 @@ end
 local network_sym = map_network(network_raw)
 
 local operator_signer
+local operator_fee_payer = x402_active
 if x402_active then
   local sgn, err = signer.json(facilitator_secret_json)
   if not sgn then log('signer.json: ' .. tostring(err)); os.exit(2) end
   operator_signer = sgn
+elseif mpp_fee_payer_json then
+  -- MPP scenarios pass the surfpool fee-payer keypair via env. Use
+  -- it as the operator's signer so the inner mpp.server's pull
+  -- cosign path has a key to sign with.
+  local sgn, err = signer.json(mpp_fee_payer_json)
+  if not sgn then log('mpp fee_payer signer.json: ' .. tostring(err)); os.exit(2) end
+  operator_signer = sgn
+  operator_fee_payer = true
 end
 
 local ok, cfg_err = pay_kit.configure({
@@ -134,8 +151,8 @@ local ok, cfg_err = pay_kit.configure({
   stablecoins = {mint},
   operator = {
     recipient = pay_to,
-    signer    = operator_signer,  -- nil = demo (mpp doesn't need a real signer)
-    fee_payer = x402_active,      -- x402: server cosigns; mpp: client pays
+    signer    = operator_signer,
+    fee_payer = operator_fee_payer,
   },
   mpp = {
     realm                    = 'PayKit Interop',
@@ -145,9 +162,19 @@ local ok, cfg_err = pay_kit.configure({
 if not ok then log('configure: ' .. tostring(cfg_err)); os.exit(2) end
 
 local amount_decimal = units_to_decimal(amount_units, 6)
-assert(pay_kit.gate('paid', {
-  amount = assert(pay_kit.usd(amount_decimal, mint)),
-}))
+local gate_opts = {amount = assert(pay_kit.usd(amount_decimal, mint))}
+assert(pay_kit.gate('paid', gate_opts))
+
+if #splits_decoded > 0 then
+  local override = {}
+  for _, s in ipairs(splits_decoded) do
+    local entry = {recipient = s.recipient, amount = tostring(s.amount)}
+    if s.ataCreationRequired == true then entry.ataCreationRequired = true end
+    if s.memo then entry.memo = s.memo end
+    override[#override + 1] = entry
+  end
+  require('resty.pay_kit.schemes.mpp').set_splits_override('paid', override)
+end
 
 -- --- HTTP loop -----------------------------------------------------
 
@@ -227,6 +254,21 @@ while true do
       if response then
         body = response.body
         for k, v in pairs(response.headers or {}) do resp_headers[k] = v end
+      end
+      -- Map canonical pay_kit error strings to the cross-SDK `code`
+      -- field the harness asserts against (G39).
+      if type(perr) == 'string' then
+        if perr:find('wrong network', 1, true) then
+          body.code = 'wrong_network'
+        elseif perr:find('charge_request_mismatch', 1, true) or
+               perr:find('does not match server challenge', 1, true) then
+          body.code = 'charge_request_mismatch'
+        elseif perr:find('signature_consumed', 1, true) or
+               perr:find('signature consumed', 1, true) then
+          body.code = 'signature_consumed'
+        elseif perr:find('invalid proof', 1, true) then
+          body.code = 'invalid_proof'
+        end
       end
       send_response(client, 402, resp_headers, body)
     end
