@@ -29,6 +29,11 @@ end
 
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 
+# Preflight makes real RPC calls at PayKit.configure time. Tests run
+# offline; the live preflight in PayKit.configure would either slow the
+# suite to a crawl or fail when surfnet is unreachable.
+ENV["PAY_KIT_DISABLE_PREFLIGHT"] = "1"
+
 require "minitest/autorun"
 require "mpp"
 

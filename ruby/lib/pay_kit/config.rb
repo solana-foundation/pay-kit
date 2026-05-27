@@ -34,7 +34,19 @@ module PayKit
       @operator = ::PayKit::Operator.new
       @x402 = X402Config.new(self)
       @mpp = MppConfig.new
+      @preflight = true
     end
+
+    # Boot-time soundness check. When `true` (default), `freeze!` runs
+    # `PayKit::Preflight.run(self)` to confirm the fee payer has SOL
+    # and every `c.stablecoins` mint has an ATA at the operator's
+    # recipient. On `:solana_localnet` with the demo signer, missing
+    # accounts are auto-created via Surfnet cheatcodes instead of
+    # raising. RPC failures are logged, not raised, so an unreachable
+    # endpoint never blocks boot. Set `c.preflight = false` (or export
+    # `PAY_KIT_DISABLE_PREFLIGHT=1`) to skip — typically used in test
+    # suites that do not have a live validator at hand.
+    attr_accessor :preflight
 
     # --- new surface ---------------------------------------------------
 
@@ -125,6 +137,7 @@ module PayKit
     def freeze!
       enforce_demo_signer_on_mainnet
       warn_about_public_mainnet_rpc
+      run_preflight
       @x402.freeze!
       @mpp.freeze!
       freeze
@@ -309,6 +322,14 @@ module PayKit
       return unless @operator.signer.demo?
 
       raise ::PayKit::DemoSignerOnMainnetError, @operator.signer.pubkey
+    end
+
+    def run_preflight
+      return unless @preflight
+      return if ENV["PAY_KIT_DISABLE_PREFLIGHT"] == "1"
+
+      require_relative "preflight"
+      ::PayKit::Preflight.run(self)
     end
 
     def warn_about_public_mainnet_rpc
