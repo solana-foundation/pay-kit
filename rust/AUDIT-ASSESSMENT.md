@@ -447,3 +447,24 @@ So the replay-state side of the bug is closed.
 **Note on no new tests:** the fix is a one-spot value-swap inside a private, RPC-bound, best-effort diagnostic. The arithmetic helpers in #8 cover the testable surface; the change here is "use the right input." Covered by the existing integration tests that exercise the token-2022 challenge paths.
 
 ---
+
+### #9 — Challenge parser missing max size cap
+**ID:** `2f9c8d1e` · **File:** `crates/mpp/src/protocol/core/headers.rs`
+
+**Audit claim:** `parse_www_authenticate` decoded the `request` parameter (base64url) and parsed it as JSON without the `MAX_TOKEN_LEN = 16 * 1024` cap that `parse_authorization` and `parse_receipt` already enforced. A large `WWW-Authenticate` value drove proportionally larger decode + JSON parse work than the credential/receipt parsers allowed.
+
+**Decision:** ✅ **accepted — cap the `request` parameter at `MAX_TOKEN_LEN`.**
+
+**Rationale:** The audit asks for "consistent limits across challenge, credential, and receipt parsers." The credential parser caps the `token` (the data after the scheme); the receipt parser caps the `token` value. For the challenge parser, the only field that gets both base64-decoded and JSON-parsed is `request` — every other parameter (id/realm/method/intent/expires/digest) is a short pass-through string. Capping `request` matches the *kind* of work the other parsers cap.
+
+**Action taken:** added a `request_b64.len() > MAX_TOKEN_LEN` check immediately after `request` is read from the parameters and before `base64url_decode`/`serde_json::from_slice` run. Error message matches the parse_authorization/parse_receipt style for ops grep-ability.
+
+**What I didn't do:**
+- Didn't cap the full header alongside the param cap — redundant once the param is capped, since the request param is the only field that drives O(n) decode/parse cost.
+- Didn't cap `opaque` here — at parse time it's only stored raw via `Base64UrlJson::from_raw`. Any decode is lazy at the consumer site.
+
+**New tests:**
+- `parse_www_authenticate_rejects_oversized_request_param`
+- `parse_www_authenticate_accepts_at_max_request_size` (regression: at-cap shouldn't fire the size gate)
+
+---

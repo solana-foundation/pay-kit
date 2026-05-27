@@ -48,6 +48,17 @@ pub fn parse_www_authenticate(header: &str) -> Result<PaymentChallenge, Error> {
     let intent = IntentName::new(require_param(&params, "intent")?);
     let request_b64 = require_param(&params, "request")?.clone();
 
+    // Audit #9: cap the request parameter before any base64 / JSON work,
+    // matching the cap already enforced by parse_authorization and
+    // parse_receipt. Without it, a large `request=` value can drive
+    // proportionally larger decode + parse work than the other parsers
+    // allow.
+    if request_b64.len() > MAX_TOKEN_LEN {
+        return Err(Error::Other(format!(
+            "Challenge request parameter exceeds maximum length of {MAX_TOKEN_LEN} bytes"
+        )));
+    }
+
     let request_bytes = base64url_decode(&request_b64)?;
     let _ = serde_json::from_slice::<serde_json::Value>(&request_bytes)
         .map_err(|e| Error::Other(format!("Invalid JSON in request field: {e}")))?;
@@ -463,6 +474,42 @@ mod tests {
         let err = parse_www_authenticate(header);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Missing 'realm'"));
+    }
+
+    #[test]
+    fn parse_www_authenticate_rejects_oversized_request_param() {
+        // One byte past MAX_TOKEN_LEN. Contents don't need to be valid
+        // base64 — the size check fires first.
+        let oversized = "A".repeat(MAX_TOKEN_LEN + 1);
+        let header = format!(
+            r#"Payment id="x", realm="api", method="solana", intent="charge", request="{oversized}""#
+        );
+        let err = parse_www_authenticate(&header)
+            .err()
+            .expect("oversized request should be rejected");
+        assert!(
+            format!("{err}").contains("exceeds maximum length"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_www_authenticate_accepts_at_max_request_size() {
+        // Exactly MAX_TOKEN_LEN bytes. The size gate must pass; the
+        // payload itself isn't valid base64+JSON so we expect a later
+        // failure (decode or JSON), but NOT the size error.
+        let at_max = "A".repeat(MAX_TOKEN_LEN);
+        let header = format!(
+            r#"Payment id="x", realm="api", method="solana", intent="charge", request="{at_max}""#
+        );
+        let err = parse_www_authenticate(&header)
+            .err()
+            .expect("invalid payload still errors");
+        let msg = format!("{err}");
+        assert!(
+            !msg.contains("exceeds maximum length"),
+            "size gate should not have fired at exactly MAX_TOKEN_LEN: {msg}"
+        );
     }
 
     #[test]
