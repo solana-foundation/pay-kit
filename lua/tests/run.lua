@@ -31,4 +31,9 @@ require('tests.store_shared_dict_spec')
 require('tests.intents_charge_spec')
 require('tests.json_util_spec')
 
+-- PayKit umbrella suites (P1+).
+require('tests.pay_kit.errors_spec')
+require('tests.pay_kit.kms_spec')
+require('tests.pay_kit.signer_spec')
+
 require('tests.test_helper').run()

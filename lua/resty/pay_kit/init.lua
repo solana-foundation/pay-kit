@@ -1,0 +1,48 @@
+--[[
+solana-pay-kit — Lua / OpenResty SDK umbrella.
+
+Single module surface (mirrors `lua-resty-openidc`):
+
+  local pay_kit = require('resty.pay_kit')
+
+  pay_kit.configure({ ... })                  -- boot-time configuration
+  pay_kit.gate(name, opts)                    -- register a gate
+  pay_kit.usd("0.10", "USDC")                 -- price helper
+  pay_kit.require_payment(name)               -- access-phase gate (halts via ngx.exit)
+  pay_kit.try_payment(name)                   -- (payment, err) form for custom 402
+  pay_kit.payment()                           -- current ngx.ctx payment or nil
+  pay_kit.paid()                              -- bool
+  pay_kit.paid_for(name)                      -- bool
+
+Sub-modules:
+
+  resty.pay_kit.signer                        -- Local signer factories
+  resty.pay_kit.kms                           -- Remote-enclave signer factories (reserved, v1.5+)
+  resty.pay_kit.errors                        -- Canonical error-string constants
+  resty.pay_kit.schemes.{mpp, x402}           -- Protocol adapters
+  resty.pay_kit.solana.rpc                    -- Cosocket-aware JSON-RPC client
+
+This file is intentionally thin: it pulls the umbrella surface from
+the dedicated sub-modules so the layout stays readable. Each sub-
+module is independently `require`able for callers that want only one
+piece (the Kong plugin only needs `signer` + `schemes.*`, for example).
+
+The phase-by-phase implementation lands across P1-P12; this entry
+point exposes whatever subset is ready as the work progresses, so
+that any consumer who pins to `resty.pay_kit` gets the canonical path
+from the first commit even if a function inside still raises
+`pay_kit: not implemented`.
+]]
+
+local M = {}
+
+M._VERSION = '0.1.0'
+
+-- Sub-module re-exports. `signer` and `kms` ship in P1; the rest
+-- arrive in P2-P6 and the existing `require` calls in this file
+-- update as each phase lands.
+M.signer = require('resty.pay_kit.signer')
+M.kms    = require('resty.pay_kit.kms')
+M.errors = require('resty.pay_kit.errors')
+
+return M
