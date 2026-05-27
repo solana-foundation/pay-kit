@@ -4,13 +4,16 @@
 # claim: one Ruby server, one /paid route, two settle paths (x402:exact
 # and mpp:charge). The harness orchestrator picks the protocol per
 # scenario by setting either `X402_INTEROP_*` or `MPP_INTEROP_*` env;
-# this adapter auto-detects which one is active and configures PayKit
-# accordingly.
+# this adapter auto-detects which one is active and wires accordingly.
 #
-# When ts-x402 client (or rust-x402) targets this server, requests
-# carry `PAYMENT-SIGNATURE`. When ts-mpp client targets it, requests
-# carry `Authorization: Payment`. PayKit::Rack::Dispatcher chooses the
-# right adapter from `gate.accept` plus header detection.
+# x402 path: routes through PayKit::Pricing + dispatcher (one gate,
+# inline coercion). The x402 wire format is uniform across scenarios.
+#
+# MPP path: bypasses PayKit's gate DSL and drives Mpp::Server::Charge
+# directly. The interop matrix exercises facets PayKit's Gate doesn't
+# model yet (per-split ataCreationRequired + memo, custom settlement
+# headers, push-mode credentials, replay-source idempotency) so the
+# harness builds the method + server with explicit knobs from env.
 
 require "json"
 require "rack"
@@ -45,7 +48,7 @@ if x402_active == mpp_active
 end
 protocol = x402_active ? :x402 : :mpp
 
-# --- read env per active protocol --------------------------------------
+# --- per-protocol setup -------------------------------------------------
 
 if x402_active
   rpc_url            = require_env("X402_INTEROP_RPC_URL")
@@ -55,108 +58,93 @@ if x402_active
   mint_raw           = optional_env("X402_INTEROP_MINT", "USDC")
   network_raw        = optional_env("X402_INTEROP_NETWORK", ::PayCore::Solana::Caip2::DEVNET)
   resource_path      = optional_env("X402_INTEROP_RESOURCE_PATH", "/paid")
-  mpp_secret         = nil
-else
-  rpc_url            = require_env("MPP_INTEROP_RPC_URL")
-  pay_to             = require_env("MPP_INTEROP_PAY_TO")
-  mint_raw           = require_env("MPP_INTEROP_MINT")
-  amount_raw         = require_env("MPP_INTEROP_AMOUNT")
-  mpp_secret         = optional_env("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
-  network_raw        = optional_env("MPP_INTEROP_NETWORK", "localnet")
-  resource_path      = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
-  facilitator_secret = nil
-end
 
-# Normalize the harness amount into a decimal-dollar string. x402
-# arrives as "$0.001"; MPP arrives as integer micro-units ("1000" =
-# $0.001 assuming 6-decimal USDC). PayKit::Price wants the customer-
-# facing decimal so we converge to the same shape.
-amount_decimal =
-  if x402_active
-    amount_raw.delete_prefix("$").sub(/\A0+(?=\d)/, "")
-  else
-    units = Integer(amount_raw, 10)
-    whole, frac = units.divmod(1_000_000)
-    if frac.zero?
-      whole.to_s
-    else
-      "#{whole}.#{format("%06d", frac).sub(/0+\z/, "")}"
-    end
+  amount_decimal = amount_raw.delete_prefix("$").sub(/\A0+(?=\d)/, "")
+  network_sym = case network_raw
+  when ::PayCore::Solana::Caip2::MAINNET then :solana_mainnet
+  when ::PayCore::Solana::Caip2::DEVNET then :solana_devnet
+  else :solana_localnet
   end
 
-# Map the harness network string to a PayKit network symbol. The MPP
-# harness uses bare names; the x402 harness uses CAIP-2 strings.
-network_sym =
-  if network_raw.start_with?("solana:")
-    case network_raw
-    when ::PayCore::Solana::Caip2::MAINNET then :solana_mainnet
-    when ::PayCore::Solana::Caip2::DEVNET then :solana_devnet
-    else :solana_localnet
-    end
-  else
-    case network_raw
-    when "mainnet" then :solana_mainnet
-    when "devnet" then :solana_devnet
-    else :solana_localnet
-    end
-  end
-
-# --- configure PayKit ---------------------------------------------------
-
-PayKit.configure do |c|
-  c.network = network_sym
-  c.accept = [protocol]
-  c.rpc_url = rpc_url
-  # Pin the harness mint as the only stablecoin so the Dispatcher's
-  # MPP server picks up the literal pubkey through the unknown-coin
-  # pass-through in `mint_for`.
-  c.stablecoins = [mint_raw.to_sym]
-  c.operator do |op|
-    op.recipient = pay_to
-    if x402_active
+  PayKit.configure do |c|
+    c.network = network_sym
+    c.accept = [:x402]
+    c.rpc_url = rpc_url
+    c.stablecoins = [mint_raw.to_sym]
+    c.operator do |op|
+      op.recipient = pay_to
       op.signer = PayKit::Signer.json(facilitator_secret)
-    else
-      # MPP harness has no Ed25519 keypair (the server verifies via the
-      # HMAC challenge-binding secret; on-chain settlement is read-only).
-      # Push-mode by definition: the client pays the SOL fee, never the
-      # server. Operator keeps its default demo signer for any code that
-      # incidentally inspects pubkey, but operator.fee_payer is false
-      # so MPP method_details omits feePayer/feePayerKey.
-      op.fee_payer = false
     end
   end
-  unless x402_active
-    c.mpp.realm = "PayKit Interop"
-    c.mpp.challenge_binding_secret = mpp_secret
+
+  mint_for_gate = mint_raw.to_sym
+  amount_for_gate = amount_decimal
+  pricing_class = Class.new(PayKit::Pricing) do
+    define_method(:build_gates) do
+      gate :paid, amount: usd(amount_for_gate, mint_for_gate), description: "PayKit interop"
+    end
   end
-end
+  PayKit.pricing = pricing_class.new
 
-# --- define the gate ----------------------------------------------------
+  dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: PayKit.pricing)
+else
+  # --- MPP direct-mode wiring -----------------------------------------
 
-# The amount is captured from a top-level local via a closure on
-# class definition so the test does not need a separate env var.
-amount_for_gate = amount_decimal
-# Pass the harness mint through PayKit's settlement symbol. The
-# `mint_for` pass-through in Dispatcher returns the symbol's string
-# form when it isn't a known stablecoin name (e.g. when the harness
-# supplies a literal devnet/localnet mint pubkey), so the underlying
-# X402::Server::Exact / Mpp::Server gets the exact mint the matrix
-# expects.
-mint_for_gate = mint_raw.to_sym
+  rpc_url           = require_env("MPP_INTEROP_RPC_URL")
+  pay_to            = require_env("MPP_INTEROP_PAY_TO")
+  mint_raw          = require_env("MPP_INTEROP_MINT")
+  amount_raw        = require_env("MPP_INTEROP_AMOUNT")
+  mpp_secret        = optional_env("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
+  network_raw       = optional_env("MPP_INTEROP_NETWORK", "localnet")
+  resource_path     = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
+  settlement_header = optional_env("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature")
+  decimals_raw      = optional_env("MPP_INTEROP_DECIMALS", "6")
+  asset_kind        = optional_env("MPP_INTEROP_ASSET_KIND", "spl")
+  splits_raw        = optional_env("MPP_INTEROP_SPLITS", "[]")
+  replay_amount     = ENV["MPP_INTEROP_REPLAY_SOURCE_AMOUNT"]
+  replay_path       = ENV["MPP_INTEROP_REPLAY_SOURCE_PATH"]
 
-pricing_class = Class.new(PayKit::Pricing) do
-  define_method(:build_gates) do
-    gate :paid,
-      amount: usd(amount_for_gate, mint_for_gate),
-      description: "PayKit interop protected content"
+  splits_for_method = JSON.parse(splits_raw)
+  splits_for_method = nil if splits_for_method.is_a?(Array) && splits_for_method.empty?
+
+  network_label = case network_raw
+  when "mainnet" then "mainnet"
+  when "devnet" then "devnet"
+  else "localnet"
   end
-end
 
-PayKit.pricing = pricing_class.new
+  # SOL-native vs SPL: PayCore::Solana::Mints.decimals_for needs an
+  # SPL mint symbol/address. For SOL we pass currency="SOL" and let
+  # the method skip the mint table.
+  currency = (asset_kind == "sol") ? "SOL" : mint_raw
+
+  method = ::Mpp::Protocol::Solana.charge(
+    recipient: pay_to,
+    currency: currency,
+    network: network_label,
+    rpc: rpc_url,
+    decimals: Integer(decimals_raw, 10)
+  )
+
+  mpp_server = ::Mpp.create(
+    method: method,
+    secret_key: mpp_secret,
+    realm: "PayKit Interop",
+    settlement_header: settlement_header
+  )
+
+  # Replay-source scenarios bind a second logical resource to the same
+  # server so a credential issued for path A can be probed against
+  # path B. The MPP server's replay store is per-instance, so reusing
+  # `mpp_server` already gives us that contract; we just route both
+  # paths through the same handler.
+  replay_resource_path = (replay_path && !replay_path.empty?) ? replay_path : nil
+  replay_amount_int = replay_amount ? Integer(replay_amount, 10) : nil
+
+  amount_int = Integer(amount_raw, 10)
+end
 
 # --- HTTP loop ----------------------------------------------------------
-
-dispatcher = PayKit::Rack::Dispatcher.new(config: PayKit.config, pricing: PayKit.pricing)
 
 def read_request(conn)
   request_line = conn.gets
@@ -230,6 +218,50 @@ end
 Signal.trap("TERM", &shutdown)
 Signal.trap("INT", &shutdown)
 
+# Per-request handler for the x402 path (PayKit dispatcher).
+serve_x402 = proc do |conn, req|
+  rack_request = ::Rack::Request.new(rack_env_for(req, port))
+  gate = PayKit.pricing[:paid]
+  proof = dispatcher.verify(gate, rack_request)
+
+  if proof
+    headers = {"content-type" => "application/json"}.merge(proof.settlement_headers)
+    write_response(conn, 200, headers, {ok: true, paid: true, protocol: proof.protocol.to_s, transaction: proof.transaction})
+  else
+    challenge = dispatcher.challenge_for(gate, rack_request)
+    headers = {"content-type" => "application/json"}.merge(challenge.headers)
+    write_response(conn, 402, headers, challenge.to_h)
+  end
+end
+
+# Per-request handler for the MPP path (direct Mpp::Server::Charge).
+serve_mpp = proc do |conn, req|
+  amount_units = if replay_resource_path && req[:path] == replay_resource_path
+    replay_amount_int
+  else
+    amount_int
+  end
+
+  authorization = req[:headers]["authorization"]
+  result = mpp_server.charge(
+    authorization,
+    amount: amount_units.to_s,
+    description: "PayKit interop protected content",
+    splits: splits_for_method
+  )
+
+  case result
+  when ::Mpp::Settlement
+    headers = {"content-type" => "application/json"}.merge(result.headers || {})
+    write_response(conn, 200, headers, {ok: true, paid: true, protocol: "mpp", transaction: result.signature})
+  when ::Mpp::Challenge
+    headers = {"content-type" => "application/json", "www-authenticate" => result.www_authenticate}
+    write_response(conn, 402, headers, result.body)
+  else
+    write_response(conn, 500, {"content-type" => "application/json"}, {error: "unexpected MPP result: #{result.class}"})
+  end
+end
+
 loop do
   begin
     conn = listener.accept
@@ -251,27 +283,34 @@ loop do
       next
     end
 
-    unless req[:method] == "GET" && req[:path] == resource_path
+    # Both the primary resource and (for MPP replay scenarios) the
+    # replay-source path route to the same handler. The handler picks
+    # the per-path expected amount.
+    path_matches = (req[:path] == resource_path) ||
+      (!x402_active && replay_resource_path && req[:path] == replay_resource_path)
+
+    unless req[:method] == "GET" && path_matches
       write_response(conn, 404, {"content-type" => "application/json"}, {"error" => "not_found"})
       conn.close
       next
     end
 
-    rack_request = ::Rack::Request.new(rack_env_for(req, port))
-    gate = PayKit.pricing[:paid]
-    proof = dispatcher.verify(gate, rack_request)
-
-    if proof
-      headers = {"content-type" => "application/json"}.merge(proof.settlement_headers)
-      write_response(conn, 200, headers, {ok: true, paid: true, protocol: proof.protocol.to_s, transaction: proof.transaction})
+    if x402_active
+      serve_x402.call(conn, req)
     else
-      challenge = dispatcher.challenge_for(gate, rack_request)
-      headers = {"content-type" => "application/json"}.merge(challenge.headers)
-      write_response(conn, 402, headers, challenge.to_h)
+      serve_mpp.call(conn, req)
     end
     conn.close
   rescue ::PayKit::InvalidProof => e
-    write_response(conn, 402, {"content-type" => "application/json"}, {error: e.code.to_s, message: e.detail})
+    body = {error: e.code.to_s, message: e.detail}
+    body[:code] = e.spec_code if e.respond_to?(:spec_code) && e.spec_code
+    write_response(conn, 402, {"content-type" => "application/json"}, body)
+    conn.close
+  rescue ::Mpp::Error => e
+    code = e.respond_to?(:code) ? e.code : nil
+    body = {error: code || "payment_invalid", message: e.message}
+    body[:code] = code if code
+    write_response(conn, 402, {"content-type" => "application/json"}, body)
     conn.close
   rescue StandardError => e
     warn "pay-kit-server error: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
