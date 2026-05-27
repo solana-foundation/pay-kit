@@ -21,10 +21,10 @@ PayKit.configure do |c|
 
   c.rpc_url = ENV["PAY_KIT_RPC_URL"]
   c.mpp.realm = ENV.fetch("PAY_KIT_REALM", "PayKitDemo")
-  c.mpp.challenge_binding_secret = ENV.fetch(
-    "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET",
-    "demo-secret-do-not-use-in-prod"
-  )
+  # `c.mpp.challenge_binding_secret` is omitted on purpose: preflight
+  # resolves it from `PAY_KIT_MPP_CHALLENGE_BINDING_SECRET`, then from
+  # `./.env`, then by generating a fresh value and persisting it to
+  # `./.env`. Override here only if you want a fixed test fixture.
 end
 
 # Central gates registry. One class declares every paid surface in
