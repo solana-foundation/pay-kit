@@ -68,7 +68,7 @@ module PayKit
       raise ConfigurationError, "duplicate gate #{sym.inspect}" if @gates.key?(sym)
 
       defaults = {
-        pay_to: PayKit.config.pay_to,
+        pay_to: PayKit.config.operator.effective_recipient,
         accept: PayKit.config.accept
       }
 
@@ -112,10 +112,10 @@ module PayKit
         Gate.build(
           name: :_inline,
           amount: arg,
-          pay_to: inline_defaults[:pay_to] || PayKit.config.pay_to,
+          pay_to: inline_defaults[:pay_to] || PayKit.config.operator.effective_recipient,
           accept: inline_defaults[:accept],
           description: inline_defaults[:description],
-          default_pay_to: PayKit.config.pay_to,
+          default_pay_to: PayKit.config.operator.effective_recipient,
           accept_default: PayKit.config.accept
         )
       else

@@ -35,6 +35,37 @@ class PayKitPricingTest < Minitest::Test
     end
   end
 
+  def test_gate_pay_to_defaults_to_operator_effective_recipient
+    PayKitTestHelpers.with_config(pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj") do
+      pricing = MyPricing.new
+      assert_equal "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj", pricing[:free_lookup].pay_to
+    end
+  end
+
+  def test_gate_pay_to_falls_back_to_demo_signer_pubkey_in_zero_config
+    PayKit.reset!
+    PayKit.configure { |_c| }
+    pricing = MyPricing.new
+    assert_equal PayKit::Signer::Demo::PUBKEY, pricing[:free_lookup].pay_to
+  ensure
+    PayKit.reset!
+  end
+
+  def test_gate_pay_to_override_wins_over_operator_default
+    explicit = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP"
+    klass = Class.new(PayKit::Pricing) do
+      gate_recipient = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP"
+      define_method(:build_gates) do
+        gate :marketplace, amount: usd("0.10"), pay_to: gate_recipient
+      end
+    end
+
+    PayKitTestHelpers.with_config(pay_to: "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj") do
+      pricing = klass.new
+      assert_equal explicit, pricing[:marketplace].pay_to
+    end
+  end
+
   def test_dynamic_gate_resolves_per_request
     PayKitTestHelpers.with_config do
       pricing = MyPricing.new
