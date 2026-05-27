@@ -65,7 +65,8 @@ class LocalSigner
             throw new InvalidKeyException('pay_kit: Signer::base58 expects a non-empty string');
         }
         try {
-            $decoded = PublicKey::base58Decode($base58Secret);
+            $publicKey = PublicKey::fromBase58($base58Secret);
+            $decoded = $publicKey->toBytes();
         } catch (Throwable $e) {
             throw new InvalidKeyException(
                 'pay_kit: Signer::base58 invalid base58: ' . $e->getMessage(),

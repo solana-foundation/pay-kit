@@ -68,8 +68,11 @@ final readonly class Price
     {
         if ($this->denom !== $other->denom) {
             throw new InvalidArgumentException(
-                sprintf('pay_kit: cannot sum prices of different denoms (%s vs %s)',
-                    $this->denom->value, $other->denom->value),
+                sprintf(
+                    'pay_kit: cannot sum prices of different denoms (%s vs %s)',
+                    $this->denom->value,
+                    $other->denom->value
+                ),
             );
         }
         return new self(
