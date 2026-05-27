@@ -25,6 +25,24 @@ class PayKitDispatcherTest < Minitest::Test
     )
   end
 
+  def test_delegated_x402_mode_raises_not_implemented_error
+    PayKitTestHelpers.with_config(x402_facilitator_url: "https://facilitator.example.com") do
+      with_dispatcher do |_middleware, dispatcher|
+        err = assert_raises(::PayKit::NotImplementedError) { dispatcher.send(:x402_adapter) }
+        assert_includes err.message, "delegated x402 mode"
+        assert_includes err.message, "facilitator_url"
+      end
+    end
+  end
+
+  def test_self_hosted_x402_mode_does_not_raise
+    PayKitTestHelpers.with_config do
+      with_dispatcher do |_middleware, dispatcher|
+        refute_nil dispatcher.send(:x402_adapter)
+      end
+    end
+  end
+
   def test_x402_settlement_cache_is_shared_across_requests
     PayKitTestHelpers.with_config do
       with_dispatcher do |middleware, _dispatcher|

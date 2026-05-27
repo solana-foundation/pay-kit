@@ -169,10 +169,20 @@ module PayKit
       end
 
       def x402_adapter
-        @x402_adapter ||= ::PayKit::Protocols::X402.new(
-          config: @config,
-          exact_config_for: ->(gate, request) { build_x402_config(gate, request) }
-        )
+        @x402_adapter ||= begin
+          if @config.x402.delegated?
+            raise ::PayKit::NotImplementedError,
+              "PayKit.config.x402.facilitator_url is set, which enables delegated x402 mode " \
+              "(POST /verify + /settle to the facilitator). The delegated HTTP client is not " \
+              "wired in this release; unset c.x402.facilitator_url to run x402 self-hosted, or " \
+              "drop :x402 from c.accept to use MPP only."
+          end
+
+          ::PayKit::Protocols::X402.new(
+            config: @config,
+            exact_config_for: ->(gate, request) { build_x402_config(gate, request) }
+          )
+        end
       end
 
       def mpp_adapter
