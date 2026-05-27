@@ -13,14 +13,14 @@ that signature slot, re-serialize to base64.
 ]]
 
 local base58 = require('mpp.util.base58')
-local base64 = require('mpp.util.base64_std')
 local tx_mod = require('mpp.methods.solana.transaction')
 local ed25519 = require('resty.pay_kit.util.ed25519')
 
 local M = {}
 
 -- Cosign a base64-encoded transaction with a 64-byte Solana secret.
--- Returns the cosigned bytes (raw binary, ready to broadcast).
+-- Returns the cosigned transaction as a base64 string, ready to feed
+-- into Solana RPC `sendTransaction` with `encoding: "base64"`.
 -- Raises if the signer's pubkey is not in the account-keys slot, or
 -- if the slot is outside the required-signers range.
 function M.cosign_base64(transaction_b64, secret_64)
@@ -43,7 +43,7 @@ function M.cosign_base64(transaction_b64, secret_64)
   local signature, err = ed25519.sign(secret_64, tx.message.raw)
   if not signature then error(err) end
   tx_mod.replace_signature(tx, index, signature)
-  return base64.decode(tx_mod.to_base64(tx))
+  return tx_mod.to_base64(tx)
 end
 
 return M
