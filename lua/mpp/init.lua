@@ -1,3 +1,22 @@
+-- DEPRECATED: the `mpp` LuaRocks package is being replaced by
+-- `lua-resty-pay-kit`. Migrate via `local pay_kit = require('resty.pay_kit')`.
+-- This shim emits a warning once per worker on first load and will be
+-- removed one minor release after `lua-resty-pay-kit` ships.
+local function _pay_kit_deprecation_warn()
+  if package.loaded._pay_kit_mpp_warned then return end
+  package.loaded._pay_kit_mpp_warned = true
+  local ngx_ref = rawget(_G, 'ngx')
+  local msg = "DEPRECATION: `require('mpp')` is superseded by " ..
+    "`require('resty.pay_kit')` (lua-resty-pay-kit). The mpp shim " ..
+    'will be removed one minor release after lua-resty-pay-kit ships.'
+  if ngx_ref and ngx_ref.log and ngx_ref.WARN then
+    ngx_ref.log(ngx_ref.WARN, msg)
+  else
+    io.stderr:write('[pay_kit] WARN: ' .. msg .. '\n')
+  end
+end
+_pay_kit_deprecation_warn()
+
 local challenge = require('mpp.protocol.core.challenge')
 local headers = require('mpp.protocol.core.headers')
 local intents = require('mpp.protocol.intents.charge')

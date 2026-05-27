@@ -43,5 +43,6 @@ require('tests.pay_kit.gate_spec')
 require('tests.pay_kit.schemes_x402_spec')
 require('tests.pay_kit.store_spec')
 require('tests.pay_kit.dispatcher_spec')
+require('tests.pay_kit.deprecation_shim_spec')
 
 require('tests.test_helper').run()
