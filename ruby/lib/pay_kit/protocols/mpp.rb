@@ -95,19 +95,20 @@ module PayKit
         @server_for.call(gate)
       end
 
-      def splits_for(gate, total_units)
+      # Build the MPP `splits[]` field for the on-chain charge intent.
+      # The MPP verifier treats splits as the FEE-ONLY list and computes
+      # `primary = request.amount - sum(splits.amount)`, then matches a
+      # transfer of `primary` to `request.recipient` (the gate's
+      # `pay_to`). Including the primary recipient inside `splits[]`
+      # would double-count the principal and fail verification with
+      # "split amounts exceed total amount". See
+      # `lib/mpp/protocol/solana/verifier.rb` lines 75-87.
+      def splits_for(gate, _total_units)
         return nil unless gate.fees?
 
-        within = gate.fees.select(&:within?)
-        on_top = gate.fees.select(&:on_top?)
-        primary = total_units - within.map { |f| to_smallest_units(f.price) }.sum -
-          on_top.map { |f| to_smallest_units(f.price) }.sum
-
-        list = [{"recipient" => gate.pay_to, "amount" => primary.to_s}]
-        gate.fees.each do |fee|
-          list << {"recipient" => fee.recipient, "amount" => to_smallest_units(fee.price).to_s}
+        gate.fees.map do |fee|
+          {"recipient" => fee.recipient, "amount" => to_smallest_units(fee.price).to_s}
         end
-        list
       end
 
       # Convert a Price (decimal string like "0.10") into the SPL

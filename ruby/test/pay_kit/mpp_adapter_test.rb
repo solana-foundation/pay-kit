@@ -1,0 +1,104 @@
+# frozen_string_literal: true
+
+require_relative "test_helper"
+
+class PayKitMppAdapterTest < Minitest::Test
+  RECIPIENT = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj"
+  FEE_RECIPIENT_A = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP"
+  FEE_RECIPIENT_B = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR"
+
+  def teardown
+    PayKit.reset!
+  end
+
+  def amount_usd_010
+    ::PayKit::Helpers::Pricing.build_price(:USD, "0.10", [:USDC])
+  end
+
+  def fee(recipient:, amount:, kind: :within)
+    ::PayKit::Fee.new(
+      recipient: recipient,
+      price: ::PayKit::Helpers::Pricing.build_price(:USD, amount, [:USDC]),
+      kind: kind
+    )
+  end
+
+  def adapter
+    fake_server = Object.new
+    def fake_server.charge(*)
+    end
+    ::PayKit::Protocols::MPP.new(server: fake_server)
+  end
+
+  def test_splits_is_nil_when_gate_has_no_fees
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [],
+        accept: %i[mpp]
+      )
+      assert_nil adapter.send(:splits_for, gate, 100_000)
+    end
+  end
+
+  def test_splits_excludes_primary_recipient
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [fee(recipient: FEE_RECIPIENT_A, amount: "0.01", kind: :within)],
+        accept: %i[mpp]
+      )
+
+      result = adapter.send(:splits_for, gate, 100_000)
+      assert_equal 1, result.length
+      assert_equal FEE_RECIPIENT_A, result.first["recipient"]
+      refute(result.any? { |s| s["recipient"] == RECIPIENT },
+        "primary recipient must NOT appear in splits[] (verifier computes primary = total - sum(splits))")
+    end
+  end
+
+  def test_splits_carries_only_fees_in_order
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [
+          fee(recipient: FEE_RECIPIENT_A, amount: "0.01", kind: :within),
+          fee(recipient: FEE_RECIPIENT_B, amount: "0.005", kind: :on_top)
+        ],
+        accept: %i[mpp]
+      )
+
+      result = adapter.send(:splits_for, gate, 100_000)
+      assert_equal 2, result.length
+      assert_equal FEE_RECIPIENT_A, result[0]["recipient"]
+      assert_equal "10000", result[0]["amount"]
+      assert_equal FEE_RECIPIENT_B, result[1]["recipient"]
+      assert_equal "5000", result[1]["amount"]
+    end
+  end
+
+  def test_accepts_entry_exposes_primary_via_pay_to_not_splits
+    PayKitTestHelpers.with_config do
+      gate = ::PayKit::Gate.new(
+        name: :report,
+        pay_to: RECIPIENT,
+        amount: amount_usd_010,
+        fees: [fee(recipient: FEE_RECIPIENT_A, amount: "0.01", kind: :within)],
+        accept: %i[mpp]
+      )
+
+      env = ::Rack::MockRequest.env_for("/report")
+      request = ::Rack::Request.new(env)
+      entry = adapter.accepts_entry(gate, request)
+      assert_equal RECIPIENT, entry[:payTo]
+      assert_equal 1, entry[:splits].length
+      assert_equal FEE_RECIPIENT_A, entry[:splits].first["recipient"]
+    end
+  end
+end
