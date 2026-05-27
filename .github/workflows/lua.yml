@@ -124,6 +124,8 @@ jobs:
           luarocks --lua-version=5.1 install --tree lua_modules luasocket
           luarocks --lua-version=5.1 install --tree lua_modules luasodium
           luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+          luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
+          luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
 
       - uses: actions/setup-node@v4
         with:
@@ -166,3 +168,21 @@ jobs:
           MPP_INTEROP_SERVERS: lua
           MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays lua server"
+
+      # Dual-protocol proof: one e2e run drives MPP charge scenarios
+      # (typescript client) and x402 exact (rust-x402 client) against
+      # the same Lua adapter binary. Mirrors the ruby workflow's
+      # interop-ruby step. The dual-protocol Lua adapter at
+      # harness/lua-server/server.lua reads either MPP_INTEROP_* or
+      # X402_INTEROP_* env (or the PAY_KIT_INTEROP_PROTOCOL hint that
+      # the matrix stamps when both namespaces are populated against
+      # the same surfpool fixtures) and routes through resty.pay_kit.
+      - name: Run PayKit interop smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: lua,typescript
+          MPP_INTEROP_INTENTS: charge,x402-exact
+          X402_INTEROP_CLIENTS: rust-x402
+          X402_INTEROP_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000
