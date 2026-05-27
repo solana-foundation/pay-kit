@@ -3,10 +3,10 @@
 require "json"
 require "sinatra/base"
 
-# Boot the gem and the opt-in Sinatra helpers. The second require is
-# explicit; the gem does NOT auto-detect Sinatra at load time.
+# A single require is enough: `solana_pay_kit` auto-detects Sinatra
+# and registers `PayKit::Sinatra` helpers + `PayKit::Rack::PaymentRequired`
+# middleware on Sinatra::Base in both load orders.
 require_relative "../../lib/solana_pay_kit"
-require_relative "../../lib/solana_pay_kit/sinatra"
 
 # Single setup file: PayKit.configure block + Pricing class +
 # PayKit.pricing= assignment. Mirrors a Rails initializer.
@@ -15,9 +15,6 @@ require_relative "pay_kit"
 # One gem, one surface. x402 and MPP both gate the same routes; the
 # merchant doesn't care which protocol settled the request.
 class PayKitSinatraExample < Sinatra::Base
-  helpers PayKit::Sinatra
-  use PayKit::Rack::PaymentRequired
-
   # Let PayKit's PaymentRequired/InvalidProof bubble up to the Rack
   # middleware so it can serialize the 402.
   set :show_exceptions, false

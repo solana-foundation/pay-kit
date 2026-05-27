@@ -19,34 +19,27 @@ currency, give it your wallet address, and gate a route in two lines.
 ## Quick start
 
 ```ruby
+require "sinatra/base"
 require "solana_pay_kit"
-require "solana_pay_kit/sinatra"
 
 PayKit.configure do |c|
-  c.pay_to = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj"
-  c.network = :solana_localnet
-  c.x402.facilitator = ENV.fetch("FACILITATOR_URL")
-  c.mpp.secret = ENV.fetch("MPP_SECRET")
+  c.mpp.challenge_binding_secret = ENV.fetch("MPP_SECRET")
 end
-
-class Pricing < PayKit::Pricing
-  def build_gates
-    gate :report, amount: usd("0.10"), description: "Premium report"
-  end
-end
-PayKit.pricing = Pricing.new
 
 class App < Sinatra::Base
-  helpers PayKit::Sinatra
-  use PayKit::Rack::PaymentRequired
-
-  get "/report" do
-    require_payment! :report
-    content_type :json
-    JSON.generate(ok: true, paid_by: payment.protocol)
-  end
+  get("/report") { require_payment!(usd("0.10")); "ok" }
 end
 ```
+
+That is the whole demo. Zero-config boot uses the published demo
+signer as recipient and fee-payer (the gem refuses to start with it
+on `:solana_mainnet`); the gem auto-detects Sinatra and mounts the
+`PayKit::Sinatra` helpers plus `PayKit::Rack::PaymentRequired`
+middleware in both load orders.
+
+Production apps name an operator, point at a private RPC, and lift
+gate definitions into a `PayKit::Pricing` class - the full walkthrough
+is below.
 
 Three primitives, mirroring Clearance's `require_login` / `signed_in?` /
 `current_user`:

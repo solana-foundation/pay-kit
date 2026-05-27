@@ -7,15 +7,24 @@
 # Loaded by app.rb via `require_relative "pay_kit"`.
 
 PayKit.configure do |c|
-  c.pay_to = ENV.fetch("PAY_KIT_PAY_TO", "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
   c.network = :solana_localnet
-  # Default to mpp-only so the demo boots without a real Solana
-  # facilitator keypair. Set PAY_KIT_ACCEPT="x402,mpp" once
-  # PAY_KIT_X402_FACILITATOR_KEY holds a valid 64-byte JSON array.
-  c.accept = ENV.fetch("PAY_KIT_ACCEPT", "mpp").split(",").map(&:to_sym)
-  c.x402.facilitator = ENV.fetch("PAY_KIT_X402_FACILITATOR", "https://402.surfnet.dev:8899")
-  c.x402.facilitator_secret_key = ENV.fetch("PAY_KIT_X402_FACILITATOR_KEY", "[]")
-  c.mpp.secret = ENV.fetch("PAY_KIT_MPP_SECRET", "demo-secret-do-not-use-in-prod")
+  c.accept = ENV.fetch("PAY_KIT_ACCEPT", "x402,mpp").split(",").map(&:to_sym)
+
+  # Operator value carries the merchant identity (recipient + signer +
+  # fee-payer flag). Unset env vars resolve to nil; the setters treat
+  # nil as a no-op so the operator keeps its defaults
+  # (demo signer + its pubkey as recipient + fee_payer: true).
+  c.operator do |op|
+    op.recipient = ENV["PAY_KIT_PAY_TO"]
+    op.signer = PayKit::Signer.env("PAY_KIT_OPERATOR_KEY")
+  end
+
+  c.rpc_url = ENV["PAY_KIT_RPC_URL"]
+  c.mpp.realm = ENV.fetch("PAY_KIT_REALM", "PayKitDemo")
+  c.mpp.challenge_binding_secret = ENV.fetch(
+    "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET",
+    "demo-secret-do-not-use-in-prod"
+  )
 end
 
 # Central gates registry. One class declares every paid surface in
@@ -23,11 +32,10 @@ end
 class Pricing < PayKit::Pricing
   SELLER = ENV.fetch("PAY_KIT_SELLER", "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj")
   PLATFORM = ENV.fetch("PAY_KIT_PLATFORM", "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY")
-  GATEWAY = ENV.fetch("PAY_KIT_GATEWAY", "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY")
 
   def build_gates
     # Simple gate. Defaults to PayKit.config.accept and
-    # PayKit.config.pay_to. Customer pays $0.10, pay_to nets $0.10.
+    # PayKit.config.operator.effective_recipient.
     gate :report,
       amount: usd("0.10"),
       description: "Premium report"
