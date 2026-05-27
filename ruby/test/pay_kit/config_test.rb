@@ -220,6 +220,27 @@ class PayKitConfigTest < Minitest::Test
     assert PayKit.config.operator.signer.demo?
   end
 
+  def test_x402_facilitator_secret_key_shim_treats_nil_as_noop
+    PayKit.configure { |c| c.x402.facilitator_secret_key = nil }
+    assert PayKit.config.operator.signer.demo?
+  end
+
+  def test_x402_facilitator_secret_key_shim_reader_returns_signer_json
+    bytes_json = JSON.generate((1..64).to_a)
+    PayKit.configure { |c| c.x402.facilitator_secret_key = bytes_json }
+    assert_equal bytes_json, PayKit.config.x402.facilitator_secret_key
+  end
+
+  def test_x402_facilitator_shim_reader_returns_effective_rpc_url
+    PayKit.configure { |c| c.rpc_url = "https://rpc.example.com" }
+    assert_equal "https://rpc.example.com", PayKit.config.x402.facilitator
+  end
+
+  def test_mpp_secret_shim_reader_returns_challenge_binding_secret
+    PayKit.configure { |c| c.mpp.challenge_binding_secret = "shared" }
+    assert_equal "shared", PayKit.config.mpp.secret
+  end
+
   def test_x402_facilitator_secret_key_shim_treats_empty_string_as_noop
     PayKit.configure { |c| c.x402.facilitator_secret_key = "" }
     assert PayKit.config.operator.signer.demo?
