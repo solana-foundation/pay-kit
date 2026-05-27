@@ -1,3 +1,17 @@
+-- Disable boot-time preflight by default in the test suite. Tests that
+-- need to exercise the preflight surface re-enable it locally. Mirrors
+-- Ruby's `test_helper.rb` setting `PAY_KIT_DISABLE_PREFLIGHT=1`.
+if not os.getenv('PAY_KIT_DISABLE_PREFLIGHT') then
+  -- LuaJIT doesn't ship setenv in the standard lib; rely on Lua 5.1's
+  -- limitation: the preflight module checks os.getenv at call time, so
+  -- we monkey-patch it for the duration of the suite.
+  local _real_getenv = os.getenv
+  os.getenv = function(name)  -- luacheck: ignore
+    if name == 'PAY_KIT_DISABLE_PREFLIGHT' then return '1' end
+    return _real_getenv(name)
+  end
+end
+
 local M = {
   tests = {},
 }
