@@ -1,124 +1,97 @@
-# Kong custom plugin: `mpp-charge`
+# Kong plugin: `pay-kit`
 
-A Kong custom plugin that gates upstream API routes behind an MPP
-`charge` challenge. The plugin runs in the `access` phase, issues a
-402 with a signed `WWW-Authenticate` header on first contact, and
-runs the full Solana settlement lifecycle (decode the wire
-transaction, cosign with the configured fee payer, simulate,
-broadcast, consume, await) on the credentialed retry.
+A Kong custom plugin that gates upstream API routes behind a PayKit
+charge. Runs in the `access` phase, issues an HTTP 402 with the
+right `WWW-Authenticate` + `PAYMENT-REQUIRED` headers on first
+contact, and verifies / settles the credential on the paid retry.
+Backs both x402 (`exact` scheme on Solana) and MPP from the same
+adapter binary; client picks per-request via header detection.
 
-## Layout
+The plugin source lives in `lua/kong/plugins/pay-kit/`:
 
 ```
-kong-plugin/
-├── README.md
-└── kong/plugins/mpp-charge/
-    ├── handler.lua
-    └── schema.lua
+kong/plugins/pay-kit/
+├── handler.lua       # access / header_filter / log phase methods
+├── schema.lua        # Kong typedefs schema (gate-name OR inline)
+└── bootstrap.lua     # KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK entry point
 ```
-
-Kong's plugin loader expects the `kong/plugins/<name>/handler.lua`
-and `kong/plugins/<name>/schema.lua` paths exactly; do not flatten
-them.
 
 ## Install
 
-Copy the `kong/plugins/mpp-charge` directory into the location where
-Kong loads custom plugins (typically `/usr/local/share/lua/5.1/kong/plugins/`
-on Linux distributions, or your local-build override directory). Add
-`mpp-charge` to the `plugins` directive in `kong.conf`:
+LuaRocks (recommended):
 
-```
-plugins = bundled,mpp-charge
+```bash
+luarocks install kong-plugin-pay-kit
 ```
 
-You also need the Lua MPP SDK installed into Kong's rocks tree:
+Or, in dev: copy the `kong/plugins/pay-kit/` directory into Kong's
+plugin path (`/usr/local/share/lua/5.1/kong/plugins/`).
 
-```
-sudo luarocks --lua-version=5.1 install <path-to-mpp-dev-1.rockspec>
-sudo luarocks --lua-version=5.1 install luasocket
-sudo luarocks --lua-version=5.1 install luasodium
-sudo luarocks --lua-version=5.1 install luasec
-sudo luarocks --lua-version=5.1 install lua-resty-http
-```
+Activate via `kong.conf` or env:
 
-The `luasodium` rock requires `libsodium` at the system level
-(`apt-get install libsodium-dev` on Debian / Ubuntu,
-`brew install libsodium` on macOS).
-
-`lua-resty-http` ships bundled with OpenResty distributions; install
-the rock explicitly on bare nginx-with-Lua builds. The plugin uses
-it for non-blocking, cosocket-based Solana RPC calls. The blocking
-`socket.http` / `ssl.https` transport from `mpp.solana.rpc_transport`
-would block the entire nginx worker for the full RPC round trip and
-starve every other concurrent request on that worker; never wire
-that transport into the access phase. The `luasocket` and `luasec`
-rocks are still required because `mpp.solana.rpc_transport` is loaded
-by the standalone luajit server example and indirectly via the
-rockspec dependency list.
-
-## Shared replay store (cross-worker safety)
-
-Kong's default `worker_processes auto` spawns one Lua state per CPU
-core. An in-memory replay store is per-Lua-state, so a credential
-consumed by Worker A is invisible to Workers B, C, etc., and an
-attacker who receives a valid Payment-Receipt can replay the same
-`Authorization: Payment` header against a different worker and obtain
-another 200 OK with a fresh on-chain settlement.
-
-The plugin routes replay through `ngx.shared.DICT`, which lives in
-nginx-managed shared memory and is atomic across workers. The shared
-dict must be declared at the http block level. Add this to Kong's
-`nginx_http_*` template directives or to the nginx.conf snippet Kong
-loads:
-
-```
-lua_shared_dict mpp_replay 10m;
+```bash
+KONG_PLUGINS=bundled,pay-kit
+KONG_NGINX_HTTP_INIT_BY_LUA_BLOCK="require('kong.plugins.pay-kit.bootstrap').setup()"
 ```
 
-Size the dict by expected QPS times challenge lifetime. 10 MB is
-enough for ~50,000 consumed-signature entries (each entry is ~200
-bytes including key + JSON payload). The `:add` primitive used for
-`put_if_absent` is atomic across workers, so duplicate detection is
-correct regardless of how many workers Kong starts.
+## Configure (env vars)
 
-The dict name is configurable via the plugin's `shared_dict_name`
-field (default `mpp_replay`). If the dict is not declared at boot,
-the plugin raises a clear error pointing back to this README.
+The plugin reads its global config (operator, signer, RPC URL, MPP
+secret) from PAY_KIT_* env vars at master init:
 
-## Configure
-
-Per-service via the Kong admin API:
-
-```
-curl -i -X POST http://localhost:8001/services/protected-api/plugins \
-  -d "name=mpp-charge" \
-  -d "config.recipient=<base58 pubkey>" \
-  -d "config.currency=USDC" \
-  -d "config.network=mainnet-beta" \
-  -d "config.secret_key=<hmac secret>" \
-  -d "config.amount=1.50" \
-  -d "config.rpc_url=https://api.mainnet-beta.solana.com" \
-  -d "config.fee_payer_secret_key=[148,222,...]"
+```bash
+PAY_KIT_NETWORK="solana_devnet"
+PAY_KIT_RPC_URL="https://api.devnet.solana.com"
+PAY_KIT_OPERATOR_RECIPIENT="<base58 Solana address>"
+PAY_KIT_OPERATOR_KEY="<JSON array | base58 | hex 64-byte secret>"
+PAY_KIT_MPP_CHALLENGE_BINDING_SECRET="<HMAC secret>"
 ```
 
-The `fee_payer_secret_key` is optional. When provided, the plugin
-cosigns the client's wire transaction with the configured Solana
-keypair before broadcasting. When omitted, the client must
-pre-cosign and the plugin only verifies / consumes / awaits.
+Per-route config goes on the plugin instance (Admin API):
 
-## Behavior
+```bash
+# Inline gate
+curl -X POST http://localhost:8001/services/<svc>/plugins \
+  -d "name=pay-kit" \
+  -d "config.amount=0.10" \
+  -d "config.stablecoins=USDC"
 
-- `GET /protected` without `Authorization: Payment ...` returns 402
-  with a signed `WWW-Authenticate` challenge.
-- The same request with `Authorization: Payment ...` triggers the
-  full settlement; on success, the request continues upstream and
-  the response carries a `Payment-Receipt` header with the on-chain
-  signature.
-- A failed settlement (transaction decode error, amount mismatch,
-  network mismatch, replay) returns a fresh 402.
+# Or reference a gate registered via bootstrap.lua + pay_kit.gate()
+curl -X POST http://localhost:8001/services/<svc>/plugins \
+  -d "name=pay-kit" \
+  -d "config.gate=report"
+```
 
-The plugin caches one `mpp.server` instance per unique `conf` value
-to avoid rebuilding the verifier / RPC / signer on every request.
-The cache key is the configuration table identity; Kong replaces it
-when the operator PATCHes the plugin config.
+## How it works
+
+1. **Master init.** `bootstrap.lua` reads env vars and calls
+   `pay_kit.configure()` once. State survives all workers via Lua
+   module caching.
+2. **Access phase.** `handler.lua:access(conf)` builds a gate arg
+   (named or inline) and calls `pay_kit.try_payment()`. Unpaid
+   requests get `kong.response.exit(402, body, headers)`. Paid
+   requests stash the payment on `kong.ctx.shared.pay_kit_payment`
+   for downstream plugins.
+3. **Header filter.** Settlement headers
+   (`x-payment-settlement-signature`, `payment-response`, ...) are
+   stamped onto the upstream 200 response so clients can verify
+   on-chain proofs.
+
+## Priority
+
+`PRIORITY = 1010` sits between basic-auth (1001) and OIDC (1050).
+Payment runs **before** rate-limiting (910) so unpaid traffic never
+burns the rate-limit bucket. Combine with identity-auth plugins by
+keeping pay-kit at 1010 and the auth plugin at its default; paid
++ authenticated requests flow through both.
+
+## Plugin config schema
+
+| Field          | Type     | Required                          | Notes                                                            |
+|----------------|----------|-----------------------------------|------------------------------------------------------------------|
+| `gate`         | string   | One of `{gate, amount}` required  | Name registered via bootstrap-time `pay_kit.gate(name, opts)`.   |
+| `amount`       | string   | One of `{gate, amount}` required  | Inline form: `"0.10"` (parsed by `pay_kit.usd`).                 |
+| `stablecoins`  | string[] | Required when `amount` is set     | Ordered preference list, e.g. `["USDC", "USDT"]`.                |
+| `accept`       | string[] | Optional                          | Subset of `{"x402", "mpp"}`. Defaults to config-level accept.    |
+| `pay_to`       | string   | Optional                          | Per-gate override (marketplace pattern). Defaults to operator.   |
+| `description`  | string   | Optional                          | Human label echoed in the challenge.                             |
