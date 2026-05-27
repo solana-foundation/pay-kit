@@ -2551,12 +2551,25 @@ fn diagnose_balances(
         .or(tx.message.static_account_keys().first());
 
     // Check payer's token balance.
-    if let Some(payer) = payer_pk {
+    // Audit #13: derive the ATA against the actual token program for this
+    // currency, not a hardcoded TOKEN_PROGRAM. For Token-2022 mints (PYUSD,
+    // USDG on Token-2022, CASH, …) the legacy program produces the wrong
+    // ATA, so the diagnostic would silently lie about the payer's balance.
+    // The token program was already resolved at boot (audit #28) and
+    // embedded in `methodDetails.tokenProgram` for every SPL challenge this
+    // server issues; we just use it. If it's missing (lower-level
+    // ChargeRequest construction edge case), skip the token-balance hint —
+    // the fee-payer SOL diagnostic below still runs.
+    let token_program = method_details
+        .token_program
+        .as_deref()
+        .and_then(|s| Pubkey::from_str(s).ok());
+
+    if let (Some(payer), Some(token_program)) = (payer_pk, token_program.as_ref()) {
         if request.currency.to_uppercase() != "SOL" {
             if let Ok(mint) =
                 resolve_expected_mint(&request.currency, method_details.network.as_deref())
             {
-                let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
                 let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
                 let (ata, _) = Pubkey::find_program_address(
                     &[payer.as_ref(), token_program.as_ref(), mint.as_ref()],

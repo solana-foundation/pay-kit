@@ -429,3 +429,21 @@ So the replay-state side of the bug is closed.
 - `to_ui_amount_safe_high_decimals_succeed` (boundary: 19 fits, 20 doesn't)
 
 ---
+
+### #13 — Hardcoded token program in `diagnose_balances`
+**ID:** `b1f6e3a4` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `diagnose_balances` derived the payer's ATA with a hardcoded `programs::TOKEN_PROGRAM`. For Token-2022 mints (PYUSD, USDG on Token-2022, CASH) this produced the wrong ATA, so the diagnostic could silently lie about the payer's balance.
+
+**Decision:** ✅ **accepted — use the value already resolved at boot.**
+
+**Rationale:** Audit #28 resolves the token program once in `Mpp::new` (static table for known stablecoins, on-chain mint-owner lookup for arbitrary mints) and embeds it on every SPL challenge as `methodDetails.tokenProgram`. The diagnostic just needs to use that value instead of guessing. No runtime RPC call needed — the resolution already happened at boot.
+
+**Action taken:**
+- Read `method_details.token_program` and parse to `Pubkey`. If `Some` and parseable → use for ATA derivation.
+- If `None` (or unparseable, which would be a separate validation failure upstream) → silently skip the token-balance diagnostic. The fee-payer SOL diagnostic below still runs.
+- No `default_token_program_for_currency` fallback — that's exactly the wrong-for-Token-2022 path the audit flagged.
+
+**Note on no new tests:** the fix is a one-spot value-swap inside a private, RPC-bound, best-effort diagnostic. The arithmetic helpers in #8 cover the testable surface; the change here is "use the right input." Covered by the existing integration tests that exercise the token-2022 challenge paths.
+
+---
