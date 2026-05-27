@@ -188,19 +188,20 @@ export const serverImplementations: ImplementationDefinition[] = [
   },
   {
     id: "lua",
-    label: "Lua HTTP server",
+    label: "Lua PayKit server (dual protocol)",
     role: "server",
+    // One adapter binary, two settle paths. The dual-protocol Lua
+    // server (lua/harness/lua-server/server.lua) reads either
+    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL
+    // for the matrix's both-namespaces shape) and routes through
+    // resty.pay_kit. Mirrors the Ruby pay-kit-server pattern.
     command: [
       "sh",
       "-c",
       "cd ../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
     ],
-    // Lua defaults off to match php/ruby: the harness requires a
-    // luarocks-installed lua_modules tree under lua/ and a working
-    // luajit, neither of which the default local interop run sets up.
-    // CI and the focused matrix opt in via MPP_INTEROP_SERVERS=lua.
-    // Codex PR #103 review (P2).
     enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
+    intents: ["charge", "x402-exact"],
   },
   {
     id: "python",
