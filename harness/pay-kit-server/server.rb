@@ -104,19 +104,30 @@ network_sym =
 # --- configure PayKit ---------------------------------------------------
 
 PayKit.configure do |c|
-  c.pay_to = pay_to
   c.network = network_sym
   c.accept = [protocol]
+  c.rpc_url = rpc_url
   # Pin the harness mint as the only stablecoin so the Dispatcher's
   # MPP server picks up the literal pubkey through the unknown-coin
   # pass-through in `mint_for`.
   c.stablecoins = [mint_raw.to_sym]
-  if x402_active
-    c.x402.facilitator = rpc_url
-    c.x402.facilitator_secret_key = facilitator_secret
-  else
+  c.operator do |op|
+    op.recipient = pay_to
+    if x402_active
+      op.signer = PayKit::Signer.json(facilitator_secret)
+    else
+      # MPP harness has no Ed25519 keypair (the server verifies via the
+      # HMAC challenge-binding secret; on-chain settlement is read-only).
+      # Push-mode by definition: the client pays the SOL fee, never the
+      # server. Operator keeps its default demo signer for any code that
+      # incidentally inspects pubkey, but operator.fee_payer is false
+      # so MPP method_details omits feePayer/feePayerKey.
+      op.fee_payer = false
+    end
+  end
+  unless x402_active
     c.mpp.realm = "PayKit Interop"
-    c.mpp.secret = mpp_secret
+    c.mpp.challenge_binding_secret = mpp_secret
   end
 end
 
