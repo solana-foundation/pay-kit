@@ -409,3 +409,23 @@ So the replay-state side of the bug is closed.
 - `checked_sum_split_amounts_empty_is_zero`
 
 ---
+
+### #8 — Balance diagnostics decimal overflow
+**ID:** `6c8a7d18` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `diagnose_balances` computed `10u64.pow(methodDetails.decimals)` to build a UI-amount divisor. `decimals` is `Option<u8>` bounded only by the type — values ≥ 20 panic (debug) or wrap (release). The function runs *after* settlement already failed and is best-effort.
+
+**Decision:** ✅ **accepted — extract a checked helper, silently omit the token-balance hint when the divisor doesn't fit.**
+
+**Action taken:**
+- Extracted `to_ui_amount(amount_base_units: u64, decimals: u8) -> Option<f64>` next to `diagnose_balances`. Uses `checked_pow` and returns `None` when the divisor can't be represented.
+- `diagnose_balances` now early-skips the token-balance diagnostic via `if let Some(needed) = ...`. The fee-payer SOL diagnostic below still runs.
+- No new `MAX_DECIMALS` cap needed at this site — the checked_pow returning None is the cap.
+
+**New tests** (against the helper):
+- `to_ui_amount_typical_decimals` (6-decimal USDC case)
+- `to_ui_amount_zero_decimals` (divisor = 1)
+- `to_ui_amount_returns_none_when_divisor_overflows_u64` (decimals = 20, 255)
+- `to_ui_amount_safe_high_decimals_succeed` (boundary: 19 fits, 20 doesn't)
+
+---

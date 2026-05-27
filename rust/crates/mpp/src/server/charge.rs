@@ -2520,6 +2520,16 @@ fn string_field<'a>(
 ///   " | payer USDC balance: 0.00 (need 0.10), fee payer SOL: 0.005"
 ///
 /// Never fails — returns an empty string if any RPC call errors.
+/// Audit #8: convert a base-unit amount to a UI amount for diagnostic
+/// rendering. Returns `None` when `10u64.pow(decimals)` would overflow,
+/// so the caller can omit that diagnostic line instead of panicking
+/// (debug) or wrapping silently (release) — `diagnose_balances` only
+/// runs after settlement already failed and is best-effort.
+fn to_ui_amount(amount_base_units: u64, decimals: u8) -> Option<f64> {
+    let divisor = 10u64.checked_pow(decimals as u32)?;
+    Some(amount_base_units as f64 / divisor as f64)
+}
+
 fn diagnose_balances(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
@@ -2552,24 +2562,27 @@ fn diagnose_balances(
                     &[payer.as_ref(), token_program.as_ref(), mint.as_ref()],
                     &ata_program,
                 );
-                let decimals = method_details.decimals.unwrap_or(6) as u32;
-                let divisor = 10u64.pow(decimals) as f64;
-                let needed = request.amount.parse::<u64>().unwrap_or(0) as f64 / divisor;
-                match rpc.get_token_account_balance(&ata) {
-                    Ok(bal) => {
-                        let actual: f64 = bal.ui_amount.unwrap_or(0.0);
-                        if actual < needed {
+                // Audit #8: skip the token-balance hint when the divisor
+                // can't be represented — see `to_ui_amount` for the why.
+                let decimals = method_details.decimals.unwrap_or(6);
+                let needed_base = request.amount.parse::<u64>().unwrap_or(0);
+                if let Some(needed) = to_ui_amount(needed_base, decimals) {
+                    match rpc.get_token_account_balance(&ata) {
+                        Ok(bal) => {
+                            let actual: f64 = bal.ui_amount.unwrap_or(0.0);
+                            if actual < needed {
+                                parts.push(format!(
+                                    "payer {} balance: {:.2} (need {:.2})",
+                                    request.currency, actual, needed,
+                                ));
+                            }
+                        }
+                        Err(_) => {
                             parts.push(format!(
-                                "payer {} balance: {:.2} (need {:.2})",
-                                request.currency, actual, needed,
+                                "payer {} token account not found (need {:.2})",
+                                request.currency, needed,
                             ));
                         }
-                    }
-                    Err(_) => {
-                        parts.push(format!(
-                            "payer {} token account not found (need {:.2})",
-                            request.currency, needed,
-                        ));
                     }
                 }
             }
@@ -2855,6 +2868,36 @@ mod tests {
         // The structured code is still available on the field for
         // callers that need to branch on it programmatically.
         assert_eq!(err.code, Some("wrong-network"));
+    }
+
+    // ── Audit #8: to_ui_amount ──
+
+    #[test]
+    fn to_ui_amount_typical_decimals() {
+        // 1 USDC = 1_000_000 base units with 6 decimals.
+        let v = to_ui_amount(1_000_000, 6).unwrap();
+        assert!((v - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn to_ui_amount_zero_decimals() {
+        // No fractional rendering — divisor is 1.
+        let v = to_ui_amount(42, 0).unwrap();
+        assert!((v - 42.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn to_ui_amount_returns_none_when_divisor_overflows_u64() {
+        // 10^20 overflows u64. Helper must skip rather than panic.
+        assert!(to_ui_amount(1, 20).is_none());
+        assert!(to_ui_amount(0, 255).is_none());
+    }
+
+    #[test]
+    fn to_ui_amount_safe_high_decimals_succeed() {
+        // 10^19 fits in u64 (< 1.84e19); 10^20 doesn't.
+        assert!(to_ui_amount(1, 19).is_some());
+        assert!(to_ui_amount(1, 20).is_none());
     }
 
     // ── Audit #3: post-timeout status recovery ──
