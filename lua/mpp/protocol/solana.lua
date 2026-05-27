@@ -42,7 +42,11 @@ function M.default_rpc_url(network)
   if network == 'devnet' then
     return 'https://api.devnet.solana.com'
   elseif network == 'localnet' then
-    return 'http://localhost:8899'
+    -- Hosted Surfpool clone of mainnet state. Lets `pay_kit.configure
+    -- { network = 'solana_localnet' }` boot against something
+    -- reachable without the developer running a local validator
+    -- (mirrors Ruby PR #142 follow-up).
+    return 'https://402.surfnet.dev:8899'
   end
   return 'https://api.mainnet-beta.solana.com'
 end

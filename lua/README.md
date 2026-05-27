@@ -54,10 +54,12 @@ That's the whole demo. The library:
 
 - Emits an HTTP 402 with `WWW-Authenticate: Payment` (MPP) and
   `PAYMENT-REQUIRED` (x402) headers when no credential is present.
-- Verifies the credential, broadcasts on-chain (self-hosted x402) or
-  forwards to the configured facilitator (delegated x402), and
-  consumes the signature in the cross-worker
-  `ngx.shared.pay_kit_replay` dict.
+- Verifies the credential, broadcasts on-chain (self-hosted x402),
+  and consumes the signature in the cross-worker
+  `ngx.shared.pay_kit_replay` dict. Delegated x402 mode
+  (`x402.facilitator_url`) is reserved in the config but not
+  wired yet; the dispatcher raises `not implemented` if the flag
+  is set.
 - Echoes settlement headers (`x-payment-settlement-signature`,
   `payment-response`) onto the upstream 200 so clients verify.
 
@@ -151,14 +153,16 @@ post-v1 swap does not change call sites.
 
 `rpc_url` is the Solana RPC endpoint (any RPC; defaults to the public
 network endpoint when omitted; production should use a private RPC).
-`x402.facilitator_url` flips x402 into delegated mode (POST verify +
-settle to the facilitator; the lib never touches the chain).
+`x402.facilitator_url` is reserved for delegated mode (POST verify +
+settle to a facilitator; the lib never touches the chain in that
+shape). The flag is recognized by the config schema but not wired:
+the dispatcher raises `not implemented` if you set it. Self-hosted
+is the only x402 path that ships in v1.
 
 ```lua
 {
   rpc_url = 'https://helius.example.com',         -- private mainnet RPC
-  x402 = { facilitator_url = nil },               -- self-hosted (default)
-  -- x402 = { facilitator_url = 'https://...' },  -- delegated
+  x402 = { facilitator_url = nil },               -- self-hosted (only v1 path)
 }
 ```
 
