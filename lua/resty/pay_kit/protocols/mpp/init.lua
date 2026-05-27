@@ -133,7 +133,7 @@ end
 function M.new(opts)
   opts = opts or {}
   if not opts.config_resolver then
-    return nil, 'pay_kit: schemes.mpp.new requires config_resolver'
+    return nil, 'pay_kit: protocols.mpp.new requires config_resolver'
   end
   return setmetatable({
     _config_resolver = opts.config_resolver,

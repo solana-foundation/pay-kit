@@ -28,7 +28,7 @@ local errors     = require('resty.pay_kit.errors')
 local rpc_mod    = require('mpp.solana.rpc')
 local rpc_transport = require('mpp.solana.rpc_transport')
 local tx_cosign  = require('resty.pay_kit.util.tx_cosign')
-local x402_verify = require('resty.pay_kit.schemes.x402_verify')
+local x402_verify = require('resty.pay_kit.protocols.x402.exact.verify')
 local tx_mod     = require('mpp.methods.solana.transaction')
 local network_check = require('mpp.server.network_check')
 
@@ -218,7 +218,7 @@ end
 function M.new(opts)
   opts = opts or {}
   if not opts.config_resolver then
-    return nil, 'pay_kit: schemes.x402.new requires config_resolver'
+    return nil, 'pay_kit: protocols.x402.new requires config_resolver'
   end
   return setmetatable({
     _config_resolver = opts.config_resolver,

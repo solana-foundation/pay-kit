@@ -476,7 +476,11 @@ lua/
 │   ├── preflight.lua                       # boot-time soundness + surfnet cheatcodes
 │   ├── solana/rpc.lua                      # cosocket RPC re-export
 │   ├── util/{base58,base64url,json,crypto,ed25519,tx_cosign}.lua
-│   ├── schemes/{mpp,x402,x402_verify}.lua  # protocol adapters + 11-rule verifier
+│   ├── protocols/                          # protocol adapters, split per protocol then per scheme
+│   │   ├── mpp/init.lua                    # MPP wrapper (charge intent via mpp/server)
+│   │   └── x402/
+│   │       ├── init.lua                    # x402 adapter (offer + cosign + broadcast)
+│   │       └── exact/verify.lua            # 11-rule SVM-exact structural verifier
 │   ├── store.lua                           # memory() + shared_dict(name)
 │   └── internal/{config,dispatcher,fee,gate,operator,price,registry}.lua
 ├── kong/plugins/pay-kit/                   # Kong custom plugin

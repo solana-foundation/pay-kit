@@ -46,9 +46,9 @@ build = {
     ['resty.pay_kit.util.crypto']       = 'resty/pay_kit/util/crypto.lua',
     ['resty.pay_kit.util.ed25519']      = 'resty/pay_kit/util/ed25519.lua',
     ['resty.pay_kit.util.tx_cosign']    = 'resty/pay_kit/util/tx_cosign.lua',
-    ['resty.pay_kit.schemes.mpp']       = 'resty/pay_kit/schemes/mpp.lua',
-    ['resty.pay_kit.schemes.x402']      = 'resty/pay_kit/schemes/x402.lua',
-    ['resty.pay_kit.schemes.x402_verify'] = 'resty/pay_kit/schemes/x402_verify.lua',
+    ['resty.pay_kit.protocols.mpp']                = 'resty/pay_kit/protocols/mpp/init.lua',
+    ['resty.pay_kit.protocols.x402']               = 'resty/pay_kit/protocols/x402/init.lua',
+    ['resty.pay_kit.protocols.x402.exact.verify']  = 'resty/pay_kit/protocols/x402/exact/verify.lua',
 
     -- Internal implementation modules (not part of the public API;
     -- callers use the umbrella surface above). Listed in the rockspec

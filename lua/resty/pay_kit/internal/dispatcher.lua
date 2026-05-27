@@ -23,8 +23,8 @@ local config_mod  = require('resty.pay_kit.internal.config')
 local registry    = require('resty.pay_kit.internal.registry')
 local store_mod   = require('resty.pay_kit.store')
 local errors      = require('resty.pay_kit.errors')
-local x402_mod    = require('resty.pay_kit.schemes.x402')
-local mpp_mod     = require('resty.pay_kit.schemes.mpp')
+local x402_mod    = require('resty.pay_kit.protocols.x402')
+local mpp_mod     = require('resty.pay_kit.protocols.mpp')
 
 local M = {}
 

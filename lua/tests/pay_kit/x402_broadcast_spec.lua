@@ -50,7 +50,7 @@ package.loaded['mpp.solana.rpc'] = {
 }
 -- Evict downstream modules so they re-bind to the stubbed rpc when
 -- the next require happens through resty.pay_kit.configure().
-package.loaded['resty.pay_kit.schemes.x402']   = nil
+package.loaded['resty.pay_kit.protocols.x402']   = nil
 package.loaded['resty.pay_kit.internal.dispatcher'] = nil
 package.loaded['resty.pay_kit']                = nil
 package.loaded['resty.pay_kit.solana.rpc']     = nil

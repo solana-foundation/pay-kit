@@ -7,7 +7,7 @@ caught at the gem level.
 
 local helper   = require('tests.test_helper')
 local pay_kit  = require('resty.pay_kit')
-local x402     = require('resty.pay_kit.schemes.x402')
+local x402     = require('resty.pay_kit.protocols.x402')
 local cjson    = require('cjson.safe')
 
 local SELLER = 'SeLLeRWaLLeT111111111111111111111111111111'

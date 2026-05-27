@@ -173,7 +173,7 @@ if #splits_decoded > 0 then
     if s.memo then entry.memo = s.memo end
     override[#override + 1] = entry
   end
-  require('resty.pay_kit.schemes.mpp').set_splits_override('paid', override)
+  require('resty.pay_kit.protocols.mpp').set_splits_override('paid', override)
 end
 
 -- --- HTTP loop -----------------------------------------------------
