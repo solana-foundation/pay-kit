@@ -51,6 +51,29 @@ class X402ServerExactTest < Minitest::Test
     assert_equal X402::Server::Exact::DEFAULT_TOKEN_PROGRAM, extra.fetch("extra").fetch("tokenProgram")
   end
 
+  def test_exact_requirement_includes_server_recent_blockhash
+    # When the server supplies a blockhash provider, it shows up in
+    # `extra.recentBlockhash` so the client can sign against the
+    # server's chain (the Surfpool / surfnet case where the wire CAIP-2
+    # is devnet but the actual ledger is a private fork).
+    state = build_state(recent_blockhash_provider: -> { "ServerProvidedBlockhash11111111111111111" })
+    requirement = X402::Server::Exact.exact_requirement(state)
+
+    assert_equal "ServerProvidedBlockhash11111111111111111",
+      requirement.fetch("extra").fetch("recentBlockhash")
+  end
+
+  def test_exact_requirement_omits_blockhash_when_provider_returns_nil
+    # The default RPC-backed provider returns `nil` when the RPC is
+    # unreachable. The challenge must still be served — the client
+    # falls back to its own `getLatestBlockhash`, which is the
+    # historical behaviour.
+    state = build_state(recent_blockhash_provider: -> { nil })
+    requirement = X402::Server::Exact.exact_requirement(state)
+
+    refute requirement.fetch("extra").key?("recentBlockhash")
+  end
+
   def test_payment_requirement_matches_binds_settlement_fields
     state = build_state
     requirement = X402::Server::Exact.exact_requirement(state)
@@ -894,7 +917,8 @@ class X402ServerExactTest < Minitest::Test
     sender: ->(_state, _transaction) { "unit-settlement" },
     account_checker: ->(_state, _account) { true },
     signature_confirmer: ->(_state, signature) { signature },
-    settlement_cache: nil
+    settlement_cache: nil,
+    recent_blockhash_provider: -> { nil }
   )
     kwargs = {
       rpc_url: "http://127.0.0.1:8899",
@@ -906,7 +930,8 @@ class X402ServerExactTest < Minitest::Test
       transaction_sender: sender,
       account_checker: account_checker,
       signature_confirmer: signature_confirmer,
-      settlement_cache: settlement_cache
+      settlement_cache: settlement_cache,
+      recent_blockhash_provider: recent_blockhash_provider
     }
     unless extra_offered_mints.nil?
       kwargs[:extra_offered_mints] = extra_offered_mints.split(",").map(&:strip).reject(&:empty?)

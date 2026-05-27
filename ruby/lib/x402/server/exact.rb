@@ -7,6 +7,7 @@ require "uri"
 
 require "pay_core/solana/mints"
 require "pay_core/solana/caip2"
+require "pay_core/solana/rpc"
 
 require_relative "../constants"
 require_relative "../error"
@@ -110,7 +111,8 @@ module X402
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer,
           :fee_payer_secret_key, :amount, :resource_path, :settlement_header
 
-        attr_accessor :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer
+        attr_accessor :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer,
+          :recent_blockhash_provider
 
         def initialize(
           rpc_url:,
@@ -125,7 +127,8 @@ module X402
           transaction_sender: nil,
           settlement_cache: nil,
           account_checker: nil,
-          signature_confirmer: nil
+          signature_confirmer: nil,
+          recent_blockhash_provider: nil
         )
           raise ArgumentError, "rpc_url is required" if rpc_url.nil? || rpc_url.empty?
           raise ArgumentError, "pay_to is required" if pay_to.nil? || pay_to.empty?
@@ -145,6 +148,33 @@ module X402
           @settlement_cache = settlement_cache || SettlementCache.new
           @account_checker = account_checker || Exact.method(:account_exists?)
           @signature_confirmer = signature_confirmer || Exact.method(:await_confirmation)
+          @recent_blockhash_provider = recent_blockhash_provider
+        end
+
+        # Fetch a recent blockhash from the server's RPC for embedding
+        # in the x402 challenge's `extra.recentBlockhash`. Lets the
+        # client sign against the server's chain even when the wire
+        # CAIP-2 maps to a different public RPC (the localnet → devnet
+        # CAIP-2 case for Surfpool / surfnet). Falls back to `nil` on
+        # any RPC error — the client then fetches its own blockhash,
+        # which is the historical behaviour.
+        #
+        # The x402 v2 spec does not define a `recentBlockhash` field,
+        # but `accepted.extra` is documented as free-form protocol-
+        # specific data; pay-kit's Rust client honours it through that
+        # extension point (`rust/crates/x402/src/protocol/schemes/
+        # exact/types.rs:279-283`).
+        def latest_blockhash
+          provider = @recent_blockhash_provider || method(:fetch_recent_blockhash)
+          provider.call
+        end
+
+        private
+
+        def fetch_recent_blockhash
+          ::PayCore::Solana::Rpc.new(@rpc_url).latest_blockhash
+        rescue ::PayCore::Solana::Rpc::RpcError
+          nil
         end
 
         # Build a `Config` from the interop harness env vars
@@ -209,6 +239,15 @@ module X402
           # `requirements.extra.memo` is compared against the on-chain memo
           # instruction.
           extra["memo"] = resource if resource.is_a?(String) && !resource.empty?
+          # Embed the server's recent blockhash so the client signs
+          # against the chain the server will settle on, not the public
+          # cluster the wire CAIP-2 happens to advertise. Required for
+          # local validators (Surfpool / surfnet) that present as devnet
+          # on the wire but expose a different ledger. `nil` is dropped
+          # so the client falls back to its own `getLatestBlockhash`.
+          if (blockhash = config.latest_blockhash)
+            extra["recentBlockhash"] = blockhash
+          end
           {
             "scheme" => Constants::EXACT_SCHEME,
             "network" => config.network,
