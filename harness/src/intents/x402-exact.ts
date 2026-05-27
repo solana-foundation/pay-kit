@@ -63,7 +63,13 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "charge_request_mismatch",
     clientIds: ["ts-x402"],
-    serverIds: ["ts-x402", "rust-x402", "lua"],
+    // Lua omitted intentionally: the lua x402 server does full
+    // settlement (cosign + broadcast), so it cannot accept ts-x402's
+    // stub credential which carries no real Solana transaction. The
+    // rust-x402 client drives the lua server end-to-end against
+    // surfpool in the lua interop matrix step. Re-add lua here once
+    // ts-x402 emits a typed PaymentProof.
+    serverIds: ["ts-x402", "rust-x402"],
   },
   {
     // Cross-server credential portability. Client pays server A and
@@ -126,6 +132,10 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     // client's stub payload. Rust server coverage of `signature_consumed`
     // lives in the Rust crate's own integration tests.
     clientIds: ["ts-x402"],
-    serverIds: ["ts-x402", "lua"],
+    // Lua omitted intentionally (see cross-route-replay note above):
+    // ts-x402's stub credential will not settle through the lua
+    // server's broadcast path. The replay-store rejection is
+    // exercised by the rust crate's own integration tests.
+    serverIds: ["ts-x402"],
   },
 ] as const;
