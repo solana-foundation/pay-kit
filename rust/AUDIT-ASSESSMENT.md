@@ -24,11 +24,18 @@ Legend for **Decision**:
 - `server/charge.rs:1185` `expected_ata_creation_policy` — primary recipient not excluded.
 - `client/charge.rs:113` — client signs whatever it gets.
 
-**Decision:** 🟡 **partial — reject the strict ban, add a misconfig guard.**
+**Decision:** 🟡 **partial — reject the strict ban, add a misconfig guard. Fixed.**
 
-**Rationale:** Having the primary recipient appear in `splits` is a legitimate use case we want to support (e.g., the merchant takes part of the funds as a split alongside other splits). Forbidding the recipient in splits would over-constrain the protocol.
+**Rationale:** Having the primary recipient appear in `splits` is a legitimate use case we want to support (e.g., the merchant takes part of the funds as a split alongside other splits). Forbidding the recipient in splits would over-constrain the protocol. The actual drain shape is the *combination* primary-in-splits + `ataCreationRequired: true` in fee-sponsored mode, so we narrow the check to that combination.
 
-**Action:** Add a narrower server-side check that detects the *misconfiguration* shape — primary recipient in splits **with `ataCreationRequired: true`** — and reject only that combination at challenge build time, since fee-sponsored ATA creation for the top-level recipient is what makes the drain attack possible. Allow the primary recipient in splits otherwise.
+**Threat model framing:** this is a server misconfig (the only party harmed is the server's own fee-payer wallet — a malicious recipient can only trigger the loop if the server already authored a challenge with this shape). So the gate belongs server-side, before HMAC; no client guard, no verify-side defense-in-depth.
+
+**Action taken:**
+- Added an early loop in `validate_charge_options` (`server/charge.rs:396`) that rejects with `Error::InvalidConfig` when any `split.recipient == self.recipient` AND `split.ata_creation_required == Some(true)`. Runs before the existing SPL-gating checks so the message points at the actual misconfig rather than a downstream consequence.
+- The lower-level `charge_challenge_with_options` path (and its `validate_charge_request`) is intentionally *not* tightened — that path is the "trusted construction escape hatch" documented for callers who need to issue challenges for a different route. Audit #19's HMAC validation already pins network/currency/recipient/token program on that path.
+- New tests:
+  - `charge_with_options_rejects_primary_recipient_with_ata_creation_required` — negative case.
+  - `charge_with_options_allows_primary_recipient_in_splits_without_ata_creation` — positive case (the legitimate use the strict ban would have over-blocked).
 
 ---
 

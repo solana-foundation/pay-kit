@@ -394,6 +394,21 @@ impl Mpp {
     }
 
     fn validate_charge_options(&self, options: &ChargeOptions<'_>) -> Result<(), Error> {
+        // Audit #38: spec §9.5 forbids fee-payer-funded ATA creation for the
+        // top-level recipient. A split that names the primary recipient AND
+        // sets `ataCreationRequired: true` is the misconfig shape that, in
+        // fee-sponsored mode, lets the recipient close/recreate its own ATA
+        // to keep draining server-funded rent. We still allow the primary
+        // recipient to appear in splits without the flag (legitimate when
+        // the merchant takes part of the funds as a regular split).
+        for (idx, split) in options.splits.iter().enumerate() {
+            if split.ata_creation_required == Some(true) && split.recipient == self.recipient {
+                return Err(Error::InvalidConfig(format!(
+                    "splits[{idx}]: ataCreationRequired must not be true for the top-level recipient"
+                )));
+            }
+        }
+
         let has_ata_creation_splits = options
             .splits
             .iter()
@@ -4042,6 +4057,66 @@ mod tests {
         assert_eq!(splits_arr[0]["amount"], "500000");
         assert_eq!(splits_arr[0]["memo"], "Vendor payout");
         assert_eq!(splits_arr[1]["amount"], "29000");
+    }
+
+    #[test]
+    fn charge_with_options_rejects_primary_recipient_with_ata_creation_required() {
+        // Audit #38: a split whose recipient duplicates the top-level
+        // recipient AND requests `ataCreationRequired: true` is the misconfig
+        // shape that, in fee-sponsored mode, lets the primary recipient drain
+        // server-funded ATA rent by closing/recreating its own ATA.
+        let mpp = test_mpp();
+        let splits = vec![crate::protocol::solana::Split {
+            recipient: TEST_RECIPIENT.to_string(),
+            amount: "10000".to_string(),
+            ata_creation_required: Some(true),
+            label: None,
+            memo: None,
+        }];
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits,
+                    ..Default::default()
+                },
+            )
+            .err()
+            .expect("should reject primary recipient with ataCreationRequired");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("top-level recipient"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn charge_with_options_allows_primary_recipient_in_splits_without_ata_creation() {
+        // Legitimate use case the audit recommendation would have over-banned:
+        // the merchant takes part of the funds as a regular split alongside
+        // other payees. Allowed as long as the ATA-creation flag isn't set.
+        let mpp = test_mpp();
+        let splits = vec![crate::protocol::solana::Split {
+            recipient: TEST_RECIPIENT.to_string(),
+            amount: "10000".to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: Some("merchant cut".to_string()),
+        }];
+        let challenge = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits,
+                    ..Default::default()
+                },
+            )
+            .expect("primary recipient as a regular split is allowed");
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let details = request.method_details.unwrap();
+        let splits_arr = details.get("splits").unwrap().as_array().unwrap();
+        assert_eq!(splits_arr.len(), 1);
+        assert_eq!(splits_arr[0]["recipient"], TEST_RECIPIENT);
     }
 
     #[test]
