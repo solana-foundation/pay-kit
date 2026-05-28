@@ -11,7 +11,6 @@ use PayKit\Gate;
 use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Price;
-use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\X402\Adapter;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
@@ -30,7 +29,6 @@ final class AdapterTest extends TestCase
             ),
             x402: $x402,
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test'),
         );
     }
 
