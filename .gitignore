@@ -37,3 +37,8 @@ go/coverage.out
 notes/codex-review/
 notes/codex-review-*.md
 harness/go-paykit-server/paykit-server
+
+# go build artifacts
+go/examples/**/paykit-server
+go/paykit-server
+go/cmd/**/harness-server
