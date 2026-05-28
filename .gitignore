@@ -42,3 +42,4 @@ harness/go-paykit-server/paykit-server
 go/examples/**/paykit-server
 go/paykit-server
 go/cmd/**/harness-server
+harness/go-server/paykit-server
