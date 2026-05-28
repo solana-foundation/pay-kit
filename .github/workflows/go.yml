@@ -36,7 +36,7 @@ jobs:
             github.com/solana-foundation/pay-kit/go/server \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 85
+          ./scripts/check_coverage.sh coverage.out 90
       - name: Run all Go packages
         working-directory: go
         env:

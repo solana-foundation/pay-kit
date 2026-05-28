@@ -45,14 +45,6 @@ func (s *localSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
 	return ed25519.Sign(s.priv, msg), nil
 }
 func (s *localSigner) IsDemo() bool { return s.isDemo }
-func (s *localSigner) SecretKey() []byte {
-	if s.priv == nil {
-		return nil
-	}
-	out := make([]byte, len(s.priv))
-	copy(out, s.priv)
-	return out
-}
 
 // demoSecret is the 64-byte secret of the package-shipped demo
 // keypair, identical to Ruby's PayKit::Signer::Demo and PHP's

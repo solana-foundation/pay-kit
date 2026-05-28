@@ -27,6 +27,14 @@ type PaymentError struct {
 	Gate    *Gate
 	Schemes []Scheme
 	Err     error
+
+	// Response payload prepared by Client.write402 for the error
+	// handler. Unexported so only the kit populates them; the default
+	// and custom error handlers render from these fields.
+	status   int
+	resource string
+	accepts  []AcceptsEntry
+	headers  map[string]string
 }
 
 func (e *PaymentError) Error() string {

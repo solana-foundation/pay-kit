@@ -153,6 +153,10 @@ type X402Config struct {
 	// Scheme is the x402 sub-scheme advertised in the 402 challenge.
 	// Defaults to "exact"; the only scheme this SDK implements today.
 	Scheme string
+	// Signer overrides Operator.Signer for x402 facilitator cosigning.
+	// Escape hatch only (DESIGN rule 3): leave nil to use the operator
+	// signer, which is the documented path.
+	Signer Signer
 }
 
 // MPPConfig groups the MPP-charge-specific knobs.

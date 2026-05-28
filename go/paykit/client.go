@@ -3,6 +3,7 @@ package paykit
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 )
 
@@ -24,7 +25,35 @@ type Client struct {
 	// them through ClientOption.
 	mppAdapter  Adapter
 	x402Adapter Adapter
+
+	// errorHandler renders the 402 (or other) response when a gate
+	// rejects a request. Defaults to DefaultErrorHandler; override with
+	// SetErrorHandler.
+	errorHandler ErrorHandler
 }
+
+// ErrorHandler renders the response when a gated request is rejected.
+// The supplied error is a *PaymentError carrying the canonical code,
+// the gate, and the accepted schemes. Apps override it via
+// [Client.SetErrorHandler] to customize the 402 body or status.
+type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
+
+// SetErrorHandler replaces the response writer used on a rejected
+// request. A nil handler restores [DefaultErrorHandler]. Not safe to
+// call concurrently with in-flight requests; set it at startup.
+func (c *Client) SetErrorHandler(h ErrorHandler) {
+	if h == nil {
+		h = DefaultErrorHandler
+	}
+	c.errorHandler = h
+}
+
+// Close releases any resources held by the client. Today the kit holds
+// no background goroutines or pooled connections, so Close is a no-op
+// that returns nil; it exists so callers can write `defer client.Close()`
+// and stay forward-compatible when pooled RPC clients or replay-store
+// flushers land.
+func (c *Client) Close() error { return nil }
 
 // Adapter is the minimal contract a payment scheme adapter implements.
 // Each scheme package returns its [Adapter] via [RegisterAdapter] in
@@ -94,8 +123,14 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Network == "" {
 		return nil, fmt.Errorf("%w: Config.Network is required", ErrInvalidConfig)
 	}
-	if cfg.RPCURL == "" {
+	warnDeprecatedEnv()
+	usingDefaultRPC := cfg.RPCURL == ""
+	if usingDefaultRPC {
 		cfg.RPCURL = cfg.Network.DefaultRPCURL()
+	}
+	if cfg.Network == SolanaMainnet && usingDefaultRPC {
+		slog.Warn("paykit: using the public mainnet RPC; it is rate-limited and unsuitable for production traffic. Set Config.RPCURL to a dedicated endpoint.",
+			"rpc", cfg.RPCURL)
 	}
 	if len(cfg.Accept) == 0 {
 		cfg.Accept = []Scheme{X402, MPP}
@@ -126,9 +161,12 @@ func New(cfg Config) (*Client, error) {
 	if cfg.X402.Scheme == "" {
 		cfg.X402.Scheme = "exact"
 	}
-	// MPP HMAC secret auto-resolution (caveat #4) -- wired in
-	// preflight.go to avoid a circular import on signer/.
-	if len(cfg.MPP.ChallengeBindingSecret) == 0 && preflightEnabled(cfg) {
+	// MPP HMAC secret auto-resolution (caveat #4). Resolve only when
+	// MPP is actually accepted -- x402-only callers must never be
+	// forced to supply (or have a .env generated for) an MPP secret,
+	// and the resolution is independent of preflight so a server with
+	// Preflight=false still gets a usable secret.
+	if containsScheme(cfg.Accept, MPP) && len(cfg.MPP.ChallengeBindingSecret) == 0 {
 		secret, err := resolveMPPSecret()
 		if err != nil {
 			return nil, fmt.Errorf("paykit: %w", err)
@@ -136,7 +174,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.MPP.ChallengeBindingSecret = secret
 	}
 
-	c := &Client{Config: cfg}
+	c := &Client{Config: cfg, errorHandler: DefaultErrorHandler}
 	for _, s := range cfg.Accept {
 		b, ok := registeredBuilders[s]
 		if !ok {

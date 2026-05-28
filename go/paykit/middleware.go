@@ -115,6 +115,18 @@ func (c *Client) pickAdapter(gate *Gate, r *http.Request) Adapter {
 	return nil
 }
 
+// paymentRequiredBody is the typed JSON shape of the 402 response body
+// shared across the cross-language ports (error + resource + accepts).
+type paymentRequiredBody struct {
+	Error    string         `json:"error"`
+	Resource string         `json:"resource"`
+	Accepts  []AcceptsEntry `json:"accepts"`
+}
+
+// write402 assembles the per-protocol accepts entries and challenge
+// headers, stamps them onto the [PaymentError], and dispatches to the
+// configured error handler (DefaultErrorHandler unless overridden via
+// [Client.SetErrorHandler]).
 func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, perr *PaymentError) {
 	accept := gate.Accept
 	if len(accept) == 0 {
@@ -134,17 +146,52 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 			headers[k] = v
 		}
 	}
-	for k, v := range headers {
+	perr.Gate = gate
+	perr.Schemes = accept
+	perr.status = http.StatusPaymentRequired
+	perr.resource = r.URL.Path
+	perr.accepts = accepts
+	perr.headers = headers
+
+	handler := c.errorHandler
+	if handler == nil {
+		handler = DefaultErrorHandler
+	}
+	handler(w, r, perr)
+}
+
+// DefaultErrorHandler renders the canonical 402 response: every
+// challenge header the accepted protocols produced, plus a JSON body
+// of `{error, resource, accepts[]}`. Custom handlers registered via
+// [Client.SetErrorHandler] can delegate to it for the default cases:
+//
+//	client.SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+//	    if errors.Is(err, paykit.ErrChallengeExpired) {
+//	        // custom body / status
+//	        return
+//	    }
+//	    paykit.DefaultErrorHandler(w, r, err)
+//	})
+func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	var perr *PaymentError
+	if !errors.As(err, &perr) {
+		http.Error(w, "payment required", http.StatusPaymentRequired)
+		return
+	}
+	for k, v := range perr.headers {
 		w.Header().Set(k, v)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusPaymentRequired)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error":    "payment_required",
-		"resource": r.URL.Path,
-		"accepts":  accepts,
+	status := perr.status
+	if status == 0 {
+		status = http.StatusPaymentRequired
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(paymentRequiredBody{
+		Error:    "payment_required",
+		Resource: perr.resource,
+		Accepts:  perr.accepts,
 	})
-	_ = perr // reserved for the Client.SetErrorHandler hook
 }
 
 func containsScheme(list []Scheme, want Scheme) bool {

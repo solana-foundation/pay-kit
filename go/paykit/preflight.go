@@ -20,6 +20,28 @@ import (
 // secret comes from when set explicitly (caveat #4 chain step 1).
 const secretEnvVar = "PAY_KIT_MPP_CHALLENGE_BINDING_SECRET"
 
+// deprecatedEnvVars maps the pre-Operator env-var names to their
+// replacements. Go has no Ruby-style `deprecate` macro, so boot-time
+// detection in New() is the idiomatic spot to warn (DESIGN.md
+// "Cascading"). Removed after one minor release.
+var deprecatedEnvVars = map[string]string{
+	"PAY_KIT_PAY_TO":               "PAY_KIT_OPERATOR_RECIPIENT",
+	"PAY_KIT_X402_FACILITATOR_KEY": "PAY_KIT_OPERATOR_KEY",
+	"PAY_KIT_X402_FACILITATOR":     "PAY_KIT_X402_FACILITATOR_URL (or PAY_KIT_RPC_URL if it held an RPC endpoint)",
+	"PAY_KIT_MPP_SECRET":           secretEnvVar,
+}
+
+// warnDeprecatedEnv emits one slog.Warn per set legacy env var,
+// pointing at the new name. Called once from New().
+func warnDeprecatedEnv() {
+	for old, replacement := range deprecatedEnvVars {
+		if _, ok := os.LookupEnv(old); ok {
+			slog.Warn("paykit: deprecated env var; use the new name",
+				"deprecated", old, "use", replacement)
+		}
+	}
+}
+
 const (
 	// minFeePayerLamports is the soundness gate the boot-time
 	// preflight enforces on the fee-payer balance: enough SOL for

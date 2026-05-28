@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"crypto/ed25519"
-
 	solana "github.com/gagliardetto/solana-go"
 	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/internal/utils"
@@ -23,24 +21,26 @@ import (
 
 // signerBridge adapts a paykit.Signer (Sign(ctx, []byte) ([]byte,
 // error)) to the utils.Signer the legacy server.Mpp expects
-// (PublicKey() + Sign([]byte) (solana.Signature, error)). Only viable
-// for in-process signers where SecretKey() exposes the 64-byte blob;
-// remote KMS signers would need a separate bridge that respects ctx.
+// (PublicKey() + Sign([]byte) (solana.Signature, error)). It signs via
+// paykit.Signer.Sign, so KMS / HSM signers that never export their key
+// work without leaking secret material — no SecretKey() escape hatch.
 type signerBridge struct {
-	paykit paykit.Signer
+	signer paykit.Signer
 }
 
 func (b *signerBridge) PublicKey() solana.PublicKey {
-	pub, _ := solana.PublicKeyFromBase58(string(b.paykit.Pubkey()))
+	pub, _ := solana.PublicKeyFromBase58(string(b.signer.Pubkey()))
 	return pub
 }
 
 func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
-	sk := b.paykit.SecretKey()
-	if sk == nil {
-		return solana.Signature{}, fmt.Errorf("signerBridge: signer does not expose a local secret key")
+	raw, err := b.signer.Sign(context.Background(), payload)
+	if err != nil {
+		return solana.Signature{}, fmt.Errorf("signerBridge: %w", err)
 	}
-	raw := ed25519.Sign(ed25519.PrivateKey(sk), payload)
+	if len(raw) != 64 {
+		return solana.Signature{}, fmt.Errorf("signerBridge: signature length %d, want 64", len(raw))
+	}
 	var sig solana.Signature
 	copy(sig[:], raw)
 	return sig, nil
@@ -50,8 +50,9 @@ func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
 // Holds the resolved paykit.Config and a per-(payTo,coin) cache of
 // server.Mpp instances.
 type Adapter struct {
-	cfg     paykit.Config
-	servers sync.Map // key: "<payTo>|<coin>" -> *server.Mpp
+	cfg       paykit.Config
+	servers   sync.Map   // key: "<payTo>|<coin>" -> *server.Mpp
+	serversMu sync.Mutex // serializes server.New on cache miss
 }
 
 // New constructs a paykit.Adapter using the resolved config. Registered
@@ -178,7 +179,12 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 }
 
 // serverFor returns a cached *server.Mpp instance for the gate's
-// (payTo, coin) tuple, building it on first miss.
+// (payTo, coin) tuple, building it on first miss. The build is
+// serialized per Adapter by serversMu so concurrent first requests for
+// the same key share ONE *server.Mpp — and therefore one replay store.
+// A check-then-act Load/Store race would otherwise spawn duplicate
+// servers with independent in-memory replay stores, letting the same
+// signature settle twice in parallel.
 func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	coin := a.settlementCoin(gate)
 	payTo := a.payTo(gate)
@@ -186,9 +192,16 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	if v, ok := a.servers.Load(key); ok {
 		return v.(*server.Mpp), nil
 	}
+	a.serversMu.Lock()
+	defer a.serversMu.Unlock()
+	// Re-check under the lock: another goroutine may have built it while
+	// we waited.
+	if v, ok := a.servers.Load(key); ok {
+		return v.(*server.Mpp), nil
+	}
 	var feePayer utils.Signer
-	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil && a.cfg.Operator.Signer.SecretKey() != nil {
-		feePayer = &signerBridge{paykit: a.cfg.Operator.Signer}
+	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil {
+		feePayer = &signerBridge{signer: a.cfg.Operator.Signer}
 	}
 	srv, err := server.New(server.Config{
 		Recipient:      string(payTo),
@@ -255,6 +268,12 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 	opts := server.ChargeOptions{
 		Description: gate.Desc,
 		FeePayer:    a.cfg.Operator.FeePayer,
+	}
+	// Thread the configured challenge lifetime into the per-charge
+	// expiry. server.ChargeWithOptions falls back to 5 minutes when
+	// Expires is "", so a zero MPPConfig.ExpiresIn keeps that default.
+	if a.cfg.MPP.ExpiresIn > 0 {
+		opts.Expires = mpp.Seconds(uint64(a.cfg.MPP.ExpiresIn.Seconds()))
 	}
 	for addr, fee := range gate.FeeWithin {
 		opts.Splits = append(opts.Splits, protocol.Split{

@@ -12,6 +12,19 @@ import (
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
+// testSecret returns a fresh valid 64-byte Ed25519 secret key as the
+// source-of-truth for round-trip tests. The Signer interface no longer
+// exposes SecretKey(), so tests carry the raw bytes themselves and
+// feed each constructor the same secret in its native encoding.
+func testSecret(t *testing.T) []byte {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
+}
+
 func TestDemoStable(t *testing.T) {
 	a, b := signer.Demo(), signer.Demo()
 	if a.Pubkey() != b.Pubkey() {
@@ -47,20 +60,26 @@ func TestFromBytesRejectsWrongLength(t *testing.T) {
 }
 
 func TestFromBytesRoundTrip(t *testing.T) {
-	s := signer.Generate()
-	sk := s.SecretKey()
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rebuilt, err := signer.FromBytes(sk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
-		t.Errorf("pubkey: got %s want %s", rebuilt.Pubkey(), s.Pubkey())
+	if rebuilt.Pubkey() != ref.Pubkey() {
+		t.Errorf("pubkey: got %s want %s", rebuilt.Pubkey(), ref.Pubkey())
 	}
 }
 
 func TestFromJSONRoundTrip(t *testing.T) {
-	s := signer.Generate()
-	sk := s.SecretKey()
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
 	arr := make([]int, len(sk))
 	for i, b := range sk {
 		arr[i] = int(b)
@@ -70,7 +89,7 @@ func TestFromJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
+	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("pubkey mismatch")
 	}
 }
@@ -88,13 +107,16 @@ func TestFromJSONRejectsOutOfRangeByte(t *testing.T) {
 }
 
 func TestFromHexRoundTrip(t *testing.T) {
-	s := signer.Generate()
-	h := hex.EncodeToString(s.SecretKey())
-	rebuilt, err := signer.FromHex(h)
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
+	rebuilt, err := signer.FromHex(hex.EncodeToString(sk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("hex round-trip pubkey mismatch")
 	}
 }
@@ -135,9 +157,13 @@ func TestFromFileEmptyPath(t *testing.T) {
 }
 
 func TestFromFileRoundTrip(t *testing.T) {
-	s := signer.Generate()
-	arr := make([]int, len(s.SecretKey()))
-	for i, b := range s.SecretKey() {
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr := make([]int, len(sk))
+	for i, b := range sk {
 		arr[i] = int(b)
 	}
 	jsonStr, _ := json.Marshal(arr)
@@ -150,7 +176,7 @@ func TestFromFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
+	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("file load pubkey mismatch")
 	}
 }
@@ -186,9 +212,13 @@ func TestFromEnvRejectsEmptyName(t *testing.T) {
 }
 
 func TestFromEnvAutoDetectsJSON(t *testing.T) {
-	s := signer.Generate()
-	arr := make([]int, len(s.SecretKey()))
-	for i, b := range s.SecretKey() {
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr := make([]int, len(sk))
+	for i, b := range sk {
 		arr[i] = int(b)
 	}
 	jsonStr, _ := json.Marshal(arr)
@@ -198,20 +228,24 @@ func TestFromEnvAutoDetectsJSON(t *testing.T) {
 	if err != nil || rebuilt == nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
+	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("env JSON pubkey mismatch")
 	}
 }
 
 func TestFromEnvAutoDetectsHex(t *testing.T) {
-	s := signer.Generate()
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const name = "PAY_KIT_TEST_SIGNER_HEX"
-	t.Setenv(name, hex.EncodeToString(s.SecretKey()))
+	t.Setenv(name, hex.EncodeToString(sk))
 	rebuilt, err := signer.FromEnv(name)
 	if err != nil || rebuilt == nil {
 		t.Fatal(err)
 	}
-	if rebuilt.Pubkey() != s.Pubkey() {
+	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("env hex pubkey mismatch")
 	}
 }
@@ -278,4 +312,20 @@ func TestMustFromFilePanicsOnMissing(t *testing.T) {
 		}
 	}()
 	_ = signer.MustFromFile("/tmp/definitely-missing-xyz.json")
+}
+
+func TestInvalidKeyErrorString(t *testing.T) {
+	e := &signer.InvalidKeyError{Source: "hex", Reason: "too short"}
+	if got := e.Error(); got == "" || !contains(got, "hex") || !contains(got, "too short") {
+		t.Errorf("InvalidKeyError.Error() = %q", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
