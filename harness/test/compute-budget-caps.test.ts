@@ -82,11 +82,11 @@ const SDKS: Sdk[] = [
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9]+)/,
     optional: true,
   },
-  // Go #101 lands `maxComputeUnitLimit` / `maxComputeUnitPriceMicroLamports`
-  // in go/server/server.go; gated until merge.
+  // Go lands `maxComputeUnitLimit` / `maxComputeUnitPriceMicroLamports`
+  // in go/protocols/mpp/server/server.go.
   {
     language: "go",
-    file: "go/server/server.go",
+    file: "go/protocols/mpp/server/server.go",
     limitPattern: /maxComputeUnitLimit\s+uint32\s*=\s*([0-9_]+)/,
     pricePattern: /maxComputeUnitPriceMicroLamports\s+uint64\s*=\s*([0-9_]+)/,
     optional: true,

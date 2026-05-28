@@ -50,7 +50,7 @@ this monorepo.
 | Lua         | `lua/mpp/server/solana_verify.lua:20`                      | `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS`    |
 | Lua (#103)  | `lua/mpp/methods/solana/instructions.lua:31`               | `MAX_COMPUTE_UNIT_LIMIT` (pending PR #103 merge)              |
 | Lua (#103)  | `lua/mpp/methods/solana/instructions.lua:32`               | `MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS` (pending PR #103 merge) |
-| Go (#101)   | `go/server/server.go` (`maxComputeUnitLimit`)              | pending PR #101 merge                     |
+| Go (#101)   | `go/protocols/mpp/server/server.go` (`maxComputeUnitLimit`)              | pending PR #101 merge                     |
 | Python (#106) | `python/src/solana_mpp/server/mpp.py`                    | pending PR #106 merge                     |
 
 `harness/test/compute-budget-caps.test.ts` parses each file above

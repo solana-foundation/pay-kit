@@ -120,7 +120,7 @@ async function main() {
   writeFileSync(resolve(rustDir, 'payment_ui.gen.js'), paymentUIRaw);
 
   // Go: write template + service worker for go:embed
-  const goDir = resolve(import.meta.dirname, '..', 'go', 'server', 'html');
+  const goDir = resolve(import.meta.dirname, '..', 'go', 'protocols', 'mpp', 'server', 'html');
   mkdirSync(goDir, { recursive: true });
   writeFileSync(resolve(goDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(goDir, 'service-worker.gen.js'), mppxServiceWorker);

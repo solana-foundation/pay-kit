@@ -123,9 +123,9 @@ jobs:
       - name: Verify committed gen files are up to date
         working-directory: .
         run: |
-          if ! git diff --quiet -- rust/src/server/html/ go/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/; then
+          if ! git diff --quiet -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/; then
             echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
-            git diff --stat -- rust/src/server/html/ go/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/
+            git diff --stat -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/
             exit 1
           fi
       - name: Upload HTML build artifacts
@@ -135,7 +135,7 @@ jobs:
           path: |
             html/dist/
             rust/src/server/html/
-            go/server/html/
+            go/protocols/mpp/server/html/
             lua/mpp/server/html_assets/
             python/src/solana_mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
@@ -226,15 +226,23 @@ jobs:
           GOCACHE: /tmp/go-build-cache
         run: |
           # Narrow `go test` to library packages so coverage measures SDK
-          # surface area only (cmd/ + internal/testutil hold fixtures and
-          # are excluded; mirrors the per-package narrowing pattern from
-          # PR #101). Gate set to the cross-SDK baseline of 90; library
-          # packages currently aggregate at ~85% because client,
-          # internal/utils, and server have known coverage gaps.
-          # The threshold WILL fail until gap-fill PRs land; surfaced as
-          # an explicit finding per PR #102 review thread rather than
-          # lowering the gate.
-          go test ./ ./client ./internal/utils ./protocol ./protocol/core ./protocol/intents ./server -coverprofile=coverage.out -covermode=atomic
+          # surface area only (examples/ + internal/testutil hold fixtures
+          # and are excluded). Gate set to the cross-SDK baseline of 90;
+          # the library set aggregates at ~90%.
+          go test \
+            ./paycore \
+            ./internal/utils \
+            ./paykit \
+            ./signer \
+            ./protocols/mpp \
+            ./protocols/mpp/core \
+            ./protocols/mpp/wire \
+            ./protocols/mpp/intents \
+            ./protocols/mpp/server \
+            ./protocols/mpp/client \
+            ./protocols/mpp/errorcodes \
+            ./protocols/x402 \
+            -coverprofile=coverage.out -covermode=atomic
           ./scripts/check_coverage.sh coverage.out 90
       - name: Upload Go coverage
         if: always()
