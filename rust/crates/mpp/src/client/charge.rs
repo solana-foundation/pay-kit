@@ -254,6 +254,21 @@ pub async fn build_credential_header_with_options(
     challenge: &PaymentChallenge,
     mut options: BuildChargeTransactionOptions,
 ) -> Result<String, Error> {
+    // Audit #17: refuse to sign anything but a `solana`/`charge`
+    // challenge. The lower-level `build_charge_transaction_with_options`
+    // takes already-decoded fields and has no notion of method/intent,
+    // so the trust boundary belongs at this `PaymentChallenge` entry
+    // point. `select_charge_challenge` already filters via the same
+    // helper; this gate catches callers who skip it.
+    if !is_solana_charge_challenge_name(challenge) {
+        return Err(Error::Other(format!(
+            "Refusing to sign: challenge is not a solana/charge challenge \
+             (method=`{}`, intent=`{}`)",
+            challenge.method.as_str(),
+            challenge.intent.as_str(),
+        )));
+    }
+
     // Audit #10: refuse to sign expired challenges. The protocol allows
     // `expires` to be absent — when it is, we let the challenge through
     // (no client-side anchor to check against).
@@ -2493,6 +2508,80 @@ mod tests {
         build_credential_header(signer.as_ref(), &rpc, &challenge)
             .await
             .expect("future expiry should be accepted");
+    }
+
+    // ── Audit #17: method/intent gate on the credential builder ──
+
+    #[tokio::test]
+    async fn build_credential_header_rejects_non_solana_method() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        // Wrong method — would otherwise be accepted by the builder.
+        let challenge =
+            PaymentChallenge::new("test-id", "test-realm", "stripe", "charge", request_b64);
+
+        let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .err()
+            .expect("non-solana method should be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a solana/charge challenge") && msg.contains("method=`stripe`"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_credential_header_rejects_non_charge_intent() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        // Wrong intent.
+        let challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "session", request_b64);
+
+        let err = build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .err()
+            .expect("non-charge intent should be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not a solana/charge challenge") && msg.contains("intent=`session`"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[tokio::test]

@@ -658,3 +658,27 @@ The "drain below rent" silent-sweep is the only failure mode the chain doesn't c
 - `verify_rejects_request_diverging_from_credential` — HMAC tier passes (credential not tampered), caller passes a different amount than the credential carries; expects the audit #1-style "Amount mismatch" error from the binding check.
 
 ---
+
+### #17 — Missing method and intent enforcement on Client and Server
+**ID:** `5f3c1d68` · **Files:** `crates/mpp/src/server/charge.rs`, `crates/mpp/src/client/charge.rs`
+
+**Audit claim, two parts:**
+1. **Server:** `verify` recomputes HMAC using whatever method/intent the credential echoes; never explicitly checks `method == "solana"` and `intent == "charge"` after HMAC. A challenge issued by the same server secret for another method/intent could reach the Solana charge verification path.
+2. **Client:** `build_credential_header` doesn't reject non-`solana`/non-`charge` challenges before signing.
+
+**Status when reviewed:**
+- **Server:** **already mitigated.** `verify_pinned_fields` (called unconditionally from `verify`) checks both `method` and `intent` — the `tier2_rejects_tampered_method` and `tier2_rejects_non_charge_intent` tests prove it. No code change needed; documenting in the assessment.
+- **Client:** real gap. `select_charge_challenge` filters via `is_solana_charge_challenge_name`, but `build_credential_header_with_options` accepts whatever challenge it's handed.
+
+**Decision:** ✅ **accepted, client-only — close the entry-point gap.**
+
+**Action taken:**
+- Added a method/intent gate at the top of `build_credential_header_with_options` (right after the audit #17 comment block, before the audit #10 expiry check). Reuses `is_solana_charge_challenge_name`. Error string surfaces both the unexpected method and intent for operator debugging.
+- The lower-level `build_charge_transaction_with_options` doesn't change — it takes already-decoded fields and has no notion of method/intent; the trust boundary belongs at the `PaymentChallenge` entry point.
+- Server-side: no code change. The pre-existing `verify_pinned_fields` already enforces the audit's exact recommendation. This entry calls it out so future readers know the check is intentional, not redundant.
+
+**New tests** (client):
+- `build_credential_header_rejects_non_solana_method` — `method = "stripe"` → error with both `method=` and `intent=` in the message.
+- `build_credential_header_rejects_non_charge_intent` — `intent = "session"` → same shape.
+
+---
