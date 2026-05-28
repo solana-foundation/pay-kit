@@ -43,7 +43,7 @@ type Adapter struct {
 // New builds an x402 adapter from the resolved config.
 func New(cfg paykit.Config) (paykit.Adapter, error) {
 	if cfg.X402.FacilitatorURL != "" {
-		return nil, errors.New("paykit/protocols/x402: delegated mode (FacilitatorURL) not yet implemented; leave empty for self-hosted")
+		return nil, errors.New("protocols/x402: delegated mode (FacilitatorURL) not yet implemented; leave empty for self-hosted")
 	}
 	rpcURL := cfg.RPCURL
 	if rpcURL == "" {

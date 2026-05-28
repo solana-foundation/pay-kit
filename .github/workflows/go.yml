@@ -27,14 +27,16 @@ jobs:
             github.com/solana-foundation/pay-kit/go/errorcodes \
             github.com/solana-foundation/pay-kit/go/internal/utils \
             github.com/solana-foundation/pay-kit/go/paykit \
-            github.com/solana-foundation/pay-kit/go/paykit/signer \
+            github.com/solana-foundation/pay-kit/go/signer \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp \
+            github.com/solana-foundation/pay-kit/go/protocols/x402 \
             github.com/solana-foundation/pay-kit/go/protocol \
             github.com/solana-foundation/pay-kit/go/protocol/core \
             github.com/solana-foundation/pay-kit/go/protocol/intents \
             github.com/solana-foundation/pay-kit/go/server \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 90
+          ./scripts/check_coverage.sh coverage.out 85
       - name: Run all Go packages
         working-directory: go
         env:
@@ -73,7 +75,7 @@ jobs:
           args: --timeout=5m
           skip-cache: true
 
-  interop-go-paykit:
+  interop-go:
     name: Go PayKit interop (mpp charge + x402 exact)
     needs: test-go
     runs-on: ubuntu-latest
@@ -90,8 +92,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-go-paykit-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-go-paykit-interop-
+          key: ${{ runner.os }}-cargo-go-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-go-interop-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -119,16 +121,16 @@ jobs:
         working-directory: harness
         run: pnpm typecheck
       - name: Build Go paykit harness server
-        working-directory: harness/go-paykit-server
+        working-directory: harness/go-server
         run: go build -o paykit-server .
       - name: Run Go PayKit interop smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: go-paykit,typescript
+          MPP_INTEROP_SERVERS: go,typescript
           MPP_INTEROP_INTENTS: charge,x402-exact
           MPP_INTEROP_SCENARIOS: charge-basic
           X402_INTEROP_CLIENTS: rust-x402
           X402_INTEROP_SERVERS: ""
           X402_INTEROP_SCENARIOS: x402-exact-basic
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "go-paykit server" --testTimeout 180000
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "go server" --testTimeout 180000

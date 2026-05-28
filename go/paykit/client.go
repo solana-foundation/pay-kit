@@ -6,9 +6,9 @@ import (
 	"os"
 )
 
-// DefaultSigner is populated by the paykit/signer package init() so
+// DefaultSigner is populated by the signer package init() so
 // paykit.New can fall back to the demo signer when Operator.Signer is
-// nil, without paykit importing paykit/signer (which would cycle).
+// nil, without paykit importing signer (which would cycle).
 var DefaultSigner func() Signer
 
 // Client is the umbrella entry point. Created via [New]; carries the
@@ -105,7 +105,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.Operator.Signer == nil {
 		if DefaultSigner == nil {
-			return nil, fmt.Errorf("%w: Operator.Signer is nil and no default registered; import paykit/signer", ErrInvalidConfig)
+			return nil, fmt.Errorf("%w: Operator.Signer is nil and no default registered; import signer", ErrInvalidConfig)
 		}
 		cfg.Operator.Signer = DefaultSigner()
 		if cfg.Network == SolanaMainnet {

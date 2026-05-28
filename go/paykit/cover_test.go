@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
-	_ "github.com/solana-foundation/pay-kit/go/paykit/signer"
+	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	_ "github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func TestClientMppAndX402Accessors(t *testing.T) {

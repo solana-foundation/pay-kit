@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/solana-foundation/pay-kit/go/paykit/signer"
+	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func TestDemoStable(t *testing.T) {

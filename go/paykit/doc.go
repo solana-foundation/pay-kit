@@ -8,9 +8,9 @@
 //
 //	import (
 //	    "github.com/solana-foundation/pay-kit/go/paykit"
-//	    _ "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
-//	    _ "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
-//	    _ "github.com/solana-foundation/pay-kit/go/paykit/signer"
+//	    _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
+//	    _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+//	    _ "github.com/solana-foundation/pay-kit/go/signer"
 //	)
 //
 //	preflight := false
@@ -36,12 +36,12 @@
 //
 // The umbrella surface lives in this package. Subpackages:
 //
-//   - [paykit/signer] -- local Ed25519 signer factories
+//   - [signer] -- local Ed25519 signer factories
 //     (Demo / Generate / FromBytes / FromJSON / FromHex / FromBase58
 //     / FromFile / FromEnv + MustXxx variants).
 //   - [paykit/kms] -- remote enclave signer factories (future).
-//   - [paykit/protocols/x402] -- x402-exact (Solana) adapter.
-//   - [paykit/protocols/mpp] -- MPP-charge adapter (wraps the legacy
+//   - [protocols/x402] -- x402-exact (Solana) adapter.
+//   - [protocols/mpp] -- MPP-charge adapter (wraps the legacy
 //     server.Mpp handler).
 //
 // # Framework-host quirks (issue #137 caveat #6)

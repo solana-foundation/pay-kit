@@ -1,323 +1,316 @@
+// Cross-language harness adapter for the Go PayKit umbrella server.
+//
+// One TCP server, two settle paths (x402:exact and mpp:charge), picked
+// per scenario by which env namespace the harness orchestrator sets
+// (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors
+// harness/lua-server/server.lua, harness/ruby-server/server.rb and
+// harness/php-server/server.php.
+//
+// The x402 path routes through paykit.Client.Require so the umbrella
+// adapter is the load-bearing surface under test. The MPP path
+// bypasses the umbrella and uses the legacy server.Mpp +
+// server.PaymentMiddleware directly so the harness can inject
+// scenario-specific splits, payment modes, and replay-source routes
+// the way the PHP server does (the umbrella's Gate cannot carry the
+// raw methodDetails the harness needs to mutate).
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
+	"strconv"
 	"strings"
-	"syscall"
-	"time"
 
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/errorcodes"
+	"github.com/solana-foundation/pay-kit/go/paykit"
+	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	"github.com/solana-foundation/pay-kit/go/signer"
 	"github.com/solana-foundation/pay-kit/go/protocol"
-	"github.com/solana-foundation/pay-kit/go/protocol/intents"
-	mppserver "github.com/solana-foundation/pay-kit/go/server"
+	"github.com/solana-foundation/pay-kit/go/server"
 )
 
-type interopEnvironment struct {
-	RPCURL           string
-	Network          string
-	Mint             string
-	Price            string
-	ResourcePath     string
-	ReplaySource     *replaySource
-	SettlementHeader string
-	PayTo            string
-	SecretKey        string
-	Splits           []protocol.Split
-	FeePayerSecret   solana.PrivateKey
-}
-
-type replaySource struct {
-	Price        string
-	ResourcePath string
+type readyMessage struct {
+	Type           string `json:"type"`
+	Implementation string `json:"implementation"`
+	Role           string `json:"role"`
+	Port           int    `json:"port"`
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
-		os.Exit(1)
+	protocolMode := strings.ToLower(os.Getenv("PAY_KIT_INTEROP_PROTOCOL"))
+	if protocolMode == "" {
+		switch {
+		case os.Getenv("X402_INTEROP_RPC_URL") != "":
+			protocolMode = "x402"
+		case os.Getenv("MPP_INTEROP_RPC_URL") != "":
+			protocolMode = "mpp"
+		default:
+			log.Fatal("set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or PAY_KIT_INTEROP_PROTOCOL")
+		}
 	}
-}
 
-func run() error {
-	environment, err := readEnvironment()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
-	handler, err := mppserver.New(mppserver.Config{
-		Recipient:      environment.PayTo,
-		Currency:       environment.Mint,
-		Decimals:       6,
-		Network:        environment.Network,
-		RPCURL:         environment.RPCURL,
-		SecretKey:      environment.SecretKey,
-		Realm:          "MPP Interop",
-		FeePayerSigner: environment.FeePayerSecret,
-	})
-	if err != nil {
-		return err
-	}
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	resourcePath := optionalEnv("X402_INTEROP_RESOURCE_PATH",
+		optionalEnv("MPP_INTEROP_RESOURCE_PATH", "/paid"))
+	settlementHeader := optionalEnv("X402_INTEROP_SETTLEMENT_HEADER",
+		optionalEnv("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature"))
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(response http.ResponseWriter, _ *http.Request) {
-		writeJSON(response, http.StatusOK, map[string]any{"ok": true})
-	})
-	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
-		serveProtected(response, request, environment, handler)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
+	switch protocolMode {
+	case "x402":
+		mountX402(mux, resourcePath, settlementHeader)
+	case "mpp":
+		mountMPP(mux, resourcePath, settlementHeader)
+	default:
+		log.Fatalf("unknown protocol %q", protocolMode)
 	}
-	defer listener.Close()
 
-	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		return fmt.Errorf("unexpected listener address %s", listener.Addr())
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
-		"type":           "ready",
-		"implementation": "go",
-		"role":           "server",
-		"port":           tcpAddr.Port,
-		"capabilities":   []string{"charge"},
+	if err := json.NewEncoder(os.Stdout).Encode(readyMessage{
+		Type: "ready", Implementation: "go-paykit", Role: "server", Port: port,
 	}); err != nil {
-		return err
+		log.Fatal(err)
 	}
 
-	server := &http.Server{Handler: mux}
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Serve(listener)
-	}()
-
-	stopCh := make(chan os.Signal, 1)
-	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(stopCh)
-
-	select {
-	case <-stopCh:
-		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownContext)
-		return nil
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
-	}
+	log.Fatal(http.Serve(ln, mux))
 }
 
-func serveProtected(
-	response http.ResponseWriter,
-	request *http.Request,
-	environment interopEnvironment,
-	handler *mppserver.Mpp,
-) {
-	if request.Method != http.MethodGet || !isProtectedPath(request.URL.Path, environment) {
-		writeJSON(response, http.StatusNotFound, map[string]any{"error": "not_found"})
-		return
+func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
+	rpcURL := requireEnv("X402_INTEROP_RPC_URL")
+	payTo := requireEnv("X402_INTEROP_PAY_TO")
+	facilitator := requireEnv("X402_INTEROP_FACILITATOR_SECRET_KEY")
+	amount := optionalEnv("X402_INTEROP_AMOUNT", "1000")
+
+	preflight := false
+	cfg := paykit.Config{
+		Network:   paykit.SolanaLocalnet,
+		Preflight: &preflight,
+		RPCURL:    rpcURL,
+		Accept:    []paykit.Scheme{paykit.X402},
+		Operator: paykit.Operator{
+			Recipient: paykit.Address(payTo),
+			Signer:    signer.MustFromJSON(facilitator),
+			FeePayer:  true,
+		},
+		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402")},
+	}
+	client, err := paykit.New(cfg)
+	if err != nil {
+		log.Fatalf("paykit.New: %v", err)
 	}
 
-	price := priceForPath(request.URL.Path, environment)
-	options := mppserver.ChargeOptions{
-		Description: "Go interop protected content",
-		FeePayer:    true,
-		Splits:      environment.Splits,
+	amountUSD := convertUnitsToUSD(amount, 6)
+	gate := paykit.Gate{Amount: paykit.MustParseUSD(amountUSD), Desc: resourcePath}
+
+	mux.Handle(resourcePath, client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if pmt, ok := paykit.PaymentFrom(r.Context()); ok {
+			w.Header().Set(settlementHeader, pmt.Transaction)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402"})
+	})))
+}
+
+func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
+	rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
+	payTo := requireEnv("MPP_INTEROP_PAY_TO")
+	mint := requireEnv("MPP_INTEROP_MINT")
+	amountUnits := requireEnv("MPP_INTEROP_AMOUNT")
+	mppSecret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
+	network := optionalEnv("MPP_INTEROP_NETWORK", "localnet")
+	paymentMode := optionalEnv("MPP_INTEROP_PAYMENT_MODE", "pull")
+	replayPath := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH")
+	replayAmount := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_AMOUNT")
+	feePayerJSON := requireEnv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
+	splitsJSON := optionalEnv("MPP_INTEROP_SPLITS", "[]")
+
+	feePayer := privateKeyFromJSON(feePayerJSON)
+	rpcClient := rpc.New(rpcURL)
+
+	srv, err := server.New(server.Config{
+		Recipient:      payTo,
+		Currency:       mint,
+		Decimals:       6,
+		Network:        network,
+		RPCURL:         rpcURL,
+		SecretKey:      mppSecret,
+		Realm:          "go-paykit",
+		FeePayerSigner: walletSignerFor(feePayer),
+		RPC:            rpcClient,
+	})
+	if err != nil {
+		log.Fatalf("server.New: %v", err)
 	}
 
-	// Inspect Authorization before building any challenge so the
-	// unauthenticated 402 branch is the only path that pays the
-	// getLatestBlockhash RPC round-trip when the caller never intends
-	// to pay. Authenticated requests still build a fresh challenge so
-	// VerifyCredentialWithExpected pins the credential against the
-	// route's live expected request (this is what enforces the
-	// cross-route replay rejection; the credential's own echo cannot
-	// be trusted for that pin).
-	authorization := request.Header.Get(mpp.AuthorizationHeader)
-	if authorization == "" {
-		challenge, err := handler.ChargeWithOptions(request.Context(), price, options)
-		if err != nil {
-			writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	splits := []protocol.Split{}
+	_ = json.Unmarshal([]byte(splitsJSON), &splits)
+
+	// Manual flow mirrors harness/go-server/main.go.serveProtected:
+	// build challenge per request so VerifyCredentialWithExpected
+	// pins the credential against the route's live expected request
+	// (needed for cross-route replay rejection). Bypass
+	// server.PaymentMiddleware so the harness sees the same shape
+	// the existing Go interop server emits.
+	handle := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "not_found", http.StatusNotFound)
 			return
 		}
-		writePaymentRequired(response, challenge, nil)
-		return
+		path := r.URL.Path
+		amt := amountUnits
+		if replayPath != "" && path == replayPath && replayAmount != "" {
+			amt = replayAmount
+		}
+		opts := server.ChargeOptions{
+			Description: "Go PayKit harness " + path,
+			FeePayer:    paymentMode != "push",
+			Splits:      splits,
+		}
+		auth := r.Header.Get(mpp.AuthorizationHeader)
+		if auth == "" {
+			challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeMPP402(w, challenge, nil)
+			return
+		}
+		challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		credential, err := mpp.ParseAuthorization(auth)
+		if err != nil {
+			writeMPP402(w, challenge, err)
+			return
+		}
+		var expected mpp.ChargeRequest
+		if err := challenge.Request.Decode(&expected); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		receipt, err := srv.VerifyCredentialWithExpected(r.Context(), credential, expected)
+		if err != nil {
+			writeMPP402(w, challenge, err)
+			return
+		}
+		receiptHeader, _ := mpp.FormatReceipt(receipt)
+		w.Header().Set("Content-Type", "application/json")
+		if receiptHeader != "" {
+			w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
+		}
+		w.Header().Set(settlementHeader, receipt.Reference)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"paid":true,"protocol":"mpp"}`))
 	}
-
-	challenge, err := handler.ChargeWithOptions(request.Context(), price, options)
-	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
+	mux.HandleFunc(resourcePath, handle)
+	if replayPath != "" && replayPath != resourcePath {
+		mux.HandleFunc(replayPath, handle)
 	}
-
-	credential, err := mpp.ParseAuthorization(authorization)
-	if err != nil {
-		writePaymentRequired(response, challenge, mpp.WrapError(mpp.ErrCodeInvalidPayload, "parse authorization", err))
-		return
-	}
-	var expected intents.ChargeRequest
-	if err := challenge.Request.Decode(&expected); err != nil {
-		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	receipt, err := handler.VerifyCredentialWithExpected(request.Context(), credential, expected)
-	if err != nil {
-		writePaymentRequired(response, challenge, err)
-		return
-	}
-	receiptHeader, err := mpp.FormatReceipt(receipt)
-	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-
-	response.Header().Set("content-type", "application/json")
-	response.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
-	response.Header().Set(environment.SettlementHeader, receipt.Reference)
-	response.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(response, `{"ok":true,"paid":true}`)
 }
 
-// writePaymentRequired emits the canonical L6 problem+json body shared
-// across every MPP server SDK. A nil verificationErr means "no
-// credential was supplied"; the body carries the payment_invalid code
-// in that case. A non-nil verificationErr promotes to its canonical L6
-// code via errorcodes.CanonicalFromError.
-func writePaymentRequired(response http.ResponseWriter, challenge mpp.PaymentChallenge, verificationErr error) {
+func privateKeyFromJSON(raw string) solana.PrivateKey {
+	var ints []int
+	if err := json.Unmarshal([]byte(raw), &ints); err != nil {
+		log.Fatalf("MPP_INTEROP_FEE_PAYER_SECRET_KEY decode: %v", err)
+	}
+	b := make([]byte, len(ints))
+	for i, v := range ints {
+		b[i] = byte(v)
+	}
+	pk := solana.PrivateKey(b)
+	return pk
+}
+
+// walletSignerFor adapts a solana.PrivateKey into the utils.Signer
+// interface server.Config expects.
+func walletSignerFor(pk solana.PrivateKey) walletSignerImpl {
+	return walletSignerImpl{pk: pk}
+}
+
+type walletSignerImpl struct {
+	pk solana.PrivateKey
+}
+
+func (w walletSignerImpl) PublicKey() solana.PublicKey {
+	return w.pk.PublicKey()
+}
+
+func (w walletSignerImpl) Sign(payload []byte) (solana.Signature, error) {
+	return w.pk.Sign(payload)
+}
+
+func requireEnv(name string) string {
+	v := os.Getenv(name)
+	if v == "" {
+		log.Fatalf("missing required env: %s", name)
+	}
+	return v
+}
+
+func optionalEnv(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+func convertUnitsToUSD(amount string, decimals int) string {
+	n, err := strconv.Atoi(amount)
+	if err != nil {
+		return amount
+	}
+	whole := n / pow10(decimals)
+	frac := n % pow10(decimals)
+	return fmt.Sprintf("%d.%0*d", whole, decimals, frac)
+}
+
+func pow10(n int) int {
+	out := 1
+	for i := 0; i < n; i++ {
+		out *= 10
+	}
+	return out
+}
+
+// writeMPP402 mirrors harness/go-server/main.go's writePaymentRequired
+// (canonical L6 problem+json body shared across MPP server SDKs).
+func writeMPP402(w http.ResponseWriter, challenge mpp.PaymentChallenge, verifyErr error) {
 	header, err := mpp.FormatWWWAuthenticate(challenge)
 	if err != nil {
-		writeJSON(response, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	code := errorcodes.PaymentInvalid
-	message := "Payment is required (Go interop server)."
-	if verificationErr != nil {
-		code = errorcodes.CanonicalFromError(verificationErr)
-		message = verificationErr.Error()
+	body := map[string]any{
+		"error": "payment_invalid",
 	}
-	body := errorcodes.NewPaymentRequiredBody(code, message)
-	response.Header().Set("cache-control", "no-store")
-	response.Header().Set("content-type", "application/problem+json")
-	response.Header().Set(mpp.WWWAuthenticateHeader, header)
-	response.WriteHeader(http.StatusPaymentRequired)
-	_ = json.NewEncoder(response).Encode(body)
-}
-
-func writeJSON(response http.ResponseWriter, status int, value any) {
-	response.Header().Set("content-type", "application/json")
-	response.WriteHeader(status)
-	_ = json.NewEncoder(response).Encode(value)
-}
-
-func isProtectedPath(path string, environment interopEnvironment) bool {
-	return path == environment.ResourcePath ||
-		(environment.ReplaySource != nil && path == environment.ReplaySource.ResourcePath)
-}
-
-func priceForPath(path string, environment interopEnvironment) string {
-	if environment.ReplaySource != nil && path == environment.ReplaySource.ResourcePath {
-		return environment.ReplaySource.Price
+	if verifyErr != nil {
+		body["message"] = verifyErr.Error()
+	} else {
+		body["message"] = "Payment is required (Go PayKit harness)."
 	}
-	return environment.Price
-}
-
-func readEnvironment() (interopEnvironment, error) {
-	feePayer, err := readPrivateKeyEnv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-	if err != nil {
-		return interopEnvironment{}, err
-	}
-	splits, err := readSplits()
-	if err != nil {
-		return interopEnvironment{}, err
-	}
-	rpcURL, err := requiredEnv("MPP_INTEROP_RPC_URL")
-	if err != nil {
-		return interopEnvironment{}, err
-	}
-	payTo, err := requiredEnv("MPP_INTEROP_PAY_TO")
-	if err != nil {
-		return interopEnvironment{}, err
-	}
-	environment := interopEnvironment{
-		RPCURL:           rpcURL,
-		Network:          envOrDefault("MPP_INTEROP_NETWORK", "localnet"),
-		Mint:             envOrDefault("MPP_INTEROP_MINT", "USDC"),
-		Price:            envOrDefault("MPP_INTEROP_PRICE", "0.001"),
-		ResourcePath:     envOrDefault("MPP_INTEROP_RESOURCE_PATH", "/protected"),
-		SettlementHeader: envOrDefault("MPP_INTEROP_SETTLEMENT_HEADER", "x-fixture-settlement"),
-		PayTo:            payTo,
-		SecretKey:        envOrDefault("MPP_INTEROP_SECRET_KEY", "mpp-interop-secret-key"),
-		Splits:           splits,
-		FeePayerSecret:   feePayer,
-	}
-	if os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH") != "" &&
-		os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PRICE") != "" {
-		environment.ReplaySource = &replaySource{
-			Price:        os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PRICE"),
-			ResourcePath: os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH"),
-		}
-	}
-	return environment, nil
-}
-
-func readSplits() ([]protocol.Split, error) {
-	raw := os.Getenv("MPP_INTEROP_SPLITS")
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var splits []protocol.Split
-	if err := json.Unmarshal([]byte(raw), &splits); err != nil {
-		return nil, fmt.Errorf("parse MPP_INTEROP_SPLITS: %w", err)
-	}
-	return splits, nil
-}
-
-func readPrivateKeyEnv(name string) (solana.PrivateKey, error) {
-	raw, err := requiredEnv(name)
-	if err != nil {
-		return nil, err
-	}
-	var values []int
-	if err := json.Unmarshal([]byte(raw), &values); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", name, err)
-	}
-	if len(values) != 64 {
-		return nil, fmt.Errorf("%s must contain 64 private key bytes, got %d", name, len(values))
-	}
-	key := make([]byte, len(values))
-	for index, value := range values {
-		if value < 0 || value > 255 {
-			return nil, fmt.Errorf("%s byte %d is outside uint8 range", name, index)
-		}
-		key[index] = byte(value)
-	}
-	return solana.PrivateKey(key), nil
-}
-
-func requiredEnv(name string) (string, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return "", fmt.Errorf("%s is required", name)
-	}
-	return value, nil
-}
-
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("content-type", "application/problem+json")
+	w.Header().Set(mpp.WWWAuthenticateHeader, header)
+	w.WriteHeader(http.StatusPaymentRequired)
+	_ = json.NewEncoder(w).Encode(body)
 }

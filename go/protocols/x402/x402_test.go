@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	x402adapter "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
-	"github.com/solana-foundation/pay-kit/go/paykit/signer"
+	x402adapter "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func cfg() paykit.Config {

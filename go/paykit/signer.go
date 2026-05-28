@@ -3,7 +3,7 @@ package paykit
 import "context"
 
 // Signer is the Ed25519 signer interface every signer backend
-// implements. Local signers (paykit/signer.Demo, .FromFile, ...) ignore
+// implements. Local signers (signer.Demo, .FromFile, ...) ignore
 // the context; remote enclave signers (paykit/kms.GCP, ...) honor it
 // for network I/O timeouts + cancellation.
 type Signer interface {

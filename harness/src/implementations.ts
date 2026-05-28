@@ -220,17 +220,10 @@ export const serverImplementations: ImplementationDefinition[] = [
   },
   {
     id: "go",
-    label: "Go HTTP server",
-    role: "server",
-    command: ["sh", "-c", "cd go-server && go run ."],
-    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
-  },
-  {
-    id: "go-paykit",
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",
-    command: ["sh", "-c", "cd go-paykit-server && ./paykit-server"],
-    enabled: isEnabled("go-paykit", "MPP_INTEROP_SERVERS", true),
+    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
     intents: ["charge", "x402-exact"],
   },
   {

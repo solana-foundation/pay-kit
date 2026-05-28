@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	mppadapter "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
-	"github.com/solana-foundation/pay-kit/go/paykit/signer"
+	mppadapter "github.com/solana-foundation/pay-kit/go/protocols/mpp"
+	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func cfg() paykit.Config {
