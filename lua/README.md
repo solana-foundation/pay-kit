@@ -239,11 +239,11 @@ address.
 
 Supported on the Lua server:
 
-| Scheme  | Status |
-|---------|--------|
-| `exact` | ✅      |
-| `upto`  | —      |
-| `batch` | —      |
+| Scheme             | Status |
+|--------------------|--------|
+| `exact`            | ✅      |
+| `upto`             | —      |
+| `batch-settlement` | —      |
 
 ## MPP
 
@@ -262,11 +262,12 @@ Use MPP when:
 
 Supported on the Lua server:
 
-| Scheme        | Status |
-|---------------|--------|
-| `charge/pull` | ✅      |
-| `charge/push` | ✅      |
-| `session`     | —      |
+| Scheme         | Status |
+|----------------|--------|
+| `charge/pull`  | ✅      |
+| `charge/push`  | ✅      |
+| `session`      | —      |
+| `subscription` | —      |
 
 ---
 

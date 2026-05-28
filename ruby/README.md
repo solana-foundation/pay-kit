@@ -185,11 +185,11 @@ address.
 
 Supported on the Ruby server:
 
-| Scheme  | Status |
-|---------|--------|
-| `exact` | ✅      |
-| `upto`  | —      |
-| `batch` | —      |
+| Scheme             | Status |
+|--------------------|--------|
+| `exact`            | ✅      |
+| `upto`             | —      |
+| `batch-settlement` | —      |
 
 ## MPP
 
@@ -206,11 +206,12 @@ Use MPP when:
 
 Supported on the Ruby server:
 
-| Scheme        | Status |
-|---------------|--------|
-| `charge/pull` | ✅      |
-| `charge/push` | ✅      |
-| `session`     | —      |
+| Scheme         | Status |
+|----------------|--------|
+| `charge/pull`  | ✅      |
+| `charge/push`  | ✅      |
+| `session`      | —      |
+| `subscription` | —      |
 
 ---
 
