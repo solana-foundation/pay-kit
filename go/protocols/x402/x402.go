@@ -29,7 +29,12 @@ const (
 	paymentResponseHeader = "payment-response"
 	settlementHeader      = "x-payment-settlement-signature"
 	x402Version           = 2
-	tokenProgramID        = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+	// stablecoinDecimals is the mint decimal count advertised in the
+	// challenge. Every stablecoin in the paycore table (USDC, USDT, USDG,
+	// PYUSD, CASH) uses 6 decimals on Solana; revisit if a non-6 asset is
+	// ever added (it would need a getMint lookup instead of a constant).
+	stablecoinDecimals = 6
 )
 
 // rpcClient is the narrow Solana RPC surface the x402 settle path uses.
@@ -142,8 +147,8 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	payTo := a.payTo(gate)
 	extra := Extra{
 		FeePayer:     string(a.signer.Pubkey()),
-		Decimals:     decimalsFor(coin),
-		TokenProgram: tokenProgramID,
+		Decimals:     stablecoinDecimals,
+		TokenProgram: paycore.DefaultTokenProgramForCurrency(coin, a.cfg.Network.MintsLabel()),
 		Memo:         gate.Desc,
 	}
 	if bh, err := a.recentBlockhash(); err == nil && bh != "" {
@@ -435,13 +440,10 @@ func (a *Adapter) payTo(gate *paykit.Gate) paykit.Address {
 	return a.cfg.Operator.Recipient
 }
 
-func (a *Adapter) totalUnits(gate *paykit.Gate, coin string) string {
-	dec := decimalsFor(coin)
-	scaled := gate.Total().Amount().Shift(int32(dec))
+func (a *Adapter) totalUnits(gate *paykit.Gate, _ string) string {
+	scaled := gate.Total().Amount().Shift(int32(stablecoinDecimals))
 	return scaled.Truncate(0).String()
 }
-
-func decimalsFor(_ string) int { return 6 }
 
 func init() {
 	paykit.RegisterAdapter(paykit.X402, New)
