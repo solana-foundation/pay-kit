@@ -156,6 +156,13 @@ func containsScheme(list []Scheme, want Scheme) bool {
 	return false
 }
 
+// ContextWithPaymentForTests attaches a *Payment to ctx through the
+// package's private context key. Exported only for tests; production
+// callers should rely on Client.Require / Client.RequireFunc.
+func ContextWithPaymentForTests(ctx context.Context, pmt *Payment) context.Context {
+	return context.WithValue(ctx, ctxKey{}, pmt)
+}
+
 // settlementWriter merges the adapter's settlement headers into the
 // upstream 2xx response. ResponseWriter is wrapped because headers must
 // be set before WriteHeader is called on the underlying writer.

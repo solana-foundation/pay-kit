@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	bin "github.com/gagliardetto/binary"
@@ -26,12 +25,11 @@ import (
 )
 
 const (
-	paymentSignatureHeader = "payment-signature"
-	paymentRequiredHeader  = "payment-required"
-	paymentResponseHeader  = "payment-response"
-	settlementHeader       = "x-payment-settlement-signature"
-	x402Version            = 2
-	tokenProgramID         = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	paymentRequiredHeader = "payment-required"
+	paymentResponseHeader = "payment-response"
+	settlementHeader      = "x-payment-settlement-signature"
+	x402Version           = 2
+	tokenProgramID        = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 )
 
 // Adapter is the paykit.Adapter implementation for x402-exact.
@@ -198,11 +196,6 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		paymentResponseHeader: base64.StdEncoding.EncodeToString(respRaw),
 		settlementHeader:      signature.String(),
 	}
-	if h := credential.Accepted["network"]; h != nil {
-		// no-op: structure pass through to keep linter happy
-		_ = h
-	}
-	_ = strings.TrimSpace
 	return &paykit.Payment{
 		Scheme:            paykit.X402,
 		Gate:              req.Gate.Name,

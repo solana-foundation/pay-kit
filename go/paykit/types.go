@@ -1,18 +1,3 @@
-// Package paykit is the umbrella SDK surface unifying x402 + MPP behind a
-// single Go-idiomatic API. Callers configure once with [Config], get a
-// [*Client] back, wrap any [http.Handler] with [Client.Require], and the
-// middleware picks the protocol per request from the inbound headers.
-//
-// See https://github.com/solana-foundation/pay-kit/issues/137 for the
-// design rationale and acceptance criteria. Sibling packages:
-//
-//   - [paykit/signer] -- local Ed25519 signer factories
-//   - [paykit/kms] -- remote enclave signers (future)
-//   - [paykit/schemes/x402] -- x402 exact-scheme adapter
-//   - [paykit/schemes/mpp] -- MPP charge adapter
-//
-// The legacy MPP-only surface lives under the module's `mpp`, `server`,
-// and `client` packages; new code should import [paykit] instead.
 package paykit
 
 import (
