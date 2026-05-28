@@ -58,7 +58,7 @@ The interop harness can run a full client/server cross-product, but CI keeps the
 |----------|----------|-------|
 | TypeScript | ![TS](https://img.shields.io/badge/coverage-67_tests-blue) | `just ts-test` |
 | Rust | ![Rust](https://img.shields.io/badge/coverage-271_tests-blue) | `just rs-test` |
-| Go | ![Go](https://img.shields.io/badge/coverage-84%25-green) | `just go-test` |
+| Go | ![Go](https://img.shields.io/badge/coverage-91%25-green) | `just go-test` |
 | Python | ![Python](https://img.shields.io/badge/coverage-87%25-green) | `just py-test` |
 | Lua | ![Lua](https://img.shields.io/badge/coverage-41_tests-blue) | `just lua-test` |
 | Ruby | ![Ruby](https://img.shields.io/badge/coverage-98%25-green) | `just rb-test-cover` |
