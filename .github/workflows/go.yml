@@ -119,8 +119,8 @@ jobs:
         working-directory: harness
         run: pnpm typecheck
       - name: Build Go paykit harness server
-        working-directory: go
-        run: go build -o ../harness/go-paykit-server/paykit-server ./cmd/harness-server
+        working-directory: harness/go-paykit-server
+        run: go build -o paykit-server .
       - name: Run Go PayKit interop smoke (mpp charge + x402 exact)
         working-directory: harness
         env:

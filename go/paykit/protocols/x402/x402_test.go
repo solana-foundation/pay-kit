@@ -39,28 +39,24 @@ func TestAcceptsEntryShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
-	entry := a.AcceptsEntry(&g)
-	if entry["protocol"] != "x402" {
-		t.Errorf("protocol: got %v", entry["protocol"])
+	entry := a.AcceptsEntry(&g).(x402adapter.AcceptsEntry)
+	if entry.Protocol != "x402" || entry.Scheme != "exact" {
+		t.Errorf("protocol/scheme: got %s/%s", entry.Protocol, entry.Scheme)
 	}
-	if entry["scheme"] != "exact" {
-		t.Errorf("scheme: got %v", entry["scheme"])
+	if entry.Network != paykit.SolanaLocalnet.CAIP2() {
+		t.Errorf("network: got %s", entry.Network)
 	}
-	if entry["network"] != paykit.SolanaLocalnet.CAIP2() {
-		t.Errorf("network: got %v", entry["network"])
+	if entry.Amount != "100000" || entry.MaxAmountRequired != "100000" {
+		t.Errorf("amount: got %s / %s", entry.Amount, entry.MaxAmountRequired)
 	}
-	if entry["amount"] != "100000" || entry["maxAmountRequired"] != "100000" {
-		t.Errorf("amount: got %v / %v", entry["amount"], entry["maxAmountRequired"])
+	if entry.Extra.RecentBlockhash != "BLOCKHASH-STUB-111111111111111111111111111" {
+		t.Errorf("recentBlockhash: got %s", entry.Extra.RecentBlockhash)
 	}
-	extra, ok := entry["extra"].(map[string]any)
-	if !ok {
-		t.Fatalf("extra: got %T", entry["extra"])
+	if entry.Extra.Decimals != 6 {
+		t.Errorf("decimals: got %d", entry.Extra.Decimals)
 	}
-	if extra["recentBlockhash"] != "BLOCKHASH-STUB-111111111111111111111111111" {
-		t.Errorf("recentBlockhash missing or wrong: got %v", extra["recentBlockhash"])
-	}
-	if extra["decimals"] != 6 {
-		t.Errorf("decimals: got %v", extra["decimals"])
+	if entry.AcceptsProtocol() != paykit.X402 {
+		t.Error("AcceptsProtocol mismatch")
 	}
 }
 
@@ -72,18 +68,29 @@ func TestChallengeHeadersEmitsPaymentRequiredBase64(t *testing.T) {
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
 	h := a.ChallengeHeaders(&g)
 	if h["payment-required"] == "" {
-		t.Fatal("missing payment-required header")
+		t.Fatal("missing header")
 	}
 	raw, err := base64.StdEncoding.DecodeString(h["payment-required"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	var env map[string]any
+	var env struct {
+		X402Version int `json:"x402Version"`
+		Resource    struct {
+			Type, URL string
+		} `json:"resource"`
+		Accepts []struct {
+			Protocol, Network, PayTo string
+		} `json:"accepts"`
+	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		t.Fatal(err)
 	}
-	if int(env["x402Version"].(float64)) != 2 {
-		t.Errorf("x402Version: got %v", env["x402Version"])
+	if env.X402Version != 2 {
+		t.Errorf("x402Version: got %d", env.X402Version)
+	}
+	if len(env.Accepts) == 0 || env.Accepts[0].Protocol != "x402" {
+		t.Errorf("accepts: got %+v", env.Accepts)
 	}
 }
 
@@ -116,10 +123,7 @@ func TestVerifyAndSettleRejectsWrongVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := map[string]any{
-		"x402Version": 99,
-		"payload":     map[string]any{"transaction": ""},
-	}
+	cred := x402adapter.Credential{X402Version: 99}
 	raw, _ := json.Marshal(cred)
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{
@@ -136,10 +140,7 @@ func TestVerifyAndSettleRejectsMissingTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := map[string]any{
-		"x402Version": 2,
-		"payload":     map[string]any{},
-	}
+	cred := x402adapter.Credential{X402Version: 2}
 	raw, _ := json.Marshal(cred)
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{

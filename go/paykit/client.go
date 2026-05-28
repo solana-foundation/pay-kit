@@ -32,8 +32,10 @@ type Client struct {
 type Adapter interface {
 	Scheme() Scheme
 	// AcceptsEntry returns the protocol-specific entry the middleware
-	// embeds in the 402 body's `accepts[]` array.
-	AcceptsEntry(gate *Gate) map[string]any
+	// embeds in the 402 body's `accepts[]` array. Each protocol
+	// package defines its own typed struct that satisfies the
+	// [AcceptsEntry] marker.
+	AcceptsEntry(gate *Gate) AcceptsEntry
 	// ChallengeHeaders returns the per-protocol headers the middleware
 	// stamps on the 402 response (e.g. WWW-Authenticate for MPP,
 	// payment-required for x402).
@@ -42,6 +44,14 @@ type Adapter interface {
 	// credential, performs settlement (chain broadcast or
 	// facilitator POST), and returns the verified [Payment].
 	VerifyAndSettle(req *AdapterRequest) (*Payment, error)
+}
+
+// AcceptsEntry is the marker every protocol-specific accepts-entry
+// struct satisfies. The middleware JSON-marshals these directly into
+// the 402 body's `accepts[]` array; protocols emit typed structs (not
+// map[string]any) per Ludo PR #146 review.
+type AcceptsEntry interface {
+	AcceptsProtocol() Scheme
 }
 
 // AdapterRequest is the cross-adapter handoff shape. Avoids dragging

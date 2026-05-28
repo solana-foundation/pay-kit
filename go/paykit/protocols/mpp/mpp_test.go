@@ -37,21 +37,24 @@ func TestAcceptsEntryShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
-	entry := a.AcceptsEntry(&g)
-	if entry["protocol"] != "mpp" {
-		t.Errorf("protocol: got %v", entry["protocol"])
+	entry, ok := a.AcceptsEntry(&g).(mppadapter.AcceptsEntry)
+	if !ok {
+		t.Fatal("expected mppadapter.AcceptsEntry")
 	}
-	if entry["scheme"] != "charge" {
-		t.Errorf("scheme: got %v", entry["scheme"])
+	if entry.Protocol != "mpp" || entry.Scheme != "charge" {
+		t.Errorf("protocol/scheme: got %s/%s", entry.Protocol, entry.Scheme)
 	}
-	if entry["realm"] != "Unit" {
-		t.Errorf("realm: got %v", entry["realm"])
+	if entry.Realm != "Unit" {
+		t.Errorf("realm: got %s", entry.Realm)
 	}
-	if entry["network"] != paykit.SolanaLocalnet.CAIP2() {
-		t.Errorf("network: got %v", entry["network"])
+	if entry.Network != paykit.SolanaLocalnet.CAIP2() {
+		t.Errorf("network: got %s", entry.Network)
 	}
-	if entry["amount"] != "100000" {
-		t.Errorf("amount: got %v want 100000", entry["amount"])
+	if entry.Amount != "100000" {
+		t.Errorf("amount: got %s want 100000", entry.Amount)
+	}
+	if entry.AcceptsProtocol() != paykit.MPP {
+		t.Error("AcceptsProtocol mismatch")
 	}
 }
 
@@ -67,10 +70,12 @@ func TestAcceptsEntryAddsSplitsForFeeGate(t *testing.T) {
 			paykit.Address("PLATFORM"): paykit.MustParseUSD("0.30"),
 		},
 	}
-	entry := a.AcceptsEntry(&g)
-	splits, ok := entry["splits"].([]map[string]any)
-	if !ok || len(splits) == 0 {
-		t.Fatalf("expected splits[], got %T %v", entry["splits"], entry["splits"])
+	entry := a.AcceptsEntry(&g).(mppadapter.AcceptsEntry)
+	if len(entry.Splits) == 0 {
+		t.Fatal("expected splits[]")
+	}
+	if entry.Splits[0].Recipient != "PLATFORM" {
+		t.Errorf("split recipient: got %s", entry.Splits[0].Recipient)
 	}
 }
 
@@ -80,9 +85,7 @@ func TestVerifyAndSettleRejectsMissingAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
-	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{
-		Method: "GET", Path: "/x", Gate: &g,
-	})
+	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Method: "GET", Path: "/x", Gate: &g})
 	if err == nil {
 		t.Error("expected payment_required error")
 	}

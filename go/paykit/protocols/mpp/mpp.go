@@ -68,34 +68,47 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 
 func (a *Adapter) Scheme() paykit.Scheme { return paykit.MPP }
 
-func (a *Adapter) AcceptsEntry(gate *paykit.Gate) map[string]any {
+// AcceptsEntry is the typed JSON shape MPP emits into the 402
+// body's `accepts[]` array. Mirrors Ruby's PayKit::Protocols::MPP
+// accepts_entry hash and PHP's Adapter::acceptsEntry array.
+type AcceptsEntry struct {
+	Protocol string  `json:"protocol"`
+	Scheme   string  `json:"scheme"`
+	Network  string  `json:"network"`
+	Amount   string  `json:"amount"`
+	Currency string  `json:"currency"`
+	PayTo    string  `json:"payTo"`
+	Realm    string  `json:"realm"`
+	Splits   []Split `json:"splits,omitempty"`
+}
+
+// Split is one fee-recipient entry inside [AcceptsEntry.Splits].
+type Split struct {
+	Recipient string `json:"recipient"`
+	Amount    string `json:"amount"`
+}
+
+// AcceptsProtocol satisfies [paykit.AcceptsEntry].
+func (e AcceptsEntry) AcceptsProtocol() paykit.Scheme { return paykit.MPP }
+
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	coin := a.settlementCoin(gate)
 	payTo := a.payTo(gate)
-	entry := map[string]any{
-		"protocol": "mpp",
-		"scheme":   "charge",
-		"network":  a.cfg.Network.CAIP2(),
-		"amount":   a.totalUnits(gate, coin),
-		"currency": coin,
-		"payTo":    string(payTo),
-		"realm":    a.cfg.MPP.Realm,
+	entry := AcceptsEntry{
+		Protocol: "mpp",
+		Scheme:   "charge",
+		Network:  a.cfg.Network.CAIP2(),
+		Amount:   a.totalUnits(gate, coin),
+		Currency: coin,
+		PayTo:    string(payTo),
+		Realm:    a.cfg.MPP.Realm,
 	}
 	if gate.HasFees() {
-		splits := []map[string]any{}
 		for addr, fee := range gate.FeeWithin {
-			splits = append(splits, map[string]any{
-				"recipient": string(addr),
-				"amount":    a.priceUnits(fee),
-			})
+			entry.Splits = append(entry.Splits, Split{Recipient: string(addr), Amount: a.priceUnits(fee)})
 		}
 		for addr, fee := range gate.FeeOnTop {
-			splits = append(splits, map[string]any{
-				"recipient": string(addr),
-				"amount":    a.priceUnits(fee),
-			})
-		}
-		if len(splits) > 0 {
-			entry["splits"] = splits
+			entry.Splits = append(entry.Splits, Split{Recipient: string(addr), Amount: a.priceUnits(fee)})
 		}
 	}
 	return entry

@@ -59,42 +59,111 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 
 func (a *Adapter) Scheme() paykit.Scheme { return paykit.X402 }
 
-func (a *Adapter) AcceptsEntry(gate *paykit.Gate) map[string]any {
+// AcceptsEntry is the typed JSON shape x402-exact emits into the 402
+// body's `accepts[]` array.
+type AcceptsEntry struct {
+	Protocol          string `json:"protocol"`
+	Scheme            string `json:"scheme"`
+	Network           string `json:"network"`
+	Asset             string `json:"asset"`
+	Amount            string `json:"amount"`
+	MaxAmountRequired string `json:"maxAmountRequired"`
+	PayTo             string `json:"payTo"`
+	MaxTimeoutSeconds int    `json:"maxTimeoutSeconds"`
+	Extra             Extra  `json:"extra"`
+}
+
+// Extra carries x402's optional metadata. RecentBlockhash is the
+// Ruby PR #142 caveat #5 hook: stamp the server's recent blockhash
+// so the pay-kit Rust client pins to it when building the tx
+// against a surfpool / forked-mainnet ledger the public RPC has
+// never seen.
+type Extra struct {
+	FeePayer        string `json:"feePayer"`
+	Decimals        int    `json:"decimals"`
+	TokenProgram    string `json:"tokenProgram"`
+	Memo            string `json:"memo"`
+	RecentBlockhash string `json:"recentBlockhash,omitempty"`
+}
+
+// AcceptsProtocol satisfies [paykit.AcceptsEntry].
+func (e AcceptsEntry) AcceptsProtocol() paykit.Scheme { return paykit.X402 }
+
+// Credential is the typed x402 credential the client posts in the
+// payment-signature header (base64 of this JSON).
+type Credential struct {
+	X402Version int               `json:"x402Version"`
+	Scheme      string            `json:"scheme"`
+	Network     string            `json:"network"`
+	Payload     CredentialPayload `json:"payload"`
+	Accepted    *AcceptsEntry     `json:"accepted,omitempty"`
+}
+
+// CredentialPayload carries the protocol-specific bits the client
+// hands the server for verification.
+type CredentialPayload struct {
+	Transaction string `json:"transaction"`
+	Signature   string `json:"signature,omitempty"`
+	ChallengeID string `json:"challengeId,omitempty"`
+	Resource    string `json:"resource,omitempty"`
+}
+
+// SettlementResponse is the typed shape the adapter writes into the
+// `payment-response` header (base64 of this JSON) after a successful
+// settle.
+type SettlementResponse struct {
+	Success     bool   `json:"success"`
+	Transaction string `json:"transaction"`
+	Network     string `json:"network"`
+	Payer       string `json:"payer"`
+}
+
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	coin := a.settlementCoin(gate)
 	mint := protocol.ResolveMint(coin, a.cfg.Network.MintsLabel())
 	amount := a.totalUnits(gate, coin)
 	payTo := a.payTo(gate)
-	extra := map[string]any{
-		"feePayer":     string(a.cfg.Operator.Signer.Pubkey()),
-		"decimals":     decimalsFor(coin),
-		"tokenProgram": tokenProgramID,
-		"memo":         gate.Desc,
+	extra := Extra{
+		FeePayer:     string(a.cfg.Operator.Signer.Pubkey()),
+		Decimals:     decimalsFor(coin),
+		TokenProgram: tokenProgramID,
+		Memo:         gate.Desc,
 	}
 	if bh, err := a.recentBlockhash(); err == nil && bh != "" {
-		// Caveat #5: stamp the server's recent blockhash so the
-		// pay-kit Rust client can pin to it when building the tx
-		// against a surfpool/forked-mainnet ledger the public RPC
-		// has never seen.
-		extra["recentBlockhash"] = bh
+		extra.RecentBlockhash = bh
 	}
-	return map[string]any{
-		"protocol":          "x402",
-		"scheme":            a.cfg.X402.Scheme,
-		"network":           a.cfg.Network.CAIP2(),
-		"asset":             mint,
-		"amount":            amount,
-		"maxAmountRequired": amount,
-		"payTo":             string(payTo),
-		"maxTimeoutSeconds": 60,
-		"extra":             extra,
+	return AcceptsEntry{
+		Protocol:          "x402",
+		Scheme:            a.cfg.X402.Scheme,
+		Network:           a.cfg.Network.CAIP2(),
+		Asset:             mint,
+		Amount:            amount,
+		MaxAmountRequired: amount,
+		PayTo:             string(payTo),
+		MaxTimeoutSeconds: 60,
+		Extra:             extra,
 	}
 }
 
+// ChallengeEnvelope is the typed shape of the payment-required
+// header's base64-encoded JSON body.
+type ChallengeEnvelope struct {
+	X402Version int                   `json:"x402Version"`
+	Resource    ResourceRef           `json:"resource"`
+	Accepts     []paykit.AcceptsEntry `json:"accepts"`
+}
+
+// ResourceRef pins the protected resource the envelope advertises.
+type ResourceRef struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
 func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
-	envelope := map[string]any{
-		"x402Version": x402Version,
-		"resource":    map[string]any{"type": "http", "url": gate.Desc},
-		"accepts":     []any{a.AcceptsEntry(gate)},
+	envelope := ChallengeEnvelope{
+		X402Version: x402Version,
+		Resource:    ResourceRef{Type: "http", URL: gate.Desc},
+		Accepts:     []paykit.AcceptsEntry{a.AcceptsEntry(gate)},
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
@@ -114,20 +183,14 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("base64 decode: %w", err), Gate: req.Gate}
 	}
-	var credential struct {
-		X402Version int            `json:"x402Version"`
-		Scheme      string         `json:"scheme"`
-		Network     string         `json:"network"`
-		Payload     map[string]any `json:"payload"`
-		Accepted    map[string]any `json:"accepted"`
-	}
+	var credential Credential
 	if err := json.Unmarshal(credBytes, &credential); err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("decode credential: %w", err), Gate: req.Gate}
 	}
 	if credential.X402Version != x402Version {
 		return nil, &paykit.PaymentError{Code: "version_mismatch", Err: fmt.Errorf("unsupported x402Version %d", credential.X402Version), Gate: req.Gate}
 	}
-	txBase64, _ := credential.Payload["transaction"].(string)
+	txBase64 := credential.Payload.Transaction
 	if txBase64 == "" {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: errors.New("missing transaction payload"), Gate: req.Gate}
 	}
@@ -185,11 +248,10 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: req.Gate}
 	}
-	respEnvelope := map[string]any{
-		"success":     true,
-		"transaction": signature.String(),
-		"network":     a.cfg.Network.CAIP2(),
-		"payer":       "",
+	respEnvelope := SettlementResponse{
+		Success:     true,
+		Transaction: signature.String(),
+		Network:     a.cfg.Network.CAIP2(),
 	}
 	respRaw, _ := json.Marshal(respEnvelope)
 	headers := map[string]string{

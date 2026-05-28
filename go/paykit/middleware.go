@@ -120,7 +120,7 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 	if len(accept) == 0 {
 		accept = c.Config.Accept
 	}
-	accepts := []map[string]any{}
+	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
 	if c.x402Adapter != nil && containsScheme(accept, X402) && !gate.HasFees() {
 		accepts = append(accepts, c.x402Adapter.AcceptsEntry(gate))
