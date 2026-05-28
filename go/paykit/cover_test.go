@@ -67,7 +67,7 @@ func TestPriceString(t *testing.T) {
 func TestSettlementHeadersMergedIntoResponse(t *testing.T) {
 	// Exercise the Client.Require success path so settlementWriter
 	// runs WriteHeader + Write -- can't easily settle on-chain here,
-	// so register a fake adapter via the schemes' registration hooks.
+	// so register a fake adapter via the protocols' registration hooks.
 	c := mustClient(t)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
 	mw := c.Require(gate)

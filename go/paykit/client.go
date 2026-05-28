@@ -15,8 +15,8 @@ var DefaultSigner func() Signer
 // Client is the umbrella entry point. Created via [New]; carries the
 // resolved [Config] plus the per-protocol adapters wired against it.
 //
-// Adapters are wired lazily inside the schemes/ packages to avoid a
-// circular import: paykit -> schemes/x402 -> paykit.
+// Adapters are wired lazily inside the protocols/ packages to avoid a
+// circular import: paykit -> protocols/x402 -> paykit.
 type Client struct {
 	Config Config
 
@@ -85,7 +85,7 @@ type AcceptsEntry interface {
 
 // AdapterRequest is the cross-adapter handoff shape. Avoids dragging
 // net/http into the adapter interface (which lets the adapters live in
-// schemes/ without circular imports back into paykit).
+// protocols/ without circular imports back into paykit).
 type AdapterRequest struct {
 	Method        string
 	Path          string
