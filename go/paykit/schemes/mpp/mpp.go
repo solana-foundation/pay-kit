@@ -1,0 +1,237 @@
+// Package mpp wires the legacy server.Mpp charge handler into the
+// paykit umbrella adapter contract. The adapter holds a per-(payTo,
+// coin) cache of server.Mpp instances so the same Client can serve
+// multiple gates with different recipients without rebuilding the
+// charge handler per request.
+package mpp
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+
+	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/paykit"
+	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/server"
+)
+
+// Adapter is the paykit.Adapter implementation for MPP charge intent.
+// Holds the resolved paykit.Config and a per-(payTo,coin) cache of
+// server.Mpp instances.
+type Adapter struct {
+	cfg     paykit.Config
+	servers sync.Map // key: "<payTo>|<coin>" -> *server.Mpp
+}
+
+// New constructs a paykit.Adapter using the resolved config. Registered
+// via the package init() below so paykit.New picks it up automatically
+// when callers import the package as a blank import:
+//
+//	import _ "github.com/solana-foundation/pay-kit/go/paykit/schemes/mpp"
+func New(cfg paykit.Config) (paykit.Adapter, error) {
+	if len(cfg.MPP.ChallengeBindingSecret) == 0 {
+		return nil, fmt.Errorf("paykit/schemes/mpp: MPP.ChallengeBindingSecret is required")
+	}
+	return &Adapter{cfg: cfg}, nil
+}
+
+func (a *Adapter) Scheme() paykit.Scheme { return paykit.MPP }
+
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) map[string]any {
+	coin := a.settlementCoin(gate)
+	payTo := a.payTo(gate)
+	entry := map[string]any{
+		"protocol": "mpp",
+		"scheme":   "charge",
+		"network":  a.cfg.Network.CAIP2(),
+		"amount":   a.totalUnits(gate, coin),
+		"currency": coin,
+		"payTo":    string(payTo),
+		"realm":    a.cfg.MPP.Realm,
+	}
+	if gate.HasFees() {
+		splits := []map[string]any{}
+		for addr, fee := range gate.FeeWithin {
+			splits = append(splits, map[string]any{
+				"recipient": string(addr),
+				"amount":    a.priceUnits(fee),
+			})
+		}
+		for addr, fee := range gate.FeeOnTop {
+			splits = append(splits, map[string]any{
+				"recipient": string(addr),
+				"amount":    a.priceUnits(fee),
+			})
+		}
+		if len(splits) > 0 {
+			entry["splits"] = splits
+		}
+	}
+	return entry
+}
+
+func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
+	srv, err := a.serverFor(gate)
+	if err != nil {
+		return nil
+	}
+	challenge, err := srv.ChargeWithOptions(context.Background(), a.amountString(gate), a.chargeOptions(gate))
+	if err != nil {
+		return nil
+	}
+	wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
+	if err != nil {
+		return nil
+	}
+	return map[string]string{mpp.WWWAuthenticateHeader: wwwAuth}
+}
+
+func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
+	auth := req.Authorization
+	if !strings.HasPrefix(auth, "Payment ") {
+		return nil, &paykit.PaymentError{
+			Code: "payment_required",
+			Err:  paykit.ErrPaymentRequired,
+			Gate: req.Gate,
+		}
+	}
+	srv, err := a.serverFor(req.Gate)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
+	}
+	credential, err := mpp.ParseAuthorization(auth)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
+	// Rebuild the expected ChargeRequest from the gate so the
+	// credential's pinned fields are verified against the route's
+	// declared amount / recipient.
+	challenge, err := srv.ChargeWithOptions(context.Background(), a.amountString(req.Gate), a.chargeOptions(req.Gate))
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
+	}
+	var expected mpp.ChargeRequest
+	if err := challenge.Request.Decode(&expected); err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
+	receipt, err := srv.VerifyCredentialWithExpected(context.Background(), credential, expected)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
+	}
+	receiptHeader, err := mpp.FormatReceipt(receipt)
+	headers := map[string]string{}
+	if err == nil {
+		headers[mpp.PaymentReceiptHeader] = receiptHeader
+	}
+	headers["x-payment-settlement-signature"] = receipt.Reference
+	return &paykit.Payment{
+		Scheme:            paykit.MPP,
+		Gate:              req.Gate.Name,
+		Transaction:       receipt.Reference,
+		SettlementHeaders: headers,
+		Raw:               auth,
+	}, nil
+}
+
+// serverFor returns a cached *server.Mpp instance for the gate's
+// (payTo, coin) tuple, building it on first miss.
+func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
+	coin := a.settlementCoin(gate)
+	payTo := a.payTo(gate)
+	key := string(payTo) + "|" + coin
+	if v, ok := a.servers.Load(key); ok {
+		return v.(*server.Mpp), nil
+	}
+	srv, err := server.New(server.Config{
+		Recipient: string(payTo),
+		SecretKey: string(a.cfg.MPP.ChallengeBindingSecret),
+		Currency:  coin,
+		Network:   a.cfg.Network.MintsLabel(),
+		Realm:     a.cfg.MPP.Realm,
+		RPCURL:    a.cfg.RPCURL,
+		Decimals:  uint8(decimalsFor(coin)), //nolint:gosec
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.servers.Store(key, srv)
+	return srv, nil
+}
+
+func (a *Adapter) settlementCoin(gate *paykit.Gate) string {
+	for _, s := range gate.Amount.Settlements() {
+		return string(s)
+	}
+	for _, s := range a.cfg.Stablecoins {
+		return string(s)
+	}
+	return "USDC"
+}
+
+func (a *Adapter) payTo(gate *paykit.Gate) paykit.Address {
+	if gate.PayTo != "" {
+		return gate.PayTo
+	}
+	return a.cfg.Operator.Recipient
+}
+
+func (a *Adapter) amountString(gate *paykit.Gate) string {
+	return gate.Total().Amount().String()
+}
+
+func (a *Adapter) totalUnits(gate *paykit.Gate, coin string) string {
+	dec := decimalsFor(coin)
+	total := gate.Total().Amount()
+	scaled := total.Shift(int32(dec))
+	return scaled.Truncate(0).String()
+}
+
+func (a *Adapter) priceUnits(p paykit.Price) string {
+	dec := decimalsFor(a.priceCoin(p))
+	scaled := p.Amount().Shift(int32(dec))
+	return scaled.Truncate(0).String()
+}
+
+func (a *Adapter) priceCoin(p paykit.Price) string {
+	for _, s := range p.Settlements() {
+		return string(s)
+	}
+	for _, s := range a.cfg.Stablecoins {
+		return string(s)
+	}
+	return "USDC"
+}
+
+func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
+	opts := server.ChargeOptions{
+		Description: gate.Desc,
+		FeePayer:    a.cfg.Operator.FeePayer,
+	}
+	for addr, fee := range gate.FeeWithin {
+		opts.Splits = append(opts.Splits, protocol.Split{
+			Recipient: string(addr),
+			Amount:    a.priceUnits(fee),
+		})
+	}
+	for addr, fee := range gate.FeeOnTop {
+		opts.Splits = append(opts.Splits, protocol.Split{
+			Recipient: string(addr),
+			Amount:    a.priceUnits(fee),
+		})
+	}
+	return opts
+}
+
+func decimalsFor(coin string) int {
+	// Mirrors the canonical mint table; all six-decimal stablecoins
+	// share the same number, but PYUSD / USDG / CASH on Token-2022
+	// still return 6 today.
+	_ = protocol.ResolveMint
+	return 6
+}
+
+func init() {
+	paykit.RegisterAdapter(paykit.MPP, New)
+}

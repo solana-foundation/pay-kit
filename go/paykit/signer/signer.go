@@ -40,9 +40,11 @@ type localSigner struct {
 	isDemo bool
 }
 
-func (s *localSigner) Pubkey() paykit.Address                                  { return s.pub }
-func (s *localSigner) Sign(_ context.Context, msg []byte) ([]byte, error)      { return ed25519.Sign(s.priv, msg), nil }
-func (s *localSigner) IsDemo() bool                                            { return s.isDemo }
+func (s *localSigner) Pubkey() paykit.Address { return s.pub }
+func (s *localSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
+	return ed25519.Sign(s.priv, msg), nil
+}
+func (s *localSigner) IsDemo() bool { return s.isDemo }
 func (s *localSigner) SecretKey() []byte {
 	if s.priv == nil {
 		return nil
@@ -52,16 +54,13 @@ func (s *localSigner) SecretKey() []byte {
 	return out
 }
 
-// demoSecret is the 64-byte secret of the package-shipped demo keypair.
-// Same bytes as the Ruby + Lua + PHP demo signers; the pubkey is
-// `AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj` per the design spec.
+// demoSecret is the 64-byte secret of the package-shipped demo
+// keypair, identical to Ruby's PayKit::Signer::Demo and PHP's
+// PayKit\Signer\Demo. Pubkey: ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq.
 var demoSecret = func() []byte {
-	// Generated from the canonical demo seed used across language
-	// ports (the value below matches Ruby's PayKit::Signer::Demo and
-	// PHP's PayKit\Signer\Demo).
 	raw, _ := hex.DecodeString(
-		"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60" +
-			"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+		"1a3d75c009e81833598769b62f0953f40bd655aae353aa1a37813a7259a0c333" +
+			"8ad17f233629caa6c7a661eeb53ffeb92d10ae66fac61ebfe8ec93a729b2971a",
 	)
 	return raw
 }()
@@ -70,7 +69,7 @@ var demoSecret = func() []byte {
 // slog.Warn whenever the demo signer is in use, and returns
 // paykit.ErrDemoSignerOnMainnet when combined with SolanaMainnet.
 func Demo() paykit.Signer {
-	priv := ed25519.NewKeyFromSeed(demoSecret[:32])
+	priv := ed25519.PrivateKey(demoSecret)
 	return &localSigner{priv: priv, pub: pubkeyOf(priv), isDemo: true}
 }
 

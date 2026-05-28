@@ -26,6 +26,8 @@ jobs:
             github.com/solana-foundation/pay-kit/go/client \
             github.com/solana-foundation/pay-kit/go/errorcodes \
             github.com/solana-foundation/pay-kit/go/internal/utils \
+            github.com/solana-foundation/pay-kit/go/paykit \
+            github.com/solana-foundation/pay-kit/go/paykit/signer \
             github.com/solana-foundation/pay-kit/go/protocol \
             github.com/solana-foundation/pay-kit/go/protocol/core \
             github.com/solana-foundation/pay-kit/go/protocol/intents \
@@ -70,3 +72,61 @@ jobs:
           version: v2.12.2
           args: --timeout=5m
           skip-cache: true
+
+  interop-go-paykit:
+    name: Go PayKit interop (mpp charge + x402 exact)
+    needs: test-go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-go-paykit-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-go-paykit-interop-
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust interop client
+        working-directory: rust
+        run: cargo build -p solana-mpp --bin interop_client
+      - name: Build Rust x402 interop client
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin interop_client
+      - name: Install interop harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck interop harness
+        working-directory: harness
+        run: pnpm typecheck
+      - name: Build Go paykit harness server
+        working-directory: go
+        run: go build -o ../harness/go-paykit-server/paykit-server ./cmd/harness-server
+      - name: Run Go PayKit interop smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: go-paykit,typescript
+          MPP_INTEROP_INTENTS: charge,x402-exact
+          X402_INTEROP_CLIENTS: rust-x402
+          X402_INTEROP_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "go-paykit server" --testTimeout 180000

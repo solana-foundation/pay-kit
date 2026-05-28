@@ -48,12 +48,12 @@ type Adapter interface {
 // net/http into the adapter interface (which lets the adapters live in
 // schemes/ without circular imports back into paykit).
 type AdapterRequest struct {
-	Method       string
-	Path         string
-	Host         string
+	Method        string
+	Path          string
+	Host          string
 	Authorization string
-	PaymentSig   string
-	Gate         *Gate
+	PaymentSig    string
+	Gate          *Gate
 }
 
 // Builder is the constructor each scheme package registers. paykit.New

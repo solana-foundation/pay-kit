@@ -226,6 +226,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
   },
   {
+    id: "go-paykit",
+    label: "Go PayKit umbrella server (dual protocol)",
+    role: "server",
+    command: ["sh", "-c", "cd go-paykit-server && ./paykit-server"],
+    enabled: isEnabled("go-paykit", "MPP_INTEROP_SERVERS", true),
+    intents: ["charge", "x402-exact"],
+  },
+  {
     id: "ts-x402",
     label: "TypeScript x402 exact server",
     role: "server",

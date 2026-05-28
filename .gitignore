@@ -36,3 +36,4 @@ mpp-sdk-self-learning/
 go/coverage.out
 notes/codex-review/
 notes/codex-review-*.md
+harness/go-paykit-server/paykit-server

@@ -3,27 +3,43 @@ set shell := ["bash", "-uc"]
 default:
     @just --list
 
-# Build Go SDK
+# Install Go module dependencies
+install:
+    go mod download
+
+# Validate module + check it builds
 build:
-    mkdir -p /tmp/go-build-cache
-    GOCACHE=/tmp/go-build-cache go build ./...
+    go build ./...
 
-# Test Go SDK
+# Run the full Go test suite
 test:
-    mkdir -p /tmp/go-build-cache
-    GOCACHE=/tmp/go-build-cache go test ./...
+    go test ./...
 
-# Format Go SDK
+# Apply gofmt + goimports in place
 fmt:
-    gofmt -w $(find . -name '*.go' -type f | sort)
+    gofmt -s -w .
 
-# Lint Go SDK
+# Lint pipeline: gofmt-check + go vet + staticcheck
 lint:
-    gofmt -l $(find . -name '*.go' -not -path './vendor/*')
-    golangci-lint run --timeout=5m
+    test -z "$(gofmt -s -l . | tee /dev/stderr)"
+    go vet ./...
+    go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
-# Run Go coverage with a minimum threshold of 70%
-test-cover:
-    mkdir -p /tmp/go-build-cache
-    GOCACHE=/tmp/go-build-cache go test ./... -coverprofile=coverage.out -covermode=atomic
-    GOCACHE=/tmp/go-build-cache ./scripts/check_coverage.sh coverage.out 70
+# Run module-deps audit (govulncheck)
+audit:
+    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+# Test with coverage gate (defaults to 90)
+test-cover gate="90":
+    mkdir -p build
+    go test -coverprofile=build/coverage.out ./...
+    go tool cover -func=build/coverage.out
+    @awk -v gate={{gate}} '/^total:/ {pct=$NF+0; if (pct+0 < gate+0) {printf "coverage %s below gate %d%%\n",$NF,gate; exit 1} else {printf "coverage %s meets gate %d%%\n",$NF,gate}}' <(go tool cover -func=build/coverage.out)
+
+# Run every local gate (build + lint + audit + test-cover)
+check: build lint audit test-cover
+
+# Boot the dual-protocol example server
+serve-example port="4567":
+    go run ./examples/paykit-server
+
