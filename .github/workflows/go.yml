@@ -34,9 +34,10 @@ jobs:
             github.com/solana-foundation/pay-kit/go/protocols/mpp/client \
             github.com/solana-foundation/pay-kit/go/protocols/mpp/errorcodes \
             github.com/solana-foundation/pay-kit/go/protocols/x402 \
+            github.com/solana-foundation/pay-kit/go/protocols/x402/client \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 90
+          ./scripts/check_coverage.sh coverage.out 91
       - name: Run all Go packages
         working-directory: go
         env:

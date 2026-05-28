@@ -5,6 +5,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
@@ -161,5 +162,34 @@ func TestVerifyAndSettleRejectsGarbageCredential(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected rejection for a garbage Payment credential")
+	}
+}
+
+func TestVerifyAndSettleReachesCredentialVerification(t *testing.T) {
+	cfg := testCfg()
+	cfg.RPCURL = "http://127.0.0.1:1" // unreachable; charge build tolerates it
+	a := &Adapter{cfg: cfg}
+	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
+
+	// A structurally valid but forged credential: it parses, drives
+	// serverFor + ChargeWithOptions + Decode, then fails at
+	// VerifyCredentialWithExpected because the echoed challenge id is not
+	// the server's HMAC over the rebuilt request.
+	echo := core.ChallengeEcho{
+		ID:     "deadbeefdeadbeef",
+		Realm:  "Unit",
+		Method: core.NewMethodName("solana"),
+		Intent: core.NewIntentName("mpp/charge/pull"),
+	}
+	cred, err := core.NewPaymentCredential(echo, map[string]string{"transaction": "AA=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := core.FormatAuthorization(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: gate, Authorization: auth}); err == nil {
+		t.Error("expected a forged credential to be rejected after charge rebuild")
 	}
 }
