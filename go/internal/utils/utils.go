@@ -24,8 +24,8 @@ import (
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Signer is the minimal signer surface shared by the client and server packages.
@@ -64,7 +64,7 @@ func BuildMemoInstruction(memo string) (solana.Instruction, error) {
 	if len([]byte(memo)) > 566 {
 		return nil, fmt.Errorf("memo cannot exceed 566 bytes")
 	}
-	programID, err := solana.PublicKeyFromBase58(protocol.MemoProgram)
+	programID, err := solana.PublicKeyFromBase58(paycore.MemoProgram)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func BuildTransferChecked(amount uint64, decimals uint8, source, mint, destinati
 	if tokenProgram.Equals(solana.TokenProgramID) {
 		return token.NewTransferCheckedInstruction(amount, decimals, source, mint, destination, owner, nil).ValidateAndBuild()
 	}
-	if tokenProgram.Equals(solana.MustPublicKeyFromBase58(protocol.Token2022Program)) {
+	if tokenProgram.Equals(solana.MustPublicKeyFromBase58(paycore.Token2022Program)) {
 		return token2022.NewTransferCheckedInstruction(amount, decimals, source, mint, destination, owner, nil).ValidateAndBuild()
 	}
 	return nil, fmt.Errorf("unsupported token program %s", tokenProgram)
@@ -187,10 +187,10 @@ func ResolveTokenProgram(ctx context.Context, rpcClient RPCClient, mint solana.P
 		return solana.PublicKey{}, fmt.Errorf("mint account not found")
 	}
 	switch account.Value.Owner.String() {
-	case protocol.TokenProgram:
+	case paycore.TokenProgram:
 		return solana.TokenProgramID, nil
-	case protocol.Token2022Program:
-		return solana.MustPublicKeyFromBase58(protocol.Token2022Program), nil
+	case paycore.Token2022Program:
+		return solana.MustPublicKeyFromBase58(paycore.Token2022Program), nil
 	default:
 		return solana.PublicKey{}, fmt.Errorf("unsupported mint owner %s", account.Value.Owner)
 	}
@@ -273,9 +273,9 @@ func FetchTransaction(ctx context.Context, rpcClient RPCClient, signature solana
 }
 
 // SplitAmounts computes the primary transfer amount and validates the split set.
-func SplitAmounts(total uint64, splits []protocol.Split) (uint64, error) {
+func SplitAmounts(total uint64, splits []paycore.Split) (uint64, error) {
 	if len(splits) > 8 {
-		return 0, mpp.NewError(mpp.ErrCodeTooManySplits, "splits exceed maximum of 8 entries")
+		return 0, core.NewError(core.ErrCodeTooManySplits, "splits exceed maximum of 8 entries")
 	}
 	var splitTotal uint64
 	for _, split := range splits {
@@ -285,12 +285,12 @@ func SplitAmounts(total uint64, splits []protocol.Split) (uint64, error) {
 		}
 		sum, carry := bits.Add64(splitTotal, amount, 0)
 		if carry != 0 {
-			return 0, mpp.NewError(mpp.ErrCodeSplitsExceed, "splits consume the entire amount")
+			return 0, core.NewError(core.ErrCodeSplitsExceed, "splits consume the entire amount")
 		}
 		splitTotal = sum
 	}
 	if splitTotal >= total {
-		return 0, mpp.NewError(mpp.ErrCodeSplitsExceed, "splits consume the entire amount")
+		return 0, core.NewError(core.ErrCodeSplitsExceed, "splits consume the entire amount")
 	}
 	return total - splitTotal, nil
 }

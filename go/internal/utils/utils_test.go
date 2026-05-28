@@ -10,7 +10,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 type failingSigner struct {
@@ -27,7 +27,7 @@ func (s failingSigner) Sign([]byte) (solana.Signature, error) {
 }
 
 func TestSplitAmounts(t *testing.T) {
-	primary, err := SplitAmounts(1000, []protocol.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "100"}})
+	primary, err := SplitAmounts(1000, []paycore.Split{{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "100"}})
 	if err != nil {
 		t.Fatalf("split failed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestAssociatedTokenHelpers(t *testing.T) {
 	if err != nil || ata.IsZero() {
 		t.Fatalf("ata failed: %v", err)
 	}
-	ata2022, err := FindAssociatedTokenAddressWithProgram(wallet, mint, solana.MustPublicKeyFromBase58(protocol.Token2022Program))
+	ata2022, err := FindAssociatedTokenAddressWithProgram(wallet, mint, solana.MustPublicKeyFromBase58(paycore.Token2022Program))
 	if err != nil || ata2022.IsZero() {
 		t.Fatalf("ata2022 failed: %v", err)
 	}
@@ -150,19 +150,19 @@ func TestAssociatedTokenHelpers(t *testing.T) {
 func TestResolveTokenProgramUsesHint(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	mint := testutil.NewPrivateKey().PublicKey()
-	program, err := ResolveTokenProgram(context.Background(), rpcClient, mint, protocol.Token2022Program)
+	program, err := ResolveTokenProgram(context.Background(), rpcClient, mint, paycore.Token2022Program)
 	if err != nil {
 		t.Fatalf("resolve with hint failed: %v", err)
 	}
-	if program.String() != protocol.Token2022Program {
+	if program.String() != paycore.Token2022Program {
 		t.Fatalf("unexpected program %s", program)
 	}
 }
 
 func TestSplitAmountsTooManySplits(t *testing.T) {
-	splits := make([]protocol.Split, 9)
+	splits := make([]paycore.Split, 9)
 	for i := range splits {
-		splits[i] = protocol.Split{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1"}
+		splits[i] = paycore.Split{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1"}
 	}
 	if _, err := SplitAmounts(100, splits); err == nil {
 		t.Fatal("expected error for >8 splits")
@@ -170,7 +170,7 @@ func TestSplitAmountsTooManySplits(t *testing.T) {
 }
 
 func TestSplitAmountsSplitTotalEqualsTotal(t *testing.T) {
-	splits := []protocol.Split{
+	splits := []paycore.Split{
 		{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "1000"},
 	}
 	if _, err := SplitAmounts(1000, splits); err == nil {
@@ -194,13 +194,13 @@ func TestSplitAmountsAccumulatorOverflow(t *testing.T) {
 	cases := []struct {
 		name    string
 		total   uint64
-		splits  []protocol.Split
+		splits  []paycore.Split
 		wantErr bool
 	}{
 		{
 			name:  "splits sum exactly fits in uint64",
 			total: 1<<63 + 1, // > sum, so primary is non-zero
-			splits: []protocol.Split{
+			splits: []paycore.Split{
 				{Recipient: recipient, Amount: "9223372036854775807"}, // 2^63 - 1
 				{Recipient: recipient, Amount: "1"},
 			},
@@ -209,7 +209,7 @@ func TestSplitAmountsAccumulatorOverflow(t *testing.T) {
 		{
 			name:  "splits sum overflows uint64 must reject",
 			total: 1000,
-			splits: []protocol.Split{
+			splits: []paycore.Split{
 				{Recipient: recipient, Amount: maxU64},
 				{Recipient: recipient, Amount: "1"},
 			},
@@ -218,7 +218,7 @@ func TestSplitAmountsAccumulatorOverflow(t *testing.T) {
 		{
 			name:  "two near-max splits wrap to small value must reject",
 			total: 1000,
-			splits: []protocol.Split{
+			splits: []paycore.Split{
 				{Recipient: recipient, Amount: "9223372036854775808"}, // 2^63
 				{Recipient: recipient, Amount: "9223372036854775808"}, // 2^63, sum wraps to 0
 			},
@@ -239,7 +239,7 @@ func TestSplitAmountsAccumulatorOverflow(t *testing.T) {
 }
 
 func TestSplitAmountsInvalidAmount(t *testing.T) {
-	splits := []protocol.Split{
+	splits := []paycore.Split{
 		{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "not-a-number"},
 	}
 	if _, err := SplitAmounts(1000, splits); err == nil {
@@ -250,7 +250,7 @@ func TestSplitAmountsInvalidAmount(t *testing.T) {
 func TestFindAssociatedTokenAddressWithProgramToken2022(t *testing.T) {
 	wallet := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
-	token2022 := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
+	token2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 	ata, err := FindAssociatedTokenAddressWithProgram(wallet, mint, token2022)
 	if err != nil {
 		t.Fatalf("ata token2022 failed: %v", err)
@@ -271,7 +271,7 @@ func TestFindAssociatedTokenAddressWithProgramToken2022(t *testing.T) {
 func TestBuildTransferCheckedToken2022(t *testing.T) {
 	wallet := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
-	token2022 := solana.MustPublicKeyFromBase58(protocol.Token2022Program)
+	token2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 	source, _ := FindAssociatedTokenAddressWithProgram(wallet, mint, token2022)
 	dest, _ := FindAssociatedTokenAddressWithProgram(testutil.NewPrivateKey().PublicKey(), mint, token2022)
 	ix, err := BuildTransferChecked(1000, 6, source, mint, dest, wallet, token2022)
@@ -323,12 +323,12 @@ func TestResolveRecentBlockhashEmptyFallsBackToRPC(t *testing.T) {
 func TestResolveTokenProgramToken2022Owner(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	mint := testutil.NewPrivateKey().PublicKey()
-	rpcClient.MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(protocol.Token2022Program)
+	rpcClient.MintOwners[mint.String()] = solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 	program, err := ResolveTokenProgram(context.Background(), rpcClient, mint, "")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
-	if program.String() != protocol.Token2022Program {
+	if program.String() != paycore.Token2022Program {
 		t.Fatalf("expected token2022 program, got %s", program)
 	}
 }
@@ -417,7 +417,7 @@ func TestResolveRecentBlockhashRejectsInvalidProvided(t *testing.T) {
 }
 
 func TestSplitAmountsRejectsPartiallyNumericAmount(t *testing.T) {
-	splits := []protocol.Split{
+	splits := []paycore.Split{
 		{Recipient: testutil.NewPrivateKey().PublicKey().String(), Amount: "100abc"},
 	}
 	if _, err := SplitAmounts(1000, splits); err == nil {

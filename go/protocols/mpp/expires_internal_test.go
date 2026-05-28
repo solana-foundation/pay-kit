@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 func TestChargeOptionsThreadsExpiresIn(t *testing.T) {
@@ -36,5 +36,5 @@ func TestChargeOptionsZeroExpiresInLeavesDefault(t *testing.T) {
 	}
 }
 
-// guard the mpp.Seconds helper stays available for the threading above.
-var _ = mpp.Seconds
+// guard the core.Seconds helper stays available for the threading above.
+var _ = core.Seconds

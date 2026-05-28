@@ -22,18 +22,18 @@ jobs:
           GOCACHE: /tmp/go-build-cache
         run: |
           go test \
-            github.com/solana-foundation/pay-kit/go \
-            github.com/solana-foundation/pay-kit/go/client \
-            github.com/solana-foundation/pay-kit/go/errorcodes \
+            github.com/solana-foundation/pay-kit/go/paycore \
             github.com/solana-foundation/pay-kit/go/internal/utils \
             github.com/solana-foundation/pay-kit/go/paykit \
             github.com/solana-foundation/pay-kit/go/signer \
             github.com/solana-foundation/pay-kit/go/protocols/mpp \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/core \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/wire \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/intents \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/server \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/client \
+            github.com/solana-foundation/pay-kit/go/protocols/mpp/errorcodes \
             github.com/solana-foundation/pay-kit/go/protocols/x402 \
-            github.com/solana-foundation/pay-kit/go/protocol \
-            github.com/solana-foundation/pay-kit/go/protocol/core \
-            github.com/solana-foundation/pay-kit/go/protocol/intents \
-            github.com/solana-foundation/pay-kit/go/server \
             -coverprofile=coverage.out \
             -covermode=atomic
           ./scripts/check_coverage.sh coverage.out 90

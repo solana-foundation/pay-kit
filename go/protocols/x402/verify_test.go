@@ -11,8 +11,8 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/utils"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
@@ -35,8 +35,8 @@ func newFixture(t *testing.T) fixture {
 	authority := solana.NewWallet().PublicKey()
 	source := solana.NewWallet().PublicKey()
 	payTo := solana.NewWallet().PublicKey()
-	mint := solana.MustPublicKeyFromBase58(protocol.USDCMainnetMint)
-	tokenProgram := solana.MustPublicKeyFromBase58(protocol.TokenProgram)
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
 	computeBudget := solana.MustPublicKeyFromBase58(computeBudgetProgram)
 
 	dest, err := utils.FindAssociatedTokenAddressWithProgram(payTo, mint, tokenProgram)
@@ -101,7 +101,7 @@ func TestVerifyAcceptsValidTransaction(t *testing.T) {
 func TestVerifyAcceptsTrailingMemo(t *testing.T) {
 	f := newFixture(t)
 	memoKeyIdx := uint16(len(f.keys))
-	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(protocol.MemoProgram))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
 	memo := solana.CompiledInstruction{ProgramIDIndex: memoKeyIdx, Data: []byte("/paid")}
 	if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
 		t.Fatalf("expected memo-trailing tx to pass, got %v", err)
@@ -122,7 +122,7 @@ func TestVerifyRejectsTooFewInstructions(t *testing.T) {
 func TestVerifyRejectsTooManyInstructions(t *testing.T) {
 	f := newFixture(t)
 	memoKeyIdx := uint16(len(f.keys))
-	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(protocol.MemoProgram))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
 	memo := solana.CompiledInstruction{ProgramIDIndex: memoKeyIdx, Data: []byte("x")}
 	// 3 base + 4 memo = 7 instructions, over the cap of 6.
 	if err := verifyExactTransaction(f.tx(memo, memo, memo, memo), f.req); err == nil {
@@ -156,7 +156,7 @@ func TestVerifyRejectsWrongAmount(t *testing.T) {
 
 func TestVerifyRejectsWrongMint(t *testing.T) {
 	f := newFixture(t)
-	f.keys[2] = solana.MustPublicKeyFromBase58(protocol.USDTMainnetMint)
+	f.keys[2] = solana.MustPublicKeyFromBase58(paycore.USDTMainnetMint)
 	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for mint mismatch")
 	}
@@ -189,7 +189,7 @@ func TestVerifyRejectsNonTransferThirdInstruction(t *testing.T) {
 func TestVerifyRejectsUnknownTrailingProgram(t *testing.T) {
 	f := newFixture(t)
 	sysIdx := uint16(len(f.keys))
-	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(protocol.SystemProgram))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.SystemProgram))
 	rogue := solana.CompiledInstruction{ProgramIDIndex: sysIdx, Data: []byte{0}}
 	if err := verifyExactTransaction(f.tx(rogue), f.req); err == nil {
 		t.Error("expected rejection for unknown trailing instruction program")
@@ -245,8 +245,8 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	// Operator = a generated signer; payTo defaults to its pubkey.
 	op := signer.Generate()
 	opPub := solana.MustPublicKeyFromBase58(string(op.Pubkey()))
-	mint := solana.MustPublicKeyFromBase58(protocol.USDCMainnetMint)
-	tokenProgram := solana.MustPublicKeyFromBase58(protocol.TokenProgram)
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
 	authority := solana.NewWallet().PublicKey()
 	source := solana.NewWallet().PublicKey()
 	dest, err := utils.FindAssociatedTokenAddressWithProgram(opPub, mint, tokenProgram)
@@ -498,7 +498,7 @@ func TestVerifyRejectsTransferTooFewAccounts(t *testing.T) {
 
 func TestVerifyRejectsNonTokenTransferProgram(t *testing.T) {
 	f := newFixture(t)
-	f.keys[6] = solana.MustPublicKeyFromBase58(protocol.SystemProgram) // ix[2] program now System
+	f.keys[6] = solana.MustPublicKeyFromBase58(paycore.SystemProgram) // ix[2] program now System
 	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[2] program is not an SPL token program")
 	}
@@ -506,7 +506,7 @@ func TestVerifyRejectsNonTokenTransferProgram(t *testing.T) {
 
 func TestVerifyRejectsComputeLimitWrongProgram(t *testing.T) {
 	f := newFixture(t)
-	f.keys[5] = solana.MustPublicKeyFromBase58(protocol.SystemProgram) // compute ixs now point at System
+	f.keys[5] = solana.MustPublicKeyFromBase58(paycore.SystemProgram) // compute ixs now point at System
 	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[0] program is not ComputeBudget")
 	}

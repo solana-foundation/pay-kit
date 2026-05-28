@@ -32,7 +32,7 @@ package main
 import (
     "net/http"
 
-    "github.com/solana-foundation/pay-kit/go/server"
+    "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
 
 func main() {
@@ -72,7 +72,7 @@ on every protected request.
 ### Client
 
 ```go
-import "github.com/solana-foundation/pay-kit/go/client"
+import "github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 
 httpClient := client.NewClient(signer, rpcClient)
 resp, err := httpClient.Get("https://api.example/paid")
@@ -205,10 +205,19 @@ for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 
 ```text
 go/
-├── client/                       HTTP client transport and credential builder
-├── server/                       PaymentMiddleware, Mpp handler, challenge issuer, verifier
-├── protocol/                     Solana wire format (challenge, intents, charge request)
-├── protocol/core/                Headers, credentials, receipts, base64url JSON
+├── paykit/                       umbrella API: x402 + MPP behind one Config and middleware
+├── paycore/                      shared Solana protocol layer (mints, token programs, ResolveMint)
+├── protocols/
+│   ├── mpp/                      MPP adapter that registers the Solana charge method
+│   │   ├── core/                 MPP type facade, replay store, expiry helpers, errors
+│   │   ├── wire/                 challenge, credential, receipt, base64url JSON
+│   │   ├── intents/              charge request intent
+│   │   ├── server/               PaymentMiddleware, Mpp handler, challenge issuer, verifier
+│   │   ├── client/               HTTP client transport and credential builder
+│   │   └── errorcodes/           canonical L6 fault codes
+│   └── x402/                     x402 "exact" adapter and structural transaction verifier
+├── signer/                       Ed25519 signer factories behind a KMS-ready interface
+├── kms/                          reserved for KMS-backed signers
 ├── internal/utils/               RPC client, transaction builders, ATA helpers
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod

@@ -7,7 +7,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/internal/utils"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 // Program IDs the structural verifier recognises. Mirror the Rust
@@ -69,7 +69,7 @@ func verifyExactTransaction(tx *solana.Transaction, req transferRequirements) er
 			return err
 		}
 		switch prog.String() {
-		case protocol.MemoProgram, lighthouseProgram:
+		case paycore.MemoProgram, lighthouseProgram:
 			continue
 		default:
 			return fmt.Errorf("x402: unexpected instruction %d program %s", i, prog)
@@ -110,7 +110,7 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return err
 	}
 	progStr := prog.String()
-	if progStr != protocol.TokenProgram && progStr != protocol.Token2022Program {
+	if progStr != paycore.TokenProgram && progStr != paycore.Token2022Program {
 		return errors.New("x402: ix[2] is not an SPL token transfer")
 	}
 	// transferChecked: discriminator 12, then u64 amount, then u8 decimals.

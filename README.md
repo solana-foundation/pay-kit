@@ -139,7 +139,7 @@ receipt = await mpp.verify_credential(credential)
 <summary>Go</summary>
 
 ```go
-import "github.com/solana-foundation/pay-kit/go/server"
+import "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 
 m, _ := server.New(server.Config{
     Recipient: "RecipientPubkey...",

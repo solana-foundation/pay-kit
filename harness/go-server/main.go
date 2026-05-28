@@ -28,13 +28,13 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/errorcodes"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/errorcodes"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-	"github.com/solana-foundation/pay-kit/go/server"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
@@ -160,7 +160,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		log.Fatalf("server.New: %v", err)
 	}
 
-	splits := []protocol.Split{}
+	splits := []paycore.Split{}
 	_ = json.Unmarshal([]byte(splitsJSON), &splits)
 
 	// Manual flow mirrors harness/go-server/main.go.serveProtected:
@@ -184,7 +184,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 			FeePayer:    paymentMode != "push",
 			Splits:      splits,
 		}
-		auth := r.Header.Get(mpp.AuthorizationHeader)
+		auth := r.Header.Get(core.AuthorizationHeader)
 		if auth == "" {
 			challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
 			if err != nil {
@@ -199,12 +199,12 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		credential, err := mpp.ParseAuthorization(auth)
+		credential, err := core.ParseAuthorization(auth)
 		if err != nil {
 			writeMPP402(w, challenge, err)
 			return
 		}
-		var expected mpp.ChargeRequest
+		var expected core.ChargeRequest
 		if err := challenge.Request.Decode(&expected); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -214,10 +214,10 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 			writeMPP402(w, challenge, err)
 			return
 		}
-		receiptHeader, _ := mpp.FormatReceipt(receipt)
+		receiptHeader, _ := core.FormatReceipt(receipt)
 		w.Header().Set("Content-Type", "application/json")
 		if receiptHeader != "" {
-			w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
+			w.Header().Set(core.PaymentReceiptHeader, receiptHeader)
 		}
 		w.Header().Set(settlementHeader, receipt.Reference)
 		w.WriteHeader(http.StatusOK)
@@ -298,8 +298,8 @@ func pow10(n int) int {
 // code via errorcodes.CanonicalFromError so the cross-SDK fault matrix
 // (G39 / caveat #7) sees the same code from Go as from TS/Rust/Ruby
 // (e.g. wrong_network, charge_request_mismatch).
-func writeMPP402(w http.ResponseWriter, challenge mpp.PaymentChallenge, verifyErr error) {
-	header, err := mpp.FormatWWWAuthenticate(challenge)
+func writeMPP402(w http.ResponseWriter, challenge core.PaymentChallenge, verifyErr error) {
+	header, err := core.FormatWWWAuthenticate(challenge)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -312,7 +312,7 @@ func writeMPP402(w http.ResponseWriter, challenge mpp.PaymentChallenge, verifyEr
 	}
 	w.Header().Set("cache-control", "no-store")
 	w.Header().Set("content-type", "application/problem+json")
-	w.Header().Set(mpp.WWWAuthenticateHeader, header)
+	w.Header().Set(core.WWWAuthenticateHeader, header)
 	w.WriteHeader(http.StatusPaymentRequired)
 	_ = json.NewEncoder(w).Encode(errorcodes.NewPaymentRequiredBody(code, message))
 }

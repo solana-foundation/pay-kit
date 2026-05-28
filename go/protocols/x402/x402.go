@@ -20,8 +20,8 @@ import (
 	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/protocol"
 )
 
 const (
@@ -137,7 +137,7 @@ type SettlementResponse struct {
 
 func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	coin := a.settlementCoin(gate)
-	mint := protocol.ResolveMint(coin, a.cfg.Network.MintsLabel())
+	mint := paycore.ResolveMint(coin, a.cfg.Network.MintsLabel())
 	amount := a.totalUnits(gate, coin)
 	payTo := a.payTo(gate)
 	extra := Extra{
@@ -295,7 +295,7 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 func (a *Adapter) transferRequirements(gate *paykit.Gate) (transferRequirements, error) {
 	coin := a.settlementCoin(gate)
 	label := a.cfg.Network.MintsLabel()
-	mintStr := protocol.ResolveMint(coin, label)
+	mintStr := paycore.ResolveMint(coin, label)
 	mint, err := solana.PublicKeyFromBase58(mintStr)
 	if err != nil {
 		return transferRequirements{}, fmt.Errorf("resolve mint %q: %w", coin, err)
@@ -305,7 +305,7 @@ func (a *Adapter) transferRequirements(gate *paykit.Gate) (transferRequirements,
 	if err != nil {
 		return transferRequirements{}, fmt.Errorf("recipient %q: %w", payToStr, err)
 	}
-	tokenProgram, err := solana.PublicKeyFromBase58(protocol.DefaultTokenProgramForCurrency(coin, label))
+	tokenProgram, err := solana.PublicKeyFromBase58(paycore.DefaultTokenProgramForCurrency(coin, label))
 	if err != nil {
 		return transferRequirements{}, fmt.Errorf("token program: %w", err)
 	}

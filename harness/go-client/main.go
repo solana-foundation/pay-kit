@@ -25,8 +25,8 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/client"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 )
 
 const fixtureSettlementHeader = "x-fixture-settlement"
@@ -158,7 +158,7 @@ func runLegacyInterop() {
 	wwwAuth := resp.Header.Get("WWW-Authenticate")
 	assert(wwwAuth != "", "missing WWW-Authenticate header")
 	assert(strings.HasPrefix(wwwAuth, "Payment "), "should use Payment scheme")
-	challenge, err := mpp.ParseWWWAuthenticate(wwwAuth)
+	challenge, err := core.ParseWWWAuthenticate(wwwAuth)
 	mustOK(err, "parse challenge")
 	assert(string(challenge.Method) == "solana", "method should be solana, got %s", challenge.Method)
 	assert(string(challenge.Intent) == "charge", "intent should be charge, got %s", challenge.Intent)

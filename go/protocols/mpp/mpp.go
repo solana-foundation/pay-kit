@@ -12,11 +12,11 @@ import (
 	"sync"
 
 	solana "github.com/gagliardetto/solana-go"
-	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/internal/utils"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/protocol"
-	"github.com/solana-foundation/pay-kit/go/server"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
 
 // signerBridge adapts a paykit.Signer (Sign(ctx, []byte) ([]byte,
@@ -124,11 +124,11 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 	if err != nil {
 		return nil
 	}
-	wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
+	wwwAuth, err := core.FormatWWWAuthenticate(challenge)
 	if err != nil {
 		return nil
 	}
-	return map[string]string{mpp.WWWAuthenticateHeader: wwwAuth}
+	return map[string]string{core.WWWAuthenticateHeader: wwwAuth}
 }
 
 func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
@@ -144,7 +144,7 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
 	}
-	credential, err := mpp.ParseAuthorization(auth)
+	credential, err := core.ParseAuthorization(auth)
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
@@ -155,7 +155,7 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
 	}
-	var expected mpp.ChargeRequest
+	var expected core.ChargeRequest
 	if err := challenge.Request.Decode(&expected); err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
@@ -163,10 +163,10 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
 	}
-	receiptHeader, err := mpp.FormatReceipt(receipt)
+	receiptHeader, err := core.FormatReceipt(receipt)
 	headers := map[string]string{}
 	if err == nil {
-		headers[mpp.PaymentReceiptHeader] = receiptHeader
+		headers[core.PaymentReceiptHeader] = receiptHeader
 	}
 	headers["x-payment-settlement-signature"] = receipt.Reference
 	return &paykit.Payment{
@@ -273,16 +273,16 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 	// expiry. server.ChargeWithOptions falls back to 5 minutes when
 	// Expires is "", so a zero MPPConfig.ExpiresIn keeps that default.
 	if a.cfg.MPP.ExpiresIn > 0 {
-		opts.Expires = mpp.Seconds(uint64(a.cfg.MPP.ExpiresIn.Seconds()))
+		opts.Expires = core.Seconds(uint64(a.cfg.MPP.ExpiresIn.Seconds()))
 	}
 	for addr, fee := range gate.FeeWithin {
-		opts.Splits = append(opts.Splits, protocol.Split{
+		opts.Splits = append(opts.Splits, paycore.Split{
 			Recipient: string(addr),
 			Amount:    a.priceUnits(fee),
 		})
 	}
 	for addr, fee := range gate.FeeOnTop {
-		opts.Splits = append(opts.Splits, protocol.Split{
+		opts.Splits = append(opts.Splits, paycore.Split{
 			Recipient: string(addr),
 			Amount:    a.priceUnits(fee),
 		})
@@ -294,7 +294,7 @@ func decimalsFor(coin string) int {
 	// Mirrors the canonical mint table; all six-decimal stablecoins
 	// share the same number, but PYUSD / USDG / CASH on Token-2022
 	// still return 6 today.
-	_ = protocol.ResolveMint
+	_ = paycore.ResolveMint
 	return 6
 }
 

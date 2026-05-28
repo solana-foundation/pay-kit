@@ -16,10 +16,10 @@ import (
 	"os"
 	"strings"
 
-	mpp "github.com/solana-foundation/pay-kit/go"
-	"github.com/solana-foundation/pay-kit/go/errorcodes"
-	"github.com/solana-foundation/pay-kit/go/protocol/core"
-	"github.com/solana-foundation/pay-kit/go/server"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/errorcodes"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/wire"
 )
 
 const csp = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'"
@@ -75,7 +75,7 @@ func main() {
 	http.HandleFunc("/fortune", func(w http.ResponseWriter, r *http.Request) {
 		// Authenticated — verify credential on-chain.
 		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Payment ") {
-			credential, err := core.ParseAuthorization(auth)
+			credential, err := wire.ParseAuthorization(auth)
 			if err != nil {
 				log.Printf("parse_authorization: %v", err)
 			} else {
@@ -83,13 +83,13 @@ func main() {
 				if err != nil {
 					log.Printf("verify_credential: %v", err)
 				} else {
-					receiptHeader, err := mpp.FormatReceipt(receipt)
+					receiptHeader, err := core.FormatReceipt(receipt)
 					if err != nil {
 						http.Error(w, err.Error(), http.StatusInternalServerError)
 						return
 					}
 					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
+					w.Header().Set(core.PaymentReceiptHeader, receiptHeader)
 					_ = json.NewEncoder(w).Encode(map[string]string{"fortune": "A smooth long journey!"})
 					return
 				}
@@ -112,7 +112,7 @@ func main() {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		wwwAuth, err := core.FormatWWWAuthenticate(mpp.PaymentChallenge(challenge))
+		wwwAuth, err := wire.FormatWWWAuthenticate(core.PaymentChallenge(challenge))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

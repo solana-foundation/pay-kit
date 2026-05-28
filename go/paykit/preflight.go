@@ -13,7 +13,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/utils"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 // secretEnvVar is the orchestrator-supplied env var the MPP HMAC
@@ -167,11 +167,11 @@ func checkFeePayerSOL(cfg Config, rpcClient preflightRPC, autofix bool) error {
 }
 
 func checkRecipientATA(cfg Config, coin Stablecoin, rpcClient preflightRPC, autofix bool) error {
-	mint := protocol.ResolveMint(string(coin), cfg.Network.MintsLabel())
+	mint := paycore.ResolveMint(string(coin), cfg.Network.MintsLabel())
 	if mint == "" || mint == string(coin) {
 		return nil // SOL-native or unknown coin; nothing to check.
 	}
-	tokenProgram := protocol.DefaultTokenProgramForCurrency(string(coin), cfg.Network.MintsLabel())
+	tokenProgram := paycore.DefaultTokenProgramForCurrency(string(coin), cfg.Network.MintsLabel())
 	recipient, err := solana.PublicKeyFromBase58(string(cfg.Operator.Recipient))
 	if err != nil {
 		return &PreflightError{Stage: "ata", Detail: err.Error()}

@@ -11,7 +11,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
-	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 // rpcStub allows fine-grained control over RPC behavior for branch coverage.
@@ -276,4 +276,4 @@ func TestBuildCreateAssociatedTokenAccountFindError(t *testing.T) {
 
 // Reference rpc to silence unused import in older Go versions.
 var _ = rpc.CommitmentConfirmed
-var _ = protocol.MemoProgram
+var _ = paycore.MemoProgram
