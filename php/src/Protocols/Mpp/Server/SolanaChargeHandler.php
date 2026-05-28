@@ -69,9 +69,11 @@ final class SolanaChargeHandler
      *        inject a shared atomic store (Redis, Postgres) so replay
      *        protection survives restarts and worker pools.
      */
+    private readonly RpcGateway $rpc;
+
     public function __construct(
         private readonly ChargeServer $challenges,
-        private readonly RpcClient $rpc,
+        RpcClient|RpcGateway $rpc,
         private readonly ?Keypair $feePayer = null,
         private readonly string $network = 'mainnet',
         private readonly string $settlementHeader = 'x-payment-settlement-signature',
@@ -81,6 +83,7 @@ final class SolanaChargeHandler
         private readonly int $confirmationDelayMicros = 250_000,
         ?Store $replayStore = null,
     ) {
+        $this->rpc = $rpc instanceof RpcGateway ? $rpc : new SolanaRpcGateway($rpc);
         $this->verifier = $verifier ?? new SolanaChargeTransactionVerifier();
         $this->transactionVerifier = $transactionVerifier
             ?? ($this->verifier instanceof TransactionPayloadVerifier ? $this->verifier : new SolanaChargeTransactionVerifier());
