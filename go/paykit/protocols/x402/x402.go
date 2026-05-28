@@ -198,45 +198,54 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction base64: %w", err), Gate: req.Gate}
 	}
-	// Deserialize as a versioned (v0 or legacy) transaction.
+	// Deserialize as a versioned (v0 or legacy) transaction. Only
+	// for replay-reservation + signature-slot inspection; we ship
+	// the ORIGINAL wire bytes through unchanged when no facilitator
+	// signing is needed, so the on-chain tx ID stays exactly what
+	// the client computed and any third-party message-bytes diff
+	// between solana-go's marshaller and the client's serializer
+	// can't corrupt the wire payload.
 	tx, err := solana.TransactionFromDecoder(bin.NewBinDecoder(bytes.NewBuffer(rawTx).Bytes()))
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("transaction decode: %w", err), Gate: req.Gate}
 	}
-	// Replay-store reservation.
 	hash := tx.Signatures[0].String()
 	if _, loaded := a.replay.LoadOrStore(hash, struct{}{}); loaded {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
 	}
-	// Partial-sign as the operator signer if it isn't already a
-	// signature on the transaction (the client may have signed with
-	// the operator's pubkey when the operator is fee-payer).
+	// Decide whether the operator needs to cosign: only when the
+	// operator's pubkey is in the static account list AND its
+	// signature slot is still zero. Otherwise pass the bytes through
+	// untouched.
+	cosign := false
+	cosignIdx := -1
 	if priv := a.cfg.Operator.Signer.SecretKey(); priv != nil {
-		msg, err := tx.Message.MarshalBinary()
-		if err != nil {
-			return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
-		}
-		// Find the fee-payer index; for a versioned tx that is the
-		// first account in the static accounts list. Replace the
-		// placeholder zero-signature at that index with our signature
-		// when needed.
 		operatorPub := ed25519.PrivateKey(priv).Public().(ed25519.PublicKey)
 		var operatorKey solana.PublicKey
 		copy(operatorKey[:], operatorPub)
 		for i, key := range tx.Message.AccountKeys {
-			if key == operatorKey && i < len(tx.Signatures) {
-				if tx.Signatures[i].IsZero() {
-					sig := ed25519.Sign(ed25519.PrivateKey(priv), msg)
-					var solSig solana.Signature
-					copy(solSig[:], sig)
-					tx.Signatures[i] = solSig
-				}
+			if key == operatorKey && i < len(tx.Signatures) && tx.Signatures[i].IsZero() {
+				cosign = true
+				cosignIdx = i
+				break
 			}
 		}
 	}
-	wire, err := tx.MarshalBinary()
-	if err != nil {
-		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	wire := rawTx
+	if cosign {
+		priv := a.cfg.Operator.Signer.SecretKey()
+		msg, err := tx.Message.MarshalBinary()
+		if err != nil {
+			return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+		}
+		raw := ed25519.Sign(ed25519.PrivateKey(priv), msg)
+		var solSig solana.Signature
+		copy(solSig[:], raw)
+		tx.Signatures[cosignIdx] = solSig
+		wire, err = tx.MarshalBinary()
+		if err != nil {
+			return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+		}
 	}
 	signature, err := a.rpc.SendEncodedTransactionWithOpts(context.Background(),
 		base64.StdEncoding.EncodeToString(wire),

@@ -5,6 +5,14 @@
 // (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors
 // harness/lua-server/server.lua, harness/ruby-server/server.rb and
 // harness/php-server/server.php.
+//
+// The x402 path routes through paykit.Client.Require so the umbrella
+// adapter is the load-bearing surface under test. The MPP path
+// bypasses the umbrella and uses the legacy server.Mpp +
+// server.PaymentMiddleware directly so the harness can inject
+// scenario-specific splits, payment modes, and replay-source routes
+// the way the PHP server does (the umbrella's Gate cannot carry the
+// raw methodDetails the harness needs to mutate).
 package main
 
 import (
@@ -17,10 +25,16 @@ import (
 	"strconv"
 	"strings"
 
+	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
+
+	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
 	"github.com/solana-foundation/pay-kit/go/paykit/signer"
+	"github.com/solana-foundation/pay-kit/go/protocol"
+	"github.com/solana-foundation/pay-kit/go/server"
 )
 
 type readyMessage struct {
@@ -31,81 +45,16 @@ type readyMessage struct {
 }
 
 func main() {
-	protocol := strings.ToLower(os.Getenv("PAY_KIT_INTEROP_PROTOCOL"))
-	if protocol == "" {
+	protocolMode := strings.ToLower(os.Getenv("PAY_KIT_INTEROP_PROTOCOL"))
+	if protocolMode == "" {
 		switch {
 		case os.Getenv("X402_INTEROP_RPC_URL") != "":
-			protocol = "x402"
+			protocolMode = "x402"
 		case os.Getenv("MPP_INTEROP_RPC_URL") != "":
-			protocol = "mpp"
+			protocolMode = "mpp"
 		default:
 			log.Fatal("set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or PAY_KIT_INTEROP_PROTOCOL")
 		}
-	}
-
-	cfg := paykit.Config{
-		Network: paykit.SolanaLocalnet,
-	}
-	// preflight: false for the harness; the harness preps surfpool.
-	preflight := false
-	cfg.Preflight = &preflight
-
-	switch protocol {
-	case "x402":
-		rpcURL := requireEnv("X402_INTEROP_RPC_URL")
-		payTo := requireEnv("X402_INTEROP_PAY_TO")
-		facilitator := requireEnv("X402_INTEROP_FACILITATOR_SECRET_KEY")
-		cfg.RPCURL = rpcURL
-		cfg.Accept = []paykit.Scheme{paykit.X402}
-		cfg.Operator = paykit.Operator{
-			Recipient: paykit.Address(payTo),
-			Signer:    signer.MustFromJSON(facilitator),
-			FeePayer:  true,
-		}
-		cfg.MPP = paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402")}
-	case "mpp":
-		rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
-		payTo := requireEnv("MPP_INTEROP_PAY_TO")
-		secret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
-		mint := optionalEnv("MPP_INTEROP_MINT", "USDC")
-		feePayerKey := os.Getenv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-		cfg.RPCURL = rpcURL
-		cfg.Accept = []paykit.Scheme{paykit.MPP}
-		// Pin the stablecoin the harness asked for so the MPP adapter
-		// resolves the right mint pubkey when comparing the credential
-		// transaction's instructions against the gate.
-		cfg.Stablecoins = []paykit.Stablecoin{paykit.Stablecoin(mint)}
-		op := paykit.Operator{
-			Recipient: paykit.Address(payTo),
-			FeePayer:  feePayerKey != "",
-		}
-		if feePayerKey != "" {
-			op.Signer = signer.MustFromJSON(feePayerKey)
-		}
-		cfg.Operator = op
-		cfg.MPP = paykit.MPPConfig{
-			Realm:                  "Harness",
-			ChallengeBindingSecret: []byte(secret),
-		}
-	default:
-		log.Fatalf("unknown protocol %q", protocol)
-	}
-
-	client, err := paykit.New(cfg)
-	if err != nil {
-		log.Fatalf("paykit.New: %v", err)
-	}
-
-	resourcePath := optionalEnv("X402_INTEROP_RESOURCE_PATH",
-		optionalEnv("MPP_INTEROP_RESOURCE_PATH", "/paid"))
-	amount := optionalEnv("X402_INTEROP_AMOUNT",
-		optionalEnv("MPP_INTEROP_AMOUNT", "1000"))
-	// Convert the integer-base-units amount the harness passes back
-	// to a decimal USD figure (assume 6 decimals).
-	amountUSD := convertUnitsToUSD(amount, 6)
-	gate := paykit.Gate{
-		Amount: paykit.MustParseUSD(amountUSD),
-		Desc:   resourcePath,
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -114,27 +63,25 @@ func main() {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	// Settlement header the harness configured for this scenario.
-	// Default mirrors the adapter's wire constant; scenarios override
-	// (e.g. x-fixture-settlement) so the runner can extract the
-	// signature off a known name.
+	resourcePath := optionalEnv("X402_INTEROP_RESOURCE_PATH",
+		optionalEnv("MPP_INTEROP_RESOURCE_PATH", "/paid"))
 	settlementHeader := optionalEnv("X402_INTEROP_SETTLEMENT_HEADER",
 		optionalEnv("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature"))
 
 	mux := http.NewServeMux()
-	mux.Handle(resourcePath, client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if pmt, ok := paykit.PaymentFrom(r.Context()); ok {
-			// Add the harness-configured alias on top of the
-			// adapter's canonical settlement headers.
-			w.Header().Set(settlementHeader, pmt.Transaction)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": protocol})
-	})))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+
+	switch protocolMode {
+	case "x402":
+		mountX402(mux, resourcePath, settlementHeader)
+	case "mpp":
+		mountMPP(mux, resourcePath, settlementHeader)
+	default:
+		log.Fatalf("unknown protocol %q", protocolMode)
+	}
 
 	if err := json.NewEncoder(os.Stdout).Encode(readyMessage{
 		Type: "ready", Implementation: "go-paykit", Role: "server", Port: port,
@@ -143,6 +90,135 @@ func main() {
 	}
 
 	log.Fatal(http.Serve(ln, mux))
+}
+
+func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
+	rpcURL := requireEnv("X402_INTEROP_RPC_URL")
+	payTo := requireEnv("X402_INTEROP_PAY_TO")
+	facilitator := requireEnv("X402_INTEROP_FACILITATOR_SECRET_KEY")
+	amount := optionalEnv("X402_INTEROP_AMOUNT", "1000")
+
+	preflight := false
+	cfg := paykit.Config{
+		Network:   paykit.SolanaLocalnet,
+		Preflight: &preflight,
+		RPCURL:    rpcURL,
+		Accept:    []paykit.Scheme{paykit.X402},
+		Operator: paykit.Operator{
+			Recipient: paykit.Address(payTo),
+			Signer:    signer.MustFromJSON(facilitator),
+			FeePayer:  true,
+		},
+		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402")},
+	}
+	client, err := paykit.New(cfg)
+	if err != nil {
+		log.Fatalf("paykit.New: %v", err)
+	}
+
+	amountUSD := convertUnitsToUSD(amount, 6)
+	gate := paykit.Gate{Amount: paykit.MustParseUSD(amountUSD), Desc: resourcePath}
+
+	mux.Handle(resourcePath, client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if pmt, ok := paykit.PaymentFrom(r.Context()); ok {
+			w.Header().Set(settlementHeader, pmt.Transaction)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402"})
+	})))
+}
+
+func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
+	rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
+	payTo := requireEnv("MPP_INTEROP_PAY_TO")
+	mint := requireEnv("MPP_INTEROP_MINT")
+	amountUnits := requireEnv("MPP_INTEROP_AMOUNT")
+	mppSecret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
+	network := optionalEnv("MPP_INTEROP_NETWORK", "localnet")
+	paymentMode := optionalEnv("MPP_INTEROP_PAYMENT_MODE", "pull")
+	replayPath := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH")
+	replayAmount := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_AMOUNT")
+	feePayerJSON := requireEnv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
+	splitsJSON := optionalEnv("MPP_INTEROP_SPLITS", "[]")
+
+	feePayer := privateKeyFromJSON(feePayerJSON)
+	rpcClient := rpc.New(rpcURL)
+
+	srv, err := server.New(server.Config{
+		Recipient:      payTo,
+		Currency:       mint,
+		Decimals:       6,
+		Network:        network,
+		RPCURL:         rpcURL,
+		SecretKey:      mppSecret,
+		Realm:          "go-paykit",
+		FeePayerSigner: walletSignerFor(feePayer),
+		RPC:            rpcClient,
+	})
+	if err != nil {
+		log.Fatalf("server.New: %v", err)
+	}
+
+	splits := []protocol.Split{}
+	_ = json.Unmarshal([]byte(splitsJSON), &splits)
+
+	chargeFn := func(req *http.Request) (string, server.ChargeOptions, error) {
+		path := req.URL.Path
+		amt := amountUnits
+		if replayPath != "" && path == replayPath && replayAmount != "" {
+			amt = replayAmount
+		}
+		opts := server.ChargeOptions{
+			Description: "Go PayKit harness " + path,
+			FeePayer:    paymentMode != "push",
+			Splits:      splits,
+		}
+		return amt, opts, nil
+	}
+
+	handler := server.PaymentMiddleware(srv, chargeFn)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if receipt, ok := server.ReceiptFromContext(r.Context()); ok {
+			w.Header().Set(settlementHeader, receipt.Reference)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "mpp"})
+	}))
+
+	mux.Handle(resourcePath, handler)
+	if replayPath != "" && replayPath != resourcePath {
+		mux.Handle(replayPath, handler)
+	}
+}
+
+func privateKeyFromJSON(raw string) solana.PrivateKey {
+	var ints []int
+	if err := json.Unmarshal([]byte(raw), &ints); err != nil {
+		log.Fatalf("MPP_INTEROP_FEE_PAYER_SECRET_KEY decode: %v", err)
+	}
+	b := make([]byte, len(ints))
+	for i, v := range ints {
+		b[i] = byte(v)
+	}
+	pk := solana.PrivateKey(b)
+	return pk
+}
+
+// walletSignerFor adapts a solana.PrivateKey into the utils.Signer
+// interface server.Config expects.
+func walletSignerFor(pk solana.PrivateKey) walletSignerImpl {
+	return walletSignerImpl{pk: pk}
+}
+
+type walletSignerImpl struct {
+	pk solana.PrivateKey
+}
+
+func (w walletSignerImpl) PublicKey() solana.PublicKey {
+	return w.pk.PublicKey()
+}
+
+func (w walletSignerImpl) Sign(payload []byte) (solana.Signature, error) {
+	return w.pk.Sign(payload)
 }
 
 func requireEnv(name string) string {
@@ -160,8 +236,6 @@ func optionalEnv(name, def string) string {
 	return def
 }
 
-// convertUnitsToUSD turns an integer-base-units amount into a decimal
-// USD string given the stablecoin's decimals (USDC = 6).
 func convertUnitsToUSD(amount string, decimals int) string {
 	n, err := strconv.Atoi(amount)
 	if err != nil {
@@ -179,3 +253,8 @@ func pow10(n int) int {
 	}
 	return out
 }
+
+// Compile-time interface bind: the harness's umbrella import keeps
+// the import edge live so the schemes packages register their
+// adapters in their init blocks.
+var _ = mpp.AuthorizationHeader
