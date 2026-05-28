@@ -14,7 +14,7 @@ use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Protocols\Mpp\MppConfig;
 use SolanaPhpSdk\Util\Base58;
-use PayKit\PayCore\Rfc3339Parser;
+use PayKit\Protocols\Mpp\Core\Rfc3339Parser;
 use PayKit\PayCore\Solana\Mints;
 use PayKit\Payment;
 use PayKit\Price;

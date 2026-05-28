@@ -6,10 +6,10 @@ namespace PayKit\Protocols\Mpp\Server;
 
 use InvalidArgumentException;
 use Throwable;
-use PayKit\PayCore\Challenge;
+use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\PayCore\Solana\Mints;
-use PayKit\PayCore\Credential;
-use PayKit\PayCore\Json;
+use PayKit\Protocols\Mpp\Core\Credential;
+use PayKit\Protocols\Mpp\Core\Json;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;

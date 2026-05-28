@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests;
+namespace PayKit\Tests\Protocols\Mpp\Core;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
-use PayKit\PayCore\Challenge;
-use PayKit\PayCore\Credential;
+use PayKit\Protocols\Mpp\Core\Challenge;
+use PayKit\Protocols\Mpp\Core\Credential;
 
 final class CredentialTest extends TestCase
 {
@@ -58,7 +58,7 @@ final class CredentialTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Invalid credential JSON structure');
 
-        Credential::fromAuthorizationHeader('Payment ' . \PayKit\PayCore\Base64Url::encodeJson(['payload' => ['type' => 'signature']]));
+        Credential::fromAuthorizationHeader('Payment ' . \PayKit\Protocols\Mpp\Core\Base64Url::encodeJson(['payload' => ['type' => 'signature']]));
     }
 
     public function testRejectsNonObjectPayload(): void
@@ -68,7 +68,7 @@ final class CredentialTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Credential payload must be an object');
 
-        Credential::fromAuthorizationHeader('Payment ' . \PayKit\PayCore\Base64Url::encodeJson([
+        Credential::fromAuthorizationHeader('Payment ' . \PayKit\Protocols\Mpp\Core\Base64Url::encodeJson([
             'challenge' => $challenge->toEcho()->toArray(),
             'payload' => 'sig',
         ]));

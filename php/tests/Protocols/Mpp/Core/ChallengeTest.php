@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests;
+namespace PayKit\Tests\Protocols\Mpp\Core;
 
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
-use PayKit\PayCore\Challenge;
-use PayKit\PayCore\ChallengeEcho;
+use PayKit\Protocols\Mpp\Core\Challenge;
+use PayKit\Protocols\Mpp\Core\ChallengeEcho;
 
 final class ChallengeTest extends TestCase
 {

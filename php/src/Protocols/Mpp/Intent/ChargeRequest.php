@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Protocols\Mpp\Intent;
 
 use InvalidArgumentException;
-use PayKit\PayCore\Json;
+use PayKit\Protocols\Mpp\Core\Json;
 
 /**
  * Represents the MPP charge intent request embedded in a challenge.

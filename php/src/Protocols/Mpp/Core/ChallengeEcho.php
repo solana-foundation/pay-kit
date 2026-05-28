@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\PayCore;
+namespace PayKit\Protocols\Mpp\Core;
 
 /**
  * Carries the challenge fields echoed inside a Payment credential.

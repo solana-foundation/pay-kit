@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests;
+namespace PayKit\Tests\Protocols\Mpp\Core;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use PayKit\PayCore\Json;
+use PayKit\Protocols\Mpp\Core\Json;
 
 final class JsonTest extends TestCase
 {

@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests;
+namespace PayKit\Tests\Protocols\Mpp\Core;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
-use PayKit\PayCore\Challenge;
-use PayKit\PayCore\Headers;
-use PayKit\PayCore\Receipt;
+use PayKit\Protocols\Mpp\Core\Challenge;
+use PayKit\Protocols\Mpp\Core\Headers;
+use PayKit\Protocols\Mpp\Core\Receipt;
 
 final class HeadersTest extends TestCase
 {

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests;
 
 use PHPUnit\Framework\TestCase;
-use PayKit\PayCore\Credential;
+use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;

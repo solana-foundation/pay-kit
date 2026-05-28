@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp\Server;
 
-use PayKit\PayCore\Challenge;
-use PayKit\PayCore\Credential;
+use PayKit\Protocols\Mpp\Core\Challenge;
+use PayKit\Protocols\Mpp\Core\Credential;
 
 /**
  * Carries the result of a payment credential verification attempt.

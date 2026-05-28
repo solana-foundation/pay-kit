@@ -7,7 +7,7 @@ namespace PayKit\Protocols\Mpp\Server;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
-use PayKit\PayCore\Credential;
+use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
