@@ -610,3 +610,29 @@ Ludo's call: `"mainnet"` is the canonical slug. `"mainnet-beta"` is the Solana R
 - `charge_with_options_rejects_too_many_splits`
 
 ---
+
+### #33 — No check for minimum remaining SOL balance for signers
+**ID:** `c4e9a3d1` · **File:** `crates/mpp/src/client/charge.rs`
+
+**Audit claim:** the client builder constructs SOL `system_instruction::transfer` instructions without verifying the signer retains lamports for fees + rent-exempt minimum. Three risks: drain the signer, leave it below rent (account swept at epoch boundary), or sign a tx that fails on-chain for insufficient funds.
+
+**Decision:** ❌ **rejected — threat does not apply to the product.**
+
+**Rationale:** The product is stablecoin-only. Signers transfer SPL tokens (USDC, USDT, PYUSD, USDG, CASH); the SOL `system_instruction::transfer` code path exists in the SDK but is not the user-facing flow. Walking through the cases:
+
+| Case | Outcome | Who catches it |
+|---|---|---|
+| Signer = fee_payer, insufficient SOL for fee | tx fails at broadcast/execution | Solana runtime — signer pays nothing |
+| Signer ≠ fee_payer (server-cosigned) | signer needs zero SOL | n/a |
+| Server fee-payer underfunded | server tx fails | spec §13.6 — server's responsibility, separate concern |
+| Signer drained below rent via SOL transfer | account swept silently at epoch | only matters if SOL transfer path is reached, which the product doesn't use |
+
+The "drain below rent" silent-sweep is the only failure mode the chain doesn't catch cleanly, and it requires the SOL transfer path the product doesn't expose to end users.
+
+**Prototype shipped briefly during analysis** (added `MIN_RENT_EXEMPT_LAMPORTS`, `MIN_FEE_RESERVE_LAMPORTS`, `skip_balance_check` opt-out, and a pre-sign `rpc.get_balance` check) but **reverted before commit** once we clarified that the SOL leg isn't a product path. The 11 tests that broke under the prototype confirmed how invasive the change would be relative to a threat that doesn't apply.
+
+**What this leaves on the table:**
+- Spec §13.6 (server fee-payer balance monitoring) is a real ask, but it targets the **server side** of fee-sponsored flows, not the client builder. Tracked separately if/when we address it.
+- The `build_sol_instructions` function stays public but unprotected. If a future caller starts using the SOL path for end-user-facing flows, the audit's concern becomes live again — revisit at that point.
+
+---
