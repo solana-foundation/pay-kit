@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -236,7 +235,7 @@ func readDotenv(path, key string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -274,7 +273,7 @@ func appendToDotenv(path, key, value string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if existed {
 		if _, err := f.WriteString("\n"); err != nil {
 			return err
@@ -297,4 +296,3 @@ func PreflightEnabledForTests(cfg Config) bool { return preflightEnabled(cfg) }
 
 // Sentinel kept for documentation purposes; preflight returns nil on
 // RPC failures so the caller can defer the error to the first request.
-var _ = errors.New("preflight RPC skipped")

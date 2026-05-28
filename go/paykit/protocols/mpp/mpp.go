@@ -11,11 +11,40 @@ import (
 	"strings"
 	"sync"
 
+	"crypto/ed25519"
+
+	solana "github.com/gagliardetto/solana-go"
 	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/server"
 )
+
+// signerBridge adapts a paykit.Signer (Sign(ctx, []byte) ([]byte,
+// error)) to the utils.Signer the legacy server.Mpp expects
+// (PublicKey() + Sign([]byte) (solana.Signature, error)). Only viable
+// for in-process signers where SecretKey() exposes the 64-byte blob;
+// remote KMS signers would need a separate bridge that respects ctx.
+type signerBridge struct {
+	paykit paykit.Signer
+}
+
+func (b *signerBridge) PublicKey() solana.PublicKey {
+	pub, _ := solana.PublicKeyFromBase58(string(b.paykit.Pubkey()))
+	return pub
+}
+
+func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
+	sk := b.paykit.SecretKey()
+	if sk == nil {
+		return solana.Signature{}, fmt.Errorf("signerBridge: signer does not expose a local secret key")
+	}
+	raw := ed25519.Sign(ed25519.PrivateKey(sk), payload)
+	var sig solana.Signature
+	copy(sig[:], raw)
+	return sig, nil
+}
 
 // Adapter is the paykit.Adapter implementation for MPP charge intent.
 // Holds the resolved paykit.Config and a per-(payTo,coin) cache of
@@ -144,14 +173,19 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	if v, ok := a.servers.Load(key); ok {
 		return v.(*server.Mpp), nil
 	}
+	var feePayer utils.Signer
+	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil && a.cfg.Operator.Signer.SecretKey() != nil {
+		feePayer = &signerBridge{paykit: a.cfg.Operator.Signer}
+	}
 	srv, err := server.New(server.Config{
-		Recipient: string(payTo),
-		SecretKey: string(a.cfg.MPP.ChallengeBindingSecret),
-		Currency:  coin,
-		Network:   a.cfg.Network.MintsLabel(),
-		Realm:     a.cfg.MPP.Realm,
-		RPCURL:    a.cfg.RPCURL,
-		Decimals:  uint8(decimalsFor(coin)), //nolint:gosec
+		Recipient:      string(payTo),
+		SecretKey:      string(a.cfg.MPP.ChallengeBindingSecret),
+		Currency:       coin,
+		Network:        a.cfg.Network.MintsLabel(),
+		Realm:          a.cfg.MPP.Realm,
+		RPCURL:         a.cfg.RPCURL,
+		Decimals:       uint8(decimalsFor(coin)), //nolint:gosec
+		FeePayerSigner: feePayer,
 	})
 	if err != nil {
 		return nil, err
