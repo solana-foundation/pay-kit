@@ -123,13 +123,18 @@ jobs:
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .
-      - name: Run Go PayKit interop smoke (mpp charge + x402 exact)
+      - name: Run Go PayKit interop matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: go,typescript
           MPP_INTEROP_INTENTS: charge,x402-exact
-          MPP_INTEROP_SCENARIOS: charge-basic
+          # Every charge scenario the go server is eligible for: basic,
+          # splits (Token + Token-2022), symbol resolution, idempotent
+          # replay store, compute-budget cap, over-split rejection, and
+          # the two L6 fault-matrix codes (wrong_network /
+          # charge_request_mismatch).
+          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay
           X402_INTEROP_CLIENTS: rust-x402
           X402_INTEROP_SERVERS: ""
           X402_INTEROP_SCENARIOS: x402-exact-basic

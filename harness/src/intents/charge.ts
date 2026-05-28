@@ -149,7 +149,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // PR adds its server id here.
     expectedCode: "wrong_network",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby"],
+    serverIds: ["typescript", "rust", "ruby", "go"],
   },
   {
     id: "charge-cross-route-replay",
@@ -172,7 +172,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // match the route's expected charge).
     expectedCode: "charge_request_mismatch",
     clientIds: ["typescript"],
-    serverIds: ["typescript", "rust", "ruby"],
+    serverIds: ["typescript", "rust", "ruby", "go"],
   },
   {
     // Symbol mode: harness sends the literal string "USDC" as currency,

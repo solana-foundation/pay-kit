@@ -29,6 +29,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	mpp "github.com/solana-foundation/pay-kit/go"
+	"github.com/solana-foundation/pay-kit/go/errorcodes"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	"github.com/solana-foundation/pay-kit/go/protocol"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
@@ -292,25 +293,26 @@ func pow10(n int) int {
 	return out
 }
 
-// writeMPP402 mirrors harness/go-server/main.go's writePaymentRequired
-// (canonical L6 problem+json body shared across MPP server SDKs).
+// writeMPP402 emits the canonical L6 problem+json body shared across
+// every MPP server SDK. The verifier error is mapped to its canonical
+// code via errorcodes.CanonicalFromError so the cross-SDK fault matrix
+// (G39 / caveat #7) sees the same code from Go as from TS/Rust/Ruby
+// (e.g. wrong_network, charge_request_mismatch).
 func writeMPP402(w http.ResponseWriter, challenge mpp.PaymentChallenge, verifyErr error) {
 	header, err := mpp.FormatWWWAuthenticate(challenge)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	body := map[string]any{
-		"error": "payment_invalid",
-	}
+	code := errorcodes.PaymentInvalid
+	message := "Payment is required (Go PayKit harness)."
 	if verifyErr != nil {
-		body["message"] = verifyErr.Error()
-	} else {
-		body["message"] = "Payment is required (Go PayKit harness)."
+		code = errorcodes.CanonicalFromError(verifyErr)
+		message = verifyErr.Error()
 	}
 	w.Header().Set("cache-control", "no-store")
 	w.Header().Set("content-type", "application/problem+json")
 	w.Header().Set(mpp.WWWAuthenticateHeader, header)
 	w.WriteHeader(http.StatusPaymentRequired)
-	_ = json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(errorcodes.NewPaymentRequiredBody(code, message))
 }
