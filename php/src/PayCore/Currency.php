@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit;
+namespace PayKit\PayCore;
 
 /**
  * Fiat denomination a price is quoted in. The wire format uses the

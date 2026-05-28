@@ -1,16 +1,21 @@
-# Laravel + MPP middleware
+# Laravel + PayKit umbrella
 
-A minimal Laravel 12 app that gates a route behind MPP using `App\Http\Middleware\MppCharge`.
+A minimal Laravel 12 app that gates routes behind the dual-protocol
+PayKit middleware. The `paykit:<name>` route-middleware alias is
+registered automatically by
+`PayKit\Frameworks\Laravel\PayKitServiceProvider`, and the active
+protocol (x402 or MPP) is picked per request from the client's
+`payment-signature` / `Authorization: Payment` header.
 
 ## Layout
 
 ```text
 examples/laravel/
-├── app/Http/Middleware/MppCharge.php   # Thin wrapper around SolanaChargeHandler
-├── bootstrap/app.php                   # Registers the `mpp.charge` middleware alias
-├── public/index.php                    # Laravel front controller
-├── routes/api.php                      # Route protected by `mpp.charge`
-└── composer.json                       # Pulls in laravel/framework and the local SDK
+├── app/Pricing.php          # Three named gates: paid, x402Only, marketplaceSale
+├── bootstrap/app.php        # Standard Laravel 12 bootstrap (provider auto-discovers)
+├── public/index.php         # Laravel front controller
+├── routes/api.php           # Routes protected by `paykit:<name>`
+└── composer.json            # Pulls in laravel/framework and the local SDK
 ```
 
 ## Run
@@ -26,55 +31,36 @@ php -S 127.0.0.1:4567 -t public
 In another terminal:
 
 ```bash
-# payment required → 402 with www-authenticate
+# payment required: 402 with x402 + mpp accepts entries
 curl -i http://127.0.0.1:4567/paid
 
-# payment successful → 200 with payment-receipt
+# payment successful: 200 with the per-protocol settlement header
 brew install pay
 pay curl http://127.0.0.1:4567/paid
 ```
 
 ## How the middleware works
 
-`MppCharge` delegates the full MPP charge lifecycle to the SDK's
-`SolanaChargeHandler`:
-
-1. Constructor builds the `ChargeRequest` (amount / currency / recipient
-   from `.env`) and configures `SolanaChargeHandler` with an `RpcClient`
-   pointing at the Solana RPC endpoint.
-2. `handle()` passes the `Authorization` header to the handler. The handler
-   verifies HMAC + expiry, pins the challenge against the expected request,
-   decodes and validates the client-signed transaction
-   (`SolanaChargeTransactionVerifier`), rejects Surfpool-signed transactions
-   on non-localnet networks, broadcasts via `sendTransaction`, and polls
-   until `confirmed`/`finalized`.
-3. On 402 (missing or invalid credential) the middleware short-circuits with
-   the SDK-built `application/problem+json` response and the
-   `www-authenticate` challenge header.
-4. On success (`ChargeSettlement`) the middleware forwards to the route via
-   `$next($request)` and attaches `payment-receipt` plus the on-chain
-   signature header to the route's response. The route keeps full control of
-   its own body.
-
-To use a fee-payer signer (so the client doesn't have to hold SOL), pass a
-`Keypair` to `SolanaChargeHandler`'s `feePayer:` parameter and set
-`methodDetails.feePayer = true` / `methodDetails.feePayerKey = $handler->feePayerPubkey()`
-on the `ChargeRequest`.
-
-## Apply the middleware to other routes
-
-In `routes/api.php`:
+The provider builds a `PayKit\Client` from `config('paykit')` and
+aliases the route middleware. Each route declares which named gate
+from `App\Pricing` to apply:
 
 ```php
-Route::get('/paid', fn () => response()->json(['ok' => true]))
-    ->middleware('mpp.charge');
+Route::get('/paid', fn () => response()->json(['ok' => true, 'paid' => true]))
+    ->middleware('paykit:paid');
+
+Route::get('/api/data', fn () => response()->json(['data' => []]))
+    ->middleware('paykit:x402Only');
+
+Route::post('/marketplace/buy', fn () => response()->json(['sold' => true]))
+    ->middleware('paykit:marketplaceSale');
 ```
 
-Or group several routes:
-
-```php
-Route::middleware('mpp.charge')->group(function () {
-    Route::get('/paid', /* ... */);
-    Route::post('/transcribe', /* ... */);
-});
-```
+`paykit:<name>` resolves `<name>` against the `App\Pricing` instance
+the container auto-wires. On a missing or invalid credential the
+middleware short-circuits with a 402 that lists both `x402` and `mpp`
+offers in `accepts[]`. On success the verified `PayKit\Payment` is
+attached to the request as the `paykit.payment` attribute and the
+per-protocol settlement header (`x-payment-settlement-signature` for
+MPP, `payment-response` for x402) is merged into the controller's
+response.

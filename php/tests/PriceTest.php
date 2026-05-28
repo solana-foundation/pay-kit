@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
-use PayKit\Currency;
+use PayKit\PayCore\Currency;
 use PayKit\Price;
-use PayKit\Stablecoin;
+use PayKit\PayCore\Stablecoin;
 use PHPUnit\Framework\TestCase;
 
 final class PriceTest extends TestCase

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests;
 
 use PayKit\Config;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Preflight;
 use PayKit\Protocols\Mpp\MppConfig;

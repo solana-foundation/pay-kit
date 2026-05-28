@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Symfony\Attribute;
+namespace PayKit\Frameworks\Symfony\Attribute;
 
 use Attribute;
 
 /**
  * Symfony controller-action attribute. Mirrors Laravel's
  * `middleware('paykit:report')` and Ruby's `require_payment! :report`.
- * Pair with {@see \PayKit\Symfony\EventListener\RequirePaymentListener}
+ * Pair with {@see \PayKit\Frameworks\Symfony\EventListener\RequirePaymentListener}
  * which intercepts kernel.controller_arguments and gates the action.
  *
  * Usage:

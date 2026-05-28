@@ -13,8 +13,8 @@ declare(strict_types=1);
 //   curl  http://127.0.0.1:4567/paid          # 402 with x402 + mpp accepts
 //   pay curl http://127.0.0.1:4567/paid       # 200 with payment-receipt
 //
-// The Client picks the protocol from the client's headers per
-// request: x402 via PAYMENT-SIGNATURE, MPP via Authorization: Payment.
+// The middleware picks the protocol from the client's headers per
+// request: x402 via `payment-signature`, MPP via `Authorization: Payment`.
 
 // solana-php's CurlHttpClient still calls the no-op-since-PHP-8.0
 // curl_close() which raises E_DEPRECATED on PHP 8.5+. Route those to
@@ -24,78 +24,67 @@ ini_set('display_errors', 'stderr');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
-use Nyholm\Psr7\Factory\Psr17Factory;
-use Nyholm\Psr7Server\ServerRequestCreator;
 use PayKit\Client;
 use PayKit\Config;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
-use PayKit\Network;
+use PayKit\PayCore\HttpFactory;
+use PayKit\PayCore\Network;
 use PayKit\Price;
-use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 
 // Boot the umbrella. Zero-config localnet defaults: Surfpool hosted
-// RPC, demo recipient, demo signer.
+// RPC, demo recipient, demo signer. `preflight: false` keeps the
+// example bootable offline; production callers leave preflight on.
 $client = new Client(new Config(
     network: Network::SolanaLocalnet,
-    preflight: false, // example boots offline-friendly
+    preflight: false,
     mpp: new MppConfig(realm: 'PHP example', challengeBindingSecret: 'local-dev-secret'),
 ));
 
 // One inline-priced gate. Accepts both x402 and MPP per default
 // Config::$accept (Protocol::X402, Protocol::Mpp in order).
 $paidGate = new Gate(amount: Price::usd('0.10'));
-
-// Wire a single PSR-15 middleware around a tiny "200 OK" handler.
 $middleware = new RequirePayment($client, $paidGate);
 
-$factory = new Psr17Factory();
-$creator = new ServerRequestCreator($factory, $factory, $factory, $factory);
-$request = $creator->fromGlobals();
+$request = HttpFactory::serverRequestFromGlobals();
+$path    = $request->getUri()->getPath();
+$factory = HttpFactory::responseFactory();
+$stream  = HttpFactory::streamFactory();
 
-if ($request->getUri()->getPath() === '/health') {
-    $factory->createResponse(200)
-        ->withHeader('content-type', 'application/json')
-        ->withBody($factory->createStream(json_encode(['ok' => true]) ?: '{}'))
-        ->getBody()
-        ->rewind();
-    echo json_encode(['ok' => true]);
+if ($path === '/health') {
+    HttpFactory::emit(
+        $factory->createResponse(200)
+            ->withHeader('content-type', 'application/json')
+            ->withBody($stream->createStream(json_encode(['ok' => true]) ?: '{}')),
+    );
     return;
 }
 
-if ($request->getUri()->getPath() !== '/paid') {
-    http_response_code(404);
-    header('content-type: application/json');
-    echo json_encode(['error' => 'not_found']);
+if ($path !== '/paid') {
+    HttpFactory::emit(
+        $factory->createResponse(404)
+            ->withHeader('content-type', 'application/json')
+            ->withBody($stream->createStream(json_encode(['error' => 'not_found']) ?: '{}')),
+    );
     return;
 }
 
 $response = $middleware->process(
     $request,
-    new class () implements Psr\Http\Server\RequestHandlerInterface {
+    new class ($factory, $stream) implements Psr\Http\Server\RequestHandlerInterface {
+        public function __construct(
+            private readonly Psr\Http\Message\ResponseFactoryInterface $factory,
+            private readonly Psr\Http\Message\StreamFactoryInterface $stream,
+        ) {
+        }
         public function handle(Psr\Http\Message\ServerRequestInterface $req): Psr\Http\Message\ResponseInterface
         {
-            $factory = new Psr17Factory();
-            return $factory->createResponse(200)
+            return $this->factory->createResponse(200)
                 ->withHeader('content-type', 'application/json')
-                ->withBody($factory->createStream(json_encode(['ok' => true, 'paid' => true]) ?: '{}'));
+                ->withBody($this->stream->createStream(json_encode(['ok' => true, 'paid' => true]) ?: '{}'));
         }
     },
 );
 
-// PHP CLI dev server (php -S) hard-codes status 401 whenever any
-// `WWW-Authenticate` header is sent, regardless of an earlier
-// `http_response_code()` call. Work around by emitting all headers
-// first and then forcing the status line as the last header.
-foreach ($response->getHeaders() as $name => $values) {
-    foreach ($values as $value) {
-        header(sprintf('%s: %s', $name, $value), false);
-    }
-}
-header(sprintf(
-    'HTTP/1.1 %d %s',
-    $response->getStatusCode(),
-    $response->getReasonPhrase(),
-));
-echo (string) $response->getBody();
+HttpFactory::emit($response);

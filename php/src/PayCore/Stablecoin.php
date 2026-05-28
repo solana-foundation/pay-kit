@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit;
+namespace PayKit\PayCore;
 
 /**
  * Stablecoin symbol used as a settlement-asset preference. Backing

@@ -8,7 +8,7 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\Config;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Price;
 use PayKit\Protocols\Mpp\MppConfig;

@@ -8,6 +8,7 @@ use PayKit\Exception\InvalidKeyException;
 use PayKit\Signer\Demo;
 use PayKit\Signer\LocalSigner;
 use Throwable;
+use PayKit\PayCore\Network;
 
 /**
  * Factory class for the local-signer family.

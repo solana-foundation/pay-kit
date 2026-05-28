@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Symfony\EventListener;
+namespace PayKit\Frameworks\Symfony\EventListener;
 
 use PayKit\Client;
 use PayKit\Middleware\RequirePayment as PsrRequirePayment;
 use PayKit\Pricing;
-use PayKit\Symfony\Attribute\RequirePayment;
+use PayKit\Frameworks\Symfony\Attribute\RequirePayment;
 use ReflectionMethod;
 use Symfony\Bridge\PsrHttpMessage\Factory\HttpFoundationFactory;
 use Symfony\Bridge\PsrHttpMessage\Factory\PsrHttpFactory;

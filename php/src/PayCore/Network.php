@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit;
+namespace PayKit\PayCore;
 
 /**
  * Network slug used by Config and Operator. Backing values match the

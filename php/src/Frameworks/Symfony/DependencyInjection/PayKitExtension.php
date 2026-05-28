@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Symfony\DependencyInjection;
+namespace PayKit\Frameworks\Symfony\DependencyInjection;
 
 use PayKit\Client;
 use PayKit\Config;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
-use PayKit\Stablecoin;
-use PayKit\Symfony\EventListener\RequirePaymentListener;
+use PayKit\PayCore\Stablecoin;
+use PayKit\Frameworks\Symfony\EventListener\RequirePaymentListener;
 use Symfony\Component\Config\Definition\Builder\TreeBuilder;
 use Symfony\Component\Config\Definition\ConfigurationInterface;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -23,7 +23,7 @@ use Symfony\Component\DependencyInjection\Reference;
 /**
  * Wires {@see Client} into the Symfony service container from a
  * `paykit:` config section, and registers the kernel.controller_arguments
- * event listener that handles the {@see \PayKit\Symfony\Attribute\RequirePayment}
+ * event listener that handles the {@see \PayKit\Frameworks\Symfony\Attribute\RequirePayment}
  * attribute.
  */
 final class PayKitExtension extends Extension implements ConfigurationInterface

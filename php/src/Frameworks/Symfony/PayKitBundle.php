@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Symfony;
+namespace PayKit\Frameworks\Symfony;
 
-use PayKit\Symfony\DependencyInjection\PayKitExtension;
+use PayKit\Frameworks\Symfony\DependencyInjection\PayKitExtension;
 use Symfony\Component\DependencyInjection\Extension\ExtensionInterface;
 use Symfony\Component\HttpKernel\Bundle\Bundle;
 
@@ -12,7 +12,7 @@ use Symfony\Component\HttpKernel\Bundle\Bundle;
  * Symfony bundle. Mirrors `PayKit\\Laravel\\PayKitServiceProvider`.
  * Register in `config/bundles.php`:
  *
- *   return [\PayKit\Symfony\PayKitBundle::class => ['all' => true]];
+ *   return [\PayKit\Frameworks\Symfony\PayKitBundle::class => ['all' => true]];
  *
  * Then publish `config/packages/paykit.yaml`:
  *
@@ -26,7 +26,7 @@ use Symfony\Component\HttpKernel\Bundle\Bundle;
  *       mpp_challenge_binding_secret: '%env(PAY_KIT_MPP_CHALLENGE_BINDING_SECRET)%'
  *
  * Controller actions gate via the
- * {@see \PayKit\Symfony\Attribute\RequirePayment} attribute.
+ * {@see \PayKit\Frameworks\Symfony\Attribute\RequirePayment} attribute.
  */
 final class PayKitBundle extends Bundle
 {

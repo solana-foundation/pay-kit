@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace PayKit\Tests;
 
 use PayKit\Config;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Preflight;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
-use PayKit\Stablecoin;
+use PayKit\PayCore\Stablecoin;
 use PHPUnit\Framework\TestCase;
 
 /**

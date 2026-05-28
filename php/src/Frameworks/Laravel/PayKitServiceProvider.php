@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Laravel;
+namespace PayKit\Frameworks\Laravel;
 
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Foundation\Application;
@@ -10,14 +10,14 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use PayKit\Client;
 use PayKit\Config;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
-use PayKit\Stablecoin;
+use PayKit\PayCore\Stablecoin;
 
 /**
  * Laravel service provider. Registers:

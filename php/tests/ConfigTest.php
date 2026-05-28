@@ -7,11 +7,11 @@ namespace PayKit\Tests;
 use PayKit\Config;
 use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\DemoSignerOnMainnetException;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Protocol;
 use PayKit\Signer;
-use PayKit\Stablecoin;
+use PayKit\PayCore\Stablecoin;
 use PHPUnit\Framework\TestCase;
 
 final class ConfigTest extends TestCase

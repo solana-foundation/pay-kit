@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Laravel;
+namespace PayKit\Frameworks\Laravel;
 
 use Closure;
 use Illuminate\Contracts\Container\Container;
@@ -10,7 +10,7 @@ use Illuminate\Http\Request;
 use PayKit\Client;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
-use PayKit\Internal\HttpFactory;
+use PayKit\PayCore\HttpFactory;
 use PayKit\Payment;
 use PayKit\Pricing;
 use Psr\Http\Message\ResponseFactoryInterface;

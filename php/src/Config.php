@@ -8,6 +8,8 @@ use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\DemoSignerOnMainnetException;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Protocols\X402\X402Config;
+use PayKit\PayCore\Network;
+use PayKit\PayCore\Stablecoin;
 
 /**
  * Boot-time configuration. Immutable after construction.
@@ -98,7 +100,7 @@ final readonly class Config
             && !\PayKit\Preflight::isDisabledByEnv()
             && ($resolvedMpp->challengeBindingSecret === null
                 || $resolvedMpp->challengeBindingSecret === '')) {
-            $resolved = \PayKit\Internal\SecretResolver::resolveMppSecret();
+            $resolved = \PayKit\Protocols\Mpp\SecretResolver::resolveMppSecret();
             $resolvedMpp = $resolvedMpp->withChallengeBindingSecret($resolved['secret']);
         }
         $this->mpp         = $resolvedMpp;

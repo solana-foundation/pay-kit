@@ -7,6 +7,7 @@ namespace PayKit;
 use PayKit\Exception\MixedCurrenciesException;
 use PayKit\Exception\ProtocolIncompatibleException;
 use InvalidArgumentException;
+use PayKit\PayCore\Stablecoin;
 
 /**
  * A protected unit. Carries the base amount, optional payTo override,

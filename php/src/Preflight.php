@@ -6,6 +6,8 @@ namespace PayKit;
 
 use PayKit\Exception\ConfigurationException;
 use Throwable;
+use PayKit\PayCore\Network;
+use PayKit\PayCore\Stablecoin;
 
 /**
  * Boot-time soundness checks. Mirrors Ruby PR #142 + Lua PR #141:

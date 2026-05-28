@@ -6,7 +6,7 @@ namespace PayKit\Tests;
 
 use PayKit\Config;
 use PayKit\Exception\ConfigurationException;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Preflight;
 use PayKit\Signer;

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
-use PayKit\Internal\SecretResolver;
+use PayKit\Protocols\Mpp\SecretResolver;
 use PHPUnit\Framework\TestCase;
 
 /**

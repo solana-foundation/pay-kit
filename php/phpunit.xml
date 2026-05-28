@@ -17,9 +17,9 @@
     <exclude>
       <!-- Laravel adapter requires illuminate/* (not in dev deps);
            coverage lands in a consumer-app integration test. -->
-      <directory>src/Laravel</directory>
+      <directory>src/Frameworks/Laravel</directory>
       <!-- Symfony adapter requires the full kernel; consumer-app cov. -->
-      <directory>src/Symfony</directory>
+      <directory>src/Frameworks/Symfony</directory>
       <!-- Internal HttpFactory helper is a thin nyholm/psr7 wrapper. -->
       <file>src/Internal/HttpFactory.php</file>
       <!-- The x402 11-rule structural verifier + cosign/broadcast

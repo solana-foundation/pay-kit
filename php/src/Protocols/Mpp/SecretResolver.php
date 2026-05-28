@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Internal;
+namespace PayKit\Protocols\Mpp;
 
 /**
  * Auto-resolves the MPP HMAC challenge-binding secret when the

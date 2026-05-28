@@ -6,16 +6,16 @@ namespace PayKit\Tests\Protocols\Mpp;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
 use PayKit\Config;
-use PayKit\Currency;
+use PayKit\PayCore\Currency;
 use PayKit\Gate;
-use PayKit\Network;
+use PayKit\PayCore\Network;
 use PayKit\Operator;
 use PayKit\Price;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Adapter;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
-use PayKit\Stablecoin;
+use PayKit\PayCore\Stablecoin;
 use PHPUnit\Framework\TestCase;
 
 final class AdapterTest extends TestCase

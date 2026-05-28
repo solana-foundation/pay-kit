@@ -9,7 +9,7 @@ use PayKit\Client;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Exception\PaymentRequiredException;
 use PayKit\Gate;
-use PayKit\Internal\HttpFactory;
+use PayKit\PayCore\HttpFactory;
 use PayKit\Pricing;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Adapter as MppAdapter;
