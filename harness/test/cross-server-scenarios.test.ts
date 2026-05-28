@@ -86,16 +86,20 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
     return;
   }
 
+  // Pick a client adapter that can drive server A: if A is the wire-only
+  // TS reference server, use the TS reference client (stub payload).
+  // Otherwise use the rust-x402 client which emits a real Solana tx and
+  // (since solana-foundation/pay-kit#1XX) echoes the sent credential
+  // under `payment-signature-sent` so the runner can replay it to B.
+  const pickClientForServer = (serverId: string): string =>
+    serverId === "ts-x402" ? "ts-x402" : "rust-x402";
+
   if (portabilityScenario && portabilityScenario.crossServerPairs) {
     for (const [serverAId, serverBId] of portabilityScenario.crossServerPairs) {
       const serverA = serversById.get(serverAId);
       const serverB = serversById.get(serverBId);
-      // Use the TS reference client to drive the pay-then-replay flow
-      // because it echoes the sent credential under `payment-signature-sent`.
-      // The Rust spine client does not surface the captured credential to
-      // the harness; its portability coverage is exercised by the Rust
-      // crate's own integration tests.
-      const client = clientsById.get("ts-x402");
+      const clientId = pickClientForServer(serverAId);
+      const client = clientsById.get(clientId);
       if (!serverA?.enabled || !serverB?.enabled || !client?.enabled) {
         it.skip(`portability ${serverAId} -> ${serverBId}: adapter not enabled`, () => {});
         continue;
@@ -157,9 +161,7 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
     const serverIds = resubmitScenario.serverIds ?? ["ts-x402"];
     for (const sid of serverIds) {
       const server = serversById.get(sid);
-      // Same rationale as portability above: drive with the TS client so
-      // the harness can replay the captured credential.
-      const client = clientsById.get("ts-x402");
+      const client = clientsById.get(pickClientForServer(sid));
       if (!server?.enabled || !client?.enabled) {
         it.skip(`idempotent-resubmit on ${sid}: adapter not enabled`, () => {});
         continue;

@@ -7,6 +7,7 @@ namespace PayKit\Signer;
 use PayKit\Exception\InvalidKeyException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
+use SolanaPhpSdk\Util\Base58;
 use Throwable;
 
 /**
@@ -65,8 +66,10 @@ class LocalSigner
             throw new InvalidKeyException('pay_kit: Signer::base58 expects a non-empty string');
         }
         try {
-            $publicKey = PublicKey::fromBase58($base58Secret);
-            $decoded = $publicKey->toBytes();
+            // Decode raw base58 bytes directly; PublicKey::fromBase58
+            // hard-codes the 32-byte pubkey shape and rejects 64-byte
+            // secret-key blobs.
+            $decoded = Base58::decode($base58Secret);
         } catch (Throwable $e) {
             throw new InvalidKeyException(
                 'pay_kit: Signer::base58 invalid base58: ' . $e->getMessage(),

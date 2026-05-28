@@ -13,6 +13,7 @@ use PayKit\Internal\SecretResolver;
 use PayKit\Network;
 use PayKit\Operator;
 use PayKit\Protocols\Mpp\MppConfig;
+use SolanaPhpSdk\Util\Base58;
 use PayKit\PayCore\Rfc3339Parser;
 use PayKit\PayCore\Solana\Mints;
 use PayKit\Payment;
@@ -104,6 +105,15 @@ final class CoverageBoostTest extends TestCase
     public function testRfc3339ParserRejectsMalformed(): void
     {
         $this->assertNull(Rfc3339Parser::parse('not-a-timestamp'));
+    }
+
+    public function testBase58SecretKeyRoundTrip(): void
+    {
+        $sgn = Signer::generate();
+        $b58 = Base58::encode($sgn->secretKey());
+        $rebuilt = Signer::base58($b58);
+        $this->assertSame($sgn->pubkey(), $rebuilt->pubkey());
+        $this->assertSame($sgn->secretKey(), $rebuilt->secretKey());
     }
 
     public function testExceptionHttpStatusValues(): void

@@ -53,12 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let paid_response = http
         .get(&target_url)
-        .header(PAYMENT_SIGNATURE_HEADER, payment_header)
+        .header(PAYMENT_SIGNATURE_HEADER, payment_header.clone())
         .send()
         .await?;
     let status = paid_response.status();
     let paid_headers = response_headers(paid_response.headers())?;
-    let paid_headers = headers_to_map(paid_headers);
+    let mut paid_headers = headers_to_map(paid_headers);
+    paid_headers.insert(format!("{PAYMENT_SIGNATURE_HEADER}-sent"), payment_header);
     let settlement = paid_headers.get(SETTLEMENT_HEADER).cloned();
     let raw_body = paid_response.text().await?;
     let response_body = serde_json::from_str::<serde_json::Value>(&raw_body)
