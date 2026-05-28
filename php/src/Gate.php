@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace PayKit;
 
-use PayKit\Exception\MixedDenomsException;
-use PayKit\Exception\SchemeIncompatibleException;
+use PayKit\Exception\MixedCurrenciesException;
+use PayKit\Exception\ProtocolIncompatibleException;
 use InvalidArgumentException;
 
 /**
@@ -21,7 +21,7 @@ use InvalidArgumentException;
  *   3. All fee prices share the gate amount's denom.
  *   4. sum(feeWithin values) <= amount.
  *   5. x402 auto-disabled when fees are present; explicit
- *      `accept: [Scheme::X402]` on a fee-bearing gate throws.
+ *      `accept: [Protocol::X402]` on a fee-bearing gate throws.
  *   6. Stablecoin preference is gate- or config-level, not per-fee.
  */
 final readonly class Gate
@@ -29,13 +29,13 @@ final readonly class Gate
     /** @var list<Fee> */
     public array $fees;
 
-    /** @var list<Scheme>|null */
+    /** @var list<Protocol>|null */
     public ?array $accept;
 
     /**
      * @param array<string,Price> $feeWithin Map of recipient => price; taken out of amount.
      * @param array<string,Price> $feeOnTop  Map of recipient => price; added on top.
-     * @param list<Scheme>|null   $accept    Per-gate accept allowlist; null inherits from Config.
+     * @param list<Protocol>|null   $accept    Per-gate accept allowlist; null inherits from Config.
      */
     public function __construct(
         public Price $amount,
@@ -70,9 +70,9 @@ final readonly class Gate
 
         // Rule 5: x402 + fees is incompatible
         $hasFees = count($fees) > 0;
-        if ($hasFees && $accept !== null && in_array(Scheme::X402, $accept, true)) {
-            throw new SchemeIncompatibleException(
-                'pay_kit: explicit accept: [Scheme::X402] on a fee-bearing gate is invalid '
+        if ($hasFees && $accept !== null && in_array(Protocol::X402, $accept, true)) {
+            throw new ProtocolIncompatibleException(
+                'pay_kit: explicit accept: [Protocol::X402] on a fee-bearing gate is invalid '
                 . '(stock x402 facilitators settle to a single address)',
             );
         }
@@ -131,12 +131,12 @@ final readonly class Gate
         if (!is_string($recipient) || $recipient === '') {
             throw new InvalidArgumentException('pay_kit: fee recipient must be a non-empty string');
         }
-        if ($price->denom !== $amount->denom) {
-            throw new MixedDenomsException(sprintf(
+        if ($price->currency !== $amount->currency) {
+            throw new MixedCurrenciesException(sprintf(
                 'pay_kit: fee for %s is %s; gate amount is %s. All prices on a gate must share denom.',
                 $recipient,
-                $price->denom->value,
-                $amount->denom->value,
+                $price->currency->value,
+                $amount->currency->value,
             ));
         }
         return new Fee($recipient, $price, $kind);

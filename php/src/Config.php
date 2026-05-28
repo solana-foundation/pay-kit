@@ -6,8 +6,8 @@ namespace PayKit;
 
 use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\DemoSignerOnMainnetException;
-use PayKit\Schemes\Mpp\MppConfig;
-use PayKit\Schemes\X402\X402Config;
+use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\X402\X402Config;
 
 /**
  * Boot-time configuration. Immutable after construction.
@@ -19,7 +19,7 @@ use PayKit\Schemes\X402\X402Config;
  */
 final readonly class Config
 {
-    /** @var list<Scheme> */
+    /** @var list<Protocol> */
     public array $accept;
 
     /** @var list<Stablecoin> */
@@ -34,12 +34,12 @@ final readonly class Config
     public MppConfig $mpp;
 
     /**
-     * @param list<Scheme>      $accept       Ordered preference.
+     * @param list<Protocol>      $accept       Ordered preference.
      * @param list<Stablecoin>  $stablecoins  Ordered settlement preference.
      */
     public function __construct(
         public Network $network = Network::SolanaLocalnet,
-        array $accept = [Scheme::X402, Scheme::Mpp],
+        array $accept = [Protocol::X402, Protocol::Mpp],
         array $stablecoins = [Stablecoin::Usdc],
         ?string $rpcUrl = null,
         ?Operator $operator = null,
@@ -51,9 +51,9 @@ final readonly class Config
             throw new ConfigurationException('pay_kit: accept[] must not be empty');
         }
         foreach ($accept as $i => $a) {
-            if (!$a instanceof Scheme) {
+            if (!$a instanceof Protocol) {
                 throw new ConfigurationException(
-                    sprintf('pay_kit: accept[%d] must be a Scheme enum', $i),
+                    sprintf('pay_kit: accept[%d] must be a Protocol enum', $i),
                 );
             }
         }

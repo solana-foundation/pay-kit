@@ -2,43 +2,92 @@
 
 declare(strict_types=1);
 
-// solana-php's CurlHttpClient still calls the no-op-since-PHP-8.0 curl_close()
-// which raises E_DEPRECATED on PHP 8.5+. Route deprecations to stderr so they
-// don't pollute the HTTP response body.
+// Dual-protocol example using the PayKit umbrella against the
+// bundled PHP built-in web server. Boots with:
+//
+//   cd php/examples/simple-server
+//   composer install
+//   php -S 127.0.0.1:4567 index.php
+//
+// Then in another terminal:
+//   curl  http://127.0.0.1:4567/paid          # 402 with x402 + mpp accepts
+//   pay curl http://127.0.0.1:4567/paid       # 200 with payment-receipt
+//
+// The Client picks the protocol from the client's headers per
+// request: x402 via PAYMENT-SIGNATURE, MPP via Authorization: Payment.
+
+// solana-php's CurlHttpClient still calls the no-op-since-PHP-8.0
+// curl_close() which raises E_DEPRECATED on PHP 8.5+. Route those to
+// stderr so they don't pollute the HTTP response body.
 error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
-use PayKit\Schemes\Mpp\Intent\ChargeRequest;
-use PayKit\Schemes\Mpp\Server\ChargeServer;
-use PayKit\Schemes\Mpp\Server\SolanaChargeHandler;
-use SolanaPhpSdk\Rpc\RpcClient;
-
 require_once __DIR__ . '/../../vendor/autoload.php';
 
-$rpc = new RpcClient('https://402.surfnet.dev:8899');
-$handler = new SolanaChargeHandler(
-    challenges: new ChargeServer(
-        secretKey: 'local-dev-secret',
-        realm: 'PHP example',
-        blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
-    ),
-    rpc: $rpc,
-    network: 'localnet',
-);
-$request = new ChargeRequest(
-    amount: '1000',
-    currency: 'USDC',
-    recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-    methodDetails: ['network' => 'localnet', 'decimals' => 6],
-);
+use Nyholm\Psr7\Factory\Psr17Factory;
+use Nyholm\Psr7Server\ServerRequestCreator;
+use PayKit\Client;
+use PayKit\Config;
+use PayKit\Gate;
+use PayKit\Middleware\RequirePayment;
+use PayKit\Network;
+use PayKit\Price;
+use PayKit\Protocol;
+use PayKit\Protocols\Mpp\MppConfig;
 
-$rawAuth = $_SERVER['HTTP_AUTHORIZATION'] ?? null;
-$result = $handler->handle(is_string($rawAuth) ? $rawAuth : null, $request);
+// Boot the umbrella. Zero-config localnet defaults: Surfpool hosted
+// RPC, demo recipient, demo signer.
+$client = new Client(new Config(
+    network: Network::SolanaLocalnet,
+    preflight: false, // example boots offline-friendly
+    mpp: new MppConfig(realm: 'PHP example', challengeBindingSecret: 'local-dev-secret'),
+));
 
-http_response_code($result->status);
-foreach ($result->headers as $name => $value) {
-    // Pin the status on every header() call so PHP's built-in CLI server
-    // doesn't rewrite 402 to 401 when WWW-Authenticate is present.
-    header($name . ': ' . $value, true, $result->status);
+// One inline-priced gate. Accepts both x402 and MPP per default
+// Config::$accept (Protocol::X402, Protocol::Mpp in order).
+$paidGate = new Gate(amount: Price::usd('0.10'));
+
+// Wire a single PSR-15 middleware around a tiny "200 OK" handler.
+$middleware = new RequirePayment($client, $paidGate);
+
+$factory = new Psr17Factory();
+$creator = new ServerRequestCreator($factory, $factory, $factory, $factory);
+$request = $creator->fromGlobals();
+
+if ($request->getUri()->getPath() === '/health') {
+    $factory->createResponse(200)
+        ->withHeader('content-type', 'application/json')
+        ->withBody($factory->createStream(json_encode(['ok' => true]) ?: '{}'))
+        ->getBody()
+        ->rewind();
+    echo json_encode(['ok' => true]);
+    return;
 }
-echo json_encode($result->body, JSON_THROW_ON_ERROR);
+
+if ($request->getUri()->getPath() !== '/paid') {
+    http_response_code(404);
+    header('content-type: application/json');
+    echo json_encode(['error' => 'not_found']);
+    return;
+}
+
+$response = $middleware->process(
+    $request,
+    new class () implements Psr\Http\Server\RequestHandlerInterface {
+        public function handle(Psr\Http\Message\ServerRequestInterface $req): Psr\Http\Message\ResponseInterface
+        {
+            $factory = new Psr17Factory();
+            return $factory->createResponse(200)
+                ->withHeader('content-type', 'application/json')
+                ->withBody($factory->createStream(json_encode(['ok' => true, 'paid' => true]) ?: '{}'));
+        }
+    },
+);
+
+http_response_code($response->getStatusCode());
+foreach ($response->getHeaders() as $name => $values) {
+    foreach ($values as $value) {
+        header(sprintf('%s: %s', $name, $value), false);
+    }
+}
+echo (string) $response->getBody();

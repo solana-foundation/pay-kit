@@ -13,9 +13,9 @@ use PayKit\Config;
 use PayKit\Network;
 use PayKit\Operator;
 use PayKit\Pricing;
-use PayKit\Scheme;
-use PayKit\Schemes\Mpp\MppConfig;
-use PayKit\Schemes\X402\X402Config;
+use PayKit\Protocol;
+use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\X402\X402Config;
 use PayKit\Signer;
 use PayKit\Stablecoin;
 
@@ -78,7 +78,7 @@ final class PayKitServiceProvider extends ServiceProvider
                 && $cfg['mpp_challenge_binding_secret'] !== ''
                     ? (string) $cfg['mpp_challenge_binding_secret']
                     : null,
-            expiresIn: (int) ($cfg['mpp']['expires_in'] ?? 300),
+            expiresIn: (int) ($cfg['mpp']['expires_in'] ?? 120),
         );
         $x402 = new X402Config(
             facilitatorUrl: isset($cfg['x402_facilitator_url']) && $cfg['x402_facilitator_url'] !== ''
@@ -110,13 +110,13 @@ final class PayKitServiceProvider extends ServiceProvider
 
     /**
      * @param array<int,string> $arr
-     * @return list<Scheme>
+     * @return list<Protocol>
      */
     private static function acceptList(array $arr): array
     {
         $out = [];
         foreach ($arr as $s) {
-            foreach (Scheme::cases() as $case) {
+            foreach (Protocol::cases() as $case) {
                 if ($case->value === $s) {
                     $out[] = $case;
                 }

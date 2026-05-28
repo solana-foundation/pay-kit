@@ -10,9 +10,9 @@ declare(strict_types=1);
  * it and read a `ready` JSON line with an ephemeral port.
  */
 
-use PayKit\Schemes\Mpp\Intent\ChargeRequest;
-use PayKit\Schemes\Mpp\Server\ChargeServer;
-use PayKit\Schemes\Mpp\Server\SolanaChargeHandler;
+use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use PayKit\Protocols\Mpp\Server\ChargeServer;
+use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Store\FileStore;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;

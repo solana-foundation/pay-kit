@@ -19,7 +19,7 @@
            coverage lands in a consumer-app integration test. -->
       <directory>src/Laravel</directory>
       <!-- Internal Psr17 helper is a thin nyholm/psr7 wrapper. -->
-      <file>src/Internal/Psr17.php</file>
+      <file>src/Internal/HttpFactory.php</file>
     </exclude>
   </source>
 </phpunit>

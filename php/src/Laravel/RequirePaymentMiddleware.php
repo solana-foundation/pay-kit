@@ -9,8 +9,8 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Http\Request;
 use PayKit\Client;
 use PayKit\Gate;
-use PayKit\Http\RequirePayment;
-use PayKit\Internal\Psr17;
+use PayKit\Middleware\RequirePayment;
+use PayKit\Internal\HttpFactory;
 use PayKit\Payment;
 use PayKit\Pricing;
 use Psr\Http\Message\ResponseFactoryInterface;
@@ -68,7 +68,7 @@ final class RequirePaymentMiddleware
         $captured = null;
         $next = function ($req) use (&$captured) {
             $captured = $req;
-            $factory = Psr17::responseFactory();
+            $factory = HttpFactory::responseFactory();
             return $factory->createResponse(200);
         };
         $handler = new class ($next) implements \Psr\Http\Server\RequestHandlerInterface {

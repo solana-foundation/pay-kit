@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
-use PayKit\Exception\MixedDenomsException;
-use PayKit\Exception\SchemeIncompatibleException;
+use PayKit\Exception\MixedCurrenciesException;
+use PayKit\Exception\ProtocolIncompatibleException;
 use PayKit\Gate;
 use PayKit\Price;
-use PayKit\Scheme;
+use PayKit\Protocol;
 use PHPUnit\Framework\TestCase;
 
 final class GateTest extends TestCase
@@ -44,9 +44,9 @@ final class GateTest extends TestCase
         $this->assertSame('10.00', $g->payout('SELLER')->amountString());
     }
 
-    public function testMixedDenomsRejected(): void
+    public function testMixedCurrenciesRejected(): void
     {
-        $this->expectException(MixedDenomsException::class);
+        $this->expectException(MixedCurrenciesException::class);
         new Gate(
             amount: Price::usd('1.00'),
             payTo: 'SELLER',
@@ -66,11 +66,11 @@ final class GateTest extends TestCase
 
     public function testExplicitX402AcceptOnFeeGateRejected(): void
     {
-        $this->expectException(SchemeIncompatibleException::class);
+        $this->expectException(ProtocolIncompatibleException::class);
         new Gate(
             amount: Price::usd('1.00'),
             payTo: 'SELLER',
-            accept: [Scheme::X402],
+            accept: [Protocol::X402],
             feeWithin: ['PLATFORM' => Price::usd('0.10')],
         );
     }

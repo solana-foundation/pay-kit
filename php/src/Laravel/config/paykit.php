@@ -16,7 +16,7 @@ return [
     'mpp_challenge_binding_secret' => env('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
     'mpp' => [
         'realm'      => env('PAY_KIT_MPP_REALM', 'Laravel'),
-        'expires_in' => 300,
+        'expires_in' => 120,
     ],
     'preflight' => env('PAY_KIT_PREFLIGHT', true),
 ];

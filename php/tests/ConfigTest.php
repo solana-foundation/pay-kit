@@ -9,7 +9,7 @@ use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\DemoSignerOnMainnetException;
 use PayKit\Network;
 use PayKit\Operator;
-use PayKit\Scheme;
+use PayKit\Protocol;
 use PayKit\Signer;
 use PayKit\Stablecoin;
 use PHPUnit\Framework\TestCase;
@@ -57,11 +57,11 @@ final class ConfigTest extends TestCase
     public function testStablecoinAndAcceptOrderPreserved(): void
     {
         $cfg = new Config(
-            accept:      [Scheme::Mpp, Scheme::X402],
+            accept:      [Protocol::Mpp, Protocol::X402],
             stablecoins: [Stablecoin::Usdt, Stablecoin::Usdc],
             preflight:   false,
         );
-        $this->assertSame(Scheme::Mpp, $cfg->accept[0]);
+        $this->assertSame(Protocol::Mpp, $cfg->accept[0]);
         $this->assertSame(Stablecoin::Usdt, $cfg->stablecoins[0]);
     }
 

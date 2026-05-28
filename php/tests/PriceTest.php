@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
-use PayKit\Denom;
+use PayKit\Currency;
 use PayKit\Price;
 use PayKit\Stablecoin;
 use PHPUnit\Framework\TestCase;
@@ -14,7 +14,7 @@ final class PriceTest extends TestCase
     public function testUsdBuildsBigDecimalAmount(): void
     {
         $p = Price::usd('0.10');
-        $this->assertSame(Denom::Usd, $p->denom);
+        $this->assertSame(Currency::Usd, $p->currency);
         $this->assertSame('0.10', $p->amountString());
         $this->assertNull($p->primaryCoin());
     }
@@ -28,11 +28,11 @@ final class PriceTest extends TestCase
 
     public function testEurAndGbpFactories(): void
     {
-        $this->assertSame(Denom::Eur, Price::eur('0.50')->denom);
-        $this->assertSame(Denom::Gbp, Price::gbp('0.50')->denom);
+        $this->assertSame(Currency::Eur, Price::eur('0.50')->currency);
+        $this->assertSame(Currency::Gbp, Price::gbp('0.50')->currency);
     }
 
-    public function testPlusRejectsMixedDenoms(): void
+    public function testPlusRejectsMixedCurrencies(): void
     {
         $this->expectException(\InvalidArgumentException::class);
         Price::usd('1.00')->plus(Price::eur('1.00'));

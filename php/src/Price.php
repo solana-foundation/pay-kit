@@ -27,7 +27,7 @@ final readonly class Price
 
     private function __construct(
         public BigDecimal $amount,
-        public Denom $denom,
+        public Currency $currency,
         Stablecoin ...$settlements,
     ) {
         $this->settlements = $settlements;
@@ -40,17 +40,17 @@ final readonly class Price
      */
     public static function usd(string|int|BigDecimal $amount, Stablecoin ...$settlements): self
     {
-        return new self(self::toBigDecimal($amount), Denom::Usd, ...$settlements);
+        return new self(self::toBigDecimal($amount), Currency::Usd, ...$settlements);
     }
 
     public static function eur(string|int|BigDecimal $amount, Stablecoin ...$settlements): self
     {
-        return new self(self::toBigDecimal($amount), Denom::Eur, ...$settlements);
+        return new self(self::toBigDecimal($amount), Currency::Eur, ...$settlements);
     }
 
     public static function gbp(string|int|BigDecimal $amount, Stablecoin ...$settlements): self
     {
-        return new self(self::toBigDecimal($amount), Denom::Gbp, ...$settlements);
+        return new self(self::toBigDecimal($amount), Currency::Gbp, ...$settlements);
     }
 
     /**
@@ -58,7 +58,7 @@ final readonly class Price
      */
     public function withAmount(string|int|BigDecimal $amount): self
     {
-        return new self(self::toBigDecimal($amount), $this->denom, ...$this->settlements);
+        return new self(self::toBigDecimal($amount), $this->currency, ...$this->settlements);
     }
 
     /**
@@ -66,18 +66,18 @@ final readonly class Price
      */
     public function plus(self $other): self
     {
-        if ($this->denom !== $other->denom) {
+        if ($this->currency !== $other->currency) {
             throw new InvalidArgumentException(
                 sprintf(
-                    'pay_kit: cannot sum prices of different denoms (%s vs %s)',
-                    $this->denom->value,
-                    $other->denom->value
+                    'pay_kit: cannot sum prices of different currencies (%s vs %s)',
+                    $this->currency->value,
+                    $other->currency->value
                 ),
             );
         }
         return new self(
             $this->amount->plus($other->amount),
-            $this->denom,
+            $this->currency,
             ...$this->settlements,
         );
     }

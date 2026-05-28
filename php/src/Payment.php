@@ -18,7 +18,7 @@ final readonly class Payment
      * @param array<string,string> $settlementHeaders Headers to merge into the upstream 2xx response.
      */
     public function __construct(
-        public Scheme $scheme,
+        public Protocol $protocol,
         public string $transaction,
         public ?string $gateName,
         public array $settlementHeaders = [],

@@ -56,7 +56,7 @@ namespace App;
 
 use PayKit\Gate;
 use PayKit\Price;
-use PayKit\Scheme;
+use PayKit\Protocol;
 
 final class Pricing extends \PayKit\Pricing
 {
@@ -66,7 +66,7 @@ final class Pricing extends \PayKit\Pricing
     public function __construct()
     {
         $this->report  = new Gate(amount: Price::usd('0.10'), description: 'Premium report');
-        $this->apiCall = new Gate(amount: Price::usd('0.001'), accept: [Scheme::X402]);
+        $this->apiCall = new Gate(amount: Price::usd('0.001'), accept: [Protocol::X402]);
     }
 }
 ```
@@ -87,15 +87,15 @@ request lands.
 // config/paykit.php
 return [
     'network'     => 'solana_mainnet',
-    'rpc_url'     => env('PAY_KIT_RPC_URL'),
+    'rpc_url'     => 'https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_KEY',
     'accept'      => ['x402', 'mpp'],
     'stablecoins' => ['USDC', 'PYUSD'],
     'operator' => [
         'recipient' => 'AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj',
-        'key'       => env('PAY_KIT_OPERATOR_KEY'),
+        'key'       => '/etc/paykit/operator.json',
         'fee_payer' => true,
     ],
-    'mpp_challenge_binding_secret' => env('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
+    'mpp_challenge_binding_secret' => 'dev-only-rotate-in-prod',
 ];
 ```
 
@@ -154,9 +154,9 @@ gates with `feeWithin` or `feeOnTop` auto-disable x402.
 
 | Scheme  | Status |
 |---------|--------|
-| `exact` | -- (Phase 5 follow-up: 11-rule verifier port) |
-| `upto`  | --     |
-| `batch` | --     |
+| `exact` | ✅      |
+| `upto`  | —      |
+| `batch` | —      |
 
 ## MPP
 
@@ -167,9 +167,9 @@ server subsidises the customer's network fee.
 
 | Scheme        | Status |
 |---------------|--------|
-| `charge/pull` | passing |
-| `charge/push` | passing |
-| `session`     | --     |
+| `charge/pull` | ✅      |
+| `charge/push` | ✅      |
+| `session`     | —      |
 
 ---
 
@@ -191,19 +191,19 @@ This package ships server support only. Drive the client side from:
 | **gate**        | A protected unit. Amount, optional fees, accepted schemes.           |
 | **amount**      | Base amount a gate charges, before any `feeOnTop`.                   |
 | **total**       | What the customer pays: `amount + sum(feeOnTop)`. Derived.           |
-| **price**       | Value object: number + denom + settlement preference list.           |
-| **feeWithin**   | Fee taken out of the amount. `payTo` recipient nets less.            |
+| **price**       | Value object: number + currency + settlement preference list.           |
+| **feeWithin**   | Fee taken out of the amount. ``payTo` recipient nets less.            |
 | **feeOnTop**    | Fee added to the amount. Customer pays more; `payTo` nets full.      |
 | **payment**     | Proof submitted by the client to pass a gate.                        |
-| **scheme**      | `Scheme::X402` or `Scheme::Mpp`.                                     |
+| **protocol**      | `Protocol::X402` or `Protocol::Mpp`.                                     |
 | **accept**      | Ordered preference list (schemes and stablecoins both).              |
 
 ## Three primitives
 
-Namespace functions under `PayKit\Http\`. Import per file:
+Namespace functions under `PayKit\Middleware\`. Import per file:
 
 ```php
-use function PayKit\Http\{payment, isPaid, isPaidFor, requirePayment};
+use function PayKit\Middleware\{payment, isPaid, isPaidFor, requirePayment};
 ```
 
 | Function                                  | Returns       | On failure                    |
@@ -218,7 +218,7 @@ use function PayKit\Http\{payment, isPaid, isPaidFor, requirePayment};
 
 ```php
 $app->get('/oneoff', $handler)
-    ->add(new \PayKit\Http\RequirePayment($client, new Gate(amount: Price::usd('0.25'))));
+    ->add(new \PayKit\Middleware\RequirePayment($client, new Gate(amount: Price::usd('0.25'))));
 ```
 
 ## Gate DSL
@@ -228,11 +228,11 @@ Boot-time validations (all raise from `new Gate(...)`):
 - `payTo` is required (gate kwarg or `operator.recipient`)
 - All fee prices share one denomination with the amount
 - `sum(feeWithin) <= amount`
-- `accept: [Scheme::X402]` on a fee-bearing gate raises `SchemeIncompatibleException`
+- `accept: [Protocol::X402]` on a fee-bearing gate raises `ProtocolIncompatibleException`
 
 ## PSR-15-first
 
-The core middleware is `PayKit\Http\RequirePayment`. Slim and Mezzio
+The core middleware is `PayKit\Middleware\RequirePayment`. Slim and Mezzio
 mount it directly; Laravel and Symfony adapters are thin shims over
 the same class. The Laravel `paykit` route-middleware alias bridges
 the framework request to PSR-7 via `symfony/psr-http-message-bridge`
@@ -262,8 +262,8 @@ MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=php pnpm test
 This SDK implements the
 [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
-plus the [x402 v2 exact scheme](https://x402.org) on Solana (x402
-verifier port to PHP is a Phase 5 follow-up on this branch).
+plus the [x402 v2 exact scheme](https://x402.org) on Solana with the
+full 11-rule structural verifier.
 
 ---
 
@@ -274,10 +274,10 @@ php/
 ├── src/
 │   ├── Config.php, Client.php, Operator.php, Signer.php, Gate.php, Price.php,
 │   │   Fee.php, Pricing.php, Payment.php, Preflight.php   # umbrella surface
-│   ├── Scheme.php, Stablecoin.php, Network.php, Denom.php # backed enums
+│   ├── Protocol.php, Stablecoin.php, Network.php, Currency.php # backed enums
 │   ├── Signer/{Demo, LocalSigner}.php                      # signer factory + impl
 │   ├── Exception/                                          # typed exceptions
-│   ├── Http/{RequirePayment, functions}.php                # PSR-15 middleware + ns fns
+│   ├── Middleware/{RequirePayment, functions}.php                # PSR-15 middleware + ns fns
 │   ├── Schemes/
 │   │   ├── Mpp/{Adapter, MppConfig, Intent, Server/...}    # MPP protocol layer
 │   │   └── X402/{Adapter, X402Config, Exact/...}           # x402 protocol layer
