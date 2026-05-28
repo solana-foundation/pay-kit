@@ -87,7 +87,21 @@ final readonly class Config
             : $network->defaultRpcUrl();
         $this->operator    = $resolvedOperator;
         $this->x402        = $x402 ?? new X402Config();
-        $this->mpp         = $mpp ?? new MppConfig();
+        $resolvedMpp       = $mpp ?? new MppConfig();
+        // Ruby PR #142 caveat #4: auto-resolve the MPP HMAC secret
+        // when the caller didn't supply one (env -> ./.env -> generate
+        // + persist). Mirrors ruby/lib/pay_kit/preflight.rb's
+        // resolution chain so the demo apps boot zero-config. Skipped
+        // when preflight is off (tests / read-only deploys) so the
+        // suite doesn't leak .env files.
+        if ($preflight
+            && !\PayKit\Preflight::isDisabledByEnv()
+            && ($resolvedMpp->challengeBindingSecret === null
+                || $resolvedMpp->challengeBindingSecret === '')) {
+            $resolved = \PayKit\Internal\SecretResolver::resolveMppSecret();
+            $resolvedMpp = $resolvedMpp->withChallengeBindingSecret($resolved['secret']);
+        }
+        $this->mpp         = $resolvedMpp;
     }
 
     /**

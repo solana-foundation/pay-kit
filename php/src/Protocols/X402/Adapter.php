@@ -36,9 +36,13 @@ final class Adapter
     private const CAIP2_MAINNET            = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
     private const CAIP2_DEVNET             = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 
+    /** @var \Closure():?string|null */
+    private $recentBlockhashProvider = null;
+
     public function __construct(
         private readonly Config $config,
         private readonly Store $replayStore = new MemoryStore(),
+        ?\Closure $recentBlockhashProvider = null,
     ) {
         if ($config->x402->isDelegated()) {
             throw new InvalidProofException(
@@ -46,6 +50,7 @@ final class Adapter
                 . 'leave X402Config::$facilitatorUrl null for self-hosted',
             );
         }
+        $this->recentBlockhashProvider = $recentBlockhashProvider;
     }
 
     /**
@@ -59,6 +64,23 @@ final class Adapter
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
         $amount = (string) $gate->total()->amount->multipliedBy(1_000_000)->toInt();
         $signer = $this->config->effectiveX402Signer();
+        $extra = [
+            'feePayer'     => $signer?->pubkey() ?? '',
+            'decimals'     => 6,
+            'tokenProgram' => self::TOKEN_PROGRAM,
+            'memo'         => $request->getUri()->getPath(),
+        ];
+        // Ruby PR #142 caveat #5: stamp the server's recent_blockhash
+        // into accepted.extra so pay-kit clients sign against the
+        // same chain state the server will broadcast to. Closes the
+        // surfpool / forked-mainnet drift the Sinatra example hit.
+        // Scope: pay-kit Rust client honours this field; canonical
+        // TS / Go x402 clients ignore it and call getLatestBlockhash
+        // against their own RPC. Harmless on real networks.
+        $blockhash = $this->fetchRecentBlockhash();
+        if ($blockhash !== null) {
+            $extra['recentBlockhash'] = $blockhash;
+        }
         return [
             'protocol'          => 'x402',
             'scheme'            => 'exact',
@@ -68,13 +90,31 @@ final class Adapter
             'maxAmountRequired' => $amount,
             'payTo'             => $payTo,
             'maxTimeoutSeconds' => 60,
-            'extra' => [
-                'feePayer'     => $signer?->pubkey() ?? '',
-                'decimals'     => 6,
-                'tokenProgram' => self::TOKEN_PROGRAM,
-                'memo'         => $request->getUri()->getPath(),
-            ],
+            'extra'             => $extra,
         ];
+    }
+
+    private function fetchRecentBlockhash(): ?string
+    {
+        if ($this->recentBlockhashProvider !== null) {
+            try {
+                $value = ($this->recentBlockhashProvider)();
+                return is_string($value) && $value !== '' ? $value : null;
+            } catch (Throwable) {
+                return null;
+            }
+        }
+        if ($this->config->rpcUrl === '') {
+            return null;
+        }
+        try {
+            $rpc = new \SolanaPhpSdk\Rpc\RpcClient($this->config->rpcUrl);
+            $result = $rpc->getLatestBlockhash();
+            $value = is_array($result) && isset($result['blockhash']) ? (string) $result['blockhash'] : null;
+            return $value !== '' ? $value : null;
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**

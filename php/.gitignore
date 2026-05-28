@@ -1,2 +1,5 @@
 vendor/
 .phpunit.result.cache
+/build/
+/.phpunit.cache/
+.env
