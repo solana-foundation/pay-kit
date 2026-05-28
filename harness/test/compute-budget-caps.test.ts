@@ -57,27 +57,27 @@ const SDKS: Sdk[] = [
   },
   {
     language: "php",
-    file: "php/src/Server/SolanaChargeTransactionVerifier.php",
+    file: "php/src/Protocols/Mpp/Server/SolanaChargeTransactionVerifier.php",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9_]+)/,
   },
   {
     language: "ruby",
-    file: "ruby/lib/mpp/methods/solana/verifier.rb",
+    file: "ruby/lib/mpp/protocol/solana/verifier.rb",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9_]+)/,
   },
   {
     language: "lua",
-    file: "lua/mpp/server/solana_verify.lua",
+    file: "lua/pay_kit/protocols/mpp/server/solana_verify.lua",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9]+)/,
   },
-  // Lua PR #103 lands the same caps at the instruction-decoder layer in
-  // lua/mpp/methods/solana/instructions.lua; gated until merge.
+  // Lua also enforces the same caps at the instruction-decoder layer in
+  // lua/pay_kit/solana/instructions.lua.
   {
     language: "lua-instructions",
-    file: "lua/mpp/methods/solana/instructions.lua",
+    file: "lua/pay_kit/solana/instructions.lua",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9]+)/,
     optional: true,
