@@ -195,6 +195,20 @@ pub struct Config {
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
     pub html: bool,
+    /// Audit #5: accept push-mode (`type=signature`) credentials.
+    ///
+    /// Push mode matches credentials to challenges by *shape* (recipient,
+    /// amount, currency, splits) — the on-chain tx is not bound to a
+    /// specific challenge id. Per spec §13.5 this is the accepted base
+    /// flow ("first accepted presentation wins"), but the lack of
+    /// cryptographic binding means any matching-shape transaction can
+    /// claim any matching-shape challenge. Routes that don't need push
+    /// mode should leave this off (default).
+    ///
+    /// Audit B34 already rejects push mode on fee-sponsored routes; this
+    /// gate runs first and covers the non-fee-sponsored case the audit
+    /// flagged.
+    pub accept_push_mode: bool,
 }
 
 impl Default for Config {
@@ -211,6 +225,7 @@ impl Default for Config {
             fee_payer_signer: None,
             store: None,
             html: false,
+            accept_push_mode: false,
         }
     }
 }
@@ -252,6 +267,8 @@ pub struct Mpp {
     fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     store: Arc<dyn Store>,
     html: bool,
+    /// Audit #5: opt-in for push-mode credentials.
+    accept_push_mode: bool,
 }
 
 impl Mpp {
@@ -314,6 +331,7 @@ impl Mpp {
             fee_payer_signer: config.fee_payer_signer,
             store,
             html: config.html,
+            accept_push_mode: config.accept_push_mode,
         })
     }
 
@@ -796,6 +814,16 @@ impl Mpp {
                 signature
             }
             CredentialPayload::Signature { ref signature } => {
+                // Audit #5: push-mode acceptance is opt-in. Spec §13.5 names
+                // "first accepted presentation wins" as the model — any
+                // matching-shape on-chain tx can claim any matching-shape
+                // challenge. Servers that don't need push mode should leave
+                // `accept_push_mode = false` (default) to reduce surface.
+                if !self.accept_push_mode {
+                    return Err(VerificationError::credential_mismatch(
+                        "Push-mode credentials are disabled on this server (Config.accept_push_mode is false; spec §13.5)",
+                    ));
+                }
                 // B34: reject push-mode credentials (`type=signature`) on
                 // routes that require a server-side fee payer. A signature-
                 // only credential references an already-landed transaction
@@ -5674,6 +5702,73 @@ mod tests {
         assert!(err.message.contains("intent"), "got: {err:?}");
     }
 
+    // ── Audit #5: push-mode acceptance is opt-in ──
+    //
+    // Spec §13.5: push mode matches by shape; any matching-shape on-chain
+    // transaction can claim any matching-shape challenge. Gate runs before
+    // B34 (which catches the narrower fee-payer-route case).
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_push_credential_when_accept_push_mode_off() {
+        // Default config: accept_push_mode is false. No fee-sponsor either,
+        // so B34 wouldn't fire — only the audit #5 gate should reject.
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({
+                "type": "signature",
+                "signature": "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC",
+            }),
+        };
+
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(
+            err.message.contains("Push-mode credentials are disabled"),
+            "got: {err:?}"
+        );
+        // The error message should also point at the spec for ops triage.
+        assert!(
+            err.message.contains("§13.5"),
+            "expected spec §13.5 callout, got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_passes_audit_5_gate_when_accept_push_mode_on() {
+        // Opt in. The audit #5 gate should NOT fire — any later error
+        // (e.g. on-chain verification against a fake signature) is fine,
+        // just not the "Push-mode credentials are disabled" one.
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
+            network: "devnet".to_string(),
+            accept_push_mode: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp.charge("0.10").unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({
+                "type": "signature",
+                "signature": "3yZe7d2X1bxYjP6kJtNJzC8mFqLgK6vQ9zR3hT5wXdAfVjY8nW1qB4uHpM2sC3rTzJtNeWfDqRmKxYjP6kJtNJzC",
+            }),
+        };
+
+        let err = mpp.verify(&cred, &request).await.unwrap_err();
+        assert!(
+            !err.message.contains("Push-mode credentials are disabled"),
+            "audit #5 gate should not fire when opted in: {err:?}"
+        );
+    }
+
     // ── B34: push-mode credentials rejected on fee-payer routes ──
     //
     // A signature-only credential references an already-landed transaction
@@ -5687,6 +5782,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn b34_rejects_push_credential_on_fee_payer_route() {
+        // Audit #5 added an earlier `accept_push_mode` gate. To exercise
+        // the B34 fee-payer-specific path in isolation, opt push mode in
+        // here so the audit #5 gate passes and B34 fires.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             secret_key: Some(TEST_SECRET.to_string()),
@@ -5694,6 +5792,7 @@ mod tests {
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
+            accept_push_mode: true,
             ..Default::default()
         })
         .unwrap();

@@ -682,3 +682,42 @@ The "drain below rent" silent-sweep is the only failure mode the chain doesn't c
 - `build_credential_header_rejects_non_charge_intent` — `intent = "session"` → same shape.
 
 ---
+
+### #5 — Push signature not bound to challenge
+**ID:** `8b2f1e9c` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** push-mode credentials (`CredentialPayload::Signature`) match on-chain transactions to challenges by shape (recipient, amount, currency, splits) only. Replay protection applies to the signature *after* verification. The on-chain tx carries no unique binding to a specific challenge, so two challenges with identical shape (or any unrelated payment with matching shape) can satisfy each other — "first accepted presentation wins."
+
+**Decision:** 🟡 **partial — spec-aware accept + opt-in gate.**
+
+**Rationale:** This is **acknowledged by the spec.** `draft-solana-charge-00.txt:1247-1268` (§13.5 "Front-running (Push Mode)") explicitly names the same attack model:
+> "Push mode does not require the on-chain transaction to carry a challenge-specific marker. It proves that a payment matching the challenged terms was made, but not necessarily that the payment was created for one unique challenge instance. If multiple valid challenges have identical terms, the same confirmed transaction could satisfy any one of them, and the first accepted presentation wins."
+
+The spec also considers and rejects mandating the audit's recommended mitigation (a Memo carrying the challenge id):
+> "Requiring an on-chain marker such as a Memo carrying the challenge id would provide stronger binding, but would also reveal extra correlation metadata on chain. This specification does not require such a marker in the base flow, but implementations MAY define a backward-compatible profile that does."
+
+So the base flow we ship is spec-compliant. Mandating the challenge-id memo would impose a privacy cost (each payment correlated to a specific request on-chain) the spec author explicitly declined to bake in. We follow suit.
+
+**What we add anyway:**
+- **`Config::accept_push_mode: bool` (default `false`).** Opt-in flag for accepting push-mode credentials. Default-off means servers that don't actively need push mode reduce their attack surface — the §13.5 trade-off only applies to operators who explicitly choose it. Independent of the binding question.
+- The new gate runs **before** B34 (the existing fee-payer-route reject). When push mode is off, the rejection message points at the spec section for ops triage; when on, B34 still narrows the fee-sponsored case.
+
+**Action taken:**
+- `Config { ..., accept_push_mode: false }` plumbed through to `Mpp` and into the push-mode branch of `verify`.
+- One pre-existing test (`b34_rejects_push_credential_on_fee_payer_route`) had to set `accept_push_mode: true` to exercise the B34-specific path in isolation now that the audit #5 gate runs first.
+- `interop_server.rs` (the interop harness binary) sets `accept_push_mode: push_mode` so the interop suite still exercises push mode end-to-end when it's the mode under test.
+
+**What we didn't do** (and why):
+- **Mandatory challenge-id memo profile** (audit's recommendation). Spec §13.5 explicitly leaves this as MAY, not MUST, citing on-chain correlation metadata as the trade-off. Adding it unilaterally would impose a privacy regression the spec author chose to avoid. If/when the spec evolves to mandate the profile, we adopt.
+- **`request.external_id` enforcement for push mode.** Considered as a lower-cost alternative to the memo profile — but it conflates `external_id` (a business identifier integrators control) with a challenge-binding marker, and still imposes the on-chain correlation cost. Skip until the spec moves.
+- **Server-side `verify_push` enrichment.** The existing memo verifier already enforces `external_id`-bound memos when integrators choose to use the field. No change there.
+
+**Note on the attacker model** that came up during analysis:
+- The attacker doesn't need the victim's challenge id. They request their own challenge (the 402 endpoint is open) for the same resource, then submit the victim's on-chain signature against their own challenge. HMAC validates (their own challenge), shape matches (same recipient/amount/currency), signature points to a real tx — first-accepted-presentation wins, attacker gets service.
+- This is exactly the model spec §13.5 names as the accepted base-flow trade-off.
+
+**New tests:**
+- `verify_rejects_push_credential_when_accept_push_mode_off` — default Mpp, push credential, expect rejection with both "Push-mode credentials are disabled" and "§13.5" in the message.
+- `verify_passes_audit_5_gate_when_accept_push_mode_on` — opt-in Mpp, confirm the audit #5 gate doesn't fire (downstream errors from the fake signature are fine; just not the gate's error).
+
+---

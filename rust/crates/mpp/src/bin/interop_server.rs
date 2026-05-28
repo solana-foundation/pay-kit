@@ -158,6 +158,9 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             fee_payer_signer: if push_mode { None } else { Some(fee_payer) },
             store: None,
             html: false,
+            // Interop tests exercise push mode end-to-end; the gate is
+            // opt-in (audit #5) so we set it explicitly here.
+            accept_push_mode: push_mode,
         })?,
         price,
         push_mode,
