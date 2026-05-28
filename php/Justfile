@@ -29,6 +29,13 @@ test-cover:
     composer run test:coverage
     php scripts/update_coverage_badge.php build/coverage/clover.xml README.md
 
+# Run Composer security advisory check against installed dependencies
+audit:
+    composer audit
+
+# Run all local PHP gates (composer validate + lint + audit + coverage)
+check: build lint audit test-cover
+
 # Boot the example simple-server (charge protected endpoint at /paid)
 serve-example port="4567":
     php -S 127.0.0.1:{{port}} -t examples/simple-server

@@ -19,6 +19,12 @@ jobs:
       - name: Install dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
+      - name: Validate composer.json
+        working-directory: php
+        run: composer validate --strict
+      - name: Audit composer dependencies
+        working-directory: php
+        run: composer audit --no-dev
       - name: Run PHP linter
         working-directory: php
         run: composer run lint
