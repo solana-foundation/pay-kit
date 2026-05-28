@@ -67,9 +67,14 @@ func main() {
 		rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
 		payTo := requireEnv("MPP_INTEROP_PAY_TO")
 		secret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
+		mint := optionalEnv("MPP_INTEROP_MINT", "USDC")
 		feePayerKey := os.Getenv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
 		cfg.RPCURL = rpcURL
 		cfg.Accept = []paykit.Scheme{paykit.MPP}
+		// Pin the stablecoin the harness asked for so the MPP adapter
+		// resolves the right mint pubkey when comparing the credential
+		// transaction's instructions against the gate.
+		cfg.Stablecoins = []paykit.Stablecoin{paykit.Stablecoin(mint)}
 		op := paykit.Operator{
 			Recipient: paykit.Address(payTo),
 			FeePayer:  feePayerKey != "",
@@ -109,8 +114,20 @@ func main() {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
+	// Settlement header the harness configured for this scenario.
+	// Default mirrors the adapter's wire constant; scenarios override
+	// (e.g. x-fixture-settlement) so the runner can extract the
+	// signature off a known name.
+	settlementHeader := optionalEnv("X402_INTEROP_SETTLEMENT_HEADER",
+		optionalEnv("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature"))
+
 	mux := http.NewServeMux()
 	mux.Handle(resourcePath, client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if pmt, ok := paykit.PaymentFrom(r.Context()); ok {
+			// Add the harness-configured alias on top of the
+			// adapter's canonical settlement headers.
+			w.Header().Set(settlementHeader, pmt.Transaction)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": protocol})
 	})))
