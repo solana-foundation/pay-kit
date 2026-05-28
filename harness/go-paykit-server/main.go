@@ -162,8 +162,18 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	splits := []protocol.Split{}
 	_ = json.Unmarshal([]byte(splitsJSON), &splits)
 
-	chargeFn := func(req *http.Request) (string, server.ChargeOptions, error) {
-		path := req.URL.Path
+	// Manual flow mirrors harness/go-server/main.go.serveProtected:
+	// build challenge per request so VerifyCredentialWithExpected
+	// pins the credential against the route's live expected request
+	// (needed for cross-route replay rejection). Bypass
+	// server.PaymentMiddleware so the harness sees the same shape
+	// the existing Go interop server emits.
+	handle := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "not_found", http.StatusNotFound)
+			return
+		}
+		path := r.URL.Path
 		amt := amountUnits
 		if replayPath != "" && path == replayPath && replayAmount != "" {
 			amt = replayAmount
@@ -173,20 +183,48 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 			FeePayer:    paymentMode != "push",
 			Splits:      splits,
 		}
-		return amt, opts, nil
-	}
-
-	handler := server.PaymentMiddleware(srv, chargeFn)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if receipt, ok := server.ReceiptFromContext(r.Context()); ok {
-			w.Header().Set(settlementHeader, receipt.Reference)
+		auth := r.Header.Get(mpp.AuthorizationHeader)
+		if auth == "" {
+			challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeMPP402(w, challenge, nil)
+			return
 		}
+		challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		credential, err := mpp.ParseAuthorization(auth)
+		if err != nil {
+			writeMPP402(w, challenge, err)
+			return
+		}
+		var expected mpp.ChargeRequest
+		if err := challenge.Request.Decode(&expected); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		receipt, err := srv.VerifyCredentialWithExpected(r.Context(), credential, expected)
+		if err != nil {
+			writeMPP402(w, challenge, err)
+			return
+		}
+		receiptHeader, _ := mpp.FormatReceipt(receipt)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "mpp"})
-	}))
-
-	mux.Handle(resourcePath, handler)
+		if receiptHeader != "" {
+			w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
+		}
+		w.Header().Set(settlementHeader, receipt.Reference)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"paid":true,"protocol":"mpp"}`))
+	}
+	mux.HandleFunc(resourcePath, handle)
 	if replayPath != "" && replayPath != resourcePath {
-		mux.Handle(replayPath, handler)
+		mux.HandleFunc(replayPath, handle)
 	}
 }
 
@@ -254,7 +292,25 @@ func pow10(n int) int {
 	return out
 }
 
-// Compile-time interface bind: the harness's umbrella import keeps
-// the import edge live so the schemes packages register their
-// adapters in their init blocks.
-var _ = mpp.AuthorizationHeader
+// writeMPP402 mirrors harness/go-server/main.go's writePaymentRequired
+// (canonical L6 problem+json body shared across MPP server SDKs).
+func writeMPP402(w http.ResponseWriter, challenge mpp.PaymentChallenge, verifyErr error) {
+	header, err := mpp.FormatWWWAuthenticate(challenge)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	body := map[string]any{
+		"error": "payment_invalid",
+	}
+	if verifyErr != nil {
+		body["message"] = verifyErr.Error()
+	} else {
+		body["message"] = "Payment is required (Go PayKit harness)."
+	}
+	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("content-type", "application/problem+json")
+	w.Header().Set(mpp.WWWAuthenticateHeader, header)
+	w.WriteHeader(http.StatusPaymentRequired)
+	_ = json.NewEncoder(w).Encode(body)
+}

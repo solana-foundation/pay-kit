@@ -127,6 +127,8 @@ jobs:
           MPP_INTEROP_CLIENTS: typescript
           MPP_INTEROP_SERVERS: go-paykit,typescript
           MPP_INTEROP_INTENTS: charge,x402-exact
+          MPP_INTEROP_SCENARIOS: charge-basic
           X402_INTEROP_CLIENTS: rust-x402
           X402_INTEROP_SERVERS: ""
+          X402_INTEROP_SCENARIOS: x402-exact-basic
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "go-paykit server" --testTimeout 180000
