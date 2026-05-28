@@ -742,6 +742,23 @@ impl Mpp {
             }
         }
 
+        // Audit #22: HMAC authenticates `credential.challenge.request` — the
+        // request the server originally issued. Settlement then runs against
+        // the caller-supplied `request`. Without binding the two, a direct
+        // caller could authenticate one request and verify settlement
+        // against a different one. Require equality on every
+        // payment-constraining field (reuses the audit #1 helper).
+        let credential_request: ChargeRequest = credential
+            .challenge
+            .request
+            .decode()
+            .map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Failed to decode credential request: {e}"
+                ))
+            })?;
+        compare_expected_to_request(&credential_request, request)?;
+
         // Tier 2: Pinned-field backstop. Runs unconditionally so callers of
         // the lower-level `verify` are protected against cross-route replay
         // for the fields that are pinned at `Mpp` construction time.
@@ -5125,6 +5142,40 @@ mod tests {
 
         let err = mpp.verify(&cred, &request).await.unwrap_err();
         assert_eq!(err.code, Some("malformed-credential"));
+    }
+
+    /// Audit #22: `verify` must reject when the caller-supplied request
+    /// diverges from the request HMAC-authenticated by the credential —
+    /// otherwise direct callers could authenticate one request shape and
+    /// settle against a different one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_request_diverging_from_credential() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap(); // credential carries amount=100000
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+
+        // Caller passes a request with a different amount than what the
+        // credential's HMAC-authenticated request carries. HMAC tier-1
+        // still passes (we didn't tamper with the credential), so the
+        // audit #22 binding check is the only thing that catches the
+        // divergence.
+        let divergent = ChargeRequest {
+            amount: "999999".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            ..Default::default()
+        };
+
+        let err = mpp.verify(&cred, &divergent).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(
+            err.message.contains("Amount mismatch"),
+            "expected amount mismatch from the binding check, got: {err:?}"
+        );
     }
 
     // ── verify_credential_with_expected() tests ──

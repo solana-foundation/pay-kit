@@ -636,3 +636,25 @@ The "drain below rent" silent-sweep is the only failure mode the chain doesn't c
 - The `build_sol_instructions` function stays public but unprotected. If a future caller starts using the SOL path for end-user-facing flows, the audit's concern becomes live again — revisit at that point.
 
 ---
+
+### #22 — Lower-level `verify` request not bound to challenge
+**ID:** `e5b8a47f` · **File:** `crates/mpp/src/server/charge.rs`
+
+**Audit claim:** `verify(&credential, &request)` recomputes HMAC from `credential.challenge.request` (confirming the challenge was server-issued) but settles against the caller-supplied `&request`. They can diverge — a direct caller could authenticate "challenge Y was issued" while verifying settlement against "request X". The escape hatch kept public after audit #2.
+
+**Decision:** ✅ **accepted — bind request to credential inside `verify`.**
+
+**Rationale:** The audit gave two options: (1) require `request == credential.request` inside `verify`, or (2) make the low-level API private/rename it. (1) closes the threat for any caller without breaking the API or forcing every caller into `verify_credential_with_expected`. (2) was a half-measure that either (a) only hid the API from external callers via `pub(crate)` while the trust gap remained for internal callers, or (b) needed a full rename (`verify_request_unchecked`) that breaks tests for marginal extra clarity.
+
+**Action taken:**
+- After the HMAC tier-1 check, `verify` decodes `credential.challenge.request` and calls `compare_expected_to_request(&decoded_from_credential, request)?` — the same audit #1 helper that `verify_credential_with_expected` uses.
+- For `verify_credential_with_expected`: the comparison fires twice (once at the outer entry, once inside `verify`). Cheap, defense-in-depth.
+- For direct callers of `verify`: any divergence between the supplied request and the credential's HMAC-authenticated request is rejected at the binding check, with the same per-field mismatch errors operators already see from audit #1.
+- Tier-2 unit tests (added in audit #2's migration) construct `request` as-if-decoded-from-the-credential, so they pass the new check naturally — no regression.
+
+**Note on `verify` still being public:** the API is now self-protected. Direct callers are free to use it; they just can't pass a divergent request. Kept public because tests and well-behaved callers (notably `verify_credential_with_expected`) need it as a building block.
+
+**New test:**
+- `verify_rejects_request_diverging_from_credential` — HMAC tier passes (credential not tampered), caller passes a different amount than the credential carries; expects the audit #1-style "Amount mismatch" error from the binding check.
+
+---
