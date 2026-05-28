@@ -1,6 +1,6 @@
 // Dual-protocol PayKit example using the umbrella package.
 //
-//	cd go/examples/paykit-server
+//	cd go/examples/simple-server
 //	go run .
 //
 // Then in another terminal:
