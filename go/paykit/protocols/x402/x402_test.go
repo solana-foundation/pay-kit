@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	x402adapter "github.com/solana-foundation/pay-kit/go/paykit/schemes/x402"
+	x402adapter "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
 	"github.com/solana-foundation/pay-kit/go/paykit/signer"
 )
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	_ "github.com/solana-foundation/pay-kit/go/paykit/schemes/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/paykit/schemes/x402"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/protocols/x402"
 	_ "github.com/solana-foundation/pay-kit/go/paykit/signer"
 )
 

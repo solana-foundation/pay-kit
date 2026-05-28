@@ -29,10 +29,10 @@ type Adapter struct {
 // via the package init() below so paykit.New picks it up automatically
 // when callers import the package as a blank import:
 //
-//	import _ "github.com/solana-foundation/pay-kit/go/paykit/schemes/mpp"
+//	import _ "github.com/solana-foundation/pay-kit/go/paykit/protocols/mpp"
 func New(cfg paykit.Config) (paykit.Adapter, error) {
 	if len(cfg.MPP.ChallengeBindingSecret) == 0 {
-		return nil, fmt.Errorf("paykit/schemes/mpp: MPP.ChallengeBindingSecret is required")
+		return nil, fmt.Errorf("paykit/protocols/mpp: MPP.ChallengeBindingSecret is required")
 	}
 	return &Adapter{cfg: cfg}, nil
 }
