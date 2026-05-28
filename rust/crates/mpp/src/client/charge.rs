@@ -73,8 +73,14 @@ pub struct BuildChargeTransactionOptions {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SelectChargeChallengeOptions<'a> {
     /// Currency symbol or mint address the client wants to pay with.
+    ///
+    /// Audit #14: this is the *fallback* preference — if
+    /// `currency_preferences` is non-empty it takes priority and this
+    /// field is ignored. Set one or the other, not both.
     pub currency: Option<&'a str>,
     /// Currency symbols or mint addresses in client preference order.
+    ///
+    /// Audit #14: when non-empty, takes priority over `currency`.
     pub currency_preferences: &'a [&'a str],
     /// Solana network identifier, one of "mainnet", "devnet", or "localnet"
     /// (spec §7.2). The legacy "mainnet-beta" name is the RPC hostname, not
@@ -676,7 +682,13 @@ fn transfer_checked_ix(
 
 /// Resolve a currency to an optional mint address.
 ///
-/// Returns `None` for native SOL, or `Some(mint_address)` for SPL tokens.
+/// Returns `None` for native SOL.
+/// Returns `Some(mint_address)` for known stablecoin symbols (e.g.
+/// `"USDC"` → the network's USDC mint).
+/// Returns `Some(currency)` (passthrough) for anything else — symbol or
+/// mint string we don't recognize. Callers handling arbitrary mints MUST
+/// validate parseability separately; audit #27 calls out the docstring
+/// drift from "Some(mint_address)" alone.
 fn resolve_mint<'a>(currency: &'a str, network: Option<&str>) -> Option<&'a str> {
     crate::protocol::solana::resolve_stablecoin_mint(currency, network)
 }

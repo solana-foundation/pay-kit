@@ -28,15 +28,45 @@ pub const MAX_DECIMALS: u8 = 18;
 /// Audit #39: rejects `decimals > MAX_DECIMALS` and uses checked
 /// arithmetic in the integer branch so a hostile or buggy caller cannot
 /// trigger a panic (debug) or silent overflow (release).
+///
+/// Audits #44 and #45: validate input shape and content.
+/// - Reject empty amount and amounts with more than one `.` (e.g.
+///   `"1.2.3"`) — `split_once('.')` only splits on the first dot, which
+///   would otherwise let `"1.2.3"` parse as `"1" + "23"` and silently
+///   produce the wrong value.
+/// - Reject inputs that aren't strict ASCII digit strings on either side
+///   of the dot — `"1a.2"`, `".5"`, `"5."`, `"."` all become errors.
 pub fn parse_units(amount: &str, decimals: u8) -> Result<String, crate::error::Error> {
     if decimals > MAX_DECIMALS {
         return Err(crate::error::Error::Other(format!(
             "Decimals {decimals} exceeds maximum {MAX_DECIMALS}"
         )));
     }
+    if amount.is_empty() {
+        return Err(crate::error::Error::Other("Empty amount".into()));
+    }
+    if amount.matches('.').count() > 1 {
+        return Err(crate::error::Error::Other(format!(
+            "Invalid amount `{amount}`: more than one decimal point"
+        )));
+    }
     let decimals = decimals as u32;
 
     if let Some((integer, fraction)) = amount.split_once('.') {
+        // Audit #44/#45: require non-empty digit strings on both sides
+        // of the dot. `".5"`, `"5."`, `"."`, `"1a.2"` all rejected.
+        if integer.is_empty() || fraction.is_empty() {
+            return Err(crate::error::Error::Other(format!(
+                "Invalid amount `{amount}`: integer and fractional parts must both be non-empty"
+            )));
+        }
+        if !integer.bytes().all(|b| b.is_ascii_digit())
+            || !fraction.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(crate::error::Error::Other(format!(
+                "Invalid amount `{amount}`: only ASCII digits and a single optional decimal point are allowed"
+            )));
+        }
         let frac_len = fraction.len() as u32;
         if frac_len > decimals {
             return Err(crate::error::Error::Other(format!(
@@ -116,9 +146,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_units_zero_decimals_with_dot() {
-        // "1." with 0 decimals: fraction part is empty string (len=0), no padding
-        assert_eq!(parse_units("1.", 0).unwrap(), "1");
+    fn parse_units_zero_decimals_with_trailing_dot_rejected() {
+        // Audit #44: empty-fraction inputs like "1." are now strictly
+        // rejected — the user must write "1" instead.
+        assert!(parse_units("1.", 0).is_err());
     }
 
     #[test]
@@ -156,6 +187,37 @@ mod tests {
     #[test]
     fn parse_units_empty_string_integer() {
         assert!(parse_units("", 6).is_err());
+    }
+
+    // ── Audits #44 / #45: input strictness ──
+
+    #[test]
+    fn parse_units_rejects_leading_dot() {
+        assert!(parse_units(".5", 1).is_err());
+    }
+
+    #[test]
+    fn parse_units_rejects_bare_dot() {
+        assert!(parse_units(".", 6).is_err());
+    }
+
+    #[test]
+    fn parse_units_rejects_multiple_dots() {
+        // Audit #45: split_once('.') only splits on the first occurrence,
+        // so "1.2.3" used to parse as "1" + "23" → 123. Now rejected.
+        assert!(parse_units("1.2.3", 6).is_err());
+    }
+
+    #[test]
+    fn parse_units_rejects_non_digit_integer_part() {
+        assert!(parse_units("1a.2", 6).is_err());
+        assert!(parse_units("1-2.3", 6).is_err());
+    }
+
+    #[test]
+    fn parse_units_rejects_non_digit_fraction_part() {
+        assert!(parse_units("1.2a", 6).is_err());
+        assert!(parse_units("1.-2", 6).is_err());
     }
 
     // ── Audit #39: overflow protection ──

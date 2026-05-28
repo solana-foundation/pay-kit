@@ -1203,7 +1203,14 @@ impl Mpp {
         } else {
             let expected_mint =
                 resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
-            if !required_ata_owners.is_empty() && request.currency != expected_mint.to_string() {
+            // Audit #34: check the property we care about directly —
+            // `request.currency` must parse as a Pubkey (i.e. be an actual
+            // mint address, not a symbol). The previous "currency !=
+            // expected_mint" check was equivalent in outcome but expressed
+            // the intent obliquely.
+            if !required_ata_owners.is_empty()
+                && Pubkey::from_str(&request.currency).is_err()
+            {
                 return Err(VerificationError::invalid_payload(
                     "ataCreationRequired requires currency to be an SPL token mint address",
                 ));
@@ -1423,7 +1430,11 @@ fn verify_versioned_transaction_pre_broadcast(
     } else {
         let expected_mint =
             resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
-        if !ata_policy.required_owners.is_empty() && request.currency != expected_mint.to_string() {
+        // Audit #34: see the matching block above — check that
+        // `request.currency` parses as a Pubkey directly.
+        if !ata_policy.required_owners.is_empty()
+            && Pubkey::from_str(&request.currency).is_err()
+        {
             return Err(VerificationError::invalid_payload(
                 "ataCreationRequired requires currency to be an SPL token mint address",
             ));
