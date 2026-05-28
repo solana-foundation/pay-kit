@@ -43,4 +43,20 @@ enum Network: string
             self::SolanaLocalnet => 'localnet',
         };
     }
+
+    /**
+     * CAIP-2 chain identifier the x402 + MPP accepts entries advertise
+     * so clients (like `pay --sandbox curl`) can match the offered
+     * network against their active wallet. Surfpool-localnet clones
+     * mainnet state, so it reuses the devnet genesis hash by convention
+     * (matches the harness fixtures + the rust x402 client).
+     */
+    public function caip2(): string
+    {
+        return match ($this) {
+            self::SolanaMainnet  => 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+            self::SolanaDevnet,
+            self::SolanaLocalnet => 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+        };
+    }
 }

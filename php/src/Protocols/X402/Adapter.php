@@ -33,8 +33,6 @@ final class Adapter
     private const PAYMENT_SIGNATURE_HEADER = 'payment-signature';
     private const X402_VERSION             = 2;
     private const TOKEN_PROGRAM            = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-    private const CAIP2_MAINNET            = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-    private const CAIP2_DEVNET             = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 
     /** @var \Closure():?string|null */
     private $recentBlockhashProvider = null;
@@ -254,9 +252,6 @@ final class Adapter
 
     private function caip2(): string
     {
-        return match ($this->config->network->value) {
-            'solana_mainnet' => self::CAIP2_MAINNET,
-            default          => self::CAIP2_DEVNET,
-        };
+        return $this->config->network->caip2();
     }
 }

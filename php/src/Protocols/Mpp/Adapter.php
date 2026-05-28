@@ -49,6 +49,7 @@ final class Adapter
         $entry = [
             'protocol' => 'mpp',
             'scheme'   => 'charge',
+            'network'  => $this->config->network->caip2(),
             'amount'   => (string) $this->totalUnits($gate, $coin),
             'currency' => $coin,
             'payTo'    => $payTo,
@@ -109,7 +110,13 @@ final class Adapter
         $coin  = $this->settlementCoin($gate);
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
         $amount = (string) $this->priceUnits($gate->amount);
-        $methodDetails = [];
+        // Pay's MPP client reads request.methodDetails.network as the
+        // short network slug ("mainnet" / "devnet" / "localnet") when
+        // filtering challenges by active wallet
+        // (rust/crates/core/src/client/mpp.rs:83). Advertise the same
+        // slug `Mints::resolve` uses so `pay --sandbox --mpp curl`
+        // matches against its sandbox network.
+        $methodDetails = ['network' => $this->config->network->mintsLabel()];
         if ($gate->hasFees()) {
             $splits = [];
             foreach ($gate->fees as $f) {
