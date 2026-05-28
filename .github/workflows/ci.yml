@@ -211,45 +211,9 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
-  test-go:
-    name: Go tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-      - name: Run tests with coverage
-        working-directory: go
-        env:
-          GOCACHE: /tmp/go-build-cache
-        run: |
-          # Narrow `go test` to library packages so coverage measures SDK
-          # surface area only (examples/ + internal/testutil hold fixtures
-          # and are excluded). Gate set to the cross-SDK baseline of 90;
-          # the library set aggregates at ~90%.
-          go test \
-            ./paycore \
-            ./internal/utils \
-            ./paykit \
-            ./signer \
-            ./protocols/mpp \
-            ./protocols/mpp/core \
-            ./protocols/mpp/wire \
-            ./protocols/mpp/intents \
-            ./protocols/mpp/server \
-            ./protocols/mpp/client \
-            ./protocols/mpp/errorcodes \
-            ./protocols/x402 \
-            -coverprofile=coverage.out -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 90
-      - name: Upload Go coverage
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: go-coverage
-          path: go/coverage.out
+  # Go tests, lint, coverage, and interop live in the dedicated go.yml
+  # workflow (triggered on pull_request and workflow_call). Kept out of
+  # ci.yml so there is a single "Go tests" check rather than two.
 
   integration:
     name: Integration tests
