@@ -25,8 +25,9 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	x402client "github.com/solana-foundation/pay-kit/go/protocols/x402/client"
 )
 
 const fixtureSettlementHeader = "x-fixture-settlement"
@@ -43,6 +44,13 @@ type adapterResult struct {
 }
 
 func main() {
+	if os.Getenv("X402_INTEROP_TARGET_URL") != "" {
+		if err := runX402Adapter(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if os.Getenv("MPP_INTEROP_TARGET_URL") != "" {
 		if err := runProcessAdapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
@@ -51,6 +59,67 @@ func main() {
 		return
 	}
 	runLegacyInterop()
+}
+
+// runX402Adapter drives the x402 (exact) client against the target. It
+// mirrors the Rust x402 interop_client contract: read the offer from the
+// 402 challenge, select by preferred network + currency order, build and
+// submit the Payment-Signature credential, then report the JSON result.
+func runX402Adapter(stdout io.Writer) error {
+	targetURL := os.Getenv("X402_INTEROP_TARGET_URL")
+	rpcURL := os.Getenv("X402_INTEROP_RPC_URL")
+	if rpcURL == "" {
+		return fmt.Errorf("X402_INTEROP_RPC_URL is required")
+	}
+	signer, err := readPrivateKeyEnv("X402_INTEROP_CLIENT_SECRET_KEY")
+	if err != nil {
+		return err
+	}
+	transport := &x402client.PaymentTransport{
+		Signer: signer,
+		RPC:    rpc.New(rpcURL),
+		Selection: x402client.ChallengeSelection{
+			Network:    os.Getenv("X402_INTEROP_NETWORK"),
+			Currencies: parseCurrencies(os.Getenv("X402_INTEROP_PREFER_CURRENCIES")),
+		},
+	}
+	resp, err := (&http.Client{Transport: transport}).Get(targetURL)
+	if err != nil {
+		return fmt.Errorf("paid request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+	result := adapterResult{
+		Type:            "result",
+		Implementation:  "go",
+		Role:            "client",
+		OK:              resp.StatusCode >= 200 && resp.StatusCode < 300,
+		Status:          resp.StatusCode,
+		ResponseHeaders: responseHeaders(resp.Header),
+		ResponseBody:    parseResponseBody(rawBody),
+		Settlement:      resp.Header.Get(fixtureSettlementHeader),
+	}
+	return json.NewEncoder(stdout).Encode(result)
+}
+
+// parseCurrencies splits the comma-separated client currency preference
+// list. Empty input yields nil (cheapest-on-network selection).
+func parseCurrencies(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func runProcessAdapter(stdout io.Writer) error {

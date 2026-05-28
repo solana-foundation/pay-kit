@@ -122,6 +122,14 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
   },
+  {
+    id: "go-x402",
+    label: "Go x402 exact client",
+    role: "client",
+    command: ["sh", "-c", "cd go-client && go run ."],
+    enabled: isEnabled("go-x402", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
