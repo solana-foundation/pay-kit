@@ -127,16 +127,23 @@ jobs:
       - name: Run Go PayKit interop matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
+          # Only the go server runs in this job, so every generated pair
+          # targets it: no testNamePattern filter and no skipped rows.
           MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: go,typescript
+          MPP_INTEROP_SERVERS: go
           MPP_INTEROP_INTENTS: charge,x402-exact
-          # Every charge scenario the go server is eligible for: basic,
-          # splits (Token + Token-2022), symbol resolution, idempotent
-          # replay store, compute-budget cap, over-split rejection, and
-          # the two L6 fault-matrix codes (wrong_network /
-          # charge_request_mismatch).
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay
+          # selectInteropScenarios reads MPP_INTEROP_SCENARIOS for the
+          # whole active set (x402 included), so x402-exact-basic must be
+          # listed here. Charge scenarios the go server is eligible for:
+          # basic, splits (Token + Token-2022), symbol resolution,
+          # idempotent replay store, compute-budget cap, over-split
+          # rejection, sum-equals-amount, and the two L6 fault-matrix
+          # codes (wrong_network / charge_request_mismatch); plus the
+          # x402 exact scheme.
+          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
           X402_INTEROP_CLIENTS: rust-x402,go-x402
-          X402_INTEROP_SERVERS: ""
-          X402_INTEROP_SCENARIOS: x402-exact-basic
-        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "go server" --testTimeout 180000
+          # Pin the x402 server set to the main go server (the rust-x402 /
+          # ts-x402 server fixtures default on; exclude them so the only
+          # x402 server is the go paykit server under test).
+          X402_INTEROP_SERVERS: go
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

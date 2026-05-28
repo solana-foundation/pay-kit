@@ -98,6 +98,11 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	payTo := requireEnv("X402_INTEROP_PAY_TO")
 	facilitator := requireEnv("X402_INTEROP_FACILITATOR_SECRET_KEY")
 	amount := optionalEnv("X402_INTEROP_AMOUNT", "1000")
+	// The harness funds the scenario's mint (X402_INTEROP_MINT) and the
+	// client pays in whatever mint the challenge advertises, so the gate
+	// must settle in that exact mint, not the USDC default (which resolves
+	// to the mainnet mint the fixtures never funded).
+	mint := optionalEnv("X402_INTEROP_MINT", "")
 
 	preflight := false
 	cfg := paykit.Config{
@@ -118,7 +123,11 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	}
 
 	amountUSD := convertUnitsToUSD(amount, 6)
-	gate := paykit.Gate{Amount: paykit.MustParseUSD(amountUSD), Desc: resourcePath}
+	price := paykit.MustParseUSD(amountUSD)
+	if mint != "" {
+		price = paykit.MustParseUSD(amountUSD, paykit.Stablecoin(mint))
+	}
+	gate := paykit.Gate{Amount: price, Desc: resourcePath}
 
 	mux.Handle(resourcePath, client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if pmt, ok := paykit.PaymentFrom(r.Context()); ok {
