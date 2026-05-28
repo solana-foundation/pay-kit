@@ -1,6 +1,10 @@
-<p align="center">
-  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="MPP" width="100%" />
-</p>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-typescript-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-typescript-light.png">
+    <img alt="Solana pay-kit — TypeScript" width="100%" src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-typescript-light.png">
+  </picture>
+</div>
 
 # @solana/pay-kit
 

@@ -1,6 +1,10 @@
-<p align="center">
-  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="solana-pay-kit" width="100%" />
-</p>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-lua-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-lua-light.png">
+    <img alt="Solana pay-kit — Lua" width="100%" src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-lua-light.png">
+  </picture>
+</div>
 
 Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in
 Lua. One rock, one surface, two protocols underneath:

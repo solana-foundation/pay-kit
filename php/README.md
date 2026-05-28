@@ -1,6 +1,10 @@
-<p align="center">
-  <img src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner.png" alt="solana-pay-kit" width="100%" />
-</p>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-php-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-php-light.png">
+    <img alt="Solana pay-kit — PHP" width="100%" src="https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/banner-php-light.png">
+  </picture>
+</div>
 
 Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in
 PHP. One package, one surface, two protocols underneath:
