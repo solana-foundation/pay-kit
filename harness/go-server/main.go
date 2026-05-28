@@ -30,11 +30,11 @@ import (
 
 	mpp "github.com/solana-foundation/pay-kit/go"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	"github.com/solana-foundation/pay-kit/go/protocol"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-	"github.com/solana-foundation/pay-kit/go/signer"
-	"github.com/solana-foundation/pay-kit/go/protocol"
 	"github.com/solana-foundation/pay-kit/go/server"
+	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 type readyMessage struct {
@@ -132,7 +132,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
 	payTo := requireEnv("MPP_INTEROP_PAY_TO")
 	mint := requireEnv("MPP_INTEROP_MINT")
-	amountUnits := requireEnv("MPP_INTEROP_AMOUNT")
+	price := optionalEnv("MPP_INTEROP_PRICE", "0.001")
 	mppSecret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
 	network := optionalEnv("MPP_INTEROP_NETWORK", "localnet")
 	paymentMode := optionalEnv("MPP_INTEROP_PAYMENT_MODE", "pull")
@@ -174,9 +174,9 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 			return
 		}
 		path := r.URL.Path
-		amt := amountUnits
+		amt := price
 		if replayPath != "" && path == replayPath && replayAmount != "" {
-			amt = replayAmount
+			amt = optionalEnv("MPP_INTEROP_REPLAY_SOURCE_PRICE", amt)
 		}
 		opts := server.ChargeOptions{
 			Description: "Go PayKit harness " + path,
