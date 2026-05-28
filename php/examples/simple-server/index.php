@@ -84,10 +84,18 @@ $response = $middleware->process(
     },
 );
 
-http_response_code($response->getStatusCode());
+// PHP CLI dev server (php -S) hard-codes status 401 whenever any
+// `WWW-Authenticate` header is sent, regardless of an earlier
+// `http_response_code()` call. Work around by emitting all headers
+// first and then forcing the status line as the last header.
 foreach ($response->getHeaders() as $name => $values) {
     foreach ($values as $value) {
         header(sprintf('%s: %s', $name, $value), false);
     }
 }
+header(sprintf(
+    'HTTP/1.1 %d %s',
+    $response->getStatusCode(),
+    $response->getReasonPhrase(),
+));
 echo (string) $response->getBody();

@@ -53,7 +53,16 @@ final class RequirePayment implements MiddlewareInterface
         ?X402Adapter $x402 = null,
     ) {
         $this->mpp  = $mpp ?? new MppAdapter($client->config);
-        $this->x402 = $x402; // x402 adapter is optional pre-Phase 5
+        // Auto-wire the X402 adapter when the client's accept list
+        // includes Protocol::X402. Callers can still pass an explicit
+        // adapter to override (e.g. with an offline blockhash provider).
+        if ($x402 !== null) {
+            $this->x402 = $x402;
+        } elseif (in_array(Protocol::X402, $client->config->accept, true)) {
+            $this->x402 = new X402Adapter($client->config);
+        } else {
+            $this->x402 = null;
+        }
     }
 
     public function process(
