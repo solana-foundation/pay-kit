@@ -3,31 +3,47 @@
 declare(strict_types=1);
 
 /**
- * Pure-PHP MPP interop charge server.
+ * Cross-language harness adapter for the PHP PayKit umbrella.
  *
- * Drives the same `SolanaChargeHandler` users of the SDK get; this file is
- * just env reading + a tiny socket-level HTTP framer so the harness can spawn
- * it and read a `ready` JSON line with an ephemeral port.
+ * One TCP server, two settle paths (x402:exact and mpp:charge),
+ * picked per scenario by which env namespace the harness orchestrator
+ * sets (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors
+ * harness/lua-server/server.lua and the Ruby pay-kit-server pattern.
+ *
+ * Drives the harness contract:
+ *   1. Read env (PAY_KIT_INTEROP_PROTOCOL OR exclusive MPP_/X402_).
+ *   2. Boot the PayKit Client + register one gate at the requested amount.
+ *   3. Listen on a free TCP port; print {"type":"ready",...} on stdout.
+ *   4. Route GET /<resource> through the matching protocol adapter.
  */
 
-use PayKit\Protocols\Mpp\Intent\ChargeRequest;
-use PayKit\Protocols\Mpp\Server\ChargeServer;
-use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
-use PayKit\Store\FileStore;
-use SolanaPhpSdk\Keypair\Keypair;
-use SolanaPhpSdk\Rpc\RpcClient;
-
-// solana-php's CurlHttpClient still calls the no-op-since-PHP-8.0 curl_close()
-// which raises E_DEPRECATED on PHP 8.5+. Route deprecations to stderr so they
-// don't pollute the ready/result JSON the harness parses from stdout.
+// solana-php's CurlHttpClient still calls curl_close(); silence the
+// PHP 8.5+ deprecation so the ready/result JSON stays clean.
 error_reporting(error_reporting() & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 ini_set('display_errors', 'stderr');
 
 require __DIR__ . '/../../php/vendor/autoload.php';
 
-// ── Env ──────────────────────────────────────────────────────────────────────
+use Nyholm\Psr7\Factory\Psr17Factory;
+use PayKit\Client;
+use PayKit\Config;
+use PayKit\Currency;
+use PayKit\Gate;
+use PayKit\Network;
+use PayKit\Operator;
+use PayKit\Price;
+use PayKit\Protocol;
+use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use PayKit\Protocols\Mpp\MppConfig;
+use PayKit\Protocols\Mpp\Server\ChargeServer;
+use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
+use PayKit\Protocols\X402\Adapter as X402Adapter;
+use PayKit\Signer;
+use PayKit\Stablecoin;
+use PayKit\Store\FileStore;
+use SolanaPhpSdk\Keypair\Keypair;
+use SolanaPhpSdk\Rpc\RpcClient;
 
-/** Read a required env var or die with a clear error. */
 function require_env(string $name): string
 {
     $value = getenv($name);
@@ -44,10 +60,6 @@ function optional_env(string $name, string $default): string
     return is_string($value) && $value !== '' ? $value : $default;
 }
 
-/**
- * Parse a JSON array-of-bytes secret key (Solana CLI / web3.js format) into
- * the 64-byte string Keypair::fromSecretKey expects.
- */
 function secret_key_from_json(string $raw): string
 {
     /** @var mixed $decoded */
@@ -65,80 +77,151 @@ function secret_key_from_json(string $raw): string
     return $bytes;
 }
 
-$rpcUrl = require_env('MPP_INTEROP_RPC_URL');
-$network = optional_env('MPP_INTEROP_NETWORK', 'localnet');
-$mint = require_env('MPP_INTEROP_MINT');
-$amount = require_env('MPP_INTEROP_AMOUNT');
-$paymentMode = optional_env('MPP_INTEROP_PAYMENT_MODE', 'pull');
-$payTo = require_env('MPP_INTEROP_PAY_TO');
-$secretKey = optional_env('MPP_INTEROP_SECRET_KEY', 'mpp-interop-secret-key');
-$resourcePath = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid');
-$settlementHeader = optional_env('MPP_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
-$replayPath = getenv('MPP_INTEROP_REPLAY_SOURCE_PATH') ?: null;
-$replayAmount = getenv('MPP_INTEROP_REPLAY_SOURCE_AMOUNT') ?: null;
-/** @var mixed $splitsDecoded */
-$splitsDecoded = json_decode(optional_env('MPP_INTEROP_SPLITS', '[]'), true, flags: JSON_THROW_ON_ERROR);
-if (!is_array($splitsDecoded)) {
-    fwrite(STDERR, "MPP_INTEROP_SPLITS must decode to an array\n");
-    exit(2);
+// ── Detect intent ───────────────────────────────────────────────────────────
+
+$explicit = strtolower(optional_env('PAY_KIT_INTEROP_PROTOCOL', ''));
+$x402Active = false;
+if ($explicit === 'x402') {
+    $x402Active = true;
+} elseif ($explicit === 'mpp' || $explicit === 'charge') {
+    $x402Active = false;
+} else {
+    $x402Set = (getenv('X402_INTEROP_RPC_URL') ?: '') !== '';
+    $mppSet  = (getenv('MPP_INTEROP_RPC_URL') ?: '') !== '';
+    if ($x402Set === $mppSet) {
+        fwrite(STDERR, "set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or set PAY_KIT_INTEROP_PROTOCOL\n");
+        exit(2);
+    }
+    $x402Active = $x402Set;
 }
-/** @var array<int, array<string, mixed>> $splits */
-$splits = $splitsDecoded;
 
-$feePayer = Keypair::fromSecretKey(secret_key_from_json(require_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY')));
+// ── Per-protocol env read ───────────────────────────────────────────────────
 
-// ── SDK wiring ───────────────────────────────────────────────────────────────
+if ($x402Active) {
+    $rpcUrl       = require_env('X402_INTEROP_RPC_URL');
+    $payTo        = require_env('X402_INTEROP_PAY_TO');
+    $facilitatorSecretJson = require_env('X402_INTEROP_FACILITATOR_SECRET_KEY');
+    $amountUnits  = optional_env('X402_INTEROP_AMOUNT', '1000');
+    $mint         = optional_env('X402_INTEROP_MINT', 'USDC');
+    $networkRaw   = optional_env('X402_INTEROP_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1');
+    $resourcePath = optional_env('X402_INTEROP_RESOURCE_PATH', '/paid');
+    $settlementHeader = optional_env('X402_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
+} else {
+    $rpcUrl       = require_env('MPP_INTEROP_RPC_URL');
+    $payTo        = require_env('MPP_INTEROP_PAY_TO');
+    $mint         = require_env('MPP_INTEROP_MINT');
+    $amountUnits  = require_env('MPP_INTEROP_AMOUNT');
+    $mppSecret    = optional_env('MPP_INTEROP_SECRET_KEY', 'pay-kit-interop-secret');
+    $networkRaw   = optional_env('MPP_INTEROP_NETWORK', 'localnet');
+    $resourcePath = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid');
+    $settlementHeader = optional_env('MPP_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
+    $paymentMode  = optional_env('MPP_INTEROP_PAYMENT_MODE', 'pull');
+    $replayPath   = getenv('MPP_INTEROP_REPLAY_SOURCE_PATH') ?: null;
+    $replayAmount = getenv('MPP_INTEROP_REPLAY_SOURCE_AMOUNT') ?: null;
+    /** @var mixed $splitsDecoded */
+    $splitsDecoded = json_decode(optional_env('MPP_INTEROP_SPLITS', '[]'), true, flags: JSON_THROW_ON_ERROR);
+    $splits = is_array($splitsDecoded) ? $splitsDecoded : [];
+    $feePayer = Keypair::fromSecretKey(secret_key_from_json(require_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY')));
+}
 
-$rpc = new RpcClient($rpcUrl);
-$handler = new SolanaChargeHandler(
-    challenges: new ChargeServer(
-        secretKey: $secretKey,
-        realm: 'MPP Interop',
-        blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
-    ),
-    rpc: $rpc,
-    feePayer: $feePayer,
-    network: $network,
-    settlementHeader: $settlementHeader,
-    // Per-PID FileStore so two server processes in the same interop run
-    // don't collide on the in-memory MemoryStore default. Push-mode
-    // replay tests rely on durable cross-request consumption.
-    replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-interop-replay-' . getmypid()),
-);
+// ── Boot the SDK ────────────────────────────────────────────────────────────
+
+if ($x402Active) {
+    // x402 mode: build the umbrella Client + X402 Adapter with the
+    // facilitator key as the operator's signer.
+    $signer = Signer::json($facilitatorSecretJson);
+    $client = new Client(new Config(
+        network:     resolve_network($networkRaw),
+        accept:      [Protocol::X402],
+        stablecoins: [Stablecoin::Usdc],
+        rpcUrl:      $rpcUrl,
+        operator:    new Operator(recipient: $payTo, signer: $signer, feePayer: true),
+        mpp:         new MppConfig(challengeBindingSecret: 'unused-x402'),
+        preflight:   false,
+    ));
+    $adapter = new X402Adapter($client->config);
+    $gate = new Gate(amount: Price::usd(format_decimal_amount($amountUnits)));
+} else {
+    // MPP mode: build the lower-level ChargeServer + SolanaChargeHandler
+    // (the existing MPP adapter path; matches the legacy harness shape).
+    $rpc = new RpcClient($rpcUrl);
+    $handler = new SolanaChargeHandler(
+        challenges: new ChargeServer(
+            secretKey: $mppSecret,
+            realm:     'MPP Interop',
+            blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
+        ),
+        rpc:        $rpc,
+        feePayer:   $feePayer,
+        network:    $networkRaw,
+        settlementHeader: $settlementHeader,
+        replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-interop-replay-' . getmypid()),
+    );
+}
+
+function resolve_network(string $raw): Network
+{
+    if (str_starts_with($raw, 'solana:')) {
+        return $raw === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
+            ? Network::SolanaMainnet
+            : Network::SolanaDevnet;
+    }
+    return match ($raw) {
+        'mainnet' => Network::SolanaMainnet,
+        'devnet'  => Network::SolanaDevnet,
+        default   => Network::SolanaLocalnet,
+    };
+}
 
 /**
- * @param array<int, array<string, mixed>> $splits
+ * Convert a smallest-units integer string to a 6-decimal Price::usd
+ * argument (e.g. "1000" -> "0.001" for USDC).
+ */
+function format_decimal_amount(string $units, int $decimals = 6): string
+{
+    $n = (int) $units;
+    if ($n === 0) {
+        return '0';
+    }
+    $divisor = 10 ** $decimals;
+    $whole = intdiv($n, $divisor);
+    $frac = $n - ($whole * $divisor);
+    if ($frac === 0) {
+        return (string) $whole;
+    }
+    return rtrim(sprintf('%d.%0' . $decimals . 'd', $whole, $frac), '0');
+}
+
+/**
+ * @param array<int,array<string,mixed>> $splits
  */
 function build_charge_request(string $amount, string $mint, string $payTo, string $network, string $paymentMode, ?string $feePayerKey, array $splits): ChargeRequest
 {
     $methodDetails = [
-        'network' => $network,
+        'network'  => $network,
         'decimals' => 6,
     ];
-    // B34: push-mode routes MUST NOT advertise a server-side fee payer.
-    // Only pull-mode routes attach feePayer/feePayerKey so the server
-    // co-signs the client-built transaction before broadcast.
     if ($paymentMode !== 'push') {
-        $methodDetails['feePayer'] = true;
+        $methodDetails['feePayer']    = true;
         $methodDetails['feePayerKey'] = $feePayerKey;
     }
     if ($splits !== []) {
         $methodDetails['splits'] = $splits;
     }
     return new ChargeRequest(
-        amount: $amount,
-        currency: $mint,
-        recipient: $payTo,
-        description: 'PHP interop protected content',
+        amount:        $amount,
+        currency:      $mint,
+        recipient:     $payTo,
+        description:   'PHP interop protected content',
         methodDetails: $methodDetails,
     );
 }
 
-// ── HTTP framing ─────────────────────────────────────────────────────────────
+// ── HTTP framing ────────────────────────────────────────────────────────────
 
 /**
  * @param resource $conn
- * @return array{method: string, path: string, headers: array<string, string>}|null
+ * @return array{method:string,path:string,headers:array<string,string>}|null
  */
 function read_request(mixed $conn): ?array
 {
@@ -151,7 +234,6 @@ function read_request(mixed $conn): ?array
         return null;
     }
     [$method, $path] = [$parts[0], $parts[1]];
-
     $headers = [];
     while (true) {
         $line = fgets($conn);
@@ -175,7 +257,7 @@ function read_request(mixed $conn): ?array
 
 /**
  * @param resource $conn
- * @param array<string, string> $headers
+ * @param array<string,string> $headers
  */
 function write_response(mixed $conn, int $status, array $headers, mixed $body): void
 {
@@ -185,24 +267,28 @@ function write_response(mixed $conn, int $status, array $headers, mixed $body): 
         404 => 'Not Found',
         default => 'Server Error',
     };
-    if (is_array($body)) {
-        $payload = json_encode($body, JSON_THROW_ON_ERROR);
-    } elseif (is_string($body)) {
-        $payload = $body;
-    } else {
-        $payload = '';
-    }
+    $payload = is_array($body) ? json_encode($body, JSON_THROW_ON_ERROR) : (is_string($body) ? $body : '');
     $merged = array_merge(['connection' => 'close', 'content-length' => (string) strlen($payload)], $headers);
-
     $head = "HTTP/1.1 $status $reason\r\n";
     foreach ($merged as $name => $value) {
         $head .= $name . ': ' . $value . "\r\n";
     }
-    $head .= "\r\n";
-    fwrite($conn, $head . $payload);
+    fwrite($conn, $head . "\r\n" . $payload);
 }
 
-// ── Listen + accept ──────────────────────────────────────────────────────────
+// ── Build a PSR-7 request for the x402 adapter ──────────────────────────────
+
+function psr7_from_socket(array $req): \Psr\Http\Message\ServerRequestInterface
+{
+    $factory = new Psr17Factory();
+    $r = $factory->createServerRequest($req['method'], $req['path']);
+    foreach ($req['headers'] as $k => $v) {
+        $r = $r->withHeader($k, $v);
+    }
+    return $r;
+}
+
+// ── Listen + accept ─────────────────────────────────────────────────────────
 
 $listener = stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
 if ($listener === false) {
@@ -217,11 +303,11 @@ if (!is_string($name)) {
 $port = (int) substr($name, strrpos($name, ':') + 1);
 
 fwrite(STDOUT, json_encode([
-    'type' => 'ready',
+    'type'           => 'ready',
     'implementation' => 'php',
-    'role' => 'server',
-    'port' => $port,
-    'capabilities' => ['charge'],
+    'role'           => 'server',
+    'port'           => $port,
+    'capabilities'   => [$x402Active ? 'exact' : 'charge'],
 ], JSON_THROW_ON_ERROR) . "\n");
 fflush(STDOUT);
 
@@ -248,31 +334,66 @@ while (is_resource($listener)) {
             fclose($conn);
             continue;
         }
-
         if ($req['method'] === 'GET' && $req['path'] === '/health') {
             write_response($conn, 200, ['content-type' => 'application/json'], ['ok' => true]);
             fclose($conn);
             continue;
         }
-
-        $protectedAmount = null;
-        if ($req['method'] === 'GET' && $req['path'] === $resourcePath) {
-            $protectedAmount = $amount;
-        } elseif ($req['method'] === 'GET' && $replayPath !== null && $req['path'] === $replayPath) {
-            $protectedAmount = $replayAmount ?? $amount;
-        }
-
-        if ($protectedAmount === null) {
+        $isProtected = ($req['method'] === 'GET' && $req['path'] === $resourcePath);
+        $isReplay = (!$x402Active && $req['method'] === 'GET'
+            && isset($replayPath) && $replayPath !== null && $req['path'] === $replayPath);
+        if (!$isProtected && !$isReplay) {
             write_response($conn, 404, ['content-type' => 'application/json'], ['error' => 'not_found']);
             fclose($conn);
             continue;
         }
 
-        $request = build_charge_request($protectedAmount, $mint, $payTo, $network, $paymentMode, $handler->feePayerPubkey(), $splits);
-        $authorization = $req['headers']['authorization'] ?? null;
-        $result = $handler->handle($authorization, $request);
-
-        write_response($conn, $result->status, $result->headers, $result->body);
+        if ($x402Active) {
+            // x402 path through the umbrella adapter.
+            $psrReq = psr7_from_socket($req);
+            $sig = $req['headers']['payment-signature'] ?? '';
+            if ($sig === '') {
+                // No credential — emit 402 challenge.
+                $accepts = [$adapter->acceptsEntry($gate, $psrReq)];
+                $challengeHeaders = $adapter->challengeHeaders($gate, $psrReq);
+                write_response($conn, 402, array_merge(['content-type' => 'application/json'], $challengeHeaders), [
+                    'error'    => 'payment_required',
+                    'resource' => $req['path'],
+                    'accepts'  => $accepts,
+                ]);
+            } else {
+                try {
+                    $payment = $adapter->verifyAndSettle($gate, $psrReq);
+                    // The harness reads the settlement signature from a
+                    // configurable header name (X402_INTEROP_SETTLEMENT_HEADER);
+                    // the default is x-payment-settlement-signature but
+                    // scenarios override it (e.g. x-fixture-settlement).
+                    $headers = array_merge(
+                        ['content-type' => 'application/json'],
+                        $payment->settlementHeaders,
+                        [$settlementHeader => $payment->transaction],
+                    );
+                    write_response($conn, 200, $headers, [
+                        'ok'          => true,
+                        'paid'        => true,
+                        'protocol'    => 'x402',
+                        'transaction' => $payment->transaction,
+                    ]);
+                } catch (Throwable $e) {
+                    write_response($conn, 402, ['content-type' => 'application/json'], [
+                        'error'   => 'invalid_proof',
+                        'message' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } else {
+            // Existing MPP path (untouched).
+            $protectedAmount = $isReplay && $replayAmount !== null ? (string) $replayAmount : $amountUnits;
+            $request = build_charge_request($protectedAmount, $mint, $payTo, $networkRaw, $paymentMode, $handler->feePayerPubkey(), $splits);
+            $authorization = $req['headers']['authorization'] ?? null;
+            $result = $handler->handle($authorization, $request);
+            write_response($conn, $result->status, $result->headers, $result->body);
+        }
         fclose($conn);
     } catch (Throwable $error) {
         fwrite(STDERR, 'interop php server error: ' . $error->getMessage() . "\n");
@@ -280,7 +401,7 @@ while (is_resource($listener)) {
             try {
                 write_response($conn, 500, ['content-type' => 'application/json'], ['error' => $error->getMessage()]);
             } catch (Throwable) {
-                // ignore secondary failure
+                // ignore
             }
             fclose($conn);
         }

@@ -158,15 +158,18 @@ export const serverImplementations: ImplementationDefinition[] = [
   },
   {
     id: "php",
-    label: "PHP HTTP server",
+    label: "PHP PayKit server (dual protocol)",
     role: "server",
+    // One adapter binary, two settle paths. The dual-protocol PHP
+    // server (harness/php-server/server.php) reads either
+    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL
+    // for the matrix's both-namespaces shape) and routes through
+    // the umbrella's X402 adapter (x402) or the lower-level
+    // SolanaChargeHandler (mpp). Mirrors the Lua + Ruby
+    // pay-kit-server pattern.
     command: ["php", "php-server/server.php"],
-    // Enabled by default so the charge-push scenario runs in the
-    // canonical matrix. PHP runs against the scenarios whose
-    // `serverIds` includes "php"; scenarios without an explicit
-    // `serverIds` filter still iterate every enabled server, so this
-    // also exposes PHP to charge-basic, charge-split-ata, etc.
     enabled: isEnabled("php", "MPP_INTEROP_SERVERS", true),
+    intents: ["charge", "x402-exact"],
   },
   {
     id: "ruby",

@@ -77,4 +77,36 @@ final class ConfigTest extends TestCase
         $this->assertSame($sgn->pubkey(), $cfg->operator->signer?->pubkey());
         $this->assertFalse($cfg->operator->feePayer);
     }
+    public function testEffectiveX402SignerFallsBackToOperatorSigner(): void
+    {
+        $sgn = Signer::generate();
+        $cfg = new Config(
+            network: Network::SolanaDevnet,
+            operator: new Operator(recipient: Signer::generate()->pubkey(), signer: $sgn, feePayer: true),
+            preflight: false,
+        );
+        $this->assertSame($sgn->pubkey(), $cfg->effectiveX402Signer()?->pubkey());
+    }
+
+    public function testWithMppReturnsCopy(): void
+    {
+        $cfg = new Config(network: Network::SolanaDevnet, preflight: false);
+        $newMpp = new \PayKit\Protocols\Mpp\MppConfig(realm: 'NewRealm', challengeBindingSecret: 'abc');
+        $next = $cfg->withMpp($newMpp);
+        $this->assertSame('NewRealm', $next->mpp->realm);
+        $this->assertSame('abc', $next->mpp->challengeBindingSecret);
+        $this->assertSame($cfg->network, $next->network);
+    }
+
+    public function testInvalidAcceptEntryRejected(): void
+    {
+        $this->expectException(\PayKit\Exception\ConfigurationException::class);
+        new Config(accept: ['not-a-protocol-enum'], preflight: false);
+    }
+
+    public function testInvalidStablecoinEntryRejected(): void
+    {
+        $this->expectException(\PayKit\Exception\ConfigurationException::class);
+        new Config(stablecoins: ['not-a-stablecoin-enum'], preflight: false);
+    }
 }

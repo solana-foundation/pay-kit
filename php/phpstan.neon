@@ -10,6 +10,12 @@ parameters:
         # deps; analysed under the consumer app, not here.
         - src/Laravel/*
         - src/Laravel/**
+        # Symfony adapter is analysed under the consumer app via the
+        # symfony/* deps that come with it. The bundle wiring uses
+        # container dynamics that PHPStan can't follow without the
+        # full Symfony kernel.
+        - src/Symfony/*
+        - src/Symfony/**
     treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false
     bootstrapFiles:

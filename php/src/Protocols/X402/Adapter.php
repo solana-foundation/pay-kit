@@ -61,13 +61,19 @@ final class Adapter
     public function acceptsEntry(Gate $gate, ServerRequestInterface $request): array
     {
         $coin = $gate->amount->primaryCoin()?->value ?? $this->config->stablecoins[0]->value;
+        // x402 spec puts the on-chain mint pubkey on `asset`, not the
+        // ticker. Resolve the ticker to a mint via the legacy Mints
+        // registry; Mints::resolve already falls back to the mainnet
+        // row when the network row is absent (Ruby PR #142 caveat #1).
+        $asset = \PayKit\PayCore\Solana\Mints::resolve($coin, $this->config->network->mintsLabel()) ?? $coin;
+        $tokenProgram = \PayKit\PayCore\Solana\Mints::tokenProgramFor($coin, $this->config->network->mintsLabel());
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
         $amount = (string) $gate->total()->amount->multipliedBy(1_000_000)->toInt();
         $signer = $this->config->effectiveX402Signer();
         $extra = [
             'feePayer'     => $signer?->pubkey() ?? '',
             'decimals'     => 6,
-            'tokenProgram' => self::TOKEN_PROGRAM,
+            'tokenProgram' => $tokenProgram,
             'memo'         => $request->getUri()->getPath(),
         ];
         // Ruby PR #142 caveat #5: stamp the server's recent_blockhash
@@ -85,7 +91,7 @@ final class Adapter
             'protocol'          => 'x402',
             'scheme'            => 'exact',
             'network'           => $this->caip2(),
-            'asset'             => $coin,
+            'asset'             => $asset,
             'amount'            => $amount,
             'maxAmountRequired' => $amount,
             'payTo'             => $payTo,
@@ -206,12 +212,13 @@ final class Adapter
         }
         $kp = Keypair::fromSecretKey($signer->secretKey());
         $tx->partialSign($kp);
-        $cosigned = base64_encode($tx->serialize(verifySignatures: false));
+        $cosignedWire = $tx->serialize(verifySignatures: false);
 
-        // Broadcast.
+        // Broadcast via the raw-wire path so PHP doesn't have to
+        // reconstruct a SignedTransaction wrapper just to send.
         $rpc = new RpcClient($this->config->rpcUrl);
         try {
-            $sig = $rpc->sendTransaction($cosigned, ['encoding' => 'base64', 'skipPreflight' => false]);
+            $sig = $rpc->sendRawTransaction($cosignedWire, ['encoding' => 'base64', 'skipPreflight' => false]);
         } catch (Throwable $e) {
             throw new InvalidProofException(
                 'pay_kit: invalid proof: broadcast failed: ' . $e->getMessage(),

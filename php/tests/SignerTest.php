@@ -84,4 +84,16 @@ final class SignerTest extends TestCase
         $this->expectException(InvalidKeyException::class);
         Signer::env('');
     }
+    public function testBase58RejectsTooShortDecoded(): void
+    {
+        // Valid base58 but decoded length != 64 -> rejected.
+        $this->expectException(InvalidKeyException::class);
+        Signer::base58('abc123');
+    }
+
+    public function testBase58RejectsEmpty(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::base58('');
+    }
 }

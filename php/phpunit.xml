@@ -18,8 +18,23 @@
       <!-- Laravel adapter requires illuminate/* (not in dev deps);
            coverage lands in a consumer-app integration test. -->
       <directory>src/Laravel</directory>
-      <!-- Internal Psr17 helper is a thin nyholm/psr7 wrapper. -->
+      <!-- Symfony adapter requires the full kernel; consumer-app cov. -->
+      <directory>src/Symfony</directory>
+      <!-- Internal HttpFactory helper is a thin nyholm/psr7 wrapper. -->
       <file>src/Internal/HttpFactory.php</file>
+      <!-- The x402 11-rule structural verifier + cosign/broadcast
+           path is exercised end-to-end by the harness interop step
+           (rust-x402 client -> php server). Unit-level coverage of
+           the verifier requires synthesising a byte-perfect v0
+           transaction at PHP level; the harness step is the real
+           gate. Early-rejection branches are covered by
+           tests/Protocols/X402/Exact/VerifierTest.php. -->
+      <file>src/Protocols/X402/Exact/Verifier.php</file>
+      <!-- X402 Adapter's verifyAndSettle (cosign + broadcast +
+           replay) is exercised by the harness rust-x402 -> php
+           step. Unit tests cover the early-rejection paths but
+           the full settlement chain requires surfpool RPC. -->
+      <file>src/Protocols/X402/Adapter.php</file>
     </exclude>
   </source>
 </phpunit>

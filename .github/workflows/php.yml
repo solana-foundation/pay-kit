@@ -69,6 +69,9 @@ jobs:
       - name: Build Rust interop client
         working-directory: rust
         run: cargo build -p solana-mpp --bin interop_client
+      - name: Build Rust x402 interop client
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin interop_client
       - name: Install interop harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
@@ -92,3 +95,17 @@ jobs:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: php
           MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata
+
+      # Dual-protocol proof: one e2e run drives MPP charge scenarios
+      # (typescript client) and x402 exact (rust-x402 client) against
+      # the same PHP adapter binary. Mirrors the lua + ruby interop
+      # steps.
+      - name: Run PayKit interop smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: php,typescript
+          MPP_INTEROP_INTENTS: charge,x402-exact
+          X402_INTEROP_CLIENTS: rust-x402
+          X402_INTEROP_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000
