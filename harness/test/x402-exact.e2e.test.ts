@@ -110,6 +110,10 @@ describe("x402 exact intent — cross-language matrix", () => {
     // stub server is intentionally excluded).
     if (clientId === "swift-x402" && serverId === "rust-x402") return true;
     if (clientId === "swift-x402" && serverId === "python") return true;
+    // kotlin-x402 client against rust-x402 and python (real settlement).
+    // ts-x402 server excluded: pre-existing getTransaction flake.
+    if (clientId === "kotlin-x402" && serverId === "rust-x402") return true;
+    if (clientId === "kotlin-x402" && serverId === "python") return true;
     return false;
   };
 

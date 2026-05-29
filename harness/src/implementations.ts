@@ -183,6 +183,22 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("swift-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "kotlin-x402",
+    label: "Kotlin x402 exact client",
+    role: "client",
+    // Pre-warmed by `gradle installDist` in `.github/workflows/kotlin.yml`
+    // (the `interop-kotlin-x402` job) so the script lands at this path. Local
+    // runs can prime it with `(cd harness/kotlin-x402-client && gradle installDist)`.
+    command: [
+      "sh",
+      "-c",
+      "kotlin-x402-client/build/install/mpp-kotlin-x402-interop-client/bin/mpp-kotlin-x402-interop-client",
+    ],
+    // Defaults off to match swift/go/etc: opt-in via `X402_INTEROP_CLIENTS=kotlin-x402`.
+    enabled: isEnabled("kotlin-x402", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
