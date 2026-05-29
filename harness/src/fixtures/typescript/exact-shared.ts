@@ -52,6 +52,26 @@ function parseCsv(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+// Convert a human-readable price ("0.001", "$0.001", "0.001 USDC") into the
+// atomic base-unit integer string the x402 wire `amount`/`maxAmountRequired`
+// field carries. Mirrors the Rust spine: conformant clients (Rust/Swift/
+// Kotlin) parse `amount` as a u64 of base units, so the offer MUST advertise
+// base units scaled by `decimals`, never the decimal price itself.
+export function toBaseUnits(price: string, decimals: number): string {
+  const token = price.trim().replace(/^\$/, "").split(/\s+/)[0] ?? "";
+  if (
+    token === "" ||
+    (token.match(/\./g)?.length ?? 0) > 1 ||
+    !/^[0-9.]+$/.test(token)
+  ) {
+    throw new Error(`invalid price: ${price}`);
+  }
+  const [whole, frac = ""] = token.split(".");
+  const fracScaled = `${frac}${"0".repeat(decimals)}`.slice(0, decimals);
+  const combined = `${whole}${fracScaled}`.replace(/^0+(?=\d)/, "");
+  return combined === "" ? "0" : combined;
+}
+
 function readBase(): X402InteropEnvironment {
   return {
     rpcUrl: readRequiredEnv("X402_INTEROP_RPC_URL"),
