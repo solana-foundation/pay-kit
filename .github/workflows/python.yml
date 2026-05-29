@@ -121,16 +121,21 @@ jobs:
       # x402 exact: drive the Python pay_kit x402 client (a real signed v0
       # VersionedTransaction) against the full-settling rust and python x402
       # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
-      # client keypair into X402_INTEROP_CLIENT_SECRET_KEY; the matrix gates on
-      # impl.intents so only x402-exact scenarios run. The x402 client adapter
-      # imports pay_kit from python/src on sys.path (no extra install beyond the
-      # editable SDK above). ts-x402 is excluded: its stub server expects a
+      # client keypair into X402_INTEROP_CLIENT_SECRET_KEY. The matrix pairs
+      # every active client x active server, so the MPP_INTEROP_* selectors are
+      # also set to keep the default charge-enabled adapters (typescript, php,
+      # go) out of this x402 run. ts-x402 is excluded: its stub server expects a
       # payload.challengeId and never broadcasts a real transaction, so it
-      # cannot settle a genuine signed tx (same reason rust-x402 skips it).
+      # cannot settle a genuine signed tx (same reason rust-x402 skips it). The
+      # x402 client adapter imports pay_kit from python/src on sys.path (no
+      # extra install beyond the editable SDK above).
       - name: Focused python-x402 -> rust/python x402 servers
         working-directory: harness
         env:
           MPP_INTEROP_INTENTS: x402-exact
+          MPP_INTEROP_SCENARIOS: x402-exact-basic
+          MPP_INTEROP_CLIENTS: python-x402
+          MPP_INTEROP_SERVERS: rust-x402,python
           X402_INTEROP_CLIENTS: python-x402
           X402_INTEROP_SERVERS: rust-x402,python
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
