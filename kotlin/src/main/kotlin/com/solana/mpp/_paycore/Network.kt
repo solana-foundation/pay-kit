@@ -21,18 +21,22 @@ object Network {
     /**
      * Resolves a network slug or CAIP-2 identifier to its canonical CAIP-2 form.
      *
-     * `null` defaults to devnet (matching the harness default
-     * `X402_INTEROP_NETWORK` value and the rust spine default).
-     * `localnet` shares the devnet CAIP-2 (Surfpool behaviour).
+     * `null` defaults to mainnet, matching the rust spine
+     * (`select_requirement` uses `.unwrap_or(SOLANA_MAINNET)`) and the
+     * Python client default. `localnet` shares the devnet CAIP-2 (Surfpool
+     * behaviour). Callers that want devnet (e.g. the interop harness) pass an
+     * explicit network slug or CAIP-2 id.
      */
     fun toCaip2(network: String?): String {
-        if (network == null) return SOLANA_DEVNET
+        if (network == null) return SOLANA_MAINNET
         val lowered = network.trim()
         if (lowered == SOLANA_MAINNET || lowered == SOLANA_DEVNET) return lowered
         return when (lowered) {
             "mainnet", "mainnet-beta", "solana" -> SOLANA_MAINNET
             "devnet", "solana-devnet", "localnet" -> SOLANA_DEVNET
-            else -> SOLANA_DEVNET
+            // Unknown slugs resolve to mainnet, matching the rust
+            // `caip2_network_for_cluster` catch-all (`_ => SOLANA_MAINNET`).
+            else -> SOLANA_MAINNET
         }
     }
 

@@ -64,7 +64,8 @@ data class X402Envelope(
  * Mirrors the rust ``ChallengeSelection`` and the Python ``ChallengeSelection``.
  */
 data class ChallengeSelection(
-    /** Solana network slug or CAIP-2 id. ``null`` defaults to devnet. */
+    /** Solana network slug or CAIP-2 id. ``null`` defaults to mainnet
+     *  (matching the rust spine + Python client). */
     val network: String? = null,
     /**
      * Priority-ordered currencies the client will pay in (symbols or mint

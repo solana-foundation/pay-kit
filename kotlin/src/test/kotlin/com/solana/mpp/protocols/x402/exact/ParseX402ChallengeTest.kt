@@ -116,14 +116,15 @@ class ParseX402ChallengeTest {
     // ── Network selection ─────────────────────────────────────────────────────
 
     @Test
-    fun defaultsToDevnetWhenNetworkIsNull() {
-        // The harness default is devnet (EtWTRABZaYq6iMfeYKouRu166VU2xqa1).
+    fun defaultsToMainnetWhenNetworkIsNull() {
+        // null network defaults to mainnet (rust .unwrap_or(SOLANA_MAINNET)),
+        // so the mainnet offer wins even though the devnet offer is cheaper.
         val devnetOffer = offer(network = Network.SOLANA_DEVNET, amount = "1")
         val mainnetOffer = offer(network = Network.SOLANA_MAINNET, amount = "999")
         val body = envelopeJson(mainnetOffer, devnetOffer)
         val result = parseX402Challenge(emptyMap(), body, ChallengeSelection(network = null))
         assertNotNull(result)
-        assertEquals("1", result.amount, "should pick devnet offer (cheapest on preferred)")
+        assertEquals("999", result.amount, "null network must default to mainnet")
     }
 
     @Test
@@ -182,7 +183,7 @@ class ParseX402ChallengeTest {
         val body = envelopeJson(usdcOffer, pyusdOffer)
         val result = parseX402Challenge(
             emptyMap(), body,
-            ChallengeSelection(currencies = listOf("PYUSD", "USDC")),
+            ChallengeSelection(network = "devnet", currencies = listOf("PYUSD", "USDC")),
         )
         assertNotNull(result)
         assertEquals(Mints.PYUSD_DEVNET, result.asset, "should pick PYUSD as first preference")
@@ -195,7 +196,7 @@ class ParseX402ChallengeTest {
         val body = envelopeJson(usdcOffer)
         val result = parseX402Challenge(
             emptyMap(), body,
-            ChallengeSelection(currencies = listOf("USDT", "USDC")),
+            ChallengeSelection(network = "devnet", currencies = listOf("USDT", "USDC")),
         )
         assertNotNull(result)
         assertEquals(Mints.USDC_DEVNET, result.asset)
@@ -210,7 +211,7 @@ class ParseX402ChallengeTest {
         )
         val result = parseX402Challenge(
             emptyMap(), body,
-            ChallengeSelection(currencies = listOf("USDT")),
+            ChallengeSelection(network = "devnet", currencies = listOf("USDT")),
         )
         assertNull(result)
     }
@@ -221,7 +222,7 @@ class ParseX402ChallengeTest {
         val body = envelopeJson(usdcOffer)
         val result = parseX402Challenge(
             emptyMap(), body,
-            ChallengeSelection(currencies = listOf(Mints.USDC_DEVNET)),
+            ChallengeSelection(network = "devnet", currencies = listOf(Mints.USDC_DEVNET)),
         )
         assertNotNull(result)
         assertEquals(Mints.USDC_DEVNET, result.asset)
@@ -233,7 +234,10 @@ class ParseX402ChallengeTest {
         val usdcOffer = offer(asset = Mints.USDC_DEVNET, amount = "1000000")
         val solOffer = offer(asset = "SOL", amount = "5000")
         val body = envelopeJson(usdcOffer, solOffer)
-        val result = parseX402Challenge(emptyMap(), body, ChallengeSelection(currencies = null))
+        val result = parseX402Challenge(
+            emptyMap(), body,
+            ChallengeSelection(network = "devnet", currencies = null),
+        )
         assertNotNull(result)
         assertEquals("SOL", result.asset)
         assertEquals("5000", result.amount)
