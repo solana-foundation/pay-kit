@@ -19,69 +19,79 @@ do not need to know anything about Solana to use this library: pick a
 currency, give it your wallet address, and gate a route in two lines.
 
 [![Go](https://img.shields.io/badge/go-1.26%2B-blue)]()
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)]()
+[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)]()
 
 ## Quick start
 
-Gate a `net/http` route with `server.PaymentMiddleware` (from
-[`examples/simple-server/`](examples/simple-server)):
+Gate a `net/http` route with the `paykit` umbrella. Importing the two
+protocol adapters registers them, so the `402` challenge advertises
+**x402** and **MPP** at once and a client may settle with either.
 
 ```go
 package main
 
 import (
+    "fmt"
     "net/http"
 
-    "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
+    "github.com/solana-foundation/pay-kit/go/paykit"
+    _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
+    _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+    _ "github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func main() {
-    handler, err := server.New(server.Config{
-        Recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        Currency:  "USDC",
-        Decimals:  6,
-        Network:   "localnet",
-        RPCURL:    "https://402.surfnet.dev:8899",
-        SecretKey: "local-dev-secret",
-        Realm:     "Go MPP Example",
+    client, err := paykit.New(paykit.Config{
+        Network: paykit.SolanaLocalnet,
+        Accept:  []paykit.Scheme{paykit.X402, paykit.MPP},
+        MPP: paykit.MPPConfig{
+            Realm:                  "MyApp",
+            ChallengeBindingSecret: []byte("local-dev-secret"),
+        },
     })
-    if err != nil { panic(err) }
+    if err != nil {
+        panic(err)
+    }
 
-    paid := server.PaymentMiddleware(handler, func(r *http.Request) (string, server.ChargeOptions, error) {
-        return "0.001", server.ChargeOptions{Description: "Paid endpoint"}, nil
-    })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        w.Write([]byte(`{"ok":true,"paid":true}`))
-    }))
+    report := paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "Premium report"}
 
-    http.Handle("/paid", paid)
-    http.ListenAndServe(":4572", nil)
+    mux := http.NewServeMux()
+    mux.Handle("/report", client.Require(report)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        pmt, _ := paykit.PaymentFrom(r.Context())
+        fmt.Fprintf(w, `{"ok":true,"paid_via":%q}`, pmt.Scheme)
+    })))
+    http.ListenAndServe(":4567", mux)
 }
 ```
 
-`Currency` accepts a symbol like `"USDC"`, `"USDT"`, `"USDG"`, `"PYUSD"`,
-or `"CASH"`. The SDK looks up the mint address, token program, and
-decimals from a built-in table. Pass a raw mint pubkey for tokens not
-in the table.
+`client.Require(gate)` is plain `func(http.Handler) http.Handler`
+middleware, so it composes with chi, gorilla, or the stdlib mux. Inside
+the handler, `paykit.PaymentFrom(ctx)` returns the verified payment.
 
-The `Mpp` handler owns every static knob (recipient, default currency,
-network, RPC, optional fee payer signer). Per-request you pass the
-charge amount through the `ChargeFunc`. The blockhash is fetched lazily
-through the RPC client so a busy endpoint does not pay an RPC round trip
-on every protected request.
+Zero-config boots on the in-memory demo signer (it logs a warning and
+defaults to the Surfpool sandbox). For production set
+`Operator.Signer` and `RPCURL`; mainnet with the demo signer returns
+`ErrDemoSignerOnMainnet`.
+
+Amounts go through `paykit.MustParseUSD("0.10")` (or the error-returning
+`ParseUSD`); narrow the settlement asset with
+`MustParseUSD("0.10", paykit.USDC, paykit.USDT)`.
 
 ### Client
 
-```go
-import "github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
+The umbrella is server-side. To *pay* a gated endpoint, the protocol
+client transports settle a `402` in one retry:
 
-httpClient := client.NewClient(signer, rpcClient)
-resp, err := httpClient.Get("https://api.example/paid")
+```go
+import x402client "github.com/solana-foundation/pay-kit/go/protocols/x402/client"
+
+httpClient := x402client.NewClient(signer, rpcClient) // x402
+resp, err := httpClient.Get("https://api.example/report")
 ```
 
-`client.NewClient` returns an `*http.Client` whose transport replays
-401 / 402 responses with the appropriate `Authorization: Payment`
-credential. Use `client.BuildCredentialHeader` directly if you want to
-own the retry yourself.
+The sibling `protocols/mpp/client` does the same for MPP
+(`Authorization: Payment`). Both wrap an `http.RoundTripper`, so any
+`*http.Client` call settles transparently.
 
 ## Protocol compatibility matrix
 
@@ -98,7 +108,7 @@ own the retry yourself.
 
 | Intent | Client | Server |
 |---|:---:|:---:|
-| `x402/exact` | --- | --- |
+| `x402/exact` | pass | pass |
 | `x402/upto` | --- | --- |
 | `x402/batch-settlement` | --- | --- |
 
@@ -121,30 +131,30 @@ signature through replay storage, and emits the same receipt shape.
 
 One runnable example ships with this package:
 
-- [`examples/simple-server/`](examples/simple-server) - bare `net/http`
-  server that constructs an `mpp/server` handler with the Solana charge
-  method and exposes `/health` (free) and `/paid` (gated).
+- [`examples/simple-server/`](examples/simple-server) - umbrella
+  `net/http` server: a single `client.Require` gate that advertises
+  both x402 and MPP, exposing `/health` (free) and `/paid` (gated).
 
 ### Run the example
 
 ```bash
 cd go/examples/simple-server
-PORT=4572 go run .
+go run .                                  # listens on 127.0.0.1:4567
 ```
 
 ### Drive it from a client
 
 ```bash
 brew install pay
-curl  http://127.0.0.1:4572/paid       # 402 payment required
-pay curl http://127.0.0.1:4572/paid    # pays and succeeds
+curl http://127.0.0.1:4567/paid                      # 402 with x402 + mpp accepts
+pay --sandbox --x402 curl http://127.0.0.1:4567/paid # pays via x402
+pay --sandbox --mpp  curl http://127.0.0.1:4567/paid # pays via MPP
 ```
 
-The example defaults to Surfpool localnet (`https://402.surfnet.dev:8899`),
-`USDC`, and a local example recipient. Override `MPP_RPC_URL`,
-`MPP_CURRENCY`, `MPP_NETWORK`, `MPP_PAY_TO`, `MPP_SECRET_KEY`, or
-`MPP_FEE_PAYER_SECRET_KEY` (a 64-byte JSON array) for a different
-localnet fixture.
+The example boots on the in-memory demo signer and the Surfpool
+sandbox; see
+[`examples/simple-server/README.md`](examples/simple-server/README.md)
+for the full walkthrough.
 
 ## Solana dependencies
 
@@ -182,18 +192,24 @@ go test ./...
 ```
 
 The CI Go job runs the SDK packages with `-coverprofile` and enforces a
-90 percent line coverage gate via `scripts/check_coverage.sh`.
+91 percent line coverage gate via `scripts/check_coverage.sh`.
 
 ## Interop
 
-The Go SDK ships both a client (`harness/go-client`) and a server
-(`harness/go-server`) adapter. Focused harness commands:
+The Go SDK plugs into the cross-SDK harness as a server
+(`harness/go-server`, both protocols) and as clients
+(`harness/go-client` drives MPP charge, and its x402 mode — registered
+as `go-x402` — drives the x402-exact client). Focused harness commands:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=go         MPP_INTEROP_SERVERS=rust pnpm test
+# MPP charge
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go   pnpm test
-MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=go   pnpm test
+MPP_INTEROP_CLIENTS=go         MPP_INTEROP_SERVERS=rust pnpm test
+# x402 exact: go client -> go server
+MPP_INTEROP_SERVERS=go MPP_INTEROP_INTENTS=x402-exact \
+  MPP_INTEROP_SCENARIOS=x402-exact-basic \
+  X402_INTEROP_CLIENTS=go-x402 X402_INTEROP_SERVERS=go pnpm test
 ```
 
 ## Spec
