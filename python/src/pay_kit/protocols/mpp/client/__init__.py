@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from solana_mpp.client.transport import PaymentTransport
+from pay_kit.protocols.mpp.client.transport import PaymentTransport
 
 __all__ = [
     "PaymentTransport",

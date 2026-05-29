@@ -6,9 +6,9 @@ import functools
 from collections.abc import Callable
 from typing import Any
 
-from solana_mpp._errors import PaymentError, payment_required_response
-from solana_mpp._headers import format_www_authenticate, parse_authorization
-from solana_mpp.server.mpp import Mpp
+from pay_kit.protocols.mpp.core.errors import PaymentError, payment_required_response
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from pay_kit.protocols.mpp.server.charge import Mpp
 
 
 def pay(mpp_handler: Mpp, amount: str, **options: Any) -> Callable:
@@ -24,8 +24,8 @@ def pay(mpp_handler: Mpp, amount: str, **options: Any) -> Callable:
         async def handler(request, credential, receipt):
             return {"data": "paid content"}
     """
-    from solana_mpp.protocol.intents import ChargeRequest
-    from solana_mpp.server.mpp import ChargeOptions
+    from pay_kit.protocols.mpp.intents.charge import ChargeRequest
+    from pay_kit.protocols.mpp.server.charge import ChargeOptions
 
     charge_options = ChargeOptions(
         description=options.get("description", ""),

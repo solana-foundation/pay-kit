@@ -79,7 +79,7 @@ cargo add solana-mpp
 go get github.com/solana-foundation/pay-kit/go
 
 # Python
-pip install solana-mpp
+pip install solana-pay-kit
 
 # Ruby
 cd ruby && bundle install
@@ -121,7 +121,7 @@ return result.withReceipt(Response.json({ data: '...' }))
 <summary>Python</summary>
 
 ```python
-from solana_mpp.server import Mpp, Config
+from pay_kit.protocols.mpp.server import Mpp, Config
 
 mpp = Mpp(Config(
     recipient="RecipientPubkey...",

@@ -19,7 +19,7 @@ The check is asymmetric:
 
 from __future__ import annotations
 
-from solana_mpp._errors import PaymentError
+from pay_kit.protocols.mpp.core.errors import PaymentError
 
 #: Base58 prefix embedded in every blockhash returned by the Surfpool
 #: localnet implementation.

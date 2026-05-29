@@ -1,7 +1,7 @@
-"""Stablecoin mint resolution and ATA derivation over solana_mpp data.
+"""Stablecoin mint resolution and ATA derivation over pay_kit.protocols.mpp data.
 
 Mirrors PHP ``PayCore/Solana/Mints.php``. All mint/program tables live in
-``solana_mpp.protocol.solana`` and are reused here rather than duplicated, so
+``pay_kit._paycore.solana`` and are reused here rather than duplicated, so
 pay_kit and the legacy surface always agree on wire values.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from solders.pubkey import Pubkey
 
-from solana_mpp.protocol.solana import (
+from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,

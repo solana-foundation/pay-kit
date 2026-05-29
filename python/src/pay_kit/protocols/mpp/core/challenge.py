@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from solana_mpp._base64url import encode
+from pay_kit.protocols.mpp.core.base64url import encode
 
 
 def compute_challenge_id(

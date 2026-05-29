@@ -1,4 +1,4 @@
-"""Edge-case coverage for solana_mpp.client.charge."""
+"""Edge-case coverage for pay_kit.protocols.mpp.client.charge."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._headers import parse_authorization
-from solana_mpp._types import PaymentChallenge
-from solana_mpp.client.charge import (
+from pay_kit._paycore.solana import MethodDetails, Split
+from pay_kit.protocols.mpp.client.charge import (
     build_charge_transaction,
     build_credential_header,
 )
-from solana_mpp.protocol.solana import MethodDetails, Split
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.headers import parse_authorization
+from pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 BLOCKHASH = "11111111111111111111111111111111"
 

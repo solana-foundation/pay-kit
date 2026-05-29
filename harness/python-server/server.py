@@ -5,24 +5,21 @@ scenario by which env namespace the harness orchestrator sets (or by the
 explicit ``PAY_KIT_INTEROP_PROTOCOL`` hint). Mirrors ``harness/php-server/
 server.php`` and the Ruby/Lua pay-kit-server pattern.
 
-Unlike ``harness/python-server/main.py`` (which drives the lower-level
-``solana_mpp`` wire directly), this adapter routes every request through the
-unified ``pay_kit`` surface:
+This adapter routes every request through the unified ``pay_kit`` surface:
 
   * x402 exact  -> ``pay_kit.protocols.x402.X402Adapter`` (the umbrella adapter)
-  * MPP charge  -> ``solana_mpp.server.mpp.Mpp`` (the lower-level wire)
+  * MPP charge  -> ``pay_kit.protocols.mpp.server.charge.Mpp`` (the lower-level wire)
 
 This split mirrors the canonical PHP adapter (``harness/php-server/
 server.php``): x402 routes through the umbrella adapter, while MPP charge
-routes through the lower-level ``solana_mpp`` handler. The umbrella's
+routes through the lower-level ``pay_kit.protocols.mpp`` handler. The umbrella's
 ticker-based currency model (``Stablecoin`` enum -> ``Mints.resolve``) is the
 right surface for x402, where the offer's ``asset`` is the resolved on-chain
 mint; but the interop MPP charge matrix runs in *pubkey mode* (the harness
 deploys the scenario mint at an arbitrary ``MPP_INTEROP_MINT`` pubkey, not the
 canonical USDC mint), so the MPP challenge must advertise that literal mint as
-its ``currency``. The lower-level ``solana_mpp`` handler takes the raw mint
-directly, exactly as the PHP ``SolanaChargeHandler`` path and the existing
-``harness/python-server/main.py`` reference do.
+its ``currency``. The lower-level ``pay_kit.protocols.mpp`` handler takes the raw mint
+directly, exactly as the PHP ``SolanaChargeHandler`` path does.
 
 Cross-route replay protection on the MPP path is enforced by
 ``Mpp.verify_credential_with_expected`` (pins amount/currency/recipient per
@@ -69,14 +66,14 @@ from pay_kit import (  # noqa: E402
 )
 from pay_kit.errors import InvalidProofError  # noqa: E402
 from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
-from solana_mpp._errors import PaymentError, canonical_code  # noqa: E402
-from solana_mpp._headers import format_www_authenticate, parse_authorization  # noqa: E402
-from solana_mpp._rpc import SolanaRpc  # noqa: E402
-from solana_mpp.protocol.intents import ChargeRequest  # noqa: E402
-from solana_mpp.server.mpp import ChargeOptions  # noqa: E402
-from solana_mpp.server.mpp import Config as MppServerConfig  # noqa: E402
-from solana_mpp.server.mpp import Mpp  # noqa: E402
-from solana_mpp.store import MemoryStore  # noqa: E402
+from pay_kit.protocols.mpp.core.errors import PaymentError, canonical_code  # noqa: E402
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization  # noqa: E402
+from pay_kit.protocols.mpp.core.rpc import SolanaRpc  # noqa: E402
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from pay_kit.protocols.mpp.server.charge import ChargeOptions  # noqa: E402
+from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
+from pay_kit.protocols.mpp.server.charge import Mpp  # noqa: E402
+from pay_kit.protocols.mpp.core.store import MemoryStore  # noqa: E402
 
 
 def require_env(name: str) -> str:
@@ -235,10 +232,9 @@ class _Adapter:
             fee_payer = Keypair.from_bytes(bytes(json.loads(fee_payer_raw)))
         self.fee_payer = fee_payer
 
-        # Build the lower-level solana_mpp handler with the raw mint. The
+        # Build the lower-level pay_kit.protocols.mpp handler with the raw mint. The
         # ``Mpp`` server boots with ``rpc=None``; a request-lifetime
-        # ``SolanaRpc`` is scoped via ``using_rpc`` in the request path
-        # (mirrors harness/python-server/main.py).
+        # ``SolanaRpc`` is scoped via ``using_rpc`` in the request path.
         config = MppServerConfig(
             recipient=pay_to,
             currency=self.mint,
@@ -285,7 +281,7 @@ class _Adapter:
 
 
 class InteropHandler(BaseHTTPRequestHandler):
-    server_version = "pay-kit-python-interop/1.0"
+    server_version = "python-interop/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
@@ -401,7 +397,7 @@ class InteropHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as err:  # noqa: BLE001 framework guard
-            print(f"interop pay-kit-python server error: {err}", file=sys.stderr)
+            print(f"interop python server error: {err}", file=sys.stderr)
             self._issue_mpp_challenge(adapter, amount, options, message=str(err))
             return
 
@@ -452,7 +448,7 @@ def main() -> None:
 
     ready = {
         "type": "ready",
-        "implementation": "pay-kit-python",
+        "implementation": "python",
         "role": "server",
         "port": port,
         "capabilities": ["exact" if adapter.x402 else "charge"],

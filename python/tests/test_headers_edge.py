@@ -1,18 +1,18 @@
-"""Edge-case parse error coverage for solana_mpp._headers."""
+"""Edge-case parse error coverage for pay_kit.protocols.mpp.core.headers."""
 
 from __future__ import annotations
 
 import pytest
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._headers import (
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.headers import (
     ParseError,
     format_authorization,
     format_receipt,
     parse_authorization,
     parse_receipt,
 )
-from solana_mpp._types import (
+from pay_kit.protocols.mpp.core.types import (
     ChallengeEcho,
     PaymentCredential,
     Receipt,

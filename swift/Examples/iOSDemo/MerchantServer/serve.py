@@ -33,16 +33,10 @@ except ImportError:  # pragma: no cover
         "httpx is required. Install with `pip install -e ../../../python`."
     )
 
-try:
-    # Stable public re-export added in PR #106.
-    from solana_mpp import SolanaRpc
-except ImportError:  # pragma: no cover - pre-#106 installs only
-    # Fall back to the underscore-prefixed path so the demo merchant
-    # boots against either tree until #106 lands.
-    from solana_mpp._rpc import SolanaRpc
-from solana_mpp._headers import format_www_authenticate, parse_authorization
-from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
-from solana_mpp.store import MemoryStore
+from pay_kit.protocols.mpp.core.rpc import SolanaRpc
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from pay_kit.protocols.mpp.server.charge import ChargeOptions, Config, Mpp
+from pay_kit.protocols.mpp.core.store import MemoryStore
 
 # Merchant recipient (separate from the demo signer). Same value as
 # python/examples/payment-links/server.py so interop fixtures keep

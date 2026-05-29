@@ -94,7 +94,7 @@ describe("x402 exact intent — cross-language matrix", () => {
     // canonical PaymentProof and settles end-to-end against surfpool,
     // mirroring the rust<->lua x402 interop pairing. The ts-x402 stub
     // client (no real transaction) is intentionally excluded.
-    if (clientId === "rust-x402" && serverId === "pay-kit-python") return true;
+    if (clientId === "rust-x402" && serverId === "python") return true;
     return false;
   };
 

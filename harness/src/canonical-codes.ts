@@ -1,5 +1,5 @@
 // Canonical L6 / P1 structured error codes shared by every server adapter.
-// Source of truth: python/src/solana_mpp/_errors.py CANONICAL_CODES,
+// Source of truth: python/src/pay_kit/protocols/mpp/core/errors.py CANONICAL_CODES,
 // ruby/lib/mpp/error_codes.rb CANONICAL_CODES.
 //
 // The G39 fault matrix asserts that every server SDK emits the same code

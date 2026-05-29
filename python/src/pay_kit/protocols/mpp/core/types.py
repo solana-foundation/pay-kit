@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from solana_mpp._base64url import decode_json, encode_json
-from solana_mpp._challenge import compute_challenge_id, constant_time_equal
+from pay_kit.protocols.mpp.core.base64url import decode_json, encode_json
+from pay_kit.protocols.mpp.core.challenge import compute_challenge_id, constant_time_equal
 
 # RFC 3339 section 5.6 ``date-time`` grammar. The capture groups are
 # year-month-day-T-hh-mm-ss[.frac][offset]. ``T`` and ``Z`` may appear in

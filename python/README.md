@@ -171,7 +171,7 @@ boots zero-config against the Surfpool sandbox.
 git clone https://github.com/solana-foundation/pay-kit
 cd pay-kit/python
 pip install -e ".[flask]"
-python examples/flask-paykit/app.py
+python examples/flask/app.py
 ```
 
 **Consume with `pay curl`:**
@@ -359,26 +359,23 @@ def view(request):
 
 ## Examples
 
-Three runnable examples ship with this package:
+Runnable examples ship with this package:
 
 - [`examples/fastapi/app.py`](examples/fastapi/app.py), FastAPI server using
   the `RequirePayment` dependency and `install_exception_handler`.
-- [`examples/flask-paykit/app.py`](examples/flask-paykit/app.py), Flask
-  server using the `@require_payment` decorator and the `Pricing` registry.
+- [`examples/flask/app.py`](examples/flask/app.py), Flask server gated with
+  the unified `pay_kit` surface (`@require_payment` decorator and the
+  `Pricing` registry).
 - [`examples/django/views.py`](examples/django/views.py), Django views +
   URLconf snippet using the `@require_payment` decorator.
-
-The lower-level `solana_mpp` wire library also ships its own examples:
-
-- [`examples/flask/`](examples/flask), Flask app gated with the
-  `solana_mpp` `@mpp_charge` decorator (config + middleware split out).
 - [`examples/payment-links/server.py`](examples/payment-links/server.py),
-  the same flow against a local Surfpool with an HTML payment-page fallback,
-  used by the interop harness.
+  a lower-level flow against a local Surfpool with an HTML payment-page
+  fallback (built directly on `pay_kit.protocols.mpp`), used by the interop
+  harness.
 
 All examples default to `solana_localnet`, `USDC`, and the demo recipient.
 Override the RPC with `rpc_url=` / `PAY_KIT_RPC_URL` (or `MPP_RPC_URL` for
-the `solana_mpp` Flask example).
+the lower-level payment-links example).
 
 ## Coverage
 
@@ -388,7 +385,7 @@ pip install -e ".[dev]"
 ruff check src tests
 ruff format --check src tests
 pyright
-pytest --cov=pay_kit --cov=solana_mpp --cov-fail-under=90
+pytest --cov=pay_kit --cov-fail-under=90
 ```
 
 The `pay_kit` surface is gated at 90 percent line coverage in CI. The
@@ -399,8 +396,9 @@ its two opt-out knobs are covered separately against a stubbed run/RPC.
 ## Harness
 
 The Python server has a direct harness adapter at
-[`harness/python-server/main.py`](../harness/python-server/main.py).
-Focused harness commands:
+[`harness/python-server/server.py`](../harness/python-server/server.py), a
+dual-protocol server that settles both MPP charge and x402-exact. Focused
+harness commands:
 
 ```bash
 cd harness
@@ -425,15 +423,19 @@ python/
 ├── src/pay_kit/                              unified surface over x402 + MPP
 │   ├── config.py, operator.py, signer.py, price.py, fee.py, gate.py,
 │   │   pricing.py, payment.py, preflight.py, errors.py    # umbrella surface
-│   ├── _paycore/                             Currency / Network / Protocol / Stablecoin / Mints
-│   ├── _wire.py                              TypedDict wire shapes (x402 offer/payload, MPP request)
+│   ├── _paycore/                             Currency / Network / Protocol / Stablecoin / Mints / Solana
 │   ├── _middleware.py                        host-neutral resolver + require_payment/is_paid/get_payment
 │   ├── fastapi.py, flask.py, django.py       framework shims
 │   ├── kms.py                                reserved remote-enclave signer namespace
-│   └── protocols/{x402,mpp}.py               x402-exact + MPP-charge adapters over the solana_mpp wire
-├── src/solana_mpp/                           lower-level MPP wire library (reused, not reimplemented)
-├── examples/{fastapi,flask-paykit,django}/   pay_kit framework examples
-├── examples/{flask,payment-links}/           solana_mpp examples
+│   └── protocols/
+│       ├── x402/                             x402-exact adapter (__init__) + verifier/wire shapes (verify.py)
+│       └── mpp/                              MPP-charge adapter (__init__) over the consolidated wire layer
+│           ├── core/                         canonical JSON, headers, challenge, types, errors, RPC, store
+│           ├── intents/charge.py             charge intent
+│           ├── server/                       charge handler, middleware, network check, defaults, payment page
+│           └── client/                       charge + transport
+├── examples/{fastapi,flask,django}/          pay_kit framework examples
+├── examples/payment-links/                   lower-level MPP server example (interop harness)
 ├── tests/                                    pytest suite
 └── pyproject.toml
 ```

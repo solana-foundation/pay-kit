@@ -8,8 +8,8 @@ import pytest
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 
-from solana_mpp.client.charge import build_charge_transaction
-from solana_mpp.protocol.solana import MEMO_PROGRAM, MethodDetails, Split
+from pay_kit._paycore.solana import MEMO_PROGRAM, MethodDetails, Split
+from pay_kit.protocols.mpp.client.charge import build_charge_transaction
 
 BLOCKHASH = "11111111111111111111111111111111"
 

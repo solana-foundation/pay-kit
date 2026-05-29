@@ -20,29 +20,103 @@ import base64
 import json
 import struct
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from pay_kit._paycore.protocol import Protocol
-from pay_kit._wire import (
-    X402AcceptsEntry,
-    X402Challenge,
-    X402Extra,
-    X402PayloadField,
-    X402ResponseEnvelope,
-)
+from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
-from solana_mpp._rpc import SolanaRpc
-from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
-from solana_mpp.server.network_check import check_network_blockhash
-from solana_mpp.store import MemoryStore, Store
+from pay_kit.protocols.mpp.core.rpc import SolanaRpc
+from pay_kit.protocols.mpp.core.store import MemoryStore, Store
+from pay_kit.protocols.mpp.server.network_check import check_network_blockhash
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
     from pay_kit.gate import Gate
 
 __all__ = ["X402Adapter", "ExactVerifier", "X402_VERSION"]
+
+
+# --- x402 wire shapes -------------------------------------------------------
+# TypedDicts describing the exact JSON dicts the adapter builds for challenges/
+# offers and parses from inbound credentials. They give the adapter precise
+# static types over the wire payloads and never change the serialized bytes.
+# Optional keys use ``total=False``. Inbound payloads are validated field-by-
+# field at runtime and then narrowed to these shapes with ``cast``.
+
+
+class X402ExtraRequired(TypedDict):
+    """The always-present keys of an x402 ``accepts[].extra`` block."""
+
+    feePayer: str
+    decimals: int
+    tokenProgram: str
+    memo: str
+
+
+class X402Extra(X402ExtraRequired, total=False):
+    """An x402 ``accepts[].extra`` block; ``recentBlockhash`` is optional."""
+
+    recentBlockhash: str
+
+
+class X402Resource(TypedDict):
+    """The ``resource`` block inside an x402 challenge."""
+
+    type: str
+    url: str
+
+
+class X402AcceptsEntry(TypedDict):
+    """One x402 ``accepts[]`` offer entry (the server requirement)."""
+
+    protocol: str
+    scheme: str
+    network: str
+    asset: str
+    amount: str
+    maxAmountRequired: str
+    payTo: str
+    maxTimeoutSeconds: int
+    extra: X402Extra
+
+
+class X402Challenge(TypedDict):
+    """The base64-encoded ``payment-required`` challenge body."""
+
+    x402Version: int
+    resource: X402Resource
+    accepts: list[X402AcceptsEntry]
+
+
+class X402PayloadField(TypedDict, total=False):
+    """The ``payload`` block of an inbound X-PAYMENT envelope."""
+
+    transaction: str
+    transactionHash: str
+
+
+class X402Envelope(TypedDict, total=False):
+    """An inbound X-PAYMENT envelope (decoded from the proof header).
+
+    All keys optional because the structure is attacker-controlled and validated
+    field-by-field at runtime before any value is trusted.
+    """
+
+    x402Version: int
+    accepted: X402AcceptsEntry
+    payload: X402PayloadField
+
+
+class X402ResponseEnvelope(TypedDict):
+    """The base64-encoded ``payment-response`` settlement receipt."""
+
+    success: bool
+    transaction: str
+    network: str
+    payer: str
+
 
 #: x402 protocol version emitted in challenges and required on credentials.
 X402_VERSION = 2
@@ -589,7 +663,7 @@ class X402Adapter:
 def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     """Splice the facilitator signature into the fee-payer slot, return wire.
 
-    Mirrors ``solana_mpp.server.mpp._co_sign_with_fee_payer``: legacy messages
+    Mirrors ``pay_kit.protocols.mpp.server.charge._co_sign_with_fee_payer``: legacy messages
     are signed over ``bytes(msg)``, v0 over ``to_bytes_versioned(msg)`` (0x80
     prefix). The fee payer must occupy a signature slot.
     """
@@ -597,10 +671,10 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     from solders.pubkey import Pubkey
     from solders.transaction import Transaction, VersionedTransaction
 
-    # Intentional reuse of solana_mpp's v0-wire detector (see docstring above)
+    # Intentional reuse of pay_kit.protocols.mpp's v0-wire detector (see docstring above)
     # rather than re-implementing parallel detection logic; private by package
     # convention but a deliberate cross-module dependency.
-    from solana_mpp.server.mpp import _is_v0_wire_bytes  # pyright: ignore[reportPrivateUsage]
+    from pay_kit.protocols.mpp.server.charge import _is_v0_wire_bytes  # pyright: ignore[reportPrivateUsage]
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = Pubkey.from_string(signer.pubkey())
@@ -611,7 +685,7 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     # account keys. The rust x402 client (and the canonical PaymentProof
     # builder) emit v0 messages, so we must route on the message-version
     # prefix byte rather than trusting a legacy parse to fail. Mirrors
-    # ``solana_mpp.server.mpp._co_sign_with_fee_payer`` and reuses its
+    # ``pay_kit.protocols.mpp.server.charge._co_sign_with_fee_payer`` and reuses its
     # ``_is_v0_wire_bytes`` guard (no parallel detection logic).
     if _is_v0_wire_bytes(raw):
         try:

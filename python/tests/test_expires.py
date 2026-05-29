@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from solana_mpp._expires import days, hours, minutes, seconds, weeks
+from pay_kit.protocols.mpp.core.expires import days, hours, minutes, seconds, weeks
 
 
 def _parse_timestamp(ts: str) -> datetime:
@@ -75,7 +75,7 @@ class TestStrictRFC3339:
     """
 
     def _make_challenge(self, expires: str):
-        from solana_mpp._types import PaymentChallenge
+        from pay_kit.protocols.mpp.core.types import PaymentChallenge
 
         return PaymentChallenge(
             id="x",

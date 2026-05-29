@@ -21,7 +21,7 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-import pay_kit.protocols.x402 as xmod
+import pay_kit.protocols.x402.verify as xmod
 from pay_kit import Gate as GateCls
 from pay_kit import (
     LocalSigner,
@@ -35,7 +35,7 @@ from pay_kit import (
 from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from pay_kit.config import reset
 from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402 import (
+from pay_kit.protocols.x402.verify import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
     X402_VERSION,
@@ -53,7 +53,7 @@ TP = token_program_for("USDC", "mainnet")
 
 
 class _FakeRpc:
-    """Stub matching solana_mpp.SolanaRpc's async send/close surface."""
+    """Stub matching pay_kit.protocols.mpp.SolanaRpc's async send/close surface."""
 
     def __init__(self, *_a, signature: str = "SIG-broadcast", fail: bool = False, **_k):
         self._signature = signature

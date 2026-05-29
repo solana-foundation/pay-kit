@@ -1,4 +1,4 @@
-"""Layer A: paycore primitives (enums, mints) plus solana_mpp re-exports."""
+"""Layer A: paycore primitives (enums, mints) plus pay_kit.protocols.mpp re-exports."""
 
 from __future__ import annotations
 

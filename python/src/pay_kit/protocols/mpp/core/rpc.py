@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from solana_mpp._errors import PaymentError
+from pay_kit.protocols.mpp.core.errors import PaymentError
 
 
 class _RpcError(PaymentError):

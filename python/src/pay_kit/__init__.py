@@ -7,7 +7,7 @@ handlers with the framework-agnostic trio :func:`require_payment`,
 submodules (``pay_kit.fastapi``, ``pay_kit.flask``, ``pay_kit.django``) and are
 imported on demand so the base install carries no web-framework dependency.
 
-This package ships alongside :mod:`solana_mpp`, whose wire internals it reuses
+This package ships alongside :mod:`pay_kit.protocols.mpp`, whose wire internals it reuses
 rather than reimplements.
 """
 
@@ -54,9 +54,9 @@ from pay_kit.operator import Operator
 from pay_kit.payment import Payment
 from pay_kit.price import Price
 from pay_kit.pricing import Pricing
+from pay_kit.protocols.mpp.core.expires import days, hours, minutes, seconds, weeks
+from pay_kit.protocols.mpp.core.store import FileReplayStore, MemoryStore, Store
 from pay_kit.signer import LocalSigner, Signer
-from solana_mpp._expires import days, hours, minutes, seconds, weeks
-from solana_mpp.store import FileReplayStore, MemoryStore, Store
 
 __all__ = [
     # enums / paycore
@@ -108,7 +108,7 @@ __all__ = [
     "ChallengeExpiredError",
     "PaymentRequiredError",
     "ProtocolNotSupportedError",
-    # expiry helpers (re-exported from solana_mpp)
+    # expiry helpers (re-exported from pay_kit.protocols.mpp)
     "seconds",
     "minutes",
     "hours",

@@ -1,64 +1,84 @@
-"""Flask app with one MPP-protected endpoint.
+# examples/flask/app.py
+"""Flask server gated with the unified pay_kit surface.
 
-Routes:
+Zero-config: ``pay_kit.configure()`` boots against solana_localnet (the
+hosted Surfpool sandbox at https://402.surfnet.dev:8899) with the shipped
+demo signer as the recipient.
 
-    GET /health -> free, returns {"ok": true}
-    GET /paid   -> gated by the @mpp_charge decorator. The decorator
-                   inspects the Authorization: Payment header, returns
-                   a 402 with a WWW-Authenticate challenge when no valid
-                   credential is supplied, and otherwise lets the route
-                   render any body it likes while emitting the
-                   Payment-Receipt header.
+This example uses the pay_kit Flask shim (``pay_kit.flask``), the unified
+surface over x402 and MPP. For the lower-level pay_kit.protocols.mpp ``@mpp_charge``
+decorator, see ../flask/app.py instead.
 
-Override the defaults via env vars:
+Three routes:
 
-    HOST, PORT, MPP_RPC_URL, MPP_NETWORK, MPP_CURRENCY,
-    MPP_PAY_TO, MPP_SECRET_KEY, MPP_AMOUNT,
-    MPP_FEE_PAYER_SECRET_KEY (optional JSON-array secret key).
+    GET /health   -> free, returns {"ok": true}
+    GET /report   -> gated by an inline price, both protocols accepted
+    GET /api/data -> gated, x402-only via accept=
 
 Run:
 
-    pip install flask
+    pip install -e ".[flask]"
     python examples/flask/app.py
 
-In another terminal:
+Drive it from a client:
 
-    curl -i http://127.0.0.1:8000/paid
-    # 402 Payment Required with WWW-Authenticate: Payment ... challenge
+    curl -i http://127.0.0.1:8000/report     # 402 payment required
+    pay curl http://127.0.0.1:8000/report    # pays and succeeds
 """
 
 from __future__ import annotations
 
 from flask import Flask, jsonify
 
-from solana_mpp.server.mpp import Mpp
+import pay_kit
+from pay_kit import Gate, Protocol, usd
+from pay_kit.flask import payment, require_payment
 
-from config import ServerSettings, mpp_config_from_env, server_settings_from_env
-from middleware import mpp_charge
+pay_kit.configure(network="solana_localnet")
+
+_defaults = {
+    "pay_to": pay_kit.config().effective_recipient(),
+    "accept": pay_kit.config().accept,
+}
+
+report_gate = Gate.build(
+    name="report",
+    amount=usd("0.10"),
+    description="Premium report",
+    default_pay_to=_defaults["pay_to"],
+    accept_default=_defaults["accept"],
+)
+
+api_gate = Gate.build(
+    name="api_call",
+    amount=usd("0.001"),
+    accept=(Protocol.X402,),
+    default_pay_to=_defaults["pay_to"],
+)
+
+app = Flask(__name__)
 
 
-def create_app(mpp: Mpp, settings: ServerSettings) -> Flask:
-    """Flask app factory wiring the MPP charge decorator onto /paid."""
-    app = Flask(__name__)
-
-    @app.get("/health")
-    def health():
-        return jsonify(ok=True)
-
-    @app.get("/paid")
-    @mpp_charge(mpp, amount=settings.amount, description="Paid endpoint")
-    def paid():
-        return jsonify(ok=True, message="thanks for paying!")
-
-    return app
+@app.get("/health")
+def health():
+    """Free liveness probe."""
+    return jsonify(ok=True)
 
 
-def main() -> None:
-    settings = server_settings_from_env()
-    mpp = Mpp(mpp_config_from_env())
-    app = create_app(mpp, settings)
-    app.run(host=settings.host, port=settings.port)
+@app.get("/report")
+@require_payment(report_gate)
+def report():
+    """Paid route. The verified proof is readable via pay_kit.flask.payment()."""
+    proof = payment()
+    return jsonify(ok=True, tx=proof.transaction, protocol=proof.protocol.value)
+
+
+@app.get("/api/data")
+@require_payment(api_gate)
+def api_data():
+    """x402-only route: this gate refuses to settle over MPP."""
+    return jsonify(data=[])
 
 
 if __name__ == "__main__":
-    main()
+    app.run(host="127.0.0.1", port=8000)

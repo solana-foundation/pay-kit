@@ -10,16 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._errors import (
-    ChallengeExpiredError,
-    ChallengeMismatchError,
-    PaymentError,
-    ReplayError,
-)
-from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
-from solana_mpp.protocol.intents import ChargeRequest, parse_units
-from solana_mpp.protocol.solana import (
+from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
@@ -32,8 +23,17 @@ from solana_mpp.protocol.solana import (
     resolve_mint,
     stablecoin_symbol,
 )
-from solana_mpp.server.network_check import check_network_blockhash
-from solana_mpp.store import Store
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.errors import (
+    ChallengeExpiredError,
+    ChallengeMismatchError,
+    PaymentError,
+    ReplayError,
+)
+from pay_kit.protocols.mpp.core.store import Store
+from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
+from pay_kit.protocols.mpp.server.network_check import check_network_blockhash
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
 MAX_SPLITS = 8
 
 # Legacy Solana memo program (v1). MPP charge transactions MUST use memo v2
-# (``MEMO_PROGRAM`` from :mod:`solana_mpp.protocol.solana`). v1 had a different
+# (``MEMO_PROGRAM`` from :mod:`pay_kit._paycore.solana`). v1 had a different
 # instruction shape and is rejected to match the L2 lock landed on PHP fde0efb
 # and mirrored in Ruby, Rust, Lua.
 _MEMO_V1_PROGRAM = "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo"
@@ -1168,7 +1168,7 @@ class Config:
     fee_payer_signer: Any = None
     store: Store | None = None
     # The RPC client MUST expose at least the methods on
-    # :class:`solana_mpp._rpc.SolanaRpc`: ``send_raw_transaction``,
+    # :class:`pay_kit.protocols.mpp.core.rpc.SolanaRpc`: ``send_raw_transaction``,
     # ``get_signature_statuses``, ``await_confirmation``,
     # ``get_recent_blockhash`` and ``get_transaction``. The previous
     # ``# solana.rpc.async_api.AsyncClient`` comment suggested the legacy
@@ -1201,7 +1201,7 @@ class Mpp:
         self._recipient = config.recipient
         self._currency = config.currency or "USDC"
         self._decimals = config.decimals or 6
-        from solana_mpp.protocol.solana import _canonical_network as _canonical_net
+        from pay_kit._paycore.solana import _canonical_network as _canonical_net
 
         self._network = _canonical_net(config.network or "mainnet")
         self._rpc_url = config.rpc_url or default_rpc_url(self._network)
@@ -1228,7 +1228,7 @@ class Mpp:
                 if not callable(getattr(config.rpc, method_name, None)):
                     raise PaymentError(
                         f"rpc client missing required method '{method_name}'; "
-                        "use solana_mpp._rpc.SolanaRpc or a compatible client",
+                        "use pay_kit.protocols.mpp.core.rpc.SolanaRpc or a compatible client",
                         code="invalid-config",
                     )
         self._rpc = config.rpc
@@ -1310,7 +1310,7 @@ class Mpp:
 
         request_b64 = encode_json(request_obj)
 
-        from solana_mpp._expires import minutes
+        from pay_kit.protocols.mpp.core.expires import minutes
 
         default_expires = minutes(5)
         return PaymentChallenge.with_secret_key(

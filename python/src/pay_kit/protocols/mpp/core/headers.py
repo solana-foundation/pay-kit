@@ -10,8 +10,8 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from solana_mpp._base64url import decode, decode_json, encode_json
-from solana_mpp._types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
+from pay_kit.protocols.mpp.core.base64url import decode, decode_json, encode_json
+from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
 
 MAX_TOKEN_LEN = 16 * 1024
 

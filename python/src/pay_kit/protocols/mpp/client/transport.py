@@ -7,8 +7,8 @@ from typing import Any
 
 import httpx
 
-from solana_mpp._headers import parse_www_authenticate_all
-from solana_mpp.client.charge import build_credential_header
+from pay_kit.protocols.mpp.client.charge import build_credential_header
+from pay_kit.protocols.mpp.core.headers import parse_www_authenticate_all
 
 logger = logging.getLogger(__name__)
 

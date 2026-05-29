@@ -137,7 +137,7 @@ async function main() {
   );
 
   // Python: write template + service worker as raw files for importlib.resources
-  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'solana_mpp', 'server', 'html');
+  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'pay_kit', 'protocols', 'mpp', 'server', 'html');
   mkdirSync(pyDir, { recursive: true });
   writeFileSync(resolve(pyDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(pyDir, 'service_worker.gen.js'), mppxServiceWorker);

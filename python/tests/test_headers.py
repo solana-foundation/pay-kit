@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp._base64url import encode, encode_json
-from solana_mpp._headers import (
+from pay_kit.protocols.mpp.core.base64url import encode, encode_json
+from pay_kit.protocols.mpp.core.headers import (
     ParseError,
     format_authorization,
     format_receipt,
@@ -15,7 +15,7 @@ from solana_mpp._headers import (
     parse_www_authenticate,
     parse_www_authenticate_all,
 )
-from solana_mpp._types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
+from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
 
 
 class TestWWWAuthenticate:

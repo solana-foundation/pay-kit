@@ -30,7 +30,7 @@ def encode_json(obj: Any) -> str:
     ``json.dumps(sort_keys=True)`` path sorted by Unicode code point, which
     diverges from Ruby / PHP / Lua / Rust on supplementary-plane keys.
     """
-    from solana_mpp._canonical_json import encode_canonical
+    from pay_kit.protocols.mpp.core.json import encode_canonical
 
     return encode(encode_canonical(obj))
 

@@ -5,16 +5,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from solana_mpp._base64url import decode_json
-from solana_mpp._headers import format_authorization
-from solana_mpp._types import PaymentChallenge, PaymentCredential
-from solana_mpp.protocol.intents import ChargeRequest
-from solana_mpp.protocol.solana import (
+from pay_kit._paycore.solana import (
     MEMO_PROGRAM,
     CredentialPayload,
     MethodDetails,
     is_native_sol,
 )
+from pay_kit.protocols.mpp.core.base64url import decode_json
+from pay_kit.protocols.mpp.core.headers import format_authorization
+from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest
 
 logger = logging.getLogger(__name__)
 

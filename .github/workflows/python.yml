@@ -33,13 +33,13 @@ jobs:
         run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
-        # Coverage gate: line coverage at 90% over both pay_kit and the
-        # solana_mpp wire it reuses. preflight.py is omitted in pyproject
-        # (live-RPC paths). Branch coverage gate is follow-up work, tracked in #108.
+        # Coverage gate: line coverage at 90% over pay_kit (the MPP wire layer
+        # now lives under pay_kit/protocols/mpp). preflight.py is omitted in
+        # pyproject (live-RPC paths). Branch coverage gate is follow-up work,
+        # tracked in #108.
         run: |
           pytest \
             --cov=pay_kit \
-            --cov=solana_mpp \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
             --cov-fail-under=90 \

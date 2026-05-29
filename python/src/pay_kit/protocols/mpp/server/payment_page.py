@@ -14,8 +14,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from solana_mpp._base64url import decode_json
-from solana_mpp._types import PaymentChallenge
+from pay_kit.protocols.mpp.core.base64url import decode_json
+from pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 SERVICE_WORKER_PARAM = "__mpp_worker"
 
@@ -41,7 +41,7 @@ _SERVICE_WORKER: str | None = None
 
 
 def _load_resource(filename: str) -> str:
-    return importlib.resources.files("solana_mpp.server.html").joinpath(filename).read_text("utf-8")
+    return importlib.resources.files("pay_kit.protocols.mpp.server.html").joinpath(filename).read_text("utf-8")
 
 
 def challenge_to_html(challenge: PaymentChallenge, rpc_url: str, network: str) -> str:

@@ -34,7 +34,6 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._paycore.protocol import Protocol
-from pay_kit._wire import MppAcceptsEntry, X402AcceptsEntry
 from pay_kit.errors import (
     InvalidProofError,
     PaymentRequiredError,
@@ -49,6 +48,8 @@ from pay_kit.protocols.x402 import X402Adapter
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
+    from pay_kit.protocols.mpp import MppAcceptsEntry
+    from pay_kit.protocols.x402.verify import X402AcceptsEntry
 
 __all__ = [
     "PayCore",

@@ -1,12 +1,12 @@
-"""MPP charge adapter wrapping the solana_mpp server wire layer.
+"""MPP charge adapter wrapping the pay_kit.protocols.mpp server wire layer.
 
 Mirrors PHP ``Protocols/Mpp/{Adapter,SecretResolver}`` and the Ruby
 reference. The adapter never reimplements canonical JSON, header parsing,
 challenge HMAC binding, or the on-chain Solana verifier; those all live in
-:mod:`solana_mpp` and are reused per the blueprint reuse map. This module
+:mod:`pay_kit.protocols.mpp` and are reused per the blueprint reuse map. This module
 only translates a unified :class:`pay_kit.gate.Gate` into the wire request,
 builds the 402 challenge, and runs cross-route-safe verification through
-``solana_mpp.server.mpp.Mpp.verify_credential_with_expected``.
+``pay_kit.protocols.mpp.server.charge.Mpp.verify_credential_with_expected``.
 """
 
 from __future__ import annotations
@@ -17,19 +17,18 @@ import os
 import secrets
 from collections.abc import Callable
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from pay_kit._paycore.protocol import Protocol
-from pay_kit._wire import MppAcceptsEntry, MppMethodDetails, MppSplit
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
-from solana_mpp._errors import PaymentError, canonical_code
-from solana_mpp._headers import format_www_authenticate, parse_authorization
-from solana_mpp._rpc import SolanaRpc
-from solana_mpp.protocol.intents import ChargeRequest
-from solana_mpp.server.mpp import ChargeOptions, Mpp
-from solana_mpp.server.mpp import Config as MppServerConfig
-from solana_mpp.store import MemoryStore, Store
+from pay_kit.protocols.mpp.core.errors import PaymentError, canonical_code
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from pay_kit.protocols.mpp.core.rpc import SolanaRpc
+from pay_kit.protocols.mpp.core.store import MemoryStore, Store
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from pay_kit.protocols.mpp.server.charge import ChargeOptions, Mpp
+from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
@@ -37,6 +36,48 @@ if TYPE_CHECKING:
     from pay_kit.price import Price
 
 __all__ = ["MppAdapter", "SecretResolver"]
+
+
+# --- MPP wire shapes --------------------------------------------------------
+# TypedDicts describing the MPP offer/charge-request JSON dicts the adapter
+# builds. They give precise static types over the wire payloads and never
+# change the serialized bytes. Optional keys use ``total=False``.
+
+
+class MppSplit(TypedDict):
+    """A single fee split on an MPP offer or charge request."""
+
+    recipient: str
+    amount: str
+
+
+class MppAcceptsEntryRequired(TypedDict):
+    """The always-present keys of an MPP ``accepts[]`` offer entry."""
+
+    protocol: str
+    scheme: str
+    network: str
+    amount: str
+    currency: str
+    payTo: str
+    realm: str
+
+
+class MppAcceptsEntry(MppAcceptsEntryRequired, total=False):
+    """One MPP ``accepts[]`` offer entry; ``splits`` present only with fees."""
+
+    splits: list[MppSplit]
+
+
+class MppMethodDetails(TypedDict, total=False):
+    """The MPP ``request.methodDetails`` block (network always set)."""
+
+    network: str
+    splits: list[MppSplit]
+    feePayer: bool
+    feePayerKey: str
+    recentBlockhash: str
+
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +174,7 @@ class SecretResolver:
 
 
 class MppAdapter:
-    """Bridges a unified gate to ``solana_mpp.server.mpp.Mpp`` charge flow."""
+    """Bridges a unified gate to ``pay_kit.protocols.mpp.server.charge.Mpp`` charge flow."""
 
     def __init__(
         self,
@@ -144,7 +185,7 @@ class MppAdapter:
         self._config = config
         self._replay_store: Store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
-        # Cache one solana_mpp.Mpp per (payTo|coin) key, like the PHP
+        # Cache one pay_kit.protocols.mpp.Mpp per (payTo|coin) key, like the PHP
         # handlerCache, so the HMAC secret and RPC client are reused.
         self._handler_cache: dict[str, Mpp] = {}
         self._secret = self._resolve_secret()
@@ -209,7 +250,7 @@ class MppAdapter:
         mpp = self._server_for(gate)
         expected = self._charge_request_for(gate)
 
-        # The cached ``solana_mpp.Mpp`` is built with ``rpc=None`` (the
+        # The cached ``pay_kit.protocols.mpp.Mpp`` is built with ``rpc=None`` (the
         # adapter is constructed at boot, before any event loop exists).
         # Transaction verification + broadcast need a live RPC, so scope a
         # request-lifetime ``SolanaRpc`` to this verify via ``using_rpc``
@@ -267,7 +308,7 @@ class MppAdapter:
             blockhash = self._recent_blockhash_provider()
             if blockhash:
                 method_details["recentBlockhash"] = blockhash
-        # ChargeRequest.method_details is the untyped solana_mpp wire shape
+        # ChargeRequest.method_details is the untyped pay_kit.protocols.mpp wire shape
         # (dict[str, Any] | None); cast the precise TypedDict at the boundary.
         return ChargeRequest(
             amount=amount,
@@ -285,7 +326,7 @@ class MppAdapter:
             external_id=gate.external_id or "",
         )
         if gate.has_fees():
-            # ChargeOptions.splits is the untyped solana_mpp list[dict]; build the
+            # ChargeOptions.splits is the untyped pay_kit.protocols.mpp list[dict]; build the
             # precise MppSplit shape and cast at the boundary.
             splits: list[MppSplit] = [
                 MppSplit(recipient=fee.recipient, amount=str(self._price_units(fee.price))) for fee in gate.fees
@@ -297,7 +338,7 @@ class MppAdapter:
         return options
 
     def _server_for(self, gate: Gate) -> Mpp:
-        """Return a cached ``solana_mpp.Mpp`` keyed on (payTo|coin)."""
+        """Return a cached ``pay_kit.protocols.mpp.Mpp`` keyed on (payTo|coin)."""
         coin = self._settlement_coin(gate)
         pay_to = gate.pay_to or self._config.effective_recipient()
         key = f"{pay_to}|{coin}"
