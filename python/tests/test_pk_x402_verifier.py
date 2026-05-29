@@ -25,12 +25,11 @@ from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
 from pay_kit.config import reset
 from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402.verify import (
+from pay_kit.protocols.x402 import ExactVerifier, X402Adapter
+from pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
-    ExactVerifier,
-    X402Adapter,
 )
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"

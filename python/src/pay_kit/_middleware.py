@@ -49,7 +49,7 @@ from pay_kit.protocols.x402 import X402Adapter
 if TYPE_CHECKING:
     from pay_kit.config import Config
     from pay_kit.protocols.mpp import MppAcceptsEntry
-    from pay_kit.protocols.x402.verify import X402AcceptsEntry
+    from pay_kit.protocols.x402.exact.types import X402AcceptsEntry
 
 __all__ = [
     "PayCore",

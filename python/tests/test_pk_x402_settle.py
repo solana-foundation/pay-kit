@@ -21,7 +21,7 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-import pay_kit.protocols.x402.verify as xmod
+import pay_kit.protocols.x402 as xmod
 from pay_kit import Gate as GateCls
 from pay_kit import (
     LocalSigner,
@@ -35,14 +35,16 @@ from pay_kit import (
 from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from pay_kit.config import reset
 from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402.verify import (
-    COMPUTE_BUDGET_PROGRAM,
-    MEMO_PROGRAM,
+from pay_kit.protocols.x402 import (
     X402_VERSION,
     X402Adapter,
     _co_sign,
     _is_loopback_rpc,
     _request_path,
+)
+from pay_kit.protocols.x402.exact.verify import (
+    COMPUTE_BUDGET_PROGRAM,
+    MEMO_PROGRAM,
 )
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
