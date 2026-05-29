@@ -6,7 +6,7 @@ import functools
 from collections.abc import Callable
 from typing import Any
 
-from pay_kit.protocols.mpp.core.errors import PaymentError, payment_required_response
+from pay_kit._paycore.errors import PaymentError, payment_required_response
 from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
 from pay_kit.protocols.mpp.server.charge import Mpp
 

@@ -23,13 +23,13 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from pay_kit._paycore.network_check import check_network_blockhash
 from pay_kit._paycore.protocol import Protocol
+from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
+from pay_kit._paycore.store import MemoryStore, Store
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
-from pay_kit.protocols.mpp.core.rpc import SolanaRpc
-from pay_kit.protocols.mpp.core.store import MemoryStore, Store
-from pay_kit.protocols.mpp.server.network_check import check_network_blockhash
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
@@ -663,18 +663,17 @@ class X402Adapter:
 def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     """Splice the facilitator signature into the fee-payer slot, return wire.
 
-    Mirrors ``pay_kit.protocols.mpp.server.charge._co_sign_with_fee_payer``: legacy messages
-    are signed over ``bytes(msg)``, v0 over ``to_bytes_versioned(msg)`` (0x80
-    prefix). The fee payer must occupy a signature slot.
+    Legacy messages are signed over ``bytes(msg)``, v0 over
+    ``to_bytes_versioned(msg)`` (0x80 prefix). The fee payer must occupy a
+    signature slot. The v0-wire detector lives in the shared
+    :mod:`pay_kit._paycore.transaction` core so neither protocol depends on the
+    other.
     """
     from solders.message import to_bytes_versioned
     from solders.pubkey import Pubkey
     from solders.transaction import Transaction, VersionedTransaction
 
-    # Intentional reuse of pay_kit.protocols.mpp's v0-wire detector (see docstring above)
-    # rather than re-implementing parallel detection logic; private by package
-    # convention but a deliberate cross-module dependency.
-    from pay_kit.protocols.mpp.server.charge import _is_v0_wire_bytes  # pyright: ignore[reportPrivateUsage]
+    from pay_kit._paycore.transaction import is_v0_wire_bytes
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = Pubkey.from_string(signer.pubkey())
@@ -684,10 +683,10 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     # transaction (it does not raise), yielding a bogus header and garbage
     # account keys. The rust x402 client (and the canonical PaymentProof
     # builder) emit v0 messages, so we must route on the message-version
-    # prefix byte rather than trusting a legacy parse to fail. Mirrors
-    # ``pay_kit.protocols.mpp.server.charge._co_sign_with_fee_payer`` and reuses its
-    # ``_is_v0_wire_bytes`` guard (no parallel detection logic).
-    if _is_v0_wire_bytes(raw):
+    # prefix byte rather than trusting a legacy parse to fail. Reuses the
+    # shared ``is_v0_wire_bytes`` guard from ``pay_kit._paycore.transaction``
+    # (no parallel detection logic; same routing as the MPP charge cosign).
+    if is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
         except Exception as exc:  # noqa: BLE001

@@ -1,7 +1,7 @@
 import pytest
 
-from pay_kit.protocols.mpp.core.errors import PaymentError
-from pay_kit.protocols.mpp.core.store import MemoryStore
+from pay_kit._paycore.errors import PaymentError
+from pay_kit._paycore.store import MemoryStore
 from pay_kit.protocols.mpp.server.charge import Config, Mpp
 
 

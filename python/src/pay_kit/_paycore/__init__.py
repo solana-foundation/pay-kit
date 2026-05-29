@@ -1,4 +1,9 @@
-"""Layer A: paycore primitives (enums, mints) plus pay_kit.protocols.mpp re-exports."""
+"""Shared payment-core primitives used by both protocol packages.
+
+The analog of the Rust ``core`` crate: enums, mints, RPC, replay store, network
+check, transaction helpers, and the wire error model. x402 and MPP both depend
+on ``_paycore``; neither protocol depends on the other.
+"""
 
 from __future__ import annotations
 

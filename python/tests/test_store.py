@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pay_kit.protocols.mpp.core.store import FileReplayStore, MemoryStore, Store
+from pay_kit._paycore.store import FileReplayStore, MemoryStore, Store
 
 
 class TestMemoryStore:
@@ -164,7 +164,7 @@ class TestMppRequiresExplicitStore:
     """L4 lock: ``Mpp.__init__`` MUST refuse to start without an explicit store."""
 
     def test_missing_store_raises(self):
-        from pay_kit.protocols.mpp.core.errors import PaymentError
+        from pay_kit._paycore.errors import PaymentError
         from pay_kit.protocols.mpp.server.charge import Config, Mpp
 
         with pytest.raises(PaymentError, match="replay store is required"):

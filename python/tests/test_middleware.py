@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pay_kit._paycore.store import MemoryStore
 from pay_kit.protocols.mpp.core.headers import format_authorization
-from pay_kit.protocols.mpp.core.store import MemoryStore
 from pay_kit.protocols.mpp.core.types import PaymentCredential
 from pay_kit.protocols.mpp.server.charge import Config, Mpp
 from pay_kit.protocols.mpp.server.middleware import pay

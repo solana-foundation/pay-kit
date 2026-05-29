@@ -11,7 +11,7 @@ Note: ``solders.transaction.Transaction.from_bytes`` is lenient on signed
 v0 wire bytes; it can mis-parse them as a degenerate legacy transaction
 with bogus instructions whose program_id_index points at random account
 keys. The decoder and allowlist guard against this with
-``_is_v0_wire_bytes`` (peeks at the v0 message-version prefix and routes
+``is_v0_wire_bytes`` (peeks at the v0 message-version prefix and routes
 to ``VersionedTransaction.from_bytes`` first). The tests here exercise
 the v0 paths reachable today: the version-prefix detector, the v0
 allowlist happy path under repeated random keypairs (which used to be a
@@ -33,8 +33,9 @@ from solders.message import MessageV0
 from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
 
+from pay_kit._paycore.errors import PaymentError
 from pay_kit._paycore.solana import MethodDetails
-from pay_kit.protocols.mpp.core.errors import PaymentError
+from pay_kit._paycore.transaction import is_v0_wire_bytes
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from pay_kit.protocols.mpp.server import charge as M
 
@@ -204,7 +205,7 @@ def test_allowlist_v0_native_transfer_accepted_no_lenient_misparse():
     transaction whose instructions point at random ``account_keys`` slots.
     The allowlist would then reject the legitimate v0 payment with a
     misleading ``unexpected program instruction in payment transaction:
-    <random pubkey>`` error. ``_is_v0_wire_bytes`` detects the v0 message
+    <random pubkey>`` error. ``is_v0_wire_bytes`` detects the v0 message
     prefix and forces ``VersionedTransaction.from_bytes`` to take the
     parse, so the allowlist sees the real System transfer.
 
@@ -232,17 +233,17 @@ def test_is_v0_wire_bytes_classifies_correctly():
     ix = transfer(TransferParams(from_pubkey=payer.pubkey(), to_pubkey=recipient.pubkey(), lamports=1))
 
     v0_raw = base64.b64decode(_v0_tx_b64(payer, [ix]))
-    assert M._is_v0_wire_bytes(v0_raw) is True
+    assert is_v0_wire_bytes(v0_raw) is True
 
     blockhash = Hash.from_string(TEST_BLOCKHASH)
     legacy_msg = Message.new_with_blockhash([ix], payer.pubkey(), blockhash)
     legacy_tx = Transaction.new_unsigned(legacy_msg)
     legacy_tx.sign([payer], blockhash)
     legacy_raw = bytes(legacy_tx)
-    assert M._is_v0_wire_bytes(legacy_raw) is False
+    assert is_v0_wire_bytes(legacy_raw) is False
 
-    assert M._is_v0_wire_bytes(b"") is False
-    assert M._is_v0_wire_bytes(b"\x01") is False
+    assert is_v0_wire_bytes(b"") is False
+    assert is_v0_wire_bytes(b"\x01") is False
 
 
 def test_allowlist_invalid_bytes_rejected_with_invalid_payload_type():

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit.protocols.mpp.server.network_check import (
+from pay_kit._paycore.network_check import (
     SURFPOOL_BLOCKHASH_PREFIX,
     WrongNetworkError,
     check_network_blockhash,

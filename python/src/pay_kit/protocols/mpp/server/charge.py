@@ -10,6 +10,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from pay_kit._paycore.errors import (
+    ChallengeExpiredError,
+    ChallengeMismatchError,
+    PaymentError,
+    ReplayError,
+)
+from pay_kit._paycore.network_check import check_network_blockhash
 from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
@@ -23,17 +30,11 @@ from pay_kit._paycore.solana import (
     resolve_mint,
     stablecoin_symbol,
 )
+from pay_kit._paycore.store import Store
+from pay_kit._paycore.transaction import is_v0_wire_bytes
 from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.errors import (
-    ChallengeExpiredError,
-    ChallengeMismatchError,
-    PaymentError,
-    ReplayError,
-)
-from pay_kit.protocols.mpp.core.store import Store
 from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest, parse_units
-from pay_kit.protocols.mpp.server.network_check import check_network_blockhash
 
 logger = logging.getLogger(__name__)
 
@@ -366,50 +367,6 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int) -> Non
     )
 
 
-def _is_v0_wire_bytes(raw: bytes) -> bool:
-    """Best-effort detection of a v0 ``VersionedTransaction`` on the wire.
-
-    SECURITY: ``solders.transaction.Transaction.from_bytes`` is lenient on
-    v0 wire bytes today: it can mis-parse a signed v0 transaction as a
-    degenerate legacy transaction whose ``instructions`` list points at
-    random ``account_keys`` entries. The downstream allowlist then rejects
-    a legitimate v0 payment with a misleading
-    ``unexpected program instruction in payment transaction: <pubkey>``
-    error sourced from the mis-parsed junk. This helper peeks at the
-    message-version prefix so callers can route v0 wire bytes straight to
-    ``VersionedTransaction.from_bytes`` instead of trusting the lenient
-    legacy parser.
-
-    Wire format: ``[shortvec sig_count] [64 * sig_count signatures] [message]``.
-    Legacy messages start with the header byte ``num_required_signatures``
-    which is always ``< 0x80`` in practice (the MSB encodes a version
-    prefix on v0). v0 messages start with ``0x80 | version`` so the high
-    bit is set. We accept multi-byte compact-u16 lengths but cap at three
-    bytes (Solana hard caps signatures well below ``128 * 128``).
-    """
-    if not raw:
-        return False
-    # Parse compact-u16 sig_count.
-    sig_count = 0
-    shift = 0
-    offset = 0
-    for _ in range(3):  # compact-u16 is at most 3 bytes
-        if offset >= len(raw):
-            return False
-        byte = raw[offset]
-        offset += 1
-        sig_count |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    msg_start = offset + sig_count * 64
-    if msg_start >= len(raw):
-        return False
-    # MessageV0 prefix is 0x80 | version; legacy header byte
-    # (num_required_signatures) never sets the MSB for any realistic tx.
-    return (raw[msg_start] & 0x80) != 0
-
-
 def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
     """Decode local transfer and memo instructions from a legacy or v0 transaction.
 
@@ -426,9 +383,9 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
     message_instructions: list[Any] = []
     # Route v0 wire bytes straight to VersionedTransaction; the legacy
     # parser in solders is lenient and can mis-parse a signed v0 tx as a
-    # degenerate legacy tx with bogus instructions (see _is_v0_wire_bytes).
+    # degenerate legacy tx with bogus instructions (see is_v0_wire_bytes).
     parsed = False
-    if _is_v0_wire_bytes(raw):
+    if is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
         except Exception:
@@ -839,9 +796,9 @@ def _validate_instruction_allowlist(
     # degenerate legacy tx whose instructions point at random account
     # keys. The allowlist would then reject the legitimate v0 payment
     # with a misleading "unexpected program instruction" error sourced
-    # from junk bytes. See _is_v0_wire_bytes.
+    # from junk bytes. See is_v0_wire_bytes.
     parsed = False
-    if _is_v0_wire_bytes(raw):
+    if is_v0_wire_bytes(raw):
         try:
             vtx = VersionedTransaction.from_bytes(raw)
         except Exception:
@@ -1168,7 +1125,7 @@ class Config:
     fee_payer_signer: Any = None
     store: Store | None = None
     # The RPC client MUST expose at least the methods on
-    # :class:`pay_kit.protocols.mpp.core.rpc.SolanaRpc`: ``send_raw_transaction``,
+    # :class:`pay_kit._paycore.rpc.SolanaRpc`: ``send_raw_transaction``,
     # ``get_signature_statuses``, ``await_confirmation``,
     # ``get_recent_blockhash`` and ``get_transaction``. The previous
     # ``# solana.rpc.async_api.AsyncClient`` comment suggested the legacy
@@ -1228,7 +1185,7 @@ class Mpp:
                 if not callable(getattr(config.rpc, method_name, None)):
                     raise PaymentError(
                         f"rpc client missing required method '{method_name}'; "
-                        "use pay_kit.protocols.mpp.core.rpc.SolanaRpc or a compatible client",
+                        "use pay_kit._paycore.rpc.SolanaRpc or a compatible client",
                         code="invalid-config",
                     )
         self._rpc = config.rpc

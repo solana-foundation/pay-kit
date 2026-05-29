@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from pay_kit.protocols.mpp.core.errors import PaymentError
+from pay_kit._paycore.errors import PaymentError
 
 
 class _RpcError(PaymentError):

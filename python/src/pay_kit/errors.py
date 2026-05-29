@@ -13,7 +13,7 @@ Two families share the :class:`PayKitError` root:
 ``InvalidProofError.code`` carries the canonical cross-SDK L6 error string
 (e.g. ``charge_request_mismatch``, ``signature_consumed``). Adapters map the
 underlying ``pay_kit.protocols.mpp`` ``PaymentError.code`` to these at the boundary via
-``pay_kit.protocols.mpp.core.errors.canonical_code``.
+``pay_kit._paycore.errors.canonical_code``.
 """
 
 from __future__ import annotations

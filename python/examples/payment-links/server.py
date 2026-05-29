@@ -12,7 +12,7 @@ import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
-from pay_kit.protocols.mpp.core.rpc import SolanaRpc
+from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit.protocols.mpp.server.charge import ChargeOptions, Config, Mpp
 from pay_kit.protocols.mpp.server.payment_page import (
     accepts_html,
@@ -20,7 +20,7 @@ from pay_kit.protocols.mpp.server.payment_page import (
     is_service_worker_request,
     service_worker_js,
 )
-from pay_kit.protocols.mpp.core.store import MemoryStore
+from pay_kit._paycore.store import MemoryStore
 
 RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"

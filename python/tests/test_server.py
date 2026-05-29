@@ -11,9 +11,9 @@ from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
+from pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
-from pay_kit.protocols.mpp.core.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
-from pay_kit.protocols.mpp.core.store import MemoryStore
+from pay_kit._paycore.store import MemoryStore
 from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from pay_kit.protocols.mpp.server.charge import (
@@ -135,7 +135,7 @@ class FakeRPC:
         status = (self.statuses or [{}])[0]
         err = status.get("err") if isinstance(status, dict) else None
         if err is not None:
-            from pay_kit.protocols.mpp.core.errors import PaymentError
+            from pay_kit._paycore.errors import PaymentError
 
             raise PaymentError(
                 f"transaction failed on-chain: {err}",
@@ -937,7 +937,7 @@ class TestL8SettlementOrdering:
             status = (self._confirm_value or [{}])[0]
             err = status.get("err") if isinstance(status, dict) else None
             if err is not None:
-                from pay_kit.protocols.mpp.core.errors import PaymentError
+                from pay_kit._paycore.errors import PaymentError
 
                 raise PaymentError(
                     f"transaction failed on-chain: {err}",
@@ -984,7 +984,7 @@ class TestL8SettlementOrdering:
         ordering: list[str] = []
         rpc = self._OrderingRPC(ordering, [{"err": None}])
         store = self._RecordingStore(ordering)
-        from pay_kit.protocols.mpp.core.store import Store  # noqa: F401  ensure protocol import
+        from pay_kit._paycore.store import Store  # noqa: F401  ensure protocol import
 
         handler = Mpp(
             Config(
@@ -1077,7 +1077,7 @@ class TestL8SettlementOrdering:
                 ordering.append("await_confirmation")
 
         rpc = _NoRPC()
-        from pay_kit.protocols.mpp.core.store import MemoryStore
+        from pay_kit._paycore.store import MemoryStore
 
         handler = Mpp(
             Config(
@@ -1366,7 +1366,7 @@ class TestComputeBudgetGuard:
         assert exc.value.code == "compute-budget-invalid"
 
     def test_canonical_code_maps_to_payment_invalid(self):
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
 
         assert canonical_code("compute-budget-cap-exceeded") == CODE_PAYMENT_INVALID
         assert canonical_code("compute-budget-invalid") == CODE_PAYMENT_INVALID
@@ -1409,7 +1409,7 @@ class TestSplitsCountGuard:
         assert str(MAX_SPLITS) in str(exc.value)
 
     def test_canonical_code_maps_to_payment_invalid(self):
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
 
         assert canonical_code("too-many-splits") == CODE_PAYMENT_INVALID
 
@@ -1480,7 +1480,7 @@ class TestInstructionAllowlist:
         attacker address. Without the allowlist this would be co-signed
         and broadcast, draining the fee payer. MUST be rejected with
         the canonical ``payment_invalid`` code before co-sign."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1510,7 +1510,7 @@ class TestInstructionAllowlist:
         SPL Token transfer instruction. The native-SOL allowlist must
         reject any Token Program instruction since a native-SOL charge
         never legitimately carries one."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1543,7 +1543,7 @@ class TestInstructionAllowlist:
     def test_valid_payment_with_unknown_program_is_rejected(self):
         """SECURITY: an arbitrary BPF program invocation alongside the
         valid payment is not on the allowlist and must be rejected."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1714,8 +1714,8 @@ class TestInstructionAllowlist:
         """SECURITY: an ATA create for an owner that is NOT a charge
         recipient must be rejected so the attacker cannot get the fee
         payer to fund an arbitrary ATA rent."""
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1813,7 +1813,7 @@ class TestFeePayerSourceDrainProtection:
         recipient matches destination + amount, but the source IS the
         fee-payer; the server would otherwise co-sign and drain fee-payer
         SOL beyond the network fee. MUST be rejected with payment_invalid."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1846,7 +1846,7 @@ class TestFeePayerSourceDrainProtection:
         check the allowlist accepts the transfer (correct mint, amount,
         destination), the server co-signs, and the fee-payer's token
         balance is drained. MUST be rejected with payment_invalid."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -1884,7 +1884,7 @@ class TestFeePayerSourceDrainProtection:
         """SECURITY: same drain shape on the Token-2022 program id (PYUSD
         devnet mint, derived under TOKEN_2022_PROGRAM). The fee-payer
         source check must hold for both token program ids."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
@@ -2017,7 +2017,7 @@ class TestFeePayerPubkeySourceOfTruth:
         fix the allowlist compares the source against ATTACKER, finds no
         match, and lets the transfer through; the server then co-signs
         and drains itself. MUST be rejected with payment_invalid."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
@@ -2055,7 +2055,7 @@ class TestFeePayerPubkeySourceOfTruth:
         """SPL variant: client echoes a bogus fee-payer key, the drain
         transfer is sourced from the real server fee-payer's ATA. MUST
         be rejected with payment_invalid."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
@@ -2101,7 +2101,7 @@ class TestFeePayerPubkeySourceOfTruth:
         canonical ``payment_invalid`` code so a tampered echoed key cannot
         slip through even if the rest of the transaction happens to be
         well-formed."""
-        from pay_kit.protocols.mpp.core.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
         from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()

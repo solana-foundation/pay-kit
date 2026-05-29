@@ -66,14 +66,14 @@ from pay_kit import (  # noqa: E402
 )
 from pay_kit.errors import InvalidProofError  # noqa: E402
 from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
-from pay_kit.protocols.mpp.core.errors import PaymentError, canonical_code  # noqa: E402
+from pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
 from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization  # noqa: E402
-from pay_kit.protocols.mpp.core.rpc import SolanaRpc  # noqa: E402
+from pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
 from pay_kit.protocols.mpp.server.charge import ChargeOptions  # noqa: E402
 from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
 from pay_kit.protocols.mpp.server.charge import Mpp  # noqa: E402
-from pay_kit.protocols.mpp.core.store import MemoryStore  # noqa: E402
+from pay_kit._paycore.store import MemoryStore  # noqa: E402
 
 
 def require_env(name: str) -> str:

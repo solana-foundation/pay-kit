@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pay_kit._paycore.store import MemoryStore
 from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.store import MemoryStore
 from pay_kit.protocols.mpp.core.types import PaymentChallenge
 from pay_kit.protocols.mpp.server.charge import Config, Mpp
 

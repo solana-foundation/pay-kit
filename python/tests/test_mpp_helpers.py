@@ -18,13 +18,13 @@ from solders.keypair import Keypair
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
+from pay_kit._paycore.errors import PaymentError
 from pay_kit._paycore.solana import (
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
     MethodDetails,
     Split,
 )
-from pay_kit.protocols.mpp.core.errors import PaymentError
 from pay_kit.protocols.mpp.server import charge as M
 
 # ---------------------------------------------------------------------------

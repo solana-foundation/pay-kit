@@ -1,8 +1,8 @@
-"""Stablecoin mint resolution and ATA derivation over pay_kit.protocols.mpp data.
+"""Stablecoin mint resolution and ATA derivation over the shared Solana tables.
 
 Mirrors PHP ``PayCore/Solana/Mints.php``. All mint/program tables live in
-``pay_kit._paycore.solana`` and are reused here rather than duplicated, so
-pay_kit and the legacy surface always agree on wire values.
+``pay_kit._paycore.solana`` and are reused here rather than duplicated, so the
+x402 and MPP adapters always agree on wire values.
 """
 
 from __future__ import annotations
