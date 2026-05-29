@@ -5,7 +5,7 @@ plugins {
 
 dependencies {
     // Path-included build, see settings.gradle.kts.
-    implementation("com.solana.mpp:solana-mpp-kotlin")
+    implementation("com.solana.paykit:solana-pay-kit-kotlin")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -21,7 +21,7 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.solana.mpp.interop.MainKt")
+    mainClass.set("com.solana.paykit.interop.MainKt")
 }
 
 tasks.named<JavaExec>("run") {

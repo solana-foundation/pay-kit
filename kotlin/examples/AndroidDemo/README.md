@@ -62,7 +62,7 @@ yes | avdmanager create avd -n mpp-demo -k 'system-images;android-34;google_apis
 "$ANDROID_HOME/emulator/emulator" -avd mpp-demo -no-snapshot &
 adb wait-for-device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.solana.mpp.demo/.MainActivity
+adb shell am start -n com.solana.paykit.demo/.MainActivity
 ```
 
 ## Configure RPC + merchant URL

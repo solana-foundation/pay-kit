@@ -4,7 +4,7 @@ plugins {
     jacoco
 }
 
-group = "com.solana.mpp"
+group = "com.solana.paykit"
 version = "0.1.0"
 
 kotlin {
@@ -29,7 +29,7 @@ dependencies {
     // instructions through web3-solana's TransactionInstruction / AccountMeta
     // / SolanaPublicKey / TokenProgram.transferChecked so the SPL transfer
     // layout comes from a maintained library instead of being hand-rolled.
-    // What it does NOT provide (and so stays hand-rolled in _paycore): v0
+    // What it does NOT provide (and so stays hand-rolled in paycore): v0
     // VersionedMessage *compilation* (web3-solana's Message.Builder only
     // produces a LegacyMessage; VersionedMessage is a bare data class with no
     // try_compile path), the ComputeBudget program, and a synchronous ATA

@@ -12,4 +12,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "solana-mpp-kotlin"
+rootProject.name = "solana-pay-kit-kotlin"

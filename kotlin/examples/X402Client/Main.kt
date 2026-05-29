@@ -10,12 +10,12 @@
 // and signs a v0 payment transaction, and replays the request with the
 // `Payment-Signature` header. Mirrors the ChargeClient example.
 
-package com.solana.mpp.examples
+package com.solana.paykit.examples
 
-import com.solana.mpp._paycore.MemorySigner
-import com.solana.mpp.protocols.x402.client.exact.ChallengeSelection
-import com.solana.mpp.protocols.x402.client.exact.X402HttpClient
-import com.solana.mpp.protocols.x402.client.exact.X402RpcClient
+import com.solana.paykit.paycore.MemorySigner
+import com.solana.paykit.protocols.x402.client.exact.ChallengeSelection
+import com.solana.paykit.protocols.x402.client.exact.X402HttpClient
+import com.solana.paykit.protocols.x402.client.exact.X402RpcClient
 
 fun main(args: Array<String>) {
     val target = args.firstOrNull() ?: error("usage: X402Client <url>")

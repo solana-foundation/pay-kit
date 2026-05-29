@@ -6,12 +6,12 @@
 //
 //   MPP_CLIENT_SECRET_KEY_HEX=<hex>  ./run <target-url>
 
-package com.solana.mpp.examples
+package com.solana.paykit.examples
 
-import com.solana.mpp.client.Charge
-import com.solana.mpp.client.JsonRpcClient
-import com.solana.mpp.client.MppHttpClient
-import com.solana.mpp.crypto.MemorySigner
+import com.solana.paykit.client.Charge
+import com.solana.paykit.client.JsonRpcClient
+import com.solana.paykit.client.MppHttpClient
+import com.solana.paykit.crypto.MemorySigner
 
 fun main(args: Array<String>) {
     val target = args.firstOrNull() ?: error("usage: ChargeClient <url>")
