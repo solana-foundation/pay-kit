@@ -218,7 +218,6 @@ go/
 │   │   └── errorcodes/           canonical L6 fault codes
 │   └── x402/                     x402 "exact" adapter and structural transaction verifier
 ├── signer/                       Ed25519 signer factories behind a KMS-ready interface
-├── kms/                          reserved for KMS-backed signers
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod
 ```

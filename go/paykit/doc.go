@@ -39,7 +39,6 @@
 //   - [signer] -- local Ed25519 signer factories
 //     (Demo / Generate / FromBytes / FromJSON / FromHex / FromBase58
 //     / FromFile / FromEnv + MustXxx variants).
-//   - [paykit/kms] -- remote enclave signer factories (future).
 //   - [protocols/x402] -- x402-exact (Solana) adapter.
 //   - [protocols/mpp] -- MPP-charge adapter (wraps the legacy
 //     server.Mpp handler).

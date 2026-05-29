@@ -4,7 +4,7 @@ import "context"
 
 // Signer is the Ed25519 signer interface every signer backend
 // implements. Local signers (signer.Demo, signer.FromFile, ...) ignore
-// the context; remote enclave signers (paykit/kms.GCP, ...) honor it
+// the context; remote enclave (KMS) signers honor it
 // for network I/O timeouts and cancellation.
 //
 // The interface deliberately never exposes the raw secret key: both the
