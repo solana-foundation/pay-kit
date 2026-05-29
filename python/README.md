@@ -205,11 +205,41 @@ network fees, the customer's signed transaction settles funds to `pay_to`.
 Gates with `fee_within` or `fee_on_top` recipients auto-disable x402,
 because stock x402 facilitators settle to one address.
 
-| Scheme  | Status |
-|---------|--------|
-| `exact` | ✅      |
-| `upto`  | —      |
-| `batch` | —      |
+| Scheme  | Client | Server |
+|---------|:------:|:------:|
+| `exact` | ✅     | ✅     |
+| `upto`  | —      | —      |
+| `batch` | —      | —      |
+
+### Client
+
+Pay an x402-gated endpoint with the auto-pay transport (the Go `NewClient`
+ergonomics): hand it a signer and an RPC and you get back an
+`httpx.AsyncClient` that replays any `402` with a signed `PAYMENT-SIGNATURE`
+payment, then returns the paid response.
+
+```python
+import asyncio
+
+from pay_kit import Signer
+from pay_kit._paycore.rpc import SolanaRpc
+from pay_kit.protocols.x402.client import x402_async_client
+
+async def main():
+    signer = Signer.file("payer.json")  # the payer's keypair
+    rpc = SolanaRpc("https://api.devnet.solana.com")
+    async with x402_async_client(signer, rpc) as http:
+        resp = await http.get("https://api.example/report")  # 402 -> pay -> 200
+        print(resp.status_code, resp.headers.get("payment-response"))
+
+asyncio.run(main())
+```
+
+The low-level building blocks are exposed too, mirroring the Rust/Go client:
+`parse_x402_challenge(headers, body, selection)` selects an offer, and
+`build_payment_header(signer, rpc, offer)` returns the base64 `PAYMENT-SIGNATURE`
+value for callers that drive their own HTTP. See
+[`examples/x402-client/`](examples/x402-client).
 
 ## MPP
 
