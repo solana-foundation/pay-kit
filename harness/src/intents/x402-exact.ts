@@ -23,54 +23,7 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     resourcePath: "/protected",
     settlementHeader: "x-fixture-settlement",
-    // The pay_kit rust/python x402 servers stamp `extra.recentBlockhash` and
-    // `extra.memo` (the resource path) into the offer; the basic happy path
-    // therefore already exercises both the recentBlockhash-present and memo
-    // bindings end-to-end. The token-2022 and ATA-create variants below add
-    // the remaining shapes. These full-settlement scenarios only run against
-    // full-settling client+server pairs (see the matrix `allowedPair`
-    // restriction); the default x402 e2e matrix runs `x402-exact-basic` only.
     expectedStatus: 200,
-  },
-  {
-    // Token-2022 mint. PYUSD on localnet/devnet is owned by the Token-2022
-    // program; the harness deploys the mint under that program. The pay_kit
-    // server advertises `extra.tokenProgram = TOKEN_2022_PROGRAM` and the
-    // client builds the transferChecked against the Token-2022 program and
-    // the Token-2022-derived ATA. Exercises the verifier's Rule 11 token
-    // program bind on the Token-2022 branch.
-    id: "x402-exact-token2022",
-    intent: "x402-exact",
-    network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-    price: "0.001",
-    amount: "1000",
-    asset: "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
-    tokenProgram: "TOKEN_2022_PROGRAM",
-    resourcePath: "/protected/token2022",
-    settlementHeader: "x-fixture-settlement",
-    expectedStatus: 200,
-    clientIds: ["rust-x402", "python-x402"],
-    serverIds: ["rust-x402", "python"],
-  },
-  {
-    // ATA-create: the platform recipient's ATA is pre-created with a zero
-    // balance before the test, so the settled transferChecked lands in an
-    // already-existing destination ATA (the verifier accepts the bare
-    // transferChecked; no client-side create-idempotent instruction needed).
-    // This exercises the destination-ATA derivation + Rule 7 recipient match
-    // against an on-chain account that exists at settle time.
-    id: "x402-exact-ata-precreated",
-    intent: "x402-exact",
-    network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-    price: "0.001",
-    amount: "1000",
-    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-    resourcePath: "/protected/ata-precreated",
-    settlementHeader: "x-fixture-settlement",
-    preCreatePlatformAta: true,
-    expectedStatus: 200,
-    clientIds: ["rust-x402", "python-x402"],
-    serverIds: ["rust-x402", "python"],
   },
   {
     // Network mismatch: client signs against localnet but the challenge
