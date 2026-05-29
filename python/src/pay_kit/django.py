@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._middleware import PAYMENT_ATTR, PayCore, is_paid
 from pay_kit._middleware import payment as _core_payment
@@ -35,7 +35,11 @@ from pay_kit.errors import PayKitError, PaymentRequiredError
 from pay_kit.payment import Payment
 
 if TYPE_CHECKING:
-    from django.http import HttpRequest, HttpResponse, JsonResponse
+    from django.http import (  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs (django-stubs is third-party)
+        HttpRequest,
+        HttpResponse,
+        JsonResponse,
+    )
 
     from pay_kit.config import Config
     from pay_kit.gate import DynamicGate, Gate
@@ -153,16 +157,20 @@ def _error_response(exc: PayKitError) -> JsonResponse:
     :meth:`PayCore.build_402`; everything else falls back to a minimal error
     body keyed on the exception's canonical code (if any).
     """
-    from django.http import JsonResponse
+    from django.http import JsonResponse  # pyright: ignore[reportMissingTypeStubs]  # django ships no type stubs
 
     status = getattr(exc, "http_status", 500)
-    body = getattr(exc, "body", None)
-    if not isinstance(body, dict):
-        body = {"error": getattr(exc, "code", "payment_error"), "message": str(exc)}
+    raw_body = getattr(exc, "body", None)
+    body: dict[str, Any] = (
+        cast("dict[str, Any]", raw_body)
+        if isinstance(raw_body, dict)
+        else {"error": getattr(exc, "code", "payment_error"), "message": str(exc)}
+    )
 
     response = JsonResponse(body, status=status)
     if isinstance(exc, PaymentRequiredError):
-        for key, value in getattr(exc, "challenge_headers", {}).items():
+        challenge_headers = cast("dict[str, str]", getattr(exc, "challenge_headers", {}))
+        for key, value in challenge_headers.items():
             response[key] = value
     return response
 

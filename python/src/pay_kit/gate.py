@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, cast
 
 import pydantic
 
@@ -44,24 +44,34 @@ __all__ = ["Gate", "DynamicGate", "dynamic"]
 
 
 def _build_fees(
-    fee_within: dict[str, Price] | None,
-    fee_on_top: dict[str, Price] | None,
+    fee_within: object,
+    fee_on_top: object,
 ) -> tuple[Fee, ...]:
-    """Coerce the ``{recipient: Price}`` fee maps into an ordered Fee tuple."""
+    """Coerce the ``{recipient: Price}`` fee maps into an ordered Fee tuple.
+
+    Both maps are typed ``object``: they arrive from untyped DSL/config callers,
+    so the isinstance ladder validating the dict / recipient / Price shape is the
+    load-bearing runtime guard, not redundant.
+    """
     fees: list[Fee] = []
-    for kind, mapping in (("within", fee_within), ("on_top", fee_on_top)):
+    pairs: tuple[tuple[Literal["within", "on_top"], object], ...] = (
+        ("within", fee_within),
+        ("on_top", fee_on_top),
+    )
+    for kind, mapping in pairs:
         if mapping is None:
             continue
         if not isinstance(mapping, dict):
             raise ConfigurationError(f"pay_kit: fee_{kind} must be a dict of {{recipient: Price}}")
-        for recipient, price in mapping.items():
+        items = cast("dict[object, object]", mapping)
+        for recipient, price in items.items():
             if not isinstance(recipient, str) or not recipient:
                 raise ConfigurationError(f"pay_kit: fee_{kind} recipient must be a non-empty string, got {recipient!r}")
             if not isinstance(price, Price):
                 raise ConfigurationError(
                     f"pay_kit: fee_{kind} price for {recipient!r} must be a Price (use usd/eur/gbp)"
                 )
-            fees.append(Fee(recipient=recipient, price=price, kind=kind))  # type: ignore[arg-type]
+            fees.append(Fee(recipient=recipient, price=price, kind=kind))
     return tuple(fees)
 
 
@@ -101,7 +111,7 @@ def _resolve_accept(
 class Gate(pydantic.BaseModel):
     """A frozen, fully validated protected unit built via :meth:`Gate.build`."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     name: str
     amount: Price
@@ -133,9 +143,12 @@ class Gate(pydantic.BaseModel):
         Raises :class:`~pay_kit.errors.ConfigurationError` (and subclasses) on
         any rule violation so misconfiguration fails at boot.
         """
-        if not isinstance(name, str) or not name:
+        # isinstance guards are load-bearing against untyped DSL callers (the
+        # public DX keeps the precise str/Price annotations); pyright sees them
+        # as redundant under strict, so silence that one rule per line.
+        if not isinstance(name, str) or not name:  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ConfigurationError(f"pay_kit: gate name must be a non-empty string, got {name!r}")
-        if not isinstance(amount, Price):
+        if not isinstance(amount, Price):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ConfigurationError(f"pay_kit: gate {name!r}: amount must be a Price (use usd/eur/gbp)")
 
         resolved_pay_to = pay_to if pay_to is not None else default_pay_to
@@ -258,7 +271,7 @@ class DynamicGate:
         name: str,
         accept: tuple[Protocol, ...] | None,
         description: str | None,
-        builder: Callable[[Any], Gate],
+        builder: Callable[[Any], object],
         defaults: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
@@ -296,7 +309,7 @@ def dynamic(
     *,
     accept: tuple[Protocol, ...] | None = None,
     description: str | None = None,
-) -> Callable[[Callable[[Any], Gate]], DynamicGate]:
+) -> Callable[[Callable[[Any], object]], DynamicGate]:
     """Decorator turning a request-builder callable into a :class:`DynamicGate`.
 
     The decorated function receives the request and returns a :class:`Gate`
@@ -304,7 +317,7 @@ def dynamic(
     :meth:`DynamicGate.resolve` time by the middleware that owns the request.
     """
 
-    def _wrap(builder: Callable[[Any], Gate]) -> DynamicGate:
+    def _wrap(builder: Callable[[Any], object]) -> DynamicGate:
         return DynamicGate(
             name=name,
             accept=accept,

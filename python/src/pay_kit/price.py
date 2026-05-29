@@ -27,8 +27,13 @@ __all__ = ["Price", "Settlement"]
 _AMOUNT_RE = re.compile(r"^\d+(\.\d+)?$")
 
 
-def _to_decimal(amount: str | int | Decimal) -> Decimal:
-    """Coerce a money input to Decimal, rejecting float and bad formats."""
+def _to_decimal(amount: object) -> Decimal:
+    """Coerce a money input to Decimal, rejecting float and bad formats.
+
+    Accepts ``object`` (not just ``str | int | Decimal``) because the public
+    factories forward untyped caller input and the field validator forwards a
+    raw pydantic value; the isinstance ladder is the load-bearing runtime guard.
+    """
     if isinstance(amount, bool):  # bool is an int subclass; reject explicitly.
         raise ConfigurationError("pay_kit: Price amount must be str | int | Decimal, not bool")
     if isinstance(amount, float):
@@ -50,7 +55,7 @@ def _to_decimal(amount: str | int | Decimal) -> Decimal:
 class Settlement(pydantic.BaseModel):
     """A single settlement preference: pay ``amount`` denominated in ``coin``."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     coin: Stablecoin
     amount: str
@@ -62,7 +67,7 @@ class Settlement(pydantic.BaseModel):
 class Price(pydantic.BaseModel):
     """Currency-denominated amount with an ordered settlement-coin preference."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     amount: Decimal
     currency: Currency
@@ -71,7 +76,7 @@ class Price(pydantic.BaseModel):
     @pydantic.field_validator("amount", mode="before")
     @classmethod
     def _coerce_amount(cls, value: object) -> Decimal:
-        return _to_decimal(value)  # type: ignore[arg-type]
+        return _to_decimal(value)
 
     @classmethod
     def usd(cls, amount: str | int | Decimal, *settlements: Stablecoin) -> Price:

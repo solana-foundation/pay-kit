@@ -17,9 +17,10 @@ import os
 import secrets
 from collections.abc import Callable
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._paycore.protocol import Protocol
+from pay_kit._wire import MppAcceptsEntry, MppMethodDetails, MppSplit
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
 from solana_mpp._errors import PaymentError, canonical_code
@@ -158,11 +159,11 @@ class MppAdapter:
 
     # -- offer / challenge --------------------------------------------------
 
-    def accepts_entry(self, gate: Gate, request: Any) -> dict[str, Any]:
+    def accepts_entry(self, gate: Gate, request: Any) -> MppAcceptsEntry:
         """Build one ``accepts[]`` entry advertising the MPP charge offer."""
         coin = self._settlement_coin(gate)
         pay_to = gate.pay_to or self._config.effective_recipient()
-        entry: dict[str, Any] = {
+        entry: MppAcceptsEntry = {
             "protocol": "mpp",
             "scheme": "charge",
             "network": self._config.network.caip2(),
@@ -173,7 +174,7 @@ class MppAdapter:
         }
         if gate.has_fees():
             entry["splits"] = [
-                {"recipient": fee.recipient, "amount": str(self._price_units(fee.price))} for fee in gate.fees
+                MppSplit(recipient=fee.recipient, amount=str(self._price_units(fee.price))) for fee in gate.fees
             ]
         return entry
 
@@ -250,10 +251,10 @@ class MppAdapter:
         # ("mainnet"/"devnet"/"localnet") in request.methodDetails.network
         # (rust/crates/core/src/client/mpp.rs). Advertise the same slug
         # Mints::resolve uses so `pay --sandbox --mpp curl` matches.
-        method_details: dict[str, Any] = {"network": self._config.network.mints_label()}
+        method_details: MppMethodDetails = {"network": self._config.network.mints_label()}
         if gate.has_fees():
             method_details["splits"] = [
-                {"recipient": fee.recipient, "amount": str(self._price_units(fee.price))} for fee in gate.fees
+                MppSplit(recipient=fee.recipient, amount=str(self._price_units(fee.price))) for fee in gate.fees
             ]
         signer = self._config.operator.signer
         if self._config.operator.fee_payer and signer is not None:
@@ -266,13 +267,15 @@ class MppAdapter:
             blockhash = self._recent_blockhash_provider()
             if blockhash:
                 method_details["recentBlockhash"] = blockhash
+        # ChargeRequest.method_details is the untyped solana_mpp wire shape
+        # (dict[str, Any] | None); cast the precise TypedDict at the boundary.
         return ChargeRequest(
             amount=amount,
             currency=coin,
             recipient=pay_to,
             description=gate.description or "",
             external_id=gate.external_id or "",
-            method_details=method_details or None,
+            method_details=cast("dict[str, Any]", method_details) or None,
         )
 
     def _charge_options(self, gate: Gate) -> ChargeOptions:
@@ -282,9 +285,12 @@ class MppAdapter:
             external_id=gate.external_id or "",
         )
         if gate.has_fees():
-            options.splits = [
-                {"recipient": fee.recipient, "amount": str(self._price_units(fee.price))} for fee in gate.fees
+            # ChargeOptions.splits is the untyped solana_mpp list[dict]; build the
+            # precise MppSplit shape and cast at the boundary.
+            splits: list[MppSplit] = [
+                MppSplit(recipient=fee.recipient, amount=str(self._price_units(fee.price))) for fee in gate.fees
             ]
+            options.splits = cast("list[dict[str, Any]]", splits)
         signer = self._config.operator.signer
         if self._config.operator.fee_payer and signer is not None:
             options.fee_payer = True
@@ -343,14 +349,15 @@ class MppAdapter:
     @staticmethod
     def _header(request: Any, name: str) -> str:
         """Read a header off a generic request bag (dict-like or .headers)."""
-        headers = getattr(request, "headers", None)
+        headers: object = getattr(request, "headers", None)
         if headers is None and isinstance(request, dict):
-            headers = request.get("headers", request)
+            request_map = cast("dict[str, object]", request)
+            headers = request_map.get("headers", request_map)
         if headers is None:
             return ""
         getter = getattr(headers, "get", None)
         if callable(getter):
-            value: Any = getter(name)
+            value: object = getter(name)
             if value is None:
                 value = getter(name.title())
             return str(value) if value else ""

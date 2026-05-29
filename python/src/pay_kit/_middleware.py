@@ -31,9 +31,10 @@ The request-scoped trio (:func:`require_payment`, :func:`is_paid`,
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._paycore.protocol import Protocol
+from pay_kit._wire import MppAcceptsEntry, X402AcceptsEntry
 from pay_kit.errors import (
     InvalidProofError,
     PaymentRequiredError,
@@ -179,7 +180,7 @@ class PayCore:
         gate accepts it and carries no fees; MPP is offered whenever accepted.
         """
         accept = gate.accept if gate.accept is not None else self._config.accept
-        accepts: list[dict[str, Any]] = []
+        accepts: list[X402AcceptsEntry | MppAcceptsEntry] = []
         headers: dict[str, str] = {}
 
         if self._x402 is not None and Protocol.X402 in accept and not gate.has_fees():
@@ -209,8 +210,13 @@ class PayCore:
         error.body = body  # type: ignore[attr-defined]
         return error
 
-    def _resolve_callable(self, builder: Callable[[Any], Gate], request: Any) -> Gate:
-        """Invoke a bare request-builder and coerce its Gate/Price result."""
+    def _resolve_callable(self, builder: Callable[[Any], object], request: Any) -> Gate:
+        """Invoke a bare request-builder and coerce its Gate/Price result.
+
+        ``builder`` is typed to return ``object`` because user request-builders
+        are untyped and may return a Gate, a Price, or an invalid value; the
+        isinstance ladder is the load-bearing runtime guard.
+        """
         result = builder(request)
         if isinstance(result, Gate):
             return result
@@ -293,14 +299,14 @@ def require_payment(request: Any) -> Payment:
 
 def _request_headers(request: Any) -> Mapping[str, str]:
     """Extract a case-tolerant header mapping from a generic request bag."""
-    headers = getattr(request, "headers", None)
+    headers: object = getattr(request, "headers", None)
     if headers is None and isinstance(request, Mapping):
-        candidate = request.get("headers", request)
-        headers = candidate
+        request_map = cast("Mapping[str, object]", request)
+        headers = request_map.get("headers", request_map)
     if headers is None:
         return {}
     if isinstance(headers, Mapping):
-        return headers
+        return cast("Mapping[str, str]", headers)
     # Header objects exposing .get (e.g. Starlette Headers, WSGI EnvironHeaders).
     if callable(getattr(headers, "get", None)):
         return _HeaderProxy(headers)
@@ -320,7 +326,7 @@ def _read_header(headers: Mapping[str, str], name: str) -> str:
     return str(value) if value else ""
 
 
-def _read_attr(request: Any, name: str) -> Any:
+def _read_attr(request: Any, name: str) -> object:
     """Read an attribute off a request bag, mapping, or ``.state`` namespace."""
     state = getattr(request, "state", None)
     if state is not None and hasattr(state, name):
@@ -328,7 +334,7 @@ def _read_attr(request: Any, name: str) -> Any:
     if hasattr(request, name):
         return getattr(request, name)
     if isinstance(request, Mapping):
-        return request.get(name)
+        return cast("Mapping[str, object]", request).get(name)
     return None
 
 
@@ -343,7 +349,8 @@ def _request_path(request: Any) -> str:
     if isinstance(path, str):
         return path
     if isinstance(request, Mapping):
-        candidate = request.get("path") or request.get("PATH_INFO")
+        request_map = cast("Mapping[str, object]", request)
+        candidate = request_map.get("path") or request_map.get("PATH_INFO")
         if isinstance(candidate, str):
             return candidate
     return "/"

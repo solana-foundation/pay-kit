@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -129,7 +129,7 @@ def _check_fee_payer_sol(config: Config, autofix: bool) -> None:  # pragma: no c
 
     pubkey = signer.pubkey()
     result = _rpc_call(config, "getBalance", [pubkey, {"commitment": "confirmed"}])
-    lamports = int(result["value"]) if isinstance(result, dict) and "value" in result else 0
+    lamports = int(cast("dict[str, Any]", result)["value"]) if isinstance(result, dict) and "value" in result else 0
     if lamports >= MIN_FEE_PAYER_LAMPORTS:
         return
 
@@ -178,7 +178,7 @@ def _check_recipient_ata(config: Config, coin: str, autofix: bool) -> None:  # p
         "getAccountInfo",
         [ata, {"encoding": "base64", "commitment": "confirmed"}],
     )
-    value = info["value"] if isinstance(info, dict) and "value" in info else None
+    value = cast("dict[str, Any]", info)["value"] if isinstance(info, dict) and "value" in info else None
     if value is not None:
         return
 
@@ -223,4 +223,4 @@ def _rpc_call(config: Config, method: str, params: list[Any]) -> Any:  # pragma:
     decoded = response.json()
     if not isinstance(decoded, dict):
         raise RuntimeError(f"rpc returned non-JSON from {endpoint}")
-    return decoded.get("result")
+    return cast("dict[str, Any]", decoded).get("result")

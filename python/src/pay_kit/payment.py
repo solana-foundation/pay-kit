@@ -19,7 +19,7 @@ class Payment(pydantic.BaseModel):
     proof string (Authorization / Payment-Signature) for auditing.
     """
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     protocol: Protocol
     transaction: str

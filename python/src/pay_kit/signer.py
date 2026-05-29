@@ -22,7 +22,7 @@ import json
 import logging
 import os
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from solders.keypair import Keypair
 
@@ -175,7 +175,9 @@ class LocalSigner:
     @classmethod
     def from_base58(cls, s: str) -> LocalSigner:
         """Build a signer from a base58-encoded 64-byte secret (Phantom/Solflare)."""
-        if not isinstance(s, str) or s == "":
+        # isinstance guard is load-bearing against untyped callers; the public
+        # ``str`` annotation is the typed-caller contract, so silence the rule.
+        if not isinstance(s, str) or s == "":  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError("pay_kit: Signer.base58 expects a non-empty string")
         try:
             kp = Keypair.from_base58_string(s)
@@ -190,8 +192,10 @@ class LocalSigner:
     @classmethod
     def from_hex(cls, s: str) -> LocalSigner:
         """Build a signer from a 128-character hex string (64 bytes hex-encoded)."""
-        if not isinstance(s, str) or len(s) != 128:
-            length = len(s) if isinstance(s, str) else 0
+        # isinstance guards are load-bearing against untyped callers; keep the
+        # public ``str`` contract and silence the redundancy rule per line.
+        if not isinstance(s, str) or len(s) != 128:  # pyright: ignore[reportUnnecessaryIsInstance]
+            length = len(s) if isinstance(s, str) else 0  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError(f"pay_kit: Signer.hex expects 128 chars, got {length}")
         if any(ch not in _HEX_DIGITS for ch in s):
             raise InvalidKeyError("pay_kit: Signer.hex contains non-hex characters")
@@ -242,7 +246,9 @@ class Signer:
     @staticmethod
     def json(json_array: str) -> LocalSigner:
         """Build a signer from a Solana-CLI JSON-array string ``"[1,2,...,64]"``."""
-        if not isinstance(json_array, str):
+        # isinstance guard is load-bearing against untyped callers; keep the
+        # public ``str`` contract and silence the redundancy rule per line.
+        if not isinstance(json_array, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError("pay_kit: Signer.json expects a string")
         trimmed = json_array.strip()
         if trimmed == "":
@@ -253,7 +259,9 @@ class Signer:
             raise InvalidKeyError(f"pay_kit: malformed Solana CLI JSON-array keypair: {exc}") from exc
         if not isinstance(decoded, list):
             raise InvalidKeyError("pay_kit: Signer.json expected a JSON array")
-        return LocalSigner.from_bytes(decoded)
+        # json.loads yields list[Any]; element types (int in [0,255], length 64)
+        # are validated inside _coerce_secret_bytes, so cast to the declared shape.
+        return LocalSigner.from_bytes(cast("Sequence[int]", decoded))
 
     @staticmethod
     def base58(s: str) -> LocalSigner:
@@ -268,7 +276,9 @@ class Signer:
     @staticmethod
     def file(path: str) -> LocalSigner:
         """Read a Solana-CLI JSON-array keypair file and build a signer."""
-        if not isinstance(path, str) or path == "":
+        # isinstance guard is load-bearing against untyped callers; keep the
+        # public ``str`` contract and silence the redundancy rule per line.
+        if not isinstance(path, str) or path == "":  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError("pay_kit: Signer.file expects a non-empty path")
         try:
             with open(path, encoding="utf-8") as handle:
@@ -287,7 +297,9 @@ class Signer:
         parsed as JSON-array / hex / base58, because silent fallback would mask
         a real misconfiguration.
         """
-        if not isinstance(name, str) or name == "":
+        # isinstance guard is load-bearing against untyped callers; keep the
+        # public ``str`` contract and silence the redundancy rule per line.
+        if not isinstance(name, str) or name == "":  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError("pay_kit: Signer.env expects a non-empty name")
         raw = os.environ.get(name)
         if raw is None or raw == "":
@@ -322,7 +334,10 @@ def _coerce_secret_bytes(secret: bytes | Sequence[int]) -> bytes:
     if len(items) != 64:
         raise InvalidKeyError(f"pay_kit: Signer.bytes expects 64 integers, got {len(items)}")
     for i, value in enumerate(items):
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 255:
+        # The declared element type is int, but a JSON-array secret (Signer.json)
+        # may carry non-int / float / bool elements at runtime, so the per-element
+        # isinstance check is load-bearing; silence the redundancy rule here.
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 255:  # pyright: ignore[reportUnnecessaryIsInstance]
             raise InvalidKeyError(f"pay_kit: Signer.bytes[{i}] must be an int in [0,255]")
     return bytes(items)
 
@@ -339,7 +354,7 @@ def _keypair_from_bytes(raw: bytes) -> Keypair:
         )
 
 
-def _reset_demo_for_tests() -> None:
+def _reset_demo_for_tests() -> None:  # pyright: ignore[reportUnusedFunction]  # external test hook (test_pk_signer_operator)
     """Reset the cached demo singleton + warning guard so the next call rebuilds.
 
     @internal

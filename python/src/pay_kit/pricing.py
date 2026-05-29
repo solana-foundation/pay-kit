@@ -82,7 +82,7 @@ class Pricing:
 
 
 def coerce(
-    arg: Gate | DynamicGate | Price | str,
+    arg: object,
     *,
     registry: Pricing | None = None,
     config: Config | None = None,
@@ -92,7 +92,9 @@ def coerce(
     A ``str`` is looked up in ``registry`` (raising if none is configured); a
     :class:`~pay_kit.gate.Gate` / :class:`~pay_kit.gate.DynamicGate` passes
     through; a bare :class:`~pay_kit.price.Price` is wrapped into an inline
-    Gate using the Config-resolved default recipient and accept list.
+    Gate using the Config-resolved default recipient and accept list. ``arg`` is
+    typed as ``object`` so the isinstance ladder stays a load-bearing runtime
+    guard for untyped callers (the trailing ``raise`` is reachable).
     """
     if isinstance(arg, (Gate, DynamicGate)):
         return arg

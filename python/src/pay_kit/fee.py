@@ -21,7 +21,7 @@ __all__ = ["Fee"]
 class Fee(pydantic.BaseModel):
     """A recipient address and the price they receive, within or on top."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     recipient: str
     price: Price

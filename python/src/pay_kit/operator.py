@@ -21,7 +21,7 @@ class Operator(pydantic.BaseModel):
     settlement destination. ``Config`` layers the mainnet-refusal rule on top.
     """
 
-    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     recipient: str | None = None
     signer: LocalSigner | None = None

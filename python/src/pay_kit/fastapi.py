@@ -27,8 +27,8 @@ Starlette lowercase header names at the boundary, so canonical casing is safe).
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, cast
 
 try:
     from fastapi import HTTPException, Request, Response
@@ -102,7 +102,9 @@ def install_exception_handler(app: Any) -> None:
     """
 
     @app.exception_handler(PayKitError)
-    async def _paykit_error_handler(_request: Request, exc: PayKitError) -> Response:
+    async def _paykit_error_handler(  # pyright: ignore[reportUnusedFunction]  # registered via @app.exception_handler
+        _request: Request, exc: PayKitError
+    ) -> Response:
         http_exc = _http_exception(exc)
         from fastapi.responses import JSONResponse
 
@@ -113,11 +115,13 @@ def install_exception_handler(app: Any) -> None:
         )
 
     @app.middleware("http")
-    async def _paykit_settlement_headers(request: Request, call_next: Any) -> Response:
+    async def _paykit_settlement_headers(  # pyright: ignore[reportUnusedFunction]  # registered via @app.middleware
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         response = await call_next(request)
         settlement = getattr(request.state, _SETTLEMENT_STATE_ATTR, None)
         if isinstance(settlement, dict):
-            for name, value in settlement.items():
+            for name, value in cast("dict[str, str]", settlement).items():
                 response.headers[name] = value
         return response
 
@@ -133,9 +137,9 @@ def _http_exception(exc: PayKitError) -> HTTPException:
     headers = getattr(exc, "challenge_headers", None)
     body = getattr(exc, "body", None)
 
-    detail: Any
+    detail: dict[str, Any]
     if isinstance(body, dict):
-        detail = body
+        detail = cast("dict[str, Any]", body)
     else:
         code = getattr(exc, "code", None)
         detail = {"error": code or "payment_error", "message": str(exc)}
@@ -143,5 +147,5 @@ def _http_exception(exc: PayKitError) -> HTTPException:
     return HTTPException(
         status_code=status,
         detail=detail,
-        headers=headers if isinstance(headers, dict) else None,
+        headers=cast("dict[str, str]", headers) if isinstance(headers, dict) else None,
     )

@@ -474,7 +474,7 @@ def test_adapter_embeds_recent_blockhash_when_provider_set():
     cfg = configure(network="solana_localnet", preflight=False)
     adapter = X402Adapter(cfg, recent_blockhash_provider=lambda: BH)
     entry = adapter.accepts_entry(_gate(cfg), {"path": "/report"})
-    assert entry["extra"]["recentBlockhash"] == BH
+    assert entry["extra"].get("recentBlockhash") == BH
 
 
 def test_adapter_blockhash_provider_failure_is_swallowed():

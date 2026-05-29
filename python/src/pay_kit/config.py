@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import pydantic
 import pydantic_settings
+from pydantic import Strict
 
 from pay_kit._paycore.network import Network
 from pay_kit._paycore.protocol import Protocol
@@ -86,7 +87,7 @@ def _deprecation_warning_for(key: str, suggestion: str) -> None:
 class X402Config(pydantic.BaseModel):
     """x402-protocol knobs: facilitator delegation, scheme, and signer override."""
 
-    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     facilitator_url: str | None = None
     scheme: Literal["exact"] = "exact"
@@ -104,11 +105,13 @@ class X402Config(pydantic.BaseModel):
 class MppConfig(pydantic.BaseModel):
     """MPP-protocol knobs: realm label, challenge-binding secret, expiry window."""
 
-    model_config = pydantic.ConfigDict(frozen=True)
+    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
 
     realm: str = "App"
     challenge_binding_secret: str | None = None
-    expires_in: int = 120
+    # Strict: reject bool (an int subclass) and float coercion; an expiry window
+    # must be a real int. Existing valid int inputs are unaffected.
+    expires_in: Annotated[int, Strict()] = 120
 
     @pydantic.field_validator("expires_in")
     @classmethod
@@ -126,7 +129,7 @@ class MppConfig(pydantic.BaseModel):
 class Config(pydantic.BaseModel):
     """Immutable boot-time configuration; build via :func:`configure`."""
 
-    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = pydantic.ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     network: Network = Network.SOLANA_LOCALNET
     accept: tuple[Protocol, ...] = (Protocol.X402, Protocol.MPP)

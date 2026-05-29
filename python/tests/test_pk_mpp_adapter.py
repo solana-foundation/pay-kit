@@ -87,7 +87,7 @@ def test_accepts_entry_includes_splits_when_fees():
     cfg = _cfg()
     gate = _gate(cfg, fee_on_top={FEE_A: Price.usd("0.02", Stablecoin.USDC)})
     entry = MppAdapter(cfg).accepts_entry(gate, {"path": "/report"})
-    assert entry["splits"] == [{"recipient": FEE_A, "amount": "20000"}]
+    assert entry.get("splits") == [{"recipient": FEE_A, "amount": "20000"}]
     # on-top fee raises the advertised total to 0.12.
     assert entry["amount"] == "120000"
 

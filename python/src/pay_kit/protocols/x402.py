@@ -20,10 +20,17 @@ import base64
 import json
 import struct
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
 from pay_kit._paycore.protocol import Protocol
+from pay_kit._wire import (
+    X402AcceptsEntry,
+    X402Challenge,
+    X402Extra,
+    X402PayloadField,
+    X402ResponseEnvelope,
+)
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
 from solana_mpp._rpc import SolanaRpc
@@ -207,7 +214,9 @@ class ExactVerifier:
                 code="invalid_exact_svm_payload_no_transfer_instruction",
             )
         data = bytes(ix.data)
-        accounts = list(ix.accounts)
+        # solders CompiledInstruction.accounts is a list of u8 account indices;
+        # solders ships no stubs, so annotate the shape explicitly at the boundary.
+        accounts: list[int] = [int(a) for a in ix.accounts]
         # Rule 4: transferChecked shape (disc 12, 10-byte data, >= 4 accounts).
         if len(accounts) < 4 or len(data) != 10 or data[0] != 12:
             raise InvalidProofError(
@@ -345,7 +354,7 @@ class ExactVerifier:
     @staticmethod
     def _string_extra(requirement: dict[str, Any], key: str, *, required: bool) -> str | None:
         extra = requirement.get("extra")
-        value = extra.get(key) if isinstance(extra, dict) else None
+        value = cast("dict[str, object]", extra).get(key) if isinstance(extra, dict) else None
         if (value is None or value == "") and required:
             raise InvalidProofError(
                 f"invalid_exact_svm_payload_missing_extra_{key}",
@@ -385,7 +394,7 @@ class X402Adapter:
         self._store: Store = replay_store if replay_store is not None else MemoryStore()
         self._recent_blockhash_provider = recent_blockhash_provider
 
-    def accepts_entry(self, gate: Gate, request: Any) -> dict[str, Any]:
+    def accepts_entry(self, gate: Gate, request: Any) -> X402AcceptsEntry:
         """Build one ``accepts[]`` entry (the server x402 offer for ``gate``)."""
         coin = gate.amount.primary_coin()
         coin_value = coin.value if coin is not None else self._config.stablecoins[0].value
@@ -398,7 +407,7 @@ class X402Adapter:
         pay_to = gate.pay_to or self._config.effective_recipient()
         amount = str(int(gate.total().amount * 1_000_000))
         signer = self._config.x402.effective_signer(self._config.operator)
-        extra: dict[str, Any] = {
+        extra: X402Extra = {
             "feePayer": signer.pubkey() if signer is not None else "",
             "decimals": 6,
             "tokenProgram": token_program,
@@ -425,7 +434,7 @@ class X402Adapter:
 
     def challenge_headers(self, gate: Gate, request: Any) -> dict[str, str]:
         """Build the ``payment-required`` header (base64 JSON challenge)."""
-        challenge = {
+        challenge: X402Challenge = {
             "x402Version": X402_VERSION,
             "resource": {"type": "http", "url": _request_path(request)},
             "accepts": [self.accepts_entry(gate, request)],
@@ -458,15 +467,22 @@ class X402Adapter:
                 code="invalid_exact_svm_payload_signature_json",
             ) from exc
 
-        if not isinstance(envelope, dict) or envelope.get("x402Version") != X402_VERSION:
+        if not isinstance(envelope, dict):
             raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
-        accepted = envelope.get("accepted")
-        payload = envelope.get("payload")
-        if not isinstance(accepted, dict) or not isinstance(payload, dict):
+        # The envelope is attacker-controlled; it is validated field-by-field
+        # below, then narrowed to the typed wire shape for the rest of the flow.
+        envelope_map = cast("dict[str, object]", envelope)
+        if envelope_map.get("x402Version") != X402_VERSION:
+            raise InvalidProofError("unsupported_x402_version", code="unsupported_x402_version")
+        accepted_raw = envelope_map.get("accepted")
+        payload_raw = envelope_map.get("payload")
+        if not isinstance(accepted_raw, dict) or not isinstance(payload_raw, dict):
             raise InvalidProofError(
                 "invalid_exact_svm_payload_envelope",
                 code="invalid_exact_svm_payload_envelope",
             )
+        accepted = cast("dict[str, object]", accepted_raw)
+        payload = cast("X402PayloadField", payload_raw)
 
         # Tier-2 identity-key match: the credential's accepted requirement must
         # match the server's freshly built offer for this route. x402 has no
@@ -474,21 +490,23 @@ class X402Adapter:
         # credential's `accepted` is never trusted for the route's parameters
         # (mirrors rust verify_pinned_fields + the targeted deepEqual gate).
         offer = self.accepts_entry(gate, request)
+        offer_map = cast("dict[str, object]", offer)
         for key in ("scheme", "network", "asset", "payTo"):
-            if accepted.get(key) != offer.get(key):
+            if accepted.get(key) != offer_map.get(key):
                 raise InvalidProofError(
                     "pay_kit: charge_request_mismatch: accepted payment requirement does not match server challenge",
                     code="charge_request_mismatch",
                 )
-        if accepted.get("amount") != offer.get("amount") and accepted.get("maxAmountRequired") != offer.get(
+        if accepted.get("amount") != offer_map.get("amount") and accepted.get("maxAmountRequired") != offer_map.get(
             "maxAmountRequired"
         ):
             raise InvalidProofError(
                 "pay_kit: charge_request_mismatch (amount)",
                 code="charge_request_mismatch",
             )
-        offer_extra = offer.get("extra") or {}
-        accepted_extra = accepted.get("extra") or {}
+        offer_extra = cast("dict[str, object]", offer_map.get("extra") or {})
+        accepted_extra_raw = accepted.get("extra")
+        accepted_extra = cast("dict[str, object]", accepted_extra_raw if isinstance(accepted_extra_raw, dict) else {})
         for key in ("feePayer", "tokenProgram", "memo"):
             if key in offer_extra and accepted_extra.get(key) != offer_extra[key]:
                 raise InvalidProofError(
@@ -504,7 +522,7 @@ class X402Adapter:
             )
 
         # Structural shape (11 rules) against the server offer.
-        ExactVerifier.verify(tx_base64, offer, [signer.pubkey()])
+        ExactVerifier.verify(tx_base64, cast("dict[str, Any]", offer), [signer.pubkey()])
 
         # Reject up-front if the client signed against the wrong cluster.
         # Skip on a loopback RPC where a Surfpool blockhash is expected.
@@ -533,17 +551,16 @@ class X402Adapter:
         if not await self._store.put_if_absent(_REPLAY_PREFIX + signature, True):
             raise InvalidProofError("pay_kit: signature_consumed", code="signature_consumed")
 
-        response_envelope = base64.b64encode(
-            json.dumps(
-                {
-                    "success": True,
-                    "transaction": signature,
-                    "network": accepted.get("network") or self._caip2(),
-                    "payer": payload.get("transactionHash", ""),
-                },
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).decode("ascii")
+        accepted_network = accepted.get("network")
+        response_body: X402ResponseEnvelope = {
+            "success": True,
+            "transaction": signature,
+            "network": accepted_network if isinstance(accepted_network, str) and accepted_network else self._caip2(),
+            "payer": payload.get("transactionHash", ""),
+        }
+        response_envelope = base64.b64encode(json.dumps(response_body, separators=(",", ":")).encode("utf-8")).decode(
+            "ascii"
+        )
 
         return Payment(
             protocol=Protocol.X402,
@@ -580,7 +597,10 @@ def _co_sign(transaction_b64: str, signer: Any) -> bytes:
     from solders.pubkey import Pubkey
     from solders.transaction import Transaction, VersionedTransaction
 
-    from solana_mpp.server.mpp import _is_v0_wire_bytes
+    # Intentional reuse of solana_mpp's v0-wire detector (see docstring above)
+    # rather than re-implementing parallel detection logic; private by package
+    # convention but a deliberate cross-module dependency.
+    from solana_mpp.server.mpp import _is_v0_wire_bytes  # pyright: ignore[reportPrivateUsage]
 
     raw = base64.b64decode(transaction_b64)
     fee_payer_pubkey = Pubkey.from_string(signer.pubkey())
@@ -675,7 +695,7 @@ def _request_path(request: Any) -> str:
         if isinstance(url_path, str):
             return url_path
     if isinstance(request, dict):
-        candidate = request.get("path")
+        candidate = cast("dict[str, object]", request).get("path")
         if isinstance(candidate, str):
             return candidate
     return "/"
@@ -688,13 +708,13 @@ def _payment_signature_header(request: Any) -> str:
         getter = getattr(headers, "get", None)
         if callable(getter):
             for name in ("payment-signature", "Payment-Signature", "PAYMENT-SIGNATURE"):
-                value = getter(name)
+                value: object = getter(name)
                 if value:
                     return str(value)
     if isinstance(request, dict):
-        raw_headers = request.get("headers")
+        raw_headers = cast("dict[str, object]", request).get("headers")
         if isinstance(raw_headers, dict):
-            for key, value in raw_headers.items():
-                if key.lower() == "payment-signature" and value:
-                    return str(value)
+            for key, header_value in cast("dict[object, object]", raw_headers).items():
+                if isinstance(key, str) and key.lower() == "payment-signature" and header_value:
+                    return str(header_value)
     return ""

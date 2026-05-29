@@ -41,6 +41,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+strict = ["src/pay_kit"]
+reportMissingTypeStubs = false
 include = ["src", "tests"]
 exclude = ["**/__pycache__"]
 
