@@ -59,19 +59,32 @@ async def test_build_charge_transaction_fetches_blockhash_when_unset():
     assert payload.type == "transaction"
 
 
-async def test_build_charge_transaction_spl_raises_not_implemented():
+async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
+    # currency given as a raw mint address (not a known symbol): resolve_mint
+    # passes it through and the client builds an SPL TransferChecked to the
+    # recipient ATA. Guards against regressing the SPL client path back to a stub.
+    import base64
+
+    from solders.transaction import Transaction
+
     signer = Keypair()
     recipient = str(Keypair().pubkey())
-    with pytest.raises(NotImplementedError):
-        await build_charge_transaction(
-            signer=signer,
-            rpc_client=None,
-            amount="100",
-            currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            recipient=recipient,
-            external_id="",
-            method_details=MethodDetails(recent_blockhash=BLOCKHASH),
-        )
+    payload = await build_charge_transaction(
+        signer=signer,
+        rpc_client=None,
+        amount="100",
+        currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        recipient=recipient,
+        external_id="",
+        method_details=MethodDetails(recent_blockhash=BLOCKHASH, decimals=6),
+    )
+
+    tx = Transaction.from_bytes(base64.b64decode(payload.transaction))
+    transfer_checked = [bytes(ix.data) for ix in tx.message.instructions if bytes(ix.data)[:1] == b"\x0c"]
+    assert len(transfer_checked) == 1
+    data = transfer_checked[0]
+    assert int.from_bytes(data[1:9], "little") == 100  # amount
+    assert data[9] == 6  # decimals
 
 
 async def test_build_charge_transaction_splits_consume_entire_amount_raises():

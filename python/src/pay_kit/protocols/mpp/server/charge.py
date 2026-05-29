@@ -1452,9 +1452,8 @@ class Mpp:
 
         # Reject up-front if the client signed against the wrong network
         # (e.g. mainnet keypair pointed at a sandbox-configured server, or
-        # vice versa). Cheaper and clearer than letting the broadcast fail.
-        # Done here in the entry path so it runs even while the rest of the
-        # pipeline below is still a stub.
+        # vice versa). Done first in the entry path so the cheap, unambiguous
+        # check fails fast before the full verification + broadcast pipeline.
         try:
             blockhash_b58 = _extract_recent_blockhash(payload.transaction)
         except Exception as exc:  # noqa: BLE001 — propagate decode failures as invalid payload

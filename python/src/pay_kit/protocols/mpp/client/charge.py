@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+from pay_kit._paycore.mints import derive_ata
 from pay_kit._paycore.solana import (
+    ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
+    SYSTEM_PROGRAM,
     CredentialPayload,
     MethodDetails,
+    default_token_program_for_currency,
     is_native_sol,
+    resolve_mint,
 )
 from pay_kit.protocols.mpp.core.base64url import decode_json
 from pay_kit.protocols.mpp.core.headers import format_authorization
 from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
-
-logger = logging.getLogger(__name__)
 
 
 async def build_credential_header(
@@ -138,11 +140,64 @@ async def build_charge_transaction(
             instructions.append(split_ix)
             append_memo(split.memo)
     else:
-        # SPL token transfer -- requires more complex instruction building
-        # This is a simplified version; full implementation would handle
-        # ATA creation, TransferChecked, etc.
-        logger.warning("SPL token transfers require full solana-py integration")
-        raise NotImplementedError("SPL token client transfers not yet implemented")
+        # SPL token transfer: one TransferChecked per recipient to their ATA,
+        # mirroring the Go client and what the server verifier expects. Decimals
+        # come from the challenge methodDetails (stablecoins are 6). An
+        # idempotent create-ATA is prepended only for splits that flag it.
+        from solders.instruction import AccountMeta
+
+        mint = resolve_mint(currency, details.network)
+        token_program = details.token_program or default_token_program_for_currency(currency, details.network)
+        decimals = details.decimals if details.decimals is not None else 6
+        token_program_key = Pubkey.from_string(token_program)
+        mint_key = Pubkey.from_string(mint)
+        system_program_key = Pubkey.from_string(SYSTEM_PROGRAM)
+        ata_program_key = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
+        source_ata = Pubkey.from_string(derive_ata(str(signer.pubkey()), mint, token_program))
+
+        def append_transfer_checked(owner: Any, transfer_amount: int, create_ata: bool, memo: str) -> None:
+            dest_ata = Pubkey.from_string(derive_ata(str(owner), mint, token_program))
+            if create_ata:
+                # Associated Token Account program CreateIdempotent (discriminator 1):
+                # the payer funds the recipient's ATA when it does not yet exist.
+                instructions.append(
+                    Instruction(
+                        ata_program_key,
+                        bytes([1]),
+                        [
+                            AccountMeta(signer.pubkey(), True, True),
+                            AccountMeta(dest_ata, False, True),
+                            AccountMeta(owner, False, False),
+                            AccountMeta(mint_key, False, False),
+                            AccountMeta(system_program_key, False, False),
+                            AccountMeta(token_program_key, False, False),
+                        ],
+                    )
+                )
+            # SPL Token TransferChecked (discriminator 12): amount u64 LE + decimals u8.
+            data = bytes([12]) + transfer_amount.to_bytes(8, "little") + bytes([decimals])
+            instructions.append(
+                Instruction(
+                    token_program_key,
+                    data,
+                    [
+                        AccountMeta(source_ata, False, True),
+                        AccountMeta(mint_key, False, False),
+                        AccountMeta(dest_ata, False, True),
+                        AccountMeta(signer.pubkey(), True, False),
+                    ],
+                )
+            )
+            append_memo(memo)
+
+        append_transfer_checked(recipient_key, primary_amount, False, external_id)
+        for split in details.splits:
+            append_transfer_checked(
+                Pubkey.from_string(split.recipient),
+                int(split.amount),
+                split.ata_creation_required,
+                split.memo,
+            )
 
     # Get recent blockhash
     if details.recent_blockhash:
