@@ -1,7 +1,6 @@
 """Payment-aware httpx transport for automatic x402 ``exact`` 402 handling.
 
-Mirrors the MPP ``PaymentTransport`` (``pay_kit.protocols.mpp.client.transport``)
-and the Go x402 ``PaymentTransport`` / ``NewClient``
+Mirrors the Go x402 ``PaymentTransport`` / ``NewClient``
 (``go/protocols/x402/client/client.go``): a request whose first response is a
 402 with an x402 ``exact`` challenge is satisfied by building a
 ``PAYMENT-SIGNATURE`` header and retrying the request once. The header name is
