@@ -146,6 +146,11 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
         _ => DEFAULT_TOKEN_DECIMALS,
     };
     let splits = read_splits()?;
+    // Refuse to boot with invalid splits (audit #21). The harness
+    // misconfig scenario depends on this — every server SDK should
+    // reject the misconfig consistently, and refusing to start is the
+    // earliest possible signal.
+    solana_mpp::protocol::solana::validate_splits(&splits)?;
 
     Ok(InteropState {
         mpp: Mpp::new(Config {
