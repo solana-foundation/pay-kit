@@ -95,6 +95,15 @@ describe("x402 exact intent — cross-language matrix", () => {
     // mirroring the rust<->lua x402 interop pairing. The ts-x402 stub
     // client (no real transaction) is intentionally excluded.
     if (clientId === "rust-x402" && serverId === "python") return true;
+    // The Python pay_kit x402 client carries a real signed v0
+    // VersionedTransaction, so it can only be driven against full-settling
+    // x402 servers (cosign + broadcast). The ts-x402 stub server expects a
+    // stub credential with a payload.challengeId and never broadcasts a real
+    // transaction, so it is intentionally excluded — same reasoning that keeps
+    // rust-x402 off the ts-x402 server. Drive python-x402 against the rust and
+    // python x402 servers, which settle end-to-end against surfpool.
+    if (clientId === "python-x402" && serverId === "rust-x402") return true;
+    if (clientId === "python-x402" && serverId === "python") return true;
     return false;
   };
 

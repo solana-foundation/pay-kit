@@ -130,6 +130,22 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("go-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "python-x402",
+    label: "Python pay_kit x402 exact client",
+    role: "client",
+    // Drives the pay_kit x402 exact client (parse challenge -> build a signed
+    // v0 VersionedTransaction -> PAYMENT-SIGNATURE -> retry). Inserts python/src
+    // on sys.path like harness/python-server/server.py. Default OFF to match the
+    // go/swift/kotlin/ruby adapters: the default matrix should not require a
+    // Python toolchain on every contributor's machine. Opt in via
+    // `X402_INTEROP_CLIENTS=python-x402` (the focused python-x402 CI job sets
+    // this). Carries a real signed Solana transaction, so it settles end-to-end
+    // against the rust/ts/python x402 servers (see test/x402-exact.e2e.test.ts).
+    command: ["python3", "python-x402-client/main.py"],
+    enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
