@@ -18,20 +18,27 @@ jobs:
           cache: pip
       - name: Install Python SDK
         working-directory: python
+        # Framework extras bring fastapi/flask/django so the pay_kit shim tests
+        # import and pyright can resolve them; dev brings ruff, pyright, pytest.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,fastapi,flask,django]"
       - name: Lint with ruff
         working-directory: python
         run: ruff check src tests
       - name: Type check with pyright
         working-directory: python
-        run: pyright
+        # Point pyright at the interpreter the extras were installed into; it
+        # does not reliably auto-detect the active env on the runner.
+        run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
-        # Coverage gate: line coverage at 90%. Branch coverage gate is follow-up work, tracked in #108.
+        # Coverage gate: line coverage at 90% over both pay_kit and the
+        # solana_mpp wire it reuses. preflight.py is omitted in pyproject
+        # (live-RPC paths). Branch coverage gate is follow-up work, tracked in #108.
         run: |
           pytest \
+            --cov=pay_kit \
             --cov=solana_mpp \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
