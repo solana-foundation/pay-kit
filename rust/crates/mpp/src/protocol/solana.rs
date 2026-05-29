@@ -656,9 +656,7 @@ pub fn validate_splits(splits: &[Split]) -> Result<(), crate::error::Error> {
     let mut seen_recipients: HashSet<&str> = HashSet::with_capacity(splits.len());
     for (idx, split) in splits.iter().enumerate() {
         solana_pubkey::Pubkey::from_str(&split.recipient).map_err(|e| {
-            Error::InvalidConfig(format!(
-                "splits[{idx}]: invalid recipient pubkey: {e}"
-            ))
+            Error::InvalidConfig(format!("splits[{idx}]: invalid recipient pubkey: {e}"))
         })?;
         let amount = split.amount.parse::<u64>().map_err(|_| {
             Error::InvalidConfig(format!(

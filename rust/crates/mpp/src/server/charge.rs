@@ -295,11 +295,9 @@ impl Mpp {
         // defaults to mainnet" behaviour that used to live in default_rpc_url.
         crate::protocol::solana::validate_network(&config.network)?;
 
-        let rpc_url = config
-            .rpc_url
-            .unwrap_or_else(|| {
-                crate::protocol::solana::default_rpc_url(&config.network).to_string()
-            });
+        let rpc_url = config.rpc_url.unwrap_or_else(|| {
+            crate::protocol::solana::default_rpc_url(&config.network).to_string()
+        });
         let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
         validate_secret_key(&secret_key)?;
         let realm = match config.realm {
@@ -766,11 +764,8 @@ impl Mpp {
         // caller could authenticate one request and verify settlement
         // against a different one. Require equality on every
         // payment-constraining field (reuses the audit #1 helper).
-        let credential_request: ChargeRequest = credential
-            .challenge
-            .request
-            .decode()
-            .map_err(|e| {
+        let credential_request: ChargeRequest =
+            credential.challenge.request.decode().map_err(|e| {
                 VerificationError::invalid_payload(format!(
                     "Failed to decode credential request: {e}"
                 ))
@@ -1208,9 +1203,7 @@ impl Mpp {
             // mint address, not a symbol). The previous "currency !=
             // expected_mint" check was equivalent in outcome but expressed
             // the intent obliquely.
-            if !required_ata_owners.is_empty()
-                && Pubkey::from_str(&request.currency).is_err()
-            {
+            if !required_ata_owners.is_empty() && Pubkey::from_str(&request.currency).is_err() {
                 return Err(VerificationError::invalid_payload(
                     "ataCreationRequired requires currency to be an SPL token mint address",
                 ));
@@ -1432,9 +1425,7 @@ fn verify_versioned_transaction_pre_broadcast(
             resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
         // Audit #34: see the matching block above — check that
         // `request.currency` parses as a Pubkey directly.
-        if !ata_policy.required_owners.is_empty()
-            && Pubkey::from_str(&request.currency).is_err()
-        {
+        if !ata_policy.required_owners.is_empty() && Pubkey::from_str(&request.currency).is_err() {
             return Err(VerificationError::invalid_payload(
                 "ataCreationRequired requires currency to be an SPL token mint address",
             ));
@@ -1601,10 +1592,7 @@ fn compare_expected_to_request(
     }
     // Splits compared element-wise (order-sensitive). A route that pins
     // `[A, B]` will reject a credential carrying `[B, A]`.
-    if !splits_eq(
-        request_md.splits.as_deref(),
-        expected_md.splits.as_deref(),
-    ) {
+    if !splits_eq(request_md.splits.as_deref(), expected_md.splits.as_deref()) {
         return Err(VerificationError::credential_mismatch(
             "methodDetails.splits mismatch",
         ));
@@ -1620,9 +1608,7 @@ fn parse_method_details_for_compare(
 ) -> Result<MethodDetails, VerificationError> {
     match md {
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
-            VerificationError::credential_mismatch(format!(
-                "Invalid {label} methodDetails: {e}"
-            ))
+            VerificationError::credential_mismatch(format!("Invalid {label} methodDetails: {e}"))
         }),
         None => Ok(MethodDetails::default()),
     }
@@ -2299,10 +2285,7 @@ fn find_spl_transfer(
                         .and_then(|d| d.as_str())
                         .unwrap_or("");
                     let source = info.get("source").and_then(|s| s.as_str()).unwrap_or("");
-                    let authority = info
-                        .get("authority")
-                        .and_then(|a| a.as_str())
-                        .unwrap_or("");
+                    let authority = info.get("authority").and_then(|a| a.as_str()).unwrap_or("");
                     let mint = info.get("mint").and_then(|m| m.as_str()).unwrap_or("");
                     if mint == expected_mint && verify_ata_owner(dest, recipient, mint, program) {
                         if let Some(fee_payer) = fee_payer {
@@ -2317,11 +2300,7 @@ fn find_spl_transfer(
                                 Pubkey::from_str(program),
                             ) {
                                 let (fee_payer_ata, _) = Pubkey::find_program_address(
-                                    &[
-                                        fee_payer_pk.as_ref(),
-                                        program_pk.as_ref(),
-                                        mint_pk.as_ref(),
-                                    ],
+                                    &[fee_payer_pk.as_ref(), program_pk.as_ref(), mint_pk.as_ref()],
                                     &ata_program,
                                 );
                                 if source == fee_payer_ata.to_string() {
@@ -4120,7 +4099,12 @@ mod tests {
     fn new_secret_key_from_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
-        unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "env-secret-key-long-enough-for-hmac-binding-32b") };
+        unsafe {
+            std::env::set_var(
+                SECRET_KEY_ENV_VAR,
+                "env-secret-key-long-enough-for-hmac-binding-32b",
+            )
+        };
 
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
@@ -4148,7 +4132,10 @@ mod tests {
         })
         .err()
         .expect("should fail");
-        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+        assert!(
+            err.to_string().contains("Secret key is too short"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4162,7 +4149,10 @@ mod tests {
         })
         .err()
         .expect("should fail");
-        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+        assert!(
+            err.to_string().contains("Secret key is too short"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4196,7 +4186,10 @@ mod tests {
         }
 
         let err = result.err().expect("should fail");
-        assert!(err.to_string().contains("Secret key is too short"), "got: {err}");
+        assert!(
+            err.to_string().contains("Secret key is too short"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -4675,10 +4668,7 @@ mod tests {
             )
             .err()
             .expect("zero split amount should be rejected");
-        assert!(
-            format!("{err}").contains("greater than zero"),
-            "got: {err}"
-        );
+        assert!(format!("{err}").contains("greater than zero"), "got: {err}");
     }
 
     #[test]
@@ -5313,10 +5303,7 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
-        assert!(
-            err.message.contains("externalId mismatch"),
-            "got: {err:?}"
-        );
+        assert!(err.message.contains("externalId mismatch"), "got: {err:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5343,10 +5330,7 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
-        assert!(
-            err.message.contains("description mismatch"),
-            "got: {err:?}"
-        );
+        assert!(err.message.contains("description mismatch"), "got: {err:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -5519,8 +5503,7 @@ mod tests {
             .unwrap_err();
         let msg = format!("{}", err.message);
         assert!(
-            !msg.contains("recentBlockhash mismatch")
-                && !msg.contains("recent_blockhash mismatch"),
+            !msg.contains("recentBlockhash mismatch") && !msg.contains("recent_blockhash mismatch"),
             "comparison should not reject on blockhash, got: {err:?}"
         );
     }
@@ -6018,10 +6001,14 @@ mod tests {
                 }
             }
         })];
-        assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
-                .is_ok()
-        );
+        assert!(find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_ok());
     }
 
     #[test]
@@ -6038,10 +6025,14 @@ mod tests {
                 }
             }
         })];
-        assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
-                .is_err()
-        );
+        assert!(find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_err());
     }
 
     #[test]
@@ -6058,10 +6049,14 @@ mod tests {
                 }
             }
         })];
-        assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
-                .is_err()
-        );
+        assert!(find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_err());
     }
 
     #[test]
@@ -6084,10 +6079,14 @@ mod tests {
                 }
             }
         })];
-        assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
-                .is_err()
-        );
+        assert!(find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_err());
     }
 
     #[test]
@@ -6107,10 +6106,14 @@ mod tests {
                 }
             }
         })];
-        assert!(
-            find_sol_transfer(&instructions, "RecipientPubkey", 1_000_000, None, &mut matched)
-                .is_err()
-        );
+        assert!(find_sol_transfer(
+            &instructions,
+            "RecipientPubkey",
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_err());
     }
 
     #[test]

@@ -512,9 +512,7 @@ fn build_spl_instructions(
     // is a mint address (i.e. always on this SPL path). Defaulting to 6
     // silently produced wrong-decimals transfers for non-6-decimal tokens.
     let decimals = method_details.decimals.ok_or_else(|| {
-        Error::Other(
-            "methodDetails.decimals is required for SPL charges (spec §7.2)".into(),
-        )
+        Error::Other("methodDetails.decimals is required for SPL charges (spec §7.2)".into())
     })?;
 
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
@@ -1897,7 +1895,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         )
         .unwrap();
         // 1 primary transfer + 1 split transfer. No split ATA create.
@@ -1926,7 +1925,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         )
         .unwrap();
         // 1 primary transfer + 1 ATA create + 1 split transfer.
@@ -1953,7 +1953,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         )
         .unwrap();
 
@@ -1987,7 +1988,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         )
         .unwrap_err();
 
@@ -2251,7 +2253,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         );
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split recipient"));
@@ -2277,7 +2280,8 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None, false,
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            false,
         );
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid split amount"));

@@ -222,11 +222,7 @@ mod tests {
     #[test]
     fn test_challenge_to_html_mainnet_not_test_mode() {
         let challenge = test_challenge(None);
-        let html = challenge_to_html(
-            &challenge,
-            "https://api.mainnet-beta.solana.com",
-            "mainnet",
-        );
+        let html = challenge_to_html(&challenge, "https://api.mainnet-beta.solana.com", "mainnet");
         assert!(html.contains("\"network\":\"mainnet\""));
     }
 

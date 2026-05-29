@@ -88,9 +88,7 @@ pub fn parse_units(amount: &str, decimals: u8) -> Result<String, crate::error::E
             .parse()
             .map_err(|_| crate::error::Error::Other(format!("Invalid amount: {amount}")))?;
         let factor = 10u128.checked_pow(decimals).ok_or_else(|| {
-            crate::error::Error::Other(format!(
-                "10^{decimals} overflows u128 in parse_units"
-            ))
+            crate::error::Error::Other(format!("10^{decimals} overflows u128 in parse_units"))
         })?;
         let product = value.checked_mul(factor).ok_or_else(|| {
             crate::error::Error::Other(format!(
@@ -225,10 +223,7 @@ mod tests {
     #[test]
     fn parse_units_rejects_decimals_above_max() {
         let err = parse_units("1", MAX_DECIMALS + 1).unwrap_err();
-        assert!(
-            err.to_string().contains("exceeds maximum"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("exceeds maximum"), "got: {err}");
     }
 
     #[test]
@@ -246,10 +241,7 @@ mod tests {
         // Push value past the cliff: 10^39 / 10^18 = 10^21 → product = 10^39 (overflows).
         let huge = format!("1{}", "0".repeat(21));
         let err = parse_units(&huge, MAX_DECIMALS).unwrap_err();
-        assert!(
-            err.to_string().contains("overflows u128"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("overflows u128"), "got: {err}");
     }
 
     #[test]

@@ -43,7 +43,10 @@ pub enum Error {
     #[error("Splits consume the entire amount")]
     SplitsExceedAmount,
 
-    #[error("Splits exceed maximum of {} entries", crate::protocol::solana::MAX_SPLITS)]
+    #[error(
+        "Splits exceed maximum of {} entries",
+        crate::protocol::solana::MAX_SPLITS
+    )]
     TooManySplits,
 
     #[error("Invalid configuration: {0}")]
