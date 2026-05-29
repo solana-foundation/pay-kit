@@ -9,11 +9,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 /**
  * Result of an x402-aware GET, carrying the response and the header that was sent.
@@ -62,21 +64,42 @@ class X402HttpClient(
             return X402GetResult(response = initial, paymentSignatureSent = null)
         }
 
-        // Collect all response headers (lowercased) and body before closing.
+        // Buffer the 402 body and headers before closing so we can both parse
+        // the challenge AND, if we cannot satisfy it, hand the original 402
+        // back to the caller with a re-readable body (mirrors go client.go +
+        // python transport.py, which buffer the body and `return resp`).
         val responseHeaders = mutableMapOf<String, String>()
-        val responseBody: String
+        val contentType: MediaType?
+        val bodyBytes: ByteArray
         initial.use { resp ->
             for (name in resp.headers.names()) {
                 // Join multi-values with ", " per RFC 7230.
                 responseHeaders[name.lowercase()] = resp.headers.values(name).joinToString(", ")
             }
-            responseBody = resp.body?.string() ?: ""
+            contentType = resp.body?.contentType()
+            bodyBytes = resp.body?.bytes() ?: ByteArray(0)
         }
+        val responseBody = bodyBytes.decodeToString()
+
+        // Rebuild the 402 response with a fresh, re-readable body. Used as the
+        // fall-back return value when no challenge matches or the build fails.
+        fun buffered402(): Response = initial.newBuilder()
+            .body(bodyBytes.toResponseBody(contentType))
+            .build()
 
         val requirement = parseX402Challenge(responseHeaders, responseBody, selection)
-            ?: throw IllegalStateException("x402: server did not return a supported SVM x402 challenge")
+            // No supported SVM x402 challenge: hand back the original 402
+            // rather than throwing (go: `return resp, nil`).
+            ?: return X402GetResult(response = buffered402(), paymentSignatureSent = null)
 
-        val paymentHeader = buildPaymentHeader(signer, requirement, rpcBlockhashProvider)
+        val paymentHeader = try {
+            buildPaymentHeader(signer, requirement, rpcBlockhashProvider)
+        } catch (_: Exception) {
+            // Build/sign failure (e.g. invalid offer fields): the offer is not
+            // one we can satisfy, so return the original 402 rather than
+            // throwing — same contract as the no-challenge path.
+            return X402GetResult(response = buffered402(), paymentSignatureSent = null)
+        }
         val finalResponse = execute(
             "GET",
             url,

@@ -193,18 +193,26 @@ class X402HttpClientTest {
     // ── 402 without a valid challenge ─────────────────────────────────────────
 
     @Test
-    fun throwsWhenChallengeIsMissing() {
-        // 402 with no payment-required header and no JSON body.
-        server.enqueue(MockResponse().setResponseCode(402))
+    fun returnsOriginal402WhenChallengeIsMissing() {
+        // 402 with no payment-required header and no JSON body: the client
+        // cannot satisfy it, so it returns the original 402 (go/python
+        // contract) rather than throwing. The body must stay readable.
+        server.enqueue(MockResponse().setResponseCode(402).setBody("pay up"))
         val client = defaultClient()
-        assertFailsWith<IllegalStateException> {
-            client.get(server.url("/no-challenge").toString()).response.close()
+        val result = client.get(server.url("/no-challenge").toString())
+        try {
+            assertEquals(402, result.response.code, "original 402 must be handed back")
+            assertNull(result.paymentSignatureSent, "no payment was sent")
+            assertEquals("pay up", result.response.body?.string(), "body must be re-readable")
+        } finally {
+            result.response.close()
         }
+        assertEquals(1, server.requestCount, "must not retry when no challenge matched")
     }
 
     @Test
-    fun throwsWhenNoChallengeMatchesSelection() {
-        // Server offers mainnet; client selection targets devnet only.
+    fun returnsOriginal402WhenNoChallengeMatchesSelection() {
+        // Server offers mainnet; client selection targets devnet-only USDT.
         val mainnetBody = """{"accepts":[{
             "scheme":"exact",
             "network":"${Network.SOLANA_MAINNET}",
@@ -218,18 +226,25 @@ class X402HttpClientTest {
                 .addHeader(
                     "payment-required",
                     Base64.getEncoder().encodeToString(mainnetBody.toByteArray()),
-                ),
+                )
+                .setBody("nope"),
         )
-        // Client selection: devnet-only currencies list → no match → throws.
+        // Client selection: devnet-only currencies list → no match → return 402.
         val client = X402HttpClient(
             signer = signer,
             rpcBlockhashProvider = fixedBlockhash,
             selection = ChallengeSelection(network = "devnet", currencies = listOf("USDT")),
             okHttp = OkHttpClient(),
         )
-        assertFailsWith<IllegalStateException> {
-            client.get(server.url("/mismatch").toString()).response.close()
+        val result = client.get(server.url("/mismatch").toString())
+        try {
+            assertEquals(402, result.response.code)
+            assertNull(result.paymentSignatureSent)
+            assertEquals("nope", result.response.body?.string())
+        } finally {
+            result.response.close()
         }
+        assertEquals(1, server.requestCount)
     }
 
     // ── paymentSignatureSent field ─────────────────────────────────────────────
