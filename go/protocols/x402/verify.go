@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	solana "github.com/gagliardetto/solana-go"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 )
 
 // Program IDs the structural verifier recognises. Mirror the Rust
@@ -137,7 +137,7 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 	if !mint.Equals(req.mint) {
 		return fmt.Errorf("x402: mint mismatch: got %s want %s", mint, req.mint)
 	}
-	expectedDest, err := utils.FindAssociatedTokenAddressWithProgram(req.payTo, req.mint, req.tokenProgram)
+	expectedDest, err := solanatx.FindAssociatedTokenAddressWithProgram(req.payTo, req.mint, req.tokenProgram)
 	if err != nil {
 		return fmt.Errorf("x402: derive recipient ATA: %w", err)
 	}

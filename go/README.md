@@ -207,6 +207,7 @@ for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 go/
 ├── paykit/                       umbrella API: x402 + MPP behind one Config and middleware
 ├── paycore/                      shared Solana protocol layer (mints, token programs, ResolveMint)
+│   └── solanatx/                 shared tx builders, ATA derivation, RPC helpers (used by mpp + x402)
 ├── protocols/
 │   ├── mpp/                      MPP adapter that registers the Solana charge method
 │   │   ├── core/                 MPP type facade, replay store, expiry helpers, errors
@@ -218,7 +219,6 @@ go/
 │   └── x402/                     x402 "exact" adapter and structural transaction verifier
 ├── signer/                       Ed25519 signer factories behind a KMS-ready interface
 ├── kms/                          reserved for KMS-backed signers
-├── internal/utils/               RPC client, transaction builders, ATA helpers
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod
 ```

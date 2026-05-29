@@ -14,8 +14,8 @@ import (
 	token2022 "github.com/gagliardetto/solana-go/programs/token-2022"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
@@ -53,9 +53,9 @@ type Config struct {
 	SecretKey      string
 	Realm          string
 	HTML           bool
-	FeePayerSigner utils.Signer
+	FeePayerSigner solanatx.Signer
 	Store          core.Store
-	RPC            utils.RPCClient
+	RPC            solanatx.RPCClient
 }
 
 // ChargeOptions customize challenge generation.
@@ -70,7 +70,7 @@ type ChargeOptions struct {
 
 // Mpp is the server-side Solana charge handler.
 type Mpp struct {
-	rpc            utils.RPCClient
+	rpc            solanatx.RPCClient
 	secretKey      string
 	realm          string
 	recipient      solana.PublicKey
@@ -79,7 +79,7 @@ type Mpp struct {
 	network        string
 	rpcURL         string
 	html           bool
-	feePayerSigner utils.Signer
+	feePayerSigner solanatx.Signer
 	store          core.Store
 }
 
@@ -385,7 +385,7 @@ func (m *Mpp) verifyTransaction(
 	if err := validateSplitsCount(details.Splits); err != nil {
 		return core.Receipt{}, err
 	}
-	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
+	tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		return core.Receipt{}, err
 	}
@@ -414,7 +414,7 @@ func (m *Mpp) verifyTransaction(
 		return core.Receipt{}, err
 	}
 	if m.feePayerSigner != nil {
-		if err := utils.SignTransaction(tx, m.feePayerSigner); err != nil {
+		if err := solanatx.SignTransaction(tx, m.feePayerSigner); err != nil {
 			return core.Receipt{}, err
 		}
 	}
@@ -437,14 +437,14 @@ func (m *Mpp) verifyTransaction(
 			_ = m.store.Delete(context.WithoutCancel(ctx), consumedKey)
 		}
 	}()
-	if err := utils.SimulateTransaction(ctx, m.rpc, tx); err != nil {
+	if err := solanatx.SimulateTransaction(ctx, m.rpc, tx); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeSimulationFailed, "simulate transaction", err)
 	}
-	signature, err := utils.SendTransaction(ctx, m.rpc, tx)
+	signature, err := solanatx.SendTransaction(ctx, m.rpc, tx)
 	if err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
 	}
-	if err := utils.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
+	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
@@ -484,7 +484,7 @@ func (m *Mpp) verifySignature(
 }
 
 func (m *Mpp) verifyOnChain(ctx context.Context, signature solana.Signature, request intents.ChargeRequest, details paycore.MethodDetails) error {
-	tx, meta, err := utils.FetchTransaction(ctx, m.rpc, signature)
+	tx, meta, err := solanatx.FetchTransaction(ctx, m.rpc, signature)
 	if err != nil {
 		return core.WrapError(core.ErrCodeTransactionNotFound, "transaction not found or not yet confirmed", err)
 	}
@@ -559,7 +559,7 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 	}
 	tokenExpected := make([]tokenExpectation, 0, len(expected))
 	for _, want := range expected {
-		ata, err := utils.FindAssociatedTokenAddressWithProgram(want.recipient, mint, expectedProgram)
+		ata, err := solanatx.FindAssociatedTokenAddressWithProgram(want.recipient, mint, expectedProgram)
 		if err != nil {
 			return err
 		}
@@ -697,7 +697,7 @@ type expectedTransfer struct {
 }
 
 func buildExpectedTransfers(amount uint64, recipient solana.PublicKey, details paycore.MethodDetails) ([]expectedTransfer, error) {
-	primaryAmount, err := utils.SplitAmounts(amount, details.Splits)
+	primaryAmount, err := solanatx.SplitAmounts(amount, details.Splits)
 	if err != nil {
 		return nil, err
 	}

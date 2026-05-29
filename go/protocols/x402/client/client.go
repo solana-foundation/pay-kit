@@ -23,8 +23,8 @@ import (
 	"strings"
 
 	solana "github.com/gagliardetto/solana-go"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -180,8 +180,8 @@ func cheapest(entries []x402.AcceptsEntry) *x402.AcceptsEntry {
 // local signer pays fees.
 func BuildPaymentHeader(
 	ctx context.Context,
-	signer utils.Signer,
-	rpc utils.RPCClient,
+	signer solanatx.Signer,
+	rpc solanatx.RPCClient,
 	entry *x402.AcceptsEntry,
 ) (string, error) {
 	if entry == nil {
@@ -207,8 +207,8 @@ func BuildPaymentHeader(
 
 func buildTransaction(
 	ctx context.Context,
-	signer utils.Signer,
-	rpc utils.RPCClient,
+	signer solanatx.Signer,
+	rpc solanatx.RPCClient,
 	entry *x402.AcceptsEntry,
 ) (string, error) {
 	amount, err := strconv.ParseUint(entry.Amount, 10, 64)
@@ -221,11 +221,11 @@ func buildTransaction(
 	}
 
 	// Compute budget first; the verifier validates these by index.
-	limitIx, err := utils.BuildComputeUnitLimit(defaultComputeUnitLimit)
+	limitIx, err := solanatx.BuildComputeUnitLimit(defaultComputeUnitLimit)
 	if err != nil {
 		return "", err
 	}
-	priceIx, err := utils.BuildComputeUnitPrice(defaultComputeUnitPrice)
+	priceIx, err := solanatx.BuildComputeUnitPrice(defaultComputeUnitPrice)
 	if err != nil {
 		return "", err
 	}
@@ -234,7 +234,7 @@ func buildTransaction(
 	// Asset == "" is a native SOL offer (Rust resolve_mint -> None);
 	// otherwise it is an SPL mint and we transfer with transferChecked.
 	if entry.Asset == "" {
-		transfer, err := utils.BuildSOLTransfer(signer.PublicKey(), recipient, amount)
+		transfer, err := solanatx.BuildSOLTransfer(signer.PublicKey(), recipient, amount)
 		if err != nil {
 			return "", err
 		}
@@ -248,14 +248,14 @@ func buildTransaction(
 	}
 
 	if entry.Extra.Memo != "" {
-		memoIx, err := utils.BuildMemoInstruction(entry.Extra.Memo)
+		memoIx, err := solanatx.BuildMemoInstruction(entry.Extra.Memo)
 		if err != nil {
 			return "", err
 		}
 		instructions = append(instructions, memoIx)
 	}
 
-	blockhash, err := utils.ResolveRecentBlockhash(ctx, rpc, entry.Extra.RecentBlockhash)
+	blockhash, err := solanatx.ResolveRecentBlockhash(ctx, rpc, entry.Extra.RecentBlockhash)
 	if err != nil {
 		return "", fmt.Errorf("x402 client: recent blockhash: %w", err)
 	}
@@ -274,14 +274,14 @@ func buildTransaction(
 	if err != nil {
 		return "", fmt.Errorf("x402 client: build transaction: %w", err)
 	}
-	if err := utils.SignTransaction(tx, signer); err != nil {
+	if err := solanatx.SignTransaction(tx, signer); err != nil {
 		return "", fmt.Errorf("x402 client: sign: %w", err)
 	}
-	return utils.EncodeTransactionBase64(tx)
+	return solanatx.EncodeTransactionBase64(tx)
 }
 
 func buildSPLTransfer(
-	signer utils.Signer,
+	signer solanatx.Signer,
 	recipient solana.PublicKey,
 	amount uint64,
 	entry *x402.AcceptsEntry,
@@ -294,15 +294,15 @@ func buildSPLTransfer(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: token program %q: %w", entry.Extra.TokenProgram, err)
 	}
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: source ATA: %w", err)
 	}
-	destATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
+	destATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: recipient ATA: %w", err)
 	}
-	return utils.BuildTransferChecked(amount, uint8(entry.Extra.Decimals), sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
+	return solanatx.BuildTransferChecked(amount, uint8(entry.Extra.Decimals), sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
 }
 
 // PaymentTransport wraps an http.RoundTripper and transparently settles an
@@ -310,8 +310,8 @@ func buildSPLTransfer(
 // retrying the request once with the `Payment-Signature` header.
 type PaymentTransport struct {
 	Base      http.RoundTripper
-	Signer    utils.Signer
-	RPC       utils.RPCClient
+	Signer    solanatx.Signer
+	RPC       solanatx.RPCClient
 	Selection ChallengeSelection
 }
 
@@ -366,6 +366,6 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // NewClient returns an *http.Client whose transport settles x402 challenges
 // with the given signer and RPC client, picking the cheapest Solana offer.
-func NewClient(signer utils.Signer, rpc utils.RPCClient) *http.Client {
+func NewClient(signer solanatx.Signer, rpc solanatx.RPCClient) *http.Client {
 	return &http.Client{Transport: &PaymentTransport{Signer: signer, RPC: rpc}}
 }

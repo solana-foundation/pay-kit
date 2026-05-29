@@ -12,8 +12,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 )
 
 // secretEnvVar is the orchestrator-supplied env var the MPP HMAC
@@ -220,7 +220,7 @@ func deriveATA(owner, mint solana.PublicKey, tokenProgram string) (solana.Public
 	if err != nil {
 		return solana.PublicKey{}, err
 	}
-	return utils.FindAssociatedTokenAddressWithProgram(owner, mint, tp)
+	return solanatx.FindAssociatedTokenAddressWithProgram(owner, mint, tp)
 }
 
 // resolveMPPSecret implements the chain from caveat #4:

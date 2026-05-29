@@ -7,8 +7,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
@@ -32,8 +32,8 @@ type BuildOptions struct {
 // BuildChargeTransaction creates a payment credential payload from challenge fields.
 func BuildChargeTransaction(
 	ctx context.Context,
-	signer utils.Signer,
-	rpcClient utils.RPCClient,
+	signer solanatx.Signer,
+	rpcClient solanatx.RPCClient,
 	amount string,
 	currency string,
 	recipient string,
@@ -44,7 +44,7 @@ func BuildChargeTransaction(
 	if err != nil {
 		return paycore.CredentialPayload{}, err
 	}
-	primaryAmount, err := utils.SplitAmounts(total, methodDetails.Splits)
+	primaryAmount, err := solanatx.SplitAmounts(total, methodDetails.Splits)
 	if err != nil {
 		return paycore.CredentialPayload{}, err
 	}
@@ -57,10 +57,10 @@ func BuildChargeTransaction(
 	}
 
 	instructions := make([]solana.Instruction, 0, 2+2+len(methodDetails.Splits)*3)
-	if ix, err := utils.BuildComputeUnitPrice(options.ComputeUnitPrice); err == nil {
+	if ix, err := solanatx.BuildComputeUnitPrice(options.ComputeUnitPrice); err == nil {
 		instructions = append(instructions, ix)
 	}
-	if ix, err := utils.BuildComputeUnitLimit(options.ComputeUnitLimit); err == nil {
+	if ix, err := solanatx.BuildComputeUnitLimit(options.ComputeUnitLimit); err == nil {
 		instructions = append(instructions, ix)
 	}
 
@@ -74,13 +74,13 @@ func BuildChargeTransaction(
 	}
 
 	if isNativeSOL(currency) {
-		ix, err := utils.BuildSOLTransfer(signer.PublicKey(), recipientKey, primaryAmount)
+		ix, err := solanatx.BuildSOLTransfer(signer.PublicKey(), recipientKey, primaryAmount)
 		if err != nil {
 			return paycore.CredentialPayload{}, err
 		}
 		instructions = append(instructions, ix)
 		if options.ExternalID != "" {
-			memoIx, err := utils.BuildMemoInstruction(options.ExternalID)
+			memoIx, err := solanatx.BuildMemoInstruction(options.ExternalID)
 			if err != nil {
 				return paycore.CredentialPayload{}, err
 			}
@@ -95,13 +95,13 @@ func BuildChargeTransaction(
 			if err != nil {
 				return paycore.CredentialPayload{}, err
 			}
-			ix, err := utils.BuildSOLTransfer(signer.PublicKey(), splitKey, splitAmount)
+			ix, err := solanatx.BuildSOLTransfer(signer.PublicKey(), splitKey, splitAmount)
 			if err != nil {
 				return paycore.CredentialPayload{}, err
 			}
 			instructions = append(instructions, ix)
 			if split.Memo != "" {
-				memoIx, err := utils.BuildMemoInstruction(split.Memo)
+				memoIx, err := solanatx.BuildMemoInstruction(split.Memo)
 				if err != nil {
 					return paycore.CredentialPayload{}, err
 				}
@@ -114,7 +114,7 @@ func BuildChargeTransaction(
 		if err != nil {
 			return paycore.CredentialPayload{}, err
 		}
-		tokenProgram, err := utils.ResolveTokenProgram(ctx, rpcClient, mint, methodDetails.TokenProgram)
+		tokenProgram, err := solanatx.ResolveTokenProgram(ctx, rpcClient, mint, methodDetails.TokenProgram)
 		if err != nil {
 			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "resolve token program", err)
 		}
@@ -122,7 +122,7 @@ func BuildChargeTransaction(
 		if methodDetails.Decimals != nil {
 			decimals = *methodDetails.Decimals
 		}
-		sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
+		sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 		if err != nil {
 			return paycore.CredentialPayload{}, err
 		}
@@ -134,18 +134,18 @@ func BuildChargeTransaction(
 			}
 		}
 		addTransfer := func(owner solana.PublicKey, amount uint64, createTokenAccount bool) error {
-			destATA, err := utils.FindAssociatedTokenAddressWithProgram(owner, mint, tokenProgram)
+			destATA, err := solanatx.FindAssociatedTokenAddressWithProgram(owner, mint, tokenProgram)
 			if err != nil {
 				return err
 			}
 			if createTokenAccount {
-				createATA, err := utils.BuildCreateAssociatedTokenAccount(payer, owner, mint, tokenProgram)
+				createATA, err := solanatx.BuildCreateAssociatedTokenAccount(payer, owner, mint, tokenProgram)
 				if err != nil {
 					return err
 				}
 				instructions = append(instructions, createATA)
 			}
-			transfer, err := utils.BuildTransferChecked(amount, decimals, sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
+			transfer, err := solanatx.BuildTransferChecked(amount, decimals, sourceATA, mint, destATA, signer.PublicKey(), tokenProgram)
 			if err != nil {
 				return err
 			}
@@ -156,7 +156,7 @@ func BuildChargeTransaction(
 			return paycore.CredentialPayload{}, err
 		}
 		if options.ExternalID != "" {
-			memoIx, err := utils.BuildMemoInstruction(options.ExternalID)
+			memoIx, err := solanatx.BuildMemoInstruction(options.ExternalID)
 			if err != nil {
 				return paycore.CredentialPayload{}, err
 			}
@@ -176,7 +176,7 @@ func BuildChargeTransaction(
 				return paycore.CredentialPayload{}, err
 			}
 			if split.Memo != "" {
-				memoIx, err := utils.BuildMemoInstruction(split.Memo)
+				memoIx, err := solanatx.BuildMemoInstruction(split.Memo)
 				if err != nil {
 					return paycore.CredentialPayload{}, err
 				}
@@ -185,7 +185,7 @@ func BuildChargeTransaction(
 		}
 	}
 
-	blockhash, err := utils.ResolveRecentBlockhash(ctx, rpcClient, methodDetails.RecentBlockhash)
+	blockhash, err := solanatx.ResolveRecentBlockhash(ctx, rpcClient, methodDetails.RecentBlockhash)
 	if err != nil {
 		return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "fetch recent blockhash", err)
 	}
@@ -202,22 +202,22 @@ func BuildChargeTransaction(
 	if err != nil {
 		return paycore.CredentialPayload{}, err
 	}
-	if err := utils.SignTransaction(tx, signer); err != nil {
+	if err := solanatx.SignTransaction(tx, signer); err != nil {
 		return paycore.CredentialPayload{}, err
 	}
 
 	if options.Broadcast {
-		signature, err := utils.SendTransaction(ctx, rpcClient, tx)
+		signature, err := solanatx.SendTransaction(ctx, rpcClient, tx)
 		if err != nil {
 			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
 		}
-		if err := utils.WaitForConfirmation(ctx, rpcClient, signature); err != nil {
+		if err := solanatx.WaitForConfirmation(ctx, rpcClient, signature); err != nil {
 			return paycore.CredentialPayload{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 		}
 		return paycore.CredentialPayload{Type: "signature", Signature: signature.String()}, nil
 	}
 
-	encoded, err := utils.EncodeTransactionBase64(tx)
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
 	if err != nil {
 		return paycore.CredentialPayload{}, err
 	}
@@ -227,8 +227,8 @@ func BuildChargeTransaction(
 // BuildCredentialHeader creates an Authorization header from a challenge.
 func BuildCredentialHeader(
 	ctx context.Context,
-	signer utils.Signer,
-	rpcClient utils.RPCClient,
+	signer solanatx.Signer,
+	rpcClient solanatx.RPCClient,
 	challenge core.PaymentChallenge,
 ) (string, error) {
 	return BuildCredentialHeaderWithOptions(ctx, signer, rpcClient, challenge, BuildOptions{})
@@ -237,8 +237,8 @@ func BuildCredentialHeader(
 // BuildCredentialHeaderWithOptions creates an Authorization header from a challenge.
 func BuildCredentialHeaderWithOptions(
 	ctx context.Context,
-	signer utils.Signer,
-	rpcClient utils.RPCClient,
+	signer solanatx.Signer,
+	rpcClient solanatx.RPCClient,
 	challenge core.PaymentChallenge,
 	options BuildOptions,
 ) (string, error) {

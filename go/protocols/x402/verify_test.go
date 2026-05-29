@@ -10,8 +10,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
@@ -39,7 +39,7 @@ func newFixture(t *testing.T) fixture {
 	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
 	computeBudget := solana.MustPublicKeyFromBase58(computeBudgetProgram)
 
-	dest, err := utils.FindAssociatedTokenAddressWithProgram(payTo, mint, tokenProgram)
+	dest, err := solanatx.FindAssociatedTokenAddressWithProgram(payTo, mint, tokenProgram)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
 	authority := solana.NewWallet().PublicKey()
 	source := solana.NewWallet().PublicKey()
-	dest, err := utils.FindAssociatedTokenAddressWithProgram(opPub, mint, tokenProgram)
+	dest, err := solanatx.FindAssociatedTokenAddressWithProgram(opPub, mint, tokenProgram)
 	if err != nil {
 		t.Fatal(err)
 	}

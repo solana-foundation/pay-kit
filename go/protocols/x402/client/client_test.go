@@ -12,8 +12,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -261,7 +261,7 @@ func decodeCredentialTx(t *testing.T, header string) *solana.Transaction {
 	if !strings.EqualFold(cred.Scheme, "exact") {
 		t.Errorf("scheme: got %q", cred.Scheme)
 	}
-	tx, err := utils.DecodeTransactionBase64(cred.Payload.Transaction)
+	tx, err := solanatx.DecodeTransactionBase64(cred.Payload.Transaction)
 	if err != nil {
 		t.Fatal(err)
 	}

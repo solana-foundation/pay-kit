@@ -12,15 +12,15 @@ import (
 	"sync"
 
 	solana "github.com/gagliardetto/solana-go"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
 
 // signerBridge adapts a paykit.Signer (Sign(ctx, []byte) ([]byte,
-// error)) to the utils.Signer the legacy server.Mpp expects
+// error)) to the solanatx.Signer the legacy server.Mpp expects
 // (PublicKey() + Sign([]byte) (solana.Signature, error)). It signs via
 // paykit.Signer.Sign, so KMS / HSM signers that never export their key
 // work without leaking secret material — no SecretKey() escape hatch.
@@ -199,7 +199,7 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	if v, ok := a.servers.Load(key); ok {
 		return v.(*server.Mpp), nil
 	}
-	var feePayer utils.Signer
+	var feePayer solanatx.Signer
 	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil {
 		feePayer = &signerBridge{signer: a.cfg.Operator.Signer}
 	}

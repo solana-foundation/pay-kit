@@ -6,7 +6,7 @@
 // instructions, decode transactions, split amounts, and run the
 // simulate-broadcast-confirm sequence. Internal-only; the public SDK
 // surface lives in the top-level mpp/server/client packages.
-package utils
+package solanatx
 
 import (
 	"context"

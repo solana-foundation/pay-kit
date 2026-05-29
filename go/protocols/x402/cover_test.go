@@ -7,7 +7,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 )
 
@@ -17,7 +17,7 @@ func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
 	// hold: the operator has no empty signature slot, so cosign ships the
 	// original wire bytes unchanged.
 	payer := testutil.NewPrivateKey().PublicKey()
-	memo, err := utils.BuildMemoInstruction("hi")
+	memo, err := solanatx.BuildMemoInstruction("hi")
 	if err != nil {
 		t.Fatal(err)
 	}

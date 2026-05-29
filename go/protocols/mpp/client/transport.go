@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
@@ -13,8 +13,8 @@ import (
 // HTTP 402 challenges by building a payment credential and retrying.
 type PaymentTransport struct {
 	Base    http.RoundTripper
-	Signer  utils.Signer
-	RPC     utils.RPCClient
+	Signer  solanatx.Signer
+	RPC     solanatx.RPCClient
 	Options *BuildOptions
 }
 
@@ -107,7 +107,7 @@ func isSupportedChargeChallenge(challenge core.PaymentChallenge) bool {
 }
 
 // NewClient creates an *http.Client with automatic 402 payment handling.
-func NewClient(signer utils.Signer, rpc utils.RPCClient, opts ...func(*PaymentTransport)) *http.Client {
+func NewClient(signer solanatx.Signer, rpc solanatx.RPCClient, opts ...func(*PaymentTransport)) *http.Client {
 	transport := &PaymentTransport{
 		Signer: signer,
 		RPC:    rpc,

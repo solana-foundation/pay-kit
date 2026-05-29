@@ -18,8 +18,8 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
-	"github.com/solana-foundation/pay-kit/go/internal/utils"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -265,11 +265,11 @@ func TestVerifyTransfersAgainstChallengeDuplicateSOLSplitsRequireDistinctInstruc
 	recipient := testutil.NewPrivateKey().PublicKey()
 	splitRecipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	splitIx, err := utils.BuildSOLTransfer(payer.PublicKey(), splitRecipient, 100)
+	splitIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), splitRecipient, 100)
 	if err != nil {
 		t.Fatalf("build split transfer failed: %v", err)
 	}
@@ -290,11 +290,11 @@ func TestVerifyTransfersAgainstChallengeSameRecipientSOLSplitsMatchByAmount(t *t
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	splitIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 200)
+	splitIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 200)
 	if err != nil {
 		t.Fatalf("build split transfer failed: %v", err)
 	}
@@ -311,11 +311,11 @@ func TestVerifyTransfersAgainstChallengeAcceptsSOLExternalIDMemo(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	memoIx, err := utils.BuildMemoInstruction("order-123")
+	memoIx, err := solanatx.BuildMemoInstruction("order-123")
 	if err != nil {
 		t.Fatalf("build memo failed: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestVerifyTransfersAgainstChallengeRejectsMissingSOLExternalIDMemo(t *testi
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
@@ -345,11 +345,11 @@ func TestVerifyTransfersAgainstChallengeRejectsUnexpectedSOLMemo(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 1000)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	memoIx, err := utils.BuildMemoInstruction("unexpected")
+	memoIx, err := solanatx.BuildMemoInstruction("unexpected")
 	if err != nil {
 		t.Fatalf("build memo failed: %v", err)
 	}
@@ -365,15 +365,15 @@ func TestVerifyTransfersAgainstChallengeAcceptsSOLSplitMemo(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey()
 	splitRecipient := testutil.NewPrivateKey().PublicKey()
 
-	primaryIx, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
+	primaryIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 800)
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	splitIx, err := utils.BuildSOLTransfer(payer.PublicKey(), splitRecipient, 200)
+	splitIx, err := solanatx.BuildSOLTransfer(payer.PublicKey(), splitRecipient, 200)
 	if err != nil {
 		t.Fatalf("build split transfer failed: %v", err)
 	}
-	memoIx, err := utils.BuildMemoInstruction("platform fee")
+	memoIx, err := solanatx.BuildMemoInstruction("platform fee")
 	if err != nil {
 		t.Fatalf("build memo failed: %v", err)
 	}
@@ -391,11 +391,11 @@ func TestVerifyTransfersAgainstChallengeSameRecipientSPLSplitsMatchByAmount(t *t
 	recipient := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
@@ -438,11 +438,11 @@ func TestVerifyTransfersAgainstChallengeAcceptsSPLExternalIDMemo(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestVerifyTransfersAgainstChallengeAcceptsSPLExternalIDMemo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	memoIx, err := utils.BuildMemoInstruction("order-123")
+	memoIx, err := solanatx.BuildMemoInstruction("order-123")
 	if err != nil {
 		t.Fatalf("build memo failed: %v", err)
 	}
@@ -476,11 +476,11 @@ func TestVerifyTransfersAgainstChallengeRejectsWrongSPLMint(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	wrongMint := testutil.NewPrivateKey().PublicKey()
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, solana.TokenProgramID)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, solana.TokenProgramID)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
@@ -1009,7 +1009,7 @@ func TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast(t *testing.T) {
 	if err := credential.PayloadAs(&payload); err != nil {
 		t.Fatalf("decode credential payload: %v", err)
 	}
-	tx, err := utils.DecodeTransactionBase64(payload.Transaction)
+	tx, err := solanatx.DecodeTransactionBase64(payload.Transaction)
 	if err != nil {
 		t.Fatalf("decode transaction: %v", err)
 	}
@@ -1042,7 +1042,7 @@ func TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast(t *testing.T) {
 	if !tampered {
 		t.Fatal("expected at least one SOL transfer to tamper")
 	}
-	rebuiltEncoded, err := utils.EncodeTransactionBase64(tx)
+	rebuiltEncoded, err := solanatx.EncodeTransactionBase64(tx)
 	if err != nil {
 		t.Fatalf("re-encode transaction: %v", err)
 	}
@@ -1090,15 +1090,15 @@ func TestVerifyTransfersAgainstChallengeRejectsMissingSPLSplitMemo(t *testing.T)
 	splitRecipient := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
-	splitATA, err := utils.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, solana.TokenProgramID)
+	splitATA, err := solanatx.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find split ata failed: %v", err)
 	}
@@ -1125,11 +1125,11 @@ func TestVerifyTransfersAgainstChallengeRejectsUnexpectedSPLMemo(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey()
 	mint := testutil.NewPrivateKey().PublicKey()
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
@@ -1138,7 +1138,7 @@ func TestVerifyTransfersAgainstChallengeRejectsUnexpectedSPLMemo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build primary transfer failed: %v", err)
 	}
-	memoIx, err := utils.BuildMemoInstruction("unexpected")
+	memoIx, err := solanatx.BuildMemoInstruction("unexpected")
 	if err != nil {
 		t.Fatalf("build memo failed: %v", err)
 	}
@@ -1155,11 +1155,11 @@ func TestVerifyTransfersAgainstChallengeAcceptsToken2022Transfer(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	tokenProgram := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 
-	sourceATA, err := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, tokenProgram)
+	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, tokenProgram)
 	if err != nil {
 		t.Fatalf("find source ata failed: %v", err)
 	}
-	recipientATA, err := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
+	recipientATA, err := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, tokenProgram)
 	if err != nil {
 		t.Fatalf("find recipient ata failed: %v", err)
 	}
@@ -1452,7 +1452,7 @@ func (r *rpcSimErr) SimulateTransactionWithOpts(_ context.Context, _ *solana.Tra
 
 func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient solana.PublicKey, lamports uint64, blockhash solana.Hash) string {
 	t.Helper()
-	ix, err := utils.BuildSOLTransfer(payer.PublicKey(), recipient, lamports)
+	ix, err := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, lamports)
 	if err != nil {
 		t.Fatalf("ix: %v", err)
 	}
@@ -1460,10 +1460,10 @@ func buildSOLPullTransaction(t *testing.T, payer solana.PrivateKey, recipient so
 	if err != nil {
 		t.Fatalf("tx: %v", err)
 	}
-	if err := utils.SignTransaction(tx, payer); err != nil {
+	if err := solanatx.SignTransaction(tx, payer); err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	encoded, err := utils.EncodeTransactionBase64(tx)
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -1650,11 +1650,11 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 		t.Fatalf("charge: %v", err)
 	}
 	payer := testutil.NewPrivateKey()
-	ix, _ := utils.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
+	ix, _ := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient.PublicKey(), 1_000_000)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, rpcClient.Blockhash, solana.TransactionPayer(payer.PublicKey()))
 	// Intentionally do NOT sign — zero signatures slot remains, primary is zero.
 	tx.Signatures = []solana.Signature{{}}
-	encoded, _ := utils.EncodeTransactionBase64(tx)
+	encoded, _ := solanatx.EncodeTransactionBase64(tx)
 	credential, err := core.NewPaymentCredential(challenge.ToEcho(), map[string]string{
 		"type":        "transaction",
 		"transaction": encoded,
@@ -1710,7 +1710,7 @@ func TestVerifyTransactionWrongNetworkBlockhash(t *testing.T) {
 var _ = time.Now
 var _ = httptest.NewRecorder
 var _ http.Handler = (http.HandlerFunc)(nil)
-var _ = utils.SplitAmounts
+var _ = solanatx.SplitAmounts
 var _ = paycore.MemoProgram
 
 // --- merged from server_more_branch_test.go ---
@@ -1764,8 +1764,8 @@ func TestVerifyTransfersToken2022Path(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	t2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 
-	sourceATA, _ := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, t2022)
-	recipientATA, _ := utils.FindAssociatedTokenAddressWithProgram(recipient, mint, t2022)
+	sourceATA, _ := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), mint, t2022)
+	recipientATA, _ := solanatx.FindAssociatedTokenAddressWithProgram(recipient, mint, t2022)
 
 	primaryIx, err := token2022.NewTransferCheckedInstruction(
 		1000, 6, sourceATA, mint, recipientATA, payer.PublicKey(), nil,
@@ -1789,8 +1789,8 @@ func TestVerifyTransfersToken2022WrongMint(t *testing.T) {
 	wrongMint := testutil.NewPrivateKey().PublicKey()
 	t2022 := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
 
-	sourceATA, _ := utils.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, t2022)
-	recipientATA, _ := utils.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, t2022)
+	sourceATA, _ := solanatx.FindAssociatedTokenAddressWithProgram(payer.PublicKey(), wrongMint, t2022)
+	recipientATA, _ := solanatx.FindAssociatedTokenAddressWithProgram(recipient, wrongMint, t2022)
 
 	primaryIx, err := token2022.NewTransferCheckedInstruction(
 		1000, 6, sourceATA, wrongMint, recipientATA, payer.PublicKey(), nil,
@@ -1836,7 +1836,7 @@ func TestBuildExpectedTransfersSplitsExceedTotal(t *testing.T) {
 func TestVerifyMemoInstructionsTooLong(t *testing.T) {
 	payer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
-	ix, _ := utils.BuildSOLTransfer(payer.PublicKey(), recipient, 1)
+	ix, _ := solanatx.BuildSOLTransfer(payer.PublicKey(), recipient, 1)
 	tx := newTestTransaction(t, payer, ix)
 	matched := make([]bool, len(tx.Message.Instructions))
 	err := verifyMemoInstructions(tx, matched, strings.Repeat("x", 600), nil)
