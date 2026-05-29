@@ -224,7 +224,12 @@ pub fn compute_challenge_id(
 }
 
 /// Constant-time string comparison to prevent timing attacks.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+///
+/// Audit #41 made this `pub(crate)` so the server's `verify` (in
+/// `server/charge.rs`) can use the same constant-time path that
+/// `PaymentChallenge::verify` uses, rather than a regular `!=` that
+/// short-circuits at the first byte mismatch.
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }

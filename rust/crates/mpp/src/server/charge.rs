@@ -735,7 +735,14 @@ impl Mpp {
             credential.challenge.digest.as_deref(),
             credential.challenge.opaque.as_ref().map(|o| o.raw()),
         );
-        if credential.challenge.id != expected_id {
+        // Audit #41: the HMAC id comparison must be constant-time —
+        // otherwise a timing oracle could leak how many leading bytes
+        // of an attacker-controlled `id` match an actually-issued one.
+        // The same helper backs `PaymentChallenge::verify`.
+        if !crate::protocol::core::challenge::constant_time_eq(
+            &credential.challenge.id,
+            &expected_id,
+        ) {
             return Err(VerificationError::credential_mismatch(
                 "Challenge ID mismatch — not issued by this server",
             ));
@@ -2820,19 +2827,22 @@ impl VerificationError {
     }
 
     pub fn invalid_amount(msg: impl Into<String>) -> Self {
+        // Audit #11: title aligned to the function name. Code stays
+        // `verification-failed` so callers grouping by code keep working.
         Self::with_code(
             msg,
             "verification-failed",
-            "Verification Failed",
+            "Invalid Amount",
             "tag:paymentauth.org,2024:verification-failed",
         )
     }
 
     pub fn invalid_recipient(msg: impl Into<String>) -> Self {
+        // Audit #11: title aligned to the function name.
         Self::with_code(
             msg,
             "verification-failed",
-            "Verification Failed",
+            "Invalid Recipient",
             "tag:paymentauth.org,2024:verification-failed",
         )
     }
@@ -2866,10 +2876,12 @@ impl VerificationError {
     }
 
     pub fn credential_mismatch(msg: impl Into<String>) -> Self {
+        // Audit #11: title aligned to the function name. Code stays
+        // `malformed-credential` (shared with `invalid_payload`).
         Self::with_code(
             msg,
             "malformed-credential",
-            "Malformed Credential",
+            "Credential Mismatch",
             "tag:paymentauth.org,2024:malformed-credential",
         )
     }

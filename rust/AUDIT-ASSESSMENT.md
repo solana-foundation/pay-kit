@@ -721,3 +721,43 @@ So the base flow we ship is spec-compliant. Mandating the challenge-id memo woul
 - `verify_passes_audit_5_gate_when_accept_push_mode_on` — opt-in Mpp, confirm the audit #5 gate doesn't fire (downstream errors from the fake signature are fine; just not the gate's error).
 
 ---
+
+## Informational
+
+### #44, #45, #27, #14, #34 — Input strictness pass
+**Commit:** `d015be1`
+
+Five informational findings batched together — input-strictness or docstring fixes.
+
+- **#44 / #45 — `parse_units` edge cases:** previously accepted dotted values missing the integer (`".5"`), the fraction (`"5."`), both (`"."`), or with more than one dot (`"1.2.3"` silently became `123` because `split_once('.')` stopped at the first dot). Now rejects all of those plus any non-ASCII-digit characters on either side. The pre-existing `parse_units_zero_decimals_with_dot` test (which expected `"1." == "1"`) became `parse_units_zero_decimals_with_trailing_dot_rejected`. Five new tests cover the new reject paths.
+- **#27 — `resolve_mint` docstring:** previously said "Returns `None` for native SOL, or `Some(mint_address)` for SPL tokens." Now documents the third case: `Some(input passthrough)` for unknown symbols.
+- **#14 — `SelectChargeChallengeOptions` precedence:** docstrings on `currency` and `currency_preferences` now state the precedence rule explicitly (`currency_preferences` takes priority when non-empty).
+- **#34 — `ataCreationRequired` mint-address check:** both `verify_versioned_transaction_pre_broadcast` and `verify_on_chain` switched from the oblique `request.currency != expected_mint.to_string()` check to a direct `Pubkey::from_str(&request.currency).is_err()`. Same outcome, clearer intent. The same comment block in `verify_on_chain` references the matching block above.
+
+---
+
+### #41, #11, #36 — API hygiene pass
+**Commit:** `_<TBD>_`
+
+Three informational findings — small touch-ups that don't change behaviour for honest callers.
+
+- **#41 — Constant-time HMAC id comparison:** `server::charge::verify` used a plain `!=` to compare the credential's challenge id against the recomputed HMAC, even though the existing `constant_time_eq` helper backed `PaymentChallenge::verify`. A timing oracle could in principle leak how many leading bytes of an attacker-controlled id match an actually-issued one. The helper is now `pub(crate)` and called directly. No behaviour change for honest callers; the timing channel closes.
+- **#11 — `VerificationError` title alignment:** `invalid_amount`, `invalid_recipient`, and `credential_mismatch` now have titles that match their function names (`"Invalid Amount"`, `"Invalid Recipient"`, `"Credential Mismatch"`) instead of repeating the bucket label. Codes (`verification-failed`, `malformed-credential`) unchanged so consumers grouping by code keep working.
+- **#36 — Explicit commitment on client blockhash fetch:** `build_charge_transaction_with_options` previously called `rpc.get_latest_blockhash()` (no explicit commitment), relying on the RPC client's default. Solana's client guidance recommends `confirmed` — a `processed` hash can disappear under reorgs, leaving the client with a signed transaction that fails with `BlockhashNotFound` after broadcast. Now calls `get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())`.
+
+---
+
+### #40 — Push-mode + fee-sponsored already rejected (no code change)
+**Existing mitigation:** the B34 reject at `server/charge.rs:837` (just below the audit #5 gate) refuses `CredentialPayload::Signature` when `methodDetails.feePayer == true`. Mirrors the spec §8.3 prohibition. The pre-existing `b34_rejects_push_credential_on_fee_payer_route` test (now in the same `accept_push_mode: true` branch added by audit #5) covers it. No code change needed; this entry documents the alignment.
+
+---
+
+### #23 — Server fee-payer funds split ATA creation (already addressed)
+**Existing mitigation:** audit #20 closed the implicit client-funded ATA creation in `build_spl_instructions` (the client now only emits an ATA-creation instruction when `ataCreationRequired: true` is explicitly set on the split). Audit #38 added the misconfig guard rejecting the primary recipient + `ataCreationRequired` combo at challenge issuance. Audit #21 enforces full split validation (positive amounts, dedup, parseable pubkeys) before the policy is computed. Together these cover the audit's "treat `ataCreationRequired` as server-trusted policy only" recommendation — the field is only honored when the server-side challenge-build path explicitly sets it. No additional code change.
+
+---
+
+### #35 — Replay protection scope (already addressed by #3)
+**Existing mitigation:** audit #3 reserved the consume_signature slot between broadcast and confirmation polling (PR #85 / G05), and the audit #3 fix also added the post-timeout `get_signature_status` recovery so a tx that landed during a polling timeout isn't lost. The audit #35 description was about the broader "what counts as consumed" model, which we already match: the signature is reserved before the confirmation poll completes and stays reserved on every outcome the server is responsible for. No additional code change.
+
+---

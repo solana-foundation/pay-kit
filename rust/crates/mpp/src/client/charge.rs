@@ -208,7 +208,14 @@ pub async fn build_charge_transaction_with_options(
     let blockhash = if let Some(bh) = &method_details.recent_blockhash {
         Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
     } else {
-        rpc.get_latest_blockhash()
+        // Audit #36: ask for `confirmed` explicitly instead of leaning on
+        // the RPC client's default commitment. Solana's client guidance
+        // recommends `confirmed` for blockhash fetches — a `processed`
+        // hash can disappear under reorgs and produce signed transactions
+        // that fail with BlockhashNotFound after broadcast.
+        use solana_commitment_config::CommitmentConfig;
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .map(|(hash, _last_valid_block_height)| hash)
             .map_err(|e| Error::Rpc(e.to_string()))?
     };
 
