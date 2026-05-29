@@ -56,7 +56,9 @@ use solana_mpp::{
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
 const HEALTH_PATH: &str = "/health";
 const DEFAULT_PRICE: &str = "0.001";
-const DEFAULT_SECRET_KEY: &str = "mpp-interop-secret-key";
+// Audit #24: ≥32 bytes for HMAC-SHA256 keys. Pad to keep the interop
+// default usable when no MPP_INTEROP_SECRET_KEY is set in the env.
+const DEFAULT_SECRET_KEY: &str = "mpp-interop-secret-key-with-32b-pad";
 const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 const DEFAULT_TOKEN_DECIMALS: u8 = 6;
 

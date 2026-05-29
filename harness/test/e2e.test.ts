@@ -276,7 +276,10 @@ beforeAll(async () => {
     MPP_INTEROP_NETWORK: baseScenario.network,
     MPP_INTEROP_MINT: baseScenario.asset,
     MPP_INTEROP_PRICE: baseScenario.price,
-    MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key",
+    // Rust audit #24 requires ≥32-byte HMAC secrets (NIST SP 800-107 for
+    // HMAC-SHA256). Padded with `-padding` to clear the threshold without
+    // changing the test's intent.
+    MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key-with-32b-pad",
     MPP_INTEROP_PAY_TO: payTo.publicKey,
     MPP_INTEROP_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
     MPP_INTEROP_FEE_PAYER_SECRET_KEY: JSON.stringify(
@@ -498,7 +501,8 @@ describe("mpp interop", () => {
             const envA = environmentForScenario(interopEnv, scenario);
             const envB = {
               ...environmentForScenario(interopEnv, scenario),
-              MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key-server-b",
+              // Rust audit #24: 32-byte minimum.
+              MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key-server-b-pad",
             };
             const a = await startServer(serverA, envA);
             runningServers.push(a);
