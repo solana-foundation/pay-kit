@@ -10,6 +10,7 @@ from __future__ import annotations
 import html as html_mod
 import importlib.resources
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -66,8 +67,11 @@ def challenge_to_html(challenge: PaymentChallenge, rpc_url: str, network: str) -
     md = request_data.get("methodDetails", {})
     decimals = md.get("decimals", 9 if currency.lower() == "sol" else 6)
     amount_raw = request_data.get("amount", "0")
-    amount_f = float(amount_raw) / (10**decimals)
-    display_amount = str(int(amount_f)) if amount_f == int(amount_f) else f"{amount_f:.2f}"
+    try:
+        amount_dec = Decimal(str(amount_raw)) / Decimal(10**decimals)
+    except (InvalidOperation, ValueError):
+        amount_dec = Decimal(0)
+    display_amount = str(int(amount_dec)) if amount_dec == amount_dec.to_integral_value() else f"{amount_dec:.2f}"
 
     sym = _KNOWN_SYMBOLS.get(currency)
     if currency.lower() == "sol":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -124,9 +125,9 @@ class MethodDetails:
     recent_blockhash: str = ""
     splits: list[Split] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict, omitting empty fields."""
-        d: dict = {}
+        d: dict[str, Any] = {}
         if self.network:
             d["network"] = self.network
         if self.decimals is not None:
@@ -144,7 +145,7 @@ class MethodDetails:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> MethodDetails:
+    def from_dict(cls, data: dict[str, Any]) -> MethodDetails:
         """Deserialize from a JSON-compatible dict."""
         splits = [Split.from_dict(s) for s in data.get("splits", [])]
         return cls(
@@ -168,8 +169,8 @@ class Split:
     memo: str = ""
     ata_creation_required: bool = False
 
-    def to_dict(self) -> dict:
-        d: dict = {"recipient": self.recipient, "amount": self.amount}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"recipient": self.recipient, "amount": self.amount}
         if self.ata_creation_required:
             d["ataCreationRequired"] = self.ata_creation_required
         if self.label:
@@ -179,7 +180,7 @@ class Split:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> Split:
+    def from_dict(cls, data: dict[str, Any]) -> Split:
         return cls(
             recipient=data["recipient"],
             amount=data["amount"],
@@ -197,8 +198,8 @@ class CredentialPayload:
     transaction: str = ""
     signature: str = ""
 
-    def to_dict(self) -> dict:
-        d: dict = {"type": self.type}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"type": self.type}
         if self.transaction:
             d["transaction"] = self.transaction
         if self.signature:
@@ -206,7 +207,7 @@ class CredentialPayload:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict) -> CredentialPayload:
+    def from_dict(cls, data: dict[str, Any]) -> CredentialPayload:
         return cls(
             type=data.get("type", ""),
             transaction=data.get("transaction", ""),
