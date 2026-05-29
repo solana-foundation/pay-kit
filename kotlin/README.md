@@ -62,7 +62,7 @@ apps connect `SolanaSigner` to a wallet stack via the official
 
 ```kotlin
 implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.3")
-implementation("com.solanamobile:web3-solana:0.2.5")
+implementation("com.solanamobile:web3-solana:0.3.1")
 implementation("com.solanamobile:rpc-core:0.2.7")
 ```
 
