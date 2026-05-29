@@ -47,6 +47,16 @@ class _RpcResponse:
         self.value = value
 
 
+class _BlockhashValue:
+    """``.blockhash`` holder so ``get_latest_blockhash().value.blockhash``
+    matches the ``solana-py`` / solders response shape the x402 client reads."""
+
+    __slots__ = ("blockhash",)
+
+    def __init__(self, blockhash: str) -> None:
+        self.blockhash = blockhash
+
+
 class SolanaRpc:
     """Minimal async JSON-RPC client for the Solana RPC API."""
 
@@ -91,6 +101,15 @@ class SolanaRpc:
             )
 
         return _RpcResponse(signature)
+
+    async def get_latest_blockhash(self, commitment: str = "confirmed") -> _RpcResponse:
+        """Fetch the latest blockhash. Used by the x402 client when an offer
+        omits ``extra.recentBlockhash``. Returns ``resp.value.blockhash``."""
+        result = await self._call("getLatestBlockhash", [{"commitment": commitment}])
+        blockhash = ((result or {}).get("value") or {}).get("blockhash") if isinstance(result, dict) else None
+        if not isinstance(blockhash, str) or not blockhash:
+            raise _RpcError("getLatestBlockhash returned no blockhash", code="payment_invalid")
+        return _RpcResponse(_BlockhashValue(blockhash))
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
         result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])

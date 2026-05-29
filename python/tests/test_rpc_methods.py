@@ -190,3 +190,27 @@ async def test_aclose_calls_underlying_client():
     rpc = _rpc({"result": None, "id": 1})
     await rpc.aclose()
     # Survives without error.
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_returns_value_blockhash():
+    # Regression: the x402 client's blockhash fallback calls
+    # rpc.get_latest_blockhash() and reads resp.value.blockhash. Manual DX
+    # caught that SolanaRpc lacked this method entirely.
+    payload = {
+        "result": {
+            "context": {"slot": 1},
+            "value": {"blockhash": "Bh11111111111111111111111111111111111111111", "lastValidBlockHeight": 200},
+        },
+        "id": 1,
+    }
+    rpc = _rpc(payload)
+    resp = await rpc.get_latest_blockhash()
+    assert resp.value.blockhash == "Bh11111111111111111111111111111111111111111"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_rejects_missing_blockhash():
+    rpc = _rpc({"result": {"value": {}}, "id": 1})
+    with pytest.raises(_RpcError):
+        await rpc.get_latest_blockhash()
