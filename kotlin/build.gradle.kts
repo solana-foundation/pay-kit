@@ -24,6 +24,17 @@ dependencies {
     // implementation as the rest of the Solana Mobile Kotlin stack
     // instead of carrying a hand-rolled BigInteger-based codec.
     implementation("io.github.funkatronics:multimult-jvm:0.2.3")
+    // web3-solana is the Solana Mobile Kotlin transaction/instruction
+    // library (production-used). The x402 exact client builds its
+    // instructions through web3-solana's TransactionInstruction / AccountMeta
+    // / SolanaPublicKey / TokenProgram.transferChecked so the SPL transfer
+    // layout comes from a maintained library instead of being hand-rolled.
+    // What it does NOT provide (and so stays hand-rolled in _paycore): v0
+    // VersionedMessage *compilation* (web3-solana's Message.Builder only
+    // produces a LegacyMessage; VersionedMessage is a bare data class with no
+    // try_compile path), the ComputeBudget program, and a synchronous ATA
+    // derivation (only a suspend `find`). See Payment.kt for the bridge.
+    implementation("com.solanamobile:web3-solana:0.3.1")
     // OkHttp is the canonical Kotlin/JVM HTTP client. Used by MppHttpClient
     // for 402-triggered credential build and retry.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

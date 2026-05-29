@@ -206,8 +206,11 @@ fun buildPayment(
         val mintKey = PublicKey.fromBase58(asset)
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgramKey)
         val destAta = Pda.associatedTokenAddress(recipientKey, mintKey, tokenProgramKey)
+        // Build the SPL transferChecked through web3-solana (the SPL wire
+        // layout comes from the maintained Solana Mobile library); see
+        // Web3Solana for the adopted-vs-hand-rolled split.
         instructions.add(
-            Instructions.transferChecked(
+            Web3Solana.transferChecked(
                 tokenProgram = tokenProgramStr,
                 source = sourceAta.toBase58(),
                 mint = mintKey.toBase58(),
