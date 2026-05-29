@@ -12,7 +12,7 @@ decimals / memo on ``extra``.
 The built transaction is a v0 ``VersionedTransaction`` whose fee payer is the
 offer's ``extra.feePayer`` (the facilitator, which cosigns server-side) and
 whose transfer authority is the client signer. Instructions are laid out
-exactly as the verifier expects: ComputeBudget SetComputeUnitLimit(200000) +
+exactly as the verifier expects: ComputeBudget SetComputeUnitLimit(20000) +
 SetComputeUnitPrice, then a ``transferChecked`` (SPL) or System ``transfer``
 (native SOL), then a Memo carrying ``extra.memo``.
 """
@@ -41,8 +41,11 @@ __all__ = [
     "build_payment_header",
 ]
 
-#: ComputeBudget SetComputeUnitLimit value the verifier accepts (disc 2, u32 LE).
-_COMPUTE_UNIT_LIMIT = 200_000
+#: ComputeBudget SetComputeUnitLimit (disc 2, u32 LE). Matches the rust spine
+#: client (``rust/crates/x402/src/client/exact/payment.rs``) and the Go client;
+#: the server verifier checks the instruction shape + the price cap, not this
+#: value, but the SDKs emit one canonical limit.
+_COMPUTE_UNIT_LIMIT = 20_000
 #: ComputeBudget SetComputeUnitPrice microlamports (disc 3, u64 LE, <= MAX).
 _COMPUTE_UNIT_PRICE = 1
 #: Default SPL decimals when the offer omits ``extra.decimals``.

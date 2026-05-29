@@ -316,6 +316,8 @@ async def test_build_payment_instruction_layout():
     # ComputeBudget limit (disc 2) + price (disc 3) + transferChecked + memo.
     assert len(instructions) == 4
     assert bytes(instructions[0].data)[0] == 2
+    # Canonical SetComputeUnitLimit value: 20_000, matching the rust/go clients.
+    assert int.from_bytes(bytes(instructions[0].data)[1:5], "little") == 20_000
     assert bytes(instructions[1].data)[0] == 3
     # transferChecked: disc 12, amount u64 LE, decimals byte.
     transfer_data = bytes(instructions[2].data)
