@@ -1,10 +1,12 @@
-package com.solana.mpp.protocols.x402.exact
+package com.solana.mpp.protocols.x402.client.exact
 
 import com.solana.mpp._paycore.Base58
 import com.solana.mpp._paycore.MemorySigner
 import com.solana.mpp._paycore.Mints
 import com.solana.mpp._paycore.Network
 import com.solana.mpp._paycore.Programs
+import com.solana.mpp.protocols.x402.exact.X402AcceptsEntry
+import com.solana.mpp.protocols.x402.exact.X402Extra
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals

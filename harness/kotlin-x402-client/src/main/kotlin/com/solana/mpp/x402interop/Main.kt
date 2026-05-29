@@ -1,9 +1,9 @@
 package com.solana.mpp.x402interop
 
 import com.solana.mpp._paycore.MemorySigner
-import com.solana.mpp.protocols.x402.exact.ChallengeSelection
-import com.solana.mpp.protocols.x402.exact.X402HttpClient
-import com.solana.mpp.protocols.x402.exact.X402RpcClient
+import com.solana.mpp.protocols.x402.client.exact.ChallengeSelection
+import com.solana.mpp.protocols.x402.client.exact.X402HttpClient
+import com.solana.mpp.protocols.x402.client.exact.X402RpcClient
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray

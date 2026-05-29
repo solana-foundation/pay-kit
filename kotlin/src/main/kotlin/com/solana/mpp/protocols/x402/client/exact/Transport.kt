@@ -1,6 +1,7 @@
-package com.solana.mpp.protocols.x402.exact
+package com.solana.mpp.protocols.x402.client.exact
 
 import com.solana.mpp._paycore.*
+import com.solana.mpp.protocols.x402.exact.*
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
