@@ -122,9 +122,7 @@ async def test_build_credential_header_wraps_charge_transaction():
             "methodDetails": {"recentBlockhash": BLOCKHASH},
         }
     )
-    challenge = PaymentChallenge(
-        id="c1", realm="api", method="solana", intent="charge", request=request
-    )
+    challenge = PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request)
     header = await build_credential_header(
         challenge=challenge,
         signer=signer,
@@ -140,12 +138,8 @@ async def test_build_credential_header_wraps_charge_transaction():
 async def test_build_credential_header_without_method_details():
     signer = Keypair()
     recipient = str(Keypair().pubkey())
-    request = encode_json(
-        {"amount": "100", "currency": "sol", "recipient": recipient}
-    )
-    challenge = PaymentChallenge(
-        id="c1", realm="api", method="solana", intent="charge", request=request
-    )
+    request = encode_json({"amount": "100", "currency": "sol", "recipient": recipient})
+    challenge = PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request)
     rpc = _FakeRpcClient()
     header = await build_credential_header(
         challenge=challenge,

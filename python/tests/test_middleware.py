@@ -162,9 +162,7 @@ class TestPayDecorator:
         # Build a valid credential that matches the route's expected charge
         # ("1.00" USDC, recipient = TEST_RECIPIENT, devnet).
         challenge = handler_mpp.charge("1.00")
-        transaction = _build_spl_transfer_checked_transaction(
-            TEST_RECIPIENT, USDC_DEVNET, 1_000_000
-        )
+        transaction = _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1_000_000)
         credential = PaymentCredential(
             challenge=challenge.to_echo(),
             payload={"type": "transaction", "transaction": transaction},
