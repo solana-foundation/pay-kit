@@ -64,6 +64,8 @@ describe("interop scenario selection", () => {
       ),
     ).toEqual([
       "x402-exact-basic",
+      "x402-exact-token2022",
+      "x402-exact-ata-precreated",
       "x402-exact-network-mismatch",
       "x402-exact-cross-route-replay",
       "x402-exact-cross-server-portability",
