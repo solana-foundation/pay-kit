@@ -4,10 +4,11 @@ Self-hosted x402 ``exact`` scheme for the Solana SVM. ``X402Adapter`` issues
 402 challenges, runs the structural 11-rule verifier on submitted credentials,
 cosigns as the facilitator fee payer, broadcasts via the configured RPC, and
 namespaces the consumed signature in the replay store. ``ExactVerifier``
-mirrors the Rust spine at
-``rust/crates/x402/src/protocol/schemes/exact/verify.rs`` and the server
-backstops at ``rust/crates/x402/src/server/exact.rs`` byte-for-byte, and the
-PHP port at ``php/src/Protocols/X402/{Adapter,Exact/Verifier}.php``.
+follows the Rust spine rule-for-rule and reject-code-for-reject-code
+(``rust/crates/x402/src/protocol/schemes/exact/verify.rs`` and the server
+backstops at ``rust/crates/x402/src/server/exact.rs``), adding only
+strictly-stronger defensive rejects; cross-checked against the PHP port at
+``php/src/Protocols/X402/{Adapter,Exact/Verifier}.php``.
 
 Delegated mode (``X402Config.facilitator_url`` set) is reserved in the config
 schema but not yet wired; the adapter raises ``NotImplementedError`` when a
@@ -126,7 +127,9 @@ COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
 #: SPL Memo program id (allowlisted optional instruction + memo binding).
 MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 #: Lighthouse assertion program id (allowlisted optional instruction).
-LIGHTHOUSE_PROGRAM = "L1TEVtgA75k273wWz1s6XMmDhQY5i3MwcvKb4VbZzfK"
+#: Must match the rust spine constant ``LIGHTHOUSE_PROGRAM`` in
+#: ``rust/crates/x402/src/protocol/schemes/exact/types.rs``.
+LIGHTHOUSE_PROGRAM = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
 #: Token-2022 program id (accepted transfer program alongside the route's).
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 #: Maximum SetComputeUnitPrice in microlamports. Matches the Rust spine
