@@ -84,11 +84,11 @@ func TestPreflightEnabledDefaultsTrue(t *testing.T) {
 }
 
 func TestMustParseHelpersSucceed(t *testing.T) {
-	if MustParseGBP("1.50").Denom() != GBP {
-		t.Error("MustParseGBP denom")
+	if MustParseGBP("1.50").Currency() != GBP {
+		t.Error("MustParseGBP currency")
 	}
-	if MustParseEUR("2.50").Denom() != EUR {
-		t.Error("MustParseEUR denom")
+	if MustParseEUR("2.50").Currency() != EUR {
+		t.Error("MustParseEUR currency")
 	}
 }
 
@@ -97,8 +97,8 @@ func TestGateErrorVariants(t *testing.T) {
 	if plain.Error() == "" || plain.Unwrap() != nil {
 		t.Error("plain GateError")
 	}
-	withSentinel := &GateError{Reason: "x", Sentinel: ErrMixedDenoms}
-	if withSentinel.Unwrap() != ErrMixedDenoms {
+	withSentinel := &GateError{Reason: "x", Sentinel: ErrMixedCurrencies}
+	if withSentinel.Unwrap() != ErrMixedCurrencies {
 		t.Error("sentinel unwrap")
 	}
 	var nilErr *GateError

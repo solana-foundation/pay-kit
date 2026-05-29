@@ -33,7 +33,7 @@ func (g *Gate) Total() Price {
 	for _, p := range g.FeeOnTop {
 		total = total.Add(p.amount)
 	}
-	return Price{amount: total, denom: g.Amount.denom, settlements: g.Amount.settlements}
+	return Price{amount: total, currency: g.Amount.currency, settlements: g.Amount.settlements}
 }
 
 // Payout returns the amount that lands at the given recipient address.
@@ -51,7 +51,7 @@ func (g *Gate) Payout(addr Address) (Price, bool) {
 		for _, p := range g.FeeWithin {
 			net = net.Sub(p.amount)
 		}
-		return Price{amount: net, denom: g.Amount.denom, settlements: g.Amount.settlements}, true
+		return Price{amount: net, currency: g.Amount.currency, settlements: g.Amount.settlements}, true
 	}
 	return Price{}, false
 }
@@ -69,26 +69,26 @@ func (g *Gate) Validate() error {
 	if g == nil {
 		return &GateError{Reason: "nil gate"}
 	}
-	if g.Amount.denom == "" {
+	if g.Amount.currency == "" {
 		return &GateError{Reason: "gate amount must be a typed Price (use paykit.MustParseUSD)"}
 	}
-	denoms := map[Denom]struct{}{g.Amount.denom: {}}
+	currencies := map[Currency]struct{}{g.Amount.currency: {}}
 	for addr, p := range g.FeeWithin {
 		if addr == "" {
 			return &GateError{Reason: "feeWithin recipient must be non-empty"}
 		}
-		denoms[p.denom] = struct{}{}
+		currencies[p.currency] = struct{}{}
 	}
 	for addr, p := range g.FeeOnTop {
 		if addr == "" {
 			return &GateError{Reason: "feeOnTop recipient must be non-empty"}
 		}
-		denoms[p.denom] = struct{}{}
+		currencies[p.currency] = struct{}{}
 	}
-	if len(denoms) > 1 {
+	if len(currencies) > 1 {
 		return &GateError{
-			Reason:   fmt.Sprintf("gate mixes denominations %v", denomKeys(denoms)),
-			Sentinel: ErrMixedDenoms,
+			Reason:   fmt.Sprintf("gate mixes denominations %v", currencyKeys(currencies)),
+			Sentinel: ErrMixedCurrencies,
 		}
 	}
 	// sum(FeeWithin) <= Amount
@@ -116,8 +116,8 @@ func (g *Gate) Validate() error {
 	return nil
 }
 
-func denomKeys(m map[Denom]struct{}) []Denom {
-	out := make([]Denom, 0, len(m))
+func currencyKeys(m map[Currency]struct{}) []Currency {
+	out := make([]Currency, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}

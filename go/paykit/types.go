@@ -87,24 +87,24 @@ func (n Network) CAIP2() string {
 // string for ergonomics; revisit when a non-Solana rail ships.
 type Address string
 
-// Denom is the fiat unit a price is quoted in. Distinct from the
+// Currency is the fiat unit a price is quoted in. Distinct from the
 // settlement asset on purpose: `USD("0.10", USDC, USDT)` means "ten
 // cents USD, settle in USDC or USDT."
-type Denom string
+type Currency string
 
 const (
-	USD Denom = "USD"
-	EUR Denom = "EUR"
-	GBP Denom = "GBP"
+	USD Currency = "USD"
+	EUR Currency = "EUR"
+	GBP Currency = "GBP"
 )
 
 // Price is a denominated amount plus an ordered settlement preference
 // list. Construct via [ParseUSD]/[MustParseUSD] etc.; do not build the
 // struct directly so the internal invariant (positive decimal, valid
-// denom) stays enforced.
+// currency) stays enforced.
 type Price struct {
 	amount      decimal.Decimal
-	denom       Denom
+	currency    Currency
 	settlements []Stablecoin
 }
 
@@ -113,8 +113,8 @@ type Price struct {
 // happens at challenge-build time using the stablecoin's decimals.
 func (p Price) Amount() decimal.Decimal { return p.amount }
 
-// Denom returns the fiat unit ("USD", "EUR", "GBP").
-func (p Price) Denom() Denom { return p.denom }
+// Currency returns the fiat unit ("USD", "EUR", "GBP").
+func (p Price) Currency() Currency { return p.currency }
 
 // Settlements returns the gate-level stablecoin preference order, or
 // nil when the price was built without an explicit narrowing.

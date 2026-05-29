@@ -111,10 +111,10 @@ func TestNetworkDefaultRPCMainnetAndDevnet(t *testing.T) {
 }
 
 func TestParseEURAndGBP(t *testing.T) {
-	if p, err := paykit.ParseEUR("1.50"); err != nil || p.Denom() != paykit.EUR {
+	if p, err := paykit.ParseEUR("1.50"); err != nil || p.Currency() != paykit.EUR {
 		t.Error("EUR parse failed")
 	}
-	if p, err := paykit.ParseGBP("1.50"); err != nil || p.Denom() != paykit.GBP {
+	if p, err := paykit.ParseGBP("1.50"); err != nil || p.Currency() != paykit.GBP {
 		t.Error("GBP parse failed")
 	}
 }

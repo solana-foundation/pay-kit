@@ -12,7 +12,7 @@ var (
 	ErrInvalidProof        = errors.New("paykit: invalid proof")
 	ErrChallengeExpired    = errors.New("paykit: challenge expired")
 	ErrSchemeNotSupported  = errors.New("paykit: scheme not supported")
-	ErrMixedDenoms         = errors.New("paykit: mixed denominations in gate")
+	ErrMixedCurrencies     = errors.New("paykit: mixed currencies in gate")
 	ErrSchemeIncompatible  = errors.New("paykit: x402 incompatible with multi-recipient gates")
 	ErrDemoSignerOnMainnet = errors.New("paykit: demo signer cannot be used on solana_mainnet")
 	ErrInvalidConfig       = errors.New("paykit: invalid configuration")

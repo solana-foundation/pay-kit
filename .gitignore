@@ -23,23 +23,10 @@ Cargo.lock
 .npm-pack/
 DUMP.md
 package/
-go/payment-link-server
 __pycache__/
 .coverage
 .venv/
 *.pyc
-harness/go-client/go-client
 .claude/
 .gocache
-mpp-sdk-self-learning/
 .build/
-go/coverage.out
-notes/codex-review/
-notes/codex-review-*.md
-harness/go-paykit-server/paykit-server
-
-# go build artifacts
-go/examples/**/paykit-server
-go/paykit-server
-go/cmd/**/harness-server
-harness/go-server/paykit-server

@@ -52,15 +52,15 @@ func MustParseGBP(amount string, settlements ...Stablecoin) Price {
 	return p
 }
 
-func parsePrice(amount string, denom Denom, settlements []Stablecoin) (Price, error) {
+func parsePrice(amount string, currency Currency, settlements []Stablecoin) (Price, error) {
 	d, err := decimal.NewFromString(amount)
 	if err != nil {
-		return Price{}, fmt.Errorf("paykit: invalid %s amount %q: %w", denom, amount, err)
+		return Price{}, fmt.Errorf("paykit: invalid %s amount %q: %w", currency, amount, err)
 	}
 	if d.IsNegative() {
-		return Price{}, fmt.Errorf("paykit: %s amount %s must be non-negative", denom, amount)
+		return Price{}, fmt.Errorf("paykit: %s amount %s must be non-negative", currency, amount)
 	}
-	out := Price{amount: d, denom: denom}
+	out := Price{amount: d, currency: currency}
 	if len(settlements) > 0 {
 		out.settlements = make([]Stablecoin, len(settlements))
 		copy(out.settlements, settlements)
@@ -68,7 +68,7 @@ func parsePrice(amount string, denom Denom, settlements []Stablecoin) (Price, er
 	return out, nil
 }
 
-// String renders the price in `<amount> <denom>` form for log lines.
+// String renders the price in `<amount> <currency>` form for log lines.
 func (p Price) String() string {
-	return fmt.Sprintf("%s %s", p.amount.String(), p.denom)
+	return fmt.Sprintf("%s %s", p.amount.String(), p.currency)
 }

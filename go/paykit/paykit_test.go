@@ -120,8 +120,8 @@ func TestPaymentFromAndIsPaidNilContext(t *testing.T) {
 
 func TestPricePositiveAndDenoms(t *testing.T) {
 	p := paykit.MustParseUSD("0.10")
-	if p.Denom() != paykit.USD {
-		t.Error("denom mismatch")
+	if p.Currency() != paykit.USD {
+		t.Error("currency mismatch")
 	}
 	if p.Amount().String() != "0.1" {
 		t.Errorf("amount: got %s want 0.1", p.Amount().String())
@@ -149,7 +149,7 @@ func TestGateValidateMixedDenoms(t *testing.T) {
 		},
 	}
 	if err := g.Validate(); err == nil {
-		t.Error("expected mixed denoms error")
+		t.Error("expected mixed currencies error")
 	}
 }
 
