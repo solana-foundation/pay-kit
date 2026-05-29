@@ -243,7 +243,10 @@ jobs:
         run: ruff check src tests
       - name: Type-check
         working-directory: python
-        run: pyright
+        # Point pyright at the interpreter the extras were installed into, so it
+        # resolves fastapi/flask/django in the shim tests (it does not reliably
+        # auto-detect the active env on the runner).
+        run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
         env:
