@@ -227,6 +227,27 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
   },
   {
+    id: "pay-kit-python",
+    label: "Python PayKit server (dual protocol)",
+    role: "server",
+    // One adapter binary, two settle paths. The dual-protocol Python
+    // PayKit server (harness/pay-kit-python-server/server.py) reads
+    // either X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL
+    // for the matrix's both-namespaces shape) and routes x402 through the
+    // umbrella's X402Adapter and MPP charge through the lower-level
+    // solana_mpp handler (the umbrella's ticker-based currency model fits
+    // x402's resolved-mint asset, but the pubkey-mode MPP charge matrix
+    // needs the literal mint as currency). Same split as the PHP adapter.
+    // Distinct from the lower-level `python` server above, which is
+    // MPP-only. Default OFF: opt in via
+    // `MPP_INTEROP_SERVERS=pay-kit-python` (charge) /
+    // `MPP_INTEROP_SERVERS=pay-kit-python X402_INTEROP_CLIENTS=rust-x402`
+    // with `MPP_INTEROP_INTENTS=x402-exact` (x402-exact).
+    command: ["python3", "pay-kit-python-server/server.py"],
+    enabled: isEnabled("pay-kit-python", "MPP_INTEROP_SERVERS", false),
+    intents: ["charge", "x402-exact"],
+  },
+  {
     id: "go",
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",

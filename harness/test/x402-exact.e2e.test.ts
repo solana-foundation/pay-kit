@@ -88,6 +88,13 @@ describe("x402 exact intent — cross-language matrix", () => {
   const allowedPair = (clientId: string, serverId: string): boolean => {
     if (clientId === "ts-x402" && serverId === "ts-x402") return true;
     if (clientId === "rust-x402" && serverId === "rust-x402") return true;
+    // The Python PayKit x402 server does full settlement (cosign +
+    // broadcast), so it can only be driven by a client that emits a real
+    // signed Solana transaction. The rust-x402 client carries the
+    // canonical PaymentProof and settles end-to-end against surfpool,
+    // mirroring the rust<->lua x402 interop pairing. The ts-x402 stub
+    // client (no real transaction) is intentionally excluded.
+    if (clientId === "rust-x402" && serverId === "pay-kit-python") return true;
     return false;
   };
 
