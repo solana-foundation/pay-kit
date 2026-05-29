@@ -100,7 +100,9 @@ jobs:
         run: pnpm --filter @solana/mpp build
       - name: Build Rust interop adapters
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client --bin interop_server
+        run: |
+          cargo build -p solana-mpp --bin interop_client --bin interop_server
+          cargo build -p solana-x402 --bin interop_client --bin interop_server
       - name: Install interop harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
@@ -116,3 +118,19 @@ jobs:
           MPP_INTEROP_CLIENTS: rust
           MPP_INTEROP_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
+      # x402 exact: drive the Python pay_kit x402 client (a real signed v0
+      # VersionedTransaction) against the full-settling rust and python x402
+      # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
+      # client keypair into X402_INTEROP_CLIENT_SECRET_KEY; the matrix gates on
+      # impl.intents so only x402-exact scenarios run. The x402 client adapter
+      # imports pay_kit from python/src on sys.path (no extra install beyond the
+      # editable SDK above). ts-x402 is excluded: its stub server expects a
+      # payload.challengeId and never broadcasts a real transaction, so it
+      # cannot settle a genuine signed tx (same reason rust-x402 skips it).
+      - name: Focused python-x402 -> rust/python x402 servers
+        working-directory: harness
+        env:
+          MPP_INTEROP_INTENTS: x402-exact
+          X402_INTEROP_CLIENTS: python-x402
+          X402_INTEROP_SERVERS: rust-x402,python
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
