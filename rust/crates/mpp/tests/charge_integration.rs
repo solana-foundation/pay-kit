@@ -55,16 +55,27 @@ async fn wait_for_surfnet(surfnet: &Surfnet) {
 /// Build the `expected` ChargeRequest for an integration test from its
 /// known static configuration. Mirrors how SDK consumers should construct
 /// the expected request from their route configuration rather than from
-/// the credential itself (audit #2).
+/// the credential itself (audit #2). Includes the `methodDetails` fields
+/// audit #1 now compares exhaustively (network, decimals, token program).
 fn expected_charge(
     amount_base_units: &str,
     currency: &str,
     recipient: &str,
+    network: &str,
+    decimals: u8,
+    token_program: Option<&str>,
 ) -> solana_mpp::ChargeRequest {
+    let md = solana_mpp::protocol::solana::MethodDetails {
+        network: Some(network.to_string()),
+        decimals: Some(decimals),
+        token_program: token_program.map(|s| s.to_string()),
+        ..Default::default()
+    };
     solana_mpp::ChargeRequest {
         amount: amount_base_units.to_string(),
         currency: currency.to_string(),
         recipient: Some(recipient.to_string()),
+        method_details: Some(serde_json::to_value(md).unwrap()),
         ..Default::default()
     }
 }
@@ -108,7 +119,14 @@ async fn sol_charge_full_flow() {
     assert!(auth_header.starts_with("Payment "));
 
     // Verify credential. `expected` mirrors the route's static config.
-    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "SOL",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        9,
+        None,
+    );
     let receipt = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth_header).unwrap(),
@@ -169,7 +187,14 @@ async fn sol_charge_wrong_amount_rejected_before_broadcast() {
     let auth = format_authorization(&credential).unwrap();
 
     // Server should reject BEFORE broadcasting.
-    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "SOL",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        9,
+        None,
+    );
     let err = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
@@ -246,7 +271,14 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
     let credential = PaymentCredential::new(challenge.to_echo(), payload);
     let auth = format_authorization(&credential).unwrap();
 
-    let expected = expected_charge("1000000", "SOL", &real_recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "SOL",
+        &real_recipient.pubkey().to_string(),
+        "localnet",
+        9,
+        None,
+    );
     let err = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
@@ -291,7 +323,14 @@ async fn sol_charge_replay_rejected() {
         .unwrap();
 
     // First: success.
-    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "SOL",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        9,
+        None,
+    );
     let receipt = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
@@ -354,23 +393,17 @@ async fn sol_charge_expired_challenge_rejected() {
 
     let signer = fund_signer(&surfnet);
     let rpc = RpcClient::new(surfnet.rpc_url().to_string());
-    let auth = build_credential_header(&*signer, &rpc, &challenge)
-        .await
-        .unwrap();
 
-    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
-    let err = mpp
-        .verify_credential_with_expected(
-            &solana_mpp::parse_authorization(&auth).unwrap(),
-            &expected,
-        )
+    // Audit #10: the client builder now refuses to sign expired challenges
+    // at build time. This is the canonical path for rejecting expired
+    // challenges; server-side rejection is the defense-in-depth backstop.
+    let err = build_credential_header(&*signer, &rpc, &challenge)
         .await
-        .unwrap_err();
+        .err()
+        .expect("expired challenge should be rejected before signing");
     assert!(
-        err.code == Some("payment-expired"),
-        "Expected expired rejection, got: {} ({:?})",
-        err.message,
-        err.code
+        err.to_string().contains("expired"),
+        "Expected expired rejection, got: {err}"
     );
 }
 
@@ -413,7 +446,14 @@ async fn sol_charge_www_authenticate_roundtrip() {
         .await
         .unwrap();
 
-    let expected = expected_charge("1000000", "SOL", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "SOL",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        9,
+        None,
+    );
     let receipt = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
@@ -490,7 +530,14 @@ async fn usdc_charge_full_flow() {
         .await
         .expect("build USDC credential");
 
-    let expected = expected_charge("1000000", "USDC", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "USDC",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        6,
+        Some(solana_mpp::protocol::solana::programs::TOKEN_PROGRAM),
+    );
     let receipt = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
@@ -591,7 +638,14 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
     let credential = PaymentCredential::new(challenge.to_echo(), payload);
     let auth = format_authorization(&credential).unwrap();
 
-    let expected = expected_charge("1000000", "USDC", &recipient.pubkey().to_string());
+    let expected = expected_charge(
+        "1000000",
+        "USDC",
+        &recipient.pubkey().to_string(),
+        "localnet",
+        6,
+        Some(solana_mpp::protocol::solana::programs::TOKEN_PROGRAM),
+    );
     let err = mpp
         .verify_credential_with_expected(
             &solana_mpp::parse_authorization(&auth).unwrap(),
