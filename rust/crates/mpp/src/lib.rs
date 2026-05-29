@@ -49,7 +49,8 @@ pub use error::{Error, Result};
 // Core protocol types
 pub use protocol::core::{
     base64url_decode, base64url_encode, compute_challenge_id, Base64UrlJson, ChallengeEcho,
-    IntentName, MethodName, PaymentChallenge, PaymentCredential, Receipt, ReceiptStatus,
+    IntentName, MethodName, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
+    ReceiptStatus,
 };
 
 // Header parsing/formatting

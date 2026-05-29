@@ -169,6 +169,15 @@ pub struct SubscriptionReceiptExtensions {
     /// RFC3339 effective subscription expiry, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// base58 of the activation transaction signature — the on-chain
+    /// transaction that created the SubscriptionDelegation. When the
+    /// verifier broadcasts a fresh activation tx, this carries that
+    /// signature; on idempotent retries (delegation already on-chain) it
+    /// reflects the original landing tx looked up via
+    /// `getSignaturesForAddress`. Omitted when neither path could
+    /// determine a sig.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation_signature: Option<String>,
 }
 
 #[cfg(test)]

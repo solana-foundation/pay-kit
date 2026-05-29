@@ -7,7 +7,7 @@ pub mod headers;
 pub mod types;
 
 pub use challenge::{
-    compute_challenge_id, ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt,
+    compute_challenge_id, ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
 };
 pub use headers::{
     extract_payment_scheme, format_authorization, format_receipt, format_www_authenticate,

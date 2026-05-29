@@ -197,6 +197,11 @@ where
 }
 
 /// Wrap a handler response with the `Payment-Receipt` header attached.
+///
+/// The receipt is wrapped in [`ReceiptKind::Charge`] on the wire — this
+/// type is the convenience entry point for charge handlers; subscription
+/// handlers should pass a `ReceiptKind::Subscription` to [`format_receipt`]
+/// directly.
 pub struct WithReceipt<T> {
     pub receipt: Receipt,
     pub body: T,
@@ -205,7 +210,8 @@ pub struct WithReceipt<T> {
 impl<T: IntoResponse> IntoResponse for WithReceipt<T> {
     fn into_response(self) -> Response {
         let mut resp = self.body.into_response();
-        if let Ok(header_val) = format_receipt(&self.receipt) {
+        let kind = crate::protocol::core::ReceiptKind::Charge(self.receipt);
+        if let Ok(header_val) = format_receipt(&kind) {
             if let Ok(v) = HeaderValue::from_str(&header_val) {
                 resp.headers_mut().insert(PAYMENT_RECEIPT_HEADER, v);
             }

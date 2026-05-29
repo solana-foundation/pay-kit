@@ -302,13 +302,22 @@ impl PaymentCredential {
 }
 
 /// Payment receipt from server (parsed from Payment-Receipt header).
+///
+/// `challenge_id` is required on the Rust struct but *optional on the wire*
+/// — the TypeScript SDK only emits it when the challenge's `id` was set,
+/// so we accept JSON without that key by defaulting to an empty string.
+/// Servers that don't pin a challenge id leave this empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub status: ReceiptStatus,
     pub method: MethodName,
     pub timestamp: String,
     pub reference: String,
-    #[serde(rename = "challengeId")]
+    #[serde(
+        rename = "challengeId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub challenge_id: String,
 }
 
@@ -332,7 +341,69 @@ impl Receipt {
         self.status == ReceiptStatus::Success
     }
 
-    /// Format as Payment-Receipt header value.
+    /// Format as Payment-Receipt header value. Wraps in
+    /// [`ReceiptKind::Charge`] for the on-the-wire shape.
+    pub fn to_header(&self) -> Result<String, crate::error::Error> {
+        super::format_receipt(&ReceiptKind::Charge(self.clone()))
+    }
+}
+
+/// Tagged receipt covering the intents pay-kit ships verification for.
+///
+/// On the wire the variant is untagged — the JSON shape is the union of
+/// [`Receipt`]'s base fields plus any intent-specific extension fields.
+/// Deserialisation tries `Subscription` first (it carries the strict
+/// superset of fields) and falls back to `Charge` when extension fields
+/// are absent.
+///
+/// This enum is the breaking change from v0.6: every caller of
+/// [`super::parse_receipt`] / [`super::format_receipt`] now handles the
+/// variant explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReceiptKind {
+    /// Subscription activation receipt — base receipt plus the
+    /// subscription-specific fields defined in
+    /// `draft-solana-subscription-00`. Listed first so untagged
+    /// deserialisation prefers the strictly-richer shape when the
+    /// `subscriptionId`/`planId`/`periodIndex`/`periodStartTs`/`periodEndTs`
+    /// keys are present.
+    Subscription {
+        #[serde(flatten)]
+        base: Receipt,
+        #[serde(flatten)]
+        extensions: crate::protocol::intents::SubscriptionReceiptExtensions,
+    },
+    /// One-shot charge receipt — the original `Receipt` shape.
+    Charge(Receipt),
+}
+
+impl ReceiptKind {
+    /// Borrow the underlying [`Receipt`] regardless of variant.
+    pub fn base(&self) -> &Receipt {
+        match self {
+            ReceiptKind::Charge(r) => r,
+            ReceiptKind::Subscription { base, .. } => base,
+        }
+    }
+
+    /// Convenience: returns the subscription extensions when the variant is
+    /// `Subscription`, `None` otherwise. Caller-friendly accessor for
+    /// pay-side persistence after a `verify_credential` call.
+    pub fn subscription_extensions(
+        &self,
+    ) -> Option<&crate::protocol::intents::SubscriptionReceiptExtensions> {
+        match self {
+            ReceiptKind::Subscription { extensions, .. } => Some(extensions),
+            ReceiptKind::Charge(_) => None,
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.base().is_success()
+    }
+
+    /// Format the receipt as a `Payment-Receipt` header value.
     pub fn to_header(&self) -> Result<String, crate::error::Error> {
         super::format_receipt(self)
     }
@@ -727,7 +798,9 @@ mod tests {
         let receipt = Receipt::success("solana", "tx-sig-abc", "ch-roundtrip");
         let header = receipt.to_header().unwrap();
         let parsed = super::super::parse_receipt(&header).unwrap();
-        assert_eq!(parsed.reference, "tx-sig-abc");
+        assert_eq!(parsed.base().reference, "tx-sig-abc");
         assert!(parsed.is_success());
+        // A bare Receipt round-trips through ReceiptKind::Charge.
+        assert!(matches!(parsed, ReceiptKind::Charge(_)));
     }
 }
