@@ -196,8 +196,9 @@ class BuildPaymentTest {
 
     @Test
     fun envelopeCarriesCorrectX402Version() {
+        // The spine emits v2 envelopes (rust X402_VERSION_V2, go=2, python=2).
         val envelope = buildPayment(signer, solOffer(), fixedBlockhash)
-        assertEquals(1, envelope.x402Version)
+        assertEquals(2, envelope.x402Version)
     }
 
     @Test

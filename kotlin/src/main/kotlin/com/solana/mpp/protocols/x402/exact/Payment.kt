@@ -27,8 +27,12 @@ private val json = Json {
     explicitNulls = false
 }
 
-/** x402 protocol version stamped in the envelope. */
-private const val X402_VERSION = 1
+/**
+ * x402 protocol version stamped in the envelope. INVARIANT: 2 — the spine
+ * (rust ``X402_VERSION_V2``, go ``x402Version = 2``, python) emits v2
+ * envelopes. Do NOT revert to 1 (legacy ``X-PAYMENT`` shape).
+ */
+private const val X402_VERSION = 2
 
 /**
  * ComputeBudget SetComputeUnitLimit. INVARIANT: 20_000 (matches rust spine +
@@ -41,6 +45,12 @@ private const val COMPUTE_UNIT_PRICE = 1L
 
 /** Default SPL decimals when the offer omits ``extra.decimals``. */
 private const val DEFAULT_DECIMALS = 6
+
+/**
+ * x402 memo byte cap. INVARIANT: 256 (rust ``MAX_MEMO_BYTES``). This is
+ * NOT the MPP charge cap (566) — the x402 verifier rejects longer memos.
+ */
+private const val X402_MAX_MEMO_BYTES = 256
 
 /** Solana CAIP-2 ids recognised by this client. */
 private val SOLANA_MAINNET_CAIP2 = Network.SOLANA_MAINNET
@@ -210,6 +220,14 @@ fun buildPayment(
 
     val memo = extra?.memo
     if (memo != null) {
+        // x402 caps the memo at 256 bytes (rust MAX_MEMO_BYTES), tighter than
+        // the MPP 566 byte cap that Instructions.memo enforces. Check here so
+        // an over-long x402 memo fails fast rather than producing a tx the
+        // verifier rejects.
+        val memoBytes = memo.encodeToByteArray().size
+        require(memoBytes <= X402_MAX_MEMO_BYTES) {
+            "extra.memo exceeds maximum $X402_MAX_MEMO_BYTES bytes (got $memoBytes)"
+        }
         instructions.add(Instructions.memo(memo))
     }
 
