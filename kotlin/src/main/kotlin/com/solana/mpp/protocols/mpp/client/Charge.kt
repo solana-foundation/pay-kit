@@ -339,6 +339,17 @@ object Charge {
     }
 
     /**
+     * Resolves a currency identifier (symbol or mint address) to a canonical
+     * mint address, or null for native SOL. Exposed here so callers that
+     * hold a reference to the [Charge] object can call it without importing
+     * the _paycore package directly.
+     *
+     * Delegates to [com.solana.mpp._paycore.resolveStablecoinMint].
+     */
+    fun resolveStablecoinMint(currency: String, network: String?): String? =
+        com.solana.mpp._paycore.resolveStablecoinMint(currency, network)
+
+    /**
      * Cheap structural check for a base58 Solana pubkey (length 32-44,
      * base58 alphabet). Lets the ataCreationRequired guard accept a
      * pass-through mint address without doing a full PublicKey decode.

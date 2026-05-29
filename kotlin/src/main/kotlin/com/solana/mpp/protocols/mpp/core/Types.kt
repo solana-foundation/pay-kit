@@ -4,10 +4,10 @@ import com.solana.mpp._paycore.*
 
 import kotlinx.serialization.Serializable
 
-// MppException is defined in _paycore to avoid circular dependencies
-// (crypto primitives need MppException, and protocols need crypto). This
-// re-export makes it available under both packages for backward compat.
-typealias MppException = com.solana.mpp._paycore.MppException
+// MppException lives in _paycore (crypto primitives need it, and protocols need
+// crypto) and is brought into scope by the wildcard import above. No same-package
+// typealias here: aliasing a sealed class within its own consuming package
+// shadows the import and breaks resolution of its nested members.
 
 /** Parsed MPP `WWW-Authenticate` challenge. */
 @Serializable

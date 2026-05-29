@@ -2,6 +2,7 @@ package com.solana.mpp.client
 
 import com.solana.mpp.protocol.*
 import com.solana.mpp.crypto.*
+import com.solana.mpp._paycore.MppException
 
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest

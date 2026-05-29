@@ -1,6 +1,7 @@
 package com.solana.mpp.crypto
 
 import com.solana.mpp.protocol.*
+import com.solana.mpp._paycore.Transaction
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
