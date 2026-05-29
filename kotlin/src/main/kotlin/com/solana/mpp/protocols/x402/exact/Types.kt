@@ -1,8 +1,6 @@
 package com.solana.mpp.protocols.x402.exact
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonObject
 
 /**
  * x402 ``exact`` wire shapes for Kotlin.
@@ -47,7 +45,6 @@ data class X402Challenge(
 @Serializable
 data class X402PayloadField(
     val transaction: String? = null,
-    val transactionHash: String? = null,
 )
 
 /** An x402 envelope sent as the ``Payment-Signature`` header value (base64 JSON). */

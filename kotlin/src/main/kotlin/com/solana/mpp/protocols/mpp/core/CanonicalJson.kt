@@ -25,7 +25,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * canonical JCS test vectors so that conformance verifiers can hash or
  * sign the credential bytes directly.
  */
-object CanonicalJson {
+internal object CanonicalJson {
     fun encode(element: JsonElement): String {
         val builder = StringBuilder()
         write(element, builder)
@@ -97,7 +97,7 @@ object CanonicalJson {
                 '"' -> builder.append("\\\"")
                 '\\' -> builder.append("\\\\")
                 '\b' -> builder.append("\\b")
-                '' -> builder.append("\\f")
+                '\u000C' -> builder.append("\\f")
                 '\n' -> builder.append("\\n")
                 '\r' -> builder.append("\\r")
                 '\t' -> builder.append("\\t")
