@@ -36,7 +36,7 @@ final class Verifier
 {
     public const COMPUTE_BUDGET_PROGRAM    = 'ComputeBudget111111111111111111111111111111';
     public const MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-    public const LIGHTHOUSE_PROGRAM        = 'L1TEVtgA75k273wWz1s6XMmDhQY5i3MwcvKb4VbZzfK';
+    public const LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
     public const ASSOCIATED_TOKEN_PROGRAM  = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
     public const TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
     public const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000;
