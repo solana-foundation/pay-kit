@@ -211,7 +211,7 @@ because stock x402 facilitators settle to one address.
 | `upto`  | —      |
 | `batch` | —      |
 
-## mpp
+## MPP
 
 The [Machine Payments Protocol](https://paymentauth.org) is the broader HTTP
 Payment Authentication scheme, the same 402 handshake, but the challenge
@@ -422,33 +422,19 @@ credential shape are all defined at [paymentauth.org](https://paymentauth.org).
 
 ```text
 python/
-├── src/pay_kit/               unified surface over x402 + MPP
-│   ├── __init__.py            public exports: configure, Gate, usd, the trio
-│   ├── config.py              configure / configure_from / Config + sub-configs
-│   ├── operator.py            Operator: recipient + signer + fee-payer flag
-│   ├── signer.py              LocalSigner family + Signer factory namespace
-│   ├── price.py               Price (Decimal money) + usd/eur/gbp factories
-│   ├── fee.py                 Fee value object (within / on_top)
-│   ├── gate.py                Gate.build validation + DynamicGate + gate()
-│   ├── pricing.py             Pricing registry + gate-reference coercion
-│   ├── payment.py             Payment: settled-proof record
-│   ├── preflight.py           boot-time live-RPC soundness check + autobootstrap
-│   ├── errors.py              PayKitError hierarchy + canonical codes
-│   ├── _middleware.py         host-neutral PayCore + require_payment/is_paid trio
-│   ├── fastapi.py             FastAPI Depends shim
-│   ├── flask.py               Flask decorator shim
-│   ├── django.py              Django decorator + middleware shim
-│   ├── kms.py                 reserved remote-enclave signer namespace
-│   ├── _wire.py               TypedDict wire shapes (x402 offer/payload, MPP request)
-│   ├── _paycore/              Currency / Network / Protocol / Stablecoin / Mints
-│   └── protocols/             x402.py (exact) + mpp.py adapters over the solana_mpp wire
-├── src/solana_mpp/            lower-level MPP wire library (reused, not reimplemented)
-├── examples/fastapi/          FastAPI pay_kit example
-├── examples/flask-paykit/     Flask pay_kit example
-├── examples/django/           Django pay_kit example
-├── examples/flask/            solana_mpp @mpp_charge example
-├── examples/payment-links/    Surfpool-backed payment-page example
-├── tests/                     pytest suite
+├── src/pay_kit/                              unified surface over x402 + MPP
+│   ├── config.py, operator.py, signer.py, price.py, fee.py, gate.py,
+│   │   pricing.py, payment.py, preflight.py, errors.py    # umbrella surface
+│   ├── _paycore/                             Currency / Network / Protocol / Stablecoin / Mints
+│   ├── _wire.py                              TypedDict wire shapes (x402 offer/payload, MPP request)
+│   ├── _middleware.py                        host-neutral resolver + require_payment/is_paid/get_payment
+│   ├── fastapi.py, flask.py, django.py       framework shims
+│   ├── kms.py                                reserved remote-enclave signer namespace
+│   └── protocols/{x402,mpp}.py               x402-exact + MPP-charge adapters over the solana_mpp wire
+├── src/solana_mpp/                           lower-level MPP wire library (reused, not reimplemented)
+├── examples/{fastapi,flask-paykit,django}/   pay_kit framework examples
+├── examples/{flask,payment-links}/           solana_mpp examples
+├── tests/                                    pytest suite
 └── pyproject.toml
 ```
 
