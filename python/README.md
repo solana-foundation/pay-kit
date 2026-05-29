@@ -439,8 +439,9 @@ python/
 │   ├── flask.py               Flask decorator shim
 │   ├── django.py              Django decorator + middleware shim
 │   ├── kms.py                 reserved remote-enclave signer namespace
-│   ├── _paycore/              Currency / Network / Protocol / Stablecoin enums
-│   └── protocols/{x402,mpp}/  protocol adapters over the solana_mpp wire
+│   ├── _wire.py               TypedDict wire shapes (x402 offer/payload, MPP request)
+│   ├── _paycore/              Currency / Network / Protocol / Stablecoin / Mints
+│   └── protocols/             x402.py (exact) + mpp.py adapters over the solana_mpp wire
 ├── src/solana_mpp/            lower-level MPP wire library (reused, not reimplemented)
 ├── examples/fastapi/          FastAPI pay_kit example
 ├── examples/flask-paykit/     Flask pay_kit example
