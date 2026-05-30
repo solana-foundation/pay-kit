@@ -169,6 +169,93 @@ class HttpClientTest {
     }
 
     @Test
+    fun forwardsMintOwnerResolverForArbitraryMintChallenge() {
+        // Regression for the round-1 token-program fix: Charge now requires a
+        // MintOwnerResolver for any mint outside the static stablecoin table.
+        // MppHttpClient used to forward only the BlockhashProvider, so an
+        // arbitrary-mint charge challenge threw InvalidTransaction
+        // ("no MintOwnerResolver was provided") on the retry step. After the
+        // fix the client forwards a resolver and the retry succeeds.
+        //
+        // Arbitrary mint: a valid base58 pubkey that is NOT a known stablecoin
+        // and carries no pinned methodDetails.tokenProgram, so the charge
+        // builder must resolve the token program from the mint account owner.
+        val arbitraryMint = "951kD1xQhvXxVxRdJjDgoWi5LnMmLdnDpzd82y3u5ATX"
+        val requestB64 = Base64Url.encode(
+            (
+                """{"amount":"1000","currency":"$arbitraryMint",""" +
+                    """"recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",""" +
+                    """"methodDetails":{"network":"localnet",""" +
+                    """"recentBlockhash":"11111111111111111111111111111111"}}"""
+                ).encodeToByteArray(),
+        )
+        val challenge =
+            """Payment id="abc", realm="MPP Payment", method="solana", intent="charge", request="$requestB64""""
+
+        // A provider that resolves both the blockhash and the mint owner,
+        // mirroring JsonRpcClient (which implements both interfaces). The owner
+        // is the legacy SPL Token program so the charge builder accepts it.
+        class CombinedProvider :
+            com.solana.paykit.protocols.mpp.client.BlockhashProvider,
+            com.solana.paykit.protocols.mpp.client.MintOwnerResolver {
+            var resolved = false
+            override fun fetchRecentBlockhash(): ByteArray = ByteArray(32)
+            override fun fetchMintOwner(mintBase58: String): String {
+                resolved = true
+                return "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            }
+        }
+        val provider = CombinedProvider()
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(402)
+                .addHeader("WWW-Authenticate", challenge),
+        )
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+
+        val client = MppHttpClient(signer, provider, mintOwnerResolver = provider)
+        val response = client.mppGet(server.url("/arbitrary-mint").toString())
+        try {
+            assertEquals(200, response.code)
+        } finally {
+            response.close()
+        }
+        assertEquals(2, server.requestCount)
+        assertTrue(provider.resolved, "MintOwnerResolver must be invoked for the arbitrary mint")
+    }
+
+    @Test
+    fun arbitraryMintChallengeFailsWithoutResolver() {
+        // Companion to forwardsMintOwnerResolverForArbitraryMintChallenge: with
+        // no resolver wired (neither explicit nor via the BlockhashProvider),
+        // the arbitrary-mint charge must fail closed rather than guessing the
+        // token program. Locks in that the resolver is genuinely required.
+        val arbitraryMint = "951kD1xQhvXxVxRdJjDgoWi5LnMmLdnDpzd82y3u5ATX"
+        val requestB64 = Base64Url.encode(
+            (
+                """{"amount":"1000","currency":"$arbitraryMint",""" +
+                    """"recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",""" +
+                    """"methodDetails":{"network":"localnet",""" +
+                    """"recentBlockhash":"11111111111111111111111111111111"}}"""
+                ).encodeToByteArray(),
+        )
+        val challenge =
+            """Payment id="abc", realm="MPP Payment", method="solana", intent="charge", request="$requestB64""""
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(402)
+                .addHeader("WWW-Authenticate", challenge),
+        )
+        // blockhashProvider here is a plain lambda that is NOT a MintOwnerResolver.
+        val client = MppHttpClient(signer, blockhashProvider)
+        assertFailsWith<MppException.InvalidTransaction> {
+            client.mppGet(server.url("/arbitrary-mint-no-resolver").toString()).close()
+        }
+    }
+
+    @Test
     fun raisesWhenChallengeHeaderMissing() {
         server.enqueue(MockResponse().setResponseCode(402))
         val client = MppHttpClient(signer, blockhashProvider)

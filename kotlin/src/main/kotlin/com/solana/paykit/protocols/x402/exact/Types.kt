@@ -45,6 +45,14 @@ data class X402AcceptsEntry(
     val decimals: Int? = null,
     val tokenProgram: String? = null,
     val recentBlockhash: String? = null,
+    // Top-level managed-fee-payer offer shape. The rust spine parses a
+    // top-level ``feePayerKey`` (the facilitator pubkey that cosigns the
+    // transaction server-side) and a ``feePayer`` boolean toggle; the
+    // canonical normalization also derives ``feePayer = true`` whenever
+    // ``feePayerKey`` is present. Read both at the top level so the client
+    // honors this shape, not only the nested ``extra.feePayer`` alias.
+    val feePayer: Boolean? = null,
+    val feePayerKey: String? = null,
     // The verbatim offered object as received on the wire, kept so the client
     // can echo it back unchanged in the `Payment-Signature` envelope's
     // `accepted` field. The rust verifier structurally compares the echoed
@@ -89,6 +97,28 @@ val X402AcceptsEntry.effectiveDecimals: Int? get() = decimals ?: extra?.decimals
  * the rust spine.
  */
 val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = recentBlockhash ?: extra?.recentBlockhash
+
+/**
+ * Effective managed fee payer pubkey, or ``null`` when the offer does not
+ * request a managed fee payer.
+ *
+ * Mirrors the rust spine ``build_payment``: a managed fee payer is used when
+ * the ``feePayer`` toggle is true AND a ``feePayerKey`` is present. The rust
+ * parser also normalizes ``feePayer = true`` whenever ``feePayerKey`` is set,
+ * so a top-level ``feePayerKey`` with no explicit ``feePayer`` flag still
+ * selects the managed fee payer. The top-level fields take precedence; the
+ * nested ``extra.feePayer`` (a bare pubkey string) is read as a fallback so
+ * the older nested-only offer shape keeps working.
+ */
+val X402AcceptsEntry.effectiveFeePayerKey: String? get() {
+    val topLevelKey = feePayerKey
+    if (topLevelKey != null) {
+        // feePayer defaults to true when feePayerKey is present (rust parser
+        // normalization); only an explicit `false` opts out.
+        return if (feePayer != false) topLevelKey else null
+    }
+    return extra?.feePayer
+}
 
 /** The base64-decoded challenge body (``payment-required`` header or 402 body). */
 @Serializable

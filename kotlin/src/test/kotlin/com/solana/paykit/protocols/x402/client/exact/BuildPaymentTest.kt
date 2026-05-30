@@ -11,6 +11,7 @@ import com.solana.paykit.protocols.x402.exact.X402AcceptsEntry
 import com.solana.paykit.protocols.x402.exact.X402Extra
 import com.solana.paykit.protocols.x402.exact.effectiveAsset
 import com.solana.paykit.protocols.x402.exact.effectiveDecimals
+import com.solana.paykit.protocols.x402.exact.effectiveFeePayerKey
 import com.solana.paykit.protocols.x402.exact.effectiveRecentBlockhash
 import com.solana.paykit.protocols.x402.exact.effectiveTokenProgram
 import java.util.Base64
@@ -503,6 +504,136 @@ class BuildPaymentTest {
         )
         assertEquals(2, offer.effectiveDecimals)
         assertEquals(Programs.TOKEN_2022_PROGRAM, offer.effectiveTokenProgram)
+    }
+
+    // ── Top-level managed fee payer (PR #152 fix 2) ────────────────────────────
+
+    @Test
+    fun honorsTopLevelFeePayerKeyOfferShape() {
+        // Regression for PR #152 fix 2: the rust spine parses a top-level
+        // `feePayerKey` (+ optional `feePayer` toggle) managed-fee-payer offer
+        // shape. The Kotlin client used to read only the nested extra.feePayer,
+        // so a top-level-only offer silently fell back to the signer as fee
+        // payer. After the fix the effective fee payer comes from the top-level
+        // field, which changes the v0 account layout (fee payer is account 0),
+        // so the transaction bytes must differ from the signer-pays case.
+        val facilitator = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        val topLevelOffer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = "SOL",
+            amount = "1000",
+            payTo = devnetRecipient,
+            feePayerKey = facilitator,
+        )
+        // feePayerKey present implies the managed fee payer is selected even
+        // without an explicit feePayer flag (rust parser normalization).
+        assertEquals(facilitator, topLevelOffer.effectiveFeePayerKey)
+
+        val withTopLevel = buildPayment(signer, topLevelOffer, fixedBlockhash, { "0011223344556677" })
+        val signerPays = buildPayment(signer, solOffer(feePayer = null), fixedBlockhash, { "0011223344556677" })
+        val rawTopLevel = decodeTransaction(withTopLevel.payload.transaction!!)
+        val rawSignerPays = decodeTransaction(signerPays.payload.transaction!!)
+        assertTrue(
+            !rawTopLevel.contentEquals(rawSignerPays),
+            "top-level feePayerKey offer must use the managed fee payer (different account layout)",
+        )
+        // The facilitator pubkey bytes must appear in the v0 message (it is the
+        // fee payer at account index 0).
+        val facilitatorBytes = Base58.decode(facilitator)
+        val found = rawTopLevel.indices.any { idx ->
+            idx + facilitatorBytes.size <= rawTopLevel.size &&
+                rawTopLevel.copyOfRange(idx, idx + facilitatorBytes.size).contentEquals(facilitatorBytes)
+        }
+        assertTrue(found, "facilitator (top-level feePayerKey) pubkey must appear in the transaction")
+    }
+
+    @Test
+    fun topLevelFeePayerFalseOptsOutOfManagedFeePayer() {
+        // An explicit `feePayer = false` opts out of the managed fee payer even
+        // when feePayerKey is present, so the signer pays its own fee.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = "SOL",
+            amount = "1000",
+            payTo = devnetRecipient,
+            feePayer = false,
+            feePayerKey = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ",
+        )
+        assertNull(offer.effectiveFeePayerKey)
+    }
+
+    @Test
+    fun topLevelFeePayerKeyTakesPrecedenceOverExtraAlias() {
+        // Top-level feePayerKey wins over the nested extra.feePayer alias.
+        val topLevel = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = "SOL",
+            amount = "1000",
+            payTo = devnetRecipient,
+            feePayerKey = topLevel,
+            extra = X402Extra(feePayer = devnetRecipient),
+        )
+        assertEquals(topLevel, offer.effectiveFeePayerKey)
+    }
+
+    // ── Unsigned u64 amount parsing (PR #152 fix 3) ─────────────────────────────
+
+    @Test
+    fun acceptsU64AmountAboveLongMaxForSol() {
+        // Regression for PR #152 fix 3: the x402 amount used toLongOrNull(),
+        // which returns null for any value above Long.MAX_VALUE (2^63-1) and so
+        // rejected legitimate u64 amounts. u64 max is 2^64-1. Before the fix
+        // this offer threw IllegalArgumentException ("invalid amount"); after,
+        // it builds and the little-endian u64 bytes appear in the transaction.
+        val u64Max = "18446744073709551615" // 2^64 - 1
+        val offer = solOffer(amount = u64Max)
+        val envelope = buildPayment(signer, offer, fixedBlockhash, { "0011223344556677" })
+        assertNotNull(envelope.payload.transaction)
+        val raw = decodeTransaction(envelope.payload.transaction!!)
+        // SystemProgram::transfer data = 0x02 (u32 LE disc) + amount (u64 LE).
+        // u64 max encodes as eight 0xFF bytes.
+        val transferData = byteArrayOf(0x02, 0x00, 0x00, 0x00) +
+            ByteArray(8) { 0xFF.toByte() }
+        val found = raw.indices.any { idx ->
+            idx + transferData.size <= raw.size &&
+                raw.copyOfRange(idx, idx + transferData.size).contentEquals(transferData)
+        }
+        assertTrue(found, "u64-max SOL transfer must encode as 0x02 + eight 0xFF amount bytes")
+    }
+
+    @Test
+    fun acceptsU64AmountAboveLongMaxForSpl() {
+        // The SPL transferChecked path (web3-solana) must also honor the full
+        // u64 range. Pick a value strictly above Long.MAX_VALUE and assert the
+        // little-endian u64 amount bytes land in the SPL transferChecked data.
+        val amount = "9223372036854775808" // Long.MAX_VALUE + 1 = 2^63
+        val offer = splOffer().copy(amount = amount)
+        val envelope = buildPayment(signer, offer, fixedBlockhash, { "0011223344556677" })
+        assertNotNull(envelope.payload.transaction)
+        val raw = decodeTransaction(envelope.payload.transaction!!)
+        // SPL transferChecked data = 0x0c disc + amount u64 LE + decimals u8.
+        // 2^63 little-endian = seven 0x00 then 0x80.
+        val amountLE = byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0x80.toByte())
+        val discPlusAmount = byteArrayOf(0x0c) + amountLE
+        val found = raw.indices.any { idx ->
+            idx + discPlusAmount.size <= raw.size &&
+                raw.copyOfRange(idx, idx + discPlusAmount.size).contentEquals(discPlusAmount)
+        }
+        assertTrue(found, "u64 SPL amount above Long.MAX_VALUE must encode as 0x0c + LE u64 bytes")
+    }
+
+    @Test
+    fun rejectsAmountAboveU64Max() {
+        // Above the u64 ceiling (2^64) must still fail, matching the rust u64
+        // parse upper bound.
+        val offer = solOffer(amount = "18446744073709551616") // 2^64
+        assertFailsWith<IllegalArgumentException> {
+            buildPayment(signer, offer, fixedBlockhash)
+        }
     }
 
     // ── Error cases ───────────────────────────────────────────────────────────

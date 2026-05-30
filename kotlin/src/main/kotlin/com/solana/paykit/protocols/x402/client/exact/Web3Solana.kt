@@ -5,6 +5,7 @@ import com.solana.paykit.paycore.Instruction
 import com.solana.programs.TokenProgram
 import com.solana.publickey.SolanaPublicKey
 import com.solana.transaction.TransactionInstruction
+import java.math.BigInteger
 
 /**
  * Bridge between the Solana Mobile ``web3-solana`` instruction builders and
@@ -70,6 +71,43 @@ internal object Web3Solana {
         // offers are honoured.
         return ix.toPaycore(programIdOverride = tokenProgram)
     }
+
+    /**
+     * Unsigned-u64 [amount] overload of [transferChecked].
+     *
+     * SPL token amounts are u64 on the wire; a signed [Long] cannot represent
+     * the upper half [2^63, 2^64). web3-solana's [TokenProgram.transferChecked]
+     * Borsh-encodes the amount as a raw little-endian i64, so the u64
+     * bit-pattern (``BigInteger.toLong()`` two's-complement of values in
+     * [2^63, 2^64)) serializes to the exact unsigned wire bytes. This keeps the
+     * x402 client at parity with the round-1 MPP charge path, which encodes the
+     * full unsigned range via [BigInteger].
+     */
+    fun transferChecked(
+        tokenProgram: String,
+        source: String,
+        mint: String,
+        destination: String,
+        authority: String,
+        amount: BigInteger,
+        decimals: Int,
+    ): Instruction {
+        require(amount.signum() >= 0) { "amount must be non-negative" }
+        require(amount < TWO_POW_64) { "amount exceeds u64 range" }
+        require(decimals in 0..255) { "decimals must fit in u8" }
+        val ix = TokenProgram.transferChecked(
+            SolanaPublicKey.from(source),
+            SolanaPublicKey.from(destination),
+            // Low 64 bits as two's-complement Long == the unsigned u64 bytes.
+            amount.toLong(),
+            decimals.toByte(),
+            SolanaPublicKey.from(authority),
+            SolanaPublicKey.from(mint),
+        )
+        return ix.toPaycore(programIdOverride = tokenProgram)
+    }
+
+    private val TWO_POW_64: BigInteger = BigInteger.ONE.shiftLeft(64)
 
     /** Lowers a web3-solana [TransactionInstruction] into a [paycore][Instruction]. */
     private fun TransactionInstruction.toPaycore(programIdOverride: String? = null): Instruction =

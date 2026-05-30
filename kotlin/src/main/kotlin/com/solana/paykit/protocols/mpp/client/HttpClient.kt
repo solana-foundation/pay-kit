@@ -39,6 +39,7 @@ class MppHttpClient(
     private val okHttp: OkHttpClient = OkHttpClient(),
     private val computeUnitLimit: Int = 200_000,
     private val computeUnitPrice: Long = 1L,
+    private val mintOwnerResolver: MintOwnerResolver? = null,
 ) {
     /**
      * Performs an MPP-aware GET. Returns the response from the post-payment
@@ -74,12 +75,23 @@ class MppHttpClient(
         }
         val challenge = MppHeaders.selectSolanaChargeChallenge(advertised)
             ?: throw MppException.InvalidPaymentScheme
+        // Forward a MintOwnerResolver so arbitrary-mint challenges can resolve
+        // their token program from the mint account owner. The round-1
+        // token-program fix made Charge require a resolver for any mint outside
+        // the static stablecoin table; without forwarding one MppHttpClient
+        // would throw on every arbitrary-mint challenge. When no explicit
+        // resolver is configured, reuse the BlockhashProvider if it also
+        // implements MintOwnerResolver (JsonRpcClient does both), so the common
+        // single-RPC setup works without extra wiring.
+        val resolver = mintOwnerResolver
+            ?: (blockhashProvider as? MintOwnerResolver)
         val authorization = Charge.buildCredentialHeader(
             signer = signer,
             challenge = challenge,
             blockhashProvider = blockhashProvider,
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
+            mintOwnerResolver = resolver,
         )
         return execute(
             "GET",

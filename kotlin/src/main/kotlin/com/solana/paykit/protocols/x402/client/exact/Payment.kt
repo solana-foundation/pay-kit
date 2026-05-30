@@ -9,8 +9,27 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import java.math.BigInteger
 import java.security.SecureRandom
 import java.util.Base64
+
+/** Maximum unsigned u64, the wire upper bound for x402 base-unit amounts. */
+private val U64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
+
+/**
+ * Parses a decimal string into an unsigned u64 ([BigInteger]) base-unit
+ * amount, or null when it is not a non-negative integer in [0, 2^64).
+ *
+ * Mirrors the rust spine ``build_payment`` which parses ``amount`` as a full
+ * ``u64`` and the round-1 MPP fix (`Charge.parseU64`). A signed-`Long`
+ * `toLongOrNull()` rejects every legitimate amount in [2^63, 2^64), so this
+ * keeps the x402 client parity with the MPP charge path.
+ */
+private fun parseX402U64(text: String): BigInteger? {
+    val value = text.toBigIntegerOrNull() ?: return null
+    if (value.signum() < 0 || value > U64_MAX) return null
+    return value
+}
 
 /**
  * x402 ``exact`` client: challenge parsing and payment-transaction building.
@@ -233,11 +252,15 @@ fun buildPayment(
     val payTo = requirement.effectivePayTo
         ?: throw IllegalArgumentException("x402 offer is missing `payTo`")
     val amountRaw = requirement.amount ?: requirement.maxAmountRequired
-    val amount = amountRaw?.toLongOrNull()?.takeIf { it >= 0 }
+    val amount = amountRaw?.let { parseX402U64(it) }
         ?: throw IllegalArgumentException("x402 offer has an invalid amount: $amountRaw")
 
     val extra = requirement.extra
-    val feePayerStr = extra?.feePayer
+    // Honor the top-level managed-fee-payer offer shape (feePayer toggle +
+    // feePayerKey), not just the nested extra.feePayer alias, matching the
+    // rust spine parser. effectiveFeePayerKey returns null when no managed
+    // fee payer is requested, in which case the signer pays its own fee.
+    val feePayerStr = requirement.effectiveFeePayerKey
     val feePayerKey = if (feePayerStr != null) PublicKey.fromBase58(feePayerStr) else PublicKey(signer.publicKeyBytes)
 
     val instructions = mutableListOf<Instruction>()
@@ -249,6 +272,8 @@ fun buildPayment(
 
     val isNativeSol = asset.uppercase() == "SOL" || asset == "11111111111111111111111111111111"
     if (isNativeSol) {
+        // BigInteger overload encodes the full unsigned u64 range; the Long
+        // overload would truncate amounts in [2^63, 2^64).
         instructions.add(Instructions.systemTransfer(signerKey.toBase58(), recipientKey.toBase58(), amount))
     } else {
         // The offer's currency may be a symbol ("USDC") rather than a mint
