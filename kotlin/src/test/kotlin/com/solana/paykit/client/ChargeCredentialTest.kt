@@ -1,8 +1,16 @@
-package com.solana.paykit.client
+package com.solana.paykit.protocols.mpp.client
 
-import com.solana.paykit.protocol.*
-import com.solana.paykit.crypto.*
+import com.solana.paykit.paycore.Base58
+import com.solana.paykit.paycore.Base64Url
+import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.paycore.MppException
+import com.solana.paykit.protocols.mpp.core.ChargeRequest
+import com.solana.paykit.protocols.mpp.core.ChallengeEcho
+import com.solana.paykit.protocols.mpp.core.CredentialPayload
+import com.solana.paykit.protocols.mpp.core.MppHeaders
+import com.solana.paykit.protocols.mpp.core.PaymentChallenge
+import com.solana.paykit.protocols.mpp.core.PaymentCredential
+import com.solana.paykit.protocols.mpp.core.SolanaChargeMethodDetails
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

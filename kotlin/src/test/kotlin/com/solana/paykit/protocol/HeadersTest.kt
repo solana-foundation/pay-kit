@@ -1,6 +1,6 @@
-package com.solana.paykit.protocol
+package com.solana.paykit.protocols.mpp.core
 
-import com.solana.paykit.crypto.*
+import com.solana.paykit.paycore.Base64Url
 import com.solana.paykit.paycore.MppException
 
 import kotlin.test.Test

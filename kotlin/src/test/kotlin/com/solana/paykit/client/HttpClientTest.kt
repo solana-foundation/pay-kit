@@ -1,7 +1,7 @@
-package com.solana.paykit.client
+package com.solana.paykit.protocols.mpp.client
 
-import com.solana.paykit.protocol.*
-import com.solana.paykit.crypto.*
+import com.solana.paykit.paycore.Base64Url
+import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.paycore.MppException
 
 import kotlin.test.AfterTest

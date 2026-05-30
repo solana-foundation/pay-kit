@@ -87,7 +87,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-    // multimult ships Base58 used by com.solana.paykit.crypto.Base58. The SDK
+    // multimult ships Base58 used by com.solana.paykit.paycore.Base58. The SDK
     // sources are vendored into this Android module via sourceSets, so the
     // dependency cannot be inherited from kotlin/build.gradle.kts and must
     // be declared explicitly here. We pin the Android variant (not -jvm)

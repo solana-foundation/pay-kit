@@ -8,10 +8,10 @@
 
 package com.solana.paykit.examples
 
-import com.solana.paykit.client.Charge
-import com.solana.paykit.client.JsonRpcClient
-import com.solana.paykit.client.MppHttpClient
-import com.solana.paykit.crypto.MemorySigner
+import com.solana.paykit.protocols.mpp.client.Charge
+import com.solana.paykit.protocols.mpp.client.JsonRpcClient
+import com.solana.paykit.protocols.mpp.client.MppHttpClient
+import com.solana.paykit.paycore.MemorySigner
 
 fun main(args: Array<String>) {
     val target = args.firstOrNull() ?: error("usage: ChargeClient <url>")

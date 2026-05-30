@@ -1,7 +1,4 @@
-package com.solana.paykit.crypto
-
-import com.solana.paykit.protocol.*
-import com.solana.paykit.paycore.MppException
+package com.solana.paykit.paycore
 
 import kotlin.test.Test
 import kotlin.test.assertEquals

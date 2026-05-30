@@ -1,6 +1,4 @@
-package com.solana.paykit.crypto
-
-import com.solana.paykit.protocol.*
+package com.solana.paykit.paycore
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
