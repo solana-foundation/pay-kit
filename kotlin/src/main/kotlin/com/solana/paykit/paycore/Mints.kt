@@ -39,3 +39,39 @@ fun resolveStablecoinMint(currency: String, network: String?): String? = when (c
     "CASH" -> Mints.CASH_MAINNET
     else -> currency
 }
+
+/**
+ * Reverse lookup: a currency symbol or mint address to its canonical symbol,
+ * or null for native SOL / unknown values. Mirrors rust `stablecoin_symbol`.
+ */
+fun stablecoinSymbol(currencyOrMint: String): String? = when (currencyOrMint.uppercase()) {
+    "SOL" -> null
+    "USDC" -> "USDC"
+    "USDT" -> "USDT"
+    "USDG" -> "USDG"
+    "PYUSD" -> "PYUSD"
+    "CASH" -> "CASH"
+    else -> when (currencyOrMint) {
+        Mints.USDC_MAINNET, Mints.USDC_DEVNET -> "USDC"
+        Mints.USDT_MAINNET -> "USDT"
+        Mints.USDG_MAINNET, Mints.USDG_DEVNET -> "USDG"
+        Mints.PYUSD_MAINNET, Mints.PYUSD_DEVNET -> "PYUSD"
+        Mints.CASH_MAINNET -> "CASH"
+        else -> null
+    }
+}
+
+/** True if a stablecoin (by symbol or mint) settles on SPL Token-2022. */
+fun stablecoinUsesToken2022(currencyOrMint: String): Boolean =
+    stablecoinSymbol(currencyOrMint) in setOf("USDG", "PYUSD", "CASH")
+
+/**
+ * Default token program for a currency or mint, resolving the mint first so
+ * symbols and addresses agree. Mirrors rust `default_token_program_for_currency`:
+ * Token-2022 mints (USDG, PYUSD, CASH) use the Token-2022 program; everything
+ * else the legacy Token program.
+ */
+fun defaultTokenProgramForCurrency(currency: String, network: String?): String {
+    val mint = resolveStablecoinMint(currency, network) ?: currency
+    return if (stablecoinUsesToken2022(mint)) Programs.TOKEN_2022_PROGRAM else Programs.TOKEN_PROGRAM
+}

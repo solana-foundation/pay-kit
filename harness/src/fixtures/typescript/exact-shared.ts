@@ -67,7 +67,15 @@ export function toBaseUnits(price: string, decimals: number): string {
     throw new Error(`invalid price: ${price}`);
   }
   const [whole, frac = ""] = token.split(".");
-  const fracScaled = `${frac}${"0".repeat(decimals)}`.slice(0, decimals);
+  // Reject more fractional digits than the mint supports rather than
+  // truncating, which would silently under-advertise the price (the Rust
+  // spine rejects the same input as too many decimal places).
+  if (frac.length > decimals) {
+    throw new Error(
+      `price ${price} has more than ${decimals} decimal places`,
+    );
+  }
+  const fracScaled = frac.padEnd(decimals, "0");
   const combined = `${whole}${fracScaled}`.replace(/^0+(?=\d)/, "");
   return combined === "" ? "0" : combined;
 }

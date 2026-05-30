@@ -219,11 +219,17 @@ fun buildPayment(
     if (isNativeSol) {
         instructions.add(Instructions.systemTransfer(signerKey.toBase58(), recipientKey.toBase58(), amount))
     } else {
+        // The offer's currency may be a symbol ("USDC") rather than a mint
+        // address, and the token program may be omitted (the reference server
+        // defaults both from the currency). Resolve the mint and default the
+        // token program from the currency, mirroring the rust client.
+        val label = Network.label(Network.toCaip2(requirement.network))
+        val mintStr = resolveStablecoinMint(asset, label) ?: asset
         val tokenProgramStr = requirement.effectiveTokenProgram
-            ?: throw IllegalArgumentException("x402 SPL offer is missing `extra.tokenProgram`")
+            ?: defaultTokenProgramForCurrency(asset, label)
         val decimals = requirement.effectiveDecimals ?: DEFAULT_DECIMALS
         val tokenProgramKey = PublicKey.fromBase58(tokenProgramStr)
-        val mintKey = PublicKey.fromBase58(asset)
+        val mintKey = PublicKey.fromBase58(mintStr)
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgramKey)
         val destAta = Pda.associatedTokenAddress(recipientKey, mintKey, tokenProgramKey)
         // Build the SPL transferChecked through web3-solana (the SPL wire

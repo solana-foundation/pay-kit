@@ -5,6 +5,8 @@ import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.paycore.Mints
 import com.solana.paykit.paycore.Network
 import com.solana.paykit.paycore.Programs
+import com.solana.paykit.paycore.defaultTokenProgramForCurrency
+import com.solana.paykit.paycore.resolveStablecoinMint
 import com.solana.paykit.protocols.x402.exact.X402AcceptsEntry
 import com.solana.paykit.protocols.x402.exact.X402Extra
 import java.util.Base64
@@ -40,6 +42,24 @@ class BuildPaymentTest {
 
     /** Fixed 32 zero-byte blockhash provider. */
     private val fixedBlockhash: () -> ByteArray = { ByteArray(32) }
+
+    @Test
+    fun buildsFromSymbolOfferDefaultingTokenProgram() {
+        // A reference offer may carry the currency as a symbol and omit the
+        // token program; the client resolves the mint and defaults the program
+        // from the currency rather than failing.
+        assertEquals(Mints.USDC_DEVNET, resolveStablecoinMint("USDC", "devnet"))
+        assertEquals(Programs.TOKEN_PROGRAM, defaultTokenProgramForCurrency("USDC", "devnet"))
+        assertEquals(Programs.TOKEN_2022_PROGRAM, defaultTokenProgramForCurrency("USDG", "devnet"))
+
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"1000","asset":"USDC","payTo":"$devnetRecipient"}]}"""
+        val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(requirement)
+        // Previously threw on the symbol asset / missing token program.
+        val envelope = buildPayment(signer, requirement, fixedBlockhash)
+        assertNotNull(envelope.payload.transaction)
+    }
 
     @Test
     fun echoesOfferedAcceptedVerbatim() {
@@ -272,7 +292,10 @@ class BuildPaymentTest {
     }
 
     @Test
-    fun splOfferMissingTokenProgramThrows() {
+    fun splOfferMissingTokenProgramDefaultsFromCurrency() {
+        // A known stablecoin offer that omits the token program defaults it
+        // from the currency (rust `default_token_program_for_currency`) rather
+        // than failing: USDC settles on the legacy Token program.
         val offer = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_DEVNET,
@@ -281,9 +304,8 @@ class BuildPaymentTest {
             payTo = devnetRecipient,
             extra = X402Extra(tokenProgram = null),
         )
-        assertFailsWith<IllegalArgumentException> {
-            buildPayment(signer, offer, fixedBlockhash)
-        }
+        val envelope = buildPayment(signer, offer, fixedBlockhash)
+        assertNotNull(envelope.payload.transaction)
     }
 
     // ── Fee payer ─────────────────────────────────────────────────────────────

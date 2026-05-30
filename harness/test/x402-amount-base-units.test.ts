@@ -38,9 +38,16 @@ describe("toBaseUnits (x402 exact amount scaling)", () => {
     expect(toBaseUnits("1.5", 6)).toBe("1500000");
   });
 
-  it("truncates fractional digits beyond the decimals precision", () => {
-    expect(toBaseUnits("0.0000001", 6)).toBe("0");
-    expect(toBaseUnits("1.2345678", 6)).toBe("1234567");
+  it("rejects more fractional digits than the decimals precision", () => {
+    // Truncating would silently under-advertise the price; the Rust spine
+    // rejects the same input, so the fixture must too.
+    expect(() => toBaseUnits("0.0000001", 6)).toThrow(/decimal places/);
+    expect(() => toBaseUnits("1.2345678", 6)).toThrow(/decimal places/);
+  });
+
+  it("accepts fractional digits exactly at the decimals precision", () => {
+    expect(toBaseUnits("1.234567", 6)).toBe("1234567");
+    expect(toBaseUnits("0.000001", 6)).toBe("1");
   });
 
   it("keeps zero as a single base unit of zero", () => {
