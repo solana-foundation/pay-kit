@@ -56,6 +56,20 @@ class ParseX402ChallengeTest {
     }
 
     @Test
+    fun negativeAmountOfferIsNotSelectedAsCheapest() {
+        // A negative amount is not a valid u64; it must not win the
+        // cheapest-offer selection over a valid offer.
+        val body = envelopeJson(
+            offer(asset = "SOL", amount = "-5"),
+            offer(asset = "SOL", amount = "1000"),
+        )
+        val headers = mapOf("payment-required" to headerFor(body))
+        val result = parseX402Challenge(headers, null, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals("1000", result.amount)
+    }
+
+    @Test
     fun selectsTestnetOffer() {
         // The rust spine supports Solana testnet; a testnet offer must be
         // selectable rather than filtered out by the network allow-set.

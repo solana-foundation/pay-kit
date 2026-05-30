@@ -139,7 +139,11 @@ private fun isSolanaExact(offer: X402AcceptsEntry): Boolean {
 
 private fun amountOf(offer: X402AcceptsEntry): Long {
     val raw = offer.amount ?: offer.maxAmountRequired
-    return raw?.toLongOrNull() ?: Long.MAX_VALUE
+    // The wire amount is a u64 of base units; a negative or non-numeric value
+    // is invalid, so sort it last rather than letting a negative amount win
+    // the cheapest-offer selection (matching the rust parser's u64 behavior).
+    val value = raw?.toLongOrNull()
+    return if (value != null && value >= 0) value else Long.MAX_VALUE
 }
 
 private fun currencyOf(offer: X402AcceptsEntry): String = offer.effectiveAsset ?: ""
@@ -201,7 +205,7 @@ fun buildPayment(
     val payTo = requirement.effectivePayTo
         ?: throw IllegalArgumentException("x402 offer is missing `payTo`")
     val amountRaw = requirement.amount ?: requirement.maxAmountRequired
-    val amount = amountRaw?.toLongOrNull()
+    val amount = amountRaw?.toLongOrNull()?.takeIf { it >= 0 }
         ?: throw IllegalArgumentException("x402 offer has an invalid amount: $amountRaw")
 
     val extra = requirement.extra
