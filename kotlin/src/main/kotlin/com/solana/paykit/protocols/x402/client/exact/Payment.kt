@@ -4,6 +4,11 @@ import com.solana.paykit.paycore.*
 import com.solana.paykit.protocols.x402.exact.*
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import java.util.Base64
 
 /**
@@ -56,7 +61,8 @@ private const val X402_MAX_MEMO_BYTES = 256
 /** Solana CAIP-2 ids recognised by this client. */
 private val SOLANA_MAINNET_CAIP2 = Network.SOLANA_MAINNET
 private val SOLANA_DEVNET_CAIP2 = Network.SOLANA_DEVNET
-private val SOLANA_CAIP2 = setOf(SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2)
+private val SOLANA_TESTNET_CAIP2 = Network.SOLANA_TESTNET
+private val SOLANA_CAIP2 = setOf(SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2, SOLANA_TESTNET_CAIP2)
 
 // ── Challenge parsing ─────────────────────────────────────────────────────────
 
@@ -96,17 +102,31 @@ private fun lookupHeader(headers: Map<String, String>, name: String): String? {
 
 private fun selectFromHeader(headerValue: String, selection: ChallengeSelection): X402AcceptsEntry? =
     try {
-        val decoded = Base64.getDecoder().decode(headerValue)
-        val challenge = json.decodeFromString<X402Challenge>(decoded.decodeToString())
-        selectRequirement(challenge.accepts, selection)
+        selectFromJsonText(Base64.getDecoder().decode(headerValue).decodeToString(), selection)
     } catch (_: Exception) {
         null
     }
 
 private fun selectFromBody(body: String, selection: ChallengeSelection): X402AcceptsEntry? =
+    selectFromJsonText(body, selection)
+
+/**
+ * Decodes the challenge JSON and selects an offer, attaching each offer's
+ * verbatim wire object as [X402AcceptsEntry.raw] so the selected entry can be
+ * echoed back unchanged (the rust verifier structurally compares the echoed
+ * `accepted` against its offered options).
+ */
+private fun selectFromJsonText(text: String, selection: ChallengeSelection): X402AcceptsEntry? =
     try {
-        val challenge = json.decodeFromString<X402Challenge>(body)
-        selectRequirement(challenge.accepts, selection)
+        val accepts = json.parseToJsonElement(text).jsonObject["accepts"]?.jsonArray
+        if (accepts == null) {
+            null
+        } else {
+            val entries = accepts.map { element ->
+                json.decodeFromJsonElement(X402AcceptsEntry.serializer(), element).copy(raw = element)
+            }
+            selectRequirement(entries, selection)
+        }
     } catch (_: Exception) {
         null
     }
@@ -278,6 +298,16 @@ fun buildPaymentHeader(
     rpcBlockhashProvider: () -> ByteArray,
 ): String {
     val envelope = buildPayment(signer, requirement, rpcBlockhashProvider)
-    val payload = json.encodeToString(X402Envelope.serializer(), envelope)
+    // Echo the offered object verbatim when it was parsed off the wire so the
+    // rust verifier's structural match sees every server-specific field; fall
+    // back to the typed entry for offers built in code.
+    val acceptedJson = requirement.raw
+        ?: json.encodeToJsonElement(X402AcceptsEntry.serializer(), envelope.accepted)
+    val envelopeJson = buildJsonObject {
+        put("x402Version", JsonPrimitive(envelope.x402Version))
+        put("accepted", acceptedJson)
+        put("payload", json.encodeToJsonElement(X402PayloadField.serializer(), envelope.payload))
+    }
+    val payload = json.encodeToString(JsonObject.serializer(), envelopeJson)
     return Base64.getEncoder().encodeToString(payload.encodeToByteArray())
 }

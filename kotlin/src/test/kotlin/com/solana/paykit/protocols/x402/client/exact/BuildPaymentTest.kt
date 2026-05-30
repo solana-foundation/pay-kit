@@ -13,6 +13,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Unit tests for [buildPayment] and [buildPaymentHeader].
@@ -36,6 +40,31 @@ class BuildPaymentTest {
 
     /** Fixed 32 zero-byte blockhash provider. */
     private val fixedBlockhash: () -> ByteArray = { ByteArray(32) }
+
+    @Test
+    fun echoesOfferedAcceptedVerbatim() {
+        // A server may add fields the typed entry does not model. The client
+        // must echo the offered `accepted` object verbatim so the rust
+        // verifier's structural comparison against the route requirement
+        // matches. Build from a *parsed* offer (the path that carries `raw`).
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"5000","asset":"SOL","payTo":"$devnetRecipient",""" +
+            """"maxTimeoutSeconds":120,"serverField":"keep-me",""" +
+            """"extra":{"customExtra":"keep-too"}}]}"""
+        val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(requirement)
+        val header = buildPaymentHeader(signer, requirement, fixedBlockhash)
+        val envelope = Json.parseToJsonElement(
+            Base64.getDecoder().decode(header).decodeToString(),
+        ).jsonObject
+        val accepted = envelope["accepted"]!!.jsonObject
+        assertEquals("keep-me", accepted["serverField"]!!.jsonPrimitive.content)
+        assertEquals(120, accepted["maxTimeoutSeconds"]!!.jsonPrimitive.int)
+        assertEquals(
+            "keep-too",
+            accepted["extra"]!!.jsonObject["customExtra"]!!.jsonPrimitive.content,
+        )
+    }
 
     private val devnetRecipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 

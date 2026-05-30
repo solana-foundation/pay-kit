@@ -18,6 +18,9 @@ object Network {
      */
     const val SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
+    /** CAIP-2 id for Solana testnet. */
+    const val SOLANA_TESTNET = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
+
     /**
      * Resolves a network slug or CAIP-2 identifier to its canonical CAIP-2 form.
      *
@@ -30,16 +33,23 @@ object Network {
     fun toCaip2(network: String?): String {
         if (network == null) return SOLANA_MAINNET
         val lowered = network.trim()
-        if (lowered == SOLANA_MAINNET || lowered == SOLANA_DEVNET) return lowered
+        if (lowered == SOLANA_MAINNET || lowered == SOLANA_DEVNET || lowered == SOLANA_TESTNET) {
+            return lowered
+        }
         return when (lowered) {
             "mainnet", "mainnet-beta", "solana" -> SOLANA_MAINNET
             "devnet", "solana-devnet", "localnet" -> SOLANA_DEVNET
+            "testnet", "solana-testnet" -> SOLANA_TESTNET
             // Unknown slugs resolve to mainnet, matching the rust
             // `caip2_network_for_cluster` catch-all (`_ => SOLANA_MAINNET`).
             else -> SOLANA_MAINNET
         }
     }
 
-    /** Returns `"devnet"` for the devnet CAIP-2, `"mainnet"` otherwise. */
-    fun label(caip2: String): String = if (caip2 == SOLANA_DEVNET) "devnet" else "mainnet"
+    /** Maps a CAIP-2 id to its cluster label (`devnet` / `testnet` / `mainnet`). */
+    fun label(caip2: String): String = when (caip2) {
+        SOLANA_DEVNET -> "devnet"
+        SOLANA_TESTNET -> "testnet"
+        else -> "mainnet"
+    }
 }

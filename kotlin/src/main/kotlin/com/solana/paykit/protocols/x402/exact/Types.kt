@@ -1,6 +1,8 @@
 package com.solana.paykit.protocols.x402.exact
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import kotlinx.serialization.json.JsonElement
 
 /**
  * x402 ``exact`` wire shapes for Kotlin.
@@ -40,6 +42,14 @@ data class X402AcceptsEntry(
     val decimals: Int? = null,
     val tokenProgram: String? = null,
     val recentBlockhash: String? = null,
+    // The verbatim offered object as received on the wire, kept so the client
+    // can echo it back unchanged in the `Payment-Signature` envelope's
+    // `accepted` field. The rust verifier structurally compares the echoed
+    // `accepted` against its offered options, so server-specific fields the
+    // typed properties above do not model must survive the round trip.
+    // `null` for entries built in code (those re-serialize from the typed
+    // fields). Excluded from (de)serialization; populated during parsing.
+    @Transient val raw: JsonElement? = null,
 )
 
 /** Effective mint: prefers ``asset``, falls back to top-level ``currency``. */

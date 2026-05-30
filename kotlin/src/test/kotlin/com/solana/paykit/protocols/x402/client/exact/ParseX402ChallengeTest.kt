@@ -56,6 +56,17 @@ class ParseX402ChallengeTest {
     }
 
     @Test
+    fun selectsTestnetOffer() {
+        // The rust spine supports Solana testnet; a testnet offer must be
+        // selectable rather than filtered out by the network allow-set.
+        val body = envelopeJson(offer(network = Network.SOLANA_TESTNET, asset = "SOL"))
+        val headers = mapOf("payment-required" to headerFor(body))
+        val result = parseX402Challenge(headers, null, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals(Network.SOLANA_TESTNET, result.network)
+    }
+
+    @Test
     fun parsesTopLevelCurrencyShape() {
         // Some x402 servers carry the mint as top-level `currency` with
         // `decimals` / `tokenProgram` / `recentBlockhash` at the top level
