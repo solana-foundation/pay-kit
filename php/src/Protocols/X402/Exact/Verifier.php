@@ -28,7 +28,12 @@ use Throwable;
  *   6. Mint match
  *   7. Destination ATA match (re-derived)
  *   8. Amount match
- *   9. ix[3..6] in allowlist (memo + lighthouse + optional ATA-create)
+ *   9. ix[3..6] in allowlist (Lighthouse + Memo ONLY). Per the official
+ *      x402 SVM exact contract the destination ATA MUST pre-exist; an
+ *      Associated-Token-Program create instruction is NOT an allowed
+ *      optional slot. Wallets inject Lighthouse guard instructions
+ *      (Phantom 1, Solflare 2), so Lighthouse is allowed in any optional
+ *      slot.
  *  10. Memo binding (exactly one if extra.memo set)
  *  11. Token program strict bind to extra.tokenProgram
  */
@@ -36,8 +41,10 @@ final class Verifier
 {
     public const COMPUTE_BUDGET_PROGRAM    = 'ComputeBudget111111111111111111111111111111';
     public const MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-    public const LIGHTHOUSE_PROGRAM        = 'L1TEVtgA75k273wWz1s6XMmDhQY5i3MwcvKb4VbZzfK';
-    public const ASSOCIATED_TOKEN_PROGRAM  = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+    // Official x402 SVM exact Lighthouse program id (specs/schemes/exact/
+    // scheme_exact_svm.md). The prior `L1TEVtgA75k...` value was wrong and
+    // would have rejected wallet-injected Lighthouse guards.
+    public const LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
     public const TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
     public const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000;
 
@@ -48,7 +55,7 @@ final class Verifier
      * @param array<string,mixed>  $requirement   The x402 accepts[] entry.
      * @param list<string>         $managedSigners Server-managed pubkeys (typically the facilitator).
      *
-     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int,destinationCreateAta:bool}
+     * @return array{program:string,source:string,mint:string,destination:string,authority:string,amount:int}
      */
     public static function verify(
         string $transactionBase64,
@@ -89,8 +96,13 @@ final class Verifier
         // Rules 4 + 5 + 6 + 7 + 8 + 11.
         $transfer = self::verifyTransfer($instructions[2], $accountKeys, $requirement, $managedSigners);
 
-        // Rule 9: ix[3..6] allowlist.
-        $destinationCreateAta = false;
+        // Rule 9: ix[3..6] allowlist. Optional slots may carry ONLY
+        // Lighthouse (wallet-injected guard) or SPL Memo. An
+        // Associated-Token-Program ATA-create is NOT permitted: per the
+        // official x402 SVM exact contract the destination ATA MUST
+        // pre-exist. Lighthouse is allowed in any optional slot because
+        // wallets inject a variable number of guards (Phantom 1,
+        // Solflare 2).
         $reasons = [
             'invalid_exact_svm_payload_unknown_fourth_instruction',
             'invalid_exact_svm_payload_unknown_fifth_instruction',
@@ -101,12 +113,7 @@ final class Verifier
             $program = self::programOf($accountKeys, $ix);
             $slotIndex = $i - 3;
             $allowed = ($program === self::MEMO_PROGRAM)
-                || ($slotIndex < 2 && $program === self::LIGHTHOUSE_PROGRAM);
-            if (!$allowed && $slotIndex < 2
-                && self::validAtaCreate($ix, $accountKeys, $requirement, $transfer)) {
-                $destinationCreateAta = true;
-                $allowed = true;
-            }
+                || ($program === self::LIGHTHOUSE_PROGRAM);
             if (!$allowed) {
                 throw new InvalidProofException(
                     $reasons[$slotIndex] ?? 'invalid_exact_svm_payload_unknown_optional_instruction',
@@ -120,7 +127,6 @@ final class Verifier
             self::findMemoMatch($accountKeys, $instructions, $expectedMemo);
         }
 
-        $transfer['destinationCreateAta'] = $destinationCreateAta;
         return $transfer;
     }
 
@@ -242,43 +248,6 @@ final class Verifier
             'authority'   => $authority,
             'amount'      => $amount,
         ];
-    }
-
-    /**
-     * @param object{programIdIndex:int,data:string,accountKeyIndexes:array<int,int>} $ix
-     * @param list<string> $accountKeys
-     * @param array<string,mixed> $requirement
-     * @param array<string,mixed> $transfer
-     */
-    private static function validAtaCreate(
-        object $ix,
-        array $accountKeys,
-        array $requirement,
-        array $transfer,
-    ): bool {
-        if (self::programOf($accountKeys, $ix) !== self::ASSOCIATED_TOKEN_PROGRAM) {
-            return false;
-        }
-        $data = $ix->data;
-        if (strlen($data) < 1 || (ord($data[0]) !== 0 && ord($data[0]) !== 1)) {
-            return false;
-        }
-        if (count($ix->accountKeyIndexes) < 6) {
-            return false;
-        }
-        $ata   = self::accountAt($accountKeys, $ix, 1);
-        $owner = self::accountAt($accountKeys, $ix, 2);
-        $mint  = self::accountAt($accountKeys, $ix, 3);
-        if ($owner !== ($requirement['payTo'] ?? null)) {
-            return false;
-        }
-        if ($mint !== $transfer['mint']) {
-            return false;
-        }
-        if ($ata !== $transfer['destination']) {
-            return false;
-        }
-        return true;
     }
 
     /**

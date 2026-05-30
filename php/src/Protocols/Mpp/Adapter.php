@@ -36,10 +36,30 @@ final class Adapter
     /** @var array<string,array{ChargeServer, SolanaChargeHandler}> */
     private array $handlerCache = [];
 
+    private readonly Store $replayStore;
+
+    /**
+     * @param ?Store $replayStore Replay-protection store shared across every
+     *        {@see SolanaChargeHandler} this adapter builds. When null (the
+     *        default) an in-process {@see MemoryStore} is used and a loud
+     *        dev-only warning is emitted: a single-process memory store
+     *        loses replay protection across workers/restarts, so production
+     *        deployments MUST inject a shared atomic store (Redis, Postgres).
+     */
     public function __construct(
         private readonly Config $config,
-        private readonly Store $replayStore = new MemoryStore(),
+        ?Store $replayStore = null,
     ) {
+        if ($replayStore === null) {
+            if (function_exists('error_log')) {
+                error_log(
+                    'pay_kit: WARN: mpp adapter using in-memory replay store; '
+                    . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+                );
+            }
+            $replayStore = new MemoryStore();
+        }
+        $this->replayStore = $replayStore;
     }
 
     public function acceptsEntry(Gate $gate, ServerRequestInterface $request): array
@@ -75,8 +95,27 @@ final class Adapter
     {
         [$charges, $_handler] = $this->serverFor($gate);
         $chargeRequest = $this->chargeRequestFor($gate);
-        $header = $charges->createChallengeHeader($chargeRequest);
+        $header = $charges->createChallengeHeader($chargeRequest, $this->challengeExpires());
         return ['www-authenticate' => $header];
+    }
+
+    /**
+     * RFC 3339 `expires` timestamp threaded into issued charge challenges.
+     *
+     * Derived from {@see MppConfig::$expiresIn}: `now + expiresIn` seconds,
+     * UTC. `expiresIn = 0` is the documented dev-only opt-out and yields an
+     * empty string, leaving the challenge with no expiry (never expires).
+     * Without this wiring `createChallengeHeader` defaulted to `''`, so
+     * signed challenges were valid indefinitely (main-audit finding 7).
+     */
+    private function challengeExpires(): string
+    {
+        $expiresIn = $this->config->mpp->expiresIn;
+        if ($expiresIn <= 0) {
+            return '';
+        }
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        return $now->add(new \DateInterval('PT' . $expiresIn . 'S'))->format('Y-m-d\TH:i:s\Z');
     }
 
     public function verifyAndSettle(Gate $gate, ServerRequestInterface $request): Payment
@@ -109,7 +148,13 @@ final class Adapter
     {
         $coin  = $this->settlementCoin($gate);
         $payTo = $gate->payTo ?? $this->config->effectiveRecipient();
-        $amount = (string) $this->priceUnits($gate->amount);
+        // Charge the gate total (base + any fee-on-top), matching the amount
+        // advertised in acceptsEntry. The MPP wire derives the primary
+        // recipient share as amount - sum(splits), so pinning the bare base
+        // here while advertising the total would let the verifier accept a
+        // payment short by the on-top fee. fee-within gates are unaffected
+        // (total == base).
+        $amount = (string) $this->totalUnits($gate, $coin);
         // Pay's MPP client reads request.methodDetails.network as the
         // short network slug ("mainnet" / "devnet" / "localnet") when
         // filtering challenges by active wallet

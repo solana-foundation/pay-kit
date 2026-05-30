@@ -146,7 +146,15 @@ final class RequirePayment implements MiddlewareInterface
             'accepts'  => $accepts,
         ];
         $factory = HttpFactory::responseFactory();
-        $resp = $factory->createResponse(402)->withHeader('content-type', 'application/json');
+        // 402 challenges are per-request and MUST NOT be cached by any
+        // intermediary or browser. Without `no-store` a CDN could replay a
+        // stale challenge (different blockhash / expiry / amount) to a
+        // later client. Matches the protocol 402 helper at
+        // ChargeServer::paymentRequiredResponse() and the cross-SDK rule
+        // (main-audit medium finding 6).
+        $resp = $factory->createResponse(402)
+            ->withHeader('cache-control', 'no-store')
+            ->withHeader('content-type', 'application/json');
         foreach ($headers as $k => $v) {
             $resp = $resp->withHeader($k, $v);
         }

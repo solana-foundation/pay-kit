@@ -46,7 +46,19 @@ final class VerifierTest extends TestCase
         $this->assertSame('ComputeBudget111111111111111111111111111111', Verifier::COMPUTE_BUDGET_PROGRAM);
         $this->assertSame('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', Verifier::MEMO_PROGRAM);
         $this->assertSame('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', Verifier::TOKEN_2022_PROGRAM);
-        $this->assertSame('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', Verifier::ASSOCIATED_TOKEN_PROGRAM);
+        // Official x402 SVM exact Lighthouse program id.
+        $this->assertSame('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95', Verifier::LIGHTHOUSE_PROGRAM);
         $this->assertSame(50000, Verifier::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS);
+    }
+
+    public function testAssociatedTokenProgramConstantRemoved(): void
+    {
+        // The optional-slot allowlist is Lighthouse + Memo ONLY; the
+        // destination ATA must pre-exist. The Associated Token Program
+        // ATA-create path was removed, so the constant must not exist.
+        $this->assertFalse(
+            defined(Verifier::class . '::ASSOCIATED_TOKEN_PROGRAM'),
+            'ASSOCIATED_TOKEN_PROGRAM must be removed: ATA-create is not an allowed optional slot',
+        );
     }
 }

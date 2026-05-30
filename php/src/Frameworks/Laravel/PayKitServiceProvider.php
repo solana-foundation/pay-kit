@@ -78,7 +78,7 @@ final class PayKitServiceProvider extends ServiceProvider
                 && $cfg['mpp_challenge_binding_secret'] !== ''
                     ? (string) $cfg['mpp_challenge_binding_secret']
                     : null,
-            expiresIn: (int) ($cfg['mpp']['expires_in'] ?? 120),
+            expiresIn: MppConfig::resolveExpiresIn($cfg['mpp']['expires_in'] ?? null),
         );
         $x402 = new X402Config(
             facilitatorUrl: isset($cfg['x402_facilitator_url']) && $cfg['x402_facilitator_url'] !== ''

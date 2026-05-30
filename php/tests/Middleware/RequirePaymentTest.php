@@ -76,6 +76,18 @@ final class RequirePaymentTest extends TestCase
         $this->assertGreaterThanOrEqual(1, count($body['accepts']));
     }
 
+    public function test402SetsCacheControlNoStore(): void
+    {
+        // main-audit medium finding 6: the umbrella 402 MUST NOT be
+        // cached. Without no-store a CDN could replay a stale challenge
+        // (different blockhash / expiry / amount) to a later client.
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $mw = new RequirePayment($this->client, $gate);
+        $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
+        $this->assertSame(402, $response->getStatusCode());
+        $this->assertSame('no-store', $response->getHeaderLine('cache-control'));
+    }
+
     public function testWwwAuthenticateHeaderStampedFromMpp(): void
     {
         $gate = new Gate(amount: Price::usd('0.10'));
