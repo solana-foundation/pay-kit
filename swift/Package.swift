@@ -3,22 +3,22 @@
 import PackageDescription
 
 let package = Package(
-    name: "SolanaMpp",
+    name: "SolanaPayKit",
     platforms: [
         .iOS(.v16),
         .macOS(.v13),
     ],
     products: [
         .library(
-            name: "SolanaMpp",
-            targets: ["SolanaMpp"]
+            name: "SolanaPayKit",
+            targets: ["SolanaPayKit"]
         ),
     ],
     targets: [
-        .target(name: "SolanaMpp"),
+        .target(name: "SolanaPayKit"),
         .testTarget(
-            name: "SolanaMppTests",
-            dependencies: ["SolanaMpp"]
+            name: "SolanaPayKitTests",
+            dependencies: ["SolanaPayKit"]
         ),
     ]
 )

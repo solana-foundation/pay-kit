@@ -32,7 +32,7 @@ two lines.
 Drive an MPP-gated endpoint with the URLSession-backed `MppHTTPClient`:
 
 ```swift
-import SolanaMpp
+import SolanaPayKit
 
 let signer = try MemorySigner(secretKey: secretKeyData) // 32-byte seed or 64-byte Solana keypair
 let rpc = RpcClient(endpoint: URL(string: "https://402.surfnet.dev")!)
@@ -94,22 +94,42 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 
 | Intent | Client |
 |---|:---:|
-| `x402/exact` | planned |
+| `x402/exact` | pass |
 | `x402/upto` | --- |
 | `x402/batch-settlement` | --- |
 
 ## Examples
 
 The `Examples/` directory hosts sample clients (a Solana Seeker demo
-app is planned). For an end-to-end exercise, run the interop adapter at
-[`harness/swift-client/`](../harness/swift-client) against any
-registered server.
+app is planned):
+
+- [`ChargeClient/`](Examples/ChargeClient) — headless MPP charge client.
+- [`X402Client/`](Examples/X402Client) — headless x402 exact client; probes
+  a gated resource, builds the `Payment-Signature` header through a signer,
+  and replays once.
+
+Both are source-only so the default `swift build` stays library-only; add an
+executable target to `Package.swift` locally to run them. For an end-to-end
+exercise, run the interop adapter at
+[`harness/swift-client/`](../harness/swift-client) (MPP) or
+[`harness/swift-x402-client/`](../harness/swift-x402-client) (x402) against
+any registered server.
 
 ### Drive a TypeScript server
 
 ```bash
 cd harness
 MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=typescript pnpm exec vitest run
+```
+
+### Drive the Rust x402 server
+
+```bash
+cd harness
+X402_INTEROP_CLIENTS=swift-x402 X402_INTEROP_SERVERS=rust-x402 \
+  MPP_INTEROP_INTENTS=x402-exact MPP_INTEROP_SCENARIOS=x402-exact-basic \
+  pnpm exec vitest run test/e2e.test.ts \
+  --testNamePattern "swift-x402 client pays rust-x402 server"
 ```
 
 ## Solana dependencies
@@ -170,7 +190,7 @@ for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 
 ```text
 swift/
-├── Sources/SolanaMpp/
+├── Sources/SolanaPayKit/
 │   ├── Client/                # Charge client, HTTP retry, JSON-RPC
 │   │   ├── Charge.swift       # MPP charge intent wire-signing pull path
 │   │   ├── HTTPClient.swift   # URLSession-backed 402 retry client
@@ -179,7 +199,7 @@ swift/
 │   │   ├── Headers.swift      # Payment WWW-Authenticate / Authorization
 │   │   └── Models.swift       # Wire-format Codable types
 │   └── Crypto/                # Solana primitives (vendored, no umbrella dep)
-├── Tests/SolanaMppTests/      # XCTest / swift-testing suite
+├── Tests/SolanaPayKitTests/      # XCTest / swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```
 
