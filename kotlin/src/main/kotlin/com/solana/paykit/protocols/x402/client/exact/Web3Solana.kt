@@ -45,43 +45,12 @@ internal object Web3Solana {
      * web3-solana's ``transferChecked(from, to, amount, decimals, owner, mint)``
      * emits accounts ``[source(w), mint(ro), destination(w), authority(signer)]``
      * — the order the x402 verifier expects at instruction index 2.
-     */
-    fun transferChecked(
-        tokenProgram: String,
-        source: String,
-        mint: String,
-        destination: String,
-        authority: String,
-        amount: Long,
-        decimals: Int,
-    ): Instruction {
-        require(amount >= 0) { "amount must be non-negative" }
-        require(decimals in 0..255) { "decimals must fit in u8" }
-        val ix = TokenProgram.transferChecked(
-            SolanaPublicKey.from(source),
-            SolanaPublicKey.from(destination),
-            amount,
-            decimals.toByte(),
-            SolanaPublicKey.from(authority),
-            SolanaPublicKey.from(mint),
-        )
-        // web3-solana hard-codes the SPL Token program id. The offer may carry
-        // Token-2022 instead, which shares the wire format; rebuild the
-        // paycore instruction with the offer's program id so Token-2022
-        // offers are honoured.
-        return ix.toPaycore(programIdOverride = tokenProgram)
-    }
-
-    /**
-     * Unsigned-u64 [amount] overload of [transferChecked].
      *
      * SPL token amounts are u64 on the wire; a signed [Long] cannot represent
      * the upper half [2^63, 2^64). web3-solana's [TokenProgram.transferChecked]
      * Borsh-encodes the amount as a raw little-endian i64, so the u64
      * bit-pattern (``BigInteger.toLong()`` two's-complement of values in
-     * [2^63, 2^64)) serializes to the exact unsigned wire bytes. This keeps the
-     * x402 client at parity with the round-1 MPP charge path, which encodes the
-     * full unsigned range via [BigInteger].
+     * [2^63, 2^64)) serializes to the exact unsigned wire bytes.
      */
     fun transferChecked(
         tokenProgram: String,
@@ -104,6 +73,10 @@ internal object Web3Solana {
             SolanaPublicKey.from(authority),
             SolanaPublicKey.from(mint),
         )
+        // web3-solana hard-codes the SPL Token program id. The offer may carry
+        // Token-2022 instead, which shares the wire format; rebuild the
+        // paycore instruction with the offer's program id so Token-2022
+        // offers are honoured.
         return ix.toPaycore(programIdOverride = tokenProgram)
     }
 

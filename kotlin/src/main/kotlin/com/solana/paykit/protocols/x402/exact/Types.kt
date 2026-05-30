@@ -67,13 +67,11 @@ data class X402AcceptsEntry(
 val X402AcceptsEntry.effectivePayTo: String? get() = payTo ?: recipient
 
 /**
- * Effective mint: prefers the top-level ``asset``, falls back to ``currency``.
+ * Effective mint: top-level ``asset`` wins; ``currency`` is the fallback.
  *
- * Precedence is TOP-LEVEL FIRST to match the rust spine normalization
- * (``effective_asset = asset.or(currency)`` /
- * ``effectiveAsset = currency ?: asset`` in the audit direction: the
- * rust-normalized requirement carries the canonical value at the top
- * level, so the top-level field wins over any aliased fallback).
+ * ``asset ?: currency`` — the rust spine normalizes the canonical mint onto
+ * the top-level ``asset`` field, so it takes priority over the aliased
+ * ``currency`` fallback.
  */
 val X402AcceptsEntry.effectiveAsset: String? get() = asset ?: currency
 

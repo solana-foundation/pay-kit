@@ -183,13 +183,12 @@ private fun isSolanaExact(offer: X402AcceptsEntry): Boolean {
     return offer.scheme == "exact" && offer.network in SOLANA_CAIP2
 }
 
-private fun amountOf(offer: X402AcceptsEntry): Long {
+private fun amountOf(offer: X402AcceptsEntry): BigInteger {
     val raw = offer.amount ?: offer.maxAmountRequired
-    // The wire amount is a u64 of base units; a negative or non-numeric value
-    // is invalid, so sort it last rather than letting a negative amount win
-    // the cheapest-offer selection (matching the rust parser's u64 behavior).
-    val value = raw?.toLongOrNull()
-    return if (value != null && value >= 0) value else Long.MAX_VALUE
+    // Parse as a full unsigned u64 so amounts in [2^63, 2^64) are ranked
+    // correctly. Invalid or unparseable values sort last (U64_MAX fallback),
+    // mirroring the rust spine which ranks on the full u64 range.
+    return raw?.let { parseX402U64(it) } ?: U64_MAX
 }
 
 private fun currencyOf(offer: X402AcceptsEntry): String = offer.effectiveAsset ?: ""
