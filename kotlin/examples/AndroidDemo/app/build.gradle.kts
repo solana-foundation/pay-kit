@@ -27,11 +27,6 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDirs("src/main/java", "../../../src/main/kotlin")
-            // This demo exercises MPP charge only. Exclude the x402 client
-            // sources: they depend on com.solanamobile:web3-solana, whose
-            // Kotlin 2.x metadata is unreadable by this demo's Kotlin 1.9
-            // toolchain (pinned for Mobile Wallet Adapter 2.0.0 compatibility).
-            java.exclude("**/protocols/x402/**")
         }
     }
 
@@ -67,6 +62,11 @@ kotlin {
 }
 
 tasks.withType<KotlinCompile>().configureEach {
+    // This demo exercises MPP charge only. Exclude the vendored x402 client
+    // sources: they depend on com.solanamobile:web3-solana, whose Kotlin 2.x
+    // metadata is unreadable by this demo's Kotlin 1.9 toolchain (pinned for
+    // Mobile Wallet Adapter 2.0.0 compatibility).
+    exclude("**/protocols/x402/**")
     kotlinOptions {
         jvmTarget = "17"
     }
