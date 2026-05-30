@@ -170,9 +170,13 @@ class X402Adapter:
                     "pay_kit: charge_request_mismatch: accepted payment requirement does not match server challenge",
                     code="charge_request_mismatch",
                 )
-        if accepted.get("amount") != offer_map.get("amount") and accepted.get("maxAmountRequired") != offer_map.get(
+        # Reject if EITHER the exact `amount` or the `maxAmountRequired`
+        # ceiling drifts from the server offer. The previous AND only tripped
+        # when both diverged, so one-sided drift (e.g. amount tampered while
+        # maxAmountRequired left intact) silently passed.
+        if accepted.get("amount") != offer_map.get("amount") or accepted.get(
             "maxAmountRequired"
-        ):
+        ) != offer_map.get("maxAmountRequired"):
             raise InvalidProofError(
                 "pay_kit: charge_request_mismatch (amount)",
                 code="charge_request_mismatch",
@@ -210,19 +214,44 @@ class X402Adapter:
 
         rpc = SolanaRpc(rpc_url)
         try:
-            response = await rpc.send_raw_transaction(cosigned_wire)
-            signature = str(response.value if hasattr(response, "value") else response)
-        except Exception as exc:  # noqa: BLE001
-            raise InvalidProofError(f"pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid") from exc
+            try:
+                response = await rpc.send_raw_transaction(cosigned_wire)
+                signature = str(response.value if hasattr(response, "value") else response)
+            except Exception as exc:  # noqa: BLE001
+                raise InvalidProofError(
+                    f"pay_kit: invalid proof: broadcast failed: {exc}", code="payment_invalid"
+                ) from exc
+            if not signature:
+                raise InvalidProofError("pay_kit: empty broadcast result", code="payment_invalid")
+
+            # Replay reservation. Namespace is distinct from the MPP charge key
+            # so an x402 signature can never satisfy an MPP route and vice
+            # versa. Reserve BEFORE confirmation so a concurrent resubmit of the
+            # same signature loses the race and is rejected as consumed.
+            replay_key = _REPLAY_PREFIX + signature
+            if not await self._store.put_if_absent(replay_key, True):
+                raise InvalidProofError("pay_kit: signature_consumed", code="signature_consumed")
+
+            # Await on-chain confirmation BEFORE returning success. Without this
+            # the adapter returned a settlement header for a transaction that
+            # may have been dropped by the cluster or reverted on-chain, granting
+            # the client access without payment. ``await_confirmation`` raises
+            # ``transaction-failed`` (included but reverted) or
+            # ``transaction-not-found`` (never confirmed inside the window).
+            #
+            # On failure roll the reservation back: the transaction did not
+            # land, so the same signature must remain replayable for an honest
+            # retry. Mirrors the confirmation gate the MPP charge flow runs
+            # (protocols/mpp/server/charge.py).
+            try:
+                await rpc.await_confirmation(signature)
+            except Exception as exc:  # noqa: BLE001
+                await self._store.delete(replay_key)
+                raise InvalidProofError(
+                    f"pay_kit: invalid proof: confirmation failed: {exc}", code="payment_invalid"
+                ) from exc
         finally:
             await rpc.aclose()
-        if not signature:
-            raise InvalidProofError("pay_kit: empty broadcast result", code="payment_invalid")
-
-        # Replay reservation. Namespace is distinct from the MPP charge key so
-        # an x402 signature can never satisfy an MPP route and vice versa.
-        if not await self._store.put_if_absent(_REPLAY_PREFIX + signature, True):
-            raise InvalidProofError("pay_kit: signature_consumed", code="signature_consumed")
 
         accepted_network = accepted.get("network")
         response_body: X402ResponseEnvelope = {

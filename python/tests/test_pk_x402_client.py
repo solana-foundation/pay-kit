@@ -330,6 +330,61 @@ async def test_build_payment_instruction_layout():
 
 
 @pytest.mark.asyncio
+async def test_build_payment_appends_random_memo_when_offer_has_none():
+    """Decision 2: the client ALWAYS appends a memo.
+
+    When the offer carries no ``extra.memo`` the client must still emit exactly
+    one Memo instruction holding a >=16-byte hex nonce, so two otherwise
+    identical payments are distinct on-chain.
+    """
+    from pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
+
+    signer = Signer.generate()
+    offer = _offer()
+    del offer["extra"]["memo"]
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    instructions = list(tx.message.instructions)
+    keys = [str(k) for k in tx.message.account_keys]
+    assert len(instructions) == 4  # compute x2 + transfer + memo
+    memo_ix = instructions[3]
+    assert keys[int(memo_ix.program_id_index)] == MEMO_PROGRAM
+    memo_text = bytes(memo_ix.data).decode("utf-8")
+    # 16 bytes hex-encoded == 32 hex chars; bytes.fromhex validates it is hex.
+    assert len(memo_text) >= 32
+    bytes.fromhex(memo_text)
+
+
+@pytest.mark.asyncio
+async def test_build_payment_memo_nonce_is_injectable():
+    """The nonce source is injectable so golden-vector tests stay deterministic."""
+    from pay_kit.protocols.x402.exact.verify import MEMO_PROGRAM
+
+    signer = Signer.generate()
+    offer = _offer()
+    del offer["extra"]["memo"]
+    fixed = "00112233445566778899aabbccddeeff"
+    env = await build_payment(signer, None, _entry(offer), memo_nonce=lambda: fixed)
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    instructions = list(tx.message.instructions)
+    keys = [str(k) for k in tx.message.account_keys]
+    memo_ix = instructions[3]
+    assert keys[int(memo_ix.program_id_index)] == MEMO_PROGRAM
+    assert bytes(memo_ix.data).decode("utf-8") == fixed
+
+
+@pytest.mark.asyncio
+async def test_build_payment_two_no_memo_payments_differ():
+    """Two payments for the same offer must produce distinct transactions."""
+    signer = Signer.generate()
+    offer = _offer()
+    del offer["extra"]["memo"]
+    env1 = await build_payment(signer, None, _entry(offer))
+    env2 = await build_payment(signer, None, _entry(offer))
+    assert _tx(env1) != _tx(env2)
+
+
+@pytest.mark.asyncio
 async def test_build_payment_uses_extra_blockhash():
     signer = Signer.generate()
     offer = _offer(blockhash=BH)
@@ -459,6 +514,9 @@ class _FakeRpc:
             value = self._signature
 
         return _Resp()
+
+    async def await_confirmation(self, _signature, *_a, **_k):
+        return None
 
     async def aclose(self):
         return None

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -50,6 +51,20 @@ _COMPUTE_UNIT_LIMIT = 20_000
 _COMPUTE_UNIT_PRICE = 1
 #: Default SPL decimals when the offer omits ``extra.decimals``.
 _DEFAULT_DECIMALS = 6
+#: Random memo nonce length in bytes when the offer omits ``extra.memo``. The
+#: x402 SVM exact contract requires a Memo of at least 16 bytes; it is
+#: hex-encoded to a UTF-8 string for the Memo instruction data.
+_MEMO_NONCE_BYTES = 16
+
+
+def _default_memo_nonce() -> str:
+    """Generate a fresh >=16-byte memo nonce, hex-encoded for UTF-8.
+
+    Used when the offer carries no ``extra.memo``. Injectable via
+    :func:`build_payment`'s ``memo_nonce`` parameter so deterministic and
+    golden-vector tests can pin a fixed nonce.
+    """
+    return secrets.token_bytes(_MEMO_NONCE_BYTES).hex()
 
 # x402 ``exact`` CAIP-2 networks the client knows how to pay on.
 _SOLANA_CAIP2 = frozenset({SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2})
@@ -252,6 +267,7 @@ async def build_payment(
     requirement: X402AcceptsEntry,
     *,
     recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
+    memo_nonce: Callable[[], str] | None = None,
 ) -> X402Envelope:
     """Build a signed x402 ``exact`` payment transaction for ``requirement``.
 
@@ -265,6 +281,13 @@ async def build_payment(
     The blockhash comes from ``requirement.extra.recentBlockhash`` when present,
     else ``recent_blockhash_provider`` (injected for offline unit tests), else
     ``await rpc.get_latest_blockhash()``.
+
+    The client ALWAYS appends exactly one Memo instruction. When the offer
+    carries ``extra.memo`` that value is used; otherwise a random >=16-byte
+    hex-encoded nonce guarantees uniqueness of otherwise-identical payments
+    (the Memo is what lets the facilitator distinguish concurrent identical
+    transfers). ``memo_nonce`` overrides the default secure RNG source so
+    deterministic / golden-vector tests can pin a fixed nonce.
     """
     from solders.hash import Hash
     from solders.instruction import AccountMeta, Instruction
@@ -332,9 +355,13 @@ async def build_payment(
             )
         )
 
+    # Always append exactly one Memo. Use the offer's memo when present, else a
+    # random >=16-byte hex nonce so two otherwise-identical payments produce
+    # distinct transactions. The verifier requires this slot for uniqueness.
     memo = _str_field(extra, "memo")
-    if memo is not None:
-        instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
+    if memo is None:
+        memo = (memo_nonce or _default_memo_nonce)()
+    instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
     blockhash_str = _str_field(extra, "recentBlockhash")
     if blockhash_str is None:
@@ -381,6 +408,7 @@ async def build_payment_header(
     requirement: X402AcceptsEntry,
     *,
     recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
+    memo_nonce: Callable[[], str] | None = None,
 ) -> str:
     """Build the standard-base64 ``PAYMENT-SIGNATURE`` header value.
 
@@ -393,6 +421,7 @@ async def build_payment_header(
         rpc,
         requirement,
         recent_blockhash_provider=recent_blockhash_provider,
+        memo_nonce=memo_nonce,
     )
     payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")

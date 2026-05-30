@@ -57,9 +57,19 @@ TP = token_program_for("USDC", "mainnet")
 class _FakeRpc:
     """Stub matching pay_kit.protocols.mpp.SolanaRpc's async send/close surface."""
 
-    def __init__(self, *_a, signature: str = "SIG-broadcast", fail: bool = False, **_k):
+    def __init__(
+        self,
+        *_a,
+        signature: str = "SIG-broadcast",
+        fail: bool = False,
+        confirm_error: Exception | None = None,
+        **_k,
+    ):
         self._signature = signature
         self._fail = fail
+        self._confirm_error = confirm_error
+        self.confirm_calls = 0
+        self.aclose_calls = 0
 
     async def send_raw_transaction(self, _raw):
         if self._fail:
@@ -71,7 +81,14 @@ class _FakeRpc:
         _Resp.value = self._signature
         return _Resp()
 
+    async def await_confirmation(self, _signature, *_a, **_k):
+        self.confirm_calls += 1
+        if self._confirm_error is not None:
+            raise self._confirm_error
+        return None
+
     async def aclose(self):
+        self.aclose_calls += 1
         return None
 
 
@@ -83,7 +100,7 @@ def _clean(monkeypatch):
     reset()
 
 
-def _adapter(store=None, signature="SIG-broadcast", fail=False, monkeypatch=None):
+def _adapter(store=None, signature="SIG-broadcast", fail=False, confirm_error=None, monkeypatch=None, rpcs=None):
     op_kp = Keypair()
     op = Operator(signer=LocalSigner.from_keypair(op_kp), recipient=str(Keypair().pubkey()))
     cfg = configure(
@@ -102,7 +119,10 @@ def _adapter(store=None, signature="SIG-broadcast", fail=False, monkeypatch=None
     adapter = X402Adapter(cfg, replay_store=store or MemoryStore())
 
     def _factory(*_a, **_k):
-        return _FakeRpc(signature=signature, fail=fail)
+        rpc = _FakeRpc(signature=signature, fail=fail, confirm_error=confirm_error)
+        if rpcs is not None:
+            rpcs.append(rpc)
+        return rpc
 
     if monkeypatch is not None:
         monkeypatch.setattr(xmod, "SolanaRpc", _factory)
@@ -182,6 +202,91 @@ async def test_broadcast_failure_is_invalid_proof(monkeypatch):
     header = _build_envelope(adapter, gate, op_kp)
     with pytest.raises(InvalidProofError, match="broadcast failed"):
         await adapter.verify_and_settle(gate, _Req(header))
+
+
+# -- confirmation gate (149-2 BLOCKER) ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_success_path_awaits_confirmation_before_returning(monkeypatch):
+    rpcs: list = []
+    adapter, gate, op_kp = _adapter(signature="SIG-ok", monkeypatch=monkeypatch, rpcs=rpcs)
+    header = _build_envelope(adapter, gate, op_kp)
+    payment = await adapter.verify_and_settle(gate, _Req(header))
+    assert payment.transaction == "SIG-ok"
+    # The adapter must poll confirmation, then close the RPC after the poll.
+    assert rpcs[0].confirm_calls == 1
+    assert rpcs[0].aclose_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmation_timeout_raises_and_does_not_return_success(monkeypatch):
+    from pay_kit._paycore.errors import PaymentError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        signature="SIG-timeout",
+        confirm_error=PaymentError("timed out", code="transaction-not-found"),
+        monkeypatch=monkeypatch,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert exc.value.code == "payment_invalid"
+    assert "confirmation failed" in str(exc.value)
+    # Reservation must be rolled back so an honest retry can replay.
+    assert await store.get("x402-svm-exact:consumed:SIG-timeout") is None
+
+
+@pytest.mark.asyncio
+async def test_confirmation_onchain_failure_rolls_back_reservation(monkeypatch):
+    from pay_kit._paycore.errors import PaymentError
+
+    store = MemoryStore()
+    adapter, gate, op_kp = _adapter(
+        store=store,
+        signature="SIG-revert",
+        confirm_error=PaymentError("reverted", code="transaction-failed"),
+        monkeypatch=monkeypatch,
+    )
+    header = _build_envelope(adapter, gate, op_kp)
+    with pytest.raises(InvalidProofError):
+        await adapter.verify_and_settle(gate, _Req(header))
+    assert await store.get("x402-svm-exact:consumed:SIG-revert") is None
+
+
+# -- accepted-echo amount drift (149-1) --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_amount_drift_one_sided_rejected(monkeypatch):
+    """One-sided amount drift must be rejected (AND -> OR fix).
+
+    Tamper only `amount`, leaving `maxAmountRequired` intact. The previous
+    AND check passed because maxAmountRequired still matched; the OR check
+    rejects on either field drifting.
+    """
+    adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    decoded = json.loads(base64.b64decode(header))
+    decoded["accepted"]["amount"] = str(int(decoded["accepted"]["amount"]) + 1)
+    tampered = base64.b64encode(json.dumps(decoded).encode()).decode()
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(tampered))
+    assert exc.value.code == "charge_request_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_max_amount_required_one_sided_drift_rejected(monkeypatch):
+    adapter, gate, op_kp = _adapter(monkeypatch=monkeypatch)
+    header = _build_envelope(adapter, gate, op_kp)
+    decoded = json.loads(base64.b64decode(header))
+    decoded["accepted"]["maxAmountRequired"] = str(int(decoded["accepted"]["maxAmountRequired"]) + 5)
+    tampered = base64.b64encode(json.dumps(decoded).encode()).decode()
+    with pytest.raises(InvalidProofError) as exc:
+        await adapter.verify_and_settle(gate, _Req(tampered))
+    assert exc.value.code == "charge_request_mismatch"
 
 
 # -- envelope reject branches ------------------------------------------------

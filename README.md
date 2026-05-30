@@ -121,13 +121,16 @@ return result.withReceipt(Response.json({ data: '...' }))
 <summary>Python</summary>
 
 ```python
-from pay_kit.protocols.mpp.server import Mpp, Config
+from pay_kit import MemoryStore
+from pay_kit.protocols.mpp.server import Config, Mpp
 
 mpp = Mpp(Config(
     recipient="RecipientPubkey...",
     currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     decimals=6,
     html=True,
+    secret_key="...",       # or set MPP_SECRET_KEY in the environment
+    store=MemoryStore(),    # required; use FileReplayStore(path) for durable replay
 ))
 
 challenge = mpp.charge("1.00")  # 1 USDC

@@ -2,9 +2,10 @@
 
 Builds real ``VersionedTransaction`` payloads with solders and exercises each
 of the verifier's reject branches by name, plus the happy path with an optional
-memo, an ATA-create instruction, and the Token-2022 program. Also covers the
-adapter's ``accepts_entry`` / ``challenge_headers`` and the caveat #5
-``recentBlockhash`` injection via the offline ``recent_blockhash_provider``.
+memo, a Lighthouse optional instruction, and the Token-2022 program. ATA-create
+is explicitly rejected (149-3). Also covers the adapter's ``accepts_entry`` /
+``challenge_headers`` and the caveat #5 ``recentBlockhash`` injection via the
+offline ``recent_blockhash_provider``.
 """
 
 from __future__ import annotations
@@ -166,7 +167,14 @@ def test_verify_happy_with_token_2022_program():
     assert out["program"] == TOKEN_2022_PROGRAM
 
 
-def test_verify_happy_with_ata_create():
+def test_verify_rejects_ata_create_instruction():
+    """149-3: ATA-create is NOT an allowed optional instruction.
+
+    Per the official x402 SVM exact contract the destination ATA MUST
+    pre-exist; only Lighthouse and Memo are permitted optional slots. A
+    transaction carrying an Associated-Token-Program create instruction must
+    be rejected, matching the Rust/Go verifiers.
+    """
     fee_payer, authority, pay_to, src, dest = _scenario()
     ixs = [
         _compute_limit_ix(),
@@ -175,8 +183,26 @@ def test_verify_happy_with_ata_create():
         _ata_create_ix(payer=fee_payer.pubkey(), ata=dest, owner=pay_to, mint=MINT, program=TOKEN_PROGRAM),
     ]
     tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
+    with pytest.raises(InvalidProofError) as e:
+        ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
+    assert e.value.code == "invalid_exact_svm_payload_unknown_fourth_instruction"
+
+
+def test_verify_allows_lighthouse_optional_instruction():
+    """Lighthouse asserts are wallet-injected and MUST be allowed."""
+    from pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [])
+    ixs = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        lighthouse,
+    ]
+    tx = _tx_b64(fee_payer, ixs, [fee_payer, authority])
     out = ExactVerifier.verify(tx, _requirement(pay_to), [str(fee_payer.pubkey())])
-    assert out["destinationCreateAta"] is True
+    assert out["destinationCreateAta"] is False
 
 
 # -- rule 0: payload decode --------------------------------------------------

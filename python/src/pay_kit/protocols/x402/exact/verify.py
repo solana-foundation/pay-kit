@@ -14,7 +14,6 @@ import struct
 from typing import Any, cast
 
 from pay_kit._paycore.mints import derive_ata
-from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
 from pay_kit.errors import InvalidProofError
 
 __all__ = [
@@ -120,8 +119,13 @@ class ExactVerifier:
         # Rules 4 + 5 + 6 + 7 + 8 + 11: transferChecked.
         transfer = ExactVerifier._verify_transfer(instructions[2], account_keys, requirement, managed_signers)
 
-        # Rule 9: ix[3:] allowlist (memo, lighthouse(<2 slots), ata-create(<2 slots)).
-        destination_create_ata = False
+        # Rule 9: ix[3:] allowlist. Per the official x402 SVM exact contract
+        # (specs/schemes/exact/scheme_exact_svm.md), the only permitted optional
+        # instructions are Lighthouse (wallet-injected user-protection asserts,
+        # Phantom=1 / Solflare=2) and SPL Memo. A Create-ATA / Associated Token
+        # Program instruction is NOT allowed: the destination ATA MUST pre-exist
+        # (Rule 7 derives and pins the destination ATA). This matches the
+        # Rust/Go verifiers, which never accept ATA-create in this shape.
         reasons = (
             "invalid_exact_svm_payload_unknown_fourth_instruction",
             "invalid_exact_svm_payload_unknown_fifth_instruction",
@@ -132,13 +136,6 @@ class ExactVerifier:
             program = ExactVerifier._program_of(account_keys, ix)
             slot_index = i - 3
             allowed = program == MEMO_PROGRAM or (slot_index < 2 and program == LIGHTHOUSE_PROGRAM)
-            if (
-                not allowed
-                and slot_index < 2
-                and ExactVerifier._valid_ata_create(ix, account_keys, requirement, transfer)
-            ):
-                destination_create_ata = True
-                allowed = True
             if not allowed:
                 reason = (
                     reasons[slot_index]
@@ -152,7 +149,8 @@ class ExactVerifier:
         if expected_memo:
             ExactVerifier._find_memo_match(account_keys, instructions, expected_memo)
 
-        transfer["destinationCreateAta"] = destination_create_ata
+        # The destination ATA must pre-exist; ATA-create is never accepted.
+        transfer["destinationCreateAta"] = False
         return transfer
 
     @staticmethod
@@ -262,29 +260,6 @@ class ExactVerifier:
             "authority": authority,
             "amount": amount,
         }
-
-    @staticmethod
-    def _valid_ata_create(
-        ix: Any,
-        account_keys: list[str],
-        requirement: dict[str, Any],
-        transfer: dict[str, Any],
-    ) -> bool:
-        if ExactVerifier._program_of(account_keys, ix) != ASSOCIATED_TOKEN_PROGRAM:
-            return False
-        data = bytes(ix.data)
-        if len(data) < 1 or (data[0] != 0 and data[0] != 1):
-            return False
-        if len(list(ix.accounts)) < 6:
-            return False
-        ata = ExactVerifier._account_at(account_keys, ix, 1)
-        owner = ExactVerifier._account_at(account_keys, ix, 2)
-        mint = ExactVerifier._account_at(account_keys, ix, 3)
-        if owner != requirement.get("payTo"):
-            return False
-        if mint != transfer["mint"]:
-            return False
-        return ata == transfer["destination"]
 
     @staticmethod
     def _find_memo_match(account_keys: list[str], instructions: list[Any], expected_memo: str) -> None:
