@@ -108,7 +108,10 @@ private fun runAdapter() {
         } catch (_: Throwable) {
             JsonPrimitive(rawBody)
         }
-        val settlement = headerMap[SETTLEMENT_HEADER]?.jsonPrimitive?.content
+        val settlementHeaderName =
+            (System.getenv("X402_INTEROP_SETTLEMENT_HEADER")?.takeIf { it.isNotBlank() }
+                ?: SETTLEMENT_HEADER).lowercase()
+        val settlement = headerMap[settlementHeaderName]?.jsonPrimitive?.content
 
         val result = buildJsonObject {
             put("type", "result")
