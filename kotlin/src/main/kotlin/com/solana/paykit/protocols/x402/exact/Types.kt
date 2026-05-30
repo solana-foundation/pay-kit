@@ -111,13 +111,18 @@ val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = recentBlockhash ?
  * the older nested-only offer shape keeps working.
  */
 val X402AcceptsEntry.effectiveFeePayerKey: String? get() {
-    val topLevelKey = feePayerKey
-    if (topLevelKey != null) {
-        // feePayer defaults to true when feePayerKey is present (rust parser
-        // normalization); only an explicit `false` opts out.
-        return if (feePayer != false) topLevelKey else null
+    // Mirror the rust normalization (types.rs): the managed fee-payer key is the
+    // top-level feePayerKey, else the nested extra.feePayer alias. The feePayer
+    // boolean toggle then gates BOTH sources: it defaults to true when a key is
+    // present and only an explicit `false` opts out. The prior code applied the
+    // toggle only to the top-level key and returned extra.feePayer
+    // unconditionally, so an offer with extra.feePayer + feePayer=false wrongly
+    // selected a managed fee payer.
+    val key = feePayerKey ?: extra?.feePayer
+    if (key != null) {
+        return if (feePayer != false) key else null
     }
-    return extra?.feePayer
+    return null
 }
 
 /** The base64-decoded challenge body (``payment-required`` header or 402 body). */

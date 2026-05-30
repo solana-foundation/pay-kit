@@ -580,6 +580,45 @@ class BuildPaymentTest {
         assertEquals(topLevel, offer.effectiveFeePayerKey)
     }
 
+    // ── extra.feePayer (nested alias) + feePayer boolean toggle (regression) ─────
+
+    @Test
+    fun extraFeePayerKeyWithTopLevelFeePayerFalseReturnsNull() {
+        // Regression for PR #152 effectiveFeePayerKey fix: when the offer carries
+        // extra.feePayer (the nested pubkey alias) AND an explicit top-level
+        // feePayer = false, the managed fee payer must be suppressed. The old code
+        // returned extra.feePayer unconditionally in the no-top-level-key branch,
+        // ignoring the feePayer boolean toggle; the fix gates both sources through
+        // the same toggle so this case correctly returns null.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = "SOL",
+            amount = "1000",
+            payTo = devnetRecipient,
+            feePayer = false,
+            extra = X402Extra(feePayer = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"),
+        )
+        assertNull(offer.effectiveFeePayerKey)
+    }
+
+    @Test
+    fun extraFeePayerKeyWithNoToggleReturnsKey() {
+        // When extra.feePayer carries the pubkey and the top-level feePayer toggle
+        // is absent, the managed fee payer is selected (defaults to true when a
+        // key is present, matching rust normalization).
+        val fpKey = "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ"
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = "SOL",
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(feePayer = fpKey),
+        )
+        assertEquals(fpKey, offer.effectiveFeePayerKey)
+    }
+
     // ── Unsigned u64 amount parsing (PR #152 fix 3) ─────────────────────────────
 
     @Test
