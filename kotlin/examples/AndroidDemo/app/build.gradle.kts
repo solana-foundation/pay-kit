@@ -27,6 +27,11 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDirs("src/main/java", "../../../src/main/kotlin")
+            // This demo exercises MPP charge only. Exclude the x402 client
+            // sources: they depend on com.solanamobile:web3-solana, whose
+            // Kotlin 2.x metadata is unreadable by this demo's Kotlin 1.9
+            // toolchain (pinned for Mobile Wallet Adapter 2.0.0 compatibility).
+            java.exclude("**/protocols/x402/**")
         }
     }
 
@@ -88,11 +93,6 @@ dependencies {
     // be declared explicitly here. We pin the Android variant (not -jvm)
     // because this module's target is Android.
     implementation("io.github.funkatronics:multimult:0.2.3")
-    // web3-solana provides the SPL transferChecked instruction layout the
-    // vendored x402 client sources (com.solana.paykit.protocols.x402) compile
-    // against. The Android variant carries the same com.solana.{programs,
-    // publickey,transaction} packages as the -jvm variant the SDK build uses.
-    implementation("com.solanamobile:web3-solana:0.3.1")
 
     // Solana Mobile Wallet Adapter client library. The demo delegates
     // transaction signing to a real wallet (Phantom, Solflare, Backpack,

@@ -1,10 +1,10 @@
 package com.solana.paykit.interop
 
-import com.solana.paykit.client.Charge
-import com.solana.paykit.client.JsonRpcClient
-import com.solana.paykit.client.MppHttpClient
-import com.solana.paykit.crypto.MemorySigner
-import com.solana.paykit.protocol.MppHeaders
+import com.solana.paykit.paycore.MemorySigner
+import com.solana.paykit.protocols.mpp.client.Charge
+import com.solana.paykit.protocols.mpp.client.JsonRpcClient
+import com.solana.paykit.protocols.mpp.client.MppHttpClient
+import com.solana.paykit.protocols.mpp.core.MppHeaders
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject

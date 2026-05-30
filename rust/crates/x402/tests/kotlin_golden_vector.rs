@@ -9,10 +9,10 @@
 
 use base64::Engine;
 use solana_transaction::versioned::VersionedTransaction;
+use solana_x402::protocol::schemes::exact::SOLANA_DEVNET;
 use solana_x402::protocol::schemes::exact::{
     verify_exact_versioned_transaction, PaymentRequirements,
 };
-use solana_x402::protocol::schemes::exact::SOLANA_DEVNET;
 
 const GOLDEN_V0_SPL: &str = concat!(
     "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -57,8 +57,8 @@ fn kotlin_golden_v0_spl_passes_rust_verifier() {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(GOLDEN_V0_SPL)
         .expect("golden vector must be valid base64");
-    let tx: VersionedTransaction =
-        bincode::deserialize(&bytes).expect("golden vector must deserialize as a VersionedTransaction");
+    let tx: VersionedTransaction = bincode::deserialize(&bytes)
+        .expect("golden vector must deserialize as a VersionedTransaction");
 
     let fee_payer = solana_pubkey::Pubkey::try_from(FEE_PAYER).unwrap();
     verify_exact_versioned_transaction(&tx, &requirements(), &[fee_payer])
