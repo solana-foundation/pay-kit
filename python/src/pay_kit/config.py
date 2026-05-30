@@ -229,7 +229,15 @@ def _resolve_mpp_secret_if_needed(cfg: Config) -> Config:
 
 
 def _enforce_demo_signer_on_mainnet(cfg: Config) -> None:
-    """Refuse to boot the shipped demo signer against solana_mainnet."""
+    """Refuse to boot the shipped demo signer against solana_mainnet.
+
+    Checks both the operator signer and, when x402 is an accepted protocol, the
+    x402 cosigner. The x402 adapter signs as the facilitator fee payer with
+    ``cfg.x402.effective_signer(cfg.operator)``, which can carry its own
+    ``X402Config(signer=Signer.demo())`` override while the operator runs a real
+    key. Without the x402 leg the shipped demo public key could still be the
+    mainnet facilitator signer, bypassing the documented refusal.
+    """
     if cfg.network is not Network.SOLANA_MAINNET:
         return
     signer = cfg.operator.signer
@@ -239,6 +247,15 @@ def _enforce_demo_signer_on_mainnet(cfg: Config) -> None:
             f"({signer.pubkey()}) refuses to start on solana_mainnet. "
             "Load a real keypair via Signer.file() or Signer.env()."
         )
+    if Protocol.X402 in cfg.accept:
+        x402_signer = cfg.effective_x402_signer()
+        if x402_signer is not None and x402_signer.is_demo():
+            raise DemoSignerOnMainnetError(
+                "pay_kit: the package-shipped demo signer "
+                f"({x402_signer.pubkey()}) refuses to start as the x402 facilitator "
+                "signer on solana_mainnet. Load a real keypair via "
+                "x402=X402Config(signer=Signer.file()/Signer.env()) or operator=Operator(signer=...)."
+            )
 
 
 def _warn_about_public_mainnet_rpc(cfg: Config) -> None:

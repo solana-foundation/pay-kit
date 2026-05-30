@@ -39,17 +39,25 @@ def _to_decimal(amount: object) -> Decimal:
     if isinstance(amount, float):
         raise ConfigurationError("pay_kit: Price amount must be str | int | Decimal, not float")
     if isinstance(amount, Decimal):
-        return amount
-    if isinstance(amount, int):
-        return Decimal(amount)
-    if isinstance(amount, str):
+        coerced = amount
+    elif isinstance(amount, int):
+        coerced = Decimal(amount)
+    elif isinstance(amount, str):
         if not _AMOUNT_RE.match(amount):
             raise ConfigurationError(f"pay_kit: invalid Price amount: {amount!r}")
         try:
-            return Decimal(amount)
+            coerced = Decimal(amount)
         except InvalidOperation as exc:
             raise ConfigurationError(f"pay_kit: invalid Price amount: {amount!r}") from exc
-    raise ConfigurationError("pay_kit: Price amount must be str | int | Decimal")
+    else:
+        raise ConfigurationError("pay_kit: Price amount must be str | int | Decimal")
+    # The str path rejects negatives via _AMOUNT_RE, but the int and Decimal
+    # paths reach here unguarded; validate the sign uniformly so usd(-1) and
+    # usd(Decimal("-0.01")) raise instead of building an invalid Price. Zero is
+    # allowed (a free gate).
+    if coerced < 0:
+        raise ConfigurationError(f"pay_kit: Price amount must not be negative: {amount!r}")
+    return coerced
 
 
 class Settlement(pydantic.BaseModel):

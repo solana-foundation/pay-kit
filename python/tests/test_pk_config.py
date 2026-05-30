@@ -127,6 +127,56 @@ def test_real_signer_on_mainnet_allowed():
     assert cfg.network is Network.SOLANA_MAINNET
 
 
+def test_x402_demo_signer_on_mainnet_refused_even_with_real_operator():
+    # Regression: the operator signer is real, but the x402 override is the
+    # shipped demo signer. The adapter cosigns with the x402 effective signer,
+    # so booting must refuse the demo facilitator key on mainnet.
+    op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
+    with pytest.raises(DemoSignerOnMainnetError, match="x402 facilitator"):
+        configure(
+            network="solana_mainnet",
+            operator=op,
+            rpc_url="https://helius",
+            x402=X402Config(signer=Signer.demo()),
+        )
+
+
+def test_x402_demo_signer_allowed_on_devnet():
+    # The same config must NOT raise off mainnet.
+    op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
+    cfg = configure(
+        network="solana_devnet",
+        operator=op,
+        x402=X402Config(signer=Signer.demo()),
+    )
+    assert cfg.network is Network.SOLANA_DEVNET
+
+
+def test_real_x402_signer_on_mainnet_allowed():
+    # A real x402 override on mainnet must NOT raise.
+    op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
+    cfg = configure(
+        network="solana_mainnet",
+        operator=op,
+        rpc_url="https://helius",
+        x402=X402Config(signer=Signer.generate()),
+    )
+    assert cfg.network is Network.SOLANA_MAINNET
+
+
+def test_x402_demo_signer_on_mainnet_allowed_when_x402_not_accepted():
+    # When x402 is not an accepted protocol, the x402 leg must not gate boot.
+    op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
+    cfg = configure(
+        network="solana_mainnet",
+        operator=op,
+        rpc_url="https://helius",
+        accept=Protocol.MPP,
+        x402=X402Config(signer=Signer.demo()),
+    )
+    assert cfg.network is Network.SOLANA_MAINNET
+
+
 def test_public_mainnet_rpc_warns(caplog):
     op = Operator(signer=Signer.generate(), recipient="R1111111111111111111111111111111111111111")
     with caplog.at_level("WARNING", logger="pay_kit"):

@@ -256,6 +256,46 @@ async def test_confirmation_onchain_failure_rolls_back_reservation(monkeypatch):
     assert await store.get("x402-svm-exact:consumed:SIG-revert") is None
 
 
+# -- sub-microunit price truncation (149-2) ----------------------------------
+
+
+def _x402_adapter_for_price(price):
+    op = Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey()))
+    cfg = configure(
+        network="solana_localnet",
+        preflight=False,
+        accept=(Protocol.X402,),
+        operator=op,
+        rpc_url="http://127.0.0.1:8899",
+    )
+    gate = GateCls.build(
+        name="report",
+        amount=price,
+        default_pay_to=cfg.effective_recipient(),
+        accept=(Protocol.X402,),
+    )
+    return X402Adapter(cfg, replay_store=MemoryStore()), gate
+
+
+def test_x402_sub_microunit_price_rejected():
+    # Regression: usd("0.0000009") truncated to "0" via int(amount * 1e6),
+    # which would have the verifier accept a zero-amount transfer. It must now
+    # raise instead of producing "0".
+    from pay_kit.errors import ConfigurationError
+
+    adapter, gate = _x402_adapter_for_price(Price.usd("0.0000009", Stablecoin.USDC))
+    with pytest.raises(ConfigurationError, match="precision"):
+        adapter.accepts_entry(gate, {"path": "/report"})
+
+
+def test_x402_six_decimal_price_yields_micro_units():
+    # A normal 6-dp price still converts exactly.
+    adapter, gate = _x402_adapter_for_price(Price.usd("0.10", Stablecoin.USDC))
+    offer = adapter.accepts_entry(gate, {"path": "/report"})
+    assert offer["amount"] == "100000"
+    assert offer["maxAmountRequired"] == "100000"
+
+
 # -- accepted-echo amount drift (149-1) --------------------------------------
 
 

@@ -55,6 +55,21 @@ def test_price_rejects_malformed_string():
         Price.usd("abc")
 
 
+def test_price_rejects_negative_int_and_decimal():
+    # Regression: the str path rejected negatives via _AMOUNT_RE, but the int
+    # and Decimal paths returned unguarded, building an invalid Price.
+    with pytest.raises(ConfigurationError, match="must not be negative"):
+        Price.usd(-1)
+    with pytest.raises(ConfigurationError, match="must not be negative"):
+        Price.usd(Decimal("-0.01"))
+
+
+def test_price_allows_zero():
+    # Zero is a valid (free) gate amount and must still build.
+    assert Price.usd(0).amount == Decimal(0)
+    assert Price.usd("0").amount == Decimal("0")
+
+
 def test_price_currency_factories():
     assert Price.usd("1").currency is Currency.USD
     assert Price.eur("1").currency is Currency.EUR

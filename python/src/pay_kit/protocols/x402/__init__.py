@@ -25,8 +25,9 @@ from pay_kit._paycore.network_check import check_network_blockhash
 from pay_kit._paycore.protocol import Protocol
 from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit._paycore.store import MemoryStore, Store
-from pay_kit.errors import InvalidProofError
+from pay_kit.errors import ConfigurationError, InvalidProofError
 from pay_kit.payment import Payment
+from pay_kit.protocols.mpp.intents.charge import parse_units
 from pay_kit.protocols.x402.exact.types import (
     X402AcceptsEntry,
     X402Challenge,
@@ -78,7 +79,18 @@ class X402Adapter:
         asset = resolve(coin_value, label) or coin_value
         token_program = token_program_for(coin_value, label)
         pay_to = gate.pay_to or self._config.effective_recipient()
-        amount = str(int(gate.total().amount * 1_000_000))
+        # Exact 6-decimal base-unit conversion. ``int(amount * 1_000_000)``
+        # silently truncated sub-microunit precision (usd("0.0000009") -> "0"),
+        # which would have the verifier accept a zero-amount transfer. Reuse the
+        # MPP ``parse_units`` helper so over-precision is rejected the same way
+        # MPP rejects it; surface it as a ConfigurationError at offer-build time.
+        try:
+            amount = parse_units(gate.total().amount_string(), 6)
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"pay_kit: x402 price {gate.total().amount_string()!r} exceeds 6-decimal (micro-unit) precision; "
+                "USDC settles in micro-units"
+            ) from exc
         signer = self._config.x402.effective_signer(self._config.operator)
         extra: X402Extra = {
             "feePayer": signer.pubkey() if signer is not None else "",
