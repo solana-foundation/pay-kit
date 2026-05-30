@@ -34,10 +34,10 @@ few lines.
 Drive an MPP-gated endpoint with `MppHttpClient`:
 
 ```kotlin
-import com.solana.paykit.Charge
-import com.solana.paykit.JsonRpcClient
-import com.solana.paykit.MemorySigner
-import com.solana.paykit.MppHttpClient
+import com.solana.paykit.client.Charge
+import com.solana.paykit.client.JsonRpcClient
+import com.solana.paykit.client.MppHttpClient
+import com.solana.paykit.paycore.MemorySigner
 
 // Wallet integrations swap MemorySigner for their own SolanaSigner.
 val signer = MemorySigner.fromSecretKey(walletSecretKeyBytes)
