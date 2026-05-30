@@ -514,7 +514,7 @@ lua/
 │   ├── kong/plugins/pay-kit/               # Kong plugin (loader path-pinned)
 │   └── apisix/plugins/pay-kit.lua          # APISIX plugin (loader path-pinned)
 ├── examples/openresty/                     # runnable PayKit demo
-└── tests/                                  # luaunit suite + luacov gate
+└── tests/                                  # hand-rolled spec runner (tests/run.lua) + luacov gate
 ```
 
 ## Coding convention

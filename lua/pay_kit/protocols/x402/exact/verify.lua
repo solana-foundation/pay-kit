@@ -16,7 +16,7 @@ Rules:
   6. Mint match                                 (verify.rs:395-400)
   7. Destination ATA match (re-derive)          (verify.rs:402-405)
   8. Amount match                               (verify.rs:407-410)
-  9. ix[3..6] in allowlist (memo + lighthouse + optional ATA-create)
+  9. ix[3..6] in allowlist (Memo + Lighthouse ONLY; ATA-create rejected)
  10. Memo binding (exactly one if extra.memo set)
  11. Token program strict bind to extra.tokenProgram
 
@@ -36,8 +36,11 @@ local M = {}
 
 local COMPUTE_BUDGET_PROGRAM    = 'ComputeBudget111111111111111111111111111111'
 local MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
-local LIGHTHOUSE_PROGRAM        = 'L1TEVtgA75k273wWz1s6XMmDhQY5i3MwcvKb4VbZzfK'
-local ASSOCIATED_TOKEN_PROGRAM  = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+-- Official x402 SVM exact Lighthouse program id (specs/schemes/exact/
+-- scheme_exact_svm.md), matching the PHP (Verifier::LIGHTHOUSE_PROGRAM)
+-- and Go (lighthouseProgram) verifiers. The prior `L1TEVtgA75k...` value
+-- was wrong and would have rejected wallet-injected Lighthouse guards.
+local LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
 local TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000
 
@@ -167,26 +170,6 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
   }
 end
 
--- Optional ATA-create slot (intentional divergence from spine to
--- allow buyer-funded destination ATA creation in slots 3-4).
-local function valid_ata_create(ix, account_keys, requirement, transfer)
-  if program_of(account_keys, ix) ~= ASSOCIATED_TOKEN_PROGRAM then return false end
-  -- The ATA-create instruction's accounts (per the SPL Associated
-  -- Token Program): [payer, ata, owner, mint, system, token_program]
-  -- with discriminator 0 (Create) or 1 (CreateIdempotent) in data[0].
-  local data = ix.data
-  if #data < 1 or (data:byte(1) ~= 0 and data:byte(1) ~= 1) then return false end
-  if #ix.accounts < 6 then return false end
-  local ata_account = account_at(account_keys, ix, 1)
-  local owner       = account_at(account_keys, ix, 2)
-  local mint        = account_at(account_keys, ix, 3)
-  local expected_owner = requirement.payTo
-  if owner ~= expected_owner then return false end
-  if mint ~= transfer.mint then return false end
-  if ata_account ~= transfer.destination then return false end
-  return true
-end
-
 local function find_memo_match(account_keys, instructions, expected_memo)
   local memo_count, last_memo_data = 0, nil
   for i = 4, #instructions do
@@ -227,8 +210,12 @@ function M.verify(transaction_b64, requirement, managed_signers)
   local transfer = verify_transfer(instructions[3], parsed.message.account_keys,
                                    requirement, managed_signers)
 
-  -- Rule 9: slots 3..6 allowlist.
-  local destination_create_ata = false
+  -- Rule 9: ix[3..6] allowlist. Optional slots may carry ONLY Lighthouse
+  -- (wallet-injected guard) or SPL Memo. An Associated-Token-Program
+  -- ATA-create is NOT permitted: per the official x402 SVM exact contract
+  -- the destination ATA MUST pre-exist. Lighthouse is allowed in ANY
+  -- optional slot because wallets inject a variable number of guards
+  -- (Phantom 1, Solflare 2). Mirrors php Verifier and go verify.go.
   local reasons = {
     'invalid_exact_svm_payload_unknown_fourth_instruction',
     'invalid_exact_svm_payload_unknown_fifth_instruction',
@@ -238,13 +225,7 @@ function M.verify(transaction_b64, requirement, managed_signers)
     local ix = instructions[i]
     local program = program_of(parsed.message.account_keys, ix)
     local slot_index = i - 4  -- 0-based offset within slots 3..5
-    local allowed = (program == MEMO_PROGRAM) or
-      (slot_index < 2 and program == LIGHTHOUSE_PROGRAM)
-    if not allowed and slot_index < 2 and
-        valid_ata_create(ix, parsed.message.account_keys, requirement, transfer) then
-      destination_create_ata = true
-      allowed = true
-    end
+    local allowed = (program == MEMO_PROGRAM) or (program == LIGHTHOUSE_PROGRAM)
     if not allowed then
       error(reasons[slot_index + 1] or 'invalid_exact_svm_payload_unknown_optional_instruction')
     end
@@ -256,7 +237,6 @@ function M.verify(transaction_b64, requirement, managed_signers)
     find_memo_match(parsed.message.account_keys, instructions, expected_memo)
   end
 
-  transfer.destination_create_ata = destination_create_ata
   return transfer
 end
 

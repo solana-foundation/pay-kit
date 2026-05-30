@@ -56,5 +56,6 @@ require('tests.pay_kit.kong_plugin_spec')
 require('tests.pay_kit.kong_plugin_runtime_spec')
 require('tests.pay_kit.apisix_plugin_spec')
 require('tests.pay_kit.apisix_plugin_runtime_spec')
+require('tests.pay_kit.main_fixes_spec')
 
 require('tests.test_helper').run()

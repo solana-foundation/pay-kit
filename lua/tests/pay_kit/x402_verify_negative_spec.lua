@@ -32,6 +32,11 @@ end
 local COMPUTE_BUDGET = 'ComputeBudget111111111111111111111111111111'
 local MEMO_PROGRAM   = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
 local TOKEN_PROGRAM  = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+-- Official x402 SVM exact Lighthouse program id (matches php/go verifiers).
+local LIGHTHOUSE_PROGRAM     = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
+-- SPL Associated Token Program. An ATA-create in an optional slot must be
+-- REJECTED per the official x402 exact contract (destination ATA pre-exists).
+local ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 
 local function build_ix(program_index, accounts, data)
   local out = {string.char(program_index), tx_mod.compact_u16(#accounts)}
@@ -237,6 +242,106 @@ helper.test('verify accepts when offer has no memo extra', function()
   local ok, transfer = pcall(x402_verify.verify, base64.encode(raw), offer, {facilitator})
   helper.assert_true(ok, 'expected verify to accept when memo extra is not set')
   helper.assert_equal(transfer.amount, 1000)
+end)
+
+-- The standard 8-key block plus one trailing program key. Used by the
+-- Lighthouse / ATA-create optional-slot cases below: key index 8 holds the
+-- extra program (Lighthouse guard or ATA-create) the wallet injects.
+local function keys_with_extra(facilitator, source, mint, destination, authority, extra_program)
+  return table.concat({
+    base58.decode(facilitator),
+    base58.decode(source),
+    base58.decode(mint),
+    base58.decode(destination),
+    base58.decode(authority),
+    base58.decode(COMPUTE_BUDGET),
+    base58.decode(TOKEN_PROGRAM),
+    base58.decode(MEMO_PROGRAM),
+    base58.decode(extra_program),  -- index 8
+  })
+end
+
+-- Rule 9 (a + c): a single trailing Lighthouse guard (Phantom injects one)
+-- with the corrected program id is an allowed optional instruction.
+helper.test('rule 9: single trailing Lighthouse guard (Phantom) accepted', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = keys_with_extra(facilitator, source, mint, destination, authority,
+                               LIGHTHOUSE_PROGRAM)
+  -- memo at index 7, lighthouse at index 8.
+  local raw = assemble(keys, 9, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(7, {}, '/paid'),
+    build_ix(8, {}, string.char(1)),  -- lighthouse guard payload (opaque)
+  })
+  local ok, transfer = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(ok, 'expected verify to accept a trailing Lighthouse guard: ' ..
+    tostring(transfer))
+  helper.assert_equal(transfer.amount, 1000)
+end)
+
+-- Rule 9 (c): two trailing Lighthouse guards (Solflare injects two). Lighthouse
+-- must be allowed in ANY optional slot, not just the first two.
+helper.test('rule 9: two trailing Lighthouse guards (Solflare) accepted', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  local keys = keys_with_extra(facilitator, source, mint, destination, authority,
+                               LIGHTHOUSE_PROGRAM)
+  -- memo at index 7, two lighthouse guards at index 8 (slots 3,4,5 used).
+  local raw = assemble(keys, 9, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(7, {}, '/paid'),
+    build_ix(8, {}, string.char(1)),
+    build_ix(8, {}, string.char(2)),
+  })
+  local ok, transfer = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(ok, 'expected verify to accept two trailing Lighthouse guards: ' ..
+    tostring(transfer))
+  helper.assert_equal(transfer.amount, 1000)
+end)
+
+-- Rule 9 (b): an Associated-Token-Program ATA-create in an optional slot is
+-- REJECTED. Per the official x402 SVM exact contract the destination ATA MUST
+-- pre-exist; ATA-create is NOT a permitted optional instruction. This test
+-- FAILS before the fix (the old verifier accepted a buyer-funded ATA-create
+-- via valid_ata_create) and PASSES after it.
+helper.test('rule 9: ATA-create optional instruction rejected', function()
+  local facilitator, authority, source, mint, pay_to, destination = setup_actors()
+  -- 10-key layout: standard 8 keys + ATA program at index 8 + payTo owner at
+  -- index 9. The ATA-create accounts genuinely satisfy the OLD valid_ata_create
+  -- gate (owner==payTo, mint match, ata==destination), so the old verifier
+  -- ACCEPTED this transaction. The corrected verifier MUST now reject it.
+  local keys = table.concat({
+    base58.decode(facilitator),
+    base58.decode(source),
+    base58.decode(mint),
+    base58.decode(destination),
+    base58.decode(authority),
+    base58.decode(COMPUTE_BUDGET),
+    base58.decode(TOKEN_PROGRAM),
+    base58.decode(MEMO_PROGRAM),
+    base58.decode(ASSOCIATED_TOKEN_PROGRAM),  -- index 8
+    base58.decode(pay_to),                    -- index 9 (ATA owner)
+  })
+  -- Slot order: compute-limit, compute-price, transfer, ata-create, memo.
+  -- ATA-create accounts [payer=0, ata=3 (destination), owner=9 (payTo),
+  -- mint=2, system=5, token=6] with CreateIdempotent discriminator (1).
+  local raw = assemble(keys, 10, {
+    build_ix(5, {}, string.char(2) .. u32_le(200000)),
+    build_ix(5, {}, string.char(3) .. u64_le(1000)),
+    build_ix(6, {1, 2, 3, 4}, string.char(12) .. u64_le(1000) .. string.char(6)),
+    build_ix(8, {0, 3, 9, 2, 5, 6}, string.char(1)),  -- ATA-create at slot 3
+    build_ix(7, {}, '/paid'),                          -- memo at slot 4
+  })
+  local ok, err = pcall(x402_verify.verify, base64.encode(raw),
+    default_offer(facilitator, mint, pay_to), {facilitator})
+  helper.assert_true(not ok, 'expected verify to REJECT an ATA-create optional instruction')
+  helper.assert_true(tostring(err):find('fourth_instruction', 1, true) ~= nil or
+                     tostring(err):find('unknown', 1, true) ~= nil, tostring(err))
 end)
 
 helper.test('verify_client_signatures rejects when no client signatures remain', function()

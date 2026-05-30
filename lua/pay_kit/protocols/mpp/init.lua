@@ -24,11 +24,35 @@ dispatcher (P6) owns the across-request cache.
 local mpp_server = require('pay_kit.protocols.mpp.server')
 local mpp_intents = require('pay_kit.protocols.mpp.charge')
 local mpp_protocol = require('pay_kit.solana.mints')
+local expires_mod  = require('pay_kit.protocols.mpp.expires')
 local error_codes  = require('pay_kit.protocol.core.error_codes')
 
 local M = {}
 local Adapter = {}
 Adapter.__index = Adapter
+
+-- Emit a one-shot warning when the MPP replay store falls back to the
+-- volatile in-memory default. Localnet is exempt (single-worker dev is the
+-- expected shape there); mainnet/devnet warn so an operator who forgot to
+-- wire a shared store is told at first server build rather than after a
+-- cross-worker double-spend.
+local _warned_volatile_replay_store = false
+local function warn_volatile_replay_store(network)
+  if network == 'localnet' then return end
+  if _warned_volatile_replay_store then return end
+  _warned_volatile_replay_store = true
+  local msg = 'pay_kit: MPP replay protection is using the default in-memory ' ..
+    'store, which is process-local and lost on restart. On a multi-worker or ' ..
+    'multi-node deploy a settled signature can be replayed against another ' ..
+    'worker. Supply config.mpp.replay_store with a shared (ngx.shared.dict / ' ..
+    'Redis-backed) store in production.'
+  local ngx_ref = rawget(_G, 'ngx')
+  if ngx_ref and ngx_ref.log and ngx_ref.WARN then
+    ngx_ref.log(ngx_ref.WARN, msg)
+  else
+    io.stderr:write('[pay_kit] WARN: ' .. msg .. '\n')
+  end
+end
 
 local function map_pay_kit_network(network)
   -- The legacy mpp.server.new accepts "mainnet" / "devnet" / "localnet";
@@ -74,10 +98,24 @@ local function build_mpp_server(config, gate, store)
   -- store. The `store` argument from the dispatcher is reserved for
   -- the x402 adapter.
   local _ = store
+  -- Replay store. The default `store.memory()` is process-local and lost
+  -- on worker restart, so it only protects against replays seen by the
+  -- SAME worker since boot - acceptable for single-worker dev, NOT for a
+  -- multi-worker / multi-node production deploy where a replay reservation
+  -- must be visible across all settlers. Callers wire a shared store
+  -- (e.g. an ngx.shared.dict / Redis-backed adapter) via
+  -- `config.mpp.replay_store`; when none is supplied we fall back to the
+  -- volatile in-memory store and warn once so the dev-only nature is
+  -- explicit. Mirrors the Ruby/PHP "default volatile replay store" caveat.
+  local replay_store = config.mpp and config.mpp.replay_store
+  if not replay_store then
+    replay_store = store_mod.memory()
+    warn_volatile_replay_store(network)
+  end
   local handler = charge_handler.new({
     rpc                       = rpc,
     network                   = network,
-    replay_store              = store_mod.memory(),
+    replay_store              = replay_store,
     transaction_verifier      = verifier_bundle.transaction_verifier,
     pull_transaction_signer   = verifier_bundle.pull_transaction_signer,
     pull_blockhash_extractor  = verifier_bundle.pull_blockhash_extractor,
@@ -196,11 +234,22 @@ end
 -- amount (e.g. "0.001") and multiplies by 10^decimals internally;
 -- the gate.amount's `amount_string()` already carries that form.
 function Adapter:challenge_headers(gate, _req)
-  local server, _config = self:_server_for(gate)
+  local server, config = self:_server_for(gate)
   local display_amount = gate:amount():amount_string()
   local options = {}
   local splits = splits_for(gate)
   if splits then options.splits = splits end
+  -- Wire the configured challenge TTL into issuance so signed challenges
+  -- are not valid indefinitely. `config.mpp.expires_in` is seconds-from-now
+  -- (default 300); `false` is the explicit development opt-out that leaves
+  -- the challenge without an expiry. Mirrors PHP/Ruby/Python which seed a
+  -- short TTL at challenge construction rather than relying on every caller
+  -- to pass one. `verify_credential_with_expected` enforces the expiry via
+  -- `challenge_value:is_expired`.
+  local expires_in = config.mpp.expires_in
+  if type(expires_in) == 'number' and expires_in > 0 then
+    options.expires = expires_mod.format_rfc3339(os.time() + expires_in)
+  end
   local ok, challenge = pcall(server.charge_with_options, server, display_amount, options)
   if not ok then
     -- Server-side rejection at challenge time (e.g. splits > 8 or
@@ -235,10 +284,44 @@ function Adapter:verify_and_settle(gate, req)
     return nil, 'pay_kit: invalid proof: ' .. tostring(parse_err)
   end
 
+  -- The route-expected request must carry the FULL on-chain shape the
+  -- challenge was issued with, not just amount/currency/recipient.
+  -- `verify_credential_with_expected` now binds methodDetails + externalId
+  -- (stripping only recentBlockhash) and settles from `expected`, so a
+  -- credential issued for a different shape (different splits, fee payer,
+  -- or token program) on the same price/recipient is rejected. Reconstruct
+  -- the same methodDetails `charge_with_options` builds inside
+  -- `build_mpp_server` (network, decimals/tokenProgram for SPL, splits,
+  -- feePayer/feePayerKey). Mirrors PHP Adapter::chargeRequestFor and Ruby
+  -- Mpp::Server::Charge#charge which both pass the route's full request
+  -- into verification.
+  local currency = gate:amount():primary_coin()
+  local is_native_sol = string.lower(currency or '') == 'sol'
+  local expected_method_details = {
+    network = server.network,
+  }
+  if not is_native_sol then
+    expected_method_details.decimals = server.decimals
+    if mpp_protocol.stablecoin_symbol(currency) then
+      expected_method_details.tokenProgram =
+        mpp_protocol.default_token_program_for_currency(currency, server.network)
+    end
+  end
+  local expected_splits = splits_for(gate)
+  if expected_splits then
+    expected_method_details.splits = expected_splits
+  end
+  if server.fee_payer then
+    expected_method_details.feePayer = true
+    if server.fee_payer_key then
+      expected_method_details.feePayerKey = server.fee_payer_key
+    end
+  end
   local expected = {
-    amount    = tostring(gate:total_units()),
-    currency  = gate:amount():primary_coin(),
-    recipient = gate:pay_to(),
+    amount        = tostring(gate:total_units()),
+    currency      = currency,
+    recipient     = gate:pay_to(),
+    methodDetails = expected_method_details,
   }
   local ok, result_or_err = pcall(function()
     return server:verify_credential_with_expected(credential, expected)

@@ -22,7 +22,9 @@ helper.test('configure() with no opts boots on demo signer + localnet', function
   helper.assert_equal(ok, true)
   local cfg = pay_kit.config()
   helper.assert_equal(cfg.network, 'solana_localnet')
-  helper.assert_equal(cfg.rpc_url, 'http://localhost:8899')
+  -- localnet defaults to the hosted Surfpool clone, not a bare local
+  -- validator the developer may not be running (LUA-3 / Ruby parity).
+  helper.assert_equal(cfg.rpc_url, 'https://402.surfnet.dev:8899')
   helper.assert_equal(cfg.operator:signer():demo(), true)
   helper.assert_equal(cfg.operator:fee_payer(), true)
 end)
@@ -149,6 +151,28 @@ helper.test('configure() mpp.expires_in default + override', function()
   reset()
   assert(pay_kit.configure({mpp = {expires_in = 60}}))
   helper.assert_equal(pay_kit.config().mpp.expires_in, 60)
+end)
+
+-- Regression: configure() must preserve a caller-supplied mpp.replay_store
+-- (and any other mpp.* field) through to the stored config. A prior round-1
+-- change rebuilt current_config.mpp from only realm / secret / expires_in,
+-- silently dropping the shared atomic replay store operators inject to
+-- satisfy the multi-worker replay-protection warning. Pre-fix the assert on
+-- replay_store fails (nil); post-fix it round-trips.
+helper.test('configure() preserves mpp.replay_store and other mpp fields', function()
+  reset()
+  local sentinel_store = { put_if_absent = function() return true end }
+  assert(pay_kit.configure({mpp = {
+    replay_store = sentinel_store,
+    challenge_binding_secret = 'rotate-me',
+    expires_in = 90,
+  }}))
+  local cfg = pay_kit.config()
+  helper.assert_equal(cfg.mpp.replay_store, sentinel_store)
+  -- Normalized fields still applied alongside the preserved store.
+  helper.assert_equal(cfg.mpp.challenge_binding_secret, 'rotate-me')
+  helper.assert_equal(cfg.mpp.expires_in, 90)
+  helper.assert_equal(cfg.mpp.realm, 'App')
 end)
 
 helper.test('configure() refuses to be called twice', function()
