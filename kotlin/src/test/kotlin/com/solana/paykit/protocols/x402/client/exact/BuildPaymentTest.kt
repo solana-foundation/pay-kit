@@ -9,6 +9,10 @@ import com.solana.paykit.paycore.defaultTokenProgramForCurrency
 import com.solana.paykit.paycore.resolveStablecoinMint
 import com.solana.paykit.protocols.x402.exact.X402AcceptsEntry
 import com.solana.paykit.protocols.x402.exact.X402Extra
+import com.solana.paykit.protocols.x402.exact.effectiveAsset
+import com.solana.paykit.protocols.x402.exact.effectiveDecimals
+import com.solana.paykit.protocols.x402.exact.effectiveRecentBlockhash
+import com.solana.paykit.protocols.x402.exact.effectiveTokenProgram
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -346,10 +350,13 @@ class BuildPaymentTest {
         // Use base58-encoded 32 byte zero hash ("11111111111111111111111111111111")
         val zeroBh = "11111111111111111111111111111111"
         val allOnesBh = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"
+        // No-memo offers now carry a per-call random nonce memo; pin it so the
+        // byte comparison isolates the blockhash difference.
+        val fixedNonce = { "0011223344556677" }
 
-        val withZero = buildPayment(signer, solOffer(recentBlockhash = zeroBh), fixedBlockhash)
+        val withZero = buildPayment(signer, solOffer(recentBlockhash = zeroBh), fixedBlockhash, fixedNonce)
         // fixedBlockhash also returns all-zero bytes → both should produce same tx.
-        val fromProvider = buildPayment(signer, solOffer(recentBlockhash = null), fixedBlockhash)
+        val fromProvider = buildPayment(signer, solOffer(recentBlockhash = null), fixedBlockhash, fixedNonce)
         val rawWithZero = decodeTransaction(withZero.payload.transaction!!)
         val rawFromProvider = decodeTransaction(fromProvider.payload.transaction!!)
         assertTrue(
@@ -358,7 +365,7 @@ class BuildPaymentTest {
         )
 
         // Now test with a different blockhash from offer: must differ from the above.
-        val withOnes = buildPayment(signer, solOffer(recentBlockhash = allOnesBh), fixedBlockhash)
+        val withOnes = buildPayment(signer, solOffer(recentBlockhash = allOnesBh), fixedBlockhash, fixedNonce)
         val rawWithOnes = decodeTransaction(withOnes.payload.transaction!!)
         assertTrue(
             !rawWithOnes.contentEquals(rawWithZero),
@@ -392,6 +399,110 @@ class BuildPaymentTest {
                 raw.copyOfRange(idx, idx + memoBytes.size).contentEquals(memoBytes)
         }
         assertTrue(found, "memo string must appear as instruction data in the transaction")
+    }
+
+    @Test
+    fun noServerMemoStillAppendsNonceMemo() {
+        // x402 SVM exact REQUIRES the client to always append exactly one Memo,
+        // a nonce when the offer carries no extra.memo, so otherwise-identical
+        // concurrent payments stay unique on-chain. With a fixed injected nonce
+        // the bytes must contain that nonce as Memo instruction data.
+        val nonce = "00112233445566778899aabbccddeeff"
+        val offer = solOffer(memo = null)
+        val envelope = buildPayment(signer, offer, fixedBlockhash, nonceProvider = { nonce })
+        val raw = decodeTransaction(envelope.payload.transaction!!)
+        val nonceBytes = nonce.encodeToByteArray()
+        val found = raw.indices.any { idx ->
+            idx + nonceBytes.size <= raw.size &&
+                raw.copyOfRange(idx, idx + nonceBytes.size).contentEquals(nonceBytes)
+        }
+        assertTrue(found, "a nonce Memo must be appended when the offer carries no extra.memo")
+    }
+
+    @Test
+    fun noMemoTransactionsAreNonDeterministicByDefault() {
+        // The default (production) nonce provider mints a fresh secure-random
+        // nonce per call, so two payments for an identical no-memo offer must
+        // produce different transaction bytes (uniqueness guarantee). This is
+        // the regression for the "deterministic without memo" finding: before
+        // the fix the two would have been byte-identical.
+        val offer = solOffer(memo = null, recentBlockhash = "11111111111111111111111111111111")
+        val a = buildPayment(signer, offer, fixedBlockhash)
+        val b = buildPayment(signer, offer, fixedBlockhash)
+        assertTrue(
+            a.payload.transaction != b.payload.transaction,
+            "no-memo payments must be unique per call via the random nonce memo",
+        )
+    }
+
+    @Test
+    fun injectedNonceMakesNoMemoTransactionDeterministic() {
+        // The nonce source is injectable so golden-vector tests stay
+        // deterministic: a fixed nonce reproduces identical bytes.
+        val offer = solOffer(memo = null, recentBlockhash = "11111111111111111111111111111111")
+        val fixed = { "deadbeefdeadbeefdeadbeefdeadbeef" }
+        val a = buildPayment(signer, offer, fixedBlockhash, nonceProvider = fixed)
+        val b = buildPayment(signer, offer, fixedBlockhash, nonceProvider = fixed)
+        assertEquals(a.payload.transaction, b.payload.transaction)
+    }
+
+    @Test
+    fun topLevelFieldsTakePrecedenceOverExtraAliases() {
+        // 152-field-precedence: effective* resolution must prefer the TOP-LEVEL
+        // field over the nested extra.* alias, matching the rust spine. Build
+        // an offer carrying conflicting shapes and assert the top-level value
+        // wins for decimals, tokenProgram, and recentBlockhash.
+        val topBlockhash = "11111111111111111111111111111111"
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = Mints.USDC_DEVNET,
+            amount = "1000",
+            payTo = devnetRecipient,
+            // Top-level canonical fields.
+            decimals = 9,
+            tokenProgram = Programs.TOKEN_PROGRAM,
+            recentBlockhash = topBlockhash,
+            // Conflicting nested aliases that MUST lose.
+            extra = X402Extra(
+                decimals = 2,
+                tokenProgram = Programs.TOKEN_2022_PROGRAM,
+                recentBlockhash = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+            ),
+        )
+        assertEquals(9, offer.effectiveDecimals)
+        assertEquals(Programs.TOKEN_PROGRAM, offer.effectiveTokenProgram)
+        assertEquals(topBlockhash, offer.effectiveRecentBlockhash)
+    }
+
+    @Test
+    fun effectiveAssetPrefersTopLevelAsset() {
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = Mints.USDC_DEVNET,
+            currency = Mints.USDT_MAINNET,
+            amount = "1000",
+            payTo = devnetRecipient,
+        )
+        // Top-level asset wins over the currency alias.
+        assertEquals(Mints.USDC_DEVNET, offer.effectiveAsset)
+    }
+
+    @Test
+    fun extraAliasUsedWhenTopLevelAbsent() {
+        // When the top-level field is absent the nested extra.* alias is the
+        // fallback, so a server emitting only the nested shape still resolves.
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = Mints.USDC_DEVNET,
+            amount = "1000",
+            payTo = devnetRecipient,
+            extra = X402Extra(decimals = 2, tokenProgram = Programs.TOKEN_2022_PROGRAM),
+        )
+        assertEquals(2, offer.effectiveDecimals)
+        assertEquals(Programs.TOKEN_2022_PROGRAM, offer.effectiveTokenProgram)
     }
 
     // ── Error cases ───────────────────────────────────────────────────────────
@@ -474,10 +585,13 @@ class BuildPaymentTest {
 
     @Test
     fun sameInputsProduceSameTransaction() {
-        // Deterministic signer + deterministic blockhash → deterministic bytes.
+        // Deterministic signer + deterministic blockhash + a pinned nonce
+        // (the no-memo offer otherwise mints a fresh random nonce per call) →
+        // deterministic bytes.
         val offer = solOffer(recentBlockhash = "11111111111111111111111111111111")
-        val a = buildPayment(signer, offer, fixedBlockhash)
-        val b = buildPayment(signer, offer, fixedBlockhash)
+        val fixedNonce = { "0011223344556677" }
+        val a = buildPayment(signer, offer, fixedBlockhash, fixedNonce)
+        val b = buildPayment(signer, offer, fixedBlockhash, fixedNonce)
         assertEquals(a.payload.transaction, b.payload.transaction)
     }
 }

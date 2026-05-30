@@ -118,8 +118,48 @@ class MppHttpClient(
 class JsonRpcClient(
     private val url: String,
     private val okHttp: OkHttpClient = OkHttpClient(),
-) : BlockhashProvider {
+) : BlockhashProvider, MintOwnerResolver {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Resolves the owning program of [mintBase58] via `getAccountInfo`.
+     *
+     * Used by the charge builder to determine the token program for a mint
+     * when the challenge omits `methodDetails.tokenProgram` (mirrors the rust
+     * client `resolve_token_program`, which reads the mint account owner).
+     * Returns the base58 owner program id. Throws
+     * [MppException.InvalidTransaction] if the account is missing or the RPC
+     * response lacks an owner (fail-closed; the caller rejects the charge).
+     */
+    override fun fetchMintOwner(mintBase58: String): String {
+        val payload = buildJsonObject {
+            put("jsonrpc", "2.0")
+            put("id", 1)
+            put("method", "getAccountInfo")
+            put(
+                "params",
+                buildJsonArray {
+                    add(JsonPrimitive(mintBase58))
+                    add(
+                        buildJsonObject {
+                            put("encoding", "base64")
+                        },
+                    )
+                },
+            )
+        }
+        val response = post(payload)
+        val value = response["result"]?.jsonObject?.get("value")
+        if (value == null || value is kotlinx.serialization.json.JsonNull) {
+            throw MppException.InvalidTransaction(
+                "getAccountInfo returned no account for mint $mintBase58",
+            )
+        }
+        return value.jsonObject["owner"]?.jsonPrimitive?.content
+            ?: throw MppException.InvalidTransaction(
+                "getAccountInfo returned no owner for mint $mintBase58",
+            )
+    }
 
     /** Fetches the latest blockhash from a Solana JSON-RPC endpoint. */
     override fun fetchRecentBlockhash(): ByteArray {

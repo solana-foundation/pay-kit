@@ -58,17 +58,37 @@ data class X402AcceptsEntry(
 /** Effective recipient: prefers ``payTo``, falls back to ``recipient``. */
 val X402AcceptsEntry.effectivePayTo: String? get() = payTo ?: recipient
 
-/** Effective mint: prefers ``asset``, falls back to top-level ``currency``. */
+/**
+ * Effective mint: prefers the top-level ``asset``, falls back to ``currency``.
+ *
+ * Precedence is TOP-LEVEL FIRST to match the rust spine normalization
+ * (``effective_asset = asset.or(currency)`` /
+ * ``effectiveAsset = currency ?: asset`` in the audit direction: the
+ * rust-normalized requirement carries the canonical value at the top
+ * level, so the top-level field wins over any aliased fallback).
+ */
 val X402AcceptsEntry.effectiveAsset: String? get() = asset ?: currency
 
-/** Effective token program: prefers ``extra.tokenProgram``, then top-level. */
-val X402AcceptsEntry.effectiveTokenProgram: String? get() = extra?.tokenProgram ?: tokenProgram
+/**
+ * Effective token program: prefers the TOP-LEVEL ``tokenProgram``, then
+ * the ``extra.tokenProgram`` nested alias. Top-level-first matches the
+ * rust spine, which normalizes the canonical token program onto the
+ * top-level field.
+ */
+val X402AcceptsEntry.effectiveTokenProgram: String? get() = tokenProgram ?: extra?.tokenProgram
 
-/** Effective token decimals: prefers ``extra.decimals``, then top-level. */
-val X402AcceptsEntry.effectiveDecimals: Int? get() = extra?.decimals ?: decimals
+/**
+ * Effective token decimals: prefers the TOP-LEVEL ``decimals``, then the
+ * ``extra.decimals`` nested alias. Top-level-first matches the rust spine.
+ */
+val X402AcceptsEntry.effectiveDecimals: Int? get() = decimals ?: extra?.decimals
 
-/** Effective pinned blockhash: prefers ``extra.recentBlockhash``, then top-level. */
-val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = extra?.recentBlockhash ?: recentBlockhash
+/**
+ * Effective pinned blockhash: prefers the TOP-LEVEL ``recentBlockhash``,
+ * then the ``extra.recentBlockhash`` nested alias. Top-level-first matches
+ * the rust spine.
+ */
+val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = recentBlockhash ?: extra?.recentBlockhash
 
 /** The base64-decoded challenge body (``payment-required`` header or 402 body). */
 @Serializable

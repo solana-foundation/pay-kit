@@ -146,9 +146,19 @@ class V0MessageDecodeTest {
     }
 
     @Test
-    fun memoOmittedWhenOfferHasNone() {
-        val tx = decode(buildPayment(signer, splOffer(memo = null), fixedBlockhash).payload.transaction!!)
-        assertEquals(3, tx.instructions.size, "no memo => exactly limit, price, transferChecked")
+    fun nonceMemoAppendedWhenOfferHasNone() {
+        // x402 SVM exact REQUIRES the client to always append exactly one Memo:
+        // a nonce when the offer carries none. So a no-memo offer now produces
+        // FOUR instructions (limit, price, transferChecked, nonce-memo), not
+        // three. The trailing memo is the Memo program with the nonce data.
+        val nonce = "0011223344556677"
+        val tx = decode(
+            buildPayment(signer, splOffer(memo = null), fixedBlockhash, nonceProvider = { nonce })
+                .payload.transaction!!,
+        )
+        assertEquals(4, tx.instructions.size, "limit, price, transferChecked, nonce-memo")
+        assertEquals(Programs.MEMO_PROGRAM, keyB58(tx, tx.instructions[3].programIndex))
+        assertContentEquals(nonce.encodeToByteArray(), tx.instructions[3].data)
     }
 
     // ── transferChecked account indices ──────────────────────────────────────
@@ -220,27 +230,40 @@ class V0MessageDecodeTest {
     @Test
     fun goldenV0SplVector() {
         // Deterministic inputs (seed 0x42*32, fee payer fixed, blockhash 0x07*32,
-        // no memo) must always serialize to this exact base64. Regenerate ONLY
-        // when the transaction shape intentionally changes, after confirming the
-        // new bytes still pass the rust verifier.
+        // and a FIXED injected nonce memo) must always serialize to this exact
+        // base64. The nonce source is injectable so this golden stays
+        // deterministic despite the always-append-memo requirement. Regenerate
+        // ONLY when the transaction shape intentionally changes, after
+        // confirming the new bytes still pass the rust verifier.
         val offer = splOffer(feePayer = feePayer, memo = null, recentBlockhash = blockhash07)
-        val encoded = buildPayment(signer, offer, fixedBlockhash).payload.transaction!!
+        val encoded = buildPayment(
+            signer,
+            offer,
+            fixedBlockhash,
+            nonceProvider = { GOLDEN_NONCE },
+        ).payload.transaction!!
         assertEquals(GOLDEN_V0_SPL, encoded)
     }
 
     companion object {
+        // Fixed nonce for the golden vector (mirrors the rust spine's 16-byte
+        // nonce hex-encoded to 32 chars; pinned here so the golden is stable).
+        private const val GOLDEN_NONCE = "00112233445566778899aabbccddeeff"
+
         // Deterministic v0 SPL transferChecked transaction (seed 0x42*32, fee
-        // payer 6Afz…, blockhash 0x07*32, no memo). web3-solana builds the
-        // transferChecked; the paycore codec compiles the v0 message.
+        // payer 6Afz…, blockhash 0x07*32, fixed nonce memo GOLDEN_NONCE).
+        // web3-solana builds the transferChecked; the paycore codec compiles
+        // the v0 message.
         private const val GOLDEN_V0_SPL =
             "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
-                "AAAAAAAAAAAAAAAAAAB4h5vIpEc09XZggnFHUKeev74bRgbaLMRFgh2NYV2ofkmx2Uf" +
-                "73Med0jbNhE6iPdgxhwDuV+Q/XoL2Fh6zIB8OgAIAAwdMxL7ko8h9WkSW5SwlG67XtS" +
+                "AAAAAAAAAAAAAAAAAAC+9d4KvGvLnvf9Aa0wKa8eoMsZl71oOCtm6jxZ66sPn+BjAtX" +
+                "pIZqYmMiDyd4xWT8Dp7raHnWmv04VTKGPYmELgAIABAhMxL7ko8h9WkSW5SwlG67XtS" +
                 "JZiRPvwPGK09Jf9vRbhSFS+NGbeR0kRTJC4V8uq2y3z/p7al7TAJeWDgaYgdsSqLucG" +
                 "/Qd4v5NMjQTvkWRrUlxle0D7MY2HMM6QMNHb6QF0v9ZVulbhkOsQH9ttW6uJjl0kF0Q" +
                 "I+cdo95TKOHKWwMGRm/lIRcy/+ytunLDm+e8jOW7xfcSayxDmzpAAAAAO0Qss5EhV/E" +
                 "6kz0BNCgtAytf/s0Botvxt3kGCN8ALqcG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jP" +
-                "WFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAwQABQIgTgAABAAJAw" +
-                "EAAAAAAAAABgQCBQMBCgzoAwAAAAAAAAYA"
+                "WFfv8AqQVKU1qZKSEGTSTocWDaOHx8NbXdvJK7geQfqEBBBUSNBwcHBwcHBwcHBwcHBw" +
+                "cHBwcHBwcHBwcHBwcHBwcHBwcEBAAFAiBOAAAEAAkDAQAAAAAAAAAGBAIFAwEKDOgDAAA" +
+                "AAAAABgcAIDAwMTEyMjMzNDQ1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmAA=="
     }
 }

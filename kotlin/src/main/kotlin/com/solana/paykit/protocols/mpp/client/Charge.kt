@@ -3,12 +3,28 @@ package com.solana.paykit.protocols.mpp.client
 import com.solana.paykit.protocols.mpp.core.*
 import com.solana.paykit.paycore.*
 
+import java.math.BigInteger
 import java.util.Base64
 
 /** Builds a signed Solana transaction for a decoded MPP charge request. */
 fun interface ChargeTransactionProvider {
     /** Returns the signed base64 transaction for the provided charge request. */
     fun buildTransaction(request: ChargeRequest): String
+}
+
+/**
+ * Resolves the owning program of an SPL mint account.
+ *
+ * The charge builder uses this to determine the token program for a mint when
+ * the challenge omits `methodDetails.tokenProgram` (mirrors the rust client
+ * `resolve_token_program`, which reads the mint account owner, and the swift
+ * `resolveTokenProgram` RPC path). [JsonRpcClient] implements this against a
+ * Solana `getAccountInfo` call. When no resolver is supplied the builder fails
+ * closed rather than guessing the token program from a static table.
+ */
+fun interface MintOwnerResolver {
+    /** Returns the base58 program id that owns the given mint account. */
+    fun fetchMintOwner(mintBase58: String): String
 }
 
 /**
@@ -76,6 +92,7 @@ object Charge {
         blockhashProvider: BlockhashProvider,
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
+        mintOwnerResolver: MintOwnerResolver? = null,
     ): String {
         val built = buildUnsignedChargeMessage(
             walletPublicKey = PublicKey(signer.publicKeyBytes),
@@ -83,6 +100,7 @@ object Charge {
             blockhashProvider = blockhashProvider,
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
+            mintOwnerResolver = mintOwnerResolver,
         )
         val signature = signer.sign(built.messageBytes)
         val signerIndex = built.message.accountKeys.indexOfFirst {
@@ -117,6 +135,7 @@ object Charge {
         blockhashProvider: BlockhashProvider,
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
+        mintOwnerResolver: MintOwnerResolver? = null,
     ): ByteArray {
         val built = buildUnsignedChargeMessage(
             walletPublicKey = walletPublicKey,
@@ -124,6 +143,7 @@ object Charge {
             blockhashProvider = blockhashProvider,
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
+            mintOwnerResolver = mintOwnerResolver,
         )
         val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
         return Transaction.serializeLegacyTransaction(built.message, signatures)
@@ -147,10 +167,20 @@ object Charge {
         blockhashProvider: BlockhashProvider,
         computeUnitLimit: Int,
         computeUnitPrice: Long,
+        mintOwnerResolver: MintOwnerResolver?,
     ): UnsignedChargeMessage {
-        val totalAmount = request.amount.toLongOrNull()
+        // Base-unit amounts are u64 on the wire (Solana lamports / SPL token
+        // amounts). A signed Long tops out at 2^63-1, so a legitimate amount
+        // in [2^63, 2^64) would overflow `toLongOrNull` (returns null →
+        // spurious "invalid amount") or, worse, parse a crafted value that
+        // wraps. Parse through BigInteger and bound to the unsigned u64 range
+        // so the full token space is representable without truncation. The
+        // instruction encoders still take Long; values are converted only at
+        // the encode boundary (see toU64Long), which preserves the exact
+        // little-endian u64 bit pattern via ULong.
+        val totalAmount = parseU64(request.amount)
             ?: throw MppException.InvalidTransaction("Invalid amount: ${request.amount}")
-        if (totalAmount <= 0L) {
+        if (totalAmount.signum() <= 0) {
             throw MppException.InvalidTransaction("Amount must be positive: ${request.amount}")
         }
         val splits = request.methodDetails.splits ?: emptyList()
@@ -159,36 +189,24 @@ object Charge {
         }
         // Reject negative split amounts up front so they cannot slip past
         // the `splitsTotal <= 0` arithmetic and reach the wire encoder as
-        // a negative lamport count. `toLongOrNull` happily parses "-100"
-        // into -100L, which would make splitsTotal negative and let
-        // primaryAmount = totalAmount - (-100) clear the <= 0 guard; the
-        // downstream `Instructions.transferChecked` / `systemTransfer`
-        // require(lamports >= 0) would then throw an unchecked
-        // IllegalArgumentException from deep in the stack instead of the
-        // structured MppException.InvalidTransaction callers expect.
-        // Use checked addition so a hostile or compromised challenge
-        // cannot craft splits whose individual amounts each fit in Long
-        // but whose sum wraps. `sumOf { Long }` is plain `+`, so an
-        // overflow silently produces a small/negative `splitsTotal`
-        // that would clear the `primaryAmount <= 0L` guard while each
-        // per-split transfer still emits its huge positive amount on
-        // the wire. `Math.addExact` throws ArithmeticException on
-        // overflow, which we surface as a structured
-        // MppException.InvalidTransaction. Mirrors the Go #101 fix.
-        val splitsTotal = splits.fold(0L) { acc, split ->
-            val v = split.amount.toLongOrNull()
+        // a negative lamport count. With BigInteger arithmetic the sum can
+        // never silently wrap, but we still bound each split to the u64
+        // range and bound the running total so the eventual per-split
+        // u64 encode cannot overflow.
+        var splitsTotal = BigInteger.ZERO
+        for (split in splits) {
+            val v = parseU64(split.amount)
                 ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
-            if (v < 0L) {
+            if (v.signum() < 0) {
                 throw MppException.InvalidTransaction("Split amount cannot be negative: ${split.amount}")
             }
-            try {
-                Math.addExact(acc, v)
-            } catch (_: ArithmeticException) {
-                throw MppException.InvalidTransaction("Splits sum overflows Long")
+            splitsTotal = splitsTotal.add(v)
+            if (splitsTotal > U64_MAX) {
+                throw MppException.InvalidTransaction("Splits sum exceeds u64 range")
             }
         }
-        val primaryAmount = totalAmount - splitsTotal
-        if (primaryAmount <= 0L) {
+        val primaryAmount = totalAmount.subtract(splitsTotal)
+        if (primaryAmount.signum() <= 0) {
             throw MppException.InvalidTransaction("Splits consume the entire amount")
         }
 
@@ -212,18 +230,18 @@ object Charge {
                     "ataCreationRequired requires an SPL token charge",
                 )
             }
-            // The previous `mint != request.currency` guard rejected
-            // every well-known symbol (USDC/USDT/USDG/PYUSD/CASH)
-            // because resolveStablecoinMint maps those symbols to the
-            // mint address, so `mint` and `request.currency` necessarily
-            // differ. Match the Rust/Swift/Lua spine: accept either
-            // (a) a symbol that resolved to a different mint, or
-            // (b) a base58 mint address passed through verbatim.
-            val isSymbol = mint != request.currency
-            val isPassThrough = mint == request.currency && isLikelyBase58MintAddress(mint)
-            if (!isSymbol && !isPassThrough) {
+            // Match the rust spine (`client/charge.rs` `if mint_str !=
+            // currency { reject }`), TypeScript, and Swift: when any split
+            // requires ATA creation the request `currency` MUST itself be the
+            // resolved base58 mint address. A symbol that resolves to a
+            // different mint is REJECTED, because a fee-sponsored server pays
+            // the ATA rent and must bind the exact mint it sponsors rather
+            // than trusting a symbol→mint mapping that could diverge across
+            // SDKs. (The previous build accepted the symbol branch, which let
+            // Kotlin construct credentials the reference servers reject.)
+            if (mint != request.currency || !isLikelyBase58MintAddress(mint)) {
                 throw MppException.InvalidTransaction(
-                    "ataCreationRequired requires currency to be an SPL token mint address or known symbol",
+                    "ataCreationRequired requires currency to be an SPL token mint address",
                 )
             }
         }
@@ -234,13 +252,12 @@ object Charge {
                 signerKey = signerKey,
                 recipientKey = recipientKey,
                 mint = mint,
-                currency = request.currency,
-                network = md.network,
                 methodDetails = md,
                 primaryAmount = primaryAmount,
                 externalId = request.externalId,
                 splits = splits,
                 feePayer = feePayerKey,
+                mintOwnerResolver = mintOwnerResolver,
             )
         } else {
             buildSolInstructions(
@@ -297,6 +314,7 @@ object Charge {
         blockhashProvider: BlockhashProvider,
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
+        mintOwnerResolver: MintOwnerResolver? = null,
     ): String {
         challenge.requireSolanaCharge()
         val request = challenge.chargeRequest()
@@ -306,6 +324,7 @@ object Charge {
             blockhashProvider = blockhashProvider,
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
+            mintOwnerResolver = mintOwnerResolver,
         )
         return MppHeaders.formatAuthorization(
             PaymentCredential(
@@ -316,14 +335,20 @@ object Charge {
     }
 
     /**
-     * Resolves the default SPL token program for a currency / network.
+     * Resolves the default SPL token program for a currency / network from the
+     * static known-stablecoin table.
      *
-     * Token-2022 mints (PYUSD, USDG, CASH) live under the Token-2022
-     * program and need a different ATA derivation than legacy SPL. The
-     * challenge methodDetails.tokenProgram override always wins; this
-     * helper is the fallback when the server does not pin one.
+     * Token-2022 mints (PYUSD, USDG, CASH) live under the Token-2022 program
+     * and need a different ATA derivation than legacy SPL.
      *
-     * Mirrors `rust/src/protocol/solana.rs::default_token_program_for_currency`.
+     * WARNING: this is the static-table path only. It returns
+     * [Programs.TOKEN_PROGRAM] for any mint outside the known table, which
+     * silently mis-derives ATAs for an arbitrary Token-2022 mint. The charge
+     * builder no longer falls back to this helper for arbitrary mints; it
+     * resolves the program from the mint account owner via
+     * [MintOwnerResolver] (see [resolveTokenProgram]). Kept for callers that
+     * only ever pay known stablecoins and for parity testing against
+     * `rust/src/protocol/solana.rs::default_token_program_for_currency`.
      */
     fun defaultTokenProgramFor(currency: String, network: String?): String {
         val mint = resolveStablecoinMint(currency, network)
@@ -336,6 +361,55 @@ object Charge {
             Mints.CASH_MAINNET -> Programs.TOKEN_2022_PROGRAM
             else -> Programs.TOKEN_PROGRAM
         }
+    }
+
+    /**
+     * Resolves the SPL token program for [mint], mirroring the rust client
+     * `resolve_token_program` and swift `resolveTokenProgram`:
+     *
+     * 1. When the challenge pins `methodDetails.tokenProgram`, validate it
+     *    against {Token, Token-2022} ONLY and reject anything else.
+     * 2. Otherwise, when [mint] is a known stablecoin mint, answer from the
+     *    static table (no RPC needed; the owner is well-known).
+     * 3. Otherwise (arbitrary mint, no pinned program) read the mint account
+     *    owner via [mintOwnerResolver] and validate it against
+     *    {Token, Token-2022}. Fail closed when no resolver is available rather
+     *    than guessing the legacy Token program (which would mis-derive ATAs
+     *    for a Token-2022 mint and bind the wrong program on the wire).
+     */
+    private fun resolveTokenProgram(
+        mint: String,
+        methodDetails: SolanaChargeMethodDetails,
+        mintOwnerResolver: MintOwnerResolver?,
+    ): String {
+        val explicit = methodDetails.tokenProgram
+        if (explicit != null) {
+            if (explicit != Programs.TOKEN_PROGRAM && explicit != Programs.TOKEN_2022_PROGRAM) {
+                throw MppException.InvalidTransaction("Unsupported token program: $explicit")
+            }
+            return explicit
+        }
+        // Known stablecoin mints carry a deterministic owner; answer from the
+        // table so callers paying stablecoins do not need to wire an RPC.
+        if (stablecoinSymbol(mint) != null) {
+            return if (stablecoinUsesToken2022(mint)) {
+                Programs.TOKEN_2022_PROGRAM
+            } else {
+                Programs.TOKEN_PROGRAM
+            }
+        }
+        val resolver = mintOwnerResolver
+            ?: throw MppException.InvalidTransaction(
+                "methodDetails.tokenProgram omitted and no MintOwnerResolver " +
+                    "was provided to resolve mint $mint",
+            )
+        val owner = resolver.fetchMintOwner(mint)
+        if (owner != Programs.TOKEN_PROGRAM && owner != Programs.TOKEN_2022_PROGRAM) {
+            throw MppException.InvalidTransaction(
+                "mint $mint is owned by unsupported program $owner",
+            )
+        }
+        return owner
     }
 
     /**
@@ -360,24 +434,46 @@ object Charge {
         return value.all { it in alphabet }
     }
 
+    /** Maximum unsigned u64, the wire upper bound for base-unit amounts. */
+    private val U64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)
+
+    /**
+     * Parses a decimal string into an unsigned u64 ([BigInteger]) base-unit
+     * amount, or null when it is not a non-negative integer in [0, 2^64).
+     * Signed Long would reject or wrap legitimate amounts in [2^63, 2^64).
+     */
+    private fun parseU64(text: String): BigInteger? {
+        val value = text.toBigIntegerOrNull() ?: return null
+        if (value.signum() < 0 || value > U64_MAX) return null
+        return value
+    }
+
     private fun buildSolInstructions(
         instructions: MutableList<Instruction>,
         signerKey: PublicKey,
         recipientKey: PublicKey,
-        primaryAmount: Long,
+        primaryAmount: BigInteger,
         externalId: String?,
         splits: List<SolanaChargeSplit>,
     ) {
         instructions.add(
-            Instructions.systemTransfer(signerKey.toBase58(), recipientKey.toBase58(), primaryAmount),
+            Instructions.systemTransfer(
+                signerKey.toBase58(),
+                recipientKey.toBase58(),
+                primaryAmount,
+            ),
         )
         addMemo(instructions, externalId)
         for (split in splits) {
             val splitDest = PublicKey.fromBase58(split.recipient)
-            val splitAmount = split.amount.toLongOrNull()
+            val splitAmount = parseU64(split.amount)
                 ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
             instructions.add(
-                Instructions.systemTransfer(signerKey.toBase58(), splitDest.toBase58(), splitAmount),
+                Instructions.systemTransfer(
+                    signerKey.toBase58(),
+                    splitDest.toBase58(),
+                    splitAmount,
+                ),
             )
             addMemo(instructions, split.memo)
         }
@@ -388,23 +484,22 @@ object Charge {
         signerKey: PublicKey,
         recipientKey: PublicKey,
         mint: String,
-        currency: String,
-        network: String?,
         methodDetails: SolanaChargeMethodDetails,
-        primaryAmount: Long,
+        primaryAmount: BigInteger,
         externalId: String?,
         splits: List<SolanaChargeSplit>,
         feePayer: PublicKey?,
+        mintOwnerResolver: MintOwnerResolver?,
     ) {
         val mintKey = PublicKey.fromBase58(mint)
         val tokenProgram = PublicKey.fromBase58(
-            methodDetails.tokenProgram ?: defaultTokenProgramFor(currency, network),
+            resolveTokenProgram(mint, methodDetails, mintOwnerResolver),
         )
         val decimals = methodDetails.decimals ?: 6
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgram)
         val payer = feePayer ?: signerKey
 
-        fun addSplTransfer(destOwner: PublicKey, amount: Long, createAta: Boolean) {
+        fun addSplTransfer(destOwner: PublicKey, amount: BigInteger, createAta: Boolean) {
             val destAta = Pda.associatedTokenAddress(destOwner, mintKey, tokenProgram)
             if (createAta) {
                 instructions.add(
@@ -434,7 +529,7 @@ object Charge {
         addMemo(instructions, externalId)
         for (split in splits) {
             val splitDest = PublicKey.fromBase58(split.recipient)
-            val splitAmount = split.amount.toLongOrNull()
+            val splitAmount = parseU64(split.amount)
                 ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
             val createAta = feePayer == null || split.ataCreationRequired == true
             addSplTransfer(splitDest, splitAmount, createAta)

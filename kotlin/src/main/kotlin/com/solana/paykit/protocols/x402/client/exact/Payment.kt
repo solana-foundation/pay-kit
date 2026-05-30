@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import java.security.SecureRandom
 import java.util.Base64
 
 /**
@@ -57,6 +58,32 @@ private const val DEFAULT_DECIMALS = 6
  * NOT the MPP charge cap (566) — the x402 verifier rejects longer memos.
  */
 private const val X402_MAX_MEMO_BYTES = 256
+
+/**
+ * Nonce length in bytes when the offer carries no ``extra.memo``. INVARIANT:
+ * 16 (rust spine ``let mut nonce = [0u8; 16]``). Hex-encoding 16 bytes yields
+ * a 32-character (32-byte UTF-8) Memo, well under [X402_MAX_MEMO_BYTES].
+ */
+private const val X402_NONCE_BYTES = 16
+
+/**
+ * Process-wide secure RNG used to mint the per-payment uniqueness nonce when
+ * the offer omits ``extra.memo``. [SecureRandom] is thread-safe.
+ */
+private val secureRandom = SecureRandom()
+
+/**
+ * Default nonce source: 16 secure-random bytes, hex-encoded to a 32-character
+ * UTF-8 string. Mirrors the rust spine ``memo_instruction`` nonce branch
+ * (``getrandom::fill(&mut [0u8;16])`` then ``{byte:02x}``). Injectable through
+ * [buildPayment]'s ``nonceProvider`` parameter so golden-vector / deterministic
+ * tests can pin a fixed value.
+ */
+private fun defaultMemoNonce(): String {
+    val nonce = ByteArray(X402_NONCE_BYTES)
+    secureRandom.nextBytes(nonce)
+    return nonce.joinToString("") { "%02x".format(it) }
+}
 
 /** Solana CAIP-2 ids recognised by this client. */
 private val SOLANA_MAINNET_CAIP2 = Network.SOLANA_MAINNET
@@ -199,6 +226,7 @@ fun buildPayment(
     signer: SolanaSigner,
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
+    nonceProvider: () -> String = ::defaultMemoNonce,
 ): X402Envelope {
     val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
@@ -252,18 +280,34 @@ fun buildPayment(
         )
     }
 
-    val memo = extra?.memo
-    if (memo != null) {
-        // x402 caps the memo at 256 bytes (rust MAX_MEMO_BYTES), tighter than
-        // the MPP 566 byte cap that Instructions.memo enforces. Check here so
-        // an over-long x402 memo fails fast rather than producing a tx the
+    // The x402 SVM exact scheme REQUIRES the client to always append exactly
+    // one Memo instruction so otherwise-identical concurrent payments stay
+    // unique on-chain: the value of ``extra.memo`` when the offer carries one,
+    // else a random >=16-byte nonce hex-encoded as UTF-8 (rust spine
+    // ``memo_instruction``). Without this an offer with no ``extra.memo`` would
+    // produce a fully deterministic transaction that two concurrent payments
+    // collide on.
+    val sellerMemo = extra?.memo
+    val memoData: String = if (sellerMemo != null) {
+        // x402 caps the seller memo at 256 bytes (rust MAX_MEMO_BYTES), tighter
+        // than the MPP 566 byte cap that Instructions.memo enforces. Check here
+        // so an over-long x402 memo fails fast rather than producing a tx the
         // verifier rejects.
-        val memoBytes = memo.encodeToByteArray().size
+        val memoBytes = sellerMemo.encodeToByteArray().size
         require(memoBytes <= X402_MAX_MEMO_BYTES) {
             "extra.memo exceeds maximum $X402_MAX_MEMO_BYTES bytes (got $memoBytes)"
         }
-        instructions.add(Instructions.memo(memo))
+        sellerMemo
+    } else {
+        // No seller memo: mint a uniqueness nonce. The default hex-encodes 16
+        // secure-random bytes (32 UTF-8 chars); tests inject a fixed value.
+        val nonce = nonceProvider()
+        require(nonce.encodeToByteArray().size <= X402_MAX_MEMO_BYTES) {
+            "generated nonce memo exceeds maximum $X402_MAX_MEMO_BYTES bytes"
+        }
+        nonce
     }
+    instructions.add(Instructions.memo(memoData))
 
     val pinnedBlockhash = requirement.effectiveRecentBlockhash
     val recentBlockhash: ByteArray = if (pinnedBlockhash != null) {
@@ -306,8 +350,9 @@ fun buildPaymentHeader(
     signer: SolanaSigner,
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
+    nonceProvider: () -> String = ::defaultMemoNonce,
 ): String {
-    val envelope = buildPayment(signer, requirement, rpcBlockhashProvider)
+    val envelope = buildPayment(signer, requirement, rpcBlockhashProvider, nonceProvider)
     // Echo the offered object verbatim when it was parsed off the wire so the
     // rust verifier's structural match sees every server-specific field; fall
     // back to the typed entry for offers built in code.

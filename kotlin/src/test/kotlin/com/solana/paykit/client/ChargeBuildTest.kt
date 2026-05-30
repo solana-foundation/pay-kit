@@ -3,6 +3,7 @@ package com.solana.paykit.client
 import com.solana.paykit.protocol.*
 import com.solana.paykit.crypto.*
 import com.solana.paykit.paycore.MppException
+import com.solana.paykit.protocols.mpp.client.MintOwnerResolver
 
 import java.util.Base64 as JBase64
 import kotlin.test.Test
@@ -213,13 +214,14 @@ class ChargeBuildTest {
     }
 
     @Test
-    fun acceptsKnownSymbolCurrencyWithAtaCreationSplit() {
-        // Regression: the prior guard rejected every known stablecoin
-        // symbol (USDC/USDT/USDG/PYUSD/CASH) combined with
-        // ataCreationRequired because resolveStablecoinMint maps the
-        // symbol to its mint address, so `mint != request.currency`
-        // was always true and the inverse check fired. Parity with
-        // the Rust/Swift/Lua spine.
+    fun rejectsKnownSymbolCurrencyWithAtaCreationSplit() {
+        // finding-9: ataCreationRequired must bind the EXACT base58 mint, not
+        // a symbol. A fee-sponsored server pays the ATA rent, so it must pin
+        // the mint it sponsors rather than trusting a symbol→mint mapping that
+        // could diverge across SDKs. Rust/TS/Swift all reject the symbol path
+        // (`mint_str != currency`). The prior Kotlin build ACCEPTED it, letting
+        // Kotlin construct credentials the reference servers reject. This is
+        // now a rejection test.
         val request = ChargeRequest(
             amount = "1000",
             currency = "USDC",
@@ -235,9 +237,33 @@ class ChargeBuildTest {
                 ),
             ),
         )
-        // Should not throw. The actual byte parity is covered by the
-        // golden-vector tests; here we just assert the policy accepts
-        // the symbol path.
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun acceptsBase58MintCurrencyWithAtaCreationSplit() {
+        // The positive case for finding-9: when `currency` IS the resolved
+        // base58 mint address, ataCreationRequired is accepted. USDC mainnet
+        // mint is a known stablecoin, so the token program resolves from the
+        // static table without an RPC. Parity with the rust/Swift positive
+        // path (`mint_str == currency`).
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = Mints.USDC_MAINNET,
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "mainnet",
+                splits = listOf(
+                    SolanaChargeSplit(
+                        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                        amount = "100",
+                        ataCreationRequired = true,
+                    ),
+                ),
+            ),
+        )
         Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
     }
 
@@ -368,6 +394,158 @@ class ChargeBuildTest {
         // Unknown currency passes through unchanged (treated as a mint address).
         val raw = "FAKEMintAddressFAKEMintAddressFAKE"
         assertEquals(raw, Charge.resolveStablecoinMint(raw, null))
+    }
+
+    // ── Token-program resolution (finding-10) ──────────────────────────────
+
+    @Test
+    fun rejectsUnsupportedExplicitTokenProgram() {
+        // finding-10(b): an explicit methodDetails.tokenProgram must be
+        // validated against {Token, Token-2022} only. A bogus program id is
+        // rejected client-side rather than mis-deriving ATAs. The prior build
+        // never validated the explicit value. Mirrors rust resolve_token_program.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "USDC",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "devnet",
+                decimals = 6,
+                tokenProgram = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            ),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun acceptsExplicitToken2022Program() {
+        // A valid explicit Token-2022 program is accepted even when the mint
+        // is unknown (the explicit value short-circuits owner resolution).
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "mainnet",
+                decimals = 6,
+                tokenProgram = Programs.TOKEN_2022_PROGRAM,
+            ),
+        )
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    @Test
+    fun failsClosedForArbitraryMintWithoutResolverOrExplicitProgram() {
+        // finding-10(a): an arbitrary (non-stablecoin) mint with no explicit
+        // tokenProgram and no MintOwnerResolver must FAIL CLOSED rather than
+        // guessing the legacy Token program. The prior build silently
+        // defaulted to TOKEN_PROGRAM, mis-deriving ATAs for Token-2022 mints.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun resolvesArbitraryMintProgramViaMintOwnerResolver() {
+        // finding-10(a): with a MintOwnerResolver, an arbitrary mint's token
+        // program is read from the mint account owner and validated against
+        // {Token, Token-2022}. Mirrors rust resolve_token_program / swift RPC.
+        val arbitraryMint = "So11111111111111111111111111111111111111112"
+        var queried: String? = null
+        val resolver = MintOwnerResolver { mint ->
+            queried = mint
+            Programs.TOKEN_2022_PROGRAM
+        }
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = arbitraryMint,
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = resolver,
+        )
+        assertEquals(arbitraryMint, queried)
+    }
+
+    @Test
+    fun rejectsArbitraryMintWhenOwnerIsUnsupportedProgram() {
+        // The resolved owner must be Token or Token-2022; anything else is a
+        // hard rejection (e.g. a mint owned by an unknown program).
+        val resolver = MintOwnerResolver { "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY" }
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(
+                signer(),
+                request,
+                fixedBlockhash,
+                mintOwnerResolver = resolver,
+            )
+        }
+    }
+
+    @Test
+    fun knownStablecoinResolvesWithoutResolver() {
+        // A known stablecoin (USDC) resolves its token program from the static
+        // table, so no resolver is needed even without an explicit program.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "USDC",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "devnet", decimals = 6),
+        )
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    // ── Unsigned u64 amounts (main medium) ─────────────────────────────────
+
+    @Test
+    fun acceptsAmountAboveSignedLongMax() {
+        // main-medium: base-unit amounts are u64. A value in [2^63, 2^64)
+        // overflows a signed Long (toLongOrNull returns null), so the prior
+        // build rejected legitimate large amounts as "invalid amount". With
+        // BigInteger parsing the full u64 range is representable. 2^63 + 5 is
+        // a valid u64 that a signed Long cannot hold.
+        val u64Amount = java.math.BigInteger.ONE.shiftLeft(63).add(java.math.BigInteger.valueOf(5))
+        val request = ChargeRequest(
+            amount = u64Amount.toString(),
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "localnet"),
+        )
+        // Must not throw: the amount is a valid u64.
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    @Test
+    fun rejectsAmountAboveU64Max() {
+        // 2^64 is one past the u64 ceiling and must be rejected.
+        val tooBig = java.math.BigInteger.ONE.shiftLeft(64)
+        val request = ChargeRequest(
+            amount = tooBig.toString(),
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "localnet"),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
     }
 
     @Test

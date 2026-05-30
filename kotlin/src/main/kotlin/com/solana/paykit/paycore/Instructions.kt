@@ -1,5 +1,7 @@
 package com.solana.paykit.paycore
 
+import java.math.BigInteger
+
 // MppException lives in the same package (paycore)
 
 /**
@@ -95,6 +97,28 @@ object Instructions {
         )
     }
 
+    /**
+     * SystemProgram::transfer for an unsigned u64 [lamports] amount.
+     *
+     * Lamports are a u64 on the wire; a signed Long cannot represent the
+     * upper half [2^63, 2^64). This overload takes the value as a
+     * [BigInteger] bounded to [0, 2^64) and writes the exact little-endian
+     * u64, so the full unsigned range is encodable without truncation.
+     */
+    fun systemTransfer(from: String, to: String, lamports: BigInteger): Instruction {
+        val data = ByteArray(4 + 8)
+        data[0] = 0x02
+        encodeUInt64LE(toU64(lamports), data, 4)
+        return Instruction(
+            programId = Programs.SYSTEM_PROGRAM,
+            accounts = listOf(
+                AccountMeta.writable(from, signer = true),
+                AccountMeta.writable(to),
+            ),
+            data = data,
+        )
+    }
+
     // ── SPL token (and Token-2022, same wire format) ──
 
     /**
@@ -120,6 +144,39 @@ object Instructions {
         val data = ByteArray(1 + 8 + 1)
         data[0] = 12
         encodeUInt64LE(amount.toULong(), data, 1)
+        data[9] = decimals.toByte()
+        return Instruction(
+            programId = tokenProgram,
+            accounts = listOf(
+                AccountMeta.writable(source),
+                AccountMeta.readOnly(mint),
+                AccountMeta.writable(destination),
+                AccountMeta.readOnly(authority, signer = true),
+            ),
+            data = data,
+        )
+    }
+
+    /**
+     * SPL TransferChecked for an unsigned u64 [amount].
+     *
+     * SPL token amounts are u64 on the wire. Takes the value as a
+     * [BigInteger] bounded to [0, 2^64) so amounts in the upper half
+     * [2^63, 2^64) encode without the truncation a signed Long would impose.
+     */
+    fun transferChecked(
+        tokenProgram: String,
+        source: String,
+        mint: String,
+        destination: String,
+        authority: String,
+        amount: BigInteger,
+        decimals: Int,
+    ): Instruction {
+        require(decimals in 0..255) { "decimals must fit in u8" }
+        val data = ByteArray(1 + 8 + 1)
+        data[0] = 12
+        encodeUInt64LE(toU64(amount), data, 1)
         data[9] = decimals.toByte()
         return Instruction(
             programId = tokenProgram,
@@ -225,6 +282,23 @@ object Instructions {
     }
 
     // ── Helpers ──
+
+    /** Upper bound (exclusive) of the unsigned u64 range, 2^64. */
+    private val TWO_POW_64: BigInteger = BigInteger.ONE.shiftLeft(64)
+
+    /**
+     * Converts a [BigInteger] base-unit amount to its [ULong] u64 value,
+     * requiring it lie in [0, 2^64). Throws [IllegalArgumentException] for a
+     * negative or out-of-range value rather than silently truncating.
+     */
+    internal fun toU64(value: BigInteger): ULong {
+        require(value.signum() >= 0) { "amount must be non-negative" }
+        require(value < TWO_POW_64) { "amount exceeds u64 range" }
+        // For a value in [2^63, 2^64), BigInteger.toLong() returns a negative
+        // Long whose two's-complement bits are the correct unsigned u64;
+        // .toULong() reinterprets those same bits as the unsigned value.
+        return value.toLong().toULong()
+    }
 
     internal fun encodeUInt32LE(value: UInt, out: ByteArray, offset: Int) {
         out[offset] = (value and 0xffu).toByte()

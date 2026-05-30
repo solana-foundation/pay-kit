@@ -232,6 +232,73 @@ class InstructionsTest {
         )
     }
 
+    // ── Unsigned u64 BigInteger overloads (main medium) ──
+
+    @Test
+    fun systemTransferBigIntegerEncodesFullU64() {
+        // u64 max = 0xFFFF...FFFF; a signed Long cannot hold it. The BigInteger
+        // overload must write the exact little-endian u64 bit pattern.
+        val u64Max = java.math.BigInteger.ONE.shiftLeft(64).subtract(java.math.BigInteger.ONE)
+        val ix = Instructions.systemTransfer(payer, owner, u64Max)
+        assertContentEquals(
+            byteArrayOf(
+                0x02, 0x00, 0x00, 0x00, // discriminator
+                0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+                0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(), // u64 max LE
+            ),
+            ix.data,
+        )
+    }
+
+    @Test
+    fun systemTransferBigIntegerMatchesLongForSmallValues() {
+        val long = Instructions.systemTransfer(payer, owner, 1_000_000L)
+        val big = Instructions.systemTransfer(payer, owner, java.math.BigInteger.valueOf(1_000_000L))
+        assertContentEquals(long.data, big.data)
+    }
+
+    @Test
+    fun transferCheckedBigIntegerEncodesAboveSignedLongMax() {
+        // 2^63 is one past Long.MAX_VALUE; the unsigned overload must encode it
+        // as 0x00...00_80 (LE), proving no signed truncation.
+        val twoPow63 = java.math.BigInteger.ONE.shiftLeft(63)
+        val ix = Instructions.transferChecked(
+            tokenProgram = Programs.TOKEN_PROGRAM,
+            source = source,
+            mint = mint,
+            destination = destination,
+            authority = authority,
+            amount = twoPow63,
+            decimals = 6,
+        )
+        assertContentEquals(
+            byteArrayOf(
+                12, // discriminator
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80.toByte(), // 2^63 LE u64
+                6, // decimals
+            ),
+            ix.data,
+        )
+    }
+
+    @Test
+    fun bigIntegerOverloadsRejectNegativeAndOversized() {
+        assertFailsWith<IllegalArgumentException> {
+            Instructions.systemTransfer(payer, owner, java.math.BigInteger.valueOf(-1L))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            Instructions.transferChecked(
+                tokenProgram = Programs.TOKEN_PROGRAM,
+                source = source,
+                mint = mint,
+                destination = destination,
+                authority = authority,
+                amount = java.math.BigInteger.ONE.shiftLeft(64), // 2^64, out of u64 range
+                decimals = 6,
+            )
+        }
+    }
+
     @Test
     fun encodeUInt32LERoundTrip() {
         val buffer = ByteArray(4)
