@@ -178,9 +178,12 @@ it sounds like a textbook or a marketing page, rewrite.
   language has the same safety rail. Frame it as a bullet under
   "Two safety rails fire at boot" after snippet 3.
 - MPP HMAC secret auto-resolution (env → `.env` → generate +
-  persist) is a Ruby preflight feature. Each language needs its
-  equivalent before snippet 3 can ship, and the README should
-  describe whichever resolution chain that language settled on.
+  persist) is a preflight feature shipped in Ruby PR #142. Each
+  language needs its equivalent before snippet 3 can ship, and the
+  README should describe whichever resolution chain that language
+  settled on. The full caveat list lives in
+  `references/operability-caveats.md` — read it before drafting
+  snippet 3.
 - `pay curl` link target: first mention in snippet 1 should link
   forward to `#run-the-example`. Avoids the reader Googling "what is
   pay curl".
