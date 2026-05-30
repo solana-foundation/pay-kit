@@ -431,6 +431,7 @@ mod tests {
             period_start_ts: "2026-01-15T12:03:10Z".into(),
             period_end_ts: "2026-02-14T12:03:10Z".into(),
             expires_at: Some("2026-07-14T12:00:00Z".into()),
+            activation_signature: None,
         };
         let header = format_receipt(&ReceiptKind::Subscription {
             base: base.clone(),
@@ -496,6 +497,7 @@ mod tests {
                 period_start_ts: "t0".into(),
                 period_end_ts: "t1".into(),
                 expires_at: None,
+                activation_signature: None,
             },
         };
         assert_eq!(sub.base().reference, "abc");

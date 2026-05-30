@@ -484,6 +484,7 @@ mod tests {
             period_start_ts: "2026-01-15T12:03:10Z".into(),
             period_end_ts: "2026-02-14T12:03:10Z".into(),
             expires_at: Some("2026-07-14T12:00:00Z".into()),
+            activation_signature: None,
         };
         let json = serde_json::to_string(&ext).unwrap();
         assert!(json.contains("\"subscriptionId\""));
