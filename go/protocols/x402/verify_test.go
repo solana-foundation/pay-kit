@@ -108,6 +108,69 @@ func TestVerifyAcceptsTrailingMemo(t *testing.T) {
 	}
 }
 
+// TestVerifyAcceptsTrailingLighthouse proves a wallet-injected Lighthouse
+// guard instruction in an optional slot is allowed (Phantom injects 1,
+// Solflare 2), per the x402 SVM spec.
+func TestVerifyAcceptsTrailingLighthouse(t *testing.T) {
+	f := newFixture(t)
+	lhIdx := uint16(len(f.keys))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(lighthouseProgram))
+	lh := solana.CompiledInstruction{ProgramIDIndex: lhIdx, Data: []byte{0x01}}
+	// Two Lighthouse instructions (Solflare-style) must also pass.
+	if err := verifyExactTransaction(f.tx(lh, lh), f.req); err != nil {
+		t.Fatalf("expected trailing Lighthouse instructions to pass, got %v", err)
+	}
+}
+
+// TestVerifyRejectsTrailingATACreate proves a Create-ATA (Associated Token
+// Program) instruction in an optional slot is rejected: the x402 SVM spec
+// requires the destination ATA to pre-exist.
+func TestVerifyRejectsTrailingATACreate(t *testing.T) {
+	f := newFixture(t)
+	ataIdx := uint16(len(f.keys))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.AssociatedTokenProgram))
+	ata := solana.CompiledInstruction{ProgramIDIndex: ataIdx, Data: []byte{1}}
+	if err := verifyExactTransaction(f.tx(ata), f.req); err == nil {
+		t.Error("expected rejection for trailing ATA-create instruction")
+	}
+}
+
+// TestVerifyEnforcesExpectedMemoMatch proves that when the offer pins
+// extra.memo the verifier requires exactly one Memo whose data equals it.
+func TestVerifyEnforcesExpectedMemoMatch(t *testing.T) {
+	mkMemo := func(t *testing.T, f *fixture, data string) solana.CompiledInstruction {
+		idx := uint16(len(f.keys))
+		f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
+		return solana.CompiledInstruction{ProgramIDIndex: idx, Data: []byte(data)}
+	}
+
+	t.Run("matching memo passes", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		memo := mkMemo(t, &f, "pi_invoice_42")
+		if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
+			t.Fatalf("expected matching memo to pass, got %v", err)
+		}
+	})
+
+	t.Run("wrong memo rejected", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		memo := mkMemo(t, &f, "different")
+		if err := verifyExactTransaction(f.tx(memo), f.req); err == nil {
+			t.Error("expected rejection for memo not matching extra.memo")
+		}
+	})
+
+	t.Run("missing memo rejected", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+			t.Error("expected rejection when extra.memo set but no memo present")
+		}
+	})
+}
+
 func TestVerifyRejectsTooFewInstructions(t *testing.T) {
 	f := newFixture(t)
 	tx := &solana.Transaction{

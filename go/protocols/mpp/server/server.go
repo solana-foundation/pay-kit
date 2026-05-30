@@ -444,13 +444,20 @@ func (m *Mpp) verifyTransaction(
 	if err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeRPC, "send transaction", err)
 	}
+	// The RPC accepted the broadcast. From here the transaction may land
+	// on-chain even if confirmation polling or the on-chain re-verification
+	// below times out. Pin the replay marker NOW so a confirmation/verify
+	// timeout does not let the deferred rollback delete it and reopen the
+	// same credential for a second submission while the original lands and
+	// double-pays. Mirrors the rust reference, which consumes the signature
+	// after broadcast and never deletes it on a confirmation timeout.
+	cleanupConsumed = false
 	if err := solanatx.WaitForConfirmation(ctx, m.rpc, signature); err != nil {
 		return core.Receipt{}, core.WrapError(core.ErrCodeTransactionFailed, "confirm transaction", err)
 	}
 	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
 		return core.Receipt{}, err
 	}
-	cleanupConsumed = false
 	return successReceipt(signature.String(), credential.Challenge.ID, request.ExternalID), nil
 }
 
@@ -540,7 +547,12 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 				return core.NewError(core.ErrCodeNoTransfer, fmt.Sprintf("no matching SOL transfer for %s", want.recipient))
 			}
 		}
-		return verifyMemoInstructions(tx, matched, externalID, details.Splits)
+		if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
+			return err
+		}
+		// Native SOL payments never carry a token mint, so ATA-create
+		// instructions are not allowed and there is no token program to pin.
+		return validateInstructionAllowlist(tx, matched, allowlistParams{})
 	}
 	resolvedMint := paycore.ResolveMint(currency, details.Network)
 	mint := solana.MustPublicKeyFromBase58(resolvedMint)
@@ -626,7 +638,60 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 			return core.NewError(core.ErrCodeNoTransfer, fmt.Sprintf("no matching token transfer for %s", want.recipient))
 		}
 	}
-	return verifyMemoInstructions(tx, matched, externalID, details.Splits)
+	if err := verifyMemoInstructions(tx, matched, externalID, details.Splits); err != nil {
+		return err
+	}
+	allowedOwners := make([]solana.PublicKey, 0, len(tokenExpected))
+	for _, want := range tokenExpected {
+		allowedOwners = append(allowedOwners, want.recipient)
+	}
+	requiredOwners, err := requiredATAOwners(details.Splits)
+	if err != nil {
+		return err
+	}
+	return validateInstructionAllowlist(tx, matched, allowlistParams{
+		expectedMint:         &mint,
+		expectedTokenProgram: &expectedProgram,
+		allowedATAOwners:     allowedOwners,
+		feePayer:             feePayerKey(details),
+		requiredATAOwners:    requiredOwners,
+	})
+}
+
+// requiredATAOwners returns the split recipients whose challenge pinned
+// ataCreationRequired=true. These owners must each have an idempotent
+// ATA-create in the settled transaction. Mirrors the rust reference's
+// expected_ata_creation_policy required_owners set: only split recipients
+// (never the primary recipient) can be required, and only when the split
+// explicitly opted in via ataCreationRequired.
+func requiredATAOwners(splits []paycore.Split) ([]solana.PublicKey, error) {
+	owners := make([]solana.PublicKey, 0, len(splits))
+	for _, split := range splits {
+		if split.AtaCreationRequired == nil || !*split.AtaCreationRequired {
+			continue
+		}
+		owner, err := solana.PublicKeyFromBase58(split.Recipient)
+		if err != nil {
+			return nil, err
+		}
+		owners = append(owners, owner)
+	}
+	return owners, nil
+}
+
+// feePayerKey returns the configured fee payer pubkey when the challenge
+// pinned one (fee-payer sponsorship flow), else nil. Used to enforce that
+// an ATA-create instruction is funded by the fee payer, mirroring the rust
+// reference (validate_instruction_allowlist's expected_ata_payer).
+func feePayerKey(details paycore.MethodDetails) *solana.PublicKey {
+	if details.FeePayerKey == "" {
+		return nil
+	}
+	key, err := solana.PublicKeyFromBase58(details.FeePayerKey)
+	if err != nil {
+		return nil
+	}
+	return &key
 }
 
 type expectedMemo struct {
@@ -689,6 +754,204 @@ func verifyMemoInstructions(tx *solana.Transaction, matched []bool, externalID s
 		}
 	}
 	return nil
+}
+
+// allowlistParams carries the pinned context the strict instruction
+// allowlist validates ATA-create instructions against. All fields are
+// optional: for native SOL payments they are zero, which forbids ATA
+// creation entirely.
+type allowlistParams struct {
+	// expectedMint is the charge currency mint; ATA-create instructions are
+	// rejected when nil (native SOL).
+	expectedMint *solana.PublicKey
+	// expectedTokenProgram pins the token program an ATA-create must use.
+	expectedTokenProgram *solana.PublicKey
+	// allowedATAOwners are the payment recipients (primary + splits) an
+	// ATA-create instruction may create an account for.
+	allowedATAOwners []solana.PublicKey
+	// feePayer, when non-nil, is the configured sponsor; an ATA-create must
+	// be funded by it. When nil the transaction fee payer (first account
+	// key) is used as the expected ATA payer.
+	feePayer *solana.PublicKey
+	// requiredATAOwners are split recipients whose challenge pinned
+	// ataCreationRequired=true. The transaction MUST contain an idempotent
+	// ATA-create for each of them; a missing one is rejected. Mirrors the
+	// rust reference required_ata_owners invariant.
+	requiredATAOwners []solana.PublicKey
+}
+
+// validateInstructionAllowlist is the strict post-match gate. After the
+// expected transfer and memo instructions have been matched, every
+// remaining instruction is checked against a closed allowlist:
+//
+//   - ComputeBudget: allowed; caps are enforced earlier in
+//     validateComputeBudgetInstructions.
+//   - Matched payment/memo instructions: already accounted for via `matched`.
+//   - Associated Token Program: only an idempotent ATA-create for an allowed
+//     owner/mint/token-program funded by the expected payer is permitted.
+//   - Everything else (System, Token, Token-2022, ATA non-idempotent,
+//     unknown programs): rejected.
+//
+// Without this gate a fee-payer route would co-sign and broadcast extra
+// System/Token/ATA/other-program instructions appended after the expected
+// payment. Mirrors the rust reference validate_instruction_allowlist in
+// rust/crates/mpp/src/server/charge.rs.
+func validateInstructionAllowlist(tx *solana.Transaction, matched []bool, params allowlistParams) error {
+	memoProgram := solana.MustPublicKeyFromBase58(paycore.MemoProgram)
+	systemProgram := solana.MustPublicKeyFromBase58(paycore.SystemProgram)
+	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
+	token2022Program := solana.MustPublicKeyFromBase58(paycore.Token2022Program)
+	ataProgram := solana.MustPublicKeyFromBase58(paycore.AssociatedTokenProgram)
+
+	if len(tx.Message.AccountKeys) == 0 {
+		return core.NewError(core.ErrCodeInvalidPayload, "transaction has no fee payer")
+	}
+	expectedATAPayer := tx.Message.AccountKeys[0]
+	if params.feePayer != nil {
+		expectedATAPayer = *params.feePayer
+	}
+	createdATAOwners := make([]solana.PublicKey, 0, len(params.requiredATAOwners))
+
+	for index, compiled := range tx.Message.Instructions {
+		programID, err := resolveProgramID(tx, compiled.ProgramIDIndex)
+		if err != nil {
+			return err
+		}
+		switch {
+		case programID.Equals(computeBudgetProgramID):
+			// Caps already enforced in validateComputeBudgetInstructions;
+			// allow it through unconditionally here.
+			continue
+		case programID.Equals(memoProgram):
+			if matched[index] {
+				continue
+			}
+			return core.NewError(core.ErrCodeInvalidPayload, "unexpected Memo Program instruction in payment transaction")
+		case programID.Equals(systemProgram):
+			if matched[index] {
+				continue
+			}
+			return core.NewError(core.ErrCodeInvalidPayload, "unexpected System Program instruction in payment transaction")
+		case programID.Equals(tokenProgram) || programID.Equals(token2022Program):
+			if matched[index] {
+				continue
+			}
+			return core.NewError(core.ErrCodeInvalidPayload, "unexpected Token Program instruction in payment transaction")
+		case programID.Equals(ataProgram):
+			owner, err := validateCreateATAIdempotentInstruction(tx, compiled, params, expectedATAPayer)
+			if err != nil {
+				return err
+			}
+			createdATAOwners = append(createdATAOwners, owner)
+			continue
+		default:
+			return core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("unexpected program instruction in payment transaction: %s", programID))
+		}
+	}
+
+	// Every owner the challenge pinned as ataCreationRequired must have a
+	// matching idempotent ATA-create in the transaction. Mirrors the rust
+	// reference's required_ata_owners check; without it a split recipient
+	// whose ATA does not yet exist would have its transfer fail on-chain
+	// (or, on the pull path, force a doomed broadcast).
+	for _, owner := range params.requiredATAOwners {
+		if !ownerAllowed(owner, createdATAOwners) {
+			return core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("missing required ATA creation instruction for split recipient %s", owner))
+		}
+	}
+	return nil
+}
+
+// validateCreateATAIdempotentInstruction enforces that an Associated Token
+// Program instruction is a CreateIdempotent (data == [1]) that targets an
+// allowed owner, the expected mint and token program, and is funded by the
+// expected payer. Mirrors the rust reference
+// validate_create_ata_idempotent_instruction.
+func validateCreateATAIdempotentInstruction(
+	tx *solana.Transaction,
+	ix solana.CompiledInstruction,
+	params allowlistParams,
+	expectedPayer solana.PublicKey,
+) (solana.PublicKey, error) {
+	if params.expectedMint == nil {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation is not allowed for native SOL payments")
+	}
+	data := []byte(ix.Data)
+	if len(data) != 1 || data[0] != 1 {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "only idempotent ATA creation is allowed")
+	}
+	if len(ix.Accounts) != 6 {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "unexpected ATA creation account layout")
+	}
+	accountAt := func(pos int, label string) (solana.PublicKey, error) {
+		idx := int(ix.Accounts[pos])
+		if idx < 0 || idx >= len(tx.Message.AccountKeys) {
+			return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload,
+				fmt.Sprintf("invalid %s account index", label))
+		}
+		return tx.Message.AccountKeys[idx], nil
+	}
+	payer, err := accountAt(0, "ATA payer")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	ata, err := accountAt(1, "ATA address")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	owner, err := accountAt(2, "ATA owner")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	mint, err := accountAt(3, "ATA mint")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	systemProgram, err := accountAt(4, "ATA system program")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	tokenProgram, err := accountAt(5, "ATA token program")
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	if !payer.Equals(expectedPayer) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA payer must match the transaction fee payer")
+	}
+	if !mint.Equals(*params.expectedMint) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation mint does not match the charge currency")
+	}
+	if !ownerAllowed(owner, params.allowedATAOwners) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation owner is not authorized by the challenge")
+	}
+	if !systemProgram.Equals(solana.MustPublicKeyFromBase58(paycore.SystemProgram)) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation must reference the System Program")
+	}
+	if tokenProgram.String() != paycore.TokenProgram && tokenProgram.String() != paycore.Token2022Program {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation uses an unsupported token program")
+	}
+	if params.expectedTokenProgram != nil && !tokenProgram.Equals(*params.expectedTokenProgram) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation token program does not match methodDetails.tokenProgram")
+	}
+	expectedATA, err := solanatx.FindAssociatedTokenAddressWithProgram(owner, mint, tokenProgram)
+	if err != nil {
+		return solana.PublicKey{}, err
+	}
+	if !ata.Equals(expectedATA) {
+		return solana.PublicKey{}, core.NewError(core.ErrCodeInvalidPayload, "ATA creation address does not match owner/mint/token program")
+	}
+	return owner, nil
+}
+
+func ownerAllowed(owner solana.PublicKey, allowed []solana.PublicKey) bool {
+	for _, candidate := range allowed {
+		if candidate.Equals(owner) {
+			return true
+		}
+	}
+	return false
 }
 
 type expectedTransfer struct {

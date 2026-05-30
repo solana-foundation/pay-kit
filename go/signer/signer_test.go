@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/signer"
@@ -247,6 +248,26 @@ func TestFromEnvAutoDetectsHex(t *testing.T) {
 	}
 	if rebuilt.Pubkey() != ref.Pubkey() {
 		t.Errorf("env hex pubkey mismatch")
+	}
+}
+
+func TestFromEnvAutoDetectsUppercaseHex(t *testing.T) {
+	sk := testSecret(t)
+	ref, err := signer.FromBytes(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "PAY_KIT_TEST_SIGNER_HEX_UPPER"
+	// hex.EncodeToString returns lowercase; convert to uppercase to exercise
+	// the 'A'-'F' branch of isHex.
+	upper := strings.ToUpper(hex.EncodeToString(sk))
+	t.Setenv(name, upper)
+	rebuilt, err := signer.FromEnv(name)
+	if err != nil || rebuilt == nil {
+		t.Fatalf("uppercase hex: err=%v signer=%v", err, rebuilt)
+	}
+	if rebuilt.Pubkey() != ref.Pubkey() {
+		t.Errorf("env uppercase hex pubkey mismatch")
 	}
 }
 

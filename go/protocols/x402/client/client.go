@@ -13,7 +13,9 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,22 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
+
+// nonceBytes is the size of the random memo nonce the client appends when the
+// offer does not pin an extra.memo. 16 bytes matches the x402 SVM spec
+// minimum, and hex-encoding keeps the memo data valid UTF-8.
+const nonceBytes = 16
+
+// nonceSource produces the raw nonce bytes for the per-payment memo. It is a
+// package var so deterministic/golden-vector tests can swap in a fixed nonce;
+// production callers get a secure RNG via crypto/rand.
+var nonceSource = func() ([]byte, error) {
+	buf := make([]byte, nonceBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
 
 const (
 	paymentRequiredHeader  = "Payment-Required"
@@ -247,13 +265,24 @@ func buildTransaction(
 		instructions = append(instructions, transfer)
 	}
 
-	if entry.Extra.Memo != "" {
-		memoIx, err := solanatx.BuildMemoInstruction(entry.Extra.Memo)
+	// The x402 SVM spec requires the client to ALWAYS append exactly one Memo
+	// instruction so that otherwise-identical payments (same amount, mint,
+	// recipient, blockhash) stay unique on-chain. Use the seller-pinned
+	// extra.memo when present, otherwise a random >=16-byte nonce hex-encoded
+	// to UTF-8.
+	memoValue := entry.Extra.Memo
+	if memoValue == "" {
+		nonce, err := nonceSource()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("x402 client: generate memo nonce: %w", err)
 		}
-		instructions = append(instructions, memoIx)
+		memoValue = hex.EncodeToString(nonce)
 	}
+	memoIx, err := solanatx.BuildMemoInstruction(memoValue)
+	if err != nil {
+		return "", err
+	}
+	instructions = append(instructions, memoIx)
 
 	blockhash, err := solanatx.ResolveRecentBlockhash(ctx, rpc, entry.Extra.RecentBlockhash)
 	if err != nil {

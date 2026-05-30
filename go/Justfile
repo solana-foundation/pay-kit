@@ -41,5 +41,5 @@ check: build lint audit test-cover
 
 # Boot the dual-protocol example server
 serve-example port="4567":
-    go run ./examples/paykit-server
+    go run ./examples/simple-server
 

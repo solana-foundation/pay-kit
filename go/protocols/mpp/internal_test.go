@@ -1,6 +1,8 @@
 package mpp
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -8,6 +10,23 @@ import (
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/signer"
 )
+
+// errSigner is a paykit.Signer stub whose Sign method always returns the given
+// error, exercising the signerBridge.Sign error propagation branch.
+type errSigner struct {
+	pubkey string
+	err    error
+	raw    []byte // when non-nil, Sign returns this slice without error
+}
+
+func (e *errSigner) Pubkey() paykit.Address { return paykit.Address(e.pubkey) }
+func (e *errSigner) IsDemo() bool           { return false }
+func (e *errSigner) Sign(_ context.Context, _ []byte) ([]byte, error) {
+	if e.err != nil {
+		return nil, e.err
+	}
+	return e.raw, nil
+}
 
 func testCfg() paykit.Config {
 	demo := signer.Demo()
@@ -162,6 +181,111 @@ func TestVerifyAndSettleRejectsGarbageCredential(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("expected rejection for a garbage Payment credential")
+	}
+}
+
+// TestSignerBridgeSignPropagatesSignerError proves that when the wrapped
+// paykit.Signer.Sign returns an error, signerBridge.Sign surfaces it wrapped
+// with the "signerBridge:" prefix.
+func TestSignerBridgeSignPropagatesSignerError(t *testing.T) {
+	demo := signer.Demo()
+	bad := &errSigner{
+		pubkey: string(demo.Pubkey()),
+		err:    fmt.Errorf("KMS unavailable"),
+	}
+	b := &signerBridge{signer: bad}
+	_, err := b.Sign([]byte("hello"))
+	if err == nil {
+		t.Fatal("expected an error from failing inner signer")
+	}
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
+
+// TestSignerBridgeSignRejectsWrongLength proves that when the inner signer
+// returns a raw byte slice that is not exactly 64 bytes, signerBridge.Sign
+// returns an error rather than copying a truncated or oversized value into a
+// solana.Signature.
+func TestSignerBridgeSignRejectsWrongLength(t *testing.T) {
+	demo := signer.Demo()
+	short := &errSigner{
+		pubkey: string(demo.Pubkey()),
+		raw:    make([]byte, 32), // 32 bytes — not 64
+	}
+	b := &signerBridge{signer: short}
+	_, err := b.Sign([]byte("hello"))
+	if err == nil {
+		t.Fatal("expected an error for a 32-byte (non-64) signature")
+	}
+}
+
+// TestChallengeHeadersReturnsNilOnBadRecipient proves that ChallengeHeaders
+// returns nil (rather than panicking) when the gate's PayTo address is not a
+// valid Solana pubkey, which causes serverFor -> server.New to fail.
+func TestChallengeHeadersReturnsNilOnBadRecipient(t *testing.T) {
+	a := &Adapter{cfg: testCfg()}
+	gate := &paykit.Gate{
+		Amount: paykit.MustParseUSD("0.10"),
+		PayTo:  paykit.Address("!!!not-a-valid-pubkey"),
+	}
+	if headers := a.ChallengeHeaders(gate); headers != nil {
+		t.Errorf("expected nil for ChallengeHeaders with bad recipient, got %v", headers)
+	}
+}
+
+// TestVerifyAndSettleReturnsErrOnBadRecipient proves VerifyAndSettle wraps
+// the serverFor failure in a PaymentError (code="invalid_proof") when the
+// gate's PayTo address is not a valid Solana pubkey.
+func TestVerifyAndSettleReturnsErrOnBadRecipient(t *testing.T) {
+	a := &Adapter{cfg: testCfg()}
+	gate := &paykit.Gate{
+		Amount: paykit.MustParseUSD("0.10"),
+		PayTo:  paykit.Address("!!!not-a-valid-pubkey"),
+	}
+	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{
+		Gate:          gate,
+		Authorization: "Payment bm90LWEtY3JlZGVudGlhbA==",
+	})
+	if err == nil {
+		t.Fatal("expected an error for a gate with an invalid recipient")
+	}
+}
+
+// TestChargeOptionsIncludesFeeWithinAndFeeOnTopSplits proves that chargeOptions
+// appends paycore.Split entries for both FeeWithin and FeeOnTop fees declared
+// on the gate. This exercises the two range-loop bodies in chargeOptions that
+// the existing AcceptsEntry tests do not reach.
+func TestChargeOptionsIncludesFeeWithinAndFeeOnTopSplits(t *testing.T) {
+	a := &Adapter{cfg: testCfg()}
+	gate := &paykit.Gate{
+		Amount:    paykit.MustParseUSD("10.00"),
+		FeeWithin: paykit.Fees{paykit.Address("PLATFORM"): paykit.MustParseUSD("0.30")},
+		FeeOnTop:  paykit.Fees{paykit.Address("GATEWAY"): paykit.MustParseUSD("0.50")},
+	}
+	opts := a.chargeOptions(gate)
+	if len(opts.Splits) != 2 {
+		t.Fatalf("expected 2 splits in chargeOptions, got %d: %+v", len(opts.Splits), opts.Splits)
+	}
+	recipients := make(map[string]bool)
+	for _, s := range opts.Splits {
+		recipients[s.Recipient] = true
+	}
+	if !recipients["PLATFORM"] || !recipients["GATEWAY"] {
+		t.Errorf("chargeOptions splits missing expected recipients: %v", opts.Splits)
+	}
+}
+
+// TestPriceCoinUsesExplicitSettlementWhenPresent proves that priceCoin returns
+// the first explicit settlement stablecoin rather than falling back to the
+// adapter config when the Price was built with an explicit settlement.
+func TestPriceCoinUsesExplicitSettlementWhenPresent(t *testing.T) {
+	a := &Adapter{cfg: testCfg()} // cfg.Stablecoins = [USDC]
+	// Build a price with an explicit USDT settlement; priceCoin must return
+	// USDT (the explicit settlement) rather than USDC (the config default).
+	priceUSDT := paykit.MustParseUSD("0.30", paykit.USDT)
+	if got := a.priceCoin(priceUSDT); got != "USDT" {
+		t.Errorf("priceCoin: got %q want USDT", got)
 	}
 }
 

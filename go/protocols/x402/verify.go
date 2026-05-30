@@ -29,6 +29,10 @@ type transferRequirements struct {
 	tokenProgram solana.PublicKey
 	amount       uint64
 	feePayer     solana.PublicKey // the operator; must not be the transfer authority
+	// expectedMemo, when non-empty, is the advertised extra.memo. The x402
+	// SVM spec requires the verifier to confirm exactly one Memo instruction
+	// whose data equals it.
+	expectedMemo string
 }
 
 // verifyExactTransaction runs the canonical x402 "exact" structural
@@ -62,18 +66,33 @@ func verifyExactTransaction(tx *solana.Transaction, req transferRequirements) er
 	if err := verifyTransfer(ixs[2], keys, req); err != nil {
 		return err
 	}
-	// Optional trailing instructions: memo / lighthouse only.
+	// Optional trailing instructions: memo / lighthouse only. Wallets inject
+	// Lighthouse guard instructions (Phantom 1, Solflare 2) so those MUST be
+	// allowed; everything else (System / Token / ATA-create / unknown) is
+	// rejected, which keeps a Create-ATA out of the optional slots per spec.
+	memoCount := 0
 	for i := 3; i < len(ixs); i++ {
 		prog, err := programIDForIx(ixs[i], keys)
 		if err != nil {
 			return err
 		}
 		switch prog.String() {
-		case paycore.MemoProgram, lighthouseProgram:
+		case paycore.MemoProgram:
+			memoCount++
+			if req.expectedMemo != "" && string(ixs[i].Data) != req.expectedMemo {
+				return fmt.Errorf("x402: memo instruction %d does not match extra.memo", i)
+			}
+			continue
+		case lighthouseProgram:
 			continue
 		default:
 			return fmt.Errorf("x402: unexpected instruction %d program %s", i, prog)
 		}
+	}
+	// When the offer pins extra.memo, exactly one matching Memo instruction
+	// must be present.
+	if req.expectedMemo != "" && memoCount != 1 {
+		return fmt.Errorf("x402: expected exactly one memo matching extra.memo, found %d", memoCount)
 	}
 	return nil
 }

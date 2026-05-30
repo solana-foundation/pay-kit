@@ -328,6 +328,10 @@ func (a *Adapter) transferRequirements(gate *paykit.Gate) (transferRequirements,
 		tokenProgram: tokenProgram,
 		amount:       amount,
 		feePayer:     feePayer,
+		// extra.memo is advertised as the gate description. When set, the
+		// spec requires the verifier to confirm exactly one Memo instruction
+		// whose data equals it (payment-reference binding).
+		expectedMemo: gate.Desc,
 	}, nil
 }
 
