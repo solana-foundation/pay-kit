@@ -1,5 +1,5 @@
 import Foundation
-import SolanaMpp
+import SolanaPayKit
 
 /// Swift interop adapter for the MPP charge harness. Mirrors the
 /// command-line shape of `rust/crates/mpp/src/bin/interop_client.rs`:

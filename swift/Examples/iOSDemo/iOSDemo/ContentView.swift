@@ -1,5 +1,5 @@
 import SwiftUI
-import SolanaMpp
+import SolanaPayKit
 
 struct ContentView: View {
     // Defaults match the local Surfpool + MerchantServer setup. Edit in

@@ -1,6 +1,6 @@
 # Examples
 
-Sample clients exercising the `SolanaMpp` package.
+Sample clients exercising the `SolanaPayKit` package.
 
 - `ChargeClient/` — minimal CLI that performs a `mpp/charge/pull` against
   a 402-protected endpoint. Mirrors `rust/examples/payment_link_server.rs`

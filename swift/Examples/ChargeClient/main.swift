@@ -6,7 +6,7 @@
 // stays library-only.
 
 import Foundation
-import SolanaMpp
+import SolanaPayKit
 
 @main
 struct ChargeClient {

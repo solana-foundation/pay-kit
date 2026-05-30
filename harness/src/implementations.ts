@@ -146,6 +146,18 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "swift-x402",
+    label: "Swift x402 exact client",
+    role: "client",
+    command: [
+      "sh",
+      "-c",
+      "cd swift-x402-client && swift run --quiet SwiftX402Client",
+    ],
+    enabled: isEnabled("swift-x402", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [

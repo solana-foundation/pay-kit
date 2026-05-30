@@ -11,7 +11,7 @@
 //   - Surfpool: http://127.0.0.1:8899
 //   - Merchant: http://127.0.0.1:3004/fortune
 import Foundation
-import SolanaMpp
+import SolanaPayKit
 
 let seed = Data([
     0x69, 0x4f, 0x53, 0x2d, 0x44, 0x45, 0x4d, 0x4f,

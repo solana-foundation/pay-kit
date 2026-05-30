@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "VerifyE2E",
             dependencies: [
-                .product(name: "SolanaMpp", package: "swift"),
+                .product(name: "SolanaPayKit", package: "swift"),
             ]
         ),
     ]

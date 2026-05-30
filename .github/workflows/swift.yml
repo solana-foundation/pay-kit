@@ -67,3 +67,70 @@ jobs:
           MPP_INTEROP_CLIENTS: swift
           MPP_INTEROP_SERVERS: rust
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
+
+  interop-swift-x402:
+    name: "Interop: Swift x402 client to Rust x402 server"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-swift-x402-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-swift-x402-interop-
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      # Install + build the TypeScript workspace BEFORE installing the
+      # interop harness: harness depends on @solana/mpp through a file:
+      # link that pnpm copies at install time, and the surfpool fixtures
+      # import it on boot.
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust x402 interop server
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin interop_server
+      - name: Install interop harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck interop harness
+        working-directory: harness
+        run: pnpm typecheck
+      - name: Build Swift x402 interop client
+        working-directory: harness/swift-x402-client
+        run: swift build --quiet
+      # Drive the swift-x402 client against the rust-x402 server through
+      # the shared surfpool + funded-keypair e2e matrix. The harness spins
+      # up surfpool via surfpool-sdk and emits the X402_INTEROP_* shadows
+      # of the MPP fixtures, so the x402-exact-basic scenario settles a
+      # real signed Solana transaction end-to-end. Mirrors the MPP
+      # interop-swift job (build-only smoke replaced with real settle).
+      #
+      # rust-x402 is the only x402 server adapter that performs full
+      # settlement against a swift-x402-signed transaction: ts-x402 is a
+      # wire-only fixture, and the harness `python` server is MPP-charge
+      # only (no x402-exact intent). Re-add a python pairing here once the
+      # python harness server gains an x402 exact adapter.
+      - name: Run Swift x402 client interop against Rust x402 server
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: ""
+          MPP_INTEROP_SERVERS: ""
+          MPP_INTEROP_INTENTS: x402-exact
+          MPP_INTEROP_SCENARIOS: x402-exact-basic
+          X402_INTEROP_CLIENTS: swift-x402
+          X402_INTEROP_SERVERS: rust-x402
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000

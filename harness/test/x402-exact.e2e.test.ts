@@ -104,6 +104,12 @@ describe("x402 exact intent — cross-language matrix", () => {
     // python x402 servers, which settle end-to-end against surfpool.
     if (clientId === "python-x402" && serverId === "rust-x402") return true;
     if (clientId === "python-x402" && serverId === "python") return true;
+    // The Swift x402 exact client likewise carries a real signed Solana
+    // transaction, so it settles end-to-end against the full-settling rust
+    // and python x402 servers (same reasoning as python-x402; the ts-x402
+    // stub server is intentionally excluded).
+    if (clientId === "swift-x402" && serverId === "rust-x402") return true;
+    if (clientId === "swift-x402" && serverId === "python") return true;
     return false;
   };
 

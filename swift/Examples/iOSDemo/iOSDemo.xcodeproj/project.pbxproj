@@ -10,7 +10,7 @@
 		A1000010000000000000A001 /* iOSDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A001 /* iOSDemoApp.swift */; };
 		A1000010000000000000A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A002 /* ContentView.swift */; };
 		A1000010000000000000A003 /* DemoSigner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A003 /* DemoSigner.swift */; };
-		A1000010000000000000A004 /* SolanaMpp in Frameworks */ = {isa = PBXBuildFile; productRef = A1000050000000000000A001 /* SolanaMpp */; };
+		A1000010000000000000A004 /* SolanaPayKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1000050000000000000A001 /* SolanaPayKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,7 +19,7 @@
 		A1000020000000000000A002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000020000000000000A003 /* DemoSigner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSigner.swift; sourceTree = "<group>"; };
 		A1000020000000000000A004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A1000020000000000000A010 /* SolanaMpp */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = SolanaMpp; path = ../../; sourceTree = "<group>"; };
+		A1000020000000000000A010 /* SolanaPayKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = SolanaPayKit; path = ../../; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -27,7 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000010000000000000A004 /* SolanaMpp in Frameworks */,
+				A1000010000000000000A004 /* SolanaPayKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,7 +57,7 @@
 		A1000040000000000000A002 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				A1000020000000000000A010 /* SolanaMpp */,
+				A1000020000000000000A010 /* SolanaPayKit */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -87,7 +87,7 @@
 			);
 			name = iOSDemo;
 			packageProductDependencies = (
-				A1000050000000000000A001 /* SolanaMpp */,
+				A1000050000000000000A001 /* SolanaPayKit */,
 			);
 			productName = iOSDemo;
 			productReference = A1000020000000000000A000 /* iOSDemo.app */;
@@ -349,9 +349,9 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		A1000050000000000000A001 /* SolanaMpp */ = {
+		A1000050000000000000A001 /* SolanaPayKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = SolanaMpp;
+			productName = SolanaPayKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
