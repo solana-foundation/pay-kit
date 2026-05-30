@@ -13,7 +13,10 @@ module Mpp
       def self.make_challenge_response(challenge, _realm = nil)
         [
           challenge.status,
-          challenge.headers.merge("content-type" => "application/json"),
+          challenge.headers.merge(
+            "content-type" => "application/json",
+            "cache-control" => "no-store"
+          ),
           [JSON.generate(challenge.body)]
         ]
       end

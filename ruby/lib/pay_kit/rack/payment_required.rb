@@ -72,14 +72,17 @@ module PayKit
       class << self
         def render_402(challenge)
           body = JSON.generate(challenge.to_h)
-          headers = {"content-type" => "application/json"}.merge(normalize_headers(challenge.headers))
+          headers = {
+            "content-type" => "application/json",
+            "cache-control" => "no-store"
+          }.merge(normalize_headers(challenge.headers))
           [402, headers, [body]]
         end
 
         def render_invalid(error)
           payload = {error: error.code.to_s, message: error.detail}
           payload[:spec_code] = error.spec_code if error.spec_code
-          [402, {"content-type" => "application/json"}, [JSON.generate(payload)]]
+          [402, {"content-type" => "application/json", "cache-control" => "no-store"}, [JSON.generate(payload)]]
         end
 
         # Rack 3 requires response header names to be lowercase. The

@@ -86,7 +86,8 @@ class MppCreateTest < Minitest::Test
   def test_create_returns_a_server_instance
     server = Mpp.create(
       method: Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new),
-      secret_key: "secret"
+      secret_key: "secret",
+      replay_store: Mpp::MemoryStore.new
     )
 
     assert_instance_of Mpp::Server::Charge, server
@@ -133,7 +134,8 @@ class MppCreateTest < Minitest::Test
         rpc: StubRpc.new
       ),
       secret_key: "secret",
-      realm: "Test"
+      realm: "Test",
+      replay_store: Mpp::MemoryStore.new
     )
 
     # Per-call override doesn't crash and still produces a Challenge for a
@@ -163,7 +165,8 @@ class MppCreateTest < Minitest::Test
     Mpp.create(
       method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
       secret_key: "secret",
-      realm: "Test"
+      realm: "Test",
+      replay_store: Mpp::MemoryStore.new
     )
   end
 end
@@ -177,6 +180,17 @@ class DecoratorTest < Minitest::Test
     assert_equal 402, status
     assert_equal "application/json", headers["content-type"]
     assert_equal({"error" => "payment_required"}, JSON.parse(body.first))
+  end
+
+  # Regression: 402 responses must carry Cache-Control: no-store so that
+  # proxies and browsers do not cache payment challenges.
+  def test_make_challenge_response_includes_cache_control_no_store
+    challenge = Mpp::Challenge.new(www_authenticate: "Payment realm=\"Test\"", body: {"error" => "payment_required"})
+
+    _status, headers, _body = Mpp::Server::Decorator.make_challenge_response(challenge)
+
+    assert_equal "no-store", headers["cache-control"],
+      "402 challenge response must include Cache-Control: no-store"
   end
 end
 
@@ -197,6 +211,18 @@ class MiddlewareTest < Minitest::Test
 
     assert_equal 402, status
     assert headers.key?(Mpp::Protocol::Core::Headers::WWW_AUTHENTICATE)
+  end
+
+  # Regression: 402 challenge responses surfaced through the Rack middleware
+  # must include Cache-Control: no-store so proxies and browsers cannot
+  # cache payment challenges.
+  def test_402_challenge_includes_cache_control_no_store
+    middleware = Mpp::Server::Middleware.new(paid_app, handler: build_server)
+
+    _status, headers, _body = middleware.call({"PATH_INFO" => "/paid"})
+
+    assert_equal "no-store", headers["cache-control"],
+      "402 challenge response must include Cache-Control: no-store"
   end
 
   def test_settlement_result_merges_headers_into_app_response
@@ -229,7 +255,11 @@ class MiddlewareTest < Minitest::Test
   private
 
   def build_server
-    Mpp.create(method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret")
+    Mpp.create(
+      method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
+      secret_key: "secret",
+      replay_store: Mpp::MemoryStore.new
+    )
   end
 
   def free_app
@@ -252,7 +282,7 @@ end
 
 class SinatraHelperTest < Minitest::Test
   def test_mpp_charge_halts_with_402_when_auth_missing
-    server = Mpp.create(method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret", realm: "T")
+    server = Mpp.create(method: Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret", realm: "T", replay_store: Mpp::MemoryStore.new)
     app = Class.new(Sinatra::Base) do
       helpers Mpp::Sinatra::Helpers
       set :mpp_server, server

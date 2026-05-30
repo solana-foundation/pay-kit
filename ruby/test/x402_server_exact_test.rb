@@ -384,22 +384,54 @@ class X402ServerExactTest < Minitest::Test
       X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
   end
 
-  def test_settlement_rejects_lighthouse_as_sixth_instruction
+  # Wallets inject a variable number of trailing Lighthouse guard
+  # instructions (Phantom 1, Solflare 2). Per the official x402 SVM exact
+  # contract Lighthouse is an allowed optional program in ANY optional
+  # slot, so a single trailing guard must be accepted. Mirrors the PHP,
+  # Lua, and Go ports.
+  def test_settlement_accepts_single_trailing_lighthouse_guard
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+      append_optional_instruction(transaction, X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM)
+    end
+
+    assert_equal "unit-settlement", X402::Server::Exact.settle_exact_payment(state, payment_header)
+  end
+
+  # Two trailing Lighthouse guards (Solflare's shape) must also be
+  # accepted. The corrected program id is
+  # `L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95`; the prior stale
+  # `L1TE...` value would have rejected wallet-injected guards.
+  def test_settlement_accepts_two_trailing_lighthouse_guards
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+      append_optional_instruction(transaction, X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM)
+      append_optional_instruction(transaction, X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM)
+    end
+
+    assert_equal "unit-settlement", X402::Server::Exact.settle_exact_payment(state, payment_header)
+  end
+
+  # An Associated-Token-Program ATA-create instruction MUST NOT be an
+  # allowed optional slot: per the official x402 SVM exact contract the
+  # destination ATA MUST pre-exist. The first optional slot after the
+  # transfer (here slot index 1, the fifth instruction, since the base
+  # envelope carries a memo at ix[3]) carries the rejected ATA-create.
+  def test_settlement_rejects_ata_create_optional_instruction
     sent = []
     state = build_state(sender: ->(_state, transaction) {
       sent << transaction
       "unit-settlement"
     })
-    payment_header = mutate_payment_transaction(build_payment_header(state)) do |transaction|
-      append_optional_instruction(transaction, X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM)
-      append_optional_instruction(transaction, X402::Protocol::Schemes::Exact::LIGHTHOUSE_PROGRAM)
+    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
+      append_valid_destination_ata_create_instruction(transaction, state)
     end
 
     error = assert_raises(RuntimeError) do
       X402::Server::Exact.settle_exact_payment(state, payment_header)
     end
 
-    assert_equal "invalid_exact_svm_payload_unknown_sixth_instruction", error.message
+    assert_equal "invalid_exact_svm_payload_unknown_fifth_instruction", error.message
     assert_empty sent
   end
 
@@ -558,22 +590,6 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "destination token account does not exist", error.message
     assert_equal 2, checked.length
     assert_empty sent
-  end
-
-  def test_settlement_skips_missing_destination_account_when_create_ata_is_present
-    checked = []
-    state = build_state(
-      account_checker: ->(_state, account) {
-        checked << account
-        true
-      }
-    )
-    payment_header = mutate_payment_transaction(build_payment_header(state), resign: true) do |transaction|
-      append_valid_destination_ata_create_instruction(transaction, state)
-    end
-
-    assert_equal "unit-settlement", X402::Server::Exact.settle_exact_payment(state, payment_header)
-    assert_equal 1, checked.length
   end
 
   def test_server_rejects_unsigned_payload_before_facilitator_sign
@@ -1131,9 +1147,8 @@ class X402ServerExactTest < Minitest::Test
   end
 
   # Append a memo-program instruction whose accounts vector names the fee
-  # payer at position 1 (a non-carve-out slot). The sweep must reject
-  # before settlement, regardless of which slot the fee payer appears in
-  # (only ATA-create's funding-payer slot 0 is carved out).
+  # payer at position 1. The sweep must reject before settlement,
+  # regardless of which slot the fee payer appears in.
   def append_memo_with_fee_payer_at_slot_one(transaction)
     message_offset = 1 + (2 * 64)
     account_count_offset = message_offset + 4

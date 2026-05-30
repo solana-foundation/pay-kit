@@ -380,8 +380,10 @@ module X402
           unless config.account_checker.call(config, Types.base58_encode(transfer.fetch(:source)))
             raise "source token account does not exist"
           end
-          return if transfer.fetch(:destination_create_ata)
 
+          # Per the official x402 SVM exact contract the destination ATA MUST
+          # pre-exist; the verifier rejects any in-band ATA-create, so the
+          # destination is always checked here.
           unless config.account_checker.call(config, Types.base58_encode(transfer.fetch(:destination)))
             raise "destination token account does not exist"
           end
