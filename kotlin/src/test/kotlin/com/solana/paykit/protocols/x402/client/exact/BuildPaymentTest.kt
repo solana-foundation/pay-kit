@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
@@ -42,6 +43,20 @@ class BuildPaymentTest {
 
     /** Fixed 32 zero-byte blockhash provider. */
     private val fixedBlockhash: () -> ByteArray = { ByteArray(32) }
+
+    @Test
+    fun buildsFromRecipientAliasOffer() {
+        // The rust-normalized requirement shape carries `recipient` instead of
+        // `payTo`; the client resolves it via effectivePayTo rather than
+        // rejecting the offer as unpayable.
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"1000","asset":"SOL","recipient":"$devnetRecipient"}]}"""
+        val requirement = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(requirement)
+        assertNull(requirement.payTo)
+        val envelope = buildPayment(signer, requirement, fixedBlockhash)
+        assertNotNull(envelope.payload.transaction)
+    }
 
     @Test
     fun buildsFromSymbolOfferDefaultingTokenProgram() {

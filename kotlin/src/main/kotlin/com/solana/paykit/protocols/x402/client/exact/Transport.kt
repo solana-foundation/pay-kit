@@ -93,14 +93,12 @@ class X402HttpClient(
             // rather than throwing (go: `return resp, nil`).
             ?: return X402GetResult(response = buffered402(), paymentSignatureSent = null)
 
-        val paymentHeader = try {
-            buildPaymentHeader(signer, requirement, rpcBlockhashProvider)
-        } catch (_: Exception) {
-            // Build/sign failure (e.g. invalid offer fields): the offer is not
-            // one we can satisfy, so return the original 402 rather than
-            // throwing — same contract as the no-challenge path.
-            return X402GetResult(response = buffered402(), paymentSignatureSent = null)
-        }
+        // A supported challenge was selected. Let build/sign failures (RPC
+        // blockhash failure, wallet/signing rejection, an invalid selected
+        // offer) propagate rather than masking them as an unpaid 402 — only
+        // the no-challenge path above returns the buffered 402, so callers can
+        // tell "no supported offer" apart from "payment construction failed".
+        val paymentHeader = buildPaymentHeader(signer, requirement, rpcBlockhashProvider)
         val finalResponse = execute(
             "GET",
             url,

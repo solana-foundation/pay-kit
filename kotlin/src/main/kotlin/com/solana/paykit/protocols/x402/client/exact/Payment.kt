@@ -198,7 +198,7 @@ fun buildPayment(
 ): X402Envelope {
     val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
-    val payTo = requirement.payTo
+    val payTo = requirement.effectivePayTo
         ?: throw IllegalArgumentException("x402 offer is missing `payTo`")
     val amountRaw = requirement.amount ?: requirement.maxAmountRequired
     val amount = amountRaw?.toLongOrNull()

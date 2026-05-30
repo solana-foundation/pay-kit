@@ -32,6 +32,9 @@ data class X402AcceptsEntry(
     val amount: String? = null,
     val maxAmountRequired: String? = null,
     val payTo: String? = null,
+    // Recipient alias emitted by the rust-normalized requirement shape (the
+    // wire field is `payTo`; `recipient` is read as a fallback).
+    val recipient: String? = null,
     val maxTimeoutSeconds: Int? = null,
     val extra: X402Extra? = null,
     // Top-level currency fields. Some x402 servers carry the mint as
@@ -51,6 +54,9 @@ data class X402AcceptsEntry(
     // fields). Excluded from (de)serialization; populated during parsing.
     @Transient val raw: JsonElement? = null,
 )
+
+/** Effective recipient: prefers ``payTo``, falls back to ``recipient``. */
+val X402AcceptsEntry.effectivePayTo: String? get() = payTo ?: recipient
 
 /** Effective mint: prefers ``asset``, falls back to top-level ``currency``. */
 val X402AcceptsEntry.effectiveAsset: String? get() = asset ?: currency
