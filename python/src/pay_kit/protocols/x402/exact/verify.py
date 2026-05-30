@@ -125,7 +125,10 @@ class ExactVerifier:
         # Phantom=1 / Solflare=2) and SPL Memo. A Create-ATA / Associated Token
         # Program instruction is NOT allowed: the destination ATA MUST pre-exist
         # (Rule 7 derives and pins the destination ATA). This matches the
-        # Rust/Go verifiers, which never accept ATA-create in this shape.
+        # Rust/Go verifiers, which accept Lighthouse or Memo in ANY optional
+        # slot (rust verify.rs iter().skip(3); go verify.go case Memo/Lighthouse
+        # for all i>=3) and never accept ATA-create in this shape. Lighthouse is
+        # not slot-restricted because wallets inject a variable number of guards.
         reasons = (
             "invalid_exact_svm_payload_unknown_fourth_instruction",
             "invalid_exact_svm_payload_unknown_fifth_instruction",
@@ -135,7 +138,7 @@ class ExactVerifier:
             ix = instructions[i]
             program = ExactVerifier._program_of(account_keys, ix)
             slot_index = i - 3
-            allowed = program == MEMO_PROGRAM or (slot_index < 2 and program == LIGHTHOUSE_PROGRAM)
+            allowed = program in (MEMO_PROGRAM, LIGHTHOUSE_PROGRAM)
             if not allowed:
                 reason = (
                     reasons[slot_index]

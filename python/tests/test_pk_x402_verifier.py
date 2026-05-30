@@ -205,6 +205,45 @@ def test_verify_allows_lighthouse_optional_instruction():
     assert out["destinationCreateAta"] is False
 
 
+def test_verify_allows_lighthouse_in_last_optional_slot():
+    """Regression: Lighthouse MUST be accepted in ANY optional slot, not just the first.
+
+    Exercises the maximum-slot layout [ComputeUnitLimit, ComputeUnitPrice,
+    transferChecked, Memo, Lighthouse, Lighthouse] so that Lighthouse sits at
+    instruction index 4 (slot_index 1) and instruction index 5 (slot_index 2).
+    The old ``slot_index < 2`` guard wrongly rejected Lighthouse at slot_index 2.
+    """
+    from pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+
+    fee_payer, authority, pay_to, src, dest = _scenario()
+    lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [])
+
+    # Lighthouse at i=4 (slot_index 1)
+    ixs_slot1 = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        _memo_ix("/pay"),
+        lighthouse,
+    ]
+    tx_slot1 = _tx_b64(fee_payer, ixs_slot1, [fee_payer, authority])
+    out1 = ExactVerifier.verify(tx_slot1, _requirement(pay_to, memo="/pay"), [str(fee_payer.pubkey())])
+    assert out1["destinationCreateAta"] is False
+
+    # Lighthouse at i=5 (slot_index 2) — the last permitted optional slot.
+    ixs_slot2 = [
+        _compute_limit_ix(),
+        _compute_price_ix(),
+        _transfer_checked_ix(source=src, mint=MINT, destination=dest, authority=authority.pubkey()),
+        _memo_ix("/pay"),
+        lighthouse,
+        lighthouse,
+    ]
+    tx_slot2 = _tx_b64(fee_payer, ixs_slot2, [fee_payer, authority])
+    out2 = ExactVerifier.verify(tx_slot2, _requirement(pay_to, memo="/pay"), [str(fee_payer.pubkey())])
+    assert out2["destinationCreateAta"] is False
+
+
 # -- rule 0: payload decode --------------------------------------------------
 
 
