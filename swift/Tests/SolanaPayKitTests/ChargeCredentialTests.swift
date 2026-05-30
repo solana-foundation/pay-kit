@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SolanaMpp
+@testable import SolanaPayKit
 
 @Suite("Charge credential")
 struct ChargeCredentialTests {

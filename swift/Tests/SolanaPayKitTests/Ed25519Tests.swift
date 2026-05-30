@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import CryptoKit
-@testable import SolanaMpp
+@testable import SolanaPayKit
 
 @Suite("Ed25519 via CryptoKit")
 struct Ed25519Tests {

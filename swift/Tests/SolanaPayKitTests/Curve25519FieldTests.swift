@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SolanaMpp
+@testable import SolanaPayKit
 
 @Suite("Curve25519 field arithmetic and on-curve check")
 struct Curve25519FieldTests {
