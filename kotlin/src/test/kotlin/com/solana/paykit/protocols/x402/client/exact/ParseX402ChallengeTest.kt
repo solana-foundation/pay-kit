@@ -2,6 +2,11 @@ package com.solana.paykit.protocols.x402.client.exact
 
 import com.solana.paykit.paycore.Mints
 import com.solana.paykit.paycore.Network
+import com.solana.paykit.paycore.Programs
+import com.solana.paykit.protocols.x402.exact.effectiveAsset
+import com.solana.paykit.protocols.x402.exact.effectiveDecimals
+import com.solana.paykit.protocols.x402.exact.effectiveRecentBlockhash
+import com.solana.paykit.protocols.x402.exact.effectiveTokenProgram
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -48,6 +53,27 @@ class ParseX402ChallengeTest {
         val result = parseX402Challenge(headers, null, ChallengeSelection())
         assertNotNull(result)
         assertEquals("SOL", result.asset)
+    }
+
+    @Test
+    fun parsesTopLevelCurrencyShape() {
+        // Some x402 servers carry the mint as top-level `currency` with
+        // `decimals` / `tokenProgram` / `recentBlockhash` at the top level
+        // instead of `asset` + `extra`. The client resolves both shapes
+        // through the effective* accessors.
+        val offer = """{"scheme":"exact","network":"${Network.SOLANA_DEVNET}",""" +
+            """"amount":"1000","currency":"${Mints.USDC_DEVNET}",""" +
+            """"payTo":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",""" +
+            """"decimals":6,"tokenProgram":"${Programs.TOKEN_PROGRAM}",""" +
+            """"recentBlockhash":"11111111111111111111111111111111"}"""
+        val headers = mapOf("payment-required" to headerFor(envelopeJson(offer)))
+        val result = parseX402Challenge(headers, null, ChallengeSelection())
+        assertNotNull(result)
+        assertNull(result.asset)
+        assertEquals(Mints.USDC_DEVNET, result.effectiveAsset)
+        assertEquals(6, result.effectiveDecimals)
+        assertEquals(Programs.TOKEN_PROGRAM, result.effectiveTokenProgram)
+        assertEquals("11111111111111111111111111111111", result.effectiveRecentBlockhash)
     }
 
     @Test

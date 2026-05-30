@@ -122,7 +122,7 @@ private fun amountOf(offer: X402AcceptsEntry): Long {
     return raw?.toLongOrNull() ?: Long.MAX_VALUE
 }
 
-private fun currencyOf(offer: X402AcceptsEntry): String = offer.asset ?: ""
+private fun currencyOf(offer: X402AcceptsEntry): String = offer.effectiveAsset ?: ""
 
 private fun currenciesMatch(offered: String, accepted: String, label: String): Boolean {
     val offeredMint = resolveStablecoinMint(offered, label) ?: offered
@@ -176,7 +176,7 @@ fun buildPayment(
     requirement: X402AcceptsEntry,
     rpcBlockhashProvider: () -> ByteArray,
 ): X402Envelope {
-    val asset = requirement.asset
+    val asset = requirement.effectiveAsset
         ?: throw IllegalArgumentException("x402 offer is missing `asset`")
     val payTo = requirement.payTo
         ?: throw IllegalArgumentException("x402 offer is missing `payTo`")
@@ -199,9 +199,9 @@ fun buildPayment(
     if (isNativeSol) {
         instructions.add(Instructions.systemTransfer(signerKey.toBase58(), recipientKey.toBase58(), amount))
     } else {
-        val tokenProgramStr = extra?.tokenProgram
+        val tokenProgramStr = requirement.effectiveTokenProgram
             ?: throw IllegalArgumentException("x402 SPL offer is missing `extra.tokenProgram`")
-        val decimals = extra.decimals ?: DEFAULT_DECIMALS
+        val decimals = requirement.effectiveDecimals ?: DEFAULT_DECIMALS
         val tokenProgramKey = PublicKey.fromBase58(tokenProgramStr)
         val mintKey = PublicKey.fromBase58(asset)
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgramKey)
@@ -235,8 +235,9 @@ fun buildPayment(
         instructions.add(Instructions.memo(memo))
     }
 
-    val recentBlockhash: ByteArray = if (extra?.recentBlockhash != null) {
-        Base58.decode(extra.recentBlockhash)
+    val pinnedBlockhash = requirement.effectiveRecentBlockhash
+    val recentBlockhash: ByteArray = if (pinnedBlockhash != null) {
+        Base58.decode(pinnedBlockhash)
     } else {
         rpcBlockhashProvider()
     }

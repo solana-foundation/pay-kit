@@ -32,7 +32,27 @@ data class X402AcceptsEntry(
     val payTo: String? = null,
     val maxTimeoutSeconds: Int? = null,
     val extra: X402Extra? = null,
+    // Top-level currency fields. Some x402 servers carry the mint as
+    // ``currency`` with ``decimals`` / ``tokenProgram`` / ``recentBlockhash``
+    // at the top level instead of nested under ``asset`` + ``extra``. Read as
+    // fallbacks so the client can pay a server emitting either shape.
+    val currency: String? = null,
+    val decimals: Int? = null,
+    val tokenProgram: String? = null,
+    val recentBlockhash: String? = null,
 )
+
+/** Effective mint: prefers ``asset``, falls back to top-level ``currency``. */
+val X402AcceptsEntry.effectiveAsset: String? get() = asset ?: currency
+
+/** Effective token program: prefers ``extra.tokenProgram``, then top-level. */
+val X402AcceptsEntry.effectiveTokenProgram: String? get() = extra?.tokenProgram ?: tokenProgram
+
+/** Effective token decimals: prefers ``extra.decimals``, then top-level. */
+val X402AcceptsEntry.effectiveDecimals: Int? get() = extra?.decimals ?: decimals
+
+/** Effective pinned blockhash: prefers ``extra.recentBlockhash``, then top-level. */
+val X402AcceptsEntry.effectiveRecentBlockhash: String? get() = extra?.recentBlockhash ?: recentBlockhash
 
 /** The base64-decoded challenge body (``payment-required`` header or 402 body). */
 @Serializable
