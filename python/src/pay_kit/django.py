@@ -74,7 +74,7 @@ def require_payment(
     def decorator(view: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(view)
         def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-            core = PayCore(config if config is not None else _config())
+            core = PayCore.for_config(config if config is not None else _config())
             try:
                 payment = _run(core.process(gate_ref, pricing, request))
             except PayKitError as exc:
@@ -110,7 +110,7 @@ class PaymentMiddleware:
         if gate_ref is None:
             return self._passthrough(request)
 
-        core = PayCore(_config())
+        core = PayCore.for_config(_config())
         try:
             payment = _run(core.process(gate_ref, _request_pricing(request), request))
         except PayKitError as exc:

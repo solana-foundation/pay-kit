@@ -111,6 +111,73 @@ def test_challenge_headers_emit_www_authenticate():
     assert headers["www-authenticate"].lower().startswith("payment")
 
 
+# -- on-top fees: challenge + expected amount track gate.total() -------------
+
+
+def test_fee_on_top_expected_amount_is_total_not_base():
+    """Regression: a fee_on_top gate's expected charge request must pin the
+    total (base + on-top), not the bare base.
+
+    accepts_entry() advertises gate.total(); if the verifier's expected amount
+    were the base, the MPP binding (which compares credential.amount to
+    expected.amount) would accept a challenge worth only the base, letting a
+    paying client underpay by the on-top fee while the 402 advertised the total.
+    """
+    cfg = _cfg()
+    gate = _gate(cfg, fee_on_top={FEE_A: Price.usd("0.02", Stablecoin.USDC)})
+    expected = MppAdapter(cfg)._charge_request_for(gate)
+    # base 0.10 + on-top 0.02 = 0.12 -> 120000 base units, NOT 100000.
+    assert expected.amount == "120000"
+    assert expected.method_details is not None
+    assert expected.method_details["splits"] == [{"recipient": FEE_A, "amount": "20000"}]
+
+
+def test_fee_on_top_issued_challenge_amount_matches_advertised_total():
+    """The issued WWW-Authenticate challenge's request.amount must equal the
+    gate total advertised in accepts_entry()."""
+    cfg = _cfg()
+    adapter = MppAdapter(cfg)
+    gate = _gate(cfg, fee_on_top={FEE_A: Price.usd("0.02", Stablecoin.USDC)})
+
+    advertised = adapter.accepts_entry(gate, {"path": "/report"})["amount"]
+
+    mpp = adapter._server_for(gate)
+    challenge = mpp.charge_with_options(adapter._human_amount(gate), adapter._charge_options(gate))
+    request = challenge.decode_request()
+    assert str(request["amount"]) == advertised == "120000"
+
+
+def test_fee_within_amount_unchanged_by_total_switch():
+    """A fee_within gate's customer-paid total equals the base, so the expected
+    amount stays the base (guards against the on-top fix over-charging here)."""
+    cfg = _cfg()
+    gate = _gate(cfg, fee_within={FEE_A: Price.usd("0.03", Stablecoin.USDC)})
+    expected = MppAdapter(cfg)._charge_request_for(gate)
+    assert expected.amount == "100000"  # base 0.10, within fee comes out of it
+
+
+# -- challenge expiry tracks MppConfig.expires_in (regression) ---------------
+
+
+def test_charge_options_expiry_derived_from_config():
+    """MppConfig(expires_in=...) must drive the challenge expiry rather than the
+    wire layer's hard-coded 5-minute fallback."""
+    from datetime import UTC, datetime
+
+    cfg = _cfg(mpp=MppConfig(challenge_binding_secret=SECRET, expires_in=30))
+    adapter = MppAdapter(cfg)
+    gate = _gate(cfg)
+
+    options = adapter._charge_options(gate)
+    assert options.expires != ""  # round-1 left this blank -> 5min fallback
+
+    challenge = adapter._server_for(gate).charge_with_options(adapter._human_amount(gate), options)
+    expires_at = datetime.fromisoformat(challenge.expires.replace("Z", "+00:00"))
+    delta = (expires_at - datetime.now(UTC)).total_seconds()
+    # ~30s window, comfortably under the 300s hard-coded default.
+    assert 20 <= delta <= 40
+
+
 # -- verify: missing / malformed proof ---------------------------------------
 
 

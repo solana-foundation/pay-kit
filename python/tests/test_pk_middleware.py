@@ -73,6 +73,51 @@ class _Req:
         self.path = path
 
 
+# -- per-config core cache (replay-store persistence) ------------------------
+
+
+def test_for_config_returns_same_core_per_config():
+    """Regression: shims built a fresh PayCore per request, so each request got
+    a fresh in-memory replay store and a settled MPP signature could be
+    replayed. for_config() must hand back the same core (and thus the same
+    replay store) for a given Config."""
+    cfg = _cfg()
+    first = PayCore.for_config(cfg)
+    second = PayCore.for_config(cfg)
+    assert first is second
+    # The MPP adapter (and its replay store) is shared, not rebuilt per call.
+    assert first._mpp is second._mpp
+    assert first._mpp._replay_store is second._mpp._replay_store
+
+
+def test_for_config_distinct_cores_for_distinct_configs():
+    """Configs that differ get distinct cores (and thus distinct replay stores)."""
+    cfg_a = _cfg(accept=(Protocol.MPP,))
+    reset()
+    import os
+
+    os.environ["PAY_KIT_DISABLE_PREFLIGHT"] = "1"
+    cfg_b = _cfg(accept=(Protocol.X402, Protocol.MPP))
+    assert cfg_a != cfg_b
+    assert PayCore.for_config(cfg_a) is not PayCore.for_config(cfg_b)
+
+
+@pytest.mark.asyncio
+async def test_settled_signature_not_replayable_across_requests(monkeypatch):
+    """End-to-end of the cache: a signature consumed on the shared replay store
+    by one request's core stays consumed for the next request's core."""
+    cfg = _cfg(accept=(Protocol.MPP,))
+    store = PayCore.for_config(cfg)._mpp._replay_store
+    key = "solana-charge:consumed:sig-xyz"
+    # First request settles the signature (marks it consumed).
+    assert await store.put_if_absent(key, True) is True
+    # A later request resolves the SAME core/store, so the marker persists and
+    # a replay of the same signature is rejected (put_if_absent returns False).
+    store_again = PayCore.for_config(cfg)._mpp._replay_store
+    assert store_again is store
+    assert await store_again.put_if_absent(key, True) is False
+
+
 # -- gate resolution ---------------------------------------------------------
 
 
@@ -251,14 +296,20 @@ async def test_process_dispatches_to_adapter(monkeypatch):
     assert out is sentinel
 
 
-@pytest.mark.asyncio
-async def test_process_inline_dynamic_from_registry_raises():
+def test_resolve_registry_dynamic_gate_uses_request():
+    """A registry-returned DynamicGate resolves against the request.
+
+    Regression: a prior round raised ProtocolNotSupportedError here, so a
+    registered name pointing at a @dynamic gate was unusable. resolve_gate()
+    has the request, so it must inject the Config defaults and resolve the
+    dynamic gate instead of rejecting it.
+    """
     from pay_kit import gate as dynamic
 
-    cfg = _cfg()
+    cfg = _cfg(accept=(Protocol.MPP,))
     core = PayCore(cfg)
 
-    @dynamic("by_units")  # type: ignore[arg-type]
+    @dynamic("by_units", accept=(Protocol.MPP,))  # type: ignore[arg-type]
     def builder(request):
         return Price.usd("0.10", Stablecoin.USDC)
 
@@ -266,9 +317,11 @@ async def test_process_inline_dynamic_from_registry_raises():
         def __init__(self):
             self.by_units = builder
 
-    # Resolving a DynamicGate through the static coercion path needs a request.
-    with pytest.raises(ProtocolNotSupportedError, match="requires a request"):
-        core._coerce_static("by_units", Catalog())
+    g = core.resolve_gate("by_units", Catalog(), _Req())
+    assert isinstance(g, Gate)
+    assert g.name == "by_units"
+    assert g.amount.amount_string() == "0.10"
+    assert g.pay_to == cfg.effective_recipient()
 
 
 # -- request-scoped trio -----------------------------------------------------

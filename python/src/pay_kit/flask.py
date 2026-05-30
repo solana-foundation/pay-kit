@@ -67,7 +67,7 @@ def require_payment(
         @wraps(view)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             request = flask.request
-            core = PayCore(config if config is not None else _global_config())
+            core = PayCore.for_config(config if config is not None else _global_config())
             try:
                 payment_obj = _run(core.process(gate_ref, pricing, request))
             except PaymentRequiredError as exc:

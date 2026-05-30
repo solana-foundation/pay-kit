@@ -30,6 +30,7 @@ The request-scoped trio (:func:`require_payment`, :func:`is_paid`,
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
@@ -66,6 +67,15 @@ PAYMENT_ATTR = "paykit_payment"
 #: Gate reference shapes accepted by the middleware.
 GateRef = "Gate | DynamicGate | Price | str | Callable[[Any], Gate]"
 
+#: One ``PayCore`` (and its adapters + shared replay store) per Config. The
+#: framework shims construct a gate per request, but a fresh adapter would mean
+#: a fresh in-memory replay store, so a settled MPP signature could be replayed.
+#: Caching the core per Config keeps the consumed-signature marker durable for
+#: the lifetime of that config. Weak keys let a dropped config (e.g. a test
+#: ``reset()``) and its cached core be collected. The Config is frozen, so a
+#: cached core never observes stale settings.
+_CORE_CACHE: weakref.WeakKeyDictionary[Config, PayCore] = weakref.WeakKeyDictionary()
+
 
 class PayCore:
     """Host-neutral payment-gating core shared by every framework shim.
@@ -95,6 +105,23 @@ class PayCore:
         else:
             self._x402 = None
 
+    @classmethod
+    def for_config(cls, config: Config) -> PayCore:
+        """Return the cached per-Config core, building (and caching) one on miss.
+
+        The framework shims call this once per request; reusing one core per
+        Config keeps the MPP/x402 adapters and their shared in-memory replay
+        store alive across requests so a settled signature stays consumed and
+        cannot be replayed. A fresh ``PayCore(config)`` per request (the prior
+        behaviour) reset that store on every call.
+        """
+        cached = _CORE_CACHE.get(config)
+        if cached is not None:
+            return cached
+        core = cls(config)
+        _CORE_CACHE[config] = core
+        return core
+
     @property
     def config(self) -> Config:
         """The frozen configuration this core gates against."""
@@ -119,7 +146,7 @@ class PayCore:
             return gate_ref.resolve(request)
         if not isinstance(gate_ref, (Gate, Price, str)) and callable(gate_ref):
             return self._resolve_callable(gate_ref, request)
-        return self._coerce_static(gate_ref, pricing)
+        return self._coerce_static(gate_ref, pricing, request)
 
     def detect_adapter(
         self,
@@ -222,7 +249,7 @@ class PayCore:
         if isinstance(result, Gate):
             return result
         if isinstance(result, Price):
-            return self._coerce_static(result, None)
+            return self._coerce_static(result, None, request)
         raise ProtocolNotSupportedError(
             f"pay_kit: gate builder returned {type(result).__name__}, expected Gate or Price"
         )
@@ -231,14 +258,19 @@ class PayCore:
         self,
         gate_ref: Gate | DynamicGate | Price | str,
         pricing: Pricing | None,
+        request: Any,
     ) -> Gate:
-        """Coerce a non-callable reference; resolve a DynamicGate against defaults."""
+        """Coerce a non-callable reference; resolve a DynamicGate against the request.
+
+        A registered name may resolve (via the pricing registry) to a
+        :class:`DynamicGate`. Such a gate still needs the current request to
+        evaluate its builder, so inject the Config defaults and resolve it here
+        rather than rejecting it; ``resolve_gate`` always has the request.
+        """
         coerced = coerce(gate_ref, registry=pricing, config=self._config)
         if isinstance(coerced, DynamicGate):
             self._inject_dynamic_defaults(coerced)
-            # A DynamicGate from a registry still needs a request to resolve;
-            # callers must pass it through process() (which has the request).
-            raise ProtocolNotSupportedError(f"pay_kit: dynamic gate {coerced.name!r} requires a request to resolve")
+            return coerced.resolve(request)
         return coerced
 
     def _inject_dynamic_defaults(self, gate: DynamicGate) -> None:

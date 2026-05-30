@@ -70,7 +70,7 @@ def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
     """
 
     async def dependency(request: Request) -> Payment:
-        core = PayCore(config if config is not None else _config())
+        core = PayCore.for_config(config if config is not None else _config())
         try:
             payment = await core.process(gate_ref, pricing, request)
         except PaymentRequiredError as exc:

@@ -287,7 +287,11 @@ class MppAdapter:
         """Build the route's expected charge request from the gate."""
         coin = self._settlement_coin(gate)
         pay_to = gate.pay_to or self._config.effective_recipient()
-        amount = str(self._price_units(gate.amount))
+        # Top-level amount is the total the customer pays (base + on-top fees),
+        # matching accepts_entry()'s advertised gate.total(). The MPP wire
+        # subtracts sum(splits) to get the primary recipient's share, so using
+        # the bare base here would let a fee_on_top gate accept an underpayment.
+        amount = str(self._price_units(gate.total()))
         # Pay's MPP client filters challenges by the short network slug
         # ("mainnet"/"devnet"/"localnet") in request.methodDetails.network
         # (rust/crates/core/src/client/mpp.rs). Advertise the same slug
@@ -321,9 +325,15 @@ class MppAdapter:
 
     def _charge_options(self, gate: Gate) -> ChargeOptions:
         """Build ChargeOptions mirroring the route's charge request."""
+        from pay_kit.protocols.mpp.core.expires import seconds
+
+        # Derive the challenge expiry from MppConfig.expires_in; without this
+        # the wire layer falls back to its hard-coded 5-minute default and
+        # MppConfig(expires_in=...) is silently ignored.
         options = ChargeOptions(
             description=gate.description or "",
             external_id=gate.external_id or "",
+            expires=seconds(self._config.mpp.expires_in),
         )
         if gate.has_fees():
             # ChargeOptions.splits is the untyped pay_kit.protocols.mpp list[dict]; build the
@@ -380,8 +390,16 @@ class MppAdapter:
         return self._config.stablecoins[0].value
 
     def _human_amount(self, gate: Gate) -> str:
-        """Charge amount as a human decimal string the wire re-parses."""
-        return gate.amount.amount_string()
+        """Charge amount as a human decimal string the wire re-parses.
+
+        Uses ``gate.total()`` (base + on-top fees) so the issued challenge's
+        top-level ``request.amount`` is the total the customer pays. The MPP
+        wire derives the primary recipient's share as ``amount - sum(splits)``
+        (rust client charge.rs), so advertising the base here would let a
+        fee_on_top gate accept an underpayment that matched ``accepts_entry``'s
+        advertised total.
+        """
+        return gate.total().amount_string()
 
     def _price_units(self, price: Price) -> int:
         """Convert a Decimal price to 6-decimal base units (no float)."""
