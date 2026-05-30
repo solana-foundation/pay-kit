@@ -12,8 +12,8 @@ pub use session::{
     DEFAULT_SESSION_EXPIRES_AT,
 };
 pub use subscription::{
-    ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
-    SubscriptionRequest,
+    ActivatePayload, SubscriptionAction, SubscriptionMethodDetails, SubscriptionPeriodUnit,
+    SubscriptionReceiptExtensions, SubscriptionRequest,
 };
 
 /// Convert a human-readable amount to base units.

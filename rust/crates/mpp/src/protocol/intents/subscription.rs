@@ -180,6 +180,126 @@ pub struct SubscriptionReceiptExtensions {
     pub activation_signature: Option<String>,
 }
 
+/// Typed `methodDetails` payload for the Solana subscription intent.
+///
+/// Serialised in camelCase per the spec wire form. The server (which
+/// builds + HMAC-pins it into the 402 challenge) and the client (which
+/// reads it back to construct the activation transaction) both use this
+/// struct directly — no manual JSON pokery.
+///
+/// The `expected_*` and `plan_*` server-extension fields mirror the
+/// immutable Plan terms the on-chain `Subscribe` instruction needs in
+/// its `SubscribeData` payload. Including them in the challenge lets the
+/// client build a settle-able activation transaction without an extra
+/// RPC roundtrip to fetch the Plan account. When absent the client falls
+/// back to RPC.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionMethodDetails {
+    /// Base58 of the on-chain `Plan` PDA (the spec's `externalId`).
+    pub plan_id: String,
+    /// Base58 of the SPL token mint. MUST equal the on-chain `plan.mint`.
+    pub mint: String,
+    /// Base58 of the SPL Token / Token-2022 program id used for the
+    /// per-period transfers.
+    pub token_program: String,
+    /// Decimal precision of the mint. Server-populated; clients use it
+    /// to render the amount in human form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+    /// Base58 of the server's puller pubkey. MUST be `plan.owner` or
+    /// appear in `plan.pullers`.
+    pub puller: String,
+    /// Base58 of the Plan's owner (the merchant who published it). The
+    /// on-chain `Subscribe` instruction needs this as its second
+    /// account meta and as part of the Plan PDA derivation. When unset,
+    /// the client falls back to `puller` (correct only when the
+    /// merchant published the plan AND is its own puller).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merchant: Option<String>,
+    /// Base58 of the recipient wallet — must be in `plan.destinations`
+    /// (or the whitelist must be empty). The transfer_subscription
+    /// instruction routes the first-period charge to this wallet's
+    /// associated token account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// The per-period charge amount in base units (decimal string).
+    /// Mirrors `SubscriptionRequest.amount` so the activation builder
+    /// can fill `SubscribeData.expected_amount` + `TransferData.amount`
+    /// without re-parsing the parent request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+    /// Subscriptions program ID. Omit for the canonical mainnet
+    /// deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
+    /// Solana network slug — `mainnet`, `mainnet-beta`, `devnet`,
+    /// `testnet`, `localnet`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// When `true`, the server pays activation transaction fees.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fee_payer: bool,
+    /// Base58 of the fee-payer pubkey. REQUIRED when `fee_payer` is
+    /// true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer_key: Option<String>,
+    /// Pre-fetched recent blockhash. When set, the client skips its own
+    /// `getLatestBlockhash` RPC call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_blockhash: Option<String>,
+    /// On-chain `plan_id` (u64) the program reads from `SubscribeData`.
+    /// The string `plan_id` above is the PDA derived from this number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id_numeric: Option<u64>,
+    /// Plan PDA's bump seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bump: Option<u8>,
+    /// Plan's `period_hours` — `period_count * 24` for day, `* 168` for
+    /// week.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_period_hours: Option<u64>,
+    /// Plan's `created_at` unix timestamp (set on-chain by the program
+    /// at Plan creation, read back into the YAML by `pay server start`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_created_at: Option<i64>,
+}
+
+impl SubscriptionMethodDetails {
+    /// Decode from the parsed `methodDetails` JSON value.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, Error> {
+        serde_json::from_value(value.clone())
+            .map_err(|e| Error::Other(format!("Invalid methodDetails: {e}")))
+    }
+
+    /// Validate the spec's REQUIRED fields are non-empty. The struct
+    /// can be deserialised with missing required fields (serde will
+    /// supply defaults), so callers that need a settle-able activation
+    /// must run this check.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.plan_id.is_empty() {
+            return Err(Error::Other("methodDetails.planId is required".into()));
+        }
+        if self.mint.is_empty() {
+            return Err(Error::Other("methodDetails.mint is required".into()));
+        }
+        if self.token_program.is_empty() {
+            return Err(Error::Other(
+                "methodDetails.tokenProgram is required".into(),
+            ));
+        }
+        if self.puller.is_empty() {
+            return Err(Error::Other("methodDetails.puller is required".into()));
+        }
+        if self.fee_payer && self.fee_payer_key.is_none() {
+            return Err(Error::Other(
+                "methodDetails.feePayerKey is required when feePayer is true".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

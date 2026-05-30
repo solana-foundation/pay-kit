@@ -35,7 +35,7 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::Transaction;
 
-use crate::client::SubscriptionMethodDetails;
+use crate::protocol::intents::SubscriptionMethodDetails;
 use crate::error::Error;
 use crate::expires;
 use crate::program::subscriptions::{
