@@ -452,8 +452,8 @@ func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	var perr *paykit.PaymentError
-	if !errorsAs(err, &perr) || perr.Code != "charge_request_mismatch" {
-		t.Errorf("expected charge_request_mismatch, got %v", err)
+	if !errorsAs(err, &perr) || perr.Code != "invalid_exact_svm_payload_recipient_mismatch" {
+		t.Errorf("expected invalid_exact_svm_payload_recipient_mismatch, got %v", err)
 	}
 }
 
