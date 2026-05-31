@@ -140,8 +140,41 @@ func (m *Mpp) Charge(ctx context.Context, amount string) (core.PaymentChallenge,
 	return m.ChargeWithOptions(ctx, amount, ChargeOptions{})
 }
 
+// validateChargeOptions rejects an ataCreationRequired split when the
+// configured currency is SOL or is a stablecoin symbol rather than a raw
+// SPL mint address, matching rust validate_charge_options
+// (charge.rs:307-335). Idempotent ATA creation is only meaningful for an
+// SPL token whose mint is known to the verifier.
+func (m *Mpp) validateChargeOptions(options ChargeOptions) error {
+	hasATACreation := false
+	for _, split := range options.Splits {
+		if split.AtaCreationRequired != nil && *split.AtaCreationRequired {
+			hasATACreation = true
+			break
+		}
+	}
+	if !hasATACreation {
+		return nil
+	}
+	if isNativeSOL(m.currency) {
+		return core.NewError(core.ErrCodeInvalidPayload, "ataCreationRequired requires an SPL token currency")
+	}
+	// resolve_stablecoin_mint(currency) == currency means the currency is
+	// already a raw mint address (symbols resolve to a different mint).
+	if paycore.ResolveMint(m.currency, m.network) != m.currency {
+		return core.NewError(core.ErrCodeInvalidPayload, "ataCreationRequired requires currency to be an SPL token mint address")
+	}
+	if _, err := solana.PublicKeyFromBase58(m.currency); err != nil {
+		return core.NewError(core.ErrCodeInvalidPayload, fmt.Sprintf("ataCreationRequired requires a valid SPL token mint address: %v", err))
+	}
+	return nil
+}
+
 // ChargeWithOptions creates a challenge with optional fields.
 func (m *Mpp) ChargeWithOptions(ctx context.Context, amount string, options ChargeOptions) (core.PaymentChallenge, error) {
+	if err := m.validateChargeOptions(options); err != nil {
+		return core.PaymentChallenge{}, err
+	}
 	baseUnits, err := intents.ParseUnits(amount, m.decimals)
 	if err != nil {
 		return core.PaymentChallenge{}, err
@@ -389,6 +422,15 @@ func (m *Mpp) verifyTransaction(
 	if err != nil {
 		return core.Receipt{}, err
 	}
+	// Accept legacy and v0 transactions with only static account keys, but
+	// reject a v0 message carrying address lookup tables: the verifier
+	// cannot resolve ALT-referenced accounts locally, so a transfer hidden
+	// behind a lookup table could not be checked. Mirrors rust
+	// reject_address_lookup_tables (charge.rs:1213-1225), called from the
+	// pre-broadcast verification path.
+	if len(tx.Message.AddressTableLookups) > 0 {
+		return core.Receipt{}, core.NewError(core.ErrCodeInvalidPayload, "v0 transactions with address lookup tables are not supported")
+	}
 	if err := validateComputeBudgetInstructions(tx); err != nil {
 		return core.Receipt{}, err
 	}
@@ -471,21 +513,25 @@ func (m *Mpp) verifySignature(
 	if payload.Signature == "" {
 		return core.Receipt{}, core.NewError(core.ErrCodeMissingSignature, "missing signature in credential payload")
 	}
+	signature, err := solana.SignatureFromBase58(payload.Signature)
+	if err != nil {
+		return core.Receipt{}, err
+	}
+	// Push mode references an already-landed transaction, so verify it
+	// on-chain BEFORE consuming the replay marker, and never delete the
+	// marker once consumed. Mirrors rust verify_push -> consume_signature
+	// (charge.rs:563-595): a verify failure must not burn the marker
+	// (nothing was committed), and a successful verify must consume it
+	// durably so the same landed signature cannot be replayed.
+	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
+		return core.Receipt{}, err
+	}
 	inserted, err := m.store.PutIfAbsent(ctx, consumedPrefix+payload.Signature, true)
 	if err != nil {
 		return core.Receipt{}, err
 	}
 	if !inserted {
 		return core.Receipt{}, core.NewError(core.ErrCodeSignatureConsumed, "transaction signature already consumed")
-	}
-	signature, err := solana.SignatureFromBase58(payload.Signature)
-	if err != nil {
-		_ = m.store.Delete(context.WithoutCancel(ctx), consumedPrefix+payload.Signature)
-		return core.Receipt{}, err
-	}
-	if err := m.verifyOnChain(ctx, signature, request, details); err != nil {
-		_ = m.store.Delete(context.WithoutCancel(ctx), consumedPrefix+payload.Signature)
-		return core.Receipt{}, err
 	}
 	return successReceipt(payload.Signature, credential.Challenge.ID, request.ExternalID), nil
 }
@@ -538,6 +584,12 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 					continue
 				}
 				if transfer.GetRecipientAccount().PublicKey.Equals(want.recipient) && *transfer.Lamports == want.amount {
+					// The configured fee payer must not fund the SOL payment
+					// transfer, matching rust verify_sol_transfer_instructions
+					// (charge.rs:1525-1528). Hard reject, not skip.
+					if fp := feePayerKey(details); fp != nil && transfer.GetFundingAccount().PublicKey.Equals(*fp) {
+						return core.NewError(core.ErrCodeInvalidPayload, "fee payer cannot fund the SOL payment transfer")
+					}
 					matched[index] = true
 					found = true
 					break
@@ -555,6 +607,17 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 		return validateInstructionAllowlist(tx, matched, allowlistParams{})
 	}
 	resolvedMint := paycore.ResolveMint(currency, details.Network)
+	// ataCreationRequired splits demand a raw SPL mint-address currency:
+	// when any split required an ATA-create but the currency resolved to a
+	// different mint (i.e. it was a symbol), reject, matching the rust
+	// verify guard (charge.rs:1120-1124).
+	requiredOwners, err := requiredATAOwners(details.Splits)
+	if err != nil {
+		return err
+	}
+	if len(requiredOwners) > 0 && currency != resolvedMint {
+		return core.NewError(core.ErrCodeInvalidPayload, "ataCreationRequired requires currency to be an SPL token mint address")
+	}
 	mint := solana.MustPublicKeyFromBase58(resolvedMint)
 	expectedProgram := solana.TokenProgramID
 	tokenProgram := details.TokenProgram
@@ -598,6 +661,14 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 			if err != nil {
 				return err
 			}
+			var (
+				transferAmount uint64
+				transferMint   solana.PublicKey
+				transferDest   solana.PublicKey
+				transferSource solana.PublicKey
+				transferAuth   solana.PublicKey
+				transferDec    *uint8
+			)
 			if expectedProgram.Equals(solana.TokenProgramID) {
 				decoded, err := token.DecodeInstruction(accounts, []byte(compiled.Data))
 				if err != nil {
@@ -607,28 +678,54 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 				if !ok || transfer.Amount == nil {
 					continue
 				}
-				if !transfer.GetMintAccount().PublicKey.Equals(mint) {
+				transferAmount = *transfer.Amount
+				transferMint = transfer.GetMintAccount().PublicKey
+				transferDest = transfer.GetDestinationAccount().PublicKey
+				transferSource = transfer.GetSourceAccount().PublicKey
+				transferAuth = transfer.GetOwnerAccount().PublicKey
+				transferDec = transfer.Decimals
+			} else {
+				decoded, err := token2022.DecodeInstruction(accounts, []byte(compiled.Data))
+				if err != nil {
 					continue
 				}
-				if transfer.GetDestinationAccount().PublicKey.Equals(want.ata) && *transfer.Amount == want.amount {
-					matched[index] = true
-					found = true
-					break
+				transfer, ok := decoded.Impl.(*token2022.TransferChecked)
+				if !ok || transfer.Amount == nil {
+					continue
 				}
+				transferAmount = *transfer.Amount
+				transferMint = transfer.GetMintAccount().PublicKey
+				transferDest = transfer.GetDestinationAccount().PublicKey
+				transferSource = transfer.GetSourceAccount().PublicKey
+				transferAuth = transfer.GetOwnerAccount().PublicKey
+				transferDec = transfer.Decimals
+			}
+			if !transferMint.Equals(mint) || transferAmount != want.amount {
 				continue
 			}
-			decoded, err := token2022.DecodeInstruction(accounts, []byte(compiled.Data))
-			if err != nil {
+			// transferChecked decimals byte must match the challenge-pinned
+			// decimals, matching rust ix.data[9] guard (charge.rs:1623-1624).
+			if details.Decimals != nil && (transferDec == nil || *transferDec != *details.Decimals) {
 				continue
 			}
-			transfer, ok := decoded.Impl.(*token2022.TransferChecked)
-			if !ok || transfer.Amount == nil {
-				continue
+			// The configured fee payer must not authorize or fund the
+			// payment transfer, matching rust verify_spl_transfer_instructions
+			// (charge.rs:1642-1658). Both are hard rejects, not skips: a tx
+			// that routes payment authority/funding through the fee payer is
+			// malicious regardless of any other matching transfer.
+			if fp := feePayerKey(details); fp != nil {
+				if transferAuth.Equals(*fp) {
+					return core.NewError(core.ErrCodeInvalidPayload, "fee payer cannot authorize the SPL payment transfer")
+				}
+				feePayerATA, err := solanatx.FindAssociatedTokenAddressWithProgram(*fp, mint, expectedProgram)
+				if err != nil {
+					return err
+				}
+				if transferSource.Equals(feePayerATA) {
+					return core.NewError(core.ErrCodeInvalidPayload, "fee payer token account cannot fund the SPL payment transfer")
+				}
 			}
-			if !transfer.GetMintAccount().PublicKey.Equals(mint) {
-				continue
-			}
-			if transfer.GetDestinationAccount().PublicKey.Equals(want.ata) && *transfer.Amount == want.amount {
+			if transferDest.Equals(want.ata) {
 				matched[index] = true
 				found = true
 				break
@@ -644,10 +741,6 @@ func verifyTransfersAgainstChallenge(tx *solana.Transaction, amount uint64, curr
 	allowedOwners := make([]solana.PublicKey, 0, len(tokenExpected))
 	for _, want := range tokenExpected {
 		allowedOwners = append(allowedOwners, want.recipient)
-	}
-	requiredOwners, err := requiredATAOwners(details.Splits)
-	if err != nil {
-		return err
 	}
 	return validateInstructionAllowlist(tx, matched, allowlistParams{
 		expectedMint:         &mint,
