@@ -129,6 +129,22 @@ local function verify_confirmed_transaction(reference, tx, request, method_detai
   end
 
   local instructions = tx.transaction and tx.transaction.message and tx.transaction.message.instructions or {}
+  -- Include inner (CPI) instructions from the confirmed transaction meta.
+  -- Mirrors the Rust spine extract_parsed_instructions (charge.rs:2218-2230):
+  -- transfers / splits emitted through a CPI live in
+  -- meta.innerInstructions[*].instructions and must be visible to the
+  -- transfer matchers and the allowlist, otherwise a settled transaction
+  -- whose payment was made via CPI would fail to match.
+  if tx.meta and type(tx.meta.innerInstructions) == 'table' then
+    local combined = {}
+    for _, ix in ipairs(instructions) do combined[#combined + 1] = ix end
+    for _, group in ipairs(tx.meta.innerInstructions) do
+      for _, ix in ipairs(group.instructions or {}) do
+        combined[#combined + 1] = ix
+      end
+    end
+    instructions = combined
+  end
   if is_native_sol(request.currency) then
     verify_sol_transfers(instructions, request)
   else
