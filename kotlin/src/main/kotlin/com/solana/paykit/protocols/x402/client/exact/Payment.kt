@@ -269,7 +269,14 @@ fun buildPayment(
     val signerKey = PublicKey(signer.publicKeyBytes)
     val recipientKey = PublicKey.fromBase58(payTo)
 
-    val isNativeSol = asset.uppercase() == "SOL" || asset == "11111111111111111111111111111111"
+    // Native SOL is ONLY the case-insensitive symbol "SOL", matching the rust
+    // spine `is_native_sol` (types.rs:86-88, `currency.eq_ignore_ascii_case
+    // ("SOL")`). Any other value (including the System Program pubkey string
+    // "11111111111111111111111111111111") passes through as an SPL mint via
+    // resolve_mint, so it must NOT be treated as native SOL here. Treating the
+    // System Program string as native SOL would build a System transfer where
+    // rust builds an SPL transferChecked, diverging on the canonical wire.
+    val isNativeSol = asset.uppercase() == "SOL"
     if (isNativeSol) {
         // BigInteger overload encodes the full unsigned u64 range; the Long
         // overload would truncate amounts in [2^63, 2^64).

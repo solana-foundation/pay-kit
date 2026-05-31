@@ -493,6 +493,50 @@ class BuildPaymentTest {
     }
 
     @Test
+    fun systemProgramPubkeyIsTreatedAsSplNotNativeSol() {
+        // Regression for the System Program native-SOL divergence: native SOL is
+        // ONLY the case-insensitive symbol "SOL" (rust is_native_sol,
+        // types.rs:86-88). The System Program pubkey string
+        // "11111111111111111111111111111111" must pass through as an SPL mint
+        // (rust resolve_mint passthrough), so the client builds an SPL
+        // transferChecked (disc 0x0c), NOT a System transfer (disc 0x02).
+        // Before the fix Kotlin treated this string as native SOL and built a
+        // System transfer, diverging from the rust verifier on the wire.
+        val systemProgram = "11111111111111111111111111111111"
+        val offer = X402AcceptsEntry(
+            scheme = "exact",
+            network = Network.SOLANA_DEVNET,
+            asset = systemProgram,
+            amount = "1000",
+            payTo = devnetRecipient,
+            decimals = 6,
+            tokenProgram = Programs.TOKEN_PROGRAM,
+        )
+        val envelope = buildPayment(signer, offer, fixedBlockhash, { "0011223344556677" })
+        val raw = decodeTransaction(envelope.payload.transaction!!)
+        // SPL transferChecked data begins with disc 0x0c then the u64 LE amount
+        // (1000 = 0xE8 0x03 ...). Its presence proves the SPL branch was taken.
+        val splTransferChecked = byteArrayOf(
+            0x0c, 0xE8.toByte(), 0x03, 0, 0, 0, 0, 0, 0,
+        )
+        val isSpl = raw.indices.any { idx ->
+            idx + splTransferChecked.size <= raw.size &&
+                raw.copyOfRange(idx, idx + splTransferChecked.size).contentEquals(splTransferChecked)
+        }
+        assertTrue(isSpl, "System Program pubkey asset must build an SPL transferChecked, not a System transfer")
+        // The System transfer disc + amount (0x02 0x00 0x00 0x00 + u64 LE 1000)
+        // must NOT appear: confirms it was not routed to the native-SOL branch.
+        val systemTransfer = byteArrayOf(
+            0x02, 0x00, 0x00, 0x00, 0xE8.toByte(), 0x03, 0, 0, 0, 0, 0, 0,
+        )
+        val isSystem = raw.indices.any { idx ->
+            idx + systemTransfer.size <= raw.size &&
+                raw.copyOfRange(idx, idx + systemTransfer.size).contentEquals(systemTransfer)
+        }
+        assertTrue(!isSystem, "System Program pubkey asset must NOT build a native System transfer")
+    }
+
+    @Test
     fun extraAliasUsedWhenTopLevelAbsent() {
         // When the top-level field is absent the nested extra.* alias is the
         // fallback, so a server emitting only the nested shape still resolves.
