@@ -114,7 +114,14 @@ module Mpp
         end
 
         def amount_from(split, label)
-          Integer(split.fetch("amount"), 10)
+          value = Integer(split.fetch("amount"), 10)
+          # Split amounts are base-unit u64 on the Rust spine; reject
+          # overflow here so it surfaces as an explicit invalid-amount error
+          # rather than a downstream "No matching transfer" failure. Mirrors
+          # `Intents::ChargeRequest::U64_MAX`.
+          raise VerificationError, "#{label} exceeds the maximum u64 amount" if value > Intents::ChargeRequest::U64_MAX
+
+          value
         rescue KeyError, ArgumentError
           raise VerificationError, "#{label} must be an integer string"
         end

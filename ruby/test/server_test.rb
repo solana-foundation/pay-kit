@@ -336,6 +336,21 @@ class TransactionVerifierTest < Minitest::Test
     assert_match(/split amounts exceed/, result.reason)
   end
 
+  # Rust spine parity (rust/crates/mpp/src/protocol/intents/charge.rs:53-58):
+  # split amounts are base-unit u64. A split amount above u64::MAX must
+  # surface as an explicit invalid-amount error rather than a downstream
+  # "No matching transfer" failure.
+  def test_rejects_split_amount_above_u64_max
+    tx = tx_base64(
+      account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
+      instructions: [compiled_instruction(2, [0, 1], u32(2) + u64(1000))]
+    )
+    overflow_split = [{"recipient" => pubkey(3), "amount" => (2**64).to_s}]
+    result = @verifier.verify_transaction_payload(tx, charge_request(method_details: {"splits" => overflow_split}))
+    refute result.ok?
+    assert_match(/exceeds the maximum u64 amount/, result.reason)
+  end
+
   def test_rejects_fee_payer_missing_key_and_mismatch
     tx = tx_base64(
       account_keys: [pubkey(1), pubkey(2), PROGRAMS::SYSTEM_PROGRAM],
