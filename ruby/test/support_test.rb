@@ -31,6 +31,24 @@ class SupportTest < Minitest::Test
     assert_nil ::PayCore::Solana::Mints.symbol_for("unknown", "localnet")
   end
 
+  # Rust spine parity (rust/crates/mpp/src/protocol/solana.rs:19-26 and
+  # :45-60): testnet stablecoin mints alias the devnet addresses
+  # (USDC_TESTNET == USDC_DEVNET, etc.). Before the fix `resolve(_, "testnet")`
+  # fell back to the mainnet mint, so a testnet-configured server verified
+  # SPL transferChecked against the mainnet mint while a rust client built
+  # against the devnet mint.
+  def test_testnet_stablecoin_mints_alias_devnet
+    devnet_usdc = ::PayCore::Solana::Mints.resolve("USDC", "devnet")
+    assert_equal devnet_usdc, ::PayCore::Solana::Mints.resolve("USDC", "testnet")
+    refute_equal "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      ::PayCore::Solana::Mints.resolve("USDC", "testnet")
+
+    assert_equal ::PayCore::Solana::Mints.resolve("USDG", "devnet"),
+      ::PayCore::Solana::Mints.resolve("USDG", "testnet")
+    assert_equal ::PayCore::Solana::Mints.resolve("PYUSD", "devnet"),
+      ::PayCore::Solana::Mints.resolve("PYUSD", "testnet")
+  end
+
   def test_base58_round_trip_and_invalid_character
     encoded = ::PayCore::Solana::Base58.encode("\x00\x00abc".b)
     assert_equal "\x00\x00abc".b, ::PayCore::Solana::Base58.decode(encoded)

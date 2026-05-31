@@ -58,9 +58,23 @@ module Mpp
           }.compact
         end
 
-        # Parse the base-unit amount as an Integer.
+        # Largest value representable by an unsigned 64-bit integer. The
+        # Rust spine stores charge amounts as a base-unit `u64`
+        # (`rust/crates/mpp/src/protocol/intents/charge.rs:53-58`,
+        # `parse_amount` -> `u64`) and surfaces an `Invalid amount` error on
+        # overflow rather than letting an out-of-range value reach the
+        # on-chain transfer matcher.
+        U64_MAX = (2**64) - 1
+
+        # Parse the base-unit amount as an Integer, rejecting values that do
+        # not fit in a u64 so overflow surfaces as an explicit invalid-amount
+        # error instead of a downstream "No matching transfer" failure.
+        # Mirrors the Rust spine `ChargeRequest::parse_amount`.
         def amount_i
-          Integer(amount, 10)
+          value = Integer(amount, 10)
+          raise ArgumentError, "invalid amount: #{amount}" if value > U64_MAX
+
+          value
         rescue ArgumentError
           raise ArgumentError, "invalid amount: #{amount}"
         end

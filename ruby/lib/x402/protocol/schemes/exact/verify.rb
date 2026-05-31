@@ -149,7 +149,17 @@ module X402
           # (spine verify.rs:380-410).
           def verify_transfer_instruction!(instruction, account_keys, requirement, managed_signers)
             program = instruction_program(instruction, account_keys)
-            allowed_programs = [Exact.base58_decode(Exact.string_extra(requirement, "tokenProgram")), Exact.base58_decode(Exact::TOKEN_2022_PROGRAM)]
+            # Rule 11: bind to the canonical SPL token program set, NOT to
+            # `extra.tokenProgram`. Mirrors the Rust spine
+            # `rust/crates/x402/src/protocol/schemes/exact/verify.rs:371-375`
+            # which accepts either Token or Token-2022 by the ACTUAL
+            # instruction program and never derives the gate from
+            # `extra.tokenProgram`. A client that omits `extra.tokenProgram`
+            # (or pins a different-but-canonical program than the offer's
+            # default) is still accepted as long as the on-chain transfer
+            # uses one of the two canonical programs; the destination ATA is
+            # re-derived below using this actual program, so it stays bound.
+            allowed_programs = [Exact.base58_decode(Exact::Mints::TOKEN_PROGRAM), Exact.base58_decode(Exact::TOKEN_2022_PROGRAM)]
             unless allowed_programs.include?(program)
               raise "invalid_exact_svm_payload_no_transfer_instruction"
             end

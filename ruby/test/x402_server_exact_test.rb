@@ -251,6 +251,36 @@ class X402ServerExactTest < Minitest::Test
     assert_empty sent
   end
 
+  # Rust spine parity (rust/crates/x402/src/protocol/schemes/exact/
+  # verify.rs:371-375): the transfer program-id gate binds to the canonical
+  # SPL token program set {Token, Token-2022} by the ACTUAL instruction
+  # program, NOT to `extra.tokenProgram`. A credential whose offer omits
+  # `extra.tokenProgram` but whose on-chain transfer uses the canonical
+  # Token program must still verify. Before the fix the verifier read
+  # `extra.tokenProgram` as required and raised on its absence.
+  def test_verifier_accepts_transfer_without_extra_token_program
+    state = build_state
+    requirement = X402::Server::Exact.exact_requirement(state)
+    transaction = Base64.decode64(
+      JSON.parse(Base64.decode64(build_payment_header(state)))
+        .fetch("payload").fetch("transaction")
+    )
+
+    requirement_without_token_program = Marshal.load(Marshal.dump(requirement))
+    requirement_without_token_program.fetch("extra").delete("tokenProgram")
+
+    transfer = X402::Protocol::Schemes::Exact::Verifier.verify(
+      transaction,
+      requirement_without_token_program,
+      managed_signers: [state.fee_payer.raw_public_key]
+    )
+
+    assert_equal(
+      X402::Protocol::Schemes::Exact.base58_decode(::PayCore::Solana::Mints::TOKEN_PROGRAM),
+      transfer.fetch(:token_program)
+    )
+  end
+
   def test_settlement_rejects_fee_payer_as_transfer_authority_before_sending
     sent = []
     state = build_state(sender: ->(_state, transaction) {
