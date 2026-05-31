@@ -39,13 +39,13 @@ local function u64_le_from_decimal(decimal)
   local digits = decimal
   local out = {}
   for _ = 1, 8 do
-    local remainder, quotient, carry = 0, {}, 0
+    local quotient, carry = {}, 0
     for i = 1, #digits do
       local cur = carry * 10 + tonumber(digits:sub(i, i))
       quotient[#quotient + 1] = tostring(math.floor(cur / 256))
       carry = cur % 256
     end
-    remainder = carry
+    local remainder = carry
     out[#out + 1] = string.char(remainder)
     digits = table.concat(quotient):gsub('^0+', '')
     if digits == '' then digits = '0' end

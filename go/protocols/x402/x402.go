@@ -174,7 +174,6 @@ type rawAcceptsEntry struct {
 	FeePayer          *bool           `json:"feePayer"`
 	FeePayerKey       string          `json:"feePayerKey"`
 	Extra             *rawExtra       `json:"extra"`
-	raw               json.RawMessage `json:"-"`
 }
 
 // rawExtra is the literal extra.* object. feePayer is decoded into a
