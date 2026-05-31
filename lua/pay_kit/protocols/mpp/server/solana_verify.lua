@@ -1,6 +1,7 @@
 local uint = require('pay_kit.util.uint')
 local protocol = require('pay_kit.solana.mints')
 local error_codes = require('pay_kit.protocol.core.error_codes')
+local ata = require('pay_kit.solana.ata')
 
 local M = {}
 
@@ -367,6 +368,24 @@ function verify_instruction_allowlist(instructions, request, method_details)
      and method_details.feePayerKey ~= '' then
     fee_payer_pubkey = method_details.feePayerKey
   end
+  -- When a fee payer is configured, derive its associated token account so
+  -- a transferChecked that SOURCES funds from the fee-payer's ATA (even
+  -- under a different authority) is rejected. Mirrors the Rust spine
+  -- (charge.rs:1649-1657 "Fee payer token account cannot fund the SPL
+  -- payment transfer"). The authority guard below catches the
+  -- authority==fee_payer shape; this catches the source-ATA shape.
+  local fee_payer_atas = nil
+  if fee_payer_pubkey ~= nil and request and request.currency
+     and not is_native_sol(request.currency) then
+    local mint = protocol.resolve_mint(request.currency, method_details.network)
+    if mint then
+      fee_payer_atas = {}
+      for _, prog in ipairs({TOKEN_PROGRAM, TOKEN_2022_PROGRAM}) do
+        local ok, derived = pcall(ata.derive, fee_payer_pubkey, mint, prog)
+        if ok and derived then fee_payer_atas[derived] = true end
+      end
+    end
+  end
   for _, ix in ipairs(instructions or {}) do
     local program = resolve_program(ix)
     if not allowed[program] then
@@ -395,6 +414,12 @@ function verify_instruction_allowlist(instructions, request, method_details)
         end
         if info.multisigAuthority == fee_payer_pubkey then
           error('payment_invalid: fee payer cannot authorize the SPL payment transfer')
+        end
+        if fee_payer_atas and info.source and fee_payer_atas[info.source] then
+          -- Mirrors rust ``verify_spl_transfer_instructions`` source-ATA
+          -- guard: the fee-payer's own token account cannot fund the
+          -- payment, even when the transfer authority is some other key.
+          error('payment_invalid: fee payer token account cannot fund the SPL payment transfer')
         end
       end
     end
