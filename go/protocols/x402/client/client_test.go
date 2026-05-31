@@ -37,8 +37,11 @@ func entry(asset, amount, network string) x402.AcceptsEntry {
 		Amount:   amount,
 		PayTo:    testutil.NewPrivateKey().PublicKey().String(),
 		Extra: x402.Extra{
-			FeePayer:        testutil.NewPrivateKey().PublicKey().String(),
+			FeePayer:        true,
+			FeePayerSet:     true,
+			FeePayerKey:     testutil.NewPrivateKey().PublicKey().String(),
 			Decimals:        6,
+			DecimalsSet:     true,
 			TokenProgram:    solana.TokenProgramID.String(),
 			Memo:            "test",
 			RecentBlockhash: blockhash(),
@@ -134,7 +137,7 @@ func TestBuildPaymentHeaderSPL(t *testing.T) {
 	}
 	// Fee payer (account 0) is the server's advertised fee payer, left
 	// unsigned for the server to cosign.
-	feePayer := solana.MustPublicKeyFromBase58(e.Extra.FeePayer)
+	feePayer := solana.MustPublicKeyFromBase58(e.Extra.FeePayerKey)
 	if !tx.Message.AccountKeys[0].Equals(feePayer) {
 		t.Errorf("fee payer: got %s want %s", tx.Message.AccountKeys[0], feePayer)
 	}
@@ -149,7 +152,8 @@ func TestBuildPaymentHeaderSPL(t *testing.T) {
 func TestBuildPaymentHeaderSOL(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	e := entry("", "1000000", mainnetCAIP2) // empty Asset => native SOL
-	e.Extra.FeePayer = ""                   // self-paid
+	e.Extra.FeePayer = false                // self-paid
+	e.Extra.FeePayerKey = ""
 
 	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
 	if err != nil {
@@ -281,7 +285,7 @@ func TestBuildTransactionErrorPaths(t *testing.T) {
 		"bad recipient":     func(e *x402.AcceptsEntry) { e.PayTo = "!!!" },
 		"bad mint":          func(e *x402.AcceptsEntry) { e.Asset = "!!!" },
 		"bad token program": func(e *x402.AcceptsEntry) { e.Extra.TokenProgram = "!!!" },
-		"bad fee payer":     func(e *x402.AcceptsEntry) { e.Extra.FeePayer = "!!!" },
+		"bad fee payer":     func(e *x402.AcceptsEntry) { e.Extra.FeePayerKey = "!!!" },
 	}
 	for name, mutate := range cases {
 		e := entry(mint, "100000", mainnetCAIP2)
