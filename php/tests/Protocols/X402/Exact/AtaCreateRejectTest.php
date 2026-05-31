@@ -155,6 +155,23 @@ final class AtaCreateRejectTest extends TestCase
         $this->assertSame(100000, $result['amount']);
     }
 
+    public function testOfferWithoutExtraTokenProgramStillVerifies(): void
+    {
+        // Rule 11 transfer-program binding. Rust derives the program-id gate
+        // from the actual transfer instruction (verify.rs:373), accepting any
+        // canonical Token / Token-2022 transfer; it does NOT require a
+        // seller-pinned extra.tokenProgram. An offer that omits it must still
+        // verify a real Token-program transfer rather than rejecting with
+        // missing_extra_tokenProgram.
+        [$tx, $req] = $this->buildTransaction([]);
+        unset($req['extra']['tokenProgram']);
+
+        $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
+
+        $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
+        $this->assertSame(100000, $result['amount']);
+    }
+
     public function testAtaCreateOptionalInstructionRejected(): void
     {
         // An Associated-Token-Program create instruction must NOT be an
