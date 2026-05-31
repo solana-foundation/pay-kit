@@ -477,7 +477,7 @@ class BuildPaymentTest {
     }
 
     @Test
-    fun effectiveAssetPrefersTopLevelAsset() {
+    fun effectiveAssetPrefersCurrencyOverAsset() {
         val offer = X402AcceptsEntry(
             scheme = "exact",
             network = Network.SOLANA_DEVNET,
@@ -486,8 +486,10 @@ class BuildPaymentTest {
             amount = "1000",
             payTo = devnetRecipient,
         )
-        // Top-level asset wins over the currency alias.
-        assertEquals(Mints.USDC_DEVNET, offer.effectiveAsset)
+        // `currency` wins over `asset` when both are present, matching the rust
+        // spine `currency.or_else(asset)` (types.rs:340-342). Before the parity
+        // fix Kotlin used `asset ?: currency` and selected the wrong mint here.
+        assertEquals(Mints.USDT_MAINNET, offer.effectiveAsset)
     }
 
     @Test

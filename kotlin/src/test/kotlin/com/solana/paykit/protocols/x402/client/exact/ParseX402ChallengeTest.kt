@@ -5,6 +5,7 @@ import com.solana.paykit.paycore.Network
 import com.solana.paykit.paycore.Programs
 import com.solana.paykit.protocols.x402.exact.effectiveAsset
 import com.solana.paykit.protocols.x402.exact.effectiveDecimals
+import com.solana.paykit.protocols.x402.exact.effectivePayTo
 import com.solana.paykit.protocols.x402.exact.effectiveRecentBlockhash
 import com.solana.paykit.protocols.x402.exact.effectiveTokenProgram
 import java.util.Base64
@@ -300,5 +301,47 @@ class ParseX402ChallengeTest {
         val result = parseX402Challenge(emptyMap(), body, ChallengeSelection())
         assertNotNull(result)
         assertEquals("123", result.maxAmountRequired)
+    }
+
+    // ── Field precedence (rust spine parity) ───────────────────────────────────
+
+    @Test
+    fun recipientWinsOverPayToWhenBothPresent() {
+        // Rust deserializes the destination as `recipient.or_else(payTo)`
+        // (types.rs:334-336): a conflicting top-level `recipient` WINS. The
+        // prior Kotlin precedence (`payTo ?: recipient`) selected the wrong
+        // destination on this wire.
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}","amount":"1","asset":"SOL","recipient":"RECIPIENT_WINS","payTo":"PAYTO_LOSES","protocol":"x402"}]}"""
+        val result = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals("RECIPIENT_WINS", result.effectivePayTo)
+    }
+
+    @Test
+    fun payToUsedWhenRecipientAbsent() {
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}","amount":"1","asset":"SOL","payTo":"PAYTO_ONLY","protocol":"x402"}]}"""
+        val result = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals("PAYTO_ONLY", result.effectivePayTo)
+    }
+
+    @Test
+    fun currencyWinsOverAssetWhenBothPresent() {
+        // Rust deserializes the mint as `currency.or_else(asset)`
+        // (types.rs:340-342): a conflicting top-level `currency` WINS. The
+        // prior Kotlin precedence (`asset ?: currency`) selected the wrong
+        // mint on this wire.
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}","amount":"1","currency":"CURRENCY_WINS","asset":"ASSET_LOSES","payTo":"A","protocol":"x402"}]}"""
+        val result = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals("CURRENCY_WINS", result.effectiveAsset)
+    }
+
+    @Test
+    fun assetUsedWhenCurrencyAbsent() {
+        val body = """{"accepts":[{"scheme":"exact","network":"${Network.SOLANA_DEVNET}","amount":"1","asset":"ASSET_ONLY","payTo":"A","protocol":"x402"}]}"""
+        val result = parseX402Challenge(emptyMap(), body, ChallengeSelection())
+        assertNotNull(result)
+        assertEquals("ASSET_ONLY", result.effectiveAsset)
     }
 }

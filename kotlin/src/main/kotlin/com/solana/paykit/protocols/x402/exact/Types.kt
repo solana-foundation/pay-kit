@@ -63,17 +63,25 @@ data class X402AcceptsEntry(
     @Transient val raw: JsonElement? = null,
 )
 
-/** Effective recipient: prefers ``payTo``, falls back to ``recipient``. */
-val X402AcceptsEntry.effectivePayTo: String? get() = payTo ?: recipient
+/**
+ * Effective recipient: prefers ``recipient``, falls back to ``payTo``.
+ *
+ * ``recipient ?: payTo`` — the rust spine deserializes the destination as
+ * ``recipient.or_else(payTo)`` (types.rs:334-336), so a conflicting top-level
+ * ``recipient`` field WINS over ``payTo``. Matching this keeps Kotlin and the
+ * canonical verifier selecting the same recipient on the same wire.
+ */
+val X402AcceptsEntry.effectivePayTo: String? get() = recipient ?: payTo
 
 /**
- * Effective mint: top-level ``asset`` wins; ``currency`` is the fallback.
+ * Effective mint: top-level ``currency`` wins; ``asset`` is the fallback.
  *
- * ``asset ?: currency`` — the rust spine normalizes the canonical mint onto
- * the top-level ``asset`` field, so it takes priority over the aliased
- * ``currency`` fallback.
+ * ``currency ?: asset`` — the rust spine deserializes the mint as
+ * ``currency.or_else(asset)`` (types.rs:340-342), so a conflicting top-level
+ * ``currency`` field WINS over ``asset``. Matching this keeps Kotlin and the
+ * canonical verifier selecting the same mint on the same wire.
  */
-val X402AcceptsEntry.effectiveAsset: String? get() = asset ?: currency
+val X402AcceptsEntry.effectiveAsset: String? get() = currency ?: asset
 
 /**
  * Effective token program: prefers the TOP-LEVEL ``tokenProgram``, then
