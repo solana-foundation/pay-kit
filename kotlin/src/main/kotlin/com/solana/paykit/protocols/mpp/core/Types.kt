@@ -58,15 +58,25 @@ data class ChallengeEcho(
     val opaque: String? = null,
 )
 
-/** Solana charge request payload encoded in the challenge `request` field. */
+/**
+ * Solana charge request payload encoded in the challenge `request` field.
+ *
+ * `recipient` and `methodDetails` are optional on the wire, matching the rust
+ * spine `ChargeRequest` (charge.rs:27-40, both `Option<...>` with
+ * `skip_serializing_if = "Option::is_none"`). The client defaults a missing
+ * `methodDetails` (rust `unwrap_or_default`, charge.rs:203-209) and only
+ * errors on a missing `recipient` when it is actually needed to build the
+ * transaction (rust charge.rs:211-214). Requiring both at deserialization
+ * would reject challenges the rust client decodes.
+ */
 @Serializable
 data class ChargeRequest(
     val amount: String,
     val currency: String,
-    val recipient: String,
+    val recipient: String? = null,
     val description: String? = null,
     val externalId: String? = null,
-    val methodDetails: SolanaChargeMethodDetails,
+    val methodDetails: SolanaChargeMethodDetails? = null,
 )
 
 /** Solana-specific method details for a charge request. */

@@ -183,7 +183,11 @@ object Charge {
         if (totalAmount.signum() <= 0) {
             throw MppException.InvalidTransaction("Amount must be positive: ${request.amount}")
         }
-        val splits = request.methodDetails.splits ?: emptyList()
+        // Default a missing methodDetails to an empty block, matching the rust
+        // client (`charge.rs` `unwrap_or_default`): an absent methodDetails is
+        // a valid charge, not an error.
+        val md = request.methodDetails ?: SolanaChargeMethodDetails()
+        val splits = md.splits ?: emptyList()
         if (splits.size > MAX_SPLITS) {
             throw MppException.InvalidTransaction("Too many splits (got ${splits.size}, max $MAX_SPLITS)")
         }
@@ -211,8 +215,12 @@ object Charge {
         }
 
         val signerKey = walletPublicKey
-        val recipientKey = PublicKey.fromBase58(request.recipient)
-        val md = request.methodDetails
+        // Error on a missing recipient only at the point it is needed to build
+        // the transfer, matching the rust client (`charge.rs` "No recipient in
+        // challenge"). The wire type allows it to be absent.
+        val recipient = request.recipient
+            ?: throw MppException.InvalidTransaction("No recipient in challenge")
+        val recipientKey = PublicKey.fromBase58(recipient)
         val useFeePayer = md.feePayer == true && md.feePayerKey != null
         val feePayerKey = if (useFeePayer) PublicKey.fromBase58(md.feePayerKey ?: "") else null
 

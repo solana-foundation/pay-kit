@@ -33,9 +33,10 @@ class ChargeCredentialTest {
         assertEquals("charge", challenge.intent)
         assertEquals("1000", request.amount)
         assertEquals("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", request.currency)
-        assertEquals("localnet", request.methodDetails.network)
-        assertEquals("250", request.methodDetails.splits?.first()?.amount)
-        assertEquals(true, request.methodDetails.splits?.first()?.ataCreationRequired)
+        val methodDetails = request.methodDetails!!
+        assertEquals("localnet", methodDetails.network)
+        assertEquals("250", methodDetails.splits?.first()?.amount)
+        assertEquals(true, methodDetails.splits?.first()?.ataCreationRequired)
     }
 
     @Test

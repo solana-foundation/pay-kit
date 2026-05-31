@@ -17,7 +17,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
 
 /**
  * Functional tests for the full Charge build pipeline. These tests
@@ -290,7 +292,7 @@ class ChargeBuildTest {
         val transactionWithFp = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
         val transactionSolo = Charge.buildChargeTransaction(
             signer(),
-            request.copy(methodDetails = request.methodDetails.copy(feePayer = false, feePayerKey = null)),
+            request.copy(methodDetails = request.methodDetails!!.copy(feePayer = false, feePayerKey = null)),
             fixedBlockhash,
         )
         // Wire bytes should differ because the fee payer changes the
@@ -623,5 +625,56 @@ class ChargeBuildTest {
         )
         assertTrue(unsigned.size > 64)
         assertEquals(0x01.toByte(), unsigned[0])
+    }
+
+    // ── Optional recipient / methodDetails (rust spine parity) ──────────────────
+
+    @Test
+    fun decodesChargeRequestWithoutRecipientOrMethodDetails() {
+        // Rust ChargeRequest marks `recipient` and `methodDetails` Option<...>
+        // with skip_serializing_if (charge.rs:27-40), so a wire payload may omit
+        // both. Before the parity fix Kotlin required both at deserialization and
+        // rejected such a payload, which the rust client decodes. After the fix
+        // decoding succeeds with both fields null.
+        val wire = """{"amount":"1000","currency":"SOL"}"""
+        val request = Json.decodeFromString<ChargeRequest>(wire)
+        assertEquals("1000", request.amount)
+        assertEquals("SOL", request.currency)
+        assertNull(request.recipient)
+        assertNull(request.methodDetails)
+    }
+
+    @Test
+    fun buildDefaultsMissingMethodDetails() {
+        // Rust defaults a missing methodDetails (charge.rs:203-209
+        // `unwrap_or_default`); the charge still builds. A SOL charge with a
+        // recipient but no methodDetails must succeed (network defaults apply),
+        // not throw.
+        val request = ChargeRequest(
+            amount = "1000000",
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = null,
+        )
+        val transaction = Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        val raw = JBase64.getDecoder().decode(transaction)
+        assertTrue(raw.size > 64)
+    }
+
+    @Test
+    fun buildRejectsMissingRecipientWhenNeeded() {
+        // Rust errors on a missing recipient only at the point the transfer is
+        // built ("No recipient in challenge", charge.rs:211-214). Kotlin mirrors
+        // this: the wire type permits a null recipient, but building the
+        // transaction without one throws.
+        val request = ChargeRequest(
+            amount = "1000000",
+            currency = "SOL",
+            recipient = null,
+            methodDetails = SolanaChargeMethodDetails(network = "localnet"),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
     }
 }

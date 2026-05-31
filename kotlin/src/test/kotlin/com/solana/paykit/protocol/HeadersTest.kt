@@ -58,7 +58,7 @@ class HeadersTest {
             """{"recipient":"r2","amount":"40","label":"Tax","ataCreationRequired":true}]}}"""
         val req = Base64Url.encode(json.encodeToByteArray())
         val decoded = MppHeaders.decodeChargeRequest(req)
-        val splits = decoded.methodDetails.splits
+        val splits = decoded.methodDetails!!.splits
         assertNotNull(splits)
         assertEquals(2, splits.size)
         assertEquals("Vendor", splits[0].label)
