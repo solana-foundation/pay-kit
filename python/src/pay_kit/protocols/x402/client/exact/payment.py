@@ -196,9 +196,10 @@ def _attach_envelope_resource(
     requirement so the client can echo it back. Only fills the entry's
     ``resource``/``description`` when absent so a per-offer override wins.
     """
-    resource = envelope.get("resource")
-    if not isinstance(resource, dict):
+    resource_value = envelope.get("resource")
+    if not isinstance(resource_value, dict):
         return
+    resource = cast("dict[str, object]", resource_value)
     url = resource.get("url")
     if not isinstance(url, str) or url == "":
         return
