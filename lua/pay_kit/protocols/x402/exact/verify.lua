@@ -42,7 +42,11 @@ local MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
 -- was wrong and would have rejected wallet-injected Lighthouse guards.
 local LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
 local TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
-local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000
+-- Mirrors the Rust spine constant
+-- (rust/crates/x402/src/protocol/schemes/exact/verify.rs:17). The prior
+-- 50_000 value rejected canonical wallet transactions whose compute-unit
+-- price legitimately sits above 50k but under the protocol cap.
+local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
 
 -- Read a little-endian u64 from a binary string at offset 1-based.
 local function read_u64_le(s, start)
