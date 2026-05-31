@@ -1,6 +1,7 @@
 local uint = require('pay_kit.util.uint')
 local protocol = require('pay_kit.solana.mints')
 local error_codes = require('pay_kit.protocol.core.error_codes')
+local ata = require('pay_kit.solana.ata')
 
 local M = {}
 
@@ -128,6 +129,22 @@ local function verify_confirmed_transaction(reference, tx, request, method_detai
   end
 
   local instructions = tx.transaction and tx.transaction.message and tx.transaction.message.instructions or {}
+  -- Include inner (CPI) instructions from the confirmed transaction meta.
+  -- Mirrors the Rust spine extract_parsed_instructions (charge.rs:2218-2230):
+  -- transfers / splits emitted through a CPI live in
+  -- meta.innerInstructions[*].instructions and must be visible to the
+  -- transfer matchers and the allowlist, otherwise a settled transaction
+  -- whose payment was made via CPI would fail to match.
+  if tx.meta and type(tx.meta.innerInstructions) == 'table' then
+    local combined = {}
+    for _, ix in ipairs(instructions) do combined[#combined + 1] = ix end
+    for _, group in ipairs(tx.meta.innerInstructions) do
+      for _, ix in ipairs(group.instructions or {}) do
+        combined[#combined + 1] = ix
+      end
+    end
+    instructions = combined
+  end
   if is_native_sol(request.currency) then
     verify_sol_transfers(instructions, request)
   else
@@ -179,6 +196,12 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
   if program_id ~= TOKEN_PROGRAM and program_id ~= TOKEN_2022_PROGRAM then
     error_codes.raise(error_codes.PAYMENT_INVALID, 'unsupported token program: ' .. tostring(program_id))
   end
+  -- Pin the transferChecked decimals byte to the challenge-declared
+  -- decimals. Mirrors the Rust spine (charge.rs:1623-1624): a
+  -- transferChecked whose decimals disagree with the expected token is
+  -- not a match. nil means the route did not pin decimals, so any value
+  -- is accepted (rust `expected_decimals.is_some_and`).
+  local expected_decimals = method_details.decimals
   local transfers = {}
   for _, ix in ipairs(instructions or {}) do
     if ix.parsed and ix.parsed.type == 'transferChecked' and normalize_program_id(ix) == program_id then
@@ -189,7 +212,11 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
     local found = false
     for idx, ix in ipairs(transfers) do
       local info = instruction_info(ix)
-      if info and info.mint == mint and uint.compare(info.tokenAmount.amount, want.amount) == 0 then
+      local decimals_ok = expected_decimals == nil
+        or (info and info.tokenAmount
+            and tonumber(info.tokenAmount.decimals) == tonumber(expected_decimals))
+      if info and decimals_ok and info.mint == mint
+         and uint.compare(info.tokenAmount.amount, want.amount) == 0 then
         local account = hooks.fetch_token_account(info.destination)
         if account and account.owner == want.recipient and account.mint == mint then
           remove_at(transfers, idx)
@@ -357,6 +384,24 @@ function verify_instruction_allowlist(instructions, request, method_details)
      and method_details.feePayerKey ~= '' then
     fee_payer_pubkey = method_details.feePayerKey
   end
+  -- When a fee payer is configured, derive its associated token account so
+  -- a transferChecked that SOURCES funds from the fee-payer's ATA (even
+  -- under a different authority) is rejected. Mirrors the Rust spine
+  -- (charge.rs:1649-1657 "Fee payer token account cannot fund the SPL
+  -- payment transfer"). The authority guard below catches the
+  -- authority==fee_payer shape; this catches the source-ATA shape.
+  local fee_payer_atas = nil
+  if fee_payer_pubkey ~= nil and request and request.currency
+     and not is_native_sol(request.currency) then
+    local mint = protocol.resolve_mint(request.currency, method_details.network)
+    if mint then
+      fee_payer_atas = {}
+      for _, prog in ipairs({TOKEN_PROGRAM, TOKEN_2022_PROGRAM}) do
+        local ok, derived = pcall(ata.derive, fee_payer_pubkey, mint, prog)
+        if ok and derived then fee_payer_atas[derived] = true end
+      end
+    end
+  end
   for _, ix in ipairs(instructions or {}) do
     local program = resolve_program(ix)
     if not allowed[program] then
@@ -385,6 +430,12 @@ function verify_instruction_allowlist(instructions, request, method_details)
         end
         if info.multisigAuthority == fee_payer_pubkey then
           error('payment_invalid: fee payer cannot authorize the SPL payment transfer')
+        end
+        if fee_payer_atas and info.source and fee_payer_atas[info.source] then
+          -- Mirrors rust ``verify_spl_transfer_instructions`` source-ATA
+          -- guard: the fee-payer's own token account cannot fund the
+          -- payment, even when the transfer authority is some other key.
+          error('payment_invalid: fee payer token account cannot fund the SPL payment transfer')
         end
       end
     end
