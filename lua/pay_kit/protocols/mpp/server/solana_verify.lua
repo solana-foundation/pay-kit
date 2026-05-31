@@ -179,6 +179,12 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
   if program_id ~= TOKEN_PROGRAM and program_id ~= TOKEN_2022_PROGRAM then
     error_codes.raise(error_codes.PAYMENT_INVALID, 'unsupported token program: ' .. tostring(program_id))
   end
+  -- Pin the transferChecked decimals byte to the challenge-declared
+  -- decimals. Mirrors the Rust spine (charge.rs:1623-1624): a
+  -- transferChecked whose decimals disagree with the expected token is
+  -- not a match. nil means the route did not pin decimals, so any value
+  -- is accepted (rust `expected_decimals.is_some_and`).
+  local expected_decimals = method_details.decimals
   local transfers = {}
   for _, ix in ipairs(instructions or {}) do
     if ix.parsed and ix.parsed.type == 'transferChecked' and normalize_program_id(ix) == program_id then
@@ -189,7 +195,11 @@ function verify_spl_transfers(instructions, request, method_details, hooks)
     local found = false
     for idx, ix in ipairs(transfers) do
       local info = instruction_info(ix)
-      if info and info.mint == mint and uint.compare(info.tokenAmount.amount, want.amount) == 0 then
+      local decimals_ok = expected_decimals == nil
+        or (info and info.tokenAmount
+            and tonumber(info.tokenAmount.decimals) == tonumber(expected_decimals))
+      if info and decimals_ok and info.mint == mint
+         and uint.compare(info.tokenAmount.amount, want.amount) == 0 then
         local account = hooks.fetch_token_account(info.destination)
         if account and account.owner == want.recipient and account.mint == mint then
           remove_at(transfers, idx)
