@@ -7,8 +7,11 @@ from typing import Any
 from pay_kit._paycore.mints import derive_ata
 from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
     SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
     CredentialPayload,
     MethodDetails,
     default_token_program_for_currency,
@@ -97,14 +100,36 @@ async def build_charge_transaction(
 
     details = method_details or MethodDetails()
     amount_int = int(amount)
+    # Cap split count, matching rust ``if splits.len() > 8`` (charge.rs:76-78);
+    # the server enforces MAX_SPLITS=8 too, but the client must fail fast.
+    if len(details.splits) > 8:
+        raise ValueError("too many splits: maximum is 8")
     split_total = sum(int(split.amount) for split in details.splits)
     primary_amount = amount_int - split_total
     if primary_amount <= 0:
         raise ValueError("splits consume the entire amount")
     recipient_key = Pubkey.from_string(recipient)
 
+    # Fee-payer toggle mirrors rust (charge.rs:96-104): a sponsored route uses
+    # the server fee payer as the message fee payer (account[0]); the client
+    # signs only its own signature slot and the server cosigns slot 0.
+    use_fee_payer = details.fee_payer and bool(details.fee_payer_key)
+    fee_payer_key = Pubkey.from_string(details.fee_payer_key) if use_fee_payer else None
+
     instructions = []
     memo_program = Pubkey.from_string(MEMO_PROGRAM)
+
+    # ComputeBudget prelude, matching rust charge.rs:108-110: SetComputeUnitPrice(1)
+    # (program ComputeBudget111..., disc 3, u64 LE) THEN SetComputeUnitLimit(200_000)
+    # (disc 2, u32 LE), both with zero accounts. Restores byte-level instruction
+    # order parity with the rust/cross-impl clients for an identical challenge.
+    compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
+    instructions.append(
+        Instruction(compute_budget_program, bytes([3]) + (1).to_bytes(8, "little"), [])
+    )
+    instructions.append(
+        Instruction(compute_budget_program, bytes([2]) + (200_000).to_bytes(4, "little"), [])
+    )
 
     def append_memo(memo: str) -> None:
         if not memo:
@@ -113,6 +138,20 @@ async def build_charge_transaction(
         if len(data) > 566:
             raise ValueError("memo cannot exceed 566 bytes")
         instructions.append(Instruction(memo_program, data, []))
+
+    # ataCreationRequired gate, matching rust charge.rs:113-128: any split that
+    # flags ata_creation_required requires the charge currency to be an SPL token
+    # mint address (not native SOL and not a symbol). resolve_mint returns "" for
+    # SOL and the raw mint for an SPL mint address; for a known symbol it returns
+    # a mint that differs from the symbol input, which we reject here.
+    if any(split.ata_creation_required for split in details.splits):
+        resolved = resolve_mint(currency, details.network)
+        if is_native_sol(currency) or not resolved:
+            raise ValueError("ataCreationRequired requires an SPL token charge")
+        if resolved != currency:
+            raise ValueError(
+                "ataCreationRequired requires currency to be an SPL token mint address"
+            )
 
     if is_native_sol(currency):
         # SOL transfer
@@ -147,13 +186,17 @@ async def build_charge_transaction(
         from solders.instruction import AccountMeta
 
         mint = resolve_mint(currency, details.network)
-        token_program = details.token_program or default_token_program_for_currency(currency, details.network)
+        token_program = await _resolve_token_program(rpc_client, mint, details)
         decimals = details.decimals if details.decimals is not None else 6
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(mint)
         system_program_key = Pubkey.from_string(SYSTEM_PROGRAM)
         ata_program_key = Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM)
         source_ata = Pubkey.from_string(derive_ata(str(signer.pubkey()), mint, token_program))
+        # The create-ATA payer is the fee payer when sponsored, else the signer,
+        # matching rust ``let payer = fee_payer.copied().unwrap_or(*signer)``
+        # (charge.rs:368).
+        ata_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey()
 
         def append_transfer_checked(owner: Any, transfer_amount: int, create_ata: bool, memo: str) -> None:
             dest_ata = Pubkey.from_string(derive_ata(str(owner), mint, token_program))
@@ -165,7 +208,7 @@ async def build_charge_transaction(
                         ata_program_key,
                         bytes([1]),
                         [
-                            AccountMeta(signer.pubkey(), True, True),
+                            AccountMeta(ata_payer, True, True),
                             AccountMeta(dest_ata, False, True),
                             AccountMeta(owner, False, False),
                             AccountMeta(mint_key, False, False),
@@ -206,10 +249,15 @@ async def build_charge_transaction(
         resp = await rpc_client.get_latest_blockhash()
         blockhash = resp.value.blockhash
 
-    # Build and sign transaction
-    msg = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+    # Build and sign transaction. The message fee payer (account[0]) is the
+    # server fee payer when sponsored, else the signer, matching rust
+    # ``actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey)``
+    # (charge.rs:162-163). The client signs ONLY its own slot via partial_sign;
+    # when sponsored the server cosigns the fee-payer slot at account[0].
+    actual_fee_payer = fee_payer_key if fee_payer_key is not None else signer.pubkey()
+    msg = Message.new_with_blockhash(instructions, actual_fee_payer, blockhash)
     tx = Transaction.new_unsigned(msg)
-    tx.sign([signer], blockhash)
+    tx.partial_sign([signer], blockhash)
 
     # Encode transaction
     import base64 as b64
@@ -218,3 +266,44 @@ async def build_charge_transaction(
     tx_b64 = b64.b64encode(tx_bytes).decode("ascii")
 
     return CredentialPayload(type="transaction", transaction=tx_b64)
+
+
+async def _resolve_token_program(rpc_client: Any, mint: str, details: MethodDetails) -> str:
+    """Resolve the SPL token program for ``mint``, matching rust resolve_token_program.
+
+    Mirrors rust ``resolve_token_program`` (charge.rs:442-466): use
+    ``methodDetails.tokenProgram`` when present; otherwise fetch the mint
+    account owner via RPC; then reject any program that is not the classic SPL
+    Token program or Token-2022. Without this, an unknown mint that omits
+    ``tokenProgram`` silently defaults to the classic program where rust
+    consults the chain, building the wrong program id / ATA derivation.
+    """
+    if details.token_program:
+        token_program = details.token_program
+    else:
+        owner = await _fetch_mint_owner(rpc_client, mint)
+        token_program = owner if owner is not None else default_token_program_for_currency(
+            mint, details.network
+        )
+    if token_program not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        raise ValueError(f"Unsupported token program: {token_program}")
+    return token_program
+
+
+async def _fetch_mint_owner(rpc_client: Any, mint: str) -> str | None:
+    """Return the on-chain owner program of ``mint`` via RPC, or None when unavailable.
+
+    Mirrors the rust ``rpc.get_account(mint).owner`` lookup. Tolerates an absent
+    or stubbed RPC client (offline tests pass ``None``) by returning None so the
+    caller falls back to the symbol-derived default.
+    """
+    if rpc_client is None:
+        return None
+    from solders.pubkey import Pubkey
+
+    resp = await rpc_client.get_account(Pubkey.from_string(mint))
+    value = getattr(resp, "value", resp)
+    if value is None:
+        return None
+    owner = getattr(value, "owner", None)
+    return str(owner) if owner is not None else None
