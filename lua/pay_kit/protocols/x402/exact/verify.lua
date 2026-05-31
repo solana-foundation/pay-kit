@@ -41,6 +41,7 @@ local MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
 -- and Go (lighthouseProgram) verifiers. The prior `L1TEVtgA75k...` value
 -- was wrong and would have rejected wallet-injected Lighthouse guards.
 local LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
+local TOKEN_PROGRAM             = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 local TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 -- Mirrors the Rust spine constant
 -- (rust/crates/x402/src/protocol/schemes/exact/verify.rs:17). The prior
@@ -115,8 +116,13 @@ end
 -- instruction.
 local function verify_transfer(ix, account_keys, requirement, managed_signers)
   local program = program_of(account_keys, ix)
-  local token_program_extra = string_extra(requirement, 'tokenProgram', true)
-  if program ~= token_program_extra and program ~= TOKEN_2022_PROGRAM then
+  -- Bind the transfer program to the canonical SPL token program set,
+  -- NOT to `extra.tokenProgram`. Mirrors the Rust spine
+  -- (verify.rs:373): the program id is accepted iff it is TOKEN_PROGRAM
+  -- or TOKEN_2022_PROGRAM, derived from the actual instruction. A
+  -- canonical offer may omit `extra.tokenProgram`, so requiring it would
+  -- reject a spec-valid credential the Rust verifier accepts.
+  if program ~= TOKEN_PROGRAM and program ~= TOKEN_2022_PROGRAM then
     error('invalid_exact_svm_payload_no_transfer_instruction')
   end
   local data = ix.data
