@@ -458,12 +458,24 @@ async def test_build_payment_rejects_invalid_amount():
 
 
 @pytest.mark.asyncio
-async def test_build_payment_rejects_missing_token_program():
+async def test_build_payment_defaults_token_program_when_offer_omits_it():
+    # Rust ``build_spl_instructions`` defaults the token program via
+    # ``default_token_program_for_currency`` when the offer omits it
+    # (client/exact/payment.rs:445-452); the client must not error. USDC ->
+    # classic Token program, so the built transferChecked uses TP_USDC.
     signer = Signer.generate()
     offer = _offer()
     del offer["extra"]["tokenProgram"]
-    with pytest.raises(ValueError, match="tokenProgram"):
-        await build_payment(signer, None, _entry(offer))
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    instructions = list(tx.message.instructions)
+    keys = [str(k) for k in tx.message.account_keys]
+    transfer_ix = instructions[2]
+    assert keys[int(transfer_ix.program_id_index)] == TP_USDC
+    # The transfer's source/dest ATAs are derived off the same defaulted
+    # program, matching what a server that pins extra.tokenProgram=TP_USDC
+    # would re-derive.
+    assert keys[int(transfer_ix.accounts[2])] == derive_ata(offer["payTo"], USDC_DEVNET, TP_USDC)
 
 
 @pytest.mark.asyncio
@@ -482,6 +494,152 @@ async def test_build_payment_rejects_missing_pay_to():
     del offer["payTo"]
     with pytest.raises(ValueError, match="payTo"):
         await build_payment(signer, None, _entry(offer))
+
+
+# -- rust-parity regressions -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_payment_fee_payer_explicit_false_opts_out():
+    # Rust ``use_fee_payer = feePayer.unwrap_or(false) && fee_payer_key.is_some()``
+    # (payment.rs:43-44): an explicit ``feePayer: false`` opts out even when a
+    # key is present, so the client signer becomes the message fee payer
+    # (account[0]) and the only required signer.
+    signer = Signer.generate()
+    offer = _offer()
+    offer["feePayer"] = False
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    keys = [str(k) for k in tx.message.account_keys]
+    assert keys[0] == str(signer.keypair.pubkey())
+    assert int(tx.message.header.num_required_signatures) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_payment_fee_payer_key_from_top_level():
+    # Rust sources the fee-payer key from top-level ``feePayerKey`` first
+    # (types.rs:350-351). A top-level key with no extra.feePayer must still be
+    # used as account[0].
+    signer = Signer.generate()
+    fee_payer = str(Keypair().pubkey())
+    offer = _offer()
+    del offer["extra"]["feePayer"]
+    offer["feePayerKey"] = fee_payer
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    keys = [str(k) for k in tx.message.account_keys]
+    assert keys[0] == fee_payer
+    assert int(tx.message.header.num_required_signatures) == 2
+
+
+@pytest.mark.asyncio
+async def test_build_payment_reads_token_program_and_decimals_top_level_first():
+    # Rust reads tokenProgram/decimals/recentBlockhash top-level before extra
+    # (types.rs:344-349). A top-level tokenProgram/decimals must win over extra.
+    signer = Signer.generate()
+    pyusd_mint = resolve("PYUSD", "devnet")
+    assert pyusd_mint is not None
+    tp_pyusd = token_program_for("PYUSD", "devnet")
+    offer = _offer(asset=pyusd_mint, token_program=tp_pyusd)
+    # Wrong values in extra; correct values at top level must override.
+    offer["extra"]["tokenProgram"] = TP_USDC
+    offer["extra"]["decimals"] = 9
+    offer["tokenProgram"] = tp_pyusd
+    offer["decimals"] = 6
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    instructions = list(tx.message.instructions)
+    keys = [str(k) for k in tx.message.account_keys]
+    transfer_ix = instructions[2]
+    assert keys[int(transfer_ix.program_id_index)] == tp_pyusd
+    assert bytes(transfer_ix.data)[9] == 6
+
+
+@pytest.mark.asyncio
+async def test_build_payment_reads_recent_blockhash_top_level_first():
+    signer = Signer.generate()
+    offer = _offer(blockhash=None)
+    offer["recentBlockhash"] = BH
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    assert str(tx.message.recent_blockhash) == BH
+
+
+@pytest.mark.asyncio
+async def test_build_payment_currency_and_recipient_aliases_win():
+    # Rust resolves currency/recipient top-level first, then asset/payTo
+    # (types.rs:334-342). A top-level currency/recipient must override the
+    # canonical asset/payTo aliases.
+    signer = Signer.generate()
+    real_pay_to = str(Keypair().pubkey())
+    offer = _offer(asset="SOL", amount="5000")
+    offer["extra"].pop("tokenProgram", None)
+    offer["payTo"] = str(Keypair().pubkey())
+    offer["recipient"] = real_pay_to
+    env = await build_payment(signer, None, _entry(offer))
+    tx = VersionedTransaction.from_bytes(base64.b64decode(_tx(env)))
+    instructions = list(tx.message.instructions)
+    keys = [str(k) for k in tx.message.account_keys]
+    # System transfer destination is account index 1 of the transfer ix.
+    transfer_ix = instructions[2]
+    assert keys[int(transfer_ix.accounts[1])] == real_pay_to
+
+
+@pytest.mark.asyncio
+async def test_build_payment_rejects_negative_amount():
+    # Rust ``amount.parse::<u64>()`` rejects a negative amount up front
+    # (payment.rs:33-36); python must reject at parse, not at to_bytes.
+    signer = Signer.generate()
+    offer = _offer(amount="-1")
+    with pytest.raises(ValueError, match="invalid amount"):
+        await build_payment(signer, None, _entry(offer))
+
+
+@pytest.mark.asyncio
+async def test_build_payment_rejects_amount_above_u64():
+    signer = Signer.generate()
+    offer = _offer(amount=str(1 << 64))
+    with pytest.raises(ValueError, match="invalid amount"):
+        await build_payment(signer, None, _entry(offer))
+
+
+@pytest.mark.asyncio
+async def test_build_payment_echoes_resource_in_envelope():
+    # Rust ``build_payment_header`` sets ``resource = requirements.resource_info()``
+    # (payment.rs:131-138). When the offer carries resource info the client must
+    # echo it at the envelope top level.
+    signer = Signer.generate()
+    offer = _offer()
+    offer["resource"] = "https://api.example.test/data"
+    offer["description"] = "Test data"
+    env = await build_payment(signer, None, _entry(offer))
+    resource = cast("dict[str, Any]", env)["resource"]
+    assert resource == {"url": "https://api.example.test/data", "description": "Test data"}
+
+
+@pytest.mark.asyncio
+async def test_build_payment_omits_resource_when_offer_has_none():
+    signer = Signer.generate()
+    offer = _offer()
+    env = await build_payment(signer, None, _entry(offer))
+    assert "resource" not in cast("dict[str, Any]", env)
+
+
+def test_parse_attaches_envelope_resource_to_selected_offer():
+    # Rust ``with_resource_on_accepts`` (types.rs:463-476) copies the envelope's
+    # v2 resource onto each parsed accept so the client can echo it.
+    offer = _offer()
+    body = {
+        "x402Version": 2,
+        "resource": {"url": "https://api.example.test/joke", "description": "A joke"},
+        "accepts": [offer],
+    }
+    header = base64.b64encode(json.dumps(body).encode()).decode()
+    picked = parse_x402_challenge(
+        {"payment-required": header}, None, ChallengeSelection(network="devnet")
+    )
+    assert picked is not None
+    assert cast("dict[str, Any]", picked)["resource"] == "https://api.example.test/joke"
 
 
 # -- build_payment_header ----------------------------------------------------

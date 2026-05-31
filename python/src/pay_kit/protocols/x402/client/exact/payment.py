@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pay_kit._paycore.mints import derive_ata, resolve_stablecoin_mint
 from pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
-from pay_kit._paycore.solana import MEMO_PROGRAM, is_native_sol
+from pay_kit._paycore.solana import (
+    MEMO_PROGRAM,
+    default_token_program_for_currency,
+    is_native_sol,
+)
 from pay_kit.protocols.x402.exact.types import X402AcceptsEntry, X402Envelope, X402PayloadField
 from pay_kit.protocols.x402.exact.verify import COMPUTE_BUDGET_PROGRAM, X402_VERSION
 
@@ -170,12 +174,40 @@ def _select_from_body(body: str, selection: ChallengeSelection) -> X402AcceptsEn
 def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> X402AcceptsEntry | None:
     if not isinstance(envelope, dict):
         return None
-    accepts_raw = cast("dict[str, object]", envelope).get("accepts")
+    envelope_dict = cast("dict[str, object]", envelope)
+    accepts_raw = envelope_dict.get("accepts")
     if not isinstance(accepts_raw, list):
         return None
     entries = cast("list[object]", accepts_raw)
     accepts = [cast("dict[str, object]", entry) for entry in entries if isinstance(entry, dict)]
+    _attach_envelope_resource(envelope_dict, accepts)
     return _select_requirement(accepts, selection)
+
+
+def _attach_envelope_resource(
+    envelope: Mapping[str, object],
+    accepts: list[dict[str, object]],
+) -> None:
+    """Copy the envelope-level v2 ``resource`` object onto each accept.
+
+    Mirrors rust ``PaymentRequiredEnvelope::with_resource_on_accepts``
+    (types.rs:463-476): the canonical v2 challenge carries ``resource`` at the
+    envelope level; the rust deserializer attaches it to every parsed
+    requirement so the client can echo it back. Only fills the entry's
+    ``resource``/``description`` when absent so a per-offer override wins.
+    """
+    resource = envelope.get("resource")
+    if not isinstance(resource, dict):
+        return
+    url = resource.get("url")
+    if not isinstance(url, str) or url == "":
+        return
+    description = resource.get("description")
+    for accept in accepts:
+        if not _str_field(accept, "resource"):
+            accept["resource"] = url
+        if "description" not in accept and isinstance(description, str):
+            accept["description"] = description
 
 
 def _is_solana_exact(offer: dict[str, object]) -> bool:
@@ -261,6 +293,30 @@ def _str_field(mapping: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) and value != "" else None
 
 
+#: Exclusive upper bound for a Solana u64 amount (lamports / token base units).
+_U64_BOUND = 1 << 64
+
+
+def _str_top_then_extra(
+    req: Mapping[str, object],
+    extra: Mapping[str, object],
+    key: str,
+) -> str | None:
+    """Read a string field top-level first, then ``extra.*``.
+
+    Mirrors the rust ``PaymentRequirements`` deserializer field precedence
+    (``rust/crates/x402/src/protocol/schemes/exact/types.rs:344-351``) where
+    canonical-wire fields (``tokenProgram``/``recentBlockhash``) are read at the
+    top level before falling back to ``extra``.
+    """
+    return _str_field(req, key) or _str_field(extra, key)
+
+
+def _bool_field(mapping: Mapping[str, object], key: str) -> bool | None:
+    value = mapping.get(key)
+    return value if isinstance(value, bool) else None
+
+
 async def build_payment(
     signer: LocalSigner,
     rpc: Any,
@@ -297,10 +353,15 @@ async def build_payment(
     from solders.transaction import VersionedTransaction
 
     req = cast("dict[str, object]", requirement)
-    asset = _str_field(req, "asset")
+    extra = _extra_of(requirement)
+
+    # Field precedence mirrors the rust ``PaymentRequirements`` deserializer
+    # (types.rs:334-353): top-level ``currency``/``recipient`` win over the
+    # canonical-wire ``asset``/``payTo`` aliases.
+    asset = _str_field(req, "currency") or _str_field(req, "asset")
     if asset is None:
         raise ValueError("pay_kit: x402 offer is missing `asset`")
-    pay_to = _str_field(req, "payTo")
+    pay_to = _str_field(req, "recipient") or _str_field(req, "payTo")
     if pay_to is None:
         raise ValueError("pay_kit: x402 offer is missing `payTo`")
 
@@ -311,10 +372,25 @@ async def build_payment(
         amount = int(cast("str | int", amount_raw))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"pay_kit: x402 offer has an invalid amount: {amount_raw!r}") from exc
+    # Amount must fit an unsigned u64, matching rust ``amount.parse::<u64>()``
+    # (client/exact/payment.rs:33-36). Reject out-of-range here rather than
+    # deferring to a later ``int.to_bytes(8, ...)`` OverflowError.
+    if amount < 0 or amount >= _U64_BOUND:
+        raise ValueError(f"pay_kit: x402 offer has an invalid amount: {amount_raw!r}")
 
-    extra = _extra_of(requirement)
-    fee_payer = _str_field(extra, "feePayer")
-    fee_payer_key = Pubkey.from_string(fee_payer) if fee_payer is not None else signer.keypair.pubkey()
+    # Fee-payer toggle + precedence (types.rs:350-353, payment.rs:43-51):
+    # key comes from top-level ``feePayerKey`` first, else ``extra.feePayer``;
+    # ``use_fee_payer`` is the explicit ``feePayer`` bool when present, else true
+    # when a key is present. An explicit ``feePayer: false`` opts OUT even with a
+    # key, in which case the client signer is the message fee payer.
+    fee_payer = _str_field(req, "feePayerKey") or _str_field(extra, "feePayer")
+    fee_payer_bool = _bool_field(req, "feePayer")
+    use_fee_payer = (fee_payer_bool if fee_payer_bool is not None else fee_payer is not None) and (
+        fee_payer is not None
+    )
+    fee_payer_key = (
+        Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.keypair.pubkey()
+    )
 
     instructions: list[Any] = [
         _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
@@ -331,11 +407,23 @@ async def build_payment(
             transfer(TransferParams(from_pubkey=signer_pubkey, to_pubkey=recipient_key, lamports=amount))
         )
     else:
-        token_program = _str_field(extra, "tokenProgram")
+        # tokenProgram: top-level first, then extra (types.rs:346-347). When the
+        # offer omits it entirely, default by currency/cluster like rust
+        # ``default_token_program_for_currency`` (payment.rs:445-452) instead of
+        # erroring, so a canonical offer that elides tokenProgram still builds.
+        token_program = _str_top_then_extra(req, extra, "tokenProgram")
         if token_program is None:
-            raise ValueError("pay_kit: x402 SPL offer is missing `extra.tokenProgram`")
-        decimals_raw = extra.get("decimals")
-        decimals = int(decimals_raw) if isinstance(decimals_raw, int) else _DEFAULT_DECIMALS
+            cluster_label = _mints_label_for_caip2(_caip2_for_selection(_str_field(req, "network")))
+            token_program = default_token_program_for_currency(asset, cluster_label)
+        # decimals: top-level first, then extra (types.rs:344-345); default 6.
+        decimals_raw = req.get("decimals")
+        if not isinstance(decimals_raw, int) or isinstance(decimals_raw, bool):
+            decimals_raw = extra.get("decimals")
+        decimals = (
+            int(decimals_raw)
+            if isinstance(decimals_raw, int) and not isinstance(decimals_raw, bool)
+            else _DEFAULT_DECIMALS
+        )
         token_program_key = Pubkey.from_string(token_program)
         mint_key = Pubkey.from_string(asset)
         source_ata = Pubkey.from_string(derive_ata(str(signer_pubkey), asset, token_program))
@@ -363,7 +451,8 @@ async def build_payment(
         memo = (memo_nonce or _default_memo_nonce)()
     instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
 
-    blockhash_str = _str_field(extra, "recentBlockhash")
+    # recentBlockhash: top-level first, then extra (types.rs:348-349).
+    blockhash_str = _str_top_then_extra(req, extra, "recentBlockhash")
     if blockhash_str is None:
         blockhash_str = await _resolve_blockhash(rpc, recent_blockhash_provider)
     blockhash = Hash.from_string(blockhash_str)
@@ -384,7 +473,37 @@ async def build_payment(
 
     encoded = base64.b64encode(bytes(tx)).decode("ascii")
     payload: X402PayloadField = {"transaction": encoded}
-    return {"x402Version": X402_VERSION, "accepted": requirement, "payload": payload}
+    envelope: dict[str, object] = {
+        "x402Version": X402_VERSION,
+        "accepted": requirement,
+        "payload": payload,
+    }
+    # Echo the offer's resource info at the envelope top level, mirroring rust
+    # ``build_payment_header`` (payment.rs:131-138) which sets
+    # ``resource: requirements.resource_info()``. Omit when the offer carries no
+    # resource (rust ``skip_serializing_if = Option::is_none``).
+    resource_info = _resource_info_of(req)
+    if resource_info is not None:
+        envelope["resource"] = resource_info
+    return cast("X402Envelope", envelope)
+
+
+def _resource_info_of(req: Mapping[str, object]) -> dict[str, object] | None:
+    """Build the canonical v2 ``resource`` object from an offer.
+
+    Mirrors rust ``PaymentRequirements::resource_info`` (types.rs:253-265):
+    derive ``{url, description?}`` from the offer's ``resource`` URL string and
+    optional ``description``. Returns ``None`` when the offer carries no
+    resource URL.
+    """
+    url = _str_field(req, "resource")
+    if url is None:
+        return None
+    info: dict[str, object] = {"url": url}
+    description = _str_field(req, "description")
+    if description is not None:
+        info["description"] = description
+    return info
 
 
 async def _resolve_blockhash(
