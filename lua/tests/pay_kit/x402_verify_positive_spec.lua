@@ -145,7 +145,7 @@ helper.test('verify accepts a structurally-valid transferChecked envelope', func
   helper.assert_true(transfer ~= nil, 'expected verify to return a transfer descriptor')
   helper.assert_equal(transfer.mint, mint)
   helper.assert_equal(transfer.destination, destination)
-  helper.assert_equal(transfer.amount, amount)
+  helper.assert_equal(transfer.amount, tostring(amount))
   helper.assert_equal(transfer.authority, authority)
 end)
 

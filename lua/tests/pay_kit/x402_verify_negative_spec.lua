@@ -241,7 +241,7 @@ helper.test('verify accepts when offer has no memo extra', function()
   offer.extra.memo = nil
   local ok, transfer = pcall(x402_verify.verify, base64.encode(raw), offer, {facilitator})
   helper.assert_true(ok, 'expected verify to accept when memo extra is not set')
-  helper.assert_equal(transfer.amount, 1000)
+  helper.assert_equal(transfer.amount, '1000')
 end)
 
 -- The standard 8-key block plus one trailing program key. Used by the
@@ -279,7 +279,7 @@ helper.test('rule 9: single trailing Lighthouse guard (Phantom) accepted', funct
     default_offer(facilitator, mint, pay_to), {facilitator})
   helper.assert_true(ok, 'expected verify to accept a trailing Lighthouse guard: ' ..
     tostring(transfer))
-  helper.assert_equal(transfer.amount, 1000)
+  helper.assert_equal(transfer.amount, '1000')
 end)
 
 -- Rule 9 (c): two trailing Lighthouse guards (Solflare injects two). Lighthouse
@@ -301,7 +301,7 @@ helper.test('rule 9: two trailing Lighthouse guards (Solflare) accepted', functi
     default_offer(facilitator, mint, pay_to), {facilitator})
   helper.assert_true(ok, 'expected verify to accept two trailing Lighthouse guards: ' ..
     tostring(transfer))
-  helper.assert_equal(transfer.amount, 1000)
+  helper.assert_equal(transfer.amount, '1000')
 end)
 
 -- Rule 9 (b): an Associated-Token-Program ATA-create in an optional slot is
