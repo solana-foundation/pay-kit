@@ -45,10 +45,13 @@ final class VerifierTest extends TestCase
         // against haven't drifted.
         $this->assertSame('ComputeBudget111111111111111111111111111111', Verifier::COMPUTE_BUDGET_PROGRAM);
         $this->assertSame('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', Verifier::MEMO_PROGRAM);
+        $this->assertSame('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', Verifier::TOKEN_PROGRAM);
         $this->assertSame('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', Verifier::TOKEN_2022_PROGRAM);
         // Official x402 SVM exact Lighthouse program id.
         $this->assertSame('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95', Verifier::LIGHTHOUSE_PROGRAM);
-        $this->assertSame(50000, Verifier::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS);
+        // Canonical compute-unit-price cap matches the Rust spine
+        // (rust/crates/x402/src/protocol/schemes/exact/verify.rs:17).
+        $this->assertSame(5000000, Verifier::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS);
     }
 
     public function testAssociatedTokenProgramConstantRemoved(): void

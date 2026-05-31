@@ -45,8 +45,9 @@ final class Verifier
     // scheme_exact_svm.md). The prior `L1TEVtgA75k...` value was wrong and
     // would have rejected wallet-injected Lighthouse guards.
     public const LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
+    public const TOKEN_PROGRAM             = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
     public const TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-    public const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000;
+    public const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000;
 
     /**
      * Verify a base64-encoded transaction against an offer.
@@ -183,9 +184,13 @@ final class Verifier
         array $requirement,
         array $managedSigners,
     ): array {
+        // Rule 11: the transfer program id must be one of the two canonical
+        // SPL token programs. Rust derives the gate from the actual
+        // instruction program (verify.rs:373), NOT from a seller-pinned
+        // extra.tokenProgram, so an offer that omits extra.tokenProgram still
+        // verifies against a real Token / Token-2022 transfer.
         $program = self::programOf($accountKeys, $ix);
-        $tokenProgramExtra = self::stringExtra($requirement, 'tokenProgram', true);
-        if ($program !== $tokenProgramExtra && $program !== self::TOKEN_2022_PROGRAM) {
+        if ($program !== self::TOKEN_PROGRAM && $program !== self::TOKEN_2022_PROGRAM) {
             throw new InvalidProofException('invalid_exact_svm_payload_no_transfer_instruction');
         }
         $data = $ix->data;
