@@ -1662,6 +1662,58 @@ class TestInstructionAllowlist:
         # Must not raise.
         _verify_local_transaction_intent(tx_b64, request, details)
 
+    def test_missing_required_ata_create_is_rejected(self):
+        """SECURITY: a split flagged ``ataCreationRequired=true`` whose
+        create-ATA-idempotent instruction is omitted must be rejected.
+
+        Mirrors rust ``validate_instruction_allowlist`` tail
+        (server/charge.rs:1362-1368): the required-ATA-owner set must be fully
+        covered by create-ATA instructions. Without the enforcement a sponsored
+        credential that drops the demanded create is cosigned and broadcast,
+        under-creating the recipient ATA. Same transaction as the positive
+        control above MINUS the ata_create instruction.
+        """
+        from pay_kit._paycore.solana import Split
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        split_recipient = "8wXtPeU6557ETkp9WHFY1n1EcU6NxDvbAggHGsMYiHsB"
+        request = ChargeRequest(amount="1000000", currency="USDC", recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            splits=[Split(recipient=split_recipient, amount="100000", ata_creation_required=True)],
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        split_ata = _derive_ata(split_recipient, mint, TOKEN_PROGRAM)
+        source = Pubkey.new_unique()
+        primary_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            bytes([12]) + (900_000).to_bytes(8, "little") + bytes([6]),
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        split_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            bytes([12]) + (100_000).to_bytes(8, "little") + bytes([6]),
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(split_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        # NOTE: the demanded create-ATA for the required split is intentionally absent.
+        tx_b64 = self._build_tx([primary_transfer, split_transfer], fee_payer)
+        with pytest.raises(PaymentError, match="missing required ATA creation"):
+            _verify_local_transaction_intent(tx_b64, request, details)
+
     def test_ata_create_for_primary_recipient_is_rejected(self):
         """SECURITY: even the top-level recipient is NOT a valid ATA-create
         owner under fee-payer sponsorship. Only splits with

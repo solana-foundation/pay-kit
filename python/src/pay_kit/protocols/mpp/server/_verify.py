@@ -190,8 +190,12 @@ def _validate_ata_create_idempotent(
     allowed_ata_owners: set[str],
     expected_token_program: str | None,
     expected_payer: str,
-) -> None:
+) -> str:
     """Validate an AssociatedTokenAccount create-idempotent instruction.
+
+    Returns the validated ATA ``owner`` so the caller can confirm every
+    ``ataCreationRequired`` split recipient actually had its ATA created,
+    mirroring rust ``validate_create_ata_idempotent_instruction``.
 
     Mirrors ``validate_create_ata_idempotent_instruction`` in
     ``rust/src/server/charge.rs``. The only ATA program instruction the
@@ -288,6 +292,8 @@ def _validate_ata_create_idempotent(
             f"could not validate ATA creation address: {exc}",
             code="invalid-payload",
         ) from exc
+
+    return owner
 
 
 def _validate_instruction_allowlist(
@@ -403,7 +409,8 @@ def _validate_instruction_allowlist(
         expected_token_program = details.token_program or default_token_program_for_currency(
             request.currency, details.network
         )
-    allowed_ata_owners, _required_ata_owners = _expected_ata_creation_policy(details, fee_payer_pubkey)
+    allowed_ata_owners, required_ata_owners = _expected_ata_creation_policy(details, fee_payer_pubkey)
+    created_ata_owners: set[str] = set()
     expected_memos = {memo for _label, memo in _expected_memos(request, details)}
 
     # Track which required transfers / memos have been satisfied so each
@@ -570,7 +577,7 @@ def _validate_instruction_allowlist(
             continue
 
         if program_id == ASSOCIATED_TOKEN_PROGRAM:
-            _validate_ata_create_idempotent(
+            created_owner = _validate_ata_create_idempotent(
                 instruction,
                 account_keys,
                 expected_mint,
@@ -578,12 +585,25 @@ def _validate_instruction_allowlist(
                 expected_token_program,
                 fee_payer_account,
             )
+            created_ata_owners.add(created_owner)
             continue
 
         raise PaymentError(
             f"unexpected program instruction in payment transaction: {program_id}",
             code="invalid-payload",
         )
+
+    # SECURITY: every split recipient flagged ``ataCreationRequired`` must have
+    # a matching create-ATA-idempotent instruction, mirroring rust
+    # ``validate_instruction_allowlist`` (server/charge.rs:1362-1368). Without
+    # this a sponsored credential that omits a demanded create is accepted and
+    # the server cosigns/broadcasts, so settlement under-creates the recipient ATA.
+    for owner in required_ata_owners:
+        if owner not in created_ata_owners:
+            raise PaymentError(
+                f"missing required ATA creation instruction for split recipient {owner}",
+                code="invalid-payload",
+            )
 
 
 def _verify_local_transaction_intent(
