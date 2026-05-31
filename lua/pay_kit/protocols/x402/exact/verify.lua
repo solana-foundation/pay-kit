@@ -31,6 +31,7 @@ local base58 = require('pay_kit.solana.base58')
 local tx_mod = require('pay_kit.solana.transaction')
 local ata    = require('pay_kit.solana.ata')
 local ed25519 = require('pay_kit.util.ed25519')
+local uint    = require('pay_kit.util.uint')
 
 local M = {}
 
@@ -49,17 +50,41 @@ local TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 -- price legitimately sits above 50k but under the protocol cap.
 local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
 
--- Read a little-endian u64 from a binary string at offset 1-based.
+-- Multiply an unsigned-decimal string by a small integer (< 2^31).
+local function mul_small(decimal, factor)
+  local carry, out = 0, {}
+  for i = #decimal, 1, -1 do
+    local product = tonumber(decimal:sub(i, i)) * factor + carry
+    out[#out + 1] = tostring(product % 10)
+    carry = math.floor(product / 10)
+  end
+  while carry > 0 do
+    out[#out + 1] = tostring(carry % 10)
+    carry = math.floor(carry / 10)
+  end
+  local chars = {}
+  for idx = #out, 1, -1 do chars[#chars + 1] = out[idx] end
+  local text = table.concat(chars):gsub('^0+', '')
+  return text == '' and '0' or text
+end
+
+-- Read a little-endian u64 from a binary string at offset 1-based and
+-- return it as an exact decimal string. Mirrors the Rust spine's
+-- `u64::from_le_bytes` (verify.rs:405-409 / :350-354): a float-based
+-- reconstruction loses precision above 2^53, so a malicious amount or
+-- compute-unit price in the high u64 range would round to a different
+-- value than the one signed on-chain. Decode byte-wise so the full u64
+-- range is exact.
 local function read_u64_le(s, start)
   if not s or #s < start + 7 then
     error('invalid_exact_svm_payload_no_transfer_instruction')
   end
-  local b1, b2, b3, b4, b5, b6, b7, b8 = s:byte(start, start + 7)
-  -- Use multiplication so we stay within LuaJIT 53-bit int range; SPL
-  -- amounts and compute-unit prices never exceed it in practice.
-  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216 +
-         b5 * 4294967296 + b6 * 1099511627776 + b7 * 281474976710656 +
-         b8 * 72057594037927936
+  -- Accumulate big-endian: total = total * 256 + byte, from MSB to LSB.
+  local total = '0'
+  for offset = 7, 0, -1 do
+    total = uint.add(mul_small(total, 256), tostring(s:byte(start + offset)))
+  end
+  return total
 end
 
 -- Look up the program id (base58 string) for an instruction.
@@ -89,7 +114,7 @@ local function verify_compute_price(ix, account_keys)
     error('invalid_exact_svm_payload_transaction_instructions_compute_price_instruction')
   end
   local micro = read_u64_le(data, 2)
-  if micro > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+  if uint.compare(micro, tostring(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) > 0 then
     error('invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high')
   end
 end
@@ -162,11 +187,18 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
     error('invalid_exact_svm_payload_recipient_mismatch')
   end
 
-  -- Rule 8: amount match.
+  -- Rule 8: amount match. Compare as exact unsigned decimals so a
+  -- full-range u64 amount cannot collide with a different value through
+  -- float rounding (mirrors Rust's u64 equality, verify.rs:414).
   local amount = read_u64_le(data, 2)
-  local expected_amount = tonumber(b58_field(requirement, 'amount')) or
-    tonumber(requirement.maxAmountRequired or '')
-  if amount ~= expected_amount then
+  local expected_amount = requirement.amount
+  if expected_amount == nil or expected_amount == '' then
+    expected_amount = requirement.maxAmountRequired
+  end
+  if type(expected_amount) ~= 'string' or expected_amount == '' then
+    error('invalid_exact_svm_payload_amount_mismatch')
+  end
+  if uint.compare(amount, expected_amount) ~= 0 then
     error('invalid_exact_svm_payload_amount_mismatch')
   end
 
