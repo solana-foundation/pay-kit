@@ -184,17 +184,34 @@ def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> X4
     return _select_requirement(accepts, selection)
 
 
+#: Private (non-wire) key under which the envelope-level v2 ``resource`` info is
+#: stashed on a parsed accept. Stripped before the offer is echoed back as the
+#: ``accepted`` body so it never reaches the wire. See ``_attach_envelope_resource``.
+_RESOURCE_INFO_KEY = "__pay_kit_resource_info__"
+
+
 def _attach_envelope_resource(
     envelope: Mapping[str, object],
     accepts: list[dict[str, object]],
 ) -> None:
-    """Copy the envelope-level v2 ``resource`` object onto each accept.
+    """Stash the envelope-level v2 ``resource`` object on each accept.
 
     Mirrors rust ``PaymentRequiredEnvelope::with_resource_on_accepts``
     (types.rs:463-476): the canonical v2 challenge carries ``resource`` at the
-    envelope level; the rust deserializer attaches it to every parsed
-    requirement so the client can echo it back. Only fills the entry's
-    ``resource``/``description`` when absent so a per-offer override wins.
+    envelope level and the rust deserializer attaches it to every parsed
+    requirement so the client can echo it at the *envelope* top level.
+
+    The rust client echoes the offer back as ``accepted`` via
+    ``PaymentRequirements::to_accepted_value`` (types.rs:235-249), which for a
+    parsed offer returns the original received JSON verbatim — it never folds
+    ``resource``/``description`` into the ``accepted`` body. The server's
+    structural ``deepEqual`` compares that echoed ``accepted`` against its own
+    freshly built requirements, which carry no top-level ``resource``; adding
+    those fields to the echo breaks the match (HTTP 402 ``payment_invalid``).
+
+    So we stash the resolved resource info under a private (non-wire) key the
+    echo path strips, instead of mutating the offer's wire fields. A per-offer
+    ``resource``/``description`` already present on the accept still wins.
     """
     resource_value = envelope.get("resource")
     if not isinstance(resource_value, dict):
@@ -205,10 +222,13 @@ def _attach_envelope_resource(
         return
     description = resource.get("description")
     for accept in accepts:
-        if not _str_field(accept, "resource"):
-            accept["resource"] = url
-        if "description" not in accept and isinstance(description, str):
-            accept["description"] = description
+        info: dict[str, object] = {"url": _str_field(accept, "resource") or url}
+        offer_description = _str_field(accept, "description")
+        if offer_description is not None:
+            info["description"] = offer_description
+        elif isinstance(description, str):
+            info["description"] = description
+        accept.setdefault(_RESOURCE_INFO_KEY, info)
 
 
 def _is_solana_exact(offer: dict[str, object]) -> bool:
@@ -472,31 +492,42 @@ async def build_payment(
     signatures[signer_index] = sig
     tx = VersionedTransaction.populate(message, signatures)
 
+    # Derive the envelope-level resource BEFORE building the echoed ``accepted``
+    # body, then strip the private resource-info key so the echo carries only
+    # the offer's wire fields. The rust client echoes the offer verbatim via
+    # ``to_accepted_value`` and the rust server's structural compare rejects any
+    # extra top-level field; mirror that exactly.
+    resource_info = _resource_info_of(req)
+    accepted = {key: value for key, value in req.items() if key != _RESOURCE_INFO_KEY}
+
     encoded = base64.b64encode(bytes(tx)).decode("ascii")
     payload: X402PayloadField = {"transaction": encoded}
     envelope: dict[str, object] = {
         "x402Version": X402_VERSION,
-        "accepted": requirement,
+        "accepted": accepted,
         "payload": payload,
     }
     # Echo the offer's resource info at the envelope top level, mirroring rust
     # ``build_payment_header`` (payment.rs:131-138) which sets
     # ``resource: requirements.resource_info()``. Omit when the offer carries no
     # resource (rust ``skip_serializing_if = Option::is_none``).
-    resource_info = _resource_info_of(req)
     if resource_info is not None:
         envelope["resource"] = resource_info
     return cast("X402Envelope", envelope)
 
 
 def _resource_info_of(req: Mapping[str, object]) -> dict[str, object] | None:
-    """Build the canonical v2 ``resource`` object from an offer.
+    """Build the canonical v2 ``resource`` object for the envelope top level.
 
     Mirrors rust ``PaymentRequirements::resource_info`` (types.rs:253-265):
-    derive ``{url, description?}`` from the offer's ``resource`` URL string and
-    optional ``description``. Returns ``None`` when the offer carries no
-    resource URL.
+    prefer the resource info stashed from the envelope-level v2 ``resource``
+    (``_attach_envelope_resource``), then fall back to a per-offer top-level
+    ``resource`` URL string with optional ``description``. Returns ``None`` when
+    neither is present.
     """
+    stashed = req.get(_RESOURCE_INFO_KEY)
+    if isinstance(stashed, dict):
+        return cast("dict[str, object]", stashed)
     url = _str_field(req, "resource")
     if url is None:
         return None

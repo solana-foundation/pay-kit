@@ -625,9 +625,16 @@ async def test_build_payment_omits_resource_when_offer_has_none():
     assert "resource" not in cast("dict[str, Any]", env)
 
 
-def test_parse_attaches_envelope_resource_to_selected_offer():
-    # Rust ``with_resource_on_accepts`` (types.rs:463-476) copies the envelope's
-    # v2 resource onto each parsed accept so the client can echo it.
+@pytest.mark.asyncio
+async def test_parse_stashes_envelope_resource_without_polluting_accepted():
+    # Rust ``with_resource_on_accepts`` (types.rs:463-476) attaches the
+    # envelope's v2 resource to each parsed requirement so the client can echo
+    # it at the *envelope* top level. The echoed ``accepted`` body must NOT gain
+    # ``resource``/``description`` wire fields: the rust server's structural
+    # compare (server/exact.rs verify_envelope_payload) rejects any top-level
+    # field its own freshly built requirements do not carry, returning HTTP 402
+    # ``payment_invalid``. Mirror rust ``to_accepted_value`` echoing the offer
+    # verbatim while ``resource_info`` rides only the envelope.
     offer = _offer()
     body = {
         "x402Version": 2,
@@ -639,7 +646,21 @@ def test_parse_attaches_envelope_resource_to_selected_offer():
         {"payment-required": header}, None, ChallengeSelection(network="devnet")
     )
     assert picked is not None
-    assert cast("dict[str, Any]", picked)["resource"] == "https://api.example.test/joke"
+    # The wire-visible offer is untouched: no top-level resource/description.
+    assert "resource" not in cast("dict[str, Any]", picked)
+    assert "description" not in cast("dict[str, Any]", picked)
+
+    signer = Signer.generate()
+    env = await build_payment(signer, None, picked)
+    decoded = cast("dict[str, Any]", env)
+    # Envelope echoes the resource; the accepted body stays clean.
+    assert decoded["resource"] == {
+        "url": "https://api.example.test/joke",
+        "description": "A joke",
+    }
+    assert "resource" not in decoded["accepted"]
+    assert "description" not in decoded["accepted"]
+    assert decoded["accepted"] == offer
 
 
 # -- build_payment_header ----------------------------------------------------
