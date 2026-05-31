@@ -157,23 +157,23 @@ type Extra struct {
 // canonical field exists both top-level and under extra so the
 // top-level-first precedence can be applied.
 type rawAcceptsEntry struct {
-	Protocol          string          `json:"protocol"`
-	Scheme            string          `json:"scheme"`
-	Network           string          `json:"network"`
-	Asset             string          `json:"asset"`
-	Currency          string          `json:"currency"`
-	Amount            string          `json:"amount"`
-	MaxAmountRequired string          `json:"maxAmountRequired"`
-	PayTo             string          `json:"payTo"`
-	Recipient         string          `json:"recipient"`
-	MaxTimeoutSeconds *int            `json:"maxTimeoutSeconds"`
-	MaxAge            *int            `json:"maxAge"`
-	Decimals          *int            `json:"decimals"`
-	TokenProgram      string          `json:"tokenProgram"`
-	RecentBlockhash   string          `json:"recentBlockhash"`
-	FeePayer          *bool           `json:"feePayer"`
-	FeePayerKey       string          `json:"feePayerKey"`
-	Extra             *rawExtra       `json:"extra"`
+	Protocol          string    `json:"protocol"`
+	Scheme            string    `json:"scheme"`
+	Network           string    `json:"network"`
+	Asset             string    `json:"asset"`
+	Currency          string    `json:"currency"`
+	Amount            string    `json:"amount"`
+	MaxAmountRequired string    `json:"maxAmountRequired"`
+	PayTo             string    `json:"payTo"`
+	Recipient         string    `json:"recipient"`
+	MaxTimeoutSeconds *int      `json:"maxTimeoutSeconds"`
+	MaxAge            *int      `json:"maxAge"`
+	Decimals          *int      `json:"decimals"`
+	TokenProgram      string    `json:"tokenProgram"`
+	RecentBlockhash   string    `json:"recentBlockhash"`
+	FeePayer          *bool     `json:"feePayer"`
+	FeePayerKey       string    `json:"feePayerKey"`
+	Extra             *rawExtra `json:"extra"`
 }
 
 // rawExtra is the literal extra.* object. feePayer is decoded into a
