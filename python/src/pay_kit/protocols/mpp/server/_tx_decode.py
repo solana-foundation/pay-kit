@@ -124,6 +124,15 @@ def _verify_parsed_spl_transfers(
     expected = _build_expected_transfers(request, details)
     program_id = details.token_program or default_token_program_for_currency(request.currency, details.network)
     mint = resolve_mint(request.currency, details.network)
+    # transferChecked carries the token decimals inline; the challenge pins
+    # the expected decimals (6 for stablecoins). A transfer that encodes a
+    # different decimals byte targets a different on-chain mint precision and
+    # must not match, mirroring the TS reference verifier
+    # (server/Charge.ts verifySplTransferPreBroadcast: ``data[9] !== decimals``
+    # skips the instruction) and the Rust spine. Without this an attacker can
+    # encode decimals=9 against a decimals=6 challenge and the lossy matcher
+    # would accept it.
+    expected_decimals = details.decimals
     transfers = [
         instruction
         for instruction in instructions
@@ -139,6 +148,10 @@ def _verify_parsed_spl_transfers(
                 if ((transfer.get("parsed") or {}).get("info") or {}).get("mint") == mint
                 and str((((transfer.get("parsed") or {}).get("info") or {}).get("tokenAmount") or {}).get("amount"))
                 == str(amount)
+                and _decimals_match(
+                    (((transfer.get("parsed") or {}).get("info") or {}).get("tokenAmount") or {}).get("decimals"),
+                    expected_decimals,
+                )
                 and _verify_ata_owner(
                     ((transfer.get("parsed") or {}).get("info") or {}).get("destination", ""),
                     recipient,
@@ -151,6 +164,22 @@ def _verify_parsed_spl_transfers(
         if match_index == -1:
             raise PaymentError(f"no matching token transfer for {recipient}", code="no-transfer")
         transfers.pop(match_index)
+
+
+def _decimals_match(actual: Any, expected: int | None) -> bool:
+    """Return True unless a present transfer decimals contradicts the challenge.
+
+    transferChecked encodes the token decimals inline; the pre-broadcast
+    decoder and the Solana jsonParsed RPC format both surface it under
+    ``tokenAmount.decimals``. We reject only a *present* decimals that
+    disagrees with the challenge so a decimals=9 transfer cannot satisfy a
+    decimals=6 challenge (mirrors the TS reference verifier). When either
+    side is absent we do not constrain on decimals, so confirmed-transaction
+    fixtures that omit the field still match on mint / amount / destination.
+    """
+    if expected is None or actual is None:
+        return True
+    return int(actual) == int(expected)
 
 
 def _verify_ata_owner(ata_address: str, expected_owner: str, mint: str, token_program: str) -> bool:
@@ -456,6 +485,10 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
                     "transaction token transfer references an unknown account", code="invalid-payload"
                 ) from exc
             amount = int.from_bytes(data[1:9], "little")
+            # transferChecked encodes the token decimals as the trailing
+            # byte (data[9]); surface it so the verifier can reject a
+            # decimals mismatch against the challenge.
+            decimals = data[9]
             instructions.append(
                 {
                     "programId": program_id,
@@ -464,7 +497,7 @@ def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, 
                         "info": {
                             "destination": destination,
                             "mint": mint,
-                            "tokenAmount": {"amount": str(amount)},
+                            "tokenAmount": {"amount": str(amount), "decimals": decimals},
                         },
                     },
                 }

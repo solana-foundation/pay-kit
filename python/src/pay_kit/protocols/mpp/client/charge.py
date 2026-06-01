@@ -72,6 +72,8 @@ async def build_charge_transaction(
     recipient: str,
     method_details: MethodDetails | None = None,
     external_id: str = "",
+    compute_unit_limit: int | None = None,
+    compute_unit_price: int | None = None,
 ) -> CredentialPayload:
     """Build a Solana transaction for a charge intent.
 
@@ -86,6 +88,11 @@ async def build_charge_transaction(
         recipient: Recipient public key (base58).
         external_id: Optional root payment memo requested by the server.
         method_details: Optional Solana-specific method details.
+        compute_unit_limit: Optional override for the SetComputeUnitLimit
+            prelude (defaults to 200_000), mirroring the Go ``BuildOptions``
+            and the TS ``buildChargeTransaction`` compute overrides.
+        compute_unit_price: Optional override for the SetComputeUnitPrice
+            prelude (defaults to 1 micro-lamport).
 
     Returns:
         A CredentialPayload with the signed transaction.
@@ -123,12 +130,17 @@ async def build_charge_transaction(
     # (program ComputeBudget111..., disc 3, u64 LE) THEN SetComputeUnitLimit(200_000)
     # (disc 2, u32 LE), both with zero accounts. Restores byte-level instruction
     # order parity with the rust/cross-impl clients for an identical challenge.
+    # The price / limit are overridable so a caller can build a transaction
+    # carrying values the server cap rejects (parity with the Go BuildOptions
+    # and the TS compute overrides).
+    price = compute_unit_price if compute_unit_price is not None else 1
+    limit = compute_unit_limit if compute_unit_limit is not None else 200_000
     compute_budget_program = Pubkey.from_string(COMPUTE_BUDGET_PROGRAM)
     instructions.append(
-        Instruction(compute_budget_program, bytes([3]) + (1).to_bytes(8, "little"), [])
+        Instruction(compute_budget_program, bytes([3]) + price.to_bytes(8, "little"), [])
     )
     instructions.append(
-        Instruction(compute_budget_program, bytes([2]) + (200_000).to_bytes(4, "little"), [])
+        Instruction(compute_budget_program, bytes([2]) + limit.to_bytes(4, "little"), [])
     )
 
     def append_memo(memo: str) -> None:

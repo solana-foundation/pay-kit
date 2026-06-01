@@ -560,11 +560,19 @@ def _validate_instruction_allowlist(
                         code="invalid-payload",
                     )
             amount = int.from_bytes(data[1:9], "little")
+            # transferChecked encodes the token decimals as the trailing byte
+            # (data[9]); reject a mismatch against the challenge decimals so a
+            # transfer targeting a different mint precision cannot satisfy a
+            # required leg. Mirrors the parsed-transfer matcher and the TS
+            # reference verifier (server/Charge.ts verifySplTransferPreBroadcast).
+            decimals = data[9]
             match_idx = next(
                 (
                     i
                     for i, (rcpt, amt) in enumerate(remaining_transfers)
-                    if amt == amount and _verify_ata_owner(destination, rcpt, mint, program_id)
+                    if amt == amount
+                    and (details.decimals is None or decimals == details.decimals)
+                    and _verify_ata_owner(destination, rcpt, mint, program_id)
                 ),
                 -1,
             )
