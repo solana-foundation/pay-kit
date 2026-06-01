@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "solana-mpp"
+name = "solana-pay-kit"
 version = "0.1.0"
 description = "Solana payment method for the Machine Payments Protocol"
 requires-python = ">=3.11"
@@ -12,9 +12,14 @@ dependencies = [
     "httpx>=0.27",
     "solders>=0.22",
     "solana>=0.35",
+    "pydantic>=2",
+    "pydantic-settings>=2",
 ]
 
 [project.optional-dependencies]
+fastapi = ["fastapi>=0.110"]
+flask = ["flask>=3"]
+django = ["django>=4.2"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
@@ -24,7 +29,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/solana_mpp"]
+packages = ["src/pay_kit"]
 
 [tool.ruff]
 target-version = "py311"
@@ -36,17 +41,63 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+# Strict scope is the hand-authored pay_kit SDK surface plus the two protocol
+# adapters/verifier (pay_kit/protocols/mpp/__init__.py, pay_kit/protocols/x402/*).
+# The MPP wire layer consolidated in from the former solana_mpp package
+# (pay_kit/_paycore/solana.py and pay_kit/protocols/mpp/{core,server,client,intents})
+# was authored under standard typing and is left at standard to keep its
+# behavior byte-identical; tightening it to strict is follow-up typing work.
+strict = [
+    "src/pay_kit/__init__.py",
+    "src/pay_kit/_middleware.py",
+    "src/pay_kit/config.py",
+    "src/pay_kit/django.py",
+    "src/pay_kit/errors.py",
+    "src/pay_kit/fastapi.py",
+    "src/pay_kit/fee.py",
+    "src/pay_kit/flask.py",
+    "src/pay_kit/gate.py",
+    "src/pay_kit/kms.py",
+    "src/pay_kit/operator.py",
+    "src/pay_kit/payment.py",
+    "src/pay_kit/preflight.py",
+    "src/pay_kit/price.py",
+    "src/pay_kit/pricing.py",
+    "src/pay_kit/signer.py",
+    "src/pay_kit/_paycore/__init__.py",
+    "src/pay_kit/_paycore/currency.py",
+    "src/pay_kit/_paycore/mints.py",
+    "src/pay_kit/_paycore/network.py",
+    "src/pay_kit/_paycore/protocol.py",
+    "src/pay_kit/_paycore/stablecoin.py",
+    "src/pay_kit/protocols/__init__.py",
+    "src/pay_kit/protocols/mpp/__init__.py",
+    "src/pay_kit/protocols/x402/__init__.py",
+    "src/pay_kit/protocols/x402/exact/__init__.py",
+    "src/pay_kit/protocols/x402/exact/types.py",
+    "src/pay_kit/protocols/x402/exact/verify.py",
+    "src/pay_kit/protocols/x402/client/__init__.py",
+    "src/pay_kit/protocols/x402/client/exact/__init__.py",
+    "src/pay_kit/protocols/x402/client/exact/payment.py",
+    "src/pay_kit/protocols/x402/client/exact/transport.py",
+]
+reportMissingTypeStubs = false
 include = ["src", "tests"]
+exclude = ["**/__pycache__"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["solana_mpp"]
+source = ["pay_kit"]
 # Line coverage gate is 90%. Branch coverage is follow-up work tracked in
 # issue #108.
 branch = false
+# pay_kit/preflight.py wraps live Solana RPC + Surfnet cheatcodes that cannot
+# run inside the offline unit suite; every meaningful path is a network call.
+# Its two opt-out knobs are covered separately against a stubbed run/RPC.
+omit = ["src/pay_kit/preflight.py"]
 
 [tool.coverage.report]
 fail_under = 90

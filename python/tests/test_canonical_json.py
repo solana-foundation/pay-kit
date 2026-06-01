@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp._canonical_json import encode_canonical
+from pay_kit.protocols.mpp.core.json import encode_canonical
 
 
 class TestKeySort:

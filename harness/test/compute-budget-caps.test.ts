@@ -91,11 +91,11 @@ const SDKS: Sdk[] = [
     pricePattern: /maxComputeUnitPriceMicroLamports\s+uint64\s*=\s*([0-9_]+)/,
     optional: true,
   },
-  // Python #106 lands MAX_COMPUTE_UNIT_* in python/src/solana_mpp/server/mpp.py;
-  // gated until merge.
+  // Python #106 lands MAX_COMPUTE_UNIT_* in
+  // python/src/pay_kit/protocols/mpp/server/charge.py; gated until merge.
   {
     language: "python",
-    file: "python/src/solana_mpp/server/mpp.py",
+    file: "python/src/pay_kit/protocols/mpp/server/charge.py",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9_]+)/,
     optional: true,

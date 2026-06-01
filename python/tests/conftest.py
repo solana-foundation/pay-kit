@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._types import PaymentChallenge
-from solana_mpp.server.mpp import Config, Mpp
-from solana_mpp.store import MemoryStore
+from pay_kit._paycore.store import MemoryStore
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.types import PaymentChallenge
+from pay_kit.protocols.mpp.server.charge import Config, Mpp
 
 TEST_SECRET_KEY = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 

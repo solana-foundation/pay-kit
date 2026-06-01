@@ -1,4 +1,4 @@
-"""Edge-case coverage for solana_mpp.client.charge."""
+"""Edge-case coverage for pay_kit.protocols.mpp.client.charge."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._headers import parse_authorization
-from solana_mpp._types import PaymentChallenge
-from solana_mpp.client.charge import (
+from pay_kit._paycore.solana import MethodDetails, Split
+from pay_kit.protocols.mpp.client.charge import (
     build_charge_transaction,
     build_credential_header,
 )
-from solana_mpp.protocol.solana import MethodDetails, Split
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.headers import parse_authorization
+from pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 BLOCKHASH = "11111111111111111111111111111111"
 
@@ -59,19 +59,32 @@ async def test_build_charge_transaction_fetches_blockhash_when_unset():
     assert payload.type == "transaction"
 
 
-async def test_build_charge_transaction_spl_raises_not_implemented():
+async def test_build_charge_transaction_spl_raw_mint_builds_transfer_checked():
+    # currency given as a raw mint address (not a known symbol): resolve_mint
+    # passes it through and the client builds an SPL TransferChecked to the
+    # recipient ATA. Guards against regressing the SPL client path back to a stub.
+    import base64
+
+    from solders.transaction import Transaction
+
     signer = Keypair()
     recipient = str(Keypair().pubkey())
-    with pytest.raises(NotImplementedError):
-        await build_charge_transaction(
-            signer=signer,
-            rpc_client=None,
-            amount="100",
-            currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            recipient=recipient,
-            external_id="",
-            method_details=MethodDetails(recent_blockhash=BLOCKHASH),
-        )
+    payload = await build_charge_transaction(
+        signer=signer,
+        rpc_client=None,
+        amount="100",
+        currency="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        recipient=recipient,
+        external_id="",
+        method_details=MethodDetails(recent_blockhash=BLOCKHASH, decimals=6),
+    )
+
+    tx = Transaction.from_bytes(base64.b64decode(payload.transaction))
+    transfer_checked = [bytes(ix.data) for ix in tx.message.instructions if bytes(ix.data)[:1] == b"\x0c"]
+    assert len(transfer_checked) == 1
+    data = transfer_checked[0]
+    assert int.from_bytes(data[1:9], "little") == 100  # amount
+    assert data[9] == 6  # decimals
 
 
 async def test_build_charge_transaction_splits_consume_entire_amount_raises():
@@ -122,9 +135,7 @@ async def test_build_credential_header_wraps_charge_transaction():
             "methodDetails": {"recentBlockhash": BLOCKHASH},
         }
     )
-    challenge = PaymentChallenge(
-        id="c1", realm="api", method="solana", intent="charge", request=request
-    )
+    challenge = PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request)
     header = await build_credential_header(
         challenge=challenge,
         signer=signer,
@@ -140,12 +151,8 @@ async def test_build_credential_header_wraps_charge_transaction():
 async def test_build_credential_header_without_method_details():
     signer = Keypair()
     recipient = str(Keypair().pubkey())
-    request = encode_json(
-        {"amount": "100", "currency": "sol", "recipient": recipient}
-    )
-    challenge = PaymentChallenge(
-        id="c1", realm="api", method="solana", intent="charge", request=request
-    )
+    request = encode_json({"amount": "100", "currency": "sol", "recipient": recipient})
+    challenge = PaymentChallenge(id="c1", realm="api", method="solana", intent="charge", request=request)
     rpc = _FakeRpcClient()
     header = await build_credential_header(
         challenge=challenge,

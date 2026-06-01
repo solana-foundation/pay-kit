@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from solana_mpp._base64url import encode_json
-from solana_mpp._types import PaymentChallenge
-from solana_mpp.server.payment_page import (
+from pay_kit.protocols.mpp.core.base64url import encode_json
+from pay_kit.protocols.mpp.core.types import PaymentChallenge
+from pay_kit.protocols.mpp.server.payment_page import (
     SERVICE_WORKER_PARAM,
     accepts_html,
     challenge_to_html,
@@ -108,7 +108,10 @@ class TestChallengeToHtml:
 
     def test_network_devnet(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "1000"}),
         )
         html = challenge_to_html(challenge, "https://api.devnet.solana.com", "devnet")
@@ -117,7 +120,10 @@ class TestChallengeToHtml:
 
     def test_network_mainnet(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "1000"}),
         )
         html = challenge_to_html(challenge, "https://api.mainnet-beta.solana.com", "mainnet-beta")
@@ -125,7 +131,10 @@ class TestChallengeToHtml:
 
     def test_amount_display_sol(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": str(2 * 10**9), "currency": "SOL"}),
         )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
@@ -133,7 +142,10 @@ class TestChallengeToHtml:
 
     def test_amount_display_usdc_symbol(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "1500000", "currency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"}),
         )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
@@ -142,7 +154,10 @@ class TestChallengeToHtml:
 
     def test_amount_display_unknown_token(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "12345678", "currency": "ABCDEFGHIJKLMNOP"}),
         )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
@@ -151,7 +166,10 @@ class TestChallengeToHtml:
 
     def test_amount_display_uses_methoddetails_decimals(self):
         challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge",
+            id="t",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "100000000", "currency": "FOO", "methodDetails": {"decimals": 8}}),
         )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
@@ -160,15 +178,16 @@ class TestChallengeToHtml:
 
     def test_malformed_request_falls_back(self):
         # Non base64url request body must not raise; renders 0 default amount.
-        challenge = PaymentChallenge(
-            id="t", realm="api", method="solana", intent="charge", request="not_base64_!!!"
-        )
+        challenge = PaymentChallenge(id="t", realm="api", method="solana", intent="charge", request="not_base64_!!!")
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")
         assert "<!doctype html>" in html
 
     def test_embedded_data_contains_required_fields(self):
         challenge = PaymentChallenge(
-            id="abc", realm="api", method="solana", intent="charge",
+            id="abc",
+            realm="api",
+            method="solana",
+            intent="charge",
             request=encode_json({"amount": "1"}),
         )
         html = challenge_to_html(challenge, "http://localhost:8899", "localnet")

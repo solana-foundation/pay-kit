@@ -11,16 +11,16 @@ import os
 import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from solana_mpp._headers import format_www_authenticate, parse_authorization
-from solana_mpp._rpc import SolanaRpc
-from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
-from solana_mpp.server.payment_page import (
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from pay_kit._paycore.rpc import SolanaRpc
+from pay_kit.protocols.mpp.server.charge import ChargeOptions, Config, Mpp
+from pay_kit.protocols.mpp.server.payment_page import (
     accepts_html,
     challenge_to_html,
     is_service_worker_request,
     service_worker_js,
 )
-from solana_mpp.store import MemoryStore
+from pay_kit._paycore.store import MemoryStore
 
 RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"

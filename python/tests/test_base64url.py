@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from solana_mpp._base64url import decode, decode_json, encode, encode_json
+from pay_kit.protocols.mpp.core.base64url import decode, decode_json, encode, encode_json
 
 
 def test_encode_decode_roundtrip():

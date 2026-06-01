@@ -123,9 +123,9 @@ jobs:
       - name: Verify committed gen files are up to date
         working-directory: .
         run: |
-          if ! git diff --quiet -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/; then
+          if ! git diff --quiet -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/; then
             echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
-            git diff --stat -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/
+            git diff --stat -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/
             exit 1
           fi
       - name: Upload HTML build artifacts
@@ -137,7 +137,7 @@ jobs:
             rust/src/server/html/
             go/protocols/mpp/server/html/
             lua/mpp/server/html_assets/
-            python/src/solana_mpp/server/html/
+            python/src/pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
   test-rust:

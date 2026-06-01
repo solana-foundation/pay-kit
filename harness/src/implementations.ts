@@ -130,6 +130,22 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("go-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "python-x402",
+    label: "Python pay_kit x402 exact client",
+    role: "client",
+    // Drives the pay_kit x402 exact client (parse challenge -> build a signed
+    // v0 VersionedTransaction -> PAYMENT-SIGNATURE -> retry). Inserts python/src
+    // on sys.path like harness/python-server/server.py. Default OFF to match the
+    // go/swift/kotlin/ruby adapters: the default matrix should not require a
+    // Python toolchain on every contributor's machine. Opt in via
+    // `X402_INTEROP_CLIENTS=python-x402` (the focused python-x402 CI job sets
+    // this). Carries a real signed Solana transaction, so it settles end-to-end
+    // against the rust/ts/python x402 servers (see test/x402-exact.e2e.test.ts).
+    command: ["python3", "python-x402-client/main.py"],
+    enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", false),
+    intents: ["x402-exact"],
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
@@ -216,15 +232,26 @@ export const serverImplementations: ImplementationDefinition[] = [
   },
   {
     id: "python",
-    label: "Python HTTP server",
+    label: "Python pay_kit server (dual protocol)",
     role: "server",
-    // Default OFF to match the other newly-landed adapters (PHP, Ruby, Go).
-    // The default interop matrix should not require a Python toolchain on
-    // every contributor's machine; opt-in via
-    // ``MPP_INTEROP_SERVERS=python`` (or the dedicated focused-matrix CI
-    // jobs in .github/workflows/python.yml).
-    command: ["python3", "python-server/main.py"],
+    // One adapter binary, two settle paths. The dual-protocol Python
+    // pay_kit server (harness/python-server/server.py) reads either
+    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL for the
+    // matrix's both-namespaces shape) and routes x402 through the umbrella's
+    // X402Adapter and MPP charge through the lower-level
+    // pay_kit.protocols.mpp handler (the umbrella's ticker-based currency
+    // model fits x402's resolved-mint asset, but the pubkey-mode MPP charge
+    // matrix needs the literal mint as currency). Same split as the PHP
+    // adapter. Default OFF to match the other newly-landed adapters (PHP,
+    // Ruby): the default interop matrix should not require a Python toolchain
+    // on every contributor's machine; opt in via
+    // ``MPP_INTEROP_SERVERS=python`` (charge) /
+    // ``MPP_INTEROP_SERVERS=python X402_INTEROP_CLIENTS=rust-x402`` with
+    // ``MPP_INTEROP_INTENTS=x402-exact`` (x402-exact), or the dedicated
+    // focused-matrix CI jobs in .github/workflows/python.yml.
+    command: ["python3", "python-server/server.py"],
     enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
+    intents: ["charge", "x402-exact"],
   },
   {
     id: "go",

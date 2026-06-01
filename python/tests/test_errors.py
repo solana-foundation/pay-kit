@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from solana_mpp._errors import (
+from pay_kit._paycore.errors import (
     ChallengeExpiredError,
     ChallengeMismatchError,
     PaymentError,
@@ -61,7 +61,7 @@ class TestCanonicalCodes:
     """L6 / P1 lock: every 402 path emits one of the canonical codes."""
 
     def test_canonical_codes_set(self):
-        from solana_mpp._errors import CANONICAL_CODES
+        from pay_kit._paycore.errors import CANONICAL_CODES
 
         assert (
             frozenset(
@@ -79,13 +79,13 @@ class TestCanonicalCodes:
         )
 
     def test_canonical_code_returns_canonical_unchanged(self):
-        from solana_mpp._errors import canonical_code
+        from pay_kit._paycore.errors import canonical_code
 
         assert canonical_code("payment_invalid") == "payment_invalid"
         assert canonical_code("wrong_network") == "wrong_network"
 
     def test_canonical_code_maps_legacy_kebab(self):
-        from solana_mpp._errors import canonical_code
+        from pay_kit._paycore.errors import canonical_code
 
         assert canonical_code("challenge-expired") == "challenge_expired"
         assert canonical_code("signature-consumed") == "signature_consumed"
@@ -100,7 +100,7 @@ class TestCanonicalCodes:
         # route/realm/method/intent/currency MUST surface as
         # ``challenge_route_mismatch``, not as ``challenge_verification_failed``.
         # Codex P2 fix.
-        from solana_mpp._errors import canonical_code
+        from pay_kit._paycore.errors import canonical_code
 
         assert canonical_code("challenge-mismatch") == "challenge_verification_failed"
         assert canonical_code("currency-mismatch") == "challenge_route_mismatch"
@@ -109,7 +109,7 @@ class TestCanonicalCodes:
         assert canonical_code("realm-mismatch") == "challenge_route_mismatch"
 
     def test_canonical_code_falls_back_to_payment_invalid(self):
-        from solana_mpp._errors import canonical_code
+        from pay_kit._paycore.errors import canonical_code
 
         assert canonical_code("unknown-thing") == "payment_invalid"
         assert canonical_code("") == "payment_invalid"
@@ -117,7 +117,7 @@ class TestCanonicalCodes:
 
 class TestPaymentRequiredResponseBuilder:
     def test_emits_canonical_code(self):
-        from solana_mpp._errors import payment_required_response
+        from pay_kit._paycore.errors import payment_required_response
 
         resp = payment_required_response("nope", code="challenge-expired")
         assert resp["status_code"] == 402
@@ -129,19 +129,19 @@ class TestPaymentRequiredResponseBuilder:
         assert resp["headers"]["content-type"] == "application/problem+json"
 
     def test_includes_challenge_header_when_provided(self):
-        from solana_mpp._errors import payment_required_response
+        from pay_kit._paycore.errors import payment_required_response
 
         resp = payment_required_response("challenge", code="payment_invalid", challenge_header='Payment id="x"')
         assert resp["headers"]["www-authenticate"] == 'Payment id="x"'
 
     def test_omits_challenge_header_by_default(self):
-        from solana_mpp._errors import payment_required_response
+        from pay_kit._paycore.errors import payment_required_response
 
         resp = payment_required_response("x", code="payment_invalid")
         assert "www-authenticate" not in resp["headers"]
 
     def test_unknown_code_falls_back_to_payment_invalid(self):
-        from solana_mpp._errors import payment_required_response
+        from pay_kit._paycore.errors import payment_required_response
 
         resp = payment_required_response("x", code="foo-bar-baz")
         assert resp["body"]["code"] == "payment_invalid"
