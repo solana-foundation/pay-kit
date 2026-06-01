@@ -119,6 +119,12 @@ pub struct SubscriptionConfig {
     /// published on-chain. Must be passed verbatim to `SubscribeData`
     /// or the program rejects with a terms mismatch.
     pub plan_created_at: Option<i64>,
+    /// Human-readable description carried into the `PaymentChallenge` and
+    /// the embedded `SubscriptionRequest`. Surfaces in client UIs (Touch
+    /// ID prompts, `pay subscriptions list/status`) so users can see what
+    /// they're paying for. Typically the endpoint's `description:` YAML
+    /// field.
+    pub description: Option<String>,
 }
 
 impl Default for SubscriptionConfig {
@@ -145,6 +151,7 @@ impl Default for SubscriptionConfig {
             plan_id_numeric: None,
             plan_bump: None,
             plan_created_at: None,
+            description: None,
         }
     }
 }
@@ -314,6 +321,7 @@ impl SubscriptionServer {
             period_count: self.config.period_count.to_string(),
             recipient: self.config.recipient.clone(),
             subscription_expires: self.config.subscription_expires.clone(),
+            description: self.config.description.clone(),
             method_details: Some(method_details_value),
             ..Default::default()
         };
@@ -329,7 +337,11 @@ impl SubscriptionServer {
             encoded,
             Some(&default_expires),
             None,
-            None,
+            // Surface the endpoint description on the top-level challenge
+            // too — pay's client checks challenge.description first when
+            // building the Touch ID prompt, falling back to
+            // request.description only when the top-level is unset.
+            self.config.description.as_deref(),
             None,
         ))
     }
@@ -564,11 +576,17 @@ impl SubscriptionServer {
         Ok(receipt)
     }
 
-    /// Broadcast a signed transaction and wait for confirmation.
+    /// Broadcast a signed transaction and wait for `confirmed` (NOT
+    /// `finalized`). The 402 caller is blocked on this round-trip, so
+    /// every extra slot is a second of UX latency. `confirmed` means
+    /// supermajority observed it (~1-2 slots, ~400-800ms); finalisation
+    /// happens behind the scenes regardless and the subscription will
+    /// still be honoured on the next request.
     async fn broadcast_and_confirm(
         &self,
         tx: &Transaction,
     ) -> Result<Signature, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
         use solana_rpc_client::rpc_client::RpcClient;
         let rpc_url = self.rpc_url.clone();
         let serialized = bincode::serialize(tx).map_err(|e| {
@@ -576,7 +594,7 @@ impl SubscriptionServer {
         })?;
         // RpcClient is blocking; offload to a worker thread.
         tokio::task::spawn_blocking(move || {
-            let rpc = RpcClient::new(rpc_url);
+            let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let tx: Transaction = bincode::deserialize(&serialized).map_err(|e| {
                 VerificationError::invalid_payload(format!("tx round-trip: {e}"))
             })?;
