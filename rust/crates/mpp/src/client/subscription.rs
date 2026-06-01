@@ -104,8 +104,7 @@ pub async fn build_subscription_activation_transaction_with_options(
     let (subscription_authority, _) =
         find_subscription_authority_pda(&subscriber, &mint, &program_id);
     let (subscription_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
-    let (event_authority, _) =
-        crate::program::subscriptions::find_event_authority_pda(&program_id);
+    let (event_authority, _) = crate::program::subscriptions::find_event_authority_pda(&program_id);
 
     // ATA derivation: SPL Token associated-token program seeds are
     // `[owner, token_program, mint]`. Both SPL Token and Token-2022 share
@@ -138,9 +137,7 @@ pub async fn build_subscription_activation_transaction_with_options(
         Error::Other("methodDetails.planBump is required to build SubscribeData".into())
     })?;
     let expected_period_hours = method_details.expected_period_hours.ok_or_else(|| {
-        Error::Other(
-            "methodDetails.expectedPeriodHours is required to build SubscribeData".into(),
-        )
+        Error::Other("methodDetails.expectedPeriodHours is required to build SubscribeData".into())
     })?;
     let expected_created_at = method_details.expected_created_at.ok_or_else(|| {
         Error::Other(
@@ -175,7 +172,10 @@ pub async fn build_subscription_activation_transaction_with_options(
     // `CreateIdempotent` is a no-op when the ATA is already in place,
     // so we always prepend it. Rent is paid by the fee_payer when
     // sponsorship is on, otherwise by the subscriber.
-    let ata_funder = match (method_details.fee_payer, method_details.fee_payer_key.as_deref()) {
+    let ata_funder = match (
+        method_details.fee_payer,
+        method_details.fee_payer_key.as_deref(),
+    ) {
         (true, Some(k)) => parse_pubkey(k, "feePayerKey")?,
         _ => subscriber,
     };
@@ -262,25 +262,27 @@ pub async fn build_subscription_activation_transaction_with_options(
         },
     ));
 
-    instructions.push(crate::program::subscriptions::build_transfer_subscription_ix(
-        program_id,
-        crate::program::subscriptions::TransferSubscriptionAccounts {
-            subscription_pda,
-            plan_pda,
-            subscription_authority,
-            delegator_ata: subscriber_ata,
-            receiver_ata: recipient_ata,
-            caller: puller,
-            token_mint: mint,
-            token_program,
-            event_authority,
-        },
-        &crate::program::subscriptions::TransferData {
-            amount,
-            delegator: subscriber,
-            mint,
-        },
-    ));
+    instructions.push(
+        crate::program::subscriptions::build_transfer_subscription_ix(
+            program_id,
+            crate::program::subscriptions::TransferSubscriptionAccounts {
+                subscription_pda,
+                plan_pda,
+                subscription_authority,
+                delegator_ata: subscriber_ata,
+                receiver_ata: recipient_ata,
+                caller: puller,
+                token_mint: mint,
+                token_program,
+                event_authority,
+            },
+            &crate::program::subscriptions::TransferData {
+                amount,
+                delegator: subscriber,
+                mint,
+            },
+        ),
+    );
 
     if let Some(external_id) = options.external_id.as_deref() {
         instructions.push(build_memo_instruction(external_id));
@@ -376,8 +378,11 @@ async fn ensure_subscription_authority_init_id(
     let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
     tx.signatures[0] = sig;
 
-    rpc.send_and_confirm_transaction(&tx)
-        .map_err(|e| Error::Other(format!("Failed to broadcast SubscriptionAuthority init: {e}")))?;
+    rpc.send_and_confirm_transaction(&tx).map_err(|e| {
+        Error::Other(format!(
+            "Failed to broadcast SubscriptionAuthority init: {e}"
+        ))
+    })?;
 
     let account = rpc.get_account(&subscription_authority).map_err(|e| {
         Error::Other(format!(

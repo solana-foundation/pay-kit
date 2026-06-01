@@ -2,9 +2,9 @@
 //!
 //! No regex — minimal dependencies.
 
-use super::challenge::{PaymentChallenge, PaymentCredential, ReceiptKind};
 #[cfg(test)]
 use super::challenge::Receipt;
+use super::challenge::{PaymentChallenge, PaymentCredential, ReceiptKind};
 use super::types::{base64url_decode, base64url_encode, Base64UrlJson, IntentName, MethodName};
 use crate::error::Error;
 use std::collections::HashMap;
@@ -448,7 +448,10 @@ mod tests {
                 assert_eq!(parsed_base.reference, base.reference);
                 assert_eq!(parsed_ext.subscription_id, extensions.subscription_id);
                 assert_eq!(parsed_ext.period_index, "0");
-                assert_eq!(parsed_ext.expires_at.as_deref(), Some("2026-07-14T12:00:00Z"));
+                assert_eq!(
+                    parsed_ext.expires_at.as_deref(),
+                    Some("2026-07-14T12:00:00Z")
+                );
             }
             ReceiptKind::Charge(_) => {
                 panic!("untagged enum must prefer Subscription when extension fields are present")

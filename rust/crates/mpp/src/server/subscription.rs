@@ -35,16 +35,16 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::Transaction;
 
-use crate::protocol::intents::SubscriptionMethodDetails;
 use crate::error::Error;
 use crate::expires;
 use crate::program::subscriptions::{
-    find_subscription_pda, parse_pubkey, INSTRUCTION_SUBSCRIBE,
-    INSTRUCTION_TRANSFER_SUBSCRIPTION, SUBSCRIPTIONS_PROGRAM_ID,
+    find_subscription_pda, parse_pubkey, INSTRUCTION_SUBSCRIBE, INSTRUCTION_TRANSFER_SUBSCRIPTION,
+    SUBSCRIPTIONS_PROGRAM_ID,
 };
 use crate::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
 };
+use crate::protocol::intents::SubscriptionMethodDetails;
 use crate::protocol::intents::{
     ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
     SubscriptionRequest,
@@ -257,15 +257,12 @@ impl SubscriptionServer {
         // camelCase serde-driven from the struct definition; no manual
         // JSON pokery.
         let fee_payer_key = if self.config.fee_payer {
-            self.config
-                .fee_payer_pubkey
-                .clone()
-                .or_else(|| {
-                    self.config
-                        .fee_payer_signer
-                        .as_ref()
-                        .map(|s| s.pubkey().to_string())
-                })
+            self.config.fee_payer_pubkey.clone().or_else(|| {
+                self.config
+                    .fee_payer_signer
+                    .as_ref()
+                    .map(|s| s.pubkey().to_string())
+            })
         } else {
             None
         };
@@ -409,11 +406,9 @@ impl SubscriptionServer {
         }
 
         // ── Decode the challenge request ─────────────────────────────────
-        let request: SubscriptionRequest = credential
-            .challenge
-            .request
-            .decode()
-            .map_err(|e| VerificationError::invalid_payload(format!("Failed to decode request: {e}")))?;
+        let request: SubscriptionRequest = credential.challenge.request.decode().map_err(|e| {
+            VerificationError::invalid_payload(format!("Failed to decode request: {e}"))
+        })?;
 
         if request.currency != self.config.mint {
             return Err(VerificationError::credential_mismatch(format!(
@@ -472,8 +467,10 @@ impl SubscriptionServer {
                     .map_err(|e| VerificationError::new(e.to_string()))?;
                 let (delegation_pda, _) =
                     find_subscription_pda(&plan_pda, &subscriber, &program_id);
-                let delegation_already_exists =
-                    self.fetch_subscription_delegation(&delegation_pda).await.is_ok();
+                let delegation_already_exists = self
+                    .fetch_subscription_delegation(&delegation_pda)
+                    .await
+                    .is_ok();
 
                 let sig = if delegation_already_exists {
                     // Look up the original landing tx so the receipt can
@@ -511,7 +508,9 @@ impl SubscriptionServer {
             .map_err(|e| VerificationError::new(e.to_string()))?;
         let (subscription_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
 
-        let delegation = self.fetch_subscription_delegation(&subscription_pda).await?;
+        let delegation = self
+            .fetch_subscription_delegation(&subscription_pda)
+            .await?;
 
         // ── Validate snapshotted terms ──────────────────────────────────
         let expected_amount: u64 = request.amount.parse().map_err(|_| {
@@ -595,9 +594,8 @@ impl SubscriptionServer {
         // RpcClient is blocking; offload to a worker thread.
         tokio::task::spawn_blocking(move || {
             let rpc = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-            let tx: Transaction = bincode::deserialize(&serialized).map_err(|e| {
-                VerificationError::invalid_payload(format!("tx round-trip: {e}"))
-            })?;
+            let tx: Transaction = bincode::deserialize(&serialized)
+                .map_err(|e| VerificationError::invalid_payload(format!("tx round-trip: {e}")))?;
             rpc.send_and_confirm_transaction(&tx).map_err(|e| {
                 VerificationError::transaction_failed(format!("Broadcast failed: {e}"))
             })
@@ -650,14 +648,11 @@ impl SubscriptionServer {
             })?;
             // The activation tx is the oldest signature for this PDA — the
             // RPC returns newest-first, so take the last entry.
-            sigs.into_iter()
-                .last()
-                .map(|s| s.signature)
-                .ok_or_else(|| {
-                    VerificationError::not_found(format!(
-                        "No signatures returned for SubscriptionDelegation {pda}"
-                    ))
-                })
+            sigs.into_iter().last().map(|s| s.signature).ok_or_else(|| {
+                VerificationError::not_found(format!(
+                    "No signatures returned for SubscriptionDelegation {pda}"
+                ))
+            })
         })
         .await
         .map_err(|e| VerificationError::network_error(format!("RPC task join: {e}")))?
@@ -760,15 +755,12 @@ fn extract_subscriber_from_tx(
     // signer (when one is configured).
     let fee_payer_in_play = config.fee_payer;
     let fee_payer_pubkey: Option<Pubkey> = if fee_payer_in_play {
-        let key_str = config
-            .fee_payer_pubkey
-            .clone()
-            .or_else(|| {
-                config
-                    .fee_payer_signer
-                    .as_ref()
-                    .map(|s| s.pubkey().to_string())
-            });
+        let key_str = config.fee_payer_pubkey.clone().or_else(|| {
+            config
+                .fee_payer_signer
+                .as_ref()
+                .map(|s| s.pubkey().to_string())
+        });
         match key_str {
             Some(s) => Some(
                 parse_pubkey(&s, "fee_payer_key")
@@ -947,9 +939,7 @@ const SUBSCRIPTION_DELEGATION_LEN: usize = 1  // discriminator
     + 8  // current_period_start_ts
     + 8; // expires_at_ts
 
-fn decode_subscription_delegation(
-    data: &[u8],
-) -> Result<SubscriptionDelegationView, String> {
+fn decode_subscription_delegation(data: &[u8]) -> Result<SubscriptionDelegationView, String> {
     if data.len() < SUBSCRIPTION_DELEGATION_LEN {
         return Err(format!(
             "SubscriptionDelegation account too short: {} bytes (need >= {SUBSCRIPTION_DELEGATION_LEN})",
@@ -1337,7 +1327,13 @@ mod tests {
             ..Default::default()
         };
         let encoded = Base64UrlJson::from_typed(&body).unwrap();
-        PaymentChallenge::with_secret_key("test-secret", "test-realm", "solana", "subscription", encoded)
+        PaymentChallenge::with_secret_key(
+            "test-secret",
+            "test-realm",
+            "solana",
+            "subscription",
+            encoded,
+        )
     }
 
     #[tokio::test(flavor = "multi_thread")]

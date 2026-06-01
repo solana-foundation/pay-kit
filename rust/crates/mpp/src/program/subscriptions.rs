@@ -583,10 +583,7 @@ mod tests {
         )
         .unwrap();
         // First 29 bytes match the URI; the rest is zero-padded.
-        assert_eq!(
-            &data.metadata_uri[..29],
-            b"https://example.com/plan.json"
-        );
+        assert_eq!(&data.metadata_uri[..29], b"https://example.com/plan.json");
         assert!(data.metadata_uri[29..].iter().all(|b| *b == 0));
     }
 
@@ -768,10 +765,8 @@ mod tests {
             receiver_ata: Pubkey::new_unique(),
             caller: Pubkey::new_unique(),
             token_mint: Pubkey::new_unique(),
-            token_program: Pubkey::from_str(
-                crate::protocol::solana::programs::TOKEN_PROGRAM,
-            )
-            .unwrap(),
+            token_program: Pubkey::from_str(crate::protocol::solana::programs::TOKEN_PROGRAM)
+                .unwrap(),
             event_authority: find_event_authority_pda(&program).0,
         };
         let data = TransferData {
