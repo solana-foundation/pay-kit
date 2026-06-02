@@ -1,0 +1,5 @@
+{
+  "language": "php",
+  "command": ["php", "conformance/runner.php"],
+  "cwd": "php"
+}

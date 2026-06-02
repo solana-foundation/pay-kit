@@ -23,6 +23,7 @@ import {
   assertConformanceVector,
   assertRunnerResult,
 } from "../src/conformance/contract-schema";
+import { discoverRunners } from "../src/conformance/runners";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -32,7 +33,6 @@ import type {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vectorsDir = join(here, "..", "vectors");
-const tsRunner = join(here, "..", "src", "conformance", "ts-runner.ts");
 
 function loadVectors(): ConformanceVector[] {
   const files = readdirSync(vectorsDir).filter((name) => name.endsWith(".json"));
@@ -52,35 +52,12 @@ function loadVectors(): ConformanceVector[] {
   return vectors;
 }
 
-// One CLI per SDK over stdin/stdout. The TS reference runner is invoked
-// via tsx; other languages register their own command here. Each runner
-// runs from its own SDK directory (see RUNNER_CWD) so the suite needs no
-// separate build step beyond the per-language toolchain caches.
-const goRunnerDir = join(here, "..", "..", "go");
-const pythonRunnerDir = join(here, "..", "..", "python");
-const rubyRunnerDir = join(here, "..", "..", "ruby");
-const phpRunnerDir = join(here, "..", "..", "php");
-const luaRunnerDir = join(here, "..", "..", "lua");
-const RUNNERS: Record<string, string[]> = {
-  typescript: ["pnpm", "exec", "node", "--import", "tsx", tsRunner],
-  go: ["go", "run", "./cmd/conformance"],
-  python: ["uv", "run", "python", "conformance_runner.py"],
-  ruby: ["bundle", "exec", "ruby", "exe/conformance"],
-  php: ["php", "conformance/runner.php"],
-  lua: ["luajit", "cmd/conformance/main.lua"],
-};
-
-// Per-runner working directory. Defaults to the harness root; each
-// non-TypeScript runner must run from its own SDK tree so its toolchain
-// resolves the project (go module, uv venv, bundler Gemfile, vendor
-// autoloader, lua package path).
-const RUNNER_CWD: Record<string, string> = {
-  go: goRunnerDir,
-  python: pythonRunnerDir,
-  ruby: rubyRunnerDir,
-  php: phpRunnerDir,
-  lua: luaRunnerDir,
-};
+// One CLI per SDK over stdin/stdout, discovered from per-language manifest
+// files under harness/runners/ rather than a hardcoded table: adding a
+// language is a manifest drop with no edit here. Each runner declares its
+// own command + cwd (its SDK tree, so the toolchain resolves the project),
+// so the suite needs no separate build step beyond the per-language caches.
+const RUNNERS = discoverRunners();
 
 function runVector(
   command: string[],
@@ -262,8 +239,7 @@ describe("cross-SDK conformance vectors", () => {
     expect(modes.has("canonical-bytes")).toBe(true);
   });
 
-  for (const [language, command] of Object.entries(RUNNERS)) {
-    const runnerCwd = RUNNER_CWD[language] ?? join(here, "..");
+  for (const { language, command, cwd: runnerCwd } of RUNNERS) {
     describe(`${language} reference runner`, () => {
       for (const vector of vectors) {
         it(`${vector.id} (${vector.mode}) -> ${vector.expect.outcome}`, async (ctx) => {

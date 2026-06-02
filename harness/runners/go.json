@@ -1,0 +1,5 @@
+{
+  "language": "go",
+  "command": ["go", "run", "./cmd/conformance"],
+  "cwd": "go"
+}
