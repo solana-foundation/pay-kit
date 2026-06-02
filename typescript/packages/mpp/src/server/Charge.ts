@@ -245,7 +245,18 @@ type CompiledInstruction = {
     programAddressIndex: number;
 };
 
-async function verifyBase64TransactionPreBroadcast(clientTxBase64: string, challenge: ChallengeRequest) {
+/**
+ * RPC-free pre-broadcast verification of a base64-encoded charge transaction
+ * against the challenge it answers: split-count, address-lookup-table,
+ * compute-budget, transfer, memo, and instruction-allowlist checks, up to the
+ * simulate/send boundary. This is the deterministic half of the charge server
+ * verify path; it runs no HMAC challenge step and reaches no live RPC.
+ *
+ * Exported so the cross-SDK conformance harness can assert the verifier's
+ * accept/reject decision against a fixed transaction. A resolved promise means
+ * the transaction conforms; a rejected promise carries the rejection reason.
+ */
+export async function verifyChargeTransaction(clientTxBase64: string, challenge: ChallengeRequest) {
     let message: CompiledMessage;
     try {
         const txBytes = getBase64Codec().encode(clientTxBase64);
@@ -659,7 +670,7 @@ async function verifyTransaction(
         checkNetworkBlockhash(network, recentBlockhash);
     }
 
-    await verifyBase64TransactionPreBroadcast(clientTxBase64, challenge);
+    await verifyChargeTransaction(clientTxBase64, challenge);
 
     let txToSend = clientTxBase64;
 
