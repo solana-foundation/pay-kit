@@ -24,6 +24,7 @@ import {
   assertRunnerResult,
 } from "../src/conformance/contract-schema";
 import { discoverRunners } from "../src/conformance/runners";
+import { parseLanguageAllowlist } from "../src/conformance/select";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -57,7 +58,14 @@ function loadVectors(): ConformanceVector[] {
 // language is a manifest drop with no edit here. Each runner declares its
 // own command + cwd (its SDK tree, so the toolchain resolves the project),
 // so the suite needs no separate build step beyond the per-language caches.
-const RUNNERS = discoverRunners();
+//
+// CI can narrow the set to the languages a PR actually touches via
+// MPP_CONFORMANCE_LANGUAGES (a comma-separated allowlist; see
+// scripts/select-conformance-runners.mjs). Unset = run every runner.
+const allowlist = parseLanguageAllowlist(process.env.MPP_CONFORMANCE_LANGUAGES);
+const RUNNERS = discoverRunners().filter(
+  (runner) => !allowlist || allowlist.has(runner.language),
+);
 
 function runVector(
   command: string[],
