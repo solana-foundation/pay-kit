@@ -134,20 +134,20 @@ func (c *Client) write402(w http.ResponseWriter, r *http.Request, gate *Gate, pe
 	}
 	accepts := []AcceptsEntry{}
 	headers := map[string]string{}
-	if c.x402Adapter != nil && containsScheme(accept, X402) && !gate.HasFees() {
+	if c.x402Adapter != nil && containsProtocol(accept, X402) && !gate.HasFees() {
 		accepts = append(accepts, c.x402Adapter.AcceptsEntry(gate))
 		for k, v := range c.x402Adapter.ChallengeHeaders(gate) {
 			headers[k] = v
 		}
 	}
-	if c.mppAdapter != nil && containsScheme(accept, MPP) {
+	if c.mppAdapter != nil && containsProtocol(accept, MPP) {
 		accepts = append(accepts, c.mppAdapter.AcceptsEntry(gate))
 		for k, v := range c.mppAdapter.ChallengeHeaders(gate) {
 			headers[k] = v
 		}
 	}
 	perr.Gate = gate
-	perr.Schemes = accept
+	perr.Protocols = accept
 	perr.status = http.StatusPaymentRequired
 	perr.resource = r.URL.Path
 	perr.accepts = accepts
@@ -194,7 +194,7 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	})
 }
 
-func containsScheme(list []Scheme, want Scheme) bool {
+func containsProtocol(list []Protocol, want Protocol) bool {
 	for _, s := range list {
 		if s == want {
 			return true

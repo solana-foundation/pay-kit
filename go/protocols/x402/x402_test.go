@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	x402adapter "github.com/solana-foundation/pay-kit/go/protocols/x402"
-	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func cfg() paykit.Config {
 	return paykit.Config{
 		Network: paykit.SolanaLocalnet,
-		Accept:  []paykit.Scheme{paykit.X402},
+		Accept:  []paykit.Protocol{paykit.X402},
 		Operator: paykit.Operator{
 			Signer:    signer.Demo(),
 			Recipient: signer.Demo().Pubkey(),
@@ -157,7 +157,7 @@ func TestSchemeAccessor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Scheme() != paykit.X402 {
-		t.Errorf("scheme: got %v", a.Scheme())
+	if a.Protocol() != paykit.X402 {
+		t.Errorf("scheme: got %v", a.Protocol())
 	}
 }

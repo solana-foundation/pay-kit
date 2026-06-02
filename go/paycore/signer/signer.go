@@ -1,5 +1,5 @@
 // Package signer provides local, in-process Ed25519 signer factories
-// that satisfy [paykit.Signer]. Remote-enclave (KMS) backends are future work, not part of v1.
+// that satisfy [paykit.Signer]. Remote-enclave (KMS) backends are future work.
 //
 // Every constructor returns a [paykit.Signer] and (for the fallible
 // ones) a non-nil [*InvalidKeyError] on parse failure. The Must*

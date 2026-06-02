@@ -34,7 +34,7 @@ type Client struct {
 
 // ErrorHandler renders the response when a gated request is rejected.
 // The supplied error is a *PaymentError carrying the canonical code,
-// the gate, and the accepted schemes. Apps override it via
+// the gate, and the accepted protocols. Apps override it via
 // [Client.SetErrorHandler] to customize the 402 body or status.
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
@@ -55,11 +55,11 @@ func (c *Client) SetErrorHandler(h ErrorHandler) {
 // flushers land.
 func (c *Client) Close() error { return nil }
 
-// Adapter is the minimal contract a payment scheme adapter implements.
-// Each scheme package returns its [Adapter] via [RegisterAdapter] in
+// Adapter is the minimal contract a payment protocol adapter implements.
+// Each protocol package returns its [Adapter] via [RegisterAdapter] in
 // init().
 type Adapter interface {
-	Scheme() Scheme
+	Protocol() Protocol
 	// AcceptsEntry returns the protocol-specific entry the middleware
 	// embeds in the 402 body's `accepts[]` array. Each protocol
 	// package defines its own typed struct that satisfies the
@@ -80,7 +80,7 @@ type Adapter interface {
 // the 402 body's `accepts[]` array; protocols emit typed structs (not
 // map[string]any) per Ludo PR #146 review.
 type AcceptsEntry interface {
-	AcceptsProtocol() Scheme
+	AcceptsProtocol() Protocol
 }
 
 // AdapterRequest is the cross-adapter handoff shape. Avoids dragging
@@ -95,17 +95,17 @@ type AdapterRequest struct {
 	Gate          *Gate
 }
 
-// Builder is the constructor each scheme package registers. paykit.New
+// Builder is the constructor each protocol package registers. paykit.New
 // calls these once it has resolved the [Config].
 type Builder func(cfg Config) (Adapter, error)
 
-var registeredBuilders = map[Scheme]Builder{}
+var registeredBuilders = map[Protocol]Builder{}
 
-// RegisterAdapter is called from each scheme package's init() to plug
+// RegisterAdapter is called from each protocol package's init() to plug
 // its concrete [Adapter] into the umbrella [New] flow. Test helpers
 // can swap implementations by re-registering before [New] runs.
-func RegisterAdapter(scheme Scheme, b Builder) {
-	registeredBuilders[scheme] = b
+func RegisterAdapter(protocol Protocol, b Builder) {
+	registeredBuilders[protocol] = b
 }
 
 // MppAdapter returns the configured MPP adapter (nil when the kit was
@@ -133,7 +133,7 @@ func New(cfg Config) (*Client, error) {
 			"rpc", cfg.RPCURL)
 	}
 	if len(cfg.Accept) == 0 {
-		cfg.Accept = []Scheme{X402, MPP}
+		cfg.Accept = []Protocol{X402, MPP}
 	}
 	if len(cfg.Stablecoins) == 0 {
 		cfg.Stablecoins = []Stablecoin{USDC}
@@ -166,7 +166,7 @@ func New(cfg Config) (*Client, error) {
 	// forced to supply (or have a .env generated for) an MPP secret,
 	// and the resolution is independent of preflight so a server with
 	// Preflight=false still gets a usable secret.
-	if containsScheme(cfg.Accept, MPP) && len(cfg.MPP.ChallengeBindingSecret) == 0 {
+	if containsProtocol(cfg.Accept, MPP) && len(cfg.MPP.ChallengeBindingSecret) == 0 {
 		secret, err := resolveMPPSecret()
 		if err != nil {
 			return nil, fmt.Errorf("paykit: %w", err)

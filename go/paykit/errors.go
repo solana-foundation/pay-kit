@@ -23,10 +23,10 @@ var (
 // originating gate and accepted schemes. Wraps an underlying error;
 // errors.Is sees both sentinels.
 type PaymentError struct {
-	Code    string
-	Gate    *Gate
-	Schemes []Scheme
-	Err     error
+	Code      string
+	Gate      *Gate
+	Protocols []Protocol
+	Err       error
 
 	// Response payload prepared by Client.write402 for the error
 	// handler. Unexported so only the kit populates them; the default

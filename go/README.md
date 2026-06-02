@@ -9,13 +9,12 @@
 # github.com/solana-foundation/pay-kit/go
 
 Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Go.
-Implements the Solana payment method for the
-[Machine Payments Protocol](https://mpp.dev) and ships a `net/http`
-middleware for `402 Payment Required` flows.
+One `paykit` umbrella, one surface, two protocols underneath:
+[x402](https://x402.org) and the
+[Machine Payments Protocol](https://paymentauth.org). The kit ships a
+`net/http` middleware for `402 Payment Required` flows.
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library: pick a
+You do not need to know anything about Solana to use this library: pick a
 currency, give it your wallet address, and gate a route in two lines.
 
 [![Go](https://img.shields.io/badge/go-1.26%2B-blue)]()
@@ -37,13 +36,13 @@ import (
     "github.com/solana-foundation/pay-kit/go/paykit"
     _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
     _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-    _ "github.com/solana-foundation/pay-kit/go/signer"
+    _ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 )
 
 func main() {
     client, err := paykit.New(paykit.Config{
         Network: paykit.SolanaLocalnet,
-        Accept:  []paykit.Scheme{paykit.X402, paykit.MPP},
+        Accept:  []paykit.Protocol{paykit.X402, paykit.MPP},
         MPP: paykit.MPPConfig{
             Realm:                  "MyApp",
             ChallengeBindingSecret: []byte("local-dev-secret"),
@@ -58,7 +57,7 @@ func main() {
     mux := http.NewServeMux()
     mux.Handle("/report", client.Require(report)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         pmt, _ := paykit.PaymentFrom(r.Context())
-        fmt.Fprintf(w, `{"ok":true,"paid_via":%q}`, pmt.Scheme)
+        fmt.Fprintf(w, `{"ok":true,"paid_via":%q}`, pmt.Protocol)
     })))
     http.ListenAndServe(":4567", mux)
 }
@@ -93,24 +92,28 @@ The sibling `protocols/mpp/client` does the same for MPP
 (`Authorization: Payment`). Both wrap an `http.RoundTripper`, so any
 `*http.Client` call settles transparently.
 
-## Protocol compatibility matrix
+## x402
 
-### MPP
-
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `mpp/charge/pull` | pass | pass |
-| `mpp/charge/push` | pass | pass |
-| `mpp/session` | --- | --- |
-| `mpp/subscription` | --- | --- |
-
-### x402
+The exact-amount scheme, settled locally against the operator signer or
+delegated to a facilitator. Both client and server ship.
 
 | Intent | Client | Server |
 |---|:---:|:---:|
-| `x402/exact` | pass | pass |
-| `x402/upto` | --- | --- |
-| `x402/batch-settlement` | --- | --- |
+| `x402/exact` | ✅ | ✅ |
+| `x402/upto` | — | — |
+| `x402/batch-settlement` | — | — |
+
+## MPP
+
+The Solana charge intent, in both pull (client-signed) and push
+(client-broadcast) modes. Both client and server ship.
+
+| Intent | Client | Server |
+|---|:---:|:---:|
+| `mpp/charge/pull` | ✅ | ✅ |
+| `mpp/charge/push` | ✅ | ✅ |
+| `mpp/session` | — | — |
+| `mpp/subscription` | — | — |
 
 For `mpp/charge/pull`: the server owns the full lifecycle. It issues
 signed challenges with a fresh `recentBlockhash`, parses and validates
@@ -214,16 +217,34 @@ MPP_INTEROP_SERVERS=go MPP_INTEROP_INTENTS=x402-exact \
 
 ## Spec
 
-This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+This SDK implements the
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| gate | a guarded route; `client.Require(gate)` wraps the handler |
+| amount | the face price a gate charges, e.g. `MustParseUSD("0.10")` |
+| total | amount plus any `fee_on_top`; what the payer actually settles |
+| price | the typed amount value (`paykit.Price`) carried by a gate |
+| fee_within | a split taken out of the amount, paid to a fee recipient |
+| fee_on_top | a surcharge added on top of the amount, paid by the payer |
+| payment | the verified `paykit.Payment` attached to the request context |
+| protocol | the wire protocol that settled: `x402` or `mpp` |
+| scheme | a protocol sub-form: x402 `exact`, mpp `charge` |
+| currency | the fiat unit a price is quoted in: `USD`, `EUR`, `GBP` |
+| settlement | the on-chain stablecoin the payer pays in (`USDC`, `USDT`, ...) |
 
 ## Repo layout
 
 ```text
 go/
 ├── paykit/                       umbrella API: x402 + MPP behind one Config and middleware
-├── paycore/                      shared Solana protocol layer (mints, token programs, ResolveMint)
-│   └── solanatx/                 shared tx builders, ATA derivation, RPC helpers (used by mpp + x402)
+├── paycore/                      PayCore: protocol-agnostic primitives
+│   ├── solanatx/                 shared tx builders, ATA derivation, RPC helpers (used by mpp + x402)
+│   └── signer/                   Ed25519 signer factories behind a KMS-ready interface
 ├── protocols/
 │   ├── mpp/                      MPP adapter that registers the Solana charge method
 │   │   ├── core/                 MPP type facade, replay store, expiry helpers, errors
@@ -233,7 +254,6 @@ go/
 │   │   ├── client/               HTTP client transport and credential builder
 │   │   └── errorcodes/           canonical L6 fault codes
 │   └── x402/                     x402 "exact" adapter and structural transaction verifier
-├── signer/                       Ed25519 signer factories behind a KMS-ready interface
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod
 ```

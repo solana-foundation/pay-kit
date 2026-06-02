@@ -13,7 +13,9 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,22 @@ import (
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
+// nonceBytes is the size of the random memo nonce the client appends when the
+// offer does not pin an extra.memo. 16 bytes matches the x402 SVM spec
+// minimum, and hex-encoding keeps the memo data valid UTF-8.
+const nonceBytes = 16
+
+// nonceSource produces the raw nonce bytes for the per-payment memo. It is a
+// package var so deterministic/golden-vector tests can swap in a fixed nonce;
+// production callers get a secure RNG via crypto/rand.
+var nonceSource = func() ([]byte, error) {
+	buf := make([]byte, nonceBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
 const (
 	paymentRequiredHeader  = "Payment-Required"
 	paymentSignatureHeader = "Payment-Signature"
@@ -38,6 +56,11 @@ const (
 	// caps (maxComputeUnitLimit / maxComputeUnitPriceMicroLamports).
 	defaultComputeUnitLimit uint32 = 20_000
 	defaultComputeUnitPrice uint64 = 1
+
+	// maxMemoBytes is the x402-specific cap on a seller-pinned extra.memo,
+	// matching Rust MAX_MEMO_BYTES (types.rs:9). Wider than this the
+	// client rejects the offer before building the memo instruction.
+	maxMemoBytes = 256
 )
 
 // mintResolutionLabels are the network labels a preferred currency symbol
@@ -46,6 +69,29 @@ const (
 // map (localnet/devnet share a CAIP-2 id, and ResolveMint falls back to
 // the mainnet mint for unknown labels).
 var mintResolutionLabels = []string{"mainnet-beta", "devnet", "localnet"}
+
+// solanaMainnetCAIP2 is the canonical mainnet chain id selectEntry
+// defaults the preferred network to when the selection leaves it empty,
+// matching the Rust select_requirement default (payment.rs:282-285).
+const solanaMainnetCAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+
+// normalizeNetworkSlug maps cluster slugs and aliases to their canonical
+// CAIP-2 id so a "devnet"/"mainnet" preference compares against an
+// offer's normalized network. Mirrors the Rust caip2_network_for_cluster
+// path (payment.rs:282-298). The AcceptsEntry parser already normalizes
+// the offer side, so only the selection's preferred network needs it.
+func normalizeNetworkSlug(network string) string {
+	switch network {
+	case "", "mainnet", "mainnet-beta", "solana", "solana_mainnet":
+		return solanaMainnetCAIP2
+	case "devnet", "solana-devnet", "localnet", "solana_devnet", "solana_localnet":
+		return "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+	case "testnet", "solana-testnet":
+		return "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
+	default:
+		return network
+	}
+}
 
 // ChallengeSelection captures client-side preferences for picking one offer
 // from a server's accepts[] list. Mirrors the Rust ChallengeSelection.
@@ -113,16 +159,17 @@ func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.Acce
 		return nil
 	}
 
-	onNetwork := solana
-	if sel.Network != "" {
-		filtered := make([]x402.AcceptsEntry, 0, len(solana))
-		for _, e := range solana {
-			if e.Network == sel.Network {
-				filtered = append(filtered, e)
-			}
+	// Rust defaults the preferred network to mainnet when the selection
+	// leaves it empty and normalizes cluster slugs to CAIP-2 on both
+	// sides before comparing (select_requirement, payment.rs:282-309).
+	preferred := normalizeNetworkSlug(sel.Network)
+	filtered := make([]x402.AcceptsEntry, 0, len(solana))
+	for _, e := range solana {
+		if e.Network == preferred {
+			filtered = append(filtered, e)
 		}
-		onNetwork = filtered
 	}
+	onNetwork := filtered
 
 	if len(sel.Currencies) > 0 {
 		for _, currency := range sel.Currencies {
@@ -142,13 +189,34 @@ func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.Acce
 }
 
 // currencyMatches reports whether an offer's mint corresponds to a client
-// currency preference, which may be a symbol ("USDC") or a mint address.
+// currency preference. Both sides may be a symbol ("USDC") or a mint
+// address; Rust currencies_match resolves BOTH through
+// resolve_stablecoin_mint before comparing (payment.rs:344-348), so a
+// symbol offer matches a mint-address preference and vice versa.
 func currencyMatches(offerMint, preferred string) bool {
 	if offerMint == preferred {
 		return true
 	}
 	for _, label := range mintResolutionLabels {
-		if paycore.ResolveMint(preferred, label) == offerMint {
+		offerResolved := paycore.ResolveMint(offerMint, label)
+		preferredResolved := paycore.ResolveMint(preferred, label)
+		if offerResolved == preferredResolved {
+			return true
+		}
+	}
+	return false
+}
+
+// isNativeSOL reports whether an offer's asset is native SOL. An empty
+// asset is native, and so is any currency that resolves to no mint
+// (ResolveMint returns "" for "SOL"/"sol"), matching Rust resolve_mint
+// -> None (payment.rs:60-73, solana.go:74-79).
+func isNativeSOL(asset string) bool {
+	if asset == "" {
+		return true
+	}
+	for _, label := range mintResolutionLabels {
+		if paycore.ResolveMint(asset, label) == "" {
 			return true
 		}
 	}
@@ -231,9 +299,11 @@ func buildTransaction(
 	}
 	instructions := []solana.Instruction{limitIx, priceIx}
 
-	// Asset == "" is a native SOL offer (Rust resolve_mint -> None);
-	// otherwise it is an SPL mint and we transfer with transferChecked.
-	if entry.Asset == "" {
+	// Native SOL when the currency resolves to no mint, mirroring Rust
+	// resolve_mint -> None (payment.rs:60-73). ResolveMint returns "" for
+	// SOL and any currency that maps to native SOL, so a literal "SOL"
+	// asset routes to the system-transfer path, not transferChecked.
+	if isNativeSOL(entry.Asset) {
 		transfer, err := solanatx.BuildSOLTransfer(signer.PublicKey(), recipient, amount)
 		if err != nil {
 			return "", err
@@ -247,26 +317,49 @@ func buildTransaction(
 		instructions = append(instructions, transfer)
 	}
 
-	if entry.Extra.Memo != "" {
-		memoIx, err := solanatx.BuildMemoInstruction(entry.Extra.Memo)
-		if err != nil {
-			return "", err
+	// The x402 SVM spec requires the client to ALWAYS append exactly one Memo
+	// instruction so that otherwise-identical payments (same amount, mint,
+	// recipient, blockhash) stay unique on-chain. Use the seller-pinned
+	// extra.memo when present, otherwise a random >=16-byte nonce hex-encoded
+	// to UTF-8.
+	memoValue := entry.Extra.Memo
+	if memoValue != "" {
+		// Seller-pinned memo: reject when it exceeds the x402 256-byte
+		// cap, matching Rust memo_instruction (payment.rs:357-362,
+		// MAX_MEMO_BYTES=256). The shared BuildMemoInstruction 566-byte
+		// bound is a wider Solana limit; this is the x402-specific cap.
+		if len(memoValue) > maxMemoBytes {
+			return "", fmt.Errorf("x402 client: extra.memo exceeds maximum %d bytes", maxMemoBytes)
 		}
-		instructions = append(instructions, memoIx)
+	} else {
+		nonce, err := nonceSource()
+		if err != nil {
+			return "", fmt.Errorf("x402 client: generate memo nonce: %w", err)
+		}
+		memoValue = hex.EncodeToString(nonce)
 	}
+	memoIx, err := solanatx.BuildMemoInstruction(memoValue)
+	if err != nil {
+		return "", err
+	}
+	instructions = append(instructions, memoIx)
 
 	blockhash, err := solanatx.ResolveRecentBlockhash(ctx, rpc, entry.Extra.RecentBlockhash)
 	if err != nil {
 		return "", fmt.Errorf("x402 client: recent blockhash: %w", err)
 	}
 
-	// Fee payer is the server when it advertises one, so the server
-	// cosigns the empty slot; otherwise the local signer pays.
+	// Fee payer is the server when it advertises one AND opts in via the
+	// boolean toggle, so the server cosigns the empty slot; otherwise the
+	// local signer pays. Matches Rust use_fee_payer =
+	// fee_payer.unwrap_or(false) && fee_payer_key.is_some()
+	// (payment.rs:43-50): an explicit feePayer:false opts out even when a
+	// key is present.
 	payer := signer.PublicKey()
-	if entry.Extra.FeePayer != "" {
-		payer, err = solana.PublicKeyFromBase58(entry.Extra.FeePayer)
+	if entry.Extra.FeePayer && entry.Extra.FeePayerKey != "" {
+		payer, err = solana.PublicKeyFromBase58(entry.Extra.FeePayerKey)
 		if err != nil {
-			return "", fmt.Errorf("x402 client: fee payer %q: %w", entry.Extra.FeePayer, err)
+			return "", fmt.Errorf("x402 client: fee payer %q: %w", entry.Extra.FeePayerKey, err)
 		}
 	}
 
@@ -290,9 +383,26 @@ func buildSPLTransfer(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: mint %q: %w", entry.Asset, err)
 	}
-	tokenProgram, err := solana.PublicKeyFromBase58(entry.Extra.TokenProgram)
+	// Default the token program to the per-currency default when the
+	// offer omits extra.tokenProgram, matching Rust
+	// token_program.unwrap_or_else(default_token_program_for_currency)
+	// (payment.rs:445-452). Resolved against every cluster label so a
+	// Token-2022 mint (PYUSD/USDG/CASH) picks the right program.
+	tokenProgramStr := entry.Extra.TokenProgram
+	if tokenProgramStr == "" {
+		for _, label := range mintResolutionLabels {
+			if tp := paycore.DefaultTokenProgramForCurrency(entry.Asset, label); paycore.StablecoinSymbol(paycore.ResolveMint(entry.Asset, label)) != "" {
+				tokenProgramStr = tp
+				break
+			}
+		}
+		if tokenProgramStr == "" {
+			tokenProgramStr = paycore.DefaultTokenProgramForCurrency(entry.Asset, "mainnet-beta")
+		}
+	}
+	tokenProgram, err := solana.PublicKeyFromBase58(tokenProgramStr)
 	if err != nil {
-		return nil, fmt.Errorf("x402 client: token program %q: %w", entry.Extra.TokenProgram, err)
+		return nil, fmt.Errorf("x402 client: token program %q: %w", tokenProgramStr, err)
 	}
 	sourceATA, err := solanatx.FindAssociatedTokenAddressWithProgram(signer.PublicKey(), mint, tokenProgram)
 	if err != nil {

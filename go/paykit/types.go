@@ -6,13 +6,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Scheme enumerates the payment protocols the kit speaks. Order matters in
+// Protocol enumerates the payment protocols the kit speaks. Order matters in
 // [Config.Accept] and [Gate.Accept] (preference, not set).
-type Scheme string
+type Protocol string
 
 const (
-	X402 Scheme = "x402"
-	MPP  Scheme = "mpp"
+	X402 Protocol = "x402"
+	MPP  Protocol = "mpp"
 )
 
 // Stablecoin is a typed ticker symbol. The mint pubkey is resolved per
@@ -171,7 +171,7 @@ type MPPConfig struct {
 // has a sensible default.
 type Config struct {
 	Network     Network
-	Accept      []Scheme
+	Accept      []Protocol
 	Stablecoins []Stablecoin
 	RPCURL      string
 	Operator    Operator
@@ -195,7 +195,7 @@ type Config struct {
 // the middleware accepts a credential. Handlers read it via
 // [PaymentFrom] / [IsPaid] / [IsPaidFor].
 type Payment struct {
-	Scheme            Scheme
+	Protocol          Protocol
 	Gate              string
 	Transaction       string
 	SettlementHeaders map[string]string

@@ -3,15 +3,15 @@ package mpp_test
 import (
 	"testing"
 
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	mppadapter "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func cfg() paykit.Config {
 	return paykit.Config{
 		Network: paykit.SolanaLocalnet,
-		Accept:  []paykit.Scheme{paykit.MPP},
+		Accept:  []paykit.Protocol{paykit.MPP},
 		Operator: paykit.Operator{
 			Signer:    signer.Demo(),
 			Recipient: signer.Demo().Pubkey(),
@@ -113,7 +113,7 @@ func TestSchemeAccessor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Scheme() != paykit.MPP {
-		t.Errorf("scheme: got %v", a.Scheme())
+	if a.Protocol() != paykit.MPP {
+		t.Errorf("scheme: got %v", a.Protocol())
 	}
 }

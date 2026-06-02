@@ -67,7 +67,7 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 	return &Adapter{cfg: cfg}, nil
 }
 
-func (a *Adapter) Scheme() paykit.Scheme { return paykit.MPP }
+func (a *Adapter) Protocol() paykit.Protocol { return paykit.MPP }
 
 // AcceptsEntry is the typed JSON shape MPP emits into the 402
 // body's `accepts[]` array. Mirrors Ruby's PayKit::Protocols::MPP
@@ -90,7 +90,7 @@ type Split struct {
 }
 
 // AcceptsProtocol satisfies [paykit.AcceptsEntry].
-func (e AcceptsEntry) AcceptsProtocol() paykit.Scheme { return paykit.MPP }
+func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.MPP }
 
 func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	coin := a.settlementCoin(gate)
@@ -170,7 +170,7 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	}
 	headers["x-payment-settlement-signature"] = receipt.Reference
 	return &paykit.Payment{
-		Scheme:            paykit.MPP,
+		Protocol:          paykit.MPP,
 		Gate:              req.Gate.Name,
 		Transaction:       receipt.Reference,
 		SettlementHeaders: headers,

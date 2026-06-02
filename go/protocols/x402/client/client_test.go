@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,8 +37,11 @@ func entry(asset, amount, network string) x402.AcceptsEntry {
 		Amount:   amount,
 		PayTo:    testutil.NewPrivateKey().PublicKey().String(),
 		Extra: x402.Extra{
-			FeePayer:        testutil.NewPrivateKey().PublicKey().String(),
+			FeePayer:        true,
+			FeePayerSet:     true,
+			FeePayerKey:     testutil.NewPrivateKey().PublicKey().String(),
 			Decimals:        6,
+			DecimalsSet:     true,
 			TokenProgram:    solana.TokenProgramID.String(),
 			Memo:            "test",
 			RecentBlockhash: blockhash(),
@@ -132,7 +137,7 @@ func TestBuildPaymentHeaderSPL(t *testing.T) {
 	}
 	// Fee payer (account 0) is the server's advertised fee payer, left
 	// unsigned for the server to cosign.
-	feePayer := solana.MustPublicKeyFromBase58(e.Extra.FeePayer)
+	feePayer := solana.MustPublicKeyFromBase58(e.Extra.FeePayerKey)
 	if !tx.Message.AccountKeys[0].Equals(feePayer) {
 		t.Errorf("fee payer: got %s want %s", tx.Message.AccountKeys[0], feePayer)
 	}
@@ -147,7 +152,8 @@ func TestBuildPaymentHeaderSPL(t *testing.T) {
 func TestBuildPaymentHeaderSOL(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	e := entry("", "1000000", mainnetCAIP2) // empty Asset => native SOL
-	e.Extra.FeePayer = ""                   // self-paid
+	e.Extra.FeePayer = false                // self-paid
+	e.Extra.FeePayerKey = ""
 
 	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
 	if err != nil {
@@ -279,7 +285,7 @@ func TestBuildTransactionErrorPaths(t *testing.T) {
 		"bad recipient":     func(e *x402.AcceptsEntry) { e.PayTo = "!!!" },
 		"bad mint":          func(e *x402.AcceptsEntry) { e.Asset = "!!!" },
 		"bad token program": func(e *x402.AcceptsEntry) { e.Extra.TokenProgram = "!!!" },
-		"bad fee payer":     func(e *x402.AcceptsEntry) { e.Extra.FeePayer = "!!!" },
+		"bad fee payer":     func(e *x402.AcceptsEntry) { e.Extra.FeePayerKey = "!!!" },
 	}
 	for name, mutate := range cases {
 		e := entry(mint, "100000", mainnetCAIP2)
@@ -344,6 +350,111 @@ func TestParseChallengeInvalidJSON(t *testing.T) {
 	}
 }
 
+// memoData returns the data of the single Memo Program instruction in the
+// transaction, failing the test if there is not exactly one.
+func memoData(t *testing.T, tx *solana.Transaction) string {
+	t.Helper()
+	memoProgram := solana.MustPublicKeyFromBase58(paycore.MemoProgram)
+	var found []string
+	for _, ix := range tx.Message.Instructions {
+		idx := int(ix.ProgramIDIndex)
+		if idx < 0 || idx >= len(tx.Message.AccountKeys) {
+			t.Fatalf("instruction program index %d out of range", idx)
+		}
+		if tx.Message.AccountKeys[idx].Equals(memoProgram) {
+			found = append(found, string(ix.Data))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one memo instruction, found %d", len(found))
+	}
+	return found[0]
+}
+
+// TestBuildPaymentHeaderAppendsNonceMemoWhenNoExtraMemo proves the client
+// always appends a Memo instruction even when the offer carries no
+// extra.memo, using a random >=16-byte hex nonce. This guarantees uniqueness
+// of otherwise-identical payments. Regression for Decision 2.
+func TestBuildPaymentHeaderAppendsNonceMemoWhenNoExtraMemo(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	e.Extra.Memo = "" // no seller-pinned memo
+
+	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := decodeCredentialTx(t, header)
+	// compute limit, compute price, transferChecked, nonce memo.
+	if len(tx.Message.Instructions) != 4 {
+		t.Fatalf("instruction count: got %d want 4", len(tx.Message.Instructions))
+	}
+	memo := memoData(t, tx)
+	raw, err := hex.DecodeString(memo)
+	if err != nil {
+		t.Fatalf("nonce memo %q is not hex-encoded: %v", memo, err)
+	}
+	if len(raw) < 16 {
+		t.Fatalf("nonce memo decodes to %d bytes, want >= 16", len(raw))
+	}
+}
+
+// TestBuildPaymentHeaderNonceMemoIsUnique proves two payments built from the
+// same offer carry distinct nonce memos so the transactions are unique.
+func TestBuildPaymentHeaderNonceMemoIsUnique(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	e.Extra.Memo = ""
+
+	build := func() string {
+		header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return memoData(t, decodeCredentialTx(t, header))
+	}
+	if a, b := build(), build(); a == b {
+		t.Fatalf("two payments produced identical nonce memos %q", a)
+	}
+}
+
+// TestBuildPaymentHeaderUsesExtraMemoWhenPresent proves the seller-pinned
+// extra.memo wins over a generated nonce.
+func TestBuildPaymentHeaderUsesExtraMemoWhenPresent(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	e.Extra.Memo = "pi_invoice_42"
+
+	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := memoData(t, decodeCredentialTx(t, header)); got != "pi_invoice_42" {
+		t.Fatalf("memo: got %q want %q", got, "pi_invoice_42")
+	}
+}
+
+// TestNonceSourceIsInjectable proves the nonce source can be overridden so
+// deterministic/golden-vector tests get a fixed nonce.
+func TestNonceSourceIsInjectable(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	e.Extra.Memo = ""
+
+	fixed := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	orig := nonceSource
+	nonceSource = func() ([]byte, error) { return fixed, nil }
+	defer func() { nonceSource = orig }()
+
+	header, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := memoData(t, decodeCredentialTx(t, header)); got != hex.EncodeToString(fixed) {
+		t.Fatalf("memo: got %q want %q", got, hex.EncodeToString(fixed))
+	}
+}
+
 func TestCheapestSkipsUnparseableAmount(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey().String()
 	junk := entry(mint, "notanumber", mainnetCAIP2)
@@ -380,5 +491,25 @@ func TestPaymentTransportReturnsBuildError(t *testing.T) {
 	defer srv.Close()
 	if _, err := NewClient(testutil.NewPrivateKey(), testutil.NewFakeRPC()).Get(srv.URL); err == nil {
 		t.Error("expected the transport to surface the build error for an unbuildable offer")
+	}
+}
+
+// TestBuildTransactionNonceSourceError proves that a failing nonce source
+// propagates as an error from buildTransaction (the branch at client.go:276).
+func TestBuildTransactionNonceSourceError(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	e := entry(testutil.NewPrivateKey().PublicKey().String(), "100000", mainnetCAIP2)
+	e.Extra.Memo = "" // force the nonce-source path
+
+	orig := nonceSource
+	nonceSource = func() ([]byte, error) { return nil, fmt.Errorf("entropy exhausted") }
+	defer func() { nonceSource = orig }()
+
+	_, err := BuildPaymentHeader(context.Background(), signer, testutil.NewFakeRPC(), &e)
+	if err == nil {
+		t.Fatal("expected error when nonce source fails")
+	}
+	if !strings.Contains(err.Error(), "generate memo nonce") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

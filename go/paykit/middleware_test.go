@@ -6,10 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	_ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-	_ "github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func TestRequireFuncGateResolutionError(t *testing.T) {
@@ -54,7 +54,7 @@ func TestRequireFuncInvalidGateReturns402(t *testing.T) {
 }
 
 func TestIsPaidForUnnamedGateMatchesAnyPayment(t *testing.T) {
-	pmt := &paykit.Payment{Scheme: paykit.MPP, Gate: "x"}
+	pmt := &paykit.Payment{Protocol: paykit.MPP, Gate: "x"}
 	ctx := withPayment(context.Background(), pmt)
 	if !paykit.IsPaidFor(ctx, paykit.Gate{}) {
 		t.Error("expected match for unnamed gate")
@@ -62,7 +62,7 @@ func TestIsPaidForUnnamedGateMatchesAnyPayment(t *testing.T) {
 }
 
 func TestIsPaidForNamedGateMatch(t *testing.T) {
-	pmt := &paykit.Payment{Scheme: paykit.MPP, Gate: "report"}
+	pmt := &paykit.Payment{Protocol: paykit.MPP, Gate: "report"}
 	ctx := withPayment(context.Background(), pmt)
 	if !paykit.IsPaidFor(ctx, paykit.Gate{Name: "report"}) {
 		t.Error("expected match")

@@ -7,18 +7,18 @@ import (
 	"testing"
 )
 
-type fakeAccepts struct{ s Scheme }
+type fakeAccepts struct{ s Protocol }
 
-func (a fakeAccepts) AcceptsProtocol() Scheme { return a.s }
+func (a fakeAccepts) AcceptsProtocol() Protocol { return a.s }
 
 type fakeAdapter struct {
-	scheme Scheme
-	pmt    *Payment
-	err    error
+	protocol Protocol
+	pmt      *Payment
+	err      error
 }
 
-func (f *fakeAdapter) Scheme() Scheme                  { return f.scheme }
-func (f *fakeAdapter) AcceptsEntry(*Gate) AcceptsEntry { return fakeAccepts{f.scheme} }
+func (f *fakeAdapter) Protocol() Protocol              { return f.protocol }
+func (f *fakeAdapter) AcceptsEntry(*Gate) AcceptsEntry { return fakeAccepts{f.protocol} }
 func (f *fakeAdapter) ChallengeHeaders(*Gate) map[string]string {
 	return map[string]string{"x-fake": "1"}
 }
@@ -28,7 +28,7 @@ func (f *fakeAdapter) VerifyAndSettle(*AdapterRequest) (*Payment, error) {
 
 func newTestClient(adapter Adapter) *Client {
 	return &Client{
-		Config:       Config{Network: SolanaLocalnet, Accept: []Scheme{MPP}},
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{MPP}},
 		mppAdapter:   adapter,
 		errorHandler: DefaultErrorHandler,
 	}
@@ -41,8 +41,8 @@ func paidRequest() *http.Request {
 }
 
 func TestRequireFuncSuccess(t *testing.T) {
-	pmt := &Payment{Scheme: MPP, Gate: "g", Transaction: "sig123", SettlementHeaders: map[string]string{"x-payment-settlement-signature": "sig123"}}
-	c := newTestClient(&fakeAdapter{scheme: MPP, pmt: pmt})
+	pmt := &Payment{Protocol: MPP, Gate: "g", Transaction: "sig123", SettlementHeaders: map[string]string{"x-payment-settlement-signature": "sig123"}}
+	c := newTestClient(&fakeAdapter{protocol: MPP, pmt: pmt})
 
 	var seen bool
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +70,7 @@ func TestRequireFuncSuccess(t *testing.T) {
 }
 
 func TestRequireFuncGateResolutionError(t *testing.T) {
-	c := newTestClient(&fakeAdapter{scheme: MPP})
+	c := newTestClient(&fakeAdapter{protocol: MPP})
 	rec := httptest.NewRecorder()
 	c.RequireFunc(func(*http.Request) (Gate, error) {
 		return Gate{}, errors.New("boom")
@@ -81,12 +81,12 @@ func TestRequireFuncGateResolutionError(t *testing.T) {
 }
 
 func TestRequireFuncInvalidGate(t *testing.T) {
-	c := newTestClient(&fakeAdapter{scheme: MPP})
+	c := newTestClient(&fakeAdapter{protocol: MPP})
 	rec := httptest.NewRecorder()
 	// x402 + fees is an incompatible combination that fails Validate.
 	bad := Gate{
 		Amount:   MustParseUSD("1.00"),
-		Accept:   []Scheme{X402},
+		Accept:   []Protocol{X402},
 		FeeOnTop: Fees{Address("PLATFORM"): MustParseUSD("0.50")},
 	}
 	c.RequireFunc(func(*http.Request) (Gate, error) { return bad, nil })(okHandler()).ServeHTTP(rec, paidRequest())
@@ -107,7 +107,7 @@ func TestRequireFuncNoAdapter(t *testing.T) {
 }
 
 func TestRequireFuncWrapsNonPaymentError(t *testing.T) {
-	c := newTestClient(&fakeAdapter{scheme: MPP, err: errors.New("plain")})
+	c := newTestClient(&fakeAdapter{protocol: MPP, err: errors.New("plain")})
 	rec := httptest.NewRecorder()
 	c.RequireFunc(func(*http.Request) (Gate, error) {
 		return Gate{Amount: MustParseUSD("0.10")}, nil
@@ -118,7 +118,7 @@ func TestRequireFuncWrapsNonPaymentError(t *testing.T) {
 }
 
 func TestRequireFuncPaymentError(t *testing.T) {
-	c := newTestClient(&fakeAdapter{scheme: MPP, err: &PaymentError{Code: "charge_request_mismatch", Err: ErrInvalidProof}})
+	c := newTestClient(&fakeAdapter{protocol: MPP, err: &PaymentError{Code: "charge_request_mismatch", Err: ErrInvalidProof}})
 	rec := httptest.NewRecorder()
 	c.RequireFunc(func(*http.Request) (Gate, error) {
 		return Gate{Amount: MustParseUSD("0.10")}, nil
@@ -129,8 +129,8 @@ func TestRequireFuncPaymentError(t *testing.T) {
 }
 
 func TestRequireStaticGate(t *testing.T) {
-	pmt := &Payment{Scheme: MPP, Gate: "g", Transaction: "sig"}
-	c := newTestClient(&fakeAdapter{scheme: MPP, pmt: pmt})
+	pmt := &Payment{Protocol: MPP, Gate: "g", Transaction: "sig"}
+	c := newTestClient(&fakeAdapter{protocol: MPP, pmt: pmt})
 	rec := httptest.NewRecorder()
 	c.Require(Gate{Amount: MustParseUSD("0.10")})(okHandler()).ServeHTTP(rec, paidRequest())
 	if rec.Code != http.StatusOK {

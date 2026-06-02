@@ -18,7 +18,7 @@ type Fees = map[Address]Price
 type Gate struct {
 	Amount    Price
 	PayTo     Address
-	Accept    []Scheme
+	Accept    []Protocol
 	Desc      string
 	Name      string
 	FeeWithin Fees

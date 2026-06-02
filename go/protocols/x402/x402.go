@@ -8,6 +8,7 @@
 package x402
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -35,6 +36,26 @@ const (
 	// PYUSD, CASH) uses 6 decimals on Solana; revisit if a non-6 asset is
 	// ever added (it would need a getMint lookup instead of a constant).
 	stablecoinDecimals = 6
+
+	// defaultDecimals is the transferChecked decimals the client assumes
+	// when an offer omits both top-level and extra.decimals, matching the
+	// Rust spine requirements.decimals.unwrap_or(6) (payment.rs:453).
+	defaultDecimals = 6
+
+	// defaultMaxTimeoutSeconds is the advertised credential lifetime the
+	// challenge emits and the client assumes when an offer omits
+	// maxTimeoutSeconds/maxAge, matching to_accepted_value's
+	// max_age.unwrap_or(300) (types.rs:247).
+	defaultMaxTimeoutSeconds = 300
+
+	// solanaNetworkCAIP2 family identifiers mirror the Rust spine
+	// (types.rs SOLANA_MAINNET/DEVNET/TESTNET, constants.rs SOLANA_NETWORK)
+	// so cluster-slug offers normalize to the same CAIP-2 the client
+	// compares preferences against.
+	solanaNetworkCAIP2 = "solana"
+	solanaMainnetCAIP2 = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+	solanaDevnetCAIP2  = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+	solanaTestnetCAIP2 = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
 )
 
 // rpcClient is the narrow Solana RPC surface the x402 settle path uses.
@@ -79,10 +100,19 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 	return a, nil
 }
 
-func (a *Adapter) Scheme() paykit.Scheme { return paykit.X402 }
+func (a *Adapter) Protocol() paykit.Protocol { return paykit.X402 }
 
 // AcceptsEntry is the typed JSON shape x402-exact emits into the 402
 // body's `accepts[]` array.
+//
+// On parse the canonical-wire precedence from the Rust spine
+// (rust/crates/x402/src/protocol/schemes/exact/types.rs Deserialize)
+// is applied: top-level canonical fields win over their extra.*
+// mirrors, `amount` falls back to `maxAmountRequired`, `payTo` to
+// `recipient`, `asset` to `currency`, decimals defaults to 6, and
+// tokenProgram defaults to the per-currency default. The raw bytes are
+// captured so the client can echo the selected offer verbatim
+// (to_accepted_value's value.clone()).
 type AcceptsEntry struct {
 	Protocol          string `json:"protocol"`
 	Scheme            string `json:"scheme"`
@@ -93,6 +123,12 @@ type AcceptsEntry struct {
 	PayTo             string `json:"payTo"`
 	MaxTimeoutSeconds int    `json:"maxTimeoutSeconds"`
 	Extra             Extra  `json:"extra"`
+
+	// raw is the verbatim JSON object this entry was parsed from, used
+	// to echo the selected offer back in the credential's `accepted`
+	// field without dropping unknown keys. Empty for server-constructed
+	// entries (which marshal from the typed fields).
+	raw json.RawMessage
 }
 
 // Extra carries x402's optional metadata. RecentBlockhash is the
@@ -100,16 +136,208 @@ type AcceptsEntry struct {
 // so the pay-kit Rust client pins to it when building the tx
 // against a surfpool / forked-mainnet ledger the public RPC has
 // never seen.
+//
+// FeePayerSet records whether the wire carried an explicit boolean
+// `feePayer` toggle so the client can honour an explicit `false`
+// opt-out the way the Rust spine does (use_fee_payer =
+// fee_payer.unwrap_or(false) && fee_payer_key.is_some()).
 type Extra struct {
-	FeePayer        string `json:"feePayer"`
+	FeePayer        bool   `json:"-"`
+	FeePayerSet     bool   `json:"-"`
+	FeePayerKey     string `json:"-"`
 	Decimals        int    `json:"decimals"`
+	DecimalsSet     bool   `json:"-"`
 	TokenProgram    string `json:"tokenProgram"`
 	Memo            string `json:"memo"`
 	RecentBlockhash string `json:"recentBlockhash,omitempty"`
 }
 
+// rawAcceptsEntry is the literal JSON shape used for parsing, before the
+// canonical-wire precedence rules collapse it into AcceptsEntry. Every
+// canonical field exists both top-level and under extra so the
+// top-level-first precedence can be applied.
+type rawAcceptsEntry struct {
+	Protocol          string    `json:"protocol"`
+	Scheme            string    `json:"scheme"`
+	Network           string    `json:"network"`
+	Asset             string    `json:"asset"`
+	Currency          string    `json:"currency"`
+	Amount            string    `json:"amount"`
+	MaxAmountRequired string    `json:"maxAmountRequired"`
+	PayTo             string    `json:"payTo"`
+	Recipient         string    `json:"recipient"`
+	MaxTimeoutSeconds *int      `json:"maxTimeoutSeconds"`
+	MaxAge            *int      `json:"maxAge"`
+	Decimals          *int      `json:"decimals"`
+	TokenProgram      string    `json:"tokenProgram"`
+	RecentBlockhash   string    `json:"recentBlockhash"`
+	FeePayer          *bool     `json:"feePayer"`
+	FeePayerKey       string    `json:"feePayerKey"`
+	Extra             *rawExtra `json:"extra"`
+}
+
+// rawExtra is the literal extra.* object. feePayer is decoded into a
+// json.RawMessage because the Rust wire allows it to be either a boolean
+// toggle (top-level) or a string key (extra.feePayer); here under extra
+// it is the fee-payer key string.
+type rawExtra struct {
+	FeePayer        string `json:"feePayer"`
+	Decimals        *int   `json:"decimals"`
+	TokenProgram    string `json:"tokenProgram"`
+	Memo            string `json:"memo"`
+	RecentBlockhash string `json:"recentBlockhash"`
+}
+
+// UnmarshalJSON applies the Rust spine's canonical-wire precedence so a
+// client parsing a server offer matches build_payment's view of it:
+// top-level canonical fields win over extra.* mirrors, amount falls
+// back to maxAmountRequired, payTo to recipient, asset to currency,
+// decimals defaults to 6, and the fee-payer toggle honours an explicit
+// boolean. The raw bytes are retained for verbatim accepted echo.
+func (e *AcceptsEntry) UnmarshalJSON(data []byte) error {
+	var r rawAcceptsEntry
+	if err := json.Unmarshal(data, &r); err != nil {
+		return err
+	}
+	if r.Extra == nil {
+		r.Extra = &rawExtra{}
+	}
+
+	e.raw = append(json.RawMessage(nil), data...)
+	e.Protocol = r.Protocol
+	e.Scheme = r.Scheme
+	e.Network = normalizeNetwork(r.Network)
+
+	// asset := asset || currency (top-level currency, then offered asset).
+	e.Asset = firstNonEmpty(r.Asset, r.Currency)
+	// amount := amount || maxAmountRequired.
+	e.Amount = firstNonEmpty(r.Amount, r.MaxAmountRequired)
+	e.MaxAmountRequired = firstNonEmpty(r.MaxAmountRequired, r.Amount)
+	// recipient := recipient || payTo. (Rust reads recipient first.)
+	e.PayTo = firstNonEmpty(r.Recipient, r.PayTo)
+
+	switch {
+	case r.MaxTimeoutSeconds != nil:
+		e.MaxTimeoutSeconds = *r.MaxTimeoutSeconds
+	case r.MaxAge != nil:
+		e.MaxTimeoutSeconds = *r.MaxAge
+	default:
+		e.MaxTimeoutSeconds = defaultMaxTimeoutSeconds
+	}
+
+	// Top-level field wins over extra.* mirror for each optional field.
+	e.Extra.RecentBlockhash = firstNonEmpty(r.RecentBlockhash, r.Extra.RecentBlockhash)
+	e.Extra.TokenProgram = firstNonEmpty(r.TokenProgram, r.Extra.TokenProgram)
+	e.Extra.Memo = r.Extra.Memo
+
+	// decimals: top-level then extra.decimals; default to 6 when absent.
+	switch {
+	case r.Decimals != nil:
+		e.Extra.Decimals, e.Extra.DecimalsSet = *r.Decimals, true
+	case r.Extra.Decimals != nil:
+		e.Extra.Decimals, e.Extra.DecimalsSet = *r.Extra.Decimals, true
+	default:
+		e.Extra.Decimals, e.Extra.DecimalsSet = defaultDecimals, false
+	}
+
+	// fee_payer_key := feePayerKey (top-level) || extra.feePayer (string).
+	e.Extra.FeePayerKey = firstNonEmpty(r.FeePayerKey, r.Extra.FeePayer)
+	// fee_payer := bool feePayer, else true when a key is present.
+	switch {
+	case r.FeePayer != nil:
+		e.Extra.FeePayer, e.Extra.FeePayerSet = *r.FeePayer, true
+	case e.Extra.FeePayerKey != "":
+		e.Extra.FeePayer, e.Extra.FeePayerSet = true, true
+	default:
+		e.Extra.FeePayer, e.Extra.FeePayerSet = false, false
+	}
+	return nil
+}
+
+// MarshalJSON keeps the server-emitted wire shape stable: the typed
+// fields (protocol/scheme/network/asset/amount/maxAmountRequired/payTo/
+// maxTimeoutSeconds/extra) with extra.feePayer rendered as the key
+// string the client expects. When the entry was parsed from a server
+// offer (raw is populated) the verbatim bytes are echoed instead so the
+// credential's `accepted` field preserves unknown keys, matching the
+// Rust to_accepted_value value.clone() path (types.rs:236-239).
+func (e AcceptsEntry) MarshalJSON() ([]byte, error) {
+	if len(e.raw) > 0 {
+		return e.raw, nil
+	}
+	type wireExtra struct {
+		FeePayer        string `json:"feePayer,omitempty"`
+		Decimals        int    `json:"decimals"`
+		TokenProgram    string `json:"tokenProgram"`
+		Memo            string `json:"memo"`
+		RecentBlockhash string `json:"recentBlockhash,omitempty"`
+	}
+	type wire struct {
+		Protocol          string    `json:"protocol"`
+		Scheme            string    `json:"scheme"`
+		Network           string    `json:"network"`
+		Asset             string    `json:"asset"`
+		Amount            string    `json:"amount"`
+		MaxAmountRequired string    `json:"maxAmountRequired"`
+		PayTo             string    `json:"payTo"`
+		MaxTimeoutSeconds int       `json:"maxTimeoutSeconds"`
+		Extra             wireExtra `json:"extra"`
+	}
+	return json.Marshal(wire{
+		Protocol:          e.Protocol,
+		Scheme:            e.Scheme,
+		Network:           e.Network,
+		Asset:             e.Asset,
+		Amount:            e.Amount,
+		MaxAmountRequired: e.MaxAmountRequired,
+		PayTo:             e.PayTo,
+		MaxTimeoutSeconds: e.MaxTimeoutSeconds,
+		Extra: wireExtra{
+			FeePayer:        e.Extra.FeePayerKey,
+			Decimals:        e.Extra.Decimals,
+			TokenProgram:    e.Extra.TokenProgram,
+			Memo:            e.Extra.Memo,
+			RecentBlockhash: e.Extra.RecentBlockhash,
+		},
+	})
+}
+
+// RawAccepted returns the verbatim JSON the offer was parsed from, or
+// nil for a server-constructed entry. The client echoes this in the
+// credential's `accepted` field so unknown keys survive the round-trip.
+func (e AcceptsEntry) RawAccepted() json.RawMessage { return e.raw }
+
+// firstNonEmpty returns the first non-empty string argument.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// normalizeNetwork maps cluster slugs and aliases to their canonical
+// CAIP-2 identifier, mirroring the Rust normalize_network_identifier so
+// a "mainnet"/"devnet"/"testnet" offer is comparable to a CAIP-2
+// preference. CAIP-2 ids and unknown values pass through unchanged.
+func normalizeNetwork(network string) string {
+	switch network {
+	case "":
+		return ""
+	case solanaNetworkCAIP2, "mainnet", "mainnet-beta":
+		return solanaMainnetCAIP2
+	case "solana-devnet", "devnet", "localnet":
+		return solanaDevnetCAIP2
+	case "solana-testnet", "testnet":
+		return solanaTestnetCAIP2
+	default:
+		return network
+	}
+}
+
 // AcceptsProtocol satisfies [paykit.AcceptsEntry].
-func (e AcceptsEntry) AcceptsProtocol() paykit.Scheme { return paykit.X402 }
+func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.X402 }
 
 // Credential is the typed x402 credential the client posts in the
 // payment-signature header (base64 of this JSON).
@@ -146,8 +374,11 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 	amount := a.totalUnits(gate, coin)
 	payTo := a.payTo(gate)
 	extra := Extra{
-		FeePayer:     string(a.signer.Pubkey()),
+		FeePayer:     true,
+		FeePayerSet:  true,
+		FeePayerKey:  string(a.signer.Pubkey()),
 		Decimals:     stablecoinDecimals,
+		DecimalsSet:  true,
 		TokenProgram: paycore.DefaultTokenProgramForCurrency(coin, a.cfg.Network.MintsLabel()),
 		Memo:         gate.Desc,
 	}
@@ -162,7 +393,7 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 		Amount:            amount,
 		MaxAmountRequired: amount,
 		PayTo:             string(payTo),
-		MaxTimeoutSeconds: 60,
+		MaxTimeoutSeconds: defaultMaxTimeoutSeconds,
 		Extra:             extra,
 	}
 }
@@ -213,6 +444,21 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if credential.X402Version != x402Version {
 		return nil, &paykit.PaymentError{Code: "version_mismatch", Err: fmt.Errorf("unsupported x402Version %d", credential.X402Version), Gate: req.Gate}
 	}
+
+	// Echoed-accepted binding: when the credential carries an `accepted`
+	// object it is the requirements the client claims to be paying for.
+	// Compare it against the ROUTE's requirements (never the other way),
+	// so a credential that lies about its accepted offer is rejected
+	// before any transaction processing or settlement. Targeted field
+	// checks first, then a structural backstop over the canonical
+	// accepted shape. Mirrors Rust verify_envelope_payload
+	// (server/exact.rs:490-541).
+	if credential.Accepted != nil {
+		if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
+			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
+		}
+	}
+
 	txBase64 := credential.Payload.Transaction
 	if txBase64 == "" {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: errors.New("missing transaction payload"), Gate: req.Gate}
@@ -239,7 +485,16 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		return nil, &paykit.PaymentError{Code: "invalid_gate", Err: err, Gate: req.Gate}
 	}
 	if err := verifyExactTransaction(tx, reqs); err != nil {
-		return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
+		// Surface the canonical invalid_exact_svm_payload_* reason from the
+		// structural verifier rather than collapsing every failure to
+		// charge_request_mismatch, matching the Rust verifier's specific
+		// reasons (verify.rs:235-418).
+		code := "charge_request_mismatch"
+		var ve *verifyError
+		if errors.As(err, &ve) {
+			code = ve.Code
+		}
+		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
 
 	// Replay reservation, keyed on the client signature (slot 0). Rolled
@@ -286,12 +541,87 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		settlementHeader:      signature.String(),
 	}
 	return &paykit.Payment{
-		Scheme:            paykit.X402,
+		Protocol:          paykit.X402,
 		Gate:              req.Gate.Name,
 		Transaction:       signature.String(),
 		SettlementHeaders: headers,
 		Raw:               sig,
 	}, nil
+}
+
+// verifyAcceptedBinding rejects a credential whose echoed `accepted`
+// offer does not match this route's advertised requirements. Targeted
+// network/amount/recipient/currency checks give actionable errors; a
+// canonical structural compare backstops drift on any remaining field.
+// Mirrors Rust verify_envelope_payload (server/exact.rs:490-541).
+func (a *Adapter) verifyAcceptedBinding(gate *paykit.Gate, accepted *AcceptsEntry) error {
+	route := a.routeAccepts(gate)
+	if accepted.Network != route.Network {
+		return fmt.Errorf("network mismatch: expected %s, got %s", route.Network, accepted.Network)
+	}
+	if accepted.Amount != route.Amount {
+		return fmt.Errorf("amount mismatch: expected %s, got %s", route.Amount, accepted.Amount)
+	}
+	if accepted.PayTo != route.PayTo {
+		return errors.New("recipient mismatch: credential claims a different recipient")
+	}
+	if accepted.Asset != route.Asset {
+		return fmt.Errorf("currency mismatch: expected %s, got %s", route.Asset, accepted.Asset)
+	}
+	// Structural backstop over the canonical typed shape. Compared via the
+	// canonical marshal (not the verbatim raw) so a credential that
+	// reorders keys or pins a divergent extra field (decimals,
+	// tokenProgram, memo, fee payer, maxTimeoutSeconds) is still caught.
+	acceptedJSON, err := canonicalAccepted(accepted)
+	if err != nil {
+		return err
+	}
+	routeJSON, err := canonicalAccepted(&route)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(acceptedJSON, routeJSON) {
+		return errors.New("credential's accepted requirements do not structurally match this route's expected requirements")
+	}
+	return nil
+}
+
+// routeAccepts builds the route's advertised accept entry without the
+// RPC-backed recentBlockhash stamp, so the echoed-accepted comparison is
+// deterministic and offline. recentBlockhash is a client-build hint, not
+// part of the binding identity, so it is excluded from both sides.
+func (a *Adapter) routeAccepts(gate *paykit.Gate) AcceptsEntry {
+	coin := a.settlementCoin(gate)
+	label := a.cfg.Network.MintsLabel()
+	return AcceptsEntry{
+		Protocol:          "x402",
+		Scheme:            a.cfg.X402.Scheme,
+		Network:           a.cfg.Network.CAIP2(),
+		Asset:             paycore.ResolveMint(coin, label),
+		Amount:            a.totalUnits(gate, coin),
+		MaxAmountRequired: a.totalUnits(gate, coin),
+		PayTo:             string(a.payTo(gate)),
+		MaxTimeoutSeconds: defaultMaxTimeoutSeconds,
+		Extra: Extra{
+			FeePayer:     true,
+			FeePayerSet:  true,
+			FeePayerKey:  string(a.signer.Pubkey()),
+			Decimals:     stablecoinDecimals,
+			DecimalsSet:  true,
+			TokenProgram: paycore.DefaultTokenProgramForCurrency(coin, label),
+			Memo:         gate.Desc,
+		},
+	}
+}
+
+// canonicalAccepted serializes an accept entry through the typed wire
+// shape (ignoring any verbatim raw bytes and the recentBlockhash hint)
+// so two entries compare equal iff their binding-relevant fields match.
+func canonicalAccepted(e *AcceptsEntry) ([]byte, error) {
+	clone := *e
+	clone.raw = nil
+	clone.Extra.RecentBlockhash = ""
+	return json.Marshal(clone)
 }
 
 // transferRequirements derives the structural-verification target from
@@ -328,6 +658,10 @@ func (a *Adapter) transferRequirements(gate *paykit.Gate) (transferRequirements,
 		tokenProgram: tokenProgram,
 		amount:       amount,
 		feePayer:     feePayer,
+		// extra.memo is advertised as the gate description. When set, the
+		// spec requires the verifier to confirm exactly one Memo instruction
+		// whose data equals it (payment-reference binding).
+		expectedMemo: gate.Desc,
 	}, nil
 }
 
