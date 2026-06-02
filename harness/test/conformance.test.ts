@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 import { address } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import { describe, expect, it } from "vitest";
+import {
+  assertConformanceVector,
+  assertRunnerResult,
+} from "../src/conformance/contract-schema";
 import type {
   ConformanceVector,
   RunnerResult,
@@ -38,6 +42,10 @@ function loadVectors(): ConformanceVector[] {
       readFileSync(join(vectorsDir, file), "utf8"),
     ) as ConformanceVector[];
     for (const vector of parsed) {
+      // Validate the vector against the ABI at load so an authoring mistake
+      // (wrong mode, missing expect.outcome, stray envelope key) fails here
+      // with a clear message instead of deep inside a runner.
+      assertConformanceVector(vector, `${file}:${vector?.id ?? "(no id)"}`);
       vectors.push(vector);
     }
   }
@@ -101,15 +109,28 @@ function runVector(
         reject(new Error(`runner produced no output for vector ${vector.id}`));
         return;
       }
+      let parsed: unknown;
       try {
-        resolve(JSON.parse(line) as RunnerResult);
+        parsed = JSON.parse(line);
       } catch (error) {
         reject(
           new Error(
             `failed to parse runner output for ${vector.id}: ${line}\n${String(error)}`,
           ),
         );
+        return;
       }
+      // Validate the runner's stdout against the ABI before the driver
+      // trusts it. A runner that emits a malformed/over-typed shape fails
+      // loudly and attributably here instead of silently passing TS types
+      // that vanish at runtime or tripping a confusing downstream assertion.
+      try {
+        assertRunnerResult(parsed, vector.id);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      resolve(parsed as RunnerResult);
     });
     child.stdin.write(JSON.stringify(vector));
     child.stdin.end();
