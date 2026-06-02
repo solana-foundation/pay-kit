@@ -56,11 +56,11 @@ ini_set('display_errors', 'stderr');
 require __DIR__ . '/../vendor/autoload.php';
 
 use PayKit\PayCore\Solana\Mints;
-use PayKit\Protocols\Mpp\Core\Base64Url;
+use PayKit\PayCore\Wire\Base64Url;
+use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\ChallengeEcho;
 use PayKit\Protocols\Mpp\Core\Credential;
-use PayKit\Protocols\Mpp\Core\Json;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;
 use SolanaPhpSdk\Keypair\PublicKey;
@@ -518,8 +518,6 @@ function build_fixture(ChargeRequest $request, array $signerSecretKey): string
 const X402_SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const X402_SOLANA_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const X402_SOLANA_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
-const X402_EXACT_SCHEME   = 'exact';
-const X402_VERSION_V1     = 1;
 const X402_VERSION_V2     = 2;
 
 /**
@@ -621,20 +619,7 @@ function verify_x402_header(string $header, array $route): array
     $version = $envelope['x402Version'] ?? null;
     $expectedNetwork = x402_caip2_for_cluster((string) ($route['network'] ?? ''));
 
-    if ($version === X402_VERSION_V1) {
-        // Legacy v1: top-level scheme + network, no `accepted`. Gate on
-        // scheme + CAIP-2-normalized network only (Adapter v1 arm).
-        $scheme = is_string($envelope['scheme'] ?? null) ? $envelope['scheme'] : '';
-        if ($scheme !== X402_EXACT_SCHEME) {
-            throw new InvalidArgumentException('invalid payload: unexpected scheme ' . $scheme);
-        }
-        $network = is_string($envelope['network'] ?? null) ? $envelope['network'] : '';
-        if (x402_caip2_for_cluster($network) !== $expectedNetwork) {
-            throw new InvalidArgumentException(
-                "Network mismatch: expected $expectedNetwork, got $network",
-            );
-        }
-    } elseif ($version === X402_VERSION_V2) {
+    if ($version === X402_VERSION_V2) {
         // v2: `accepted` is required and structurally matched against the
         // server route (network/amount/payTo/asset), mirroring the Adapter
         // v2 identity-key match and the rust verify_envelope_payload.

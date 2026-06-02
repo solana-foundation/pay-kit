@@ -45,15 +45,11 @@ from pay_kit.protocols.mpp.core import json as wire_json
 from pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
-from pay_kit.protocols.x402 import _caip2_network_for_cluster
 from pay_kit.protocols.x402.client.exact.payment import (
+    _caip2_for_selection,
     build_payment_header,
-    build_payment_header_v1,
 )
-from pay_kit.protocols.x402.exact.verify import (
-    X402_VERSION_V1,
-    X402_VERSION_V2,
-)
+from pay_kit.protocols.x402.exact.verify import X402_VERSION
 from pay_kit.signer import LocalSigner
 
 DEFAULT_NETWORK = "mainnet"
@@ -352,7 +348,6 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
 # signed Solana transaction inside payload.transaction. This mirrors the
 # rust spine and the TS reference oracle (harness/src/conformance/x402.ts):
 #   - build v2 -> pay_kit build_payment_header    (PAYMENT-SIGNATURE)
-#   - build v1 -> pay_kit build_payment_header_v1 (X-PAYMENT)
 #   - verify   -> the envelope-level version dispatch + network gate + the
 #                 v2 accepted-vs-route field comparison from the pay_kit
 #                 X402Adapter.verify_and_settle pre-broadcast surface.
@@ -389,22 +384,21 @@ def _decode_envelope_shape(header_b64: str) -> dict[str, Any]:
 
 
 async def _x402_build_header(vector: dict[str, Any]) -> str:
-    """Drive the real pay_kit x402 client to build a v1/v2 payment header.
+    """Drive the real pay_kit x402 client to build a v2 PAYMENT-SIGNATURE header.
 
-    The offer is the vector's ``x402Offer``; ``x402Version`` selects the wire
-    version. An ephemeral signer + pinned blockhash + pinned memo nonce keep
-    the build deterministic and RPC-free; the resulting transaction is real
-    but its bytes are not asserted (the envelope shape is the oracle).
+    The offer is the vector's ``x402Offer``. An ephemeral signer + pinned
+    blockhash + pinned memo nonce keep the build deterministic and RPC-free;
+    the resulting transaction is real but its bytes are not asserted (the
+    envelope shape is the oracle). Only the canonical v2 wire is built here;
+    the legacy v1 builder ships in a separate change.
     """
     inp = vector.get("input") or {}
     offer = inp.get("x402Offer")
     if not offer:
         raise ValueError("x402 build vector is missing input.x402Offer")
-    version = inp.get("x402Version", X402_VERSION_V2)
 
     signer = LocalSigner.generate()
-    builder = build_payment_header_v1 if version == X402_VERSION_V1 else build_payment_header
-    return await builder(
+    return await build_payment_header(
         signer,
         OfflineRPC(),
         offer,
@@ -437,17 +431,10 @@ def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(env, dict):
         raise ValueError("invalid payload: payment header is not a JSON object")
 
-    expected_network = _caip2_network_for_cluster(inp.get("x402ServerNetwork") or DEFAULT_NETWORK)
+    expected_network = _caip2_for_selection(inp.get("x402ServerNetwork") or DEFAULT_NETWORK)
     version = env.get("x402Version")
 
-    if version == X402_VERSION_V1:
-        scheme = env.get("scheme") or ""
-        if scheme != "exact":
-            raise ValueError(f"invalid payload: unexpected scheme {scheme}")
-        network = env.get("network") or ""
-        if _caip2_network_for_cluster(network) != expected_network:
-            raise ValueError(f"Network mismatch: expected {expected_network}, got {network}")
-    elif version == X402_VERSION_V2:
+    if version == X402_VERSION:
         accepted = env.get("accepted")
         if not isinstance(accepted, dict):
             raise ValueError("invalid payload: v2 envelope missing accepted")

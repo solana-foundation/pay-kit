@@ -10,8 +10,9 @@
 # RunnerResult line as JSON on stdout.
 #
 # ROLE: ruby is SERVER-only. The SDK ships a pre-broadcast charge verifier
-# (Mpp::Protocol::Solana::Verifier) and the wire canonical-JSON / base64url
-# encoders (PayCore::Json, PayCore::Base64Url), but NO client-side
+# (PayKit::Protocols::Mpp::Protocol::Solana::Verifier) and the wire
+# canonical-JSON / base64url encoders (PayCore::Json, PayCore::Base64Url),
+# but NO client-side
 # transaction builder. So this runner:
 #
 #   - canonical-bytes      -> drive PayCore::Json + PayCore::Base64Url.
@@ -39,7 +40,7 @@
 $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 
 require "json"
-require "mpp"
+require "pay_kit"
 
 TOKEN_PROGRAM = PayCore::Solana::Programs::TOKEN_PROGRAM
 TOKEN_2022_PROGRAM = PayCore::Solana::Programs::TOKEN_2022_PROGRAM
@@ -94,7 +95,7 @@ end
 
 # Build the charge request object the verifier consumes.
 def charge_request(flat)
-  Mpp::Protocol::Intents::ChargeRequest.from_h(flat)
+  PayKit::Protocols::Mpp::Protocol::Intents::ChargeRequest.from_h(flat)
 end
 
 # ── wire transaction fixture builder ──
@@ -381,8 +382,6 @@ module X402
   SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
   SOLANA_TESTNET = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
 
-  EXACT_SCHEME = "exact"
-  VERSION_V1 = 1
   VERSION_V2 = 2
 
   # Map a cluster/network identifier to its CAIP-2 form. Mirrors
@@ -446,15 +445,7 @@ module X402
     expected_network = caip2_network_for_cluster(route.fetch("network"))
     version = env["x402Version"]
 
-    if version == VERSION_V1
-      scheme = env["scheme"].to_s
-      raise "invalid payload: unexpected scheme #{scheme}" unless scheme == EXACT_SCHEME
-
-      network = env["network"].to_s
-      if caip2_network_for_cluster(network) != expected_network
-        raise "Network mismatch: expected #{expected_network}, got #{network}"
-      end
-    elsif version == VERSION_V2
+    if version == VERSION_V2
       accepted = env["accepted"]
       raise "invalid payload: v2 envelope missing accepted" unless accepted.is_a?(Hash)
 
@@ -590,7 +581,7 @@ def run_verify_transaction(vector)
     tx = build_fixture(flat, secret, compute_unit_price: cup, force_fee_payer_authority: fee_payer_authority)
   end
 
-  verifier = Mpp::Protocol::Solana::Verifier.new
+  verifier = PayKit::Protocols::Mpp::Protocol::Solana::Verifier.new
   result = verifier.verify_transaction_payload(tx, charge_request(flat))
   unless result.ok?
     return reject_result(vector["id"], result.reason)

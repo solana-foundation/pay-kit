@@ -18,7 +18,7 @@
 -- equivalent. For those the runner emits a clear "unsupported-mode"
 -- reject so the driver SKIPs (not fails) the vector for Lua.
 --
--- It also handles the x402 `exact` intent (v1 + v2): build vectors emit
+-- It also handles the x402 `exact` intent (v2): build vectors emit
 -- unsupported-mode (server-only SDK, no client builder), and verify
 -- vectors drive the real pay_kit.protocols.x402 credential decoder to
 -- emit accept/reject (+ rejectCode) plus the decoded X402EnvelopeShape.
@@ -443,7 +443,7 @@ local function run_build_transaction(vector)
   }
 end
 
--- ── x402 `exact` intent (v1 + v2) ──
+-- ── x402 `exact` intent (v2) ──
 --
 -- The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
 -- produces a base64(JSON) payment header and a SERVER verify consumes one.
@@ -470,7 +470,6 @@ end
 
 local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
 local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
-local EXACT_SCHEME  = 'exact'
 local LEGACY_NETWORK_SOLANA = 'solana'
 local LEGACY_NETWORK_DEVNET = 'solana-devnet'
 
@@ -569,16 +568,7 @@ local function run_x402_verify(vector)
   end
 
   local version = env.x402Version
-  if version == 1 then
-    -- v1 commits only to scheme + network at parse time; no accepted object.
-    local scheme = env.scheme or ''
-    if scheme ~= EXACT_SCHEME then
-      error('invalid payload: unsupported payment scheme ' .. tostring(scheme))
-    end
-    if caip2_network_for_cluster(env.network or '') ~= expected_caip2 then
-      error('wrong network: credential network does not match server')
-    end
-  elseif version == 2 then
+  if version == 2 then
     local accepted = env.accepted
     if type(accepted) ~= 'table' then
       error('invalid payload: v2 envelope missing accepted')
