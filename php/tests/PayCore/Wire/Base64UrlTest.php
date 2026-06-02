@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests\Protocols\Mpp\Core;
+namespace PayKit\Tests\PayCore\Wire;
 
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
-use PayKit\Protocols\Mpp\Core\Base64Url;
+use PayKit\PayCore\Wire\Base64Url;
 
 final class Base64UrlTest extends TestCase
 {

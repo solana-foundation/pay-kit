@@ -8,6 +8,7 @@ use PayKit\Exception\InvalidKeyException;
 use PayKit\Signer;
 use PayKit\Signer\Demo;
 use PHPUnit\Framework\TestCase;
+use SolanaPhpSdk\Util\Base58;
 
 final class SignerTest extends TestCase
 {
@@ -95,5 +96,38 @@ final class SignerTest extends TestCase
     {
         $this->expectException(InvalidKeyException::class);
         Signer::base58('');
+    }
+
+    public function testJsonRejectsNonArrayPayload(): void
+    {
+        $this->expectException(InvalidKeyException::class);
+        Signer::json('42');
+    }
+
+    public function testEnvWhitespaceOnlyReturnsNull(): void
+    {
+        putenv('PAY_KIT_TEST_BLANK=   ');
+        try {
+            $this->assertNull(Signer::env('PAY_KIT_TEST_BLANK'));
+        } finally {
+            putenv('PAY_KIT_TEST_BLANK');
+        }
+    }
+
+    public function testBase58SecretKeyRoundTrip(): void
+    {
+        $sgn = Signer::generate();
+        $b58 = Base58::encode($sgn->secretKey());
+        $rebuilt = Signer::base58($b58);
+        $this->assertSame($sgn->pubkey(), $rebuilt->pubkey());
+        $this->assertSame($sgn->secretKey(), $rebuilt->secretKey());
+    }
+
+    public function testDemoResetForTestsKeepsStableDemoPubkey(): void
+    {
+        $a = Signer::demo();
+        Demo::resetForTests();
+        $b = Signer::demo();
+        $this->assertSame($a->pubkey(), $b->pubkey());
     }
 }

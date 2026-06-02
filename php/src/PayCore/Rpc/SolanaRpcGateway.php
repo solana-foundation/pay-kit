@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Protocols\Mpp\Server;
+namespace PayKit\PayCore\Rpc;
 
 use SolanaPhpSdk\Rpc\RpcClient;
 

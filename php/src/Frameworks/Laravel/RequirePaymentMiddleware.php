@@ -7,7 +7,7 @@ namespace PayKit\Frameworks\Laravel;
 use Closure;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Http\Request;
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
 use PayKit\PayCore\HttpFactory;
@@ -37,7 +37,7 @@ use Symfony\Bridge\PsrHttpMessage\Factory\PsrHttpFactory;
 final class RequirePaymentMiddleware
 {
     public function __construct(
-        private readonly Client $client,
+        private readonly PayKit $client,
         private readonly Container $container,
         private readonly PsrHttpFactory $psrFactory,
         private readonly HttpFoundationFactory $httpFactory,

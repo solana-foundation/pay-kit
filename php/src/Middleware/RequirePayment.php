@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Middleware;
 
 use Closure;
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Exception\PaymentRequiredException;
 use PayKit\Gate;
@@ -33,7 +33,7 @@ use Psr\Http\Server\RequestHandlerInterface;
  * On success the middleware attaches the verified {@see \PayKit\Payment}
  * to the request as "paykit.payment" and calls the next handler;
  * settlement headers are merged into the upstream 2xx response. On
- * failure it short-circuits with a 402 carrying the active scheme
+ * failure it short-circuits with a 402 carrying the active protocol
  * adapter's challenge headers and an `error: "payment_required"`
  * JSON body.
  */
@@ -46,7 +46,7 @@ final class RequirePayment implements MiddlewareInterface
      * @param Gate|string|Closure(ServerRequestInterface):Gate $gateRef
      */
     public function __construct(
-        private readonly Client $client,
+        private readonly PayKit $client,
         private readonly Gate|string|Closure $gateRef,
         private readonly ?Pricing $pricing = null,
         ?MppAdapter $mpp = null,
@@ -114,11 +114,11 @@ final class RequirePayment implements MiddlewareInterface
         $accept = $gate->accept ?? $this->client->config->accept;
         $auth = $request->getHeaderLine('Authorization');
         $sig  = $request->getHeaderLine('Payment-Signature');
-        foreach ($accept as $scheme) {
-            if ($scheme === Protocol::X402 && $sig !== '' && $this->x402 !== null) {
+        foreach ($accept as $protocol) {
+            if ($protocol === Protocol::X402 && $sig !== '' && $this->x402 !== null) {
                 return $this->x402;
             }
-            if ($scheme === Protocol::Mpp && $auth !== '' && stripos($auth, 'payment ') === 0) {
+            if ($protocol === Protocol::Mpp && $auth !== '' && stripos($auth, 'payment ') === 0) {
                 return $this->mpp;
             }
         }
@@ -146,7 +146,15 @@ final class RequirePayment implements MiddlewareInterface
             'accepts'  => $accepts,
         ];
         $factory = HttpFactory::responseFactory();
-        $resp = $factory->createResponse(402)->withHeader('content-type', 'application/json');
+        // 402 challenges are per-request and MUST NOT be cached by any
+        // intermediary or browser. Without `no-store` a CDN could replay a
+        // stale challenge (different blockhash / expiry / amount) to a
+        // later client. Matches the protocol 402 helper at
+        // ChargeServer::paymentRequiredResponse() and the cross-SDK rule
+        // (main-audit medium finding 6).
+        $resp = $factory->createResponse(402)
+            ->withHeader('cache-control', 'no-store')
+            ->withHeader('content-type', 'application/json');
         foreach ($headers as $k => $v) {
             $resp = $resp->withHeader($k, $v);
         }

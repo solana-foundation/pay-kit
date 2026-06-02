@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PayKit\Protocols\Mpp\Core;
 
 use InvalidArgumentException;
+use PayKit\PayCore\Wire\Base64Url;
+use PayKit\PayCore\Wire\Json;
 
 /**
  * Represents the Payment authorization credential sent by a client.

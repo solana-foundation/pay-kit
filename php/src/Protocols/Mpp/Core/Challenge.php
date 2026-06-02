@@ -6,6 +6,8 @@ namespace PayKit\Protocols\Mpp\Core;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use PayKit\PayCore\Rfc3339Parser;
+use PayKit\PayCore\Wire\Base64Url;
 
 /**
  * Represents a signed MPP challenge from a WWW-Authenticate header.

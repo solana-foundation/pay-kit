@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp\Core;
 
+use PayKit\PayCore\Wire\Base64Url;
+use PayKit\PayCore\Wire\Json;
+
 /**
  * Carries the challenge fields echoed inside a Payment credential.
  */

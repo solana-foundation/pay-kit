@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests\Protocols\Mpp\Server;
+namespace PayKit\Tests\PayCore\Rpc;
 
-use PayKit\Protocols\Mpp\Server\RpcGateway;
+use PayKit\PayCore\Rpc\RpcGateway;
 
 /**
  * Test double mirroring ruby/test/server_test.rb's FakeRpc. Scripted

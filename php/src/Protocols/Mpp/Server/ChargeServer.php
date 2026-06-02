@@ -8,11 +8,11 @@ use Closure;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Throwable;
-use PayKit\Protocols\Mpp\Core\Base64Url;
+use PayKit\PayCore\Wire\Base64Url;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Core\Headers;
-use PayKit\Protocols\Mpp\Core\Json;
+use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Core\Receipt;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 
@@ -36,6 +36,8 @@ final class ChargeServer
         private readonly string $realm,
         private readonly string $method = 'solana',
         private readonly ?Closure $blockhashProvider = null,
+        private readonly ?string $pinnedCurrency = null,
+        private readonly ?string $pinnedRecipient = null,
     ) {
     }
 
@@ -134,6 +136,19 @@ final class ChargeServer
             return VerificationResult::failure($error->getMessage());
         } catch (Throwable) {
             return VerificationResult::failure('invalid charge request');
+        }
+
+        // Tier-2 pinned-field backstop. Runs unconditionally so even callers
+        // who do not pass $expectedRequest are protected against cross-route
+        // replay on the fields fixed at server construction. Mirrors Rust
+        // verify_pinned_fields (rust/crates/mpp/src/server/charge.rs:457-468),
+        // which always compares the credential currency/recipient against the
+        // pinned server configuration.
+        if ($this->pinnedCurrency !== null && $request->currency !== $this->pinnedCurrency) {
+            return VerificationResult::failure('charge request mismatch');
+        }
+        if ($this->pinnedRecipient !== null && $request->recipient !== $this->pinnedRecipient) {
+            return VerificationResult::failure('charge request mismatch');
         }
 
         if ($expectedRequest !== null && !$this->matchesExpectedRequest($request, $expectedRequest)) {

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Tests;
 
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Network;
 use PayKit\Operator;
@@ -13,7 +13,7 @@ use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
 use PHPUnit\Framework\TestCase;
 
-final class ClientTest extends TestCase
+final class PayKitTest extends TestCase
 {
     protected function tearDown(): void
     {
@@ -28,7 +28,7 @@ final class ClientTest extends TestCase
             preflight: false,
             mpp: new MppConfig(challengeBindingSecret: 'x'),
         );
-        $client = new Client($cfg);
+        $client = new PayKit($cfg);
         $this->assertSame($cfg, $client->config);
     }
 
@@ -50,7 +50,7 @@ final class ClientTest extends TestCase
             preflight: true,
             mpp: new MppConfig(challengeBindingSecret: 'x'),
         );
-        new Client($cfg);
+        new PayKit($cfg);
         $this->assertTrue($called);
     }
 
@@ -64,7 +64,7 @@ final class ClientTest extends TestCase
                 $called = true;
                 return null;
             });
-            new Client(new Config(
+            new PayKit(new Config(
                 network: Network::SolanaLocalnet,
                 preflight: true,
                 mpp: new MppConfig(challengeBindingSecret: 'x'),

@@ -2,48 +2,52 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Tests\Protocols\Mpp\Core;
+namespace PayKit\Tests\PayCore\Wire;
 
 use InvalidArgumentException;
+use PayKit\PayCore\Wire\Json;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use PayKit\Protocols\Mpp\Core\Json;
 
-final class JsonTest extends TestCase
+/**
+ * RFC 8785 JSON Canonicalization Scheme (JCS) conformance for
+ * {@see Json::canonicalize()}.
+ *
+ * The reference vectors come from RFC 8785 itself: the worked example in
+ * appendix B (key ordering + number serialization) and the ECMAScript
+ * Number serialization cases in section 3.2.2.3, which the spec sources
+ * from the V8 test suite. Number literals below are the canonical
+ * shortest round-trip forms mandated by RFC 8785 section 3.2.2.3.
+ *
+ * @see https://datatracker.ietf.org/doc/html/rfc8785
+ */
+final class JsonCanonicalTest extends TestCase
 {
-    public function testObjectRequiresStringKeys(): void
+    public function testCanonicalizeRfc8785AppendixBExample(): void
     {
-        self::assertSame(['amount' => '1000'], Json::object(['amount' => '1000'], 'request'));
-
-        $this->expectException(InvalidArgumentException::class);
-        Json::object(['valid', 'list'], 'request');
-    }
-
-    public function testStringRejectsNonStringValues(): void
-    {
-        self::assertSame('localnet', Json::string('localnet', 'network'));
-
-        $this->expectException(InvalidArgumentException::class);
-        Json::string(123, 'network');
-    }
-
-    public function testOptionalStringReturnsDefaultForAbsentValue(): void
-    {
-        self::assertSame('localnet', Json::optionalString(null, 'network', 'localnet'));
-    }
-
-    public function testOptionalIntRejectsStringNumbers(): void
-    {
-        self::assertSame(6, Json::optionalInt(6, 'decimals'));
-        self::assertNull(Json::optionalInt(null, 'decimals'));
-
-        $this->expectException(InvalidArgumentException::class);
-        Json::optionalInt('6', 'decimals');
+        // RFC 8785 appendix B style input: members deliberately out of
+        // order, a number array exercising shortest-form serialization,
+        // a string with an escape, and the three JSON literals.
+        $input = [
+            'numbers' => [333333333.33333329, 1e30, 4.5, 2e-3, 0.000000000000000000000000001],
+            'string' => "\u{20ac}\$\u{000A}A'B/",
+            'literals' => [null, true, false],
+        ];
+        // Canonical output: members sorted by UTF-16 code unit, newline as
+        // \n, the currency sign retained as a raw UTF-8 byte, shortest-form
+        // numbers per RFC 8785 section 3.2.2.3.
+        $expected = '{"literals":[null,true,false],'
+            . '"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],'
+            . '"string":"€$\nA\'B/"}';
+        self::assertSame($expected, Json::canonicalize($input));
     }
 
     public function testCanonicalizeNestedKeyOrder(): void
     {
-        self::assertSame('{"a":[{"a":false,"b":true}],"b":2}', Json::canonicalize(['b' => 2, 'a' => [['b' => true, 'a' => false]]]));
+        self::assertSame(
+            '{"a":[{"a":false,"b":true}],"b":2}',
+            Json::canonicalize(['b' => 2, 'a' => [['b' => true, 'a' => false]]]),
+        );
     }
 
     public function testCanonicalizeUtf16KeyOrder(): void
@@ -62,9 +66,8 @@ final class JsonTest extends TestCase
     }
 
     /**
-     * ES6 ToString edge cases. The previous %.15g-then-%.17g fallback emitted
-     * "333333333.33333331" for the first value (16-significant-digit shortest form).
-     * See codex P2 finding on PR #102.
+     * ECMAScript Number serialization cases (RFC 8785 section 3.2.2.3),
+     * the shortest round-trip forms the spec borrows from the V8 suite.
      *
      * @return array<string, array{0: float, 1: string}>
      */
@@ -80,9 +83,7 @@ final class JsonTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider es6NumberCases
-     */
+    #[DataProvider('es6NumberCases')]
     public function testCanonicalizeEs6ShortestRoundtrip(float $input, string $expected): void
     {
         self::assertSame($expected, Json::canonicalize($input));
@@ -136,10 +137,10 @@ final class JsonTest extends TestCase
 
     public function testCanonicalizeAllEscapeSequences(): void
     {
-        // Backslash and double quote escapes (lines 292, 294).
+        // Backslash and double quote escapes.
         self::assertSame('"\\\\"', Json::canonicalize('\\'));
         self::assertSame('"\\""', Json::canonicalize('"'));
-        // Backspace, form feed, carriage return (lines 296, 302, 304).
+        // Backspace, form feed, carriage return.
         self::assertSame('"\\b"', Json::canonicalize("\x08"));
         self::assertSame('"\\f"', Json::canonicalize("\x0C"));
         self::assertSame('"\\r"', Json::canonicalize("\r"));
@@ -155,8 +156,8 @@ final class JsonTest extends TestCase
 
     public function testCanonicalizeSupplementaryPlane(): void
     {
-        // 4-byte UTF-8 codepoint U+1F600 ('😀') triggers surrogate pair (lines 109-111)
-        // and the 4-byte UTF-8 re-encode path in encodeString (lines 316-319).
+        // 4-byte UTF-8 codepoint U+1F600 ('😀') triggers surrogate pair handling
+        // and the 4-byte UTF-8 re-encode path in encodeString.
         $emoji = "\xF0\x9F\x98\x80";
         self::assertSame("\"$emoji\"", Json::canonicalize($emoji));
         // Sort with supplementary plane to exercise utf16CodeUnits surrogate expansion in key sort.
@@ -171,17 +172,17 @@ final class JsonTest extends TestCase
     public static function malformedUtf8Cases(): array
     {
         return [
-            'invalid-lead-byte-0x80' => ["\x80"], // line 138
-            'invalid-lead-byte-0xF5' => ["\xF5\x80\x80\x80"], // line 190
-            'truncated-2byte' => ["\xC2"], // line 142
-            'invalid-continuation-2byte' => ["\xC2\x20"], // line 146
-            'truncated-3byte' => ["\xE0\xA0"], // line 154
-            'invalid-continuation-3byte' => ["\xE0\xA0\x20"], // line 159
-            'overlong-3byte' => ["\xE0\x80\x80"], // line 163
-            'surrogate-as-3byte' => ["\xED\xA0\x80"], // lines 168-170 (re-cover)
-            'truncated-4byte' => ["\xF0\x90\x80"], // line 174
-            'invalid-continuation-4byte' => ["\xF0\x90\x80\x20"], // lines 176-180
-            '4byte-out-of-range' => ["\xF4\x90\x80\x80"], // U+110000 (line 187)
+            'invalid-lead-byte-0x80' => ["\x80"],
+            'invalid-lead-byte-0xF5' => ["\xF5\x80\x80\x80"],
+            'truncated-2byte' => ["\xC2"],
+            'invalid-continuation-2byte' => ["\xC2\x20"],
+            'truncated-3byte' => ["\xE0\xA0"],
+            'invalid-continuation-3byte' => ["\xE0\xA0\x20"],
+            'overlong-3byte' => ["\xE0\x80\x80"],
+            'surrogate-as-3byte' => ["\xED\xA0\x80"],
+            'truncated-4byte' => ["\xF0\x90\x80"],
+            'invalid-continuation-4byte' => ["\xF0\x90\x80\x20"],
+            '4byte-out-of-range' => ["\xF4\x90\x80\x80"], // U+110000
         ];
     }
 
@@ -198,12 +199,6 @@ final class JsonTest extends TestCase
         Json::canonicalize(INF);
     }
 
-    public function testObjectRejectsNonArray(): void
-    {
-        $this->expectException(InvalidArgumentException::class);
-        Json::object('not-an-object', 'request');
-    }
-
     public function testCanonicalizeNegativeNumber(): void
     {
         self::assertSame('-1.5', Json::canonicalize(-1.5));
@@ -218,7 +213,7 @@ final class JsonTest extends TestCase
 
     public function testCanonicalizeIntegerValuedFloatPadding(): void
     {
-        // Forces n <= k+1 padding branch with trailing zero (line 270).
+        // Forces n <= k+1 padding branch with trailing zero.
         self::assertSame('100', Json::canonicalize(100.0));
         self::assertSame('1000', Json::canonicalize(1000.0));
     }

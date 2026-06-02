@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Protocols\Mpp\Core;
 
 use InvalidArgumentException;
+use PayKit\PayCore\Wire\Base64Url;
 
 /**
  * Formats and parses MPP HTTP authentication headers.

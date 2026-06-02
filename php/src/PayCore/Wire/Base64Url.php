@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Protocols\Mpp\Core;
+namespace PayKit\PayCore\Wire;
 
 use InvalidArgumentException;
 use JsonException;

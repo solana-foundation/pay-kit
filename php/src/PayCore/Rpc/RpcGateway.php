@@ -2,13 +2,14 @@
 
 declare(strict_types=1);
 
-namespace PayKit\Protocols\Mpp\Server;
+namespace PayKit\PayCore\Rpc;
 
 /**
  * Narrow abstraction over the subset of Solana RPC methods that the
- * MPP server uses for settlement and confirmation. Lets the handler
- * be unit-tested with a fake gateway (mirrors Ruby's FakeRpc test
- * helper at ruby/test/server_test.rb).
+ * server tiers use for settlement and confirmation. Protocol-agnostic:
+ * both the MPP charge server and the x402 exact verifier broadcast and
+ * confirm through this interface. Lets handlers be unit-tested with a
+ * fake gateway (mirrors Ruby's FakeRpc test helper).
  *
  * The default implementation {@see SolanaRpcGateway} delegates to
  * {@see \SolanaPhpSdk\Rpc\RpcClient}; consumers passing a concrete

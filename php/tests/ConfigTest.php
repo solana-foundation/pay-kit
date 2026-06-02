@@ -109,4 +109,16 @@ final class ConfigTest extends TestCase
         $this->expectException(\PayKit\Exception\ConfigurationException::class);
         new Config(stablecoins: ['not-a-stablecoin-enum'], preflight: false);
     }
+
+    public function testEmptyStablecoinsRejected(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        new Config(
+            network: Network::SolanaDevnet,
+            stablecoins: [],
+            operator: new Operator(recipient: Signer::generate()->pubkey()),
+            preflight: false,
+            mpp: new \PayKit\Protocols\Mpp\MppConfig(challengeBindingSecret: 'x'),
+        );
+    }
 }

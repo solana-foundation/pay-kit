@@ -9,10 +9,13 @@ use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
 use PayKit\Payment;
 use PayKit\Protocol;
+use PayKit\PayCore\Rpc\RpcGateway;
+use PayKit\PayCore\Rpc\SolanaRpcGateway;
 use PayKit\Protocols\X402\Exact\Verifier;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
 use Psr\Http\Message\ServerRequestInterface;
+use RuntimeException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Rpc\RpcClient;
 use SolanaPhpSdk\Transaction\VersionedTransaction;
@@ -33,14 +36,36 @@ final class Adapter
     private const PAYMENT_SIGNATURE_HEADER = 'payment-signature';
     private const X402_VERSION             = 2;
     private const TOKEN_PROGRAM            = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    private const REPLAY_KEY_PREFIX        = 'x402-svm-exact:consumed:';
 
     /** @var \Closure():?string|null */
     private $recentBlockhashProvider = null;
 
+    private ?RpcGateway $rpc = null;
+
+    private readonly Store $replayStore;
+
+    /**
+     * @param ?Store $replayStore Replay-protection store. When null (the
+     *        default) an in-process {@see MemoryStore} is used and a loud
+     *        dev-only warning is emitted: a single-process memory store
+     *        loses replay protection across workers/restarts, so production
+     *        deployments MUST inject a shared atomic store (Redis, Postgres).
+     * @param ?RpcGateway $rpc Confirmation/broadcast gateway. Defaults to a
+     *        {@see SolanaRpcGateway} over the configured `rpcUrl`, created
+     *        lazily on first settlement. Inject a fake for unit tests.
+     * @param int $confirmationAttempts How many times to poll
+     *        `getSignatureStatuses` before giving up. 40 attempts at the
+     *        default delay = 10 seconds. Mirrors the MPP charge handler.
+     * @param int $confirmationDelayMicros Sleep between polls in microseconds.
+     */
     public function __construct(
         private readonly Config $config,
-        private readonly Store $replayStore = new MemoryStore(),
+        ?Store $replayStore = null,
         ?\Closure $recentBlockhashProvider = null,
+        ?RpcGateway $rpc = null,
+        private readonly int $confirmationAttempts = 40,
+        private readonly int $confirmationDelayMicros = 250_000,
     ) {
         if ($config->x402->isDelegated()) {
             throw new InvalidProofException(
@@ -48,7 +73,28 @@ final class Adapter
                 . 'leave X402Config::$facilitatorUrl null for self-hosted',
             );
         }
+        if ($replayStore === null) {
+            self::warnDefaultReplayStore();
+            $replayStore = new MemoryStore();
+        }
+        $this->replayStore = $replayStore;
         $this->recentBlockhashProvider = $recentBlockhashProvider;
+        $this->rpc = $rpc;
+    }
+
+    private static function warnDefaultReplayStore(): void
+    {
+        if (function_exists('error_log')) {
+            error_log(
+                'pay_kit: WARN: x402 adapter using in-memory replay store; '
+                . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+            );
+        }
+    }
+
+    private function rpc(): RpcGateway
+    {
+        return $this->rpc ??= new SolanaRpcGateway(new RpcClient($this->config->rpcUrl));
     }
 
     /**
@@ -214,9 +260,13 @@ final class Adapter
 
         // Broadcast via the raw-wire path so PHP doesn't have to
         // reconstruct a SignedTransaction wrapper just to send.
-        $rpc = new RpcClient($this->config->rpcUrl);
+        $rpc = $this->rpc();
         try {
-            $sig = $rpc->sendRawTransaction($cosignedWire, ['encoding' => 'base64', 'skipPreflight' => false]);
+            $sig = $rpc->sendRawTransaction($cosignedWire, [
+                'encoding' => 'base64',
+                'skipPreflight' => false,
+                'preflightCommitment' => 'confirmed',
+            ]);
         } catch (Throwable $e) {
             throw new InvalidProofException(
                 'pay_kit: invalid proof: broadcast failed: ' . $e->getMessage(),
@@ -226,9 +276,29 @@ final class Adapter
             throw new InvalidProofException('pay_kit: empty broadcast result');
         }
 
-        // Reserve in replay store.
-        if (!$this->replayStore->putIfAbsent('x402-svm-exact:consumed:' . $sig, true)) {
+        // Reserve in the replay store BETWEEN broadcast and confirmation.
+        // RPC has accepted the transaction, so it may land even if the
+        // await below times out or the process crashes. Reserving first
+        // means a retry of the same credential trips the consumed guard
+        // rather than re-settling. Mirrors the MPP SolanaChargeHandler
+        // (settle() reserves between sendRawTransaction and
+        // awaitConfirmation; PR #85 Greptile P1 / audit gap G05).
+        if (!$this->replayStore->putIfAbsent(self::REPLAY_KEY_PREFIX . $sig, true)) {
             throw new InvalidProofException('pay_kit: signature_consumed');
+        }
+
+        // Confirm BEFORE returning the payment-response success. RPC
+        // acceptance is not settlement: the transaction can still fail or
+        // never finalize. Poll getSignatureStatuses until confirmed or
+        // finalized, throwing on on-chain failure or timeout so callers
+        // never receive a success header for an unsettled transaction.
+        // Closes main-audit finding 3 (PHP x402 confirm-before-success).
+        try {
+            $this->awaitConfirmation($sig);
+        } catch (Throwable $e) {
+            throw new InvalidProofException(
+                'pay_kit: invalid proof: settlement not confirmed: ' . $e->getMessage(),
+            );
         }
 
         $responseEnvelope = base64_encode(json_encode([
@@ -248,6 +318,33 @@ final class Adapter
             ],
             raw: $header,
         );
+    }
+
+    /**
+     * Poll `getSignatureStatuses` through the PayCore {@see RpcGateway}
+     * until the broadcast transaction is confirmed or finalized. Throws on
+     * on-chain failure (`err`) or when the confirmation budget is exhausted.
+     */
+    private function awaitConfirmation(string $signature): void
+    {
+        $rpc = $this->rpc();
+        for ($attempt = 0; $attempt < $this->confirmationAttempts; $attempt += 1) {
+            $statuses = $rpc->getSignatureStatuses([$signature]);
+            $status = $statuses[0] ?? null;
+            if (is_array($status)) {
+                if (($status['err'] ?? null) !== null) {
+                    throw new RuntimeException(
+                        "Transaction $signature failed: " . json_encode($status['err'], JSON_THROW_ON_ERROR),
+                    );
+                }
+                $confirmationStatus = $status['confirmationStatus'] ?? null;
+                if ($confirmationStatus === 'confirmed' || $confirmationStatus === 'finalized') {
+                    return;
+                }
+            }
+            usleep($this->confirmationDelayMicros);
+        }
+        throw new RuntimeException("Timed out waiting for transaction $signature");
     }
 
     private function caip2(): string

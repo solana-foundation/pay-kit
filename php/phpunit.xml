@@ -20,8 +20,8 @@
       <directory>src/Frameworks/Laravel</directory>
       <!-- Symfony adapter requires the full kernel; consumer-app cov. -->
       <directory>src/Frameworks/Symfony</directory>
-      <!-- Internal HttpFactory helper is a thin nyholm/psr7 wrapper. -->
-      <file>src/Internal/HttpFactory.php</file>
+      <!-- PayCore HttpFactory is a thin nyholm/psr7 wrapper. -->
+      <file>src/PayCore/HttpFactory.php</file>
       <!-- The x402 11-rule structural verifier + cosign/broadcast
            path is exercised end-to-end by the harness interop step
            (rust-x402 client -> php server). Unit-level coverage of

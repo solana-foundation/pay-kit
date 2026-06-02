@@ -7,6 +7,7 @@ namespace PayKit\Protocols\Mpp\Core;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
+use PayKit\PayCore\Wire\Json;
 
 /**
  * Represents a successful payment receipt header payload.

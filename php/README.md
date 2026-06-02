@@ -6,15 +6,18 @@
   </picture>
 </div>
 
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in
-PHP. One package, one surface, two protocols underneath:
+Charge stablecoins (USDC, USDT, PYUSD, …) for any HTTP endpoint, in PHP.
+One package, one surface, two protocols underneath:
 [x402](https://x402.org) and the
 [Machine Payments Protocol](https://paymentauth.org). Laravel and
 Symfony ride on top of a pure PSR-15 middleware.
 
+You do not need to know anything about Solana to use this library: pick a
+currency, give it your wallet address, and gate a route in two lines.
+
 [![PHP](https://img.shields.io/badge/php-8.2%2B-blue)]()
-[![Coverage](https://img.shields.io/badge/coverage-pending-yellow)]()
-[![Tests](https://img.shields.io/badge/tests-219-brightgreen)]()
+[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)]()
+[![Branch coverage](https://img.shields.io/badge/branch%20coverage-tracked-blue)]()
 
 ---
 
@@ -156,7 +159,7 @@ pay curl -i http://127.0.0.1:4567/api/paid # 200 - payment provided
 client-server payment handshake. x402 is single-recipient by design;
 gates with `feeWithin` or `feeOnTop` auto-disable x402.
 
-| Scheme             | Status |
+| Intent             | Status |
 |--------------------|--------|
 | `exact`            | ✅      |
 | `upto`             | —      |
@@ -169,7 +172,7 @@ multi-recipient splits, server-side fee accounting, and a separate
 fee-payer signer. Use MPP when your gate has a platform fee or the
 server subsidises the customer's network fee.
 
-| Scheme         | Status |
+| Intent         | Status |
 |----------------|--------|
 | `charge/pull`  | ✅      |
 | `charge/push`  | ✅      |
@@ -193,15 +196,18 @@ This package ships server support only. Drive the client side from:
 | Term            | Meaning                                                              |
 |-----------------|----------------------------------------------------------------------|
 | **operator**    | Merchant identity: recipient + signer + fee-payer flag.              |
-| **gate**        | A protected unit. Amount, optional fees, accepted schemes.           |
+| **gate**        | A protected unit. Amount, optional fees, accepted protocols.         |
 | **amount**      | Base amount a gate charges, before any `feeOnTop`.                   |
 | **total**       | What the customer pays: `amount + sum(feeOnTop)`. Derived.           |
 | **price**       | Value object: number + currency + settlement preference list.           |
 | **feeWithin**   | Fee taken out of the amount. ``payTo` recipient nets less.            |
 | **feeOnTop**    | Fee added to the amount. Customer pays more; `payTo` nets full.      |
 | **payment**     | Proof submitted by the client to pass a gate.                        |
-| **protocol**      | `Protocol::X402` or `Protocol::Mpp`.                                     |
-| **accept**      | Ordered preference list (schemes and stablecoins both).              |
+| **protocol**    | `Protocol::X402` or `Protocol::Mpp`.                                 |
+| **scheme**      | A protocol sub-form: x402 `exact`, MPP `charge`.                     |
+| **currency**    | The unit a price is denominated in (USDC, USDT, PYUSD, …).           |
+| **settlement**  | The on-chain transfer that fulfils a verified payment.              |
+| **accept**      | Ordered preference list (protocols and stablecoins both).            |
 
 ## Three primitives
 
@@ -231,7 +237,7 @@ $app->get('/oneoff', $handler)
 Boot-time validations (all raise from `new Gate(...)`):
 
 - `payTo` is required (gate kwarg or `operator.recipient`)
-- All fee prices share one denomination with the amount
+- All fee prices share one currency with the amount
 - `sum(feeWithin) <= amount`
 - `accept: [Protocol::X402]` on a fee-bearing gate raises `ProtocolIncompatibleException`
 
@@ -256,6 +262,11 @@ vendor/bin/phpunit
 
 ## Harness
 
+The interop adapter lives at
+[`harness/php-server`](../harness/php-server) (out of the shipped
+library). It boots one gated endpoint that cross-language clients pay
+against:
+
 ```bash
 cd harness
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=php pnpm test
@@ -265,10 +276,10 @@ MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=php pnpm test
 ## Spec
 
 This SDK implements the
-[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
-plus the [x402 v2 exact scheme](https://x402.org) on Solana with the
-full 11-rule structural verifier.
+plus the [x402 exact scheme](https://x402.org) on Solana with the full
+11-rule structural verifier.
 
 ---
 
@@ -277,23 +288,27 @@ full 11-rule structural verifier.
 ```text
 php/
 ├── src/
-│   ├── Config.php, Client.php, Operator.php, Signer.php, Gate.php, Price.php,
-│   │   Fee.php, Pricing.php, Payment.php, Preflight.php   # umbrella surface
-│   ├── Protocol.php, Stablecoin.php, Network.php, Currency.php # backed enums
+│   ├── PayKit.php, Config.php, Operator.php, Signer.php, Gate.php, Price.php,
+│   │   Fee.php, Pricing.php, Payment.php, Preflight.php    # umbrella surface
+│   ├── Protocol.php, Stablecoin.php                        # umbrella backed enums
 │   ├── Signer/{Demo, LocalSigner}.php                      # signer factory + impl
-│   ├── Exception/                                          # typed exceptions
-│   ├── Middleware/{RequirePayment, functions}.php                # PSR-15 middleware + ns fns
-│   ├── Schemes/
-│   │   ├── Mpp/{Adapter, MppConfig, Intent, Server/...}    # MPP protocol layer
-│   │   └── X402/{Adapter, X402Config, Exact/...}           # x402 protocol layer
-│   ├── PayCore/                                            # shared wire primitives
-│   │   ├── Base64Url, Json, Headers, Challenge, ChallengeEcho,
-│   │   │   Credential, Receipt, Rfc3339Parser.php
-│   │   └── Solana/Mints.php
-│   ├── Store/{Store, MemoryStore, FileStore}.php           # replay store
-│   ├── Internal/Psr17.php                                  # PSR-17 factory helper
-│   └── Laravel/{PayKitServiceProvider, RequirePaymentMiddleware,
-│       config/paykit.php}                                  # Laravel adapter
+│   ├── Exception/Exceptions.php                            # typed exceptions (one file)
+│   ├── Middleware/{RequirePayment, functions}.php          # PSR-15 middleware + ns fns
+│   ├── Frameworks/{Laravel, Symfony}/                      # umbrella adapters
+│   ├── PayCore/                                            # protocol-agnostic primitives
+│   │   ├── Currency.php, Network.php, HttpFactory.php
+│   │   ├── Rfc3339Parser.php                               # RFC 3339
+│   │   ├── Wire/{Base64Url, Json}.php                      # base64url + RFC 8785
+│   │   ├── Rpc/{RpcGateway, SolanaRpcGateway}.php          # JSON-RPC transport
+│   │   └── Solana/Mints.php                                # mint table + token program
+│   ├── Protocols/
+│   │   ├── Mpp/{Adapter, MppConfig, SecretResolver}.php    # MPP protocol
+│   │   │   ├── Core/{Challenge, ChallengeEcho, Credential, Receipt, Headers}.php
+│   │   │   ├── Intent/ChargeRequest.php
+│   │   │   └── Server/{ChargeServer, SolanaChargeHandler, ...}.php
+│   │   └── X402/{Adapter, X402Config}.php                  # x402 protocol
+│   │       └── Exact/Verifier.php                          # x402 exact scheme
+│   └── Store/{Store, MemoryStore, FileStore}.php           # replay store
 ├── examples/{laravel, simple-server}/
 └── tests/                                                  # PHPUnit suite
 ```

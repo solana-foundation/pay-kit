@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Frameworks\Symfony\DependencyInjection;
 
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Network;
 use PayKit\Operator;
@@ -21,7 +21,7 @@ use Symfony\Component\DependencyInjection\Extension\Extension;
 use Symfony\Component\DependencyInjection\Reference;
 
 /**
- * Wires {@see Client} into the Symfony service container from a
+ * Wires {@see PayKit} into the Symfony service container from a
  * `paykit:` config section, and registers the kernel.controller_arguments
  * event listener that handles the {@see \PayKit\Frameworks\Symfony\Attribute\RequirePayment}
  * attribute.
@@ -33,11 +33,11 @@ final class PayKitExtension extends Extension implements ConfigurationInterface
         $config = $this->processConfiguration($this, $configs);
         $payKitConfig = self::buildConfig($config);
 
-        $client = new Client($payKitConfig);
-        $container->set(Client::class, $client);
+        $client = new PayKit($payKitConfig);
+        $container->set(PayKit::class, $client);
 
         $listener = $container->register(RequirePaymentListener::class)
-            ->setArgument('$client', new Reference(Client::class))
+            ->setArgument('$client', new Reference(PayKit::class))
             ->setArgument('$pricing', null)
             ->setArgument('$psrFactory', new Reference('paykit.psr_http_factory'))
             ->setArgument('$httpFactory', new Reference('paykit.http_foundation_factory'))
