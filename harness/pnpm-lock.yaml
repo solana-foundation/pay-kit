@@ -24,6 +24,9 @@ importers:
         specifier: ^1.2.0
         version: 1.2.0
     devDependencies:
+      '@solana-program/token':
+        specifier: ^0.11.0
+        version: 0.11.0(@solana/kit@6.8.0(typescript@5.9.3))
       '@types/node':
         specifier: ^25.0.0
         version: 25.6.0
