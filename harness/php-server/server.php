@@ -12,7 +12,7 @@ declare(strict_types=1);
  *
  * Drives the harness contract:
  *   1. Read env (PAY_KIT_INTEROP_PROTOCOL OR exclusive MPP_/X402_).
- *   2. Boot the PayKit Client + register one gate at the requested amount.
+ *   2. Boot the PayKit umbrella + register one gate at the requested amount.
  *   3. Listen on a free TCP port; print {"type":"ready",...} on stdout.
  *   4. Route GET /<resource> through the matching protocol adapter.
  */
@@ -25,7 +25,7 @@ ini_set('display_errors', 'stderr');
 require __DIR__ . '/../../php/vendor/autoload.php';
 
 use Nyholm\Psr7\Factory\Psr17Factory;
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
@@ -127,10 +127,10 @@ if ($x402Active) {
 // ── Boot the SDK ────────────────────────────────────────────────────────────
 
 if ($x402Active) {
-    // x402 mode: build the umbrella Client + X402 Adapter with the
+    // x402 mode: build the umbrella PayKit + X402 Adapter with the
     // facilitator key as the operator's signer.
     $signer = Signer::json($facilitatorSecretJson);
-    $client = new Client(new Config(
+    $client = new PayKit(new Config(
         network:     resolve_network($networkRaw),
         accept:      [Protocol::X402],
         stablecoins: [Stablecoin::Usdc],

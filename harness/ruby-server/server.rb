@@ -9,7 +9,7 @@
 # x402 path: routes through PayKit::Pricing + dispatcher (one gate,
 # inline coercion). The x402 wire format is uniform across scenarios.
 #
-# MPP path: bypasses PayKit's gate DSL and drives Mpp::Server::Charge
+# MPP path: bypasses PayKit's gate DSL and drives PayKit::Protocols::Mpp::Server::Charge
 # directly. The interop matrix exercises facets PayKit's Gate doesn't
 # model yet (per-split ataCreationRequired + memo, custom settlement
 # headers, push-mode credentials, replay-source idempotency) so the
@@ -133,7 +133,7 @@ else
   # the method skip the mint table.
   currency = (asset_kind == "sol") ? "SOL" : mint_raw
 
-  method = ::Mpp::Protocol::Solana.charge(
+  method = ::PayKit::Protocols::Mpp::Protocol::Solana.charge(
     recipient: pay_to,
     currency: currency,
     network: network_label,
@@ -141,7 +141,7 @@ else
     decimals: Integer(decimals_raw, 10)
   )
 
-  mpp_server = ::Mpp.create(
+  mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,
     secret_key: mpp_secret,
     realm: "PayKit Interop",
@@ -249,7 +249,7 @@ serve_x402 = proc do |conn, req|
   end
 end
 
-# Per-request handler for the MPP path (direct Mpp::Server::Charge).
+# Per-request handler for the MPP path (direct PayKit::Protocols::Mpp::Server::Charge).
 serve_mpp = proc do |conn, req|
   amount_units = if replay_resource_path && req[:path] == replay_resource_path
     replay_amount_int
@@ -266,10 +266,10 @@ serve_mpp = proc do |conn, req|
   )
 
   case result
-  when ::Mpp::Settlement
+  when ::PayKit::Protocols::Mpp::Settlement
     headers = {"content-type" => "application/json"}.merge(result.headers || {})
     write_response(conn, 200, headers, {ok: true, paid: true, protocol: "mpp", transaction: result.signature})
-  when ::Mpp::Challenge
+  when ::PayKit::Protocols::Mpp::Challenge
     headers = {"content-type" => "application/json", "www-authenticate" => result.www_authenticate}
     write_response(conn, 402, headers, result.body)
   else
@@ -321,7 +321,7 @@ loop do
     body[:code] = e.spec_code if e.respond_to?(:spec_code) && e.spec_code
     write_response(conn, 402, {"content-type" => "application/json"}, body)
     conn.close
-  rescue ::Mpp::Error => e
+  rescue ::PayKit::Protocols::Mpp::Error => e
     code = e.respond_to?(:code) ? e.code : nil
     body = {error: code || "payment_invalid", message: e.message}
     body[:code] = code if code

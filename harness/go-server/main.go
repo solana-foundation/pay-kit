@@ -35,7 +35,7 @@ import (
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
-	"github.com/solana-foundation/pay-kit/go/signer"
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 )
 
 type readyMessage struct {
@@ -109,7 +109,7 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		Network:   paykit.SolanaLocalnet,
 		Preflight: &preflight,
 		RPCURL:    rpcURL,
-		Accept:    []paykit.Scheme{paykit.X402},
+		Accept:    []paykit.Protocol{paykit.X402},
 		Operator: paykit.Operator{
 			Recipient: paykit.Address(payTo),
 			Signer:    signer.MustFromJSON(facilitator),

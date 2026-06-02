@@ -1,6 +1,6 @@
 // Canonical L6 / P1 structured error codes shared by every server adapter.
 // Source of truth: python/src/pay_kit/protocols/mpp/core/errors.py CANONICAL_CODES,
-// ruby/lib/mpp/error_codes.rb CANONICAL_CODES.
+// ruby/lib/pay_core/error_codes.rb CANONICAL_CODES.
 //
 // The G39 fault matrix asserts that every server SDK emits the same code
 // for the same failure class. Adapter fixtures that wrap a SDK that has

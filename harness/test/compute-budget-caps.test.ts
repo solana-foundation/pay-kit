@@ -63,7 +63,7 @@ const SDKS: Sdk[] = [
   },
   {
     language: "ruby",
-    file: "ruby/lib/mpp/protocol/solana/verifier.rb",
+    file: "ruby/lib/pay_kit/protocols/mpp/protocol/solana/verifier.rb",
     limitPattern: /MAX_COMPUTE_UNIT_LIMIT\s*=\s*([0-9_]+)/,
     pricePattern: /MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS\s*=\s*([0-9_]+)/,
   },
