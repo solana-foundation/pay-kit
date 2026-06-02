@@ -72,7 +72,15 @@ the directory skeleton and CI from earlier ones.
    `harness/src/implementations.ts`. Run the focused matrix
    (`MPP_INTEROP_CLIENTS=<lang> MPP_INTEROP_SERVERS=rust pnpm test` and
    the inverse) before flipping `enabled: true`.
-7. **Write the README last.** Read `references/readme-template.md` and
+7. **Apply the operability caveats.** Read
+   `references/operability-caveats.md`. These are the gaps the Ruby
+   gem's PR #142 follow-up closed (default `localnet` RPC, mainnet
+   mint fallback on `localnet`, preflight + Surfnet cheatcode
+   auto-bootstrap, MPP HMAC secret auto-resolution chain, embedded
+   `recentBlockhash` in the x402 challenge, framework-host quirks).
+   Every port has to land them; PRs that omit any of the numbered
+   items need an explicit "not applicable" note in the body.
+8. **Write the README last.** Read `references/readme-template.md` and
    fill in the title, badges, repo layout, basic snippet, install/usage,
    client and server matrices (with the seven rows above), example
    walkthrough, Solana dependency list, and links to spec. The matrix
