@@ -54,8 +54,6 @@ use crate::store::{MemoryStore, Store};
 
 const METHOD_NAME: &str = "solana";
 const INTENT_NAME: &str = "subscription";
-const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
-const DEFAULT_REALM: &str = "MPP Subscription";
 
 /// Configuration for a subscription server route.
 #[derive(Clone)]
@@ -78,16 +76,21 @@ pub struct SubscriptionConfig {
     pub period_count: u64,
     /// Optional RFC3339 expiry of the recurring authorization.
     pub subscription_expires: Option<String>,
-    /// Solana network: mainnet-beta, devnet, testnet, or localnet.
+    /// Solana network: mainnet, devnet, testnet, or localnet.
     pub network: String,
     /// Subscriptions program ID. Defaults to the canonical mainnet deployment.
     pub program_id: Option<String>,
     /// Override the public RPC for the configured network.
     pub rpc_url: Option<String>,
-    /// HMAC secret for challenge IDs. Defaults to `MPP_SECRET_KEY` env var.
-    pub secret_key: Option<String>,
-    /// Server realm.
-    pub realm: Option<String>,
+    /// HMAC secret for challenge IDs. REQUIRED — the SDK refuses to
+    /// fall back to env-var lookups so misconfigured deployments fail
+    /// at boot instead of silently using whatever happened to be in
+    /// the process env.
+    pub challenge_binding_secret: String,
+    /// 402 realm string. REQUIRED — the operator picks an explicit
+    /// value rather than inheriting an SDK-side default that's
+    /// invisible at config-review time.
+    pub realm: String,
     /// If `true`, the server pays activation transaction fees.
     pub fee_payer: bool,
     /// Fee-payer signer (used when `fee_payer` is `true`). Required at
@@ -139,11 +142,11 @@ impl Default for SubscriptionConfig {
             period_unit: SubscriptionPeriodUnit::Day,
             period_count: 30,
             subscription_expires: None,
-            network: "mainnet-beta".into(),
+            network: "mainnet".into(),
             program_id: None,
             rpc_url: None,
-            secret_key: None,
-            realm: None,
+            challenge_binding_secret: String::new(),
+            realm: String::new(),
             fee_payer: false,
             fee_payer_signer: None,
             fee_payer_pubkey: None,
@@ -161,7 +164,7 @@ impl Default for SubscriptionConfig {
 pub struct SubscriptionServer {
     config: SubscriptionConfig,
     program_id: String,
-    secret_key: String,
+    challenge_binding_secret: String,
     realm: String,
     #[allow(dead_code)]
     store: Arc<dyn Store>,
@@ -173,7 +176,7 @@ impl SubscriptionServer {
     /// Create a new server handler from config. Validates pubkeys and
     /// period bounds eagerly; misconfigured servers fail at boot, not on
     /// the first challenge.
-    pub fn new(mut config: SubscriptionConfig) -> Result<Self, Error> {
+    pub fn new(config: SubscriptionConfig) -> Result<Self, Error> {
         if config.plan_id.is_empty() {
             return Err(Error::InvalidConfig("plan_id is required".into()));
         }
@@ -188,6 +191,14 @@ impl SubscriptionServer {
         }
         if config.recipient.is_empty() {
             return Err(Error::InvalidConfig("recipient is required".into()));
+        }
+        if config.challenge_binding_secret.is_empty() {
+            return Err(Error::InvalidConfig(
+                "challenge_binding_secret is required".into(),
+            ));
+        }
+        if config.realm.is_empty() {
+            return Err(Error::InvalidConfig("realm is required".into()));
         }
 
         // Validate all pubkeys parse.
@@ -206,19 +217,8 @@ impl SubscriptionServer {
             .unwrap_or_else(|| SUBSCRIPTIONS_PROGRAM_ID.to_string());
         parse_pubkey(&program_id, "program_id")?;
 
-        let secret_key = match config.secret_key.take() {
-            Some(s) => s,
-            None => std::env::var(SECRET_KEY_ENV_VAR).map_err(|_| {
-                Error::InvalidConfig(format!(
-                    "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass secret_key explicitly."
-                ))
-            })?,
-        };
-
-        let realm = config
-            .realm
-            .clone()
-            .unwrap_or_else(|| DEFAULT_REALM.to_string());
+        let challenge_binding_secret = config.challenge_binding_secret.clone();
+        let realm = config.realm.clone();
 
         let store: Arc<dyn Store> = config
             .store
@@ -233,7 +233,7 @@ impl SubscriptionServer {
         Ok(SubscriptionServer {
             config,
             program_id,
-            secret_key,
+            challenge_binding_secret,
             realm,
             store,
             rpc_url,
@@ -326,8 +326,8 @@ impl SubscriptionServer {
         let encoded = Base64UrlJson::from_typed(&request)?;
         let default_expires = expires::minutes(5);
 
-        Ok(PaymentChallenge::with_secret_key_full(
-            &self.secret_key,
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
             &self.realm,
             METHOD_NAME,
             INTENT_NAME,
@@ -370,7 +370,7 @@ impl SubscriptionServer {
     ) -> Result<ReceiptKind, VerificationError> {
         // ── Tier 1: HMAC ─────────────────────────────────────────────────
         let expected_id = compute_challenge_id(
-            &self.secret_key,
+            &self.challenge_binding_secret,
             &self.realm,
             credential.challenge.method.as_str(),
             credential.challenge.intent.as_str(),
@@ -1020,7 +1020,8 @@ mod tests {
             token_program: crate::protocol::solana::programs::TOKEN_PROGRAM.to_string(),
             puller: keypair_base58(),
             recipient: keypair_base58(),
-            secret_key: Some("test-secret".to_string()),
+            challenge_binding_secret: "test-secret".to_string(),
+            realm: "test-realm".to_string(),
             ..Default::default()
         }
     }
@@ -1056,7 +1057,7 @@ mod tests {
         let header = challenge.to_header().expect("header");
         assert!(header.contains("intent=\"subscription\""));
         assert!(header.contains("method=\"solana\""));
-        assert!(header.contains("realm=\"MPP Subscription\""));
+        assert!(header.contains("realm=\"test-realm\""));
     }
 
     #[test]
@@ -1115,21 +1116,17 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_env_secret_key_when_unset() {
+    fn rejects_empty_challenge_binding_secret() {
         let mut cfg = make_config();
-        cfg.secret_key = None;
-        unsafe {
-            std::env::set_var("MPP_SECRET_KEY", "env-secret-for-test");
-        }
-        let server = SubscriptionServer::new(cfg).expect("server with env secret");
-        let _challenge = server.subscription_challenge("1000").expect("challenge");
-        unsafe {
-            std::env::remove_var("MPP_SECRET_KEY");
-        }
-        // Re-creating without the env var or explicit secret should now fail.
-        let mut cfg2 = make_config();
-        cfg2.secret_key = None;
-        assert!(SubscriptionServer::new(cfg2).is_err());
+        cfg.challenge_binding_secret = String::new();
+        assert!(SubscriptionServer::new(cfg).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_realm() {
+        let mut cfg = make_config();
+        cfg.realm = String::new();
+        assert!(SubscriptionServer::new(cfg).is_err());
     }
 
     #[test]
@@ -1169,7 +1166,7 @@ mod tests {
         let expected_puller = cfg.puller.clone();
         let expected_program = SUBSCRIPTIONS_PROGRAM_ID.to_string();
         let server = SubscriptionServer::new(cfg).expect("server");
-        assert_eq!(server.realm(), DEFAULT_REALM);
+        assert_eq!(server.realm(), "test-realm");
         assert_eq!(server.plan_id(), expected_plan);
         assert_eq!(server.mint(), expected_mint);
         assert_eq!(server.recipient(), expected_recipient);
@@ -1184,11 +1181,17 @@ mod tests {
         assert_eq!(default_rpc_url("devnet"), "https://api.devnet.solana.com");
         assert_eq!(default_rpc_url("testnet"), "https://api.testnet.solana.com");
         assert_eq!(default_rpc_url("localnet"), "http://localhost:8899");
+        // `mainnet` is the canonical slug; the legacy `mainnet-beta`
+        // alias still resolves so existing clients don't break.
+        assert_eq!(
+            default_rpc_url("mainnet"),
+            "https://api.mainnet-beta.solana.com"
+        );
         assert_eq!(
             default_rpc_url("mainnet-beta"),
             "https://api.mainnet-beta.solana.com"
         );
-        // Unknown network falls through to mainnet-beta default.
+        // Unknown network falls through to the mainnet RPC.
         assert_eq!(
             default_rpc_url("custom"),
             "https://api.mainnet-beta.solana.com"
@@ -1327,9 +1330,13 @@ mod tests {
             ..Default::default()
         };
         let encoded = Base64UrlJson::from_typed(&body).unwrap();
-        PaymentChallenge::with_secret_key(
-            "test-secret",
-            "test-realm",
+        // Different secret + realm than `make_config()` so the
+        // challenge id HMAC will deliberately mismatch when fed into
+        // the test server's `verify_credential` — that's what the
+        // HMAC-rejection test actually exercises.
+        PaymentChallenge::with_challenge_binding_secret(
+            "different-secret",
+            "different-realm",
             "solana",
             "subscription",
             encoded,

@@ -233,8 +233,9 @@ pub struct SubscriptionMethodDetails {
     /// deployment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_id: Option<String>,
-    /// Solana network slug — `mainnet`, `mainnet-beta`, `devnet`,
-    /// `testnet`, `localnet`.
+    /// Solana network slug — `mainnet`, `devnet`, `testnet`,
+    /// `localnet`. Servers MAY accept `mainnet-beta` as a legacy alias
+    /// of `mainnet` but MUST emit `mainnet`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
     /// When `true`, the server pays activation transaction fees.

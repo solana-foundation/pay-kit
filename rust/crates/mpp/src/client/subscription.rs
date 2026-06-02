@@ -619,7 +619,7 @@ mod tests {
             recipient: Some("5fKb5cF22cFybZB1H4hLDydFhwoQy9JzKzRWaSbMkB6h".into()),
             amount: Some("10000000".into()),
             program_id: None,
-            network: Some("mainnet-beta".into()),
+            network: Some("mainnet".into()),
             fee_payer,
             fee_payer_key: fee_payer_key.map(str::to_string),
             recent_blockhash: Some("11111111111111111111111111111111".into()),

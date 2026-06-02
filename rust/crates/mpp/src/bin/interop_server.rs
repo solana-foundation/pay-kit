@@ -137,7 +137,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
         }),
         _ => None,
     };
-    let secret_key =
+    let challenge_binding_secret =
         env::var("MPP_INTEROP_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
     let decimals = match env::var("MPP_INTEROP_DECIMALS") {
         Ok(raw) if !raw.is_empty() => raw.parse::<u8>()?,
@@ -152,7 +152,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             decimals,
             network,
             rpc_url: Some(rpc_url),
-            secret_key: Some(secret_key),
+            challenge_binding_secret: Some(challenge_binding_secret),
             realm: Some("MPP Interop".to_string()),
             fee_payer: !push_mode,
             fee_payer_signer: if push_mode { None } else { Some(fee_payer) },

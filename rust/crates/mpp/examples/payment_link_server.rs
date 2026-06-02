@@ -144,7 +144,7 @@ async fn main() {
     let mpp = Arc::new(
         Mpp::new(Config {
             recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
-            secret_key: Some(
+            challenge_binding_secret: Some(
                 "e2e-test-secret-key-long-enough-for-hmac-operations-1234567890".into(),
             ),
             network: "localnet".to_string(),

@@ -235,7 +235,7 @@ mod tests {
         Arc::new(
             Mpp::new(Config {
                 recipient: TEST_RECIPIENT.to_string(),
-                secret_key: Some(TEST_SECRET.to_string()),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: "devnet".to_string(),
                 ..Default::default()
             })

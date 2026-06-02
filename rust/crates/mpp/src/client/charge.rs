@@ -54,7 +54,7 @@ pub struct SelectChargeChallengeOptions<'a> {
     pub currency: Option<&'a str>,
     /// Currency symbols or mint addresses in client preference order.
     pub currency_preferences: &'a [&'a str],
-    /// Solana network identifier, e.g. "mainnet-beta", "devnet", or "localnet".
+    /// Solana network identifier, e.g. "mainnet", "devnet", or "localnet".
     pub network: Option<&'a str>,
 }
 
@@ -554,7 +554,7 @@ fn decode_charge_challenge(
 fn matches_network(method_details: &MethodDetails, network: Option<&str>) -> bool {
     match network {
         None => true,
-        Some(expected) => method_details.network.as_deref().unwrap_or("mainnet-beta") == expected,
+        Some(expected) => method_details.network.as_deref().unwrap_or("mainnet") == expected,
     }
 }
 
@@ -680,12 +680,7 @@ mod tests {
     #[test]
     fn select_charge_challenge_honors_client_currency_preference_order() {
         let challenges = vec![
-            selection_challenge(
-                "mainnet-usdc",
-                "solana",
-                mints::USDC_MAINNET,
-                "mainnet-beta",
-            ),
+            selection_challenge("mainnet-usdc", "solana", mints::USDC_MAINNET, "mainnet"),
             selection_challenge("devnet-usdc", "solana", mints::USDC_DEVNET, "devnet"),
         ];
 
@@ -706,12 +701,7 @@ mod tests {
     fn select_charge_challenge_returns_none_when_no_candidate_matches() {
         let challenges = vec![
             selection_challenge("stripe", "stripe", mints::USDC_DEVNET, "devnet"),
-            selection_challenge(
-                "usdc-mainnet",
-                "solana",
-                mints::USDC_MAINNET,
-                "mainnet-beta",
-            ),
+            selection_challenge("usdc-mainnet", "solana", mints::USDC_MAINNET, "mainnet"),
         ];
 
         let selected = select_charge_challenge(

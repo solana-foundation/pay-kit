@@ -46,10 +46,10 @@ const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
 const DEFAULT_REALM: &str = "MPP Payment";
 
-fn detect_secret_key() -> Result<String, Error> {
+fn detect_challenge_binding_secret() -> Result<String, Error> {
     std::env::var(SECRET_KEY_ENV_VAR).map_err(|_| {
         Error::InvalidConfig(format!(
-            "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass secret_key explicitly."
+            "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass challenge_binding_secret explicitly."
         ))
     })
 }
@@ -73,12 +73,12 @@ pub struct Config {
     pub currency: String,
     /// Token decimals (default: 6 for USDC-like tokens).
     pub decimals: u8,
-    /// Solana network: mainnet-beta, devnet, or localnet.
+    /// Solana network: mainnet, devnet, or localnet.
     pub network: String,
     /// RPC URL (overrides default for the network).
     pub rpc_url: Option<String>,
     /// Server secret key for HMAC challenge IDs.
-    pub secret_key: Option<String>,
+    pub challenge_binding_secret: Option<String>,
     /// Server realm.
     pub realm: Option<String>,
     /// Whether server pays transaction fees.
@@ -99,7 +99,7 @@ impl Default for Config {
             decimals: 6,
             network: "mainnet".to_string(),
             rpc_url: None,
-            secret_key: None,
+            challenge_binding_secret: None,
             realm: None,
             fee_payer: false,
             fee_payer_signer: None,
@@ -131,7 +131,7 @@ pub struct Mpp {
     rpc: Arc<RpcClient>,
     rpc_url: String,
     realm: String,
-    secret_key: String,
+    challenge_binding_secret: String,
     currency: String,
     recipient: String,
     decimals: u32,
@@ -154,7 +154,9 @@ impl Mpp {
         let rpc_url = config
             .rpc_url
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
-        let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
+        let challenge_binding_secret = config
+            .challenge_binding_secret
+            .map_or_else(detect_challenge_binding_secret, Ok)?;
         let realm = config.realm.unwrap_or_else(|| DEFAULT_REALM.to_string());
         let store: Arc<dyn Store> = config.store.unwrap_or_else(|| Arc::new(MemoryStore::new()));
 
@@ -162,7 +164,7 @@ impl Mpp {
             rpc: Arc::new(RpcClient::new(rpc_url.clone())),
             rpc_url,
             realm,
-            secret_key,
+            challenge_binding_secret,
             currency: config.currency,
             recipient: config.recipient,
             decimals: config.decimals as u32,
@@ -281,8 +283,8 @@ impl Mpp {
         let default_expires = crate::expires::minutes(5);
         let expires = options.expires.unwrap_or(&default_expires);
 
-        Ok(PaymentChallenge::with_secret_key_full(
-            &self.secret_key,
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
             &self.realm,
             METHOD_NAME,
             "charge",
@@ -350,8 +352,8 @@ impl Mpp {
         let default_expires = crate::expires::minutes(5);
         let expires = expires.unwrap_or(&default_expires);
 
-        Ok(PaymentChallenge::with_secret_key_full(
-            &self.secret_key,
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
             &self.realm,
             METHOD_NAME,
             "charge",
@@ -478,7 +480,7 @@ impl Mpp {
     ) -> Result<Receipt, VerificationError> {
         // Tier 1: Verify HMAC.
         let expected_id = compute_challenge_id(
-            &self.secret_key,
+            &self.challenge_binding_secret,
             &self.realm,
             credential.challenge.method.as_str(),
             credential.challenge.intent.as_str(),
@@ -3313,7 +3315,7 @@ mod tests {
     fn test_mpp() -> Mpp {
         Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
             ..Default::default()
         })
@@ -3323,7 +3325,7 @@ mod tests {
     fn test_mpp_sol() -> Mpp {
         Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
             network: "devnet".to_string(),
@@ -3349,7 +3351,7 @@ mod tests {
     fn new_missing_recipient_errors() {
         let err = Mpp::new(Config {
             recipient: String::new(),
-            secret_key: Some("key".to_string()),
+            challenge_binding_secret: Some("key".to_string()),
             ..Default::default()
         })
         .err()
@@ -3364,7 +3366,7 @@ mod tests {
     fn new_invalid_recipient_pubkey_errors() {
         let err = Mpp::new(Config {
             recipient: "not-a-valid-pubkey!!!".to_string(),
-            secret_key: Some("key".to_string()),
+            challenge_binding_secret: Some("key".to_string()),
             ..Default::default()
         })
         .err()
@@ -3376,7 +3378,7 @@ mod tests {
     }
 
     #[test]
-    fn new_missing_secret_key_without_env_errors() {
+    fn new_missing_challenge_binding_secret_without_env_errors() {
         let _guard = ENV_LOCK.lock().unwrap();
         // Temporarily ensure the env var is not set.
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
@@ -3384,7 +3386,7 @@ mod tests {
 
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: None,
+            challenge_binding_secret: None,
             ..Default::default()
         })
         .err()
@@ -3398,14 +3400,14 @@ mod tests {
     }
 
     #[test]
-    fn new_secret_key_from_env() {
+    fn new_challenge_binding_secret_from_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
         unsafe { std::env::set_var(SECRET_KEY_ENV_VAR, "env-secret") };
 
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: None,
+            challenge_binding_secret: None,
             ..Default::default()
         });
 
@@ -3432,7 +3434,7 @@ mod tests {
     fn new_custom_realm() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            challenge_binding_secret: Some("key".to_string()),
             realm: Some("Custom Realm".to_string()),
             ..Default::default()
         })
@@ -3445,7 +3447,7 @@ mod tests {
         // Should not fail — just verifying it accepts a custom RPC URL.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            challenge_binding_secret: Some("key".to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
             ..Default::default()
         });
@@ -3457,7 +3459,7 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some("key".to_string()),
+            challenge_binding_secret: Some("key".to_string()),
             store: Some(store),
             ..Default::default()
         });
@@ -3478,6 +3480,13 @@ mod tests {
 
     #[test]
     fn default_rpc_url_mainnet() {
+        // Canonical slug.
+        assert_eq!(
+            default_rpc_url("mainnet"),
+            "https://api.mainnet-beta.solana.com"
+        );
+        // Legacy alias still resolves so clients that send the older
+        // slug don't break.
         assert_eq!(
             default_rpc_url("mainnet-beta"),
             "https://api.mainnet-beta.solana.com"
@@ -4136,7 +4145,7 @@ mod tests {
     async fn b34_rejects_push_credential_on_fee_payer_route() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -4174,7 +4183,7 @@ mod tests {
         // not fire: any error must come from broadcast, not from B34.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -4209,7 +4218,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let _mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
             network: "devnet".to_string(),
             ..Default::default()
@@ -5439,7 +5448,7 @@ mod tests {
     fn charge_with_fee_payer_includes_method_details() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: true,
             network: "devnet".to_string(),
             ..Default::default()
@@ -5476,7 +5485,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -5519,7 +5528,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -5551,7 +5560,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "USDC".to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),

@@ -71,7 +71,7 @@ async fn sol_charge_full_flow() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -116,7 +116,7 @@ async fn sol_charge_wrong_amount_rejected_before_broadcast() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -190,7 +190,7 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -249,7 +249,7 @@ async fn sol_charge_replay_rejected() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -300,7 +300,7 @@ async fn sol_charge_expired_challenge_rejected() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -351,7 +351,7 @@ async fn sol_charge_www_authenticate_roundtrip() {
         decimals: 9,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -413,7 +413,7 @@ async fn usdc_charge_full_flow() {
         decimals: 6,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();
@@ -492,7 +492,7 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
         decimals: 6,
         network: "localnet".to_string(),
         rpc_url: Some(surfnet.rpc_url().to_string()),
-        secret_key: Some("test-secret".to_string()),
+        challenge_binding_secret: Some("test-secret".to_string()),
         ..Default::default()
     })
     .unwrap();

@@ -48,8 +48,8 @@ impl PaymentChallenge {
     /// Create a new payment challenge with an HMAC-bound ID.
     ///
     /// Enables stateless verification without storing challenge state.
-    pub fn with_secret_key(
-        secret_key: &str,
+    pub fn with_challenge_binding_secret(
+        challenge_binding_secret: &str,
         realm: impl Into<String>,
         method: impl Into<MethodName>,
         intent: impl Into<IntentName>,
@@ -59,7 +59,7 @@ impl PaymentChallenge {
         let method = method.into();
         let intent = intent.into();
         let id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &realm,
             method.as_str(),
             intent.as_str(),
@@ -83,8 +83,8 @@ impl PaymentChallenge {
 
     /// Create with HMAC-bound ID including all optional fields.
     #[allow(clippy::too_many_arguments)]
-    pub fn with_secret_key_full(
-        secret_key: &str,
+    pub fn with_challenge_binding_secret_full(
+        challenge_binding_secret: &str,
         realm: impl Into<String>,
         method: impl Into<MethodName>,
         intent: impl Into<IntentName>,
@@ -98,7 +98,7 @@ impl PaymentChallenge {
         let method = method.into();
         let intent = intent.into();
         let id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &realm,
             method.as_str(),
             intent.as_str(),
@@ -155,9 +155,9 @@ impl PaymentChallenge {
     }
 
     /// Verify that this challenge's ID matches the expected HMAC.
-    pub fn verify(&self, secret_key: &str) -> bool {
+    pub fn verify(&self, challenge_binding_secret: &str) -> bool {
         let expected_id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &self.realm,
             self.method.as_str(),
             self.intent.as_str(),
@@ -190,7 +190,7 @@ impl PaymentChallenge {
 /// computes HMAC-SHA256 with the secret key, then base64url-encodes.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_challenge_id(
-    secret_key: &str,
+    challenge_binding_secret: &str,
     realm: &str,
     method: &str,
     intent: &str,
@@ -215,8 +215,8 @@ pub fn compute_challenge_id(
     ]
     .join("|");
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret_key.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(challenge_binding_secret.as_bytes())
+        .expect("HMAC can take key of any size");
     mac.update(hmac_input.as_bytes());
     let result = mac.finalize();
 
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn challenge_hmac_verify() {
-        let challenge = PaymentChallenge::with_secret_key(
+        let challenge = PaymentChallenge::with_challenge_binding_secret(
             "test-secret",
             "api.example.com",
             "solana",
@@ -454,13 +454,13 @@ mod tests {
         assert_eq!(receipt.challenge_id, "challenge-1");
     }
 
-    // ── with_secret_key_full coverage ──
+    // ── with_challenge_binding_secret_full coverage ──
 
     #[test]
-    fn challenge_with_secret_key_full_verify() {
+    fn challenge_with_challenge_binding_secret_full_verify() {
         let request = Base64UrlJson::from_value(&serde_json::json!({"amount": "5000"})).unwrap();
         let opaque = Base64UrlJson::from_value(&serde_json::json!({"context": "xyz"})).unwrap();
-        let challenge = PaymentChallenge::with_secret_key_full(
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
             "my-secret",
             "realm.example.com",
             "solana",
@@ -480,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn challenge_with_secret_key_full_no_optionals() {
+    fn challenge_with_challenge_binding_secret_full_no_optionals() {
         let request = Base64UrlJson::from_value(&serde_json::json!({"amount": "100"})).unwrap();
-        let challenge = PaymentChallenge::with_secret_key_full(
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
             "secret", "realm", "solana", "charge", request, None, None, None, None,
         );
         assert!(challenge.verify("secret"));

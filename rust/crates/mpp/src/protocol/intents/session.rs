@@ -110,7 +110,7 @@ pub struct SessionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
 
-    /// Solana network: "mainnet-beta", "devnet", "localnet".
+    /// Solana network: "mainnet", "devnet", "localnet".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
 
@@ -752,7 +752,7 @@ mod tests {
             cap: "10000000".to_string(),
             currency: "USDC".to_string(),
             decimals: Some(6),
-            network: Some("mainnet-beta".to_string()),
+            network: Some("mainnet".to_string()),
             operator: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             splits: vec![],
@@ -1383,7 +1383,7 @@ mod tests {
             cap: "10000000".to_string(),
             currency: "USDC".to_string(),
             decimals: Some(6),
-            network: Some("mainnet-beta".to_string()),
+            network: Some("mainnet".to_string()),
             operator: "op".to_string(),
             recipient: "rec".to_string(),
             splits: vec![],

@@ -64,7 +64,7 @@ pub struct SessionConfig {
     /// Token decimals (default 6 for USDC).
     pub decimals: u8,
 
-    /// Solana network: "mainnet-beta", "devnet", "localnet".
+    /// Solana network: "mainnet", "devnet", "localnet".
     pub network: String,
 
     /// Payment-channel program ID. `None` defaults to the canonical program.
@@ -101,7 +101,7 @@ impl Default for SessionConfig {
             max_cap: 10_000_000, // 10 USDC
             currency: "USDC".to_string(),
             decimals: 6,
-            network: "mainnet-beta".to_string(),
+            network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
             modes: vec![SessionMode::Push],
@@ -1636,7 +1636,7 @@ mod tests {
             max_cap: 10_000_000,
             currency: "USDC".to_string(),
             decimals: 6,
-            network: "mainnet-beta".to_string(),
+            network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
             modes: vec![SessionMode::Push],

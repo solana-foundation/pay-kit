@@ -1,5 +1,6 @@
 //! Client-side implementations for the charge, session, and subscription intents.
 
+pub mod authenticate;
 mod charge;
 pub mod http_stream;
 pub mod multi_delegate;
@@ -8,6 +9,10 @@ pub mod session;
 pub mod session_consumer;
 pub mod subscription;
 
+pub use authenticate::{
+    build_credential as build_authenticate_credential,
+    build_credential_header as build_authenticate_credential_header,
+};
 pub use charge::*;
 pub use http_stream::*;
 pub use payment_channels::*;
