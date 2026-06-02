@@ -11,6 +11,7 @@
 // Only the TS runner ships in this change; other languages are a tracked
 // follow-up (see harness/vectors/README.md).
 
+import { createHmac } from "node:crypto";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { buildChargeTransaction } from "@solana/mpp/client";
 import {
@@ -203,6 +204,23 @@ async function runVector(vector: ConformanceVector): Promise<RunnerResult> {
       } else if (enc.utf8) {
         exactBytes.base64Url = base64UrlFromUtf8(enc.utf8);
       }
+    }
+    if (vector.input.challengeId) {
+      const c = vector.input.challengeId;
+      // base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+      // digest|opaque)); absent optionals join as empty strings. Mirrors
+      // rust compute_challenge_id (protocol/core/challenge.rs).
+      const hmacInput = [
+        c.realm,
+        c.method,
+        c.intent,
+        c.request,
+        c.expires ?? "",
+        c.digest ?? "",
+        c.opaque ?? "",
+      ].join("|");
+      const mac = createHmac("sha256", c.secretKey).update(hmacInput).digest();
+      exactBytes.base64Url = mac.toString("base64url");
     }
     return { exactBytes, id: vector.id, outcome: "accept" };
   }

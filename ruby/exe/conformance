@@ -560,6 +560,22 @@ def run_canonical_bytes(vector)
       exact["base64Url"] = PayCore::Base64Url.encode(enc["utf8"])
     end
   end
+  if (cid = input["challengeId"])
+    # base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+    # digest|opaque)); absent optionals join as empty strings. Drives the
+    # production SDK derivation (Challenge.compute_id), mirroring rust
+    # compute_challenge_id (protocol/core/challenge.rs).
+    exact["base64Url"] = PayKit::Protocols::Mpp::Protocol::Core::Challenge.compute_id(
+      secret_key: cid["secretKey"],
+      realm: cid["realm"],
+      method: cid["method"],
+      intent: cid["intent"],
+      request: cid["request"],
+      expires: cid["expires"],
+      digest: cid["digest"],
+      opaque: cid["opaque"]
+    )
+  end
   {"id" => vector["id"], "outcome" => "accept", "exactBytes" => exact}
 end
 

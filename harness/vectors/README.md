@@ -185,7 +185,7 @@ server verify (`verifyChargeTransaction`), and the JCS reference encoder.
 
 ## Seeded vectors (this change)
 
-13 vectors across the divergence classes from the audit:
+Vectors across the divergence classes from the audit:
 
 - `charge-defaults.json` — field-omitted defaults (decimals=6, token
   program by currency), Token-2022-by-currency, SOL-native build.
@@ -198,6 +198,20 @@ server verify (`verifyChargeTransaction`), and the JCS reference encoder.
   idempotent ATA creation + memo).
 - `canonical-bytes.json` — RFC 8785 JCS canonical JSON + base64url,
   48-byte base64url, UTF-8 base64url.
+- `wire-bytes.json` — byte-exact canonical wire vectors. Five MPP charge
+  challenge-id HMAC vectors (`base64url(HMAC-SHA256(secret, realm|method|
+  intent|request|expires|digest|opaque))`, required-only through all-fields,
+  mirroring rust `compute_challenge_id`) plus the x402 v2 PAYMENT-SIGNATURE
+  and PAYMENT-REQUIRED envelope wire strings (canonicalized via the shared
+  JCS path). These pin cross-SDK agreement byte-for-byte where the on-chain
+  settlement oracle is blind to the header/id encoding. The `challengeId`
+  input drives each SDK's production challenge-id derivation; the envelope
+  wire vectors feed the envelope object through the `value` (JCS) path so the
+  agreement reuses the canonicalizer all runners already conform on. The
+  optional x402 `extra` map is omitted from the envelope vectors because an
+  empty `{}` is indistinguishable from `[]` once decoded into a dynamically
+  typed runner's untyped container; empty-map encoding is a separate concern
+  from envelope wire agreement.
 
 ## Per-SDK runner follow-up
 

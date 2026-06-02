@@ -197,6 +197,23 @@ export type VectorInput = {
   value?: unknown;
   // canonical-bytes: a base58 or hex string the runner base64url-encodes.
   encodeBase64Url?: { hexBytes?: string; utf8?: string };
+  // canonical-bytes: MPP charge challenge-id HMAC derivation. The runner
+  // computes base64url(HMAC-SHA256(secretKey, realm|method|intent|request|
+  // expires|digest|opaque)) with absent optionals joined as empty strings,
+  // and emits it as exactBytes.base64Url. This pins cross-SDK challenge-id
+  // agreement byte-for-byte: two SDKs that compute a different id from the
+  // same inputs are caught here, not buried behind a live-server roundtrip.
+  // Mirrors rust `compute_challenge_id` (protocol/core/challenge.rs).
+  challengeId?: {
+    secretKey: string;
+    realm: string;
+    method: string;
+    intent: string;
+    request: string;
+    expires?: string;
+    digest?: string;
+    opaque?: string;
+  };
 
   // ── x402-exact inputs ────────────────────────────────────────────────
   // build-transaction (x402): the offer the client selects + wraps into a

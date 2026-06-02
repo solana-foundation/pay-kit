@@ -67,6 +67,7 @@ type VectorInput struct {
 	RPCFixtures     *RPCFixtures     `json:"rpcFixtures"`
 	Value           json.RawMessage  `json:"value"`
 	EncodeBase64URL *EncodeBase64URL `json:"encodeBase64Url"`
+	ChallengeID     *ChallengeID     `json:"challengeId"`
 
 	// x402-exact inputs (mirror schema.ts VectorInput x402 fields).
 	X402Offer             *X402Offer `json:"x402Offer"`
@@ -113,6 +114,19 @@ type RPCFixtures struct {
 type EncodeBase64URL struct {
 	HexBytes string `json:"hexBytes"`
 	UTF8     string `json:"utf8"`
+}
+
+// ChallengeID mirrors schema.ts VectorInput.challengeId: the inputs to the
+// MPP charge challenge-id HMAC derivation.
+type ChallengeID struct {
+	SecretKey string `json:"secretKey"`
+	Realm     string `json:"realm"`
+	Method    string `json:"method"`
+	Intent    string `json:"intent"`
+	Request   string `json:"request"`
+	Expires   string `json:"expires"`
+	Digest    string `json:"digest"`
+	Opaque    string `json:"opaque"`
 }
 
 // Transfer mirrors schema.ts TransactionShape.transfers element.
@@ -480,6 +494,15 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 		case enc.UTF8 != "":
 			eb.Base64URL = wire.Base64URLEncode([]byte(enc.UTF8))
 		}
+	}
+	if c := in.ChallengeID; c != nil {
+		// base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+		// digest|opaque)); absent optionals join as empty strings. Drives the
+		// production SDK derivation (wire.ComputeChallengeID), which mirrors
+		// rust compute_challenge_id (protocol/core/challenge.rs).
+		eb.Base64URL = wire.ComputeChallengeID(
+			c.SecretKey, c.Realm, c.Method, c.Intent, c.Request, c.Expires, c.Digest, c.Opaque,
+		)
 	}
 	return eb, nil
 }

@@ -1,0 +1,169 @@
+[
+  {
+    "id": "challenge-id-hmac-required-only",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: MPP charge challenge-id HMAC derivation. base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|digest|opaque)) with absent optionals joined as empty strings. Required-only inputs (no expires/digest/opaque). Mirrors rust compute_challenge_id (protocol/core/challenge.rs). Pins cross-SDK challenge-id agreement byte-for-byte so two SDKs computing a different id from the same inputs are caught here, not behind a live-server roundtrip.",
+    "input": {
+      "challengeId": {
+        "secretKey": "test-secret-key",
+        "realm": "https://api.example.com",
+        "method": "GET",
+        "intent": "charge",
+        "request": "eyJhbW91bnQiOiIxMDAwMDAwIn0"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "base64Url": "enSqSrV2FpC-EFNQ1HdjGKshc-HzmrAZP6xTsKz05Mo"
+      }
+    }
+  },
+  {
+    "id": "challenge-id-hmac-with-expires",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Challenge-id HMAC with an RFC 3339 expires segment. The expires string is an RFC 3339 / ISO 8601 UTC timestamp (battle-tested format) and must enter the HMAC input verbatim, changing the id relative to required-only.",
+    "input": {
+      "challengeId": {
+        "secretKey": "test-secret-key",
+        "realm": "https://api.example.com",
+        "method": "GET",
+        "intent": "charge",
+        "request": "eyJhbW91bnQiOiIxMDAwMDAwIn0",
+        "expires": "2026-01-01T00:00:00Z"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "base64Url": "hXUE3ICSKDbozDNJYEnDg-xHqEzFhrcWSZfQfG638VM"
+      }
+    }
+  },
+  {
+    "id": "challenge-id-hmac-with-digest",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Challenge-id HMAC with a digest segment (RFC 9530 Repr-Digest SFV value sha-256=:...:). The digest binds the request body hash into the id; it must enter the HMAC input verbatim.",
+    "input": {
+      "challengeId": {
+        "secretKey": "test-secret-key",
+        "realm": "https://api.example.com",
+        "method": "GET",
+        "intent": "charge",
+        "request": "eyJhbW91bnQiOiIxMDAwMDAwIn0",
+        "digest": "sha-256=:abc123:"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "base64Url": "fTHJHq2TO4Jyze0ak9YTsHJqtxOutaU0vvooDkKbhVY"
+      }
+    }
+  },
+  {
+    "id": "challenge-id-hmac-with-opaque",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Challenge-id HMAC with an opaque segment. opaque is server-issued nonce material; it must enter the HMAC input verbatim.",
+    "input": {
+      "challengeId": {
+        "secretKey": "test-secret-key",
+        "realm": "https://api.example.com",
+        "method": "GET",
+        "intent": "charge",
+        "request": "eyJhbW91bnQiOiIxMDAwMDAwIn0",
+        "opaque": "opaque-token-xyz"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "base64Url": "_Ym_ZqlmWcYI8I7IegaWL4SJycxerPSl6OJdp4rxRGY"
+      }
+    }
+  },
+  {
+    "id": "challenge-id-hmac-all-fields",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Challenge-id HMAC with every optional present (expires + digest + opaque). Pins the fully-bound id so an SDK that drops or reorders any segment diverges here.",
+    "input": {
+      "challengeId": {
+        "secretKey": "test-secret-key",
+        "realm": "https://api.example.com",
+        "method": "GET",
+        "intent": "charge",
+        "request": "eyJhbW91bnQiOiIxMDAwMDAwIn0",
+        "expires": "2026-01-01T00:00:00Z",
+        "digest": "sha-256=:abc123:",
+        "opaque": "opaque-token-xyz"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "base64Url": "Ey3ryTKSQBrapirFkQjYFu2F47H039L-KBh33jRdrrA"
+      }
+    }
+  },
+  {
+    "id": "x402-payment-signature-envelope-canonical-wire",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: x402 v2 PAYMENT-SIGNATURE payment envelope wire bytes. The envelope object {x402Version, accepted, payload} is canonicalized via RFC 8785 JCS and base64url-encoded; the canonical accepted object carries scheme/network/amount/asset/payTo/maxTimeoutSeconds(=300 default). Pins the exact wire string so an SDK that quotes a parameter differently, reorders fields, or base64url-pads the embedded payload breaks here instead of silently passing the on-chain settlement oracle. (The optional `extra` map is omitted here: an empty `{}` is indistinguishable from `[]` once decoded into a dynamically-typed runner's untyped container, so the empty-map encoding is a separate concern from envelope wire agreement.)",
+    "input": {
+      "value": {
+        "x402Version": 2,
+        "accepted": {
+          "scheme": "exact",
+          "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "amount": "1000000",
+          "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "payTo": "3yQ3Y8Z1n3wKXa1234567890abcdefghijkLMNopqrs",
+          "maxTimeoutSeconds": 300
+        },
+        "payload": { "transaction": "AA==" }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"accepted\":{\"amount\":\"1000000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"3yQ3Y8Z1n3wKXa1234567890abcdefghijkLMNopqrs\",\"scheme\":\"exact\"},\"payload\":{\"transaction\":\"AA==\"},\"x402Version\":2}",
+        "base64Url": "eyJhY2NlcHRlZCI6eyJhbW91bnQiOiIxMDAwMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMDAsIm5ldHdvcmsiOiJzb2xhbmE6RXRXVFJBQlphWXE2aU1mZVlLb3VSdTE2NlZVMnhxYTEiLCJwYXlUbyI6IjN5UTNZOFoxbjN3S1hhMTIzNDU2Nzg5MGFiY2RlZmdoaWprTE1Ob3BxcnMiLCJzY2hlbWUiOiJleGFjdCJ9LCJwYXlsb2FkIjp7InRyYW5zYWN0aW9uIjoiQUE9PSJ9LCJ4NDAyVmVyc2lvbiI6Mn0"
+      }
+    }
+  },
+  {
+    "id": "x402-payment-required-envelope-canonical-wire",
+    "intent": "charge",
+    "mode": "canonical-bytes",
+    "description": "Divergence class: x402 PAYMENT-REQUIRED challenge envelope wire bytes. The 402 challenge body {x402Version, accepts:[...], error} is canonicalized via RFC 8785 JCS and base64url-encoded. accepts carries the same canonical PaymentRequirements as the accepted echo. Pins the exact challenge-envelope wire string across SDKs. (The optional `extra` map is omitted, same rationale as the PAYMENT-SIGNATURE vector.)",
+    "input": {
+      "value": {
+        "x402Version": 2,
+        "accepts": [
+          {
+            "scheme": "exact",
+            "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "amount": "1000000",
+            "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "payTo": "3yQ3Y8Z1n3wKXa1234567890abcdefghijkLMNopqrs",
+            "maxTimeoutSeconds": 300
+          }
+        ],
+        "error": "payment required"
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "canonicalJson": "{\"accepts\":[{\"amount\":\"1000000\",\"asset\":\"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU\",\"maxTimeoutSeconds\":300,\"network\":\"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1\",\"payTo\":\"3yQ3Y8Z1n3wKXa1234567890abcdefghijkLMNopqrs\",\"scheme\":\"exact\"}],\"error\":\"payment required\",\"x402Version\":2}",
+        "base64Url": "eyJhY2NlcHRzIjpbeyJhbW91bnQiOiIxMDAwMDAwIiwiYXNzZXQiOiI0ek1NQzlzcnQ1Umk1WDE0R0FnWGhhSGlpM0duUEFFRVJZUEpnWkpEbmNEVSIsIm1heFRpbWVvdXRTZWNvbmRzIjozMDAsIm5ldHdvcmsiOiJzb2xhbmE6RXRXVFJBQlphWXE2aU1mZVlLb3VSdTE2NlZVMnhxYTEiLCJwYXlUbyI6IjN5UTNZOFoxbjN3S1hhMTIzNDU2Nzg5MGFiY2RlZmdoaWprTE1Ob3BxcnMiLCJzY2hlbWUiOiJleGFjdCJ9XSwiZXJyb3IiOiJwYXltZW50IHJlcXVpcmVkIiwieDQwMlZlcnNpb24iOjJ9"
+      }
+    }
+  }
+]

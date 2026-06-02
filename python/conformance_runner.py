@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import sys
 from typing import Any
@@ -335,6 +337,29 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
             exact["base64Url"] = base64url_encode(raw)
         elif enc.get("utf8"):
             exact["base64Url"] = base64url_encode(enc["utf8"].encode("utf-8"))
+
+    cid = inp.get("challengeId")
+    if cid:
+        # base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+        # digest|opaque)); absent optionals join as empty strings. Mirrors
+        # rust compute_challenge_id (protocol/core/challenge.rs).
+        hmac_input = "|".join(
+            [
+                cid["realm"],
+                cid["method"],
+                cid["intent"],
+                cid["request"],
+                cid.get("expires", ""),
+                cid.get("digest", ""),
+                cid.get("opaque", ""),
+            ]
+        )
+        mac = hmac.new(
+            cid["secretKey"].encode("utf-8"),
+            hmac_input.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        exact["base64Url"] = base64url_encode(mac)
 
     return exact
 

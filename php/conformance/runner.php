@@ -758,6 +758,24 @@ function run_canonical_bytes(array $input): array
         }
     }
 
+    $cid = $input['challengeId'] ?? null;
+    if (is_array($cid)) {
+        // base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+        // digest|opaque)); absent optionals join as empty strings. Drives the
+        // production SDK derivation (Challenge::computeId), mirroring rust
+        // compute_challenge_id (protocol/core/challenge.rs).
+        $exactBytes['base64Url'] = Challenge::computeId(
+            Json::optionalString($cid['secretKey'] ?? null, 'challengeId.secretKey'),
+            Json::optionalString($cid['realm'] ?? null, 'challengeId.realm'),
+            Json::optionalString($cid['method'] ?? null, 'challengeId.method'),
+            Json::optionalString($cid['intent'] ?? null, 'challengeId.intent'),
+            Json::optionalString($cid['request'] ?? null, 'challengeId.request'),
+            is_string($cid['expires'] ?? null) ? $cid['expires'] : '',
+            is_string($cid['digest'] ?? null) ? $cid['digest'] : '',
+            is_string($cid['opaque'] ?? null) ? $cid['opaque'] : null,
+        );
+    }
+
     return $exactBytes;
 }
 

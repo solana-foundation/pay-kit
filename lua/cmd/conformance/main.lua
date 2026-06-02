@@ -41,6 +41,7 @@ package.path = table.concat({
 local json = require('pay_kit.util.json')
 local base64url = require('pay_kit.util.base64url')
 local base64_std = require('pay_kit.util.base64_std')
+local challenge = require('pay_kit.protocol.core.challenge')
 local verifier = require('pay_kit.solana.verifier')
 local transaction = require('pay_kit.solana.transaction')
 local instructions = require('pay_kit.solana.instructions')
@@ -398,6 +399,23 @@ local function run_canonical_bytes(vector)
     elseif type(enc.utf8) == 'string' then
       exact.base64Url = base64url.encode(enc.utf8)
     end
+  end
+  if type(input.challengeId) == 'table' then
+    -- base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
+    -- digest|opaque)); absent optionals join as empty strings. Drives the
+    -- production SDK derivation (challenge.compute_challenge_id), mirroring
+    -- rust compute_challenge_id (protocol/core/challenge.rs).
+    local cid = input.challengeId
+    exact.base64Url = challenge.compute_challenge_id(
+      cid.secretKey,
+      cid.realm,
+      cid.method,
+      cid.intent,
+      cid.request,
+      cid.expires,
+      cid.digest,
+      cid.opaque
+    )
   end
   return { id = vector.id, outcome = 'accept', exactBytes = exact }
 end
