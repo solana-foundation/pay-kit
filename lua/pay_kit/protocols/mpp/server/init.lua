@@ -1,3 +1,4 @@
+local canonical_json = require('pay_kit.util.json')
 local challenge = require('pay_kit.protocol.core.challenge')
 local error_codes = require('pay_kit.protocol.core.error_codes')
 local html_module = require('pay_kit.protocols.mpp.server.html')
@@ -25,6 +26,31 @@ local function bool_or_nil(value)
     return nil
   end
   return value and true or false
+end
+
+-- Return a copy of `method_details` with the per-request freshness field
+-- `recentBlockhash` removed, so two requests that differ only in the
+-- blockhash compare equal. Mirrors PHP ChargeServer::comparableRequest
+-- (strips methodDetails.recentBlockhash) and Ruby
+-- ChallengeStore#comparable_method_details (`(details || {}).except(...)`).
+local function comparable_method_details(method_details)
+  local out = {}
+  if type(method_details) == 'table' then
+    for k, v in pairs(method_details) do
+      if k ~= 'recentBlockhash' then
+        out[k] = v
+      end
+    end
+  end
+  return out
+end
+
+-- Canonical (RFC 8785) JSON serialization is used for the methodDetails
+-- and externalId comparison so field ordering and nested split tables
+-- compare structurally, not by Lua table identity. This is the Lua
+-- analogue of PHP's Base64Url::encodeJson(canonicalizeArray(...)).
+local function canonical(value)
+  return canonical_json.encode(value)
 end
 
 function M.new(config)
@@ -189,18 +215,75 @@ function Server:verify_credential_with_expected(credential_value, expected, now_
       'recipient mismatch: credential was issued for a different recipient')
   end
 
-  -- Settlement runs against a hybrid request: the pinned route fields
-  -- come from `expected` (so a credential issued for a cheaper route
-  -- cannot settle here), but the on-chain shape parameters
-  -- (`methodDetails`: splits, feePayer, decimals, tokenProgram, etc.) and
-  -- the externalId come from the credential. The credential's HMAC and
-  -- pinned-field checks above already authenticate those secondary fields.
+  -- Full route binding. amount/currency/recipient alone are NOT enough
+  -- WHEN the route pins an on-chain shape: a credential issued for the same
+  -- price and recipient but a different on-chain shape (splits,
+  -- feePayer/feePayerKey, tokenProgram, decimals) or a different externalId
+  -- must not settle against a route that pins those. Compare the FULL
+  -- methodDetails (stripping only the per-request freshness field
+  -- recentBlockhash) and the externalId against the route's expected
+  -- request. Mirrors PHP ChargeServer::matchesExpectedRequest (canonical
+  -- compare after removing methodDetails.recentBlockhash) and Ruby
+  -- ChallengeStore#verify_expected (amount/currency/recipient +
+  -- comparable_method_details).
+  --
+  -- The adapter / route-binding path supplies expected.methodDetails (and
+  -- optionally expected.externalId), so the full-compare security check
+  -- runs there. The documented minimal expected form
+  -- {amount, currency, recipient} (methodDetails omitted, externalId
+  -- omitted) does NOT pin an on-chain shape, so there is nothing to bind
+  -- against: the three pinned fields above are the whole contract. Only
+  -- run the methodDetails / externalId binding when the caller actually
+  -- supplied them. When omitted, the credential's own methodDetails /
+  -- externalId become the settlement defaults (derived below), so settling
+  -- from `expected` does not widen the on-chain contract.
+  local expected_has_method_details = type(expected.methodDetails) == 'table'
+  if expected_has_method_details then
+    if canonical(comparable_method_details(cred_request.methodDetails)) ~=
+       canonical(comparable_method_details(expected.methodDetails)) then
+      error_codes.raise(error_codes.CHARGE_REQUEST_MISMATCH,
+        'method details mismatch: credential method details do not match this route')
+    end
+  end
+  if expected.externalId ~= nil then
+    if (cred_request.externalId or '') ~= (expected.externalId or '') then
+      error_codes.raise(error_codes.CHARGE_REQUEST_MISMATCH,
+        'externalId mismatch: credential was issued for a different externalId')
+    end
+  end
+
+  -- Settlement runs against the ROUTE-expected request, not the
+  -- credential's claims. When the route pinned methodDetails, the binding
+  -- check above proved the credential's methodDetails equal the route's
+  -- (modulo recentBlockhash), so settling from `expected.methodDetails`
+  -- cannot widen the on-chain contract. When the caller used the minimal
+  -- expected form (methodDetails / externalId omitted), there was nothing
+  -- to widen: the credential's own methodDetails / externalId ARE the
+  -- contract, so we carry them forward as the settlement defaults. Either
+  -- way we keep the credential's recentBlockhash (a freshness value the
+  -- client already committed to and the route does not pin) and the
+  -- credential description for the receipt.
+  local settlement_method_details = {}
+  local method_details_source =
+    (type(expected.methodDetails) == 'table' and expected.methodDetails)
+    or (type(cred_request.methodDetails) == 'table' and cred_request.methodDetails)
+    or nil
+  if method_details_source then
+    for k, v in pairs(method_details_source) do
+      settlement_method_details[k] = v
+    end
+  end
+  if settlement_method_details.recentBlockhash == nil
+     and type(cred_request.methodDetails) == 'table'
+     and cred_request.methodDetails.recentBlockhash ~= nil then
+    settlement_method_details.recentBlockhash = cred_request.methodDetails.recentBlockhash
+  end
   local settlement_request = {
     amount = expected.amount,
     currency = expected.currency,
     recipient = expected.recipient,
-    methodDetails = cred_request.methodDetails,
-    externalId = cred_request.externalId,
+    methodDetails = settlement_method_details,
+    externalId = expected.externalId or cred_request.externalId,
     description = cred_request.description,
   }
   return self:_finalize_verification(credential_value, settlement_request, payload)

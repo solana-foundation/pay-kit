@@ -16,11 +16,11 @@ Rules:
   6. Mint match                                 (verify.rs:395-400)
   7. Destination ATA match (re-derive)          (verify.rs:402-405)
   8. Amount match                               (verify.rs:407-410)
-  9. ix[3..6] in allowlist (memo + lighthouse + optional ATA-create)
+  9. ix[3..6] in allowlist (Memo + Lighthouse ONLY; ATA-create rejected)
  10. Memo binding (exactly one if extra.memo set)
  11. Token program strict bind to extra.tokenProgram
 
-Reuses lua/mpp/methods/solana/ for transaction parsing, ATA derive,
+Reuses pay_kit.solana (PayCore) for transaction parsing, ATA derive,
 and base58. Ed25519 client-signature verification routes through
 pay_kit.util.ed25519 so the openssl / luasodium backend choice
 is consistent with the rest of the SDK.
@@ -31,27 +31,60 @@ local base58 = require('pay_kit.solana.base58')
 local tx_mod = require('pay_kit.solana.transaction')
 local ata    = require('pay_kit.solana.ata')
 local ed25519 = require('pay_kit.util.ed25519')
+local uint    = require('pay_kit.util.uint')
 
 local M = {}
 
 local COMPUTE_BUDGET_PROGRAM    = 'ComputeBudget111111111111111111111111111111'
 local MEMO_PROGRAM              = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
+-- Official x402 SVM exact Lighthouse program id (specs/schemes/exact/
+-- scheme_exact_svm.md), matching the PHP (Verifier::LIGHTHOUSE_PROGRAM)
+-- and Go (lighthouseProgram) verifiers. The prior `L1TEVtgA75k...` value
+-- was wrong and would have rejected wallet-injected Lighthouse guards.
 local LIGHTHOUSE_PROGRAM        = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
-local ASSOCIATED_TOKEN_PROGRAM  = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+local TOKEN_PROGRAM             = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 local TOKEN_2022_PROGRAM        = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
-local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 50000
+-- Mirrors the Rust spine constant
+-- (rust/crates/x402/src/protocol/schemes/exact/verify.rs:17). The prior
+-- 50_000 value rejected canonical wallet transactions whose compute-unit
+-- price legitimately sits above 50k but under the protocol cap.
+local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
 
--- Read a little-endian u64 from a binary string at offset 1-based.
+-- Multiply an unsigned-decimal string by a small integer (< 2^31).
+local function mul_small(decimal, factor)
+  local carry, out = 0, {}
+  for i = #decimal, 1, -1 do
+    local product = tonumber(decimal:sub(i, i)) * factor + carry
+    out[#out + 1] = tostring(product % 10)
+    carry = math.floor(product / 10)
+  end
+  while carry > 0 do
+    out[#out + 1] = tostring(carry % 10)
+    carry = math.floor(carry / 10)
+  end
+  local chars = {}
+  for idx = #out, 1, -1 do chars[#chars + 1] = out[idx] end
+  local text = table.concat(chars):gsub('^0+', '')
+  return text == '' and '0' or text
+end
+
+-- Read a little-endian u64 from a binary string at offset 1-based and
+-- return it as an exact decimal string. Mirrors the Rust spine's
+-- `u64::from_le_bytes` (verify.rs:405-409 / :350-354): a float-based
+-- reconstruction loses precision above 2^53, so a malicious amount or
+-- compute-unit price in the high u64 range would round to a different
+-- value than the one signed on-chain. Decode byte-wise so the full u64
+-- range is exact.
 local function read_u64_le(s, start)
   if not s or #s < start + 7 then
     error('invalid_exact_svm_payload_no_transfer_instruction')
   end
-  local b1, b2, b3, b4, b5, b6, b7, b8 = s:byte(start, start + 7)
-  -- Use multiplication so we stay within LuaJIT 53-bit int range; SPL
-  -- amounts and compute-unit prices never exceed it in practice.
-  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216 +
-         b5 * 4294967296 + b6 * 1099511627776 + b7 * 281474976710656 +
-         b8 * 72057594037927936
+  -- Accumulate big-endian: total = total * 256 + byte, from MSB to LSB.
+  local total = '0'
+  for offset = 7, 0, -1 do
+    total = uint.add(mul_small(total, 256), tostring(s:byte(start + offset)))
+  end
+  return total
 end
 
 -- Look up the program id (base58 string) for an instruction.
@@ -81,7 +114,7 @@ local function verify_compute_price(ix, account_keys)
     error('invalid_exact_svm_payload_transaction_instructions_compute_price_instruction')
   end
   local micro = read_u64_le(data, 2)
-  if micro > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+  if uint.compare(micro, tostring(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS)) > 0 then
     error('invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high')
   end
 end
@@ -108,8 +141,13 @@ end
 -- instruction.
 local function verify_transfer(ix, account_keys, requirement, managed_signers)
   local program = program_of(account_keys, ix)
-  local token_program_extra = string_extra(requirement, 'tokenProgram', true)
-  if program ~= token_program_extra and program ~= TOKEN_2022_PROGRAM then
+  -- Bind the transfer program to the canonical SPL token program set,
+  -- NOT to `extra.tokenProgram`. Mirrors the Rust spine
+  -- (verify.rs:373): the program id is accepted iff it is TOKEN_PROGRAM
+  -- or TOKEN_2022_PROGRAM, derived from the actual instruction. A
+  -- canonical offer may omit `extra.tokenProgram`, so requiring it would
+  -- reject a spec-valid credential the Rust verifier accepts.
+  if program ~= TOKEN_PROGRAM and program ~= TOKEN_2022_PROGRAM then
     error('invalid_exact_svm_payload_no_transfer_instruction')
   end
   local data = ix.data
@@ -149,11 +187,18 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
     error('invalid_exact_svm_payload_recipient_mismatch')
   end
 
-  -- Rule 8: amount match.
+  -- Rule 8: amount match. Compare as exact unsigned decimals so a
+  -- full-range u64 amount cannot collide with a different value through
+  -- float rounding (mirrors Rust's u64 equality, verify.rs:414).
   local amount = read_u64_le(data, 2)
-  local expected_amount = tonumber(b58_field(requirement, 'amount')) or
-    tonumber(requirement.maxAmountRequired or '')
-  if amount ~= expected_amount then
+  local expected_amount = requirement.amount
+  if expected_amount == nil or expected_amount == '' then
+    expected_amount = requirement.maxAmountRequired
+  end
+  if type(expected_amount) ~= 'string' or expected_amount == '' then
+    error('invalid_exact_svm_payload_amount_mismatch')
+  end
+  if uint.compare(amount, expected_amount) ~= 0 then
     error('invalid_exact_svm_payload_amount_mismatch')
   end
 
@@ -165,26 +210,6 @@ local function verify_transfer(ix, account_keys, requirement, managed_signers)
     authority   = authority,
     amount      = amount,
   }
-end
-
--- Optional ATA-create slot (intentional divergence from spine to
--- allow buyer-funded destination ATA creation in slots 3-4).
-local function valid_ata_create(ix, account_keys, requirement, transfer)
-  if program_of(account_keys, ix) ~= ASSOCIATED_TOKEN_PROGRAM then return false end
-  -- The ATA-create instruction's accounts (per the SPL Associated
-  -- Token Program): [payer, ata, owner, mint, system, token_program]
-  -- with discriminator 0 (Create) or 1 (CreateIdempotent) in data[0].
-  local data = ix.data
-  if #data < 1 or (data:byte(1) ~= 0 and data:byte(1) ~= 1) then return false end
-  if #ix.accounts < 6 then return false end
-  local ata_account = account_at(account_keys, ix, 1)
-  local owner       = account_at(account_keys, ix, 2)
-  local mint        = account_at(account_keys, ix, 3)
-  local expected_owner = requirement.payTo
-  if owner ~= expected_owner then return false end
-  if mint ~= transfer.mint then return false end
-  if ata_account ~= transfer.destination then return false end
-  return true
 end
 
 local function find_memo_match(account_keys, instructions, expected_memo)
@@ -227,8 +252,12 @@ function M.verify(transaction_b64, requirement, managed_signers)
   local transfer = verify_transfer(instructions[3], parsed.message.account_keys,
                                    requirement, managed_signers)
 
-  -- Rule 9: slots 3..6 allowlist.
-  local destination_create_ata = false
+  -- Rule 9: ix[3..6] allowlist. Optional slots may carry ONLY Lighthouse
+  -- (wallet-injected guard) or SPL Memo. An Associated-Token-Program
+  -- ATA-create is NOT permitted: per the official x402 SVM exact contract
+  -- the destination ATA MUST pre-exist. Lighthouse is allowed in ANY
+  -- optional slot because wallets inject a variable number of guards
+  -- (Phantom 1, Solflare 2). Mirrors php Verifier and go verify.go.
   local reasons = {
     'invalid_exact_svm_payload_unknown_fourth_instruction',
     'invalid_exact_svm_payload_unknown_fifth_instruction',
@@ -238,13 +267,7 @@ function M.verify(transaction_b64, requirement, managed_signers)
     local ix = instructions[i]
     local program = program_of(parsed.message.account_keys, ix)
     local slot_index = i - 4  -- 0-based offset within slots 3..5
-    local allowed = (program == MEMO_PROGRAM) or
-      (slot_index < 2 and program == LIGHTHOUSE_PROGRAM)
-    if not allowed and slot_index < 2 and
-        valid_ata_create(ix, parsed.message.account_keys, requirement, transfer) then
-      destination_create_ata = true
-      allowed = true
-    end
+    local allowed = (program == MEMO_PROGRAM) or (program == LIGHTHOUSE_PROGRAM)
     if not allowed then
       error(reasons[slot_index + 1] or 'invalid_exact_svm_payload_unknown_optional_instruction')
     end
@@ -256,7 +279,6 @@ function M.verify(transaction_b64, requirement, managed_signers)
     find_memo_match(parsed.message.account_keys, instructions, expected_memo)
   end
 
-  transfer.destination_create_ata = destination_create_ata
   return transfer
 end
 

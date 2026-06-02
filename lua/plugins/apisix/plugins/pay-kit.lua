@@ -10,7 +10,7 @@ The global concerns (operator, signer, RPC URL, MPP secret) live in
 env vars consumed by `kong/plugins/pay-kit/init.lua`-style code
 that APISIX operators wire via `apisix.init_worker_hook` or an
 `access_by_lua_file` near the top of `conf/config.yaml`'s
-`apisix.lua_module_hook`. See examples/openresty/apisix/README.md.
+`apisix.lua_module_hook`. See examples/nginx/README.md.
 
 Priority 2520 sits just above APISIX's jwt-auth (2510) so payment
 acts as a paid-tier gate on top of identity auth.

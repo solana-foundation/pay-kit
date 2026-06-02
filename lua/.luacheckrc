@@ -2,7 +2,7 @@
 --
 -- The repo skill `skills/pay-sdk-implementation/references/coding-conventions.md`
 -- specifies luacheck as the canonical linter for Lua. The settings below match
--- the conventions used across `mpp/` and `tests/`:
+-- the conventions used across `pay_kit/` and `tests/`:
 --
 --   - LuaJIT 2.1 is the production runtime target (matches OpenResty / Kong).
 --   - Underscore-prefixed identifiers (`_value`, `_unused`) are explicit
@@ -45,11 +45,6 @@ files["pay_kit/protocols/mpp/server/html_assets/gen.lua"] = {
 -- access-phase middleware assigns `ngx.status` and `ngx.header[name]`.
 -- This lints cleanly without requiring OpenResty's own luacheck plugin.
 files["examples/nginx/access.lua"] = {
-  globals = { "ngx" },
-}
-
--- Same `ngx` allowlist for the Kong custom plugin example.
-files["examples/openresty/kong-plugin/kong/plugins/mpp-charge/handler.lua"] = {
   globals = { "ngx" },
 }
 

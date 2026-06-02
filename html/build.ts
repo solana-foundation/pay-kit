@@ -127,7 +127,7 @@ async function main() {
   writeFileSync(resolve(goDir, 'payment-ui.gen.js'), paymentUIRaw);
 
   // Lua: write template + service worker as Lua strings
-  const luaDir = resolve(import.meta.dirname, '..', 'lua', 'mpp', 'server', 'html_assets');
+  const luaDir = resolve(import.meta.dirname, '..', 'lua', 'pay_kit', 'protocols', 'mpp', 'server', 'html_assets');
   mkdirSync(luaDir, { recursive: true });
   const luaTemplate = htmlTemplate.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const luaSW = mppxServiceWorker.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');

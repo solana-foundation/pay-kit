@@ -44,10 +44,18 @@ local VALID_NETWORKS = { solana_mainnet = true, solana_devnet = true, solana_loc
 local VALID_ACCEPT_SCHEMES = { x402 = true, mpp = true }
 local VALID_X402_SCHEMES = { exact = true }
 
+-- Default per-network RPC endpoints used when the caller does not pass an
+-- explicit `rpc_url`. The localnet default points at the hosted Surfpool
+-- clone of mainnet state (https://402.surfnet.dev:8899) so
+-- `configure { network = 'solana_localnet' }` boots against something
+-- reachable without the developer running a local validator. This matches
+-- the Ruby/`pay_kit.solana.mints` localnet default and the preflight
+-- auto-bootstrap path; the previous `http://localhost:8899` only worked
+-- when a validator happened to be running locally.
 local PUBLIC_RPC_URLS = {
   solana_mainnet  = 'https://api.mainnet-beta.solana.com',
   solana_devnet   = 'https://api.devnet.solana.com',
-  solana_localnet = 'http://localhost:8899',
+  solana_localnet = 'https://402.surfnet.dev:8899',
 }
 
 local current_config
@@ -179,17 +187,41 @@ function M.configure(opts)
   local mpp = opts.mpp or {}
   local mpp_realm = mpp.realm or 'App'
   local mpp_secret = mpp.challenge_binding_secret
-  local mpp_expires_in = mpp.expires_in or 300
+  -- expires_in defaults to a short 300s TTL so issued challenges are not
+  -- valid indefinitely (parity with Python/Rust/Ruby short-TTL defaults
+  -- and the PHP/Lua expiry-wiring fix). `expires_in = false` is the
+  -- explicit development opt-out: challenges are then issued with no
+  -- expiry. Any non-positive number is rejected so `0` is not silently
+  -- treated as "never expires".
+  local mpp_expires_in = mpp.expires_in
+  if mpp_expires_in == nil then
+    mpp_expires_in = 300
+  end
   if mpp_secret ~= nil and type(mpp_secret) ~= 'string' then
     return nil, 'pay_kit: mpp.challenge_binding_secret must be a string or nil'
   end
-  if type(mpp_expires_in) ~= 'number' or mpp_expires_in <= 0 then
-    return nil, 'pay_kit: mpp.expires_in must be a positive number'
+  if mpp_expires_in ~= false then
+    if type(mpp_expires_in) ~= 'number' or mpp_expires_in <= 0 then
+      return nil, 'pay_kit: mpp.expires_in must be a positive number or false (dev opt-out)'
+    end
   end
 
   -- Preflight opt-out: default true, opt out via opts.preflight = false.
   local preflight_enabled = opts.preflight
   if preflight_enabled == nil then preflight_enabled = true end
+
+  -- Preserve every caller-supplied mpp.* field (notably mpp.replay_store,
+  -- the shared atomic store operators inject to satisfy the multi-worker
+  -- replay-protection warning) while overlaying the normalized realm /
+  -- secret / expires_in. Rebuilding mpp from only the three normalized
+  -- fields silently dropped replay_store and any future mpp option.
+  local mpp_config = {}
+  for k, v in pairs(mpp) do
+    mpp_config[k] = v
+  end
+  mpp_config.realm = mpp_realm
+  mpp_config.challenge_binding_secret = mpp_secret
+  mpp_config.expires_in = mpp_expires_in
 
   current_config = {
     network                  = network,
@@ -206,11 +238,7 @@ function M.configure(opts)
       signer_override  = x402_signer_override,
       delegated        = x402_facilitator_url ~= nil and x402_facilitator_url ~= '',
     },
-    mpp = {
-      realm                    = mpp_realm,
-      challenge_binding_secret = mpp_secret,
-      expires_in               = mpp_expires_in,
-    },
+    mpp = mpp_config,
   }
 
   -- Convenience accessors on the resolved config table.
@@ -226,6 +254,22 @@ function M.configure(opts)
   -- surfnet cheatcodes. Opt-out via opts.preflight=false or
   -- PAY_KIT_DISABLE_PREFLIGHT=1.
   local preflight = require('pay_kit.preflight')
+
+  -- Resolve the MPP challenge-binding secret regardless of whether the
+  -- (RPC-touching) preflight checks run. When the caller did not pass
+  -- `mpp.challenge_binding_secret`, this reads
+  -- PAY_KIT_MPP_CHALLENGE_BINDING_SECRET, then ./.env, then generates a
+  -- CSPRNG secret and persists it (Ruby preflight.rb parity). Without
+  -- this the MPP adapter would either crash on a nil secret or rotate a
+  -- per-process random one on every boot, invalidating challenges.
+  if mpp_secret == nil or mpp_secret == '' then
+    local ok_secret, secret_err = pcall(preflight.ensure_challenge_binding_secret, current_config)
+    if not ok_secret then
+      current_config = nil
+      return nil, tostring(secret_err)
+    end
+  end
+
   if preflight.should_run(current_config) then
     local ok, err = pcall(preflight.run, current_config)
     if not ok then

@@ -26,3 +26,37 @@ t.test('expires parser rejects bare fractional dot (RFC 3339 sec 5.6)', function
   -- A normal fractional value still parses.
   t.assert_true(expires.parse_rfc3339('2026-01-01T00:00:00.5Z') ~= nil)
 end)
+
+-- Additional parser edge cases (merged from library_coverage_spec).
+
+t.test('expires.parse_rfc3339 rejects non-string input', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  local value, err = expires.parse_rfc3339(123)
+  t.assert_true(value == nil)
+  t.assert_true(err ~= nil)
+end)
+
+t.test('expires.parse_rfc3339 rejects fractional seconds longer than 9 digits', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  local value, err = expires.parse_rfc3339('2099-01-01T00:00:00.1234567890Z')
+  t.assert_true(value == nil)
+  t.assert_true(err and err:find('fractional'))
+end)
+
+t.test('expires.parse_rfc3339 rejects out-of-range offset hours', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  local value, err = expires.parse_rfc3339('2099-01-01T00:00:00+25:00')
+  t.assert_true(value == nil)
+  t.assert_true(err and err:find('offset'))
+end)
+
+t.test('expires.parse_rfc3339 accepts April 30 (30-day month)', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  local epoch = expires.parse_rfc3339('2099-04-30T00:00:00Z')
+  t.assert_true(type(epoch) == 'number')
+end)
+
+t.test('expires.is_expired returns true on unparseable input', function()
+  local expires = require('pay_kit.protocols.mpp.expires')
+  t.assert_equal(expires.is_expired('not-a-timestamp', 0), true)
+end)

@@ -135,3 +135,52 @@ t.test('parse_www_authenticate_all skips malformed challenge and returns valid s
   t.assert_equal(results[1].id, 'ok')
 end)
 
+
+-- Wire-type + MPP error helper edge cases (merged from library_coverage_spec).
+
+do
+  local types = require('pay_kit.protocol.core.types')
+  local mpp_error = require('pay_kit.protocols.mpp.error')
+
+  t.test('types Base64URLJSON:is_empty reports empty raw', function()
+    t.assert_equal(types.new_base64url_json_raw(''):is_empty(), true)
+    t.assert_equal(types.new_base64url_json_raw(nil):is_empty(), true)
+    t.assert_equal(types.new_base64url_json_raw('eyJhIjoxfQ'):is_empty(), false)
+  end)
+
+  t.test('types Base64URLJSON:decode surfaces base64 error', function()
+    local value, err = types.new_base64url_json_raw('!!!not-base64!!!'):decode()
+    t.assert_equal(value, nil)
+    t.assert_true(err ~= nil)
+  end)
+
+  t.test('types Base64URLJSON:decode surfaces JSON error', function()
+    local raw = types.base64url_encode('not-json{')
+    local value, err = types.new_base64url_json_raw(raw):decode()
+    t.assert_equal(value, nil)
+    t.assert_true(err ~= nil)
+  end)
+
+  t.test('types.is_valid_method rejects non-strings and empty strings', function()
+    t.assert_equal(types.is_valid_method(nil), false)
+    t.assert_equal(types.is_valid_method(''), false)
+    t.assert_equal(types.is_valid_method(123), false)
+    t.assert_equal(types.is_valid_method('charge'), true)
+    t.assert_equal(types.is_valid_method('Charge'), false)
+  end)
+
+  t.test('mpp.error.new returns a table with code, message, details', function()
+    local err = mpp_error.new('bad', 'oops', { hint = 'try again' })
+    t.assert_equal(err.code, 'bad')
+    t.assert_equal(err.message, 'oops')
+    t.assert_equal(err.details.hint, 'try again')
+  end)
+
+  t.test('mpp.error.raise throws a table error', function()
+    local ok, err = pcall(function() mpp_error.raise('boom', 'kaput', nil) end)
+    t.assert_true(not ok)
+    t.assert_equal(type(err), 'table')
+    t.assert_equal(err.code, 'boom')
+    t.assert_equal(err.message, 'kaput')
+  end)
+end

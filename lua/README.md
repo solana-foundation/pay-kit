@@ -12,9 +12,14 @@ Lua. One rock, one surface, two protocols underneath:
 [Machine Payments Protocol](https://paymentauth.org). Kong and APISIX
 ride on top of a pure OpenResty middleware.
 
+You do not need to know anything about Solana to use this. Pick a
+currency, give it your wallet address, and gate a route in two lines.
+The rock handles the challenge, the verification, and the on-chain
+settlement underneath.
+
 [![LuaJIT](https://img.shields.io/badge/luajit-2.1-blue)]()
 [![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-528-brightgreen)]()
+[![Branch coverage](https://img.shields.io/badge/branch-90%25-brightgreen)]()
 
 ---
 
@@ -113,7 +118,7 @@ pay_kit.gate('api_call', { amount = pay_kit.usd('0.001'),
 ```
 
 Gates are validated at boot. Wrong currency, missing recipient, fee
-math that does not add up, all raise from `configure()` / `gate()`
+math that does not add up - all raise from `configure()` / `gate()`
 before any request lands. `accept` is an allowlist; the `api_call`
 gate above refuses to settle over MPP.
 
@@ -187,15 +192,16 @@ do not have to mentally substitute while reading.
 
 ## Run the example
 
-The runnable demo lives at [`examples/openresty/`](examples/openresty) -
-registry pricing, both protocols, real Solana settlement against the
-hosted Surfpool sandbox.
+The runnable demo lives at [`examples/nginx/`](examples/nginx) - one
+gated endpoint, both protocols, real Solana settlement against the
+hosted Surfpool sandbox. A bare [`examples/simple-server.lua`](examples/simple-server.lua)
+TCP loop covers hosts without OpenResty.
 
 **Boot the server:**
 
 ```bash
 git clone https://github.com/solana-foundation/pay-kit
-cd pay-kit/lua/examples/openresty
+cd pay-kit/lua/examples/nginx
 luarocks --lua-version=5.1 --tree=../../lua_modules install pay-kit
 openresty -p . -c nginx.conf
 ```
@@ -239,7 +245,7 @@ address.
 
 Supported on the Lua server:
 
-| Scheme             | Status |
+| Intent             | Status |
 |--------------------|--------|
 | `exact`            | ✅      |
 | `upto`             | —      |
@@ -262,7 +268,7 @@ Use MPP when:
 
 Supported on the Lua server:
 
-| Scheme         | Status |
+| Intent         | Status |
 |----------------|--------|
 | `charge/pull`  | ✅      |
 | `charge/push`  | ✅      |
@@ -290,14 +296,14 @@ it does not pay. Drive the client side from:
 | **gate**     | A protected unit. Has an amount, optional fees, accepted protocols. |
 | **amount**   | The base amount a gate charges, before any `fee_on_top`. |
 | **total**    | What the customer pays: `amount + sum(fee_on_top)`. Derived. |
-| **price**    | Value object returned by `usd(...)`: number + denom + settlement. |
+| **price**    | Value object returned by `usd(...)`: number + currency + settlement. |
 | **fee_within** | Fee taken out of the amount. `pay_to` nets less. |
 | **fee_on_top** | Fee added to the amount. Customer pays more; `pay_to` nets full. |
 | **payment**  | Proof submitted by the client to pass a gate. |
 | **protocol** | `'x402'` or `'mpp'` (top-level dispatch). |
 | **scheme**   | x402 sub-form: `'exact'`. MPP sub-form: `'charge'`. |
+| **currency** | Fiat unit a price is quoted in (`'USD'`, `'EUR'`). |
 | **accept**   | Ordered preference list (protocols and stablecoins both). |
-| **denom**    | Fiat unit a price is quoted in (`'USD'`, `'EUR'`). |
 | **settlement** | On-chain asset that actually transfers (`USDC`, `USDT`). |
 
 ## Three primitives
@@ -377,7 +383,7 @@ Boot-time validations (all raise from `gate()`):
 
 - `pay_to` is required (gate kwarg or `operator.recipient`).
 - Fee recipient must differ from `pay_to`. Fold the fee into the amount instead.
-- All fee prices share one denomination with the amount.
+- All fee prices share one currency with the amount.
 - `sum(fee_within) <= amount`.
 - `accept = { 'x402' }` on a fee-bearing gate raises.
 
@@ -456,7 +462,7 @@ needs). Refresh the README badges from `luacov.report.out`.
 Gates:
 
 - Line coverage: at least 90 percent
-- Tests: 528 passing, 1 skipped
+- Tests: 561 passing, 1 skipped
 
 ## Harness
 
@@ -478,9 +484,9 @@ CI runs the same matrix in `.github/workflows/lua.yml`.
 ## Spec
 
 This SDK implements the
-[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
-plus the [x402 v2 exact scheme](https://x402.org) on Solana.
+plus the [x402 exact scheme](https://x402.org) on Solana.
 
 ---
 
@@ -495,16 +501,16 @@ lua/
 │   ├── preflight.lua                       # boot-time soundness + surfnet cheatcodes
 │   ├── signer.lua + signer/{demo,local}    # signer factory family
 │   ├── store.lua                           # memory() + shared_dict(name) replay store
-│   ├── solana/                             # Solana primitives + cosocket RPC
+│   ├── solana/                             # PayCore: Solana primitives + cosocket RPC
 │   │   ├── ata.lua, base58.lua, instructions.lua, transaction.lua
-│   │   ├── local_signer.lua, mints.lua, tx_cosign.lua, verifier.lua
+│   │   ├── local_signer.lua, mints.lua, network_check.lua, tx_cosign.lua, verifier.lua
 │   │   └── rpc.lua, rpc_transport.lua, rpc_transport_resty.lua
-│   ├── util/                               # generic util (base64, bit, crypto, ed25519, json, uint)
-│   ├── protocol/core/                      # wire format (headers, types, challenge, error_codes)
-│   ├── protocols/                          # per-protocol adapters
+│   ├── util/                               # PayCore: generic util (base64, bit, crypto, ed25519, json, uint)
+│   ├── protocol/core/                      # MPP wire format (headers, types, challenge, error_codes)
+│   ├── protocols/                          # per-protocol code; neither imports the other
 │   │   ├── mpp/
 │   │   │   ├── init.lua, charge.lua, expires.lua, error.lua, store.lua
-│   │   │   └── server/                     # MPP server (charge_handler, network_check, ...)
+│   │   │   └── server/                     # MPP server (charge_handler, solana_verify, ...)
 │   │   └── x402/
 │   │       ├── init.lua                    # x402 adapter (offer + cosign + broadcast)
 │   │       └── exact/verify.lua            # 11-rule SVM-exact structural verifier
@@ -513,8 +519,8 @@ lua/
 │   ├── resty/pay-kit.lua                   # OpenResty re-export
 │   ├── kong/plugins/pay-kit/               # Kong plugin (loader path-pinned)
 │   └── apisix/plugins/pay-kit.lua          # APISIX plugin (loader path-pinned)
-├── examples/openresty/                     # runnable PayKit demo
-└── tests/                                  # luaunit suite + luacov gate
+├── examples/                               # simple-server.lua + nginx/ runnable demos
+└── tests/                                  # hand-rolled spec runner (tests/run.lua) + luacov gate
 ```
 
 ## Coding convention

@@ -511,6 +511,12 @@ t.test('Kong-style shared replay_store does not double-consume on first payment'
   })
 
   local challenge = server:charge('1.00')
+  -- The route-expected request must carry the SAME methodDetails the
+  -- challenge was issued with; `verify_credential_with_expected` now binds
+  -- the full methodDetails (modulo recentBlockhash). Decode the issued
+  -- request so the expected shape matches exactly (a real route rebuilds
+  -- the same methodDetails it advertised).
+  local expected_request = challenge.request:decode()
   local function build_credential()
     return mpp.NewPaymentCredential(challenge:to_echo(), {
       type = 'transaction',
@@ -521,11 +527,7 @@ t.test('Kong-style shared replay_store does not double-consume on first payment'
   -- First valid settlement must succeed; the shared store's consume
   -- happens once (inside settle_pull) and the outer finalize honors the
   -- `consumed` signal so it does not re-assert the same key.
-  local receipt = server:verify_credential_with_expected(build_credential(), {
-    amount = '1000000',
-    currency = 'USDC',
-    recipient = RECIPIENT,
-  })
+  local receipt = server:verify_credential_with_expected(build_credential(), expected_request)
   t.assert_equal(receipt.reference, 'sig-kong-1')
 
   -- A second settlement with the same signature must hit the durable
@@ -551,11 +553,7 @@ t.test('Kong-style shared replay_store does not double-consume on first payment'
     verify_payment = replay_handler:as_callback(),
   })
   local ok, err = pcall(function()
-    replay_server:verify_credential_with_expected(build_credential(), {
-      amount = '1000000',
-      currency = 'USDC',
-      recipient = RECIPIENT,
-    })
+    replay_server:verify_credential_with_expected(build_credential(), expected_request)
   end)
   t.assert_true(not ok, 'replay must be rejected')
   local message = type(err) == 'table' and err.message or tostring(err)

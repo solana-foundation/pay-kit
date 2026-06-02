@@ -30,7 +30,7 @@ local rpc_transport = require('pay_kit.solana.rpc_transport')
 local tx_cosign  = require('pay_kit.solana.tx_cosign')
 local x402_verify = require('pay_kit.protocols.x402.exact.verify')
 local tx_mod     = require('pay_kit.solana.transaction')
-local network_check = require('pay_kit.protocols.mpp.server.network_check')
+local network_check = require('pay_kit.solana.network_check')
 
 local M = {}
 local Adapter = {}

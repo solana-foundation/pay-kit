@@ -1,6 +1,6 @@
 // Minimal HTTP test server for Lua payment-link Playwright tests.
 // Reads the shared HTML assets from html/dist/ and serves the same page
-// structure that lua/mpp/server/html.lua would produce.
+// structure that lua/pay_kit/protocols/mpp/server/html.lua would produce.
 //
 // Unlike the Rust/Go servers, this doesn't use the Lua SDK for verification.
 // Instead it parses the credential, extracts the transaction, and broadcasts

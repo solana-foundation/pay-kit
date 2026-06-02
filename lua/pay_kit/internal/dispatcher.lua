@@ -85,7 +85,11 @@ end
 -- carries one entry per accepted scheme.
 local function build_402(d, gate, request)
   local accepts = {}
-  local headers = {}
+  -- A 402 carries a fresh, single-use signed challenge (per-request
+  -- nonce / blockhash / expiry). It must never be cached or reused by an
+  -- intermediary, so pin `Cache-Control: no-store`. Mirrors PHP
+  -- ChargeServer::paymentRequiredResponse and the Ruby/x402 402 helpers.
+  local headers = { ['cache-control'] = 'no-store' }
   if gate:x402_accepted() then
     accepts[#accepts + 1] = d.x402:accepts_entry(gate, request)
     local h = d.x402:challenge_headers(gate, request) or {}

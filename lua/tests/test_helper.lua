@@ -5,9 +5,22 @@ if not os.getenv('PAY_KIT_DISABLE_PREFLIGHT') then
   -- LuaJIT doesn't ship setenv in the standard lib; rely on Lua 5.1's
   -- limitation: the preflight module checks os.getenv at call time, so
   -- we monkey-patch it for the duration of the suite.
+  --
+  -- We also surface a fixed PAY_KIT_MPP_CHALLENGE_BINDING_SECRET so the
+  -- secret-resolution path inside `configure()` short-circuits to the env
+  -- var (deterministic) instead of generating a CSPRNG secret and writing
+  -- a stray `./.env` into the repo on every test run. The dedicated
+  -- secret-resolution spec restores the real os.getenv to exercise the
+  -- .env / CSPRNG fallbacks.
   local _real_getenv = os.getenv
+  -- Stash the real getenv on a global so a spec that needs to exercise
+  -- the genuine env/.env/CSPRNG resolution order can restore it locally.
+  rawset(_G, '_PAY_KIT_REAL_GETENV', _real_getenv)  -- luacheck: ignore
   os.getenv = function(name)  -- luacheck: ignore
     if name == 'PAY_KIT_DISABLE_PREFLIGHT' then return '1' end
+    if name == 'PAY_KIT_MPP_CHALLENGE_BINDING_SECRET' then
+      return 'test-suite-fixed-challenge-binding-secret'
+    end
     return _real_getenv(name)
   end
 end

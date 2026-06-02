@@ -7,7 +7,7 @@
 -- attacker replay a consumed Payment credential against a different
 -- worker and obtain another 200 OK with a fresh on-chain settlement.
 --
--- The fix is `lua/mpp/server/store_shared_dict.lua`, which wraps
+-- The fix is `pay_kit/protocols/mpp/server/store_shared_dict.lua`, which wraps
 -- `ngx.shared.DICT` and routes put_if_absent through the atomic-on-
 -- collision `:add` primitive. This spec mocks the shared-dict surface
 -- with an in-memory table that mimics the worker-shared semantics

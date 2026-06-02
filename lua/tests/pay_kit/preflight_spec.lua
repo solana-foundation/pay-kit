@@ -178,3 +178,63 @@ helper.test('preflight downgrades RPC failure to warning (no raise)', function()
   restore_rpc()
   helper.assert_true(ok, 'preflight must not raise on RPC failure')
 end)
+
+-- Read a file's octal permission bits via stat. Tries the BSD/macOS form
+-- first (`stat -f %Lp`) then the GNU/Linux form (`stat -c %a`). Returns the
+-- string of octal digits (e.g. "600") or nil if neither worked.
+local function file_mode(path)
+  for _, cmd in ipairs({
+    "stat -f '%Lp' " .. string.format('%q', path) .. ' 2>/dev/null',
+    "stat -c '%a' "  .. string.format('%q', path) .. ' 2>/dev/null',
+  }) do
+    local fh = io.popen(cmd)
+    if fh then
+      local out = (fh:read('*a') or ''):gsub('%s+', '')
+      fh:close()
+      -- Only accept octal permission bits. On GNU/Linux the BSD form
+      -- `stat -f '%Lp'` is parsed as `--file-system` and prints a statvfs
+      -- table instead of failing, so guard against that non-octal output
+      -- and fall through to the `stat -c '%a'` form.
+      if out:match('^[0-7]+$') then return out end
+    end
+  end
+  return nil
+end
+
+-- Regression: a freshly created ./.env (which holds the CSPRNG
+-- challenge-binding secret) must NOT be world/group readable. A prior round
+-- wrote it with the default mode (644 under umask 022). persist_dotenv_value
+-- must lock a newly created file to owner-only 0600. Pre-fix this asserts
+-- "600" against "644" and fails; post-fix it passes.
+helper.test('persist_dotenv_value locks a newly created .env to 0600', function()
+  local pf = require('pay_kit.preflight')
+  local tmp = os.tmpname()
+  -- os.tmpname() creates the file; remove it so persist sees a fresh path
+  -- and exercises the create branch.
+  os.remove(tmp)
+  local ok = pf.persist_dotenv_value('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET', 'deadbeef', tmp)
+  helper.assert_true(ok, 'persist must succeed')
+  local mode = file_mode(tmp)
+  os.remove(tmp)
+  -- Skip the assertion only if stat is entirely unavailable (no way to
+  -- observe the mode); otherwise it must be owner-only.
+  if mode then
+    helper.assert_equal(mode, '600', 'new .env must be owner-only')
+  end
+end)
+
+-- Permissions on a PRE-EXISTING .env must not be touched (we only tighten
+-- files we create, never relax/override operator-set modes).
+helper.test('persist_dotenv_value leaves an existing .env mode untouched', function()
+  local pf = require('pay_kit.preflight')
+  local tmp = os.tmpname()  -- file already exists here
+  -- Give it a deliberately looser mode and confirm persist does not change it.
+  os.execute('chmod 644 ' .. string.format('%q', tmp))
+  local ok = pf.persist_dotenv_value('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET', 'deadbeef', tmp)
+  helper.assert_true(ok, 'persist must succeed')
+  local mode = file_mode(tmp)
+  os.remove(tmp)
+  if mode then
+    helper.assert_equal(mode, '644', 'existing .env mode must be preserved')
+  end
+end)

@@ -23,11 +23,12 @@ install:
 test:
     eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit tests/run.lua
 
-# Lint the SDK source tree. Pre-existing tech debt in `mpp/server/html.lua`
-# and `mpp/server/init.lua` raises 5 warnings; the recipe fails only on
-# errors, not warnings, until those are tracked separately.
+# Lint the SDK source tree. The framework wrappers live under `plugins/`
+# (resty / kong / apisix), not at the repo root. The recipe fails only on
+# errors, not warnings, while any residual style warnings are tracked
+# separately.
 lint:
-    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luacheck mpp/ resty/ kong/ apisix/ tests/
+    eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luacheck pay_kit/ plugins/ tests/
 
 # Run the suite under luacov and enforce the >=90% line-coverage gate.
 test-cover:
@@ -39,7 +40,7 @@ test-cover:
 # Audit-equivalent: run luarocks lint over the rockspec. This is the closest
 # analogue to `bundle audit` / `composer audit` in the Lua ecosystem.
 audit:
-    luarocks --lua-version=5.1 lint mpp-dev-1.rockspec
+    luarocks --lua-version=5.1 lint pay-kit-dev-1.rockspec
 
 # Format check (no auto-fix; luacheck doubles as a lightweight style gate
 # until a Lua formatter is selected).
