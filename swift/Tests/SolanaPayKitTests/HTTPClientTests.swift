@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SolanaPayKit
 
-@Suite("MppHTTPClient 402 retry semantics", .serialized)
+@Suite("PayKit.HttpClient MPP 402 retry semantics", .serialized)
 struct HTTPClientTests {
     @Test
     func splitsCommaJoinedWWWAuthenticatePerChallenge() {
@@ -10,7 +10,7 @@ struct HTTPClientTests {
         let combined = """
         Payment id="a", realm="MPP Payment", method="solana", intent="charge", request="\(req)", Payment id="b", realm="MPP Payment", method="solana", intent="charge", request="\(req)"
         """
-        let parts = MppHTTPClient.splitWWWAuthenticate(combined)
+        let parts = ChargeInterceptor.splitWWWAuthenticate(combined)
         #expect(parts.count == 2)
         #expect(parts[0].contains("id=\"a\""))
         #expect(parts[1].contains("id=\"b\""))
@@ -57,9 +57,9 @@ struct HTTPClientTests {
         config.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: config)
         let signer = try MemorySigner(secretKey: Data(repeating: 1, count: 32))
-        let client = MppHTTPClient(signer: signer, urlSession: session)
+        let client = PayKit.HttpClient.mpp(signer: signer, urlSession: session)
 
-        let response = try await client.fetch(url: url)
+        let response = try await client.request(url).response()
         #expect(response.status == 200)
         #expect(response.settlementSignature == "SETTLEMENT_SIG_XXX")
         #expect(String(decoding: response.body, as: UTF8.self) == "{\"ok\":true}")
@@ -76,9 +76,9 @@ struct HTTPClientTests {
         config.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: config)
         let signer = try MemorySigner(secretKey: Data(repeating: 2, count: 32))
-        let client = MppHTTPClient(signer: signer, urlSession: session)
+        let client = PayKit.HttpClient.mpp(signer: signer, urlSession: session)
 
-        let response = try await client.fetch(url: URL(string: "https://example.test/x")!)
+        let response = try await client.request(URL(string: "https://example.test/x")!).response()
         #expect(response.status == 500)
         #expect(StubURLProtocol.requestCount == 1)
     }
@@ -91,10 +91,10 @@ struct HTTPClientTests {
         config.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: config)
         let signer = try MemorySigner(secretKey: Data(repeating: 3, count: 32))
-        let client = MppHTTPClient(signer: signer, urlSession: session)
+        let client = PayKit.HttpClient.mpp(signer: signer, urlSession: session)
 
         do {
-            _ = try await client.fetch(url: URL(string: "https://example.test/x")!)
+            _ = try await client.request(URL(string: "https://example.test/x")!).response()
             Issue.record("expected transport error to propagate")
         } catch {
             // Expected

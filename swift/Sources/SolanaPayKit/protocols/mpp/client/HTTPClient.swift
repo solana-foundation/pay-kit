@@ -1,23 +1,22 @@
 import Foundation
 
-/// MPP-aware HTTP client: send a request, on a 402 response pick the
-/// solana+charge challenge from the response headers, build a pull-mode
-/// credential through the supplied signer, and replay the same request
-/// once with the `Authorization: Payment ...` header attached.
+/// The MPP charge payment interceptor: on a `402` response it picks the
+/// `solana/charge` challenge from `WWW-Authenticate`, builds a pull-mode
+/// credential through the supplied signer, and replays the request once
+/// with the `Authorization: Payment ...` header attached.
 ///
-/// Retry semantics:
+/// This is the `RequestInterceptor` (Alamofire) for the MPP charge
+/// protocol. Drive it through `PayKit.HttpClient.mpp(signer:rpc:)`.
 ///
-/// - 402 response: parse `WWW-Authenticate`, sign, replay once. Any
-///   status other than 200..<300 on the replay is returned verbatim.
-/// - Non-402 status (success, 4xx other than 402, 5xx): returned
-///   unchanged.
+/// Retry semantics (owned here, exercised by `PayKit.HttpClient`):
+///
+/// - 402 response: parse `WWW-Authenticate`, sign, replay once.
+/// - Non-402 status: returned unchanged (the client never calls `retry`).
 /// - Transport error: thrown to the caller; no retry.
 ///
-/// Only one MPP retry per call. The client does not retry on transport
-/// errors, 5xx responses, or any non-402 status; the caller decides
-/// whether to issue a new request.
-public struct MppHTTPClient: Sendable {
-    public let urlSession: URLSession
+/// Only one charge retry per request: `retry` builds exactly one
+/// credential and the client replays exactly once.
+public struct ChargeInterceptor: PayKit.PaymentInterceptor {
     public let signer: any SolanaSigner
     public let rpc: RpcClient?
     public let chargeOptions: Charge.Options
@@ -25,45 +24,19 @@ public struct MppHTTPClient: Sendable {
     public init(
         signer: any SolanaSigner,
         rpc: RpcClient? = nil,
-        urlSession: URLSession = .shared,
         chargeOptions: Charge.Options = Charge.Options()
     ) {
         self.signer = signer
         self.rpc = rpc
-        self.urlSession = urlSession
         self.chargeOptions = chargeOptions
     }
 
-    public struct Response: Sendable {
-        public let status: Int
-        public let headers: [String: String]
-        public let body: Data
-        public let settlementSignature: String?
-    }
-
-    /// Fetches the given URL with optional headers, retrying once on a
-    /// 402 status with a freshly built MPP credential.
-    public func fetch(
-        url: URL,
-        method: String = "GET",
-        additionalHeaders: [String: String] = [:],
-        body: Data? = nil,
-        settlementHeader: String = "x-fixture-settlement"
-    ) async throws -> Response {
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        for (k, v) in additionalHeaders { request.setValue(v, forHTTPHeaderField: k) }
-        request.httpBody = body
-
-        let (firstData, firstResponse) = try await urlSession.data(for: request)
-        guard let firstHttp = firstResponse as? HTTPURLResponse else {
-            throw MppError.rpcFailure("non-HTTP response")
-        }
-        if firstHttp.statusCode != 402 {
-            return responseFor(http: firstHttp, body: firstData, settlementHeader: settlementHeader)
-        }
-
-        let challenges = wwwAuthenticateValues(from: firstHttp)
+    public func retry(
+        _ request: URLRequest,
+        for response: HTTPURLResponse,
+        body: Data
+    ) async throws -> PayKit.RetryResult {
+        let challenges = Self.wwwAuthenticateValues(from: response)
         let challenge = try Charge.pickChallenge(wwwAuthenticateHeaders: challenges)
         let authorization = try await Charge.buildPullCredential(
             challenge: challenge,
@@ -72,43 +45,22 @@ public struct MppHTTPClient: Sendable {
             options: chargeOptions
         )
 
-        var retry = URLRequest(url: url)
-        retry.httpMethod = method
-        for (k, v) in additionalHeaders { retry.setValue(v, forHTTPHeaderField: k) }
+        var retry = request
         retry.setValue(authorization, forHTTPHeaderField: "Authorization")
-        retry.httpBody = body
-
-        let (retryData, retryResponse) = try await urlSession.data(for: retry)
-        guard let retryHttp = retryResponse as? HTTPURLResponse else {
-            throw MppError.rpcFailure("non-HTTP response on MPP retry")
-        }
-        return responseFor(http: retryHttp, body: retryData, settlementHeader: settlementHeader)
+        return .retry(request: retry, paymentSent: authorization)
     }
 
-    private func responseFor(http: HTTPURLResponse, body: Data, settlementHeader: String) -> Response {
-        var headers: [String: String] = [:]
-        for (rawKey, rawValue) in http.allHeaderFields {
-            guard let key = (rawKey as? String)?.lowercased() else { continue }
-            headers[key] = String(describing: rawValue)
-        }
-        let settlement = headers[settlementHeader.lowercased()]
-        return Response(
-            status: http.statusCode,
-            headers: headers,
-            body: body,
-            settlementSignature: settlement
-        )
-    }
+    // MARK: - WWW-Authenticate parsing
 
-    private func wwwAuthenticateValues(from response: HTTPURLResponse) -> [String] {
-        // HTTPURLResponse joins multi-value WWW-Authenticate with comma
+    static func wwwAuthenticateValues(from response: HTTPURLResponse) -> [String] {
+        // HTTPURLResponse joins multi-value WWW-Authenticate with comma;
         // commas in the value would corrupt naive splitting, so use
         // `value(forHTTPHeaderField:)` directly and fall back to the
         // single combined header.
         if let combined = response.value(forHTTPHeaderField: "WWW-Authenticate")
             ?? response.value(forHTTPHeaderField: "Www-Authenticate")
             ?? response.value(forHTTPHeaderField: "www-authenticate") {
-            return Self.splitWWWAuthenticate(combined)
+            return splitWWWAuthenticate(combined)
         }
         return []
     }

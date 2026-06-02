@@ -27,9 +27,9 @@ struct ChargeClient {
 
         let signer = try MemorySigner(secretKey: secretKey)
         let rpc = RpcClient(endpoint: URL(string: "https://402.surfnet.dev")!)
-        let client = MppHTTPClient(signer: signer, rpc: rpc)
+        let client = PayKit.HttpClient.mpp(signer: signer, rpc: rpc)
 
-        let response = try await client.fetch(url: target)
+        let response = try await client.request(target).response()
         print("status:    \(response.status)")
         if let sig = response.settlementSignature {
             print("signature: \(sig)")

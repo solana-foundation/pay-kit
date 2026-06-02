@@ -51,7 +51,7 @@ final class X402StubURLProtocol: URLProtocol, @unchecked Sendable {
 
 // MARK: - Transport tests
 
-@Suite("X402HTTPClient transport", .serialized)
+@Suite("PayKit.HttpClient x402 transport", .serialized)
 struct X402TransportTests {
     static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
@@ -59,11 +59,11 @@ struct X402TransportTests {
         return URLSession(configuration: config)
     }
 
-    static func makeClient(session: URLSession) throws -> X402HTTPClient {
+    static func makeClient(session: URLSession) throws -> PayKit.HttpClient {
         let signer = try MemorySigner(secretKey: Data(repeating: 0x01, count: 32))
         let rpc = RpcClient(endpoint: URL(string: "http://localhost:8899")!)
         let selection = X402ChallengeSelection(network: "devnet", currencies: nil)
-        return X402HTTPClient(signer: signer, rpc: rpc, urlSession: session, selection: selection)
+        return PayKit.HttpClient.x402(signer: signer, rpc: rpc, urlSession: session, selection: selection)
     }
 
     static func challengeBody() -> Data {
@@ -107,21 +107,21 @@ struct X402TransportTests {
 
         let session = Self.makeSession()
         let client = try Self.makeClient(session: session)
-        let response = try await client.fetch(url: URL(string: "https://example.test/paid")!)
+        let response = try await client.request(URL(string: "https://example.test/paid")!).response()
 
         #expect(response.status == 200)
         #expect(X402StubURLProtocol.requestCount == 2)
         #expect(response.settlementSignature == "SETTLED_42")
-        #expect(response.paymentSignatureSent != nil)
+        #expect(response.paymentSent != nil)
 
         // The retry request actually carried the header.
         let retry = X402StubURLProtocol.capturedRequests.last
         let sentHeader = retry?.value(forHTTPHeaderField: "Payment-Signature")
         #expect(sentHeader != nil)
-        #expect(sentHeader == response.paymentSignatureSent)
+        #expect(sentHeader == response.paymentSent)
 
         // And the header value is a valid base64 payment envelope.
-        let envData = Data(base64Encoded: response.paymentSignatureSent ?? "")
+        let envData = Data(base64Encoded: response.paymentSent ?? "")
         #expect(envData != nil)
     }
 
@@ -138,11 +138,11 @@ struct X402TransportTests {
 
         let session = Self.makeSession()
         let client = try Self.makeClient(session: session)
-        let response = try await client.fetch(url: URL(string: "https://example.test/free")!)
+        let response = try await client.request(URL(string: "https://example.test/free")!).response()
 
         #expect(response.status == 200)
         #expect(X402StubURLProtocol.requestCount == 1)
-        #expect(response.paymentSignatureSent == nil)
+        #expect(response.paymentSent == nil)
         #expect(String(decoding: response.body, as: UTF8.self) == "hello")
         // Header collapse uses the typed accessor; value survives verbatim.
         #expect(response.headers["x-extra"] == "kept")
@@ -161,7 +161,7 @@ struct X402TransportTests {
         let session = Self.makeSession()
         let client = try Self.makeClient(session: session)
         do {
-            _ = try await client.fetch(url: URL(string: "https://example.test/paid")!)
+            _ = try await client.request(URL(string: "https://example.test/paid")!).response()
             Issue.record("expected unsupportedChallenge")
         } catch {
             // Expected: no Solana exact offer in the challenge.

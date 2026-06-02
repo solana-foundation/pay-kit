@@ -46,14 +46,14 @@ struct X402Client {
         let signer = try MemorySigner(secretKey: secretKey)
         let rpc = RpcClient(endpoint: rpcURL)
         let selection = X402ChallengeSelection(network: network, currencies: currencies)
-        let client = X402HTTPClient(signer: signer, rpc: rpc, selection: selection)
+        let client = PayKit.HttpClient.x402(signer: signer, rpc: rpc, selection: selection)
 
-        let response = try await client.fetch(url: target)
+        let response = try await client.request(target).response()
         print("status:      \(response.status)")
         if let sig = response.settlementSignature {
             print("settlement:  \(sig)")
         }
-        if response.paymentSignatureSent != nil {
+        if response.paymentSent != nil {
             print("paid:        yes (Payment-Signature sent)")
         }
     }

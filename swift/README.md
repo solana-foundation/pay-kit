@@ -29,26 +29,52 @@ two lines.
 
 ## Quick start
 
-Drive an MPP-gated endpoint with the URLSession-backed `MppHTTPClient`:
+The public surface is namespaced under `PayKit` and modeled on
+[Alamofire](https://github.com/Alamofire/Alamofire): build one reusable
+`PayKit.HttpClient` with config, then issue fluent requests. Payment is
+handled by an interceptor (the Alamofire `RequestInterceptor` pattern),
+so the same client shape drives both the MPP charge flow and x402.
 
 ```swift
 import SolanaPayKit
 
 let signer = try MemorySigner(secretKey: secretKeyData) // 32-byte seed or 64-byte Solana keypair
 let rpc = RpcClient(endpoint: URL(string: "https://402.surfnet.dev")!)
-let client = MppHTTPClient(signer: signer, rpc: rpc)
+let client = PayKit.HttpClient.mpp(signer: signer, rpc: rpc)
 
-let response = try await client.fetch(url: URL(string: "https://api.example.com/paid")!)
-print(response.status)              // 200 after MPP retry
+let response = try await client
+    .request(URL(string: "https://api.example.com/paid")!)
+    .response()
+print(response.status)              // 200 after the payment retry
 print(response.settlementSignature) // base58 on-chain signature
 ```
 
-`MppHTTPClient` sends the request, on a 402 response it parses the
-`WWW-Authenticate: Payment ...` challenge, builds the credential through
-the supplied `SolanaSigner`, and replays the same request once with the
-`Authorization: Payment ...` header attached. Any non-402 status
-(success, other 4xx, 5xx) is returned verbatim. Transport errors
-propagate.
+`PayKit.HttpClient` is created once and reused across requests, the way
+an Alamofire `Session` is. `client.request(_:method:headers:body:)`
+returns a `PayKit.DataRequest` value; terminate it with `.response()`
+for the raw `PayKit.DataResponse`, or `.serializingDecodable(of:)` to
+decode the body directly:
+
+```swift
+struct Quote: Decodable { let price: String }
+
+let quote = try await client
+    .request(URL(string: "https://api.example.com/quote")!)
+    .serializingDecodable(of: Quote.self)
+```
+
+The payment interceptor sends the request, and on a `402` response it
+parses the challenge, builds the credential through the supplied
+`SolanaSigner`, and replays the request once with the payment header
+attached (`Authorization: Payment ...` for MPP charge,
+`Payment-Signature` for x402). Any non-402 status (success, other 4xx,
+5xx) is returned verbatim. Transport errors propagate. To drive x402
+instead, build the client with `PayKit.HttpClient.x402(signer:rpc:)`.
+
+The `mpp` and `x402` factories each wire a concrete
+`PayKit.PaymentInterceptor` (`ChargeInterceptor` and `X402Interceptor`).
+Supply your own to the designated `PayKit.HttpClient(interceptor:)`
+initializer to customise the payment flow.
 
 Lower-level entry points are also exposed:
 
@@ -191,15 +217,20 @@ for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 ```text
 swift/
 ├── Sources/SolanaPayKit/
-│   ├── Client/                # Charge client, HTTP retry, JSON-RPC
-│   │   ├── Charge.swift       # MPP charge intent wire-signing pull path
-│   │   ├── HTTPClient.swift   # URLSession-backed 402 retry client
-│   │   └── RpcClient.swift    # Minimal JSON-RPC client
-│   ├── Protocol/              # Wire format types
-│   │   ├── Headers.swift      # Payment WWW-Authenticate / Authorization
-│   │   └── Models.swift       # Wire-format Codable types
-│   └── Crypto/                # Solana primitives (vendored, no umbrella dep)
-├── Tests/SolanaPayKitTests/      # XCTest / swift-testing suite
+│   ├── SolanaPayKit.swift     # PayKit namespace: HttpClient, DataRequest, interceptor
+│   ├── PayCore/               # Solana primitives + RPC (vendored, no umbrella dep)
+│   └── protocols/
+│       ├── mpp/
+│       │   ├── client/
+│       │   │   ├── Charge.swift      # MPP charge intent wire-signing pull path
+│       │   │   └── HTTPClient.swift  # ChargeInterceptor (402 -> Authorization: Payment)
+│       │   └── core/                 # Payment WWW-Authenticate / Authorization, models
+│       └── x402/
+│           ├── client/exact/
+│           │   ├── Payment.swift     # x402 challenge parse + payment building
+│           │   └── Transport.swift   # X402Interceptor (402 -> Payment-Signature)
+│           └── exact/Types.swift     # x402 wire-format Codable types
+├── Tests/SolanaPayKitTests/   # swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```
 

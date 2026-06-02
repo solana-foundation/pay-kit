@@ -9,7 +9,7 @@ import SolanaPayKit
 /// - Optional `MPP_INTEROP_SETTLEMENT_HEADER` (defaults to
 ///   `x-fixture-settlement`).
 /// - Sends the unauthenticated request, parses the 402 WWW-Authenticate,
-///   signs through `MppHTTPClient.fetch`, emits one `result` JSON line
+///   signs through `PayKit.HttpClient.mpp`, emits one `result` JSON line
 ///   on stdout, exits 0 on completion (success or paid failure).
 ///
 /// All diagnostics go to stderr. Stdout is reserved for the harness
@@ -92,9 +92,11 @@ struct InteropEntry {
 
             let signer = try MemorySigner(secretKey: secret)
             let rpc = RpcClient(endpoint: rpcURL)
-            let client = MppHTTPClient(signer: signer, rpc: rpc)
+            let client = PayKit.HttpClient.mpp(
+                signer: signer, rpc: rpc, settlementHeader: settlementHeader
+            )
 
-            let response = try await client.fetch(url: targetURL, settlementHeader: settlementHeader)
+            let response = try await client.request(targetURL).response()
             emitResult(
                 response.status,
                 ok: (200..<300).contains(response.status),

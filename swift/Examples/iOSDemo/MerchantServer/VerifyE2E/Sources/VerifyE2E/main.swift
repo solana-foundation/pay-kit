@@ -1,5 +1,5 @@
 // Standalone Swift driver that exercises the same code path as the
-// iOSDemo app (MppHTTPClient + MemorySigner with the demo seed) against
+// iOSDemo app (PayKit.HttpClient.mpp + MemorySigner with the demo seed) against
 // a running Surfpool + MerchantServer stack. Useful for verifying the
 // stack outside the Simulator and for the PR's evidence trail.
 //
@@ -29,17 +29,14 @@ let exitCode = await { () -> Int32 in
     do {
         let signer = try MemorySigner(secretKey: seed)
         print("[verify] signer address: \(signer.address)")
-        let client = MppHTTPClient(
+        let client = PayKit.HttpClient.mpp(
             signer: signer,
-            rpc: RpcClient(endpoint: rpcURL)
-        )
-        let response = try await client.fetch(
-            url: merchantURL,
-            method: "GET",
-            additionalHeaders: ["Accept": "application/json"],
-            body: nil,
+            rpc: RpcClient(endpoint: rpcURL),
             settlementHeader: "payment-receipt"
         )
+        let response = try await client
+            .request(merchantURL, headers: ["Accept": "application/json"])
+            .response()
         let body = String(data: response.body, encoding: .utf8) ?? ""
         print("[verify] HTTP \(response.status)")
         print("[verify] settlement signature: \(response.settlementSignature ?? "(none)")")

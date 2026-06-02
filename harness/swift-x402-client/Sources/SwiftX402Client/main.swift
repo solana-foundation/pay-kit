@@ -107,25 +107,24 @@ struct InteropEntry {
                 currencies = nil
             }
 
-            let signer = try MemorySigner(secretKey: secret)
-            let rpc = RpcClient(endpoint: rpcURL)
-            let selection = X402ChallengeSelection(network: network, currencies: currencies)
-            let client = X402HTTPClient(signer: signer, rpc: rpc, selection: selection)
-
             let settlementHeader = ProcessInfo.processInfo.environment["X402_INTEROP_SETTLEMENT_HEADER"]
                 ?? "x-fixture-settlement"
 
-            let response = try await client.fetch(
-                url: targetURL,
-                settlementHeader: settlementHeader
+            let signer = try MemorySigner(secretKey: secret)
+            let rpc = RpcClient(endpoint: rpcURL)
+            let selection = X402ChallengeSelection(network: network, currencies: currencies)
+            let client = PayKit.HttpClient.x402(
+                signer: signer, rpc: rpc, selection: selection, settlementHeader: settlementHeader
             )
+
+            let response = try await client.request(targetURL).response()
 
             emitResult(
                 ok: (200..<300).contains(response.status),
                 status: response.status,
                 headers: response.headers,
                 body: response.body,
-                paymentSignatureSent: response.paymentSignatureSent,
+                paymentSignatureSent: response.paymentSent,
                 settlement: response.settlementSignature
             )
         } catch let error as InteropError {
