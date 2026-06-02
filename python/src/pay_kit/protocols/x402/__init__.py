@@ -20,6 +20,7 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from pay_kit._paycore.currency import parse_units
 from pay_kit._paycore.mints import resolve, token_program_for
 from pay_kit._paycore.network_check import check_network_blockhash
 from pay_kit._paycore.protocol import Protocol
@@ -27,7 +28,6 @@ from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit._paycore.store import MemoryStore, Store
 from pay_kit.errors import ConfigurationError, InvalidProofError
 from pay_kit.payment import Payment
-from pay_kit.protocols.mpp.intents.charge import parse_units
 from pay_kit.protocols.x402.exact.types import (
     X402AcceptsEntry,
     X402Challenge,
@@ -82,8 +82,9 @@ class X402Adapter:
         # Exact 6-decimal base-unit conversion. ``int(amount * 1_000_000)``
         # silently truncated sub-microunit precision (usd("0.0000009") -> "0"),
         # which would have the verifier accept a zero-amount transfer. Reuse the
-        # MPP ``parse_units`` helper so over-precision is rejected the same way
-        # MPP rejects it; surface it as a ConfigurationError at offer-build time.
+        # shared core ``parse_units`` helper so over-precision is rejected the
+        # same way MPP rejects it; surface it as a ConfigurationError at
+        # offer-build time.
         try:
             amount = parse_units(gate.total().amount_string(), 6)
         except ValueError as exc:

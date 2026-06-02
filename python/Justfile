@@ -1,0 +1,31 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Install the Python SDK with dev + framework extras.
+install:
+    pip install -e '.[dev,fastapi,flask,django]'
+
+# Run the Python unit test suite.
+test:
+    pytest
+
+# Lint with ruff.
+lint:
+    ruff check src tests
+
+# Format with ruff.
+fmt:
+    ruff format src tests
+
+# Type-check with pyright.
+typecheck:
+    pyright
+
+# Run tests with the 90% line-coverage gate.
+test-cover:
+    pytest --cov=pay_kit --cov-report=term-missing --cov-fail-under=90 --ignore=tests/test_server_html.py
+
+# Run all local Python gates.
+check: lint typecheck test-cover

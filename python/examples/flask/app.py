@@ -6,8 +6,8 @@ hosted Surfpool sandbox at https://402.surfnet.dev:8899) with the shipped
 demo signer as the recipient.
 
 This example uses the pay_kit Flask shim (``pay_kit.flask``), the unified
-surface over x402 and MPP. For the lower-level pay_kit.protocols.mpp ``@mpp_charge``
-decorator, see ../flask/app.py instead.
+surface over x402 and MPP. For a framework-free server on the same surface,
+see ../simple-server/server.py instead.
 
 Three routes:
 

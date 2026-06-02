@@ -72,7 +72,7 @@ go-fmt:
 go-lint:
     cd go && just lint
 
-# Run Go coverage with the 70% gate (delegates to go/Justfile)
+# Run Go coverage with the 90% gate (delegates to go/Justfile)
 go-test-cover:
     cd go && just test-cover
 
@@ -99,30 +99,33 @@ lua-test-cover:
     cd lua && just test-cover
 
 # ── Python ──
+# Recipes live in python/Justfile. The wrappers below delegate so the
+# orchestration targets keep working without root-level knowledge of the
+# Python commands, and the 90% gate stays defined in one place.
 
-# Install Python SDK dependencies
+# Install Python SDK dependencies (delegates to python/Justfile)
 py-install:
-    cd python && pip install -e '.[dev]'
+    cd python && just install
 
-# Run Python SDK tests
+# Run Python SDK tests (delegates to python/Justfile)
 py-test:
-    cd python && pytest
+    cd python && just test
 
-# Run Python coverage with a minimum threshold of 85%
+# Run Python coverage with the 90% gate (delegates to python/Justfile)
 py-test-cover:
-    cd python && pytest --cov --cov-report=term --cov-fail-under=85
+    cd python && just test-cover
 
-# Lint Python
+# Lint Python (delegates to python/Justfile)
 py-lint:
-    cd python && ruff check src/ tests/
+    cd python && just lint
 
-# Format Python
+# Format Python (delegates to python/Justfile)
 py-fmt:
-    cd python && ruff format src/ tests/
+    cd python && just fmt
 
-# Typecheck Python
+# Typecheck Python (delegates to python/Justfile)
 py-typecheck:
-    cd python && pyright
+    cd python && just typecheck
 
 # ── PHP ──
 # Recipes live in php/Justfile. The wrappers below delegate so the

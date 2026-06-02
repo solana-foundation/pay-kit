@@ -14,6 +14,10 @@ One package, one surface, two protocols underneath:
 [Machine Payments Protocol](https://paymentauth.org). FastAPI, Flask, and
 Django ride on top of a framework-agnostic core.
 
+You do not need to know anything about Solana to use this. Pick a currency,
+give it your wallet address, gate a route in two lines. The SDK handles the
+challenge, the on-chain verification, the broadcast, and the settlement.
+
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)]()
 [![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-tracked-blue)]()
@@ -279,14 +283,14 @@ confirmation, and emits `payment-receipt` with the on-chain signature.
 | **gate**     | A protected unit. Has an amount, optional fees, accepted protocols. |
 | **amount**   | The base amount a gate charges, before any `fee_on_top`. |
 | **total**    | What the customer pays: `amount + sum(fee_on_top)`. Derived via `Gate.total()`. |
-| **price**    | Value object returned by `usd(...)`: number + denom + settlement. |
+| **price**    | Value object returned by `usd(...)`: number + currency + settlement. |
 | **fee_within** | Fee taken out of the amount. `pay_to` nets less. |
 | **fee_on_top** | Fee added to the amount. Customer pays more; `pay_to` nets full. |
 | **payment**  | Proof submitted by the client to pass a gate. |
 | **protocol** | `Protocol.X402` or `Protocol.MPP` (top-level dispatch). |
 | **scheme**   | x402 sub-form: `exact`. MPP sub-form: `charge`. |
+| **currency** | Fiat unit a price is quoted in (`USD`, `EUR`, `GBP`). |
 | **accept**   | Ordered preference list (protocols and stablecoins both). |
-| **denom**    | Fiat unit a price is quoted in (`USD`, `EUR`, `GBP`). |
 | **settlement** | On-chain asset that actually transfers (`USDC`, `USDT`). |
 
 ## Three primitives
@@ -391,6 +395,9 @@ def view(request):
 
 Runnable examples ship with this package:
 
+- [`examples/simple-server/server.py`](examples/simple-server/server.py), the
+  smallest pay_kit server: stdlib `http.server` with one gated endpoint over
+  the unified `pay_kit` surface, no web framework.
 - [`examples/fastapi/app.py`](examples/fastapi/app.py), FastAPI server using
   the `RequirePayment` dependency and `install_exception_handler`.
 - [`examples/flask/app.py`](examples/flask/app.py), Flask server gated with
@@ -398,14 +405,9 @@ Runnable examples ship with this package:
   `Pricing` registry).
 - [`examples/django/views.py`](examples/django/views.py), Django views +
   URLconf snippet using the `@require_payment` decorator.
-- [`examples/payment-links/server.py`](examples/payment-links/server.py),
-  a lower-level flow against a local Surfpool with an HTML payment-page
-  fallback (built directly on `pay_kit.protocols.mpp`), used by the interop
-  harness.
 
 All examples default to `solana_localnet`, `USDC`, and the demo recipient.
-Override the RPC with `rpc_url=` / `PAY_KIT_RPC_URL` (or `MPP_RPC_URL` for
-the lower-level payment-links example).
+Override the RPC with `rpc_url=` / `PAY_KIT_RPC_URL`.
 
 ## Coverage
 
@@ -439,7 +441,7 @@ MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=python pnpm test
 ## Spec
 
 This SDK implements the
-[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188) for
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html) for
 the [HTTP Payment Authentication Scheme](https://paymentauth.org), plus the
 x402 exact scheme on Solana. The wire format, error grammar, and challenge /
 credential shape are all defined at [paymentauth.org](https://paymentauth.org).
@@ -464,8 +466,8 @@ python/
 │           ├── intents/charge.py             charge intent
 │           ├── server/                       charge handler, middleware, network check, defaults, payment page
 │           └── client/                       charge + transport
+├── examples/simple-server/                   stdlib http.server, one gated endpoint
 ├── examples/{fastapi,flask,django}/          pay_kit framework examples
-├── examples/payment-links/                   lower-level MPP server example (interop harness)
 ├── tests/                                    pytest suite
 └── pyproject.toml
 ```

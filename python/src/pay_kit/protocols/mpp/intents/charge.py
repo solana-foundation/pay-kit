@@ -1,9 +1,19 @@
-"""Charge intent types and amount parsing."""
+"""Charge intent types and amount parsing.
+
+``parse_units`` is re-exported from the shared core (:mod:`pay_kit._paycore.currency`)
+so the MPP intent layer keeps a stable name while the actual implementation
+stays protocol-agnostic and shared with x402 without either protocol importing
+the other (R2).
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from pay_kit._paycore.currency import parse_units
+
+__all__ = ["ChargeRequest", "parse_units", "validate_max_amount"]
 
 
 @dataclass
@@ -39,45 +49,6 @@ class ChargeRequest:
             external_id=data.get("externalId", ""),
             method_details=data.get("methodDetails"),
         )
-
-
-def parse_units(amount: str, decimals: int) -> str:
-    """Convert a human-readable decimal amount to base units.
-
-    Examples:
-        parse_units("1.5", 6)  -> "1500000"
-        parse_units("0.01", 2) -> "1"
-        parse_units("100", 6)  -> "100000000"
-    """
-    amount = amount.strip()
-    if not amount:
-        raise ValueError("amount is required")
-    if amount.startswith("-"):
-        raise ValueError("amount cannot be negative")
-
-    parts = amount.split(".")
-    if len(parts) > 2:
-        raise ValueError(f"invalid amount: {amount}")
-
-    whole = parts[0] or "0"
-    fractional = parts[1] if len(parts) == 2 else ""
-
-    if len(fractional) > decimals:
-        raise ValueError(f"amount {amount} has too many decimal places for {decimals} decimals")
-
-    # Pad fractional part to fill decimals
-    value_str = whole + fractional + "0" * (decimals - len(fractional))
-
-    # Strip leading zeros
-    value_str = value_str.lstrip("0") or "0"
-
-    # Validate it's a valid integer
-    try:
-        val = int(value_str)
-    except ValueError as exc:
-        raise ValueError(f"invalid amount: {amount}") from exc
-
-    return str(val)
 
 
 def validate_max_amount(request: ChargeRequest, max_amount: str) -> None:
