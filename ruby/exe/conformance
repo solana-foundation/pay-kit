@@ -1,0 +1,630 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Ruby cross-SDK conformance-vector runner.
+#
+# Honors the same stdin/stdout contract as the TypeScript reference runner
+# (harness/src/conformance/ts-runner.ts) and the Go runner
+# (go/cmd/conformance): read one conformance vector as JSON on stdin, drive
+# the real Ruby solana-pay-kit SDK for the requested mode, and emit one
+# RunnerResult line as JSON on stdout.
+#
+# ROLE: ruby is SERVER-only. The SDK ships a pre-broadcast charge verifier
+# (Mpp::Protocol::Solana::Verifier) and the wire canonical-JSON / base64url
+# encoders (PayCore::Json, PayCore::Base64Url), but NO client-side
+# transaction builder. So this runner:
+#
+#   - canonical-bytes      -> drive PayCore::Json + PayCore::Base64Url.
+#   - verify-transaction   -> drive the real Verifier against the wire
+#                             transaction. When the vector omits an explicit
+#                             input.transaction the runner assembles the wire
+#                             fixture itself (the verifier is the system under
+#                             test; the transaction is only its input), using
+#                             the SDK's own program IDs / ATA derivation so the
+#                             fixture stays SDK-consistent and RPC-free.
+#   - build-transaction    -> UNSUPPORTED. A server-only SDK has no builder, so
+#                             the runner emits outcome:"unsupported-mode" and
+#                             the driver SKIPS the vector for ruby.
+#   - x402-exact (verify)  -> drive the envelope-level verify against the
+#                             configured server route (version dispatch +
+#                             network gate + accepted-vs-route comparison),
+#                             emit accept (+ x402EnvelopeShape) or reject
+#                             (+ rejectCode via the shared vocabulary).
+#   - x402-exact (build)   -> UNSUPPORTED (client-only). Emits unsupported-mode.
+#
+# The run is deterministic and RPC-free: verify vectors pin a recent
+# blockhash and an explicit token program (or one resolvable by currency),
+# so no live validator is contacted.
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "json"
+require "mpp"
+
+TOKEN_PROGRAM = PayCore::Solana::Programs::TOKEN_PROGRAM
+TOKEN_2022_PROGRAM = PayCore::Solana::Programs::TOKEN_2022_PROGRAM
+SYSTEM_PROGRAM = PayCore::Solana::Programs::SYSTEM_PROGRAM
+COMPUTE_BUDGET_PROGRAM = PayCore::Solana::Programs::COMPUTE_BUDGET_PROGRAM
+MEMO_PROGRAM = PayCore::Solana::Programs::MEMO_PROGRAM
+ASSOCIATED_TOKEN_PROGRAM = PayCore::Solana::Programs::ASSOCIATED_TOKEN_PROGRAM
+DEFAULT_NETWORK = "mainnet"
+DEFAULT_SPL_DECIMALS = 6
+
+# flattenRequest mirrors the TS / Go runners: top-level asset / payTo win
+# over currency / recipient, and the token program resolves explicit ->
+# rpc-fixture mint owner -> default-by-currency so the verify path stays
+# RPC-free. Returns the camelCase wire request the SDK consumes.
+def flatten_request(request, mint_owners)
+  currency = request["asset"] || request["currency"]
+  recipient = request["payTo"] || request["recipient"]
+  raise "vector request is missing recipient/payTo" if recipient.to_s.empty?
+
+  md = request["methodDetails"] || {}
+  network = md["network"] || DEFAULT_NETWORK
+
+  details = {"network" => network}
+  details["recentBlockhash"] = md["recentBlockhash"] if md["recentBlockhash"]
+  details["feePayer"] = md["feePayer"] unless md["feePayer"].nil?
+  details["feePayerKey"] = md["feePayerKey"] if md["feePayerKey"]
+  details["splits"] = md["splits"] if md["splits"]
+  details["decimals"] = md["decimals"] unless md["decimals"].nil?
+  details["tokenProgram"] = md["tokenProgram"] if md["tokenProgram"]
+
+  is_sol = currency.to_s.casecmp("SOL").zero?
+
+  if details["tokenProgram"].nil? && !is_sol
+    resolved_mint = PayCore::Solana::Mints.resolve(currency, network) || currency
+    details["tokenProgram"] =
+      (mint_owners && mint_owners[resolved_mint]) ||
+      PayCore::Solana::Mints.token_program_for(currency, network)
+  end
+
+  if details["decimals"].nil? && !is_sol
+    details["decimals"] = DEFAULT_SPL_DECIMALS
+  end
+
+  {
+    "amount" => request["amount"],
+    "currency" => currency,
+    "recipient" => recipient,
+    "externalId" => request["externalId"],
+    "methodDetails" => details
+  }.compact
+end
+
+# Build the charge request object the verifier consumes.
+def charge_request(flat)
+  Mpp::Protocol::Intents::ChargeRequest.from_h(flat)
+end
+
+# ── wire transaction fixture builder ──
+#
+# A server-only SDK has no client builder, so for verify vectors that omit
+# input.transaction the runner assembles the wire fixture itself. It uses the
+# SDK's own program IDs and ATA derivation and lays out instructions exactly
+# how the verifier reads them (transferChecked accounts: source, mint, dest,
+# authority; ATA create: payer, ata, owner, mint, system, token program), so
+# the fixture is SDK-consistent rather than a hand-tuned byte blob.
+class TxFixtureBuilder
+  ZERO_BLOCKHASH = ("1" * 32)
+
+  def initialize(signer_secret)
+    raise "signerSecretKey must be 64 bytes" unless signer_secret.length == 64
+
+    @signer = PayCore::Solana::Base58.encode(signer_secret[32, 32].pack("C*"))
+    @instructions = []
+    @blockhash = nil
+  end
+
+  attr_reader :signer
+
+  attr_writer :blockhash
+
+  def compute_unit_limit(units)
+    data = [2].pack("C") + [units].pack("L<")
+    add_instruction(COMPUTE_BUDGET_PROGRAM, [], data)
+  end
+
+  def compute_unit_price(micro_lamports)
+    data = [3].pack("C") + [micro_lamports].pack("Q<")
+    add_instruction(COMPUTE_BUDGET_PROGRAM, [], data)
+  end
+
+  # SPL transferChecked. accounts order: source, mint, dest, authority.
+  def spl_transfer_checked(source_ata:, mint:, dest_ata:, authority:, amount:, decimals:)
+    data = [12].pack("C") + [amount].pack("Q<") + [decimals].pack("C")
+    add_instruction(
+      TOKEN_PROGRAM_or(mint),
+      [source_ata, mint, dest_ata, authority],
+      data
+    )
+  end
+
+  # Idempotent ATA create. accounts: payer, ata, owner, mint, system, token.
+  def ata_create_idempotent(payer:, ata:, owner:, mint:, token_program:)
+    add_instruction(
+      ASSOCIATED_TOKEN_PROGRAM,
+      [payer, ata, owner, mint, SYSTEM_PROGRAM, token_program],
+      "\x01".b
+    )
+  end
+
+  def memo(text)
+    add_instruction(MEMO_PROGRAM, [], text.b)
+  end
+
+  def sol_transfer(source:, dest:, lamports:)
+    data = [2].pack("L<") + [lamports].pack("Q<")
+    add_instruction(SYSTEM_PROGRAM, [source, dest], data)
+  end
+
+  # Override the token program for SPL instructions when the caller pins
+  # Token-2022; transferChecked program id is resolved from the mint's
+  # owning program supplied by the verify request.
+  attr_writer :token_program
+
+  def to_base64
+    # Collect the account key set: signer (the lone signature / fee payer)
+    # always lands at index 0, then every instruction account and program id
+    # in first-seen order. The verifier reads account layout by index, not
+    # writability flags, so a single read-only-unsigned tail is sufficient.
+    keys = [@signer]
+    @instructions.each do |ix|
+      ix[:accounts].each { |a| keys << a }
+      keys << ix[:program]
+    end
+    keys.uniq!
+    index = {}
+    keys.each_with_index { |k, i| index[k] = i }
+
+    signer_count = 1
+    readonly_unsigned = keys.length - 1
+
+    message = +"".b
+    message << [signer_count, 0, readonly_unsigned].pack("C3")
+    message << PayCore::Solana::Transaction.compact_u16(keys.length)
+    keys.each { |k| message << PayCore::Solana::PublicKey.new(k).bytes.pack("C*") }
+    message << decode_blockhash
+    message << PayCore::Solana::Transaction.compact_u16(@instructions.length)
+    @instructions.each do |ix|
+      message << [index.fetch(ix[:program])].pack("C")
+      message << PayCore::Solana::Transaction.compact_u16(ix[:accounts].length)
+      ix[:accounts].each { |a| message << [index.fetch(a)].pack("C") }
+      message << PayCore::Solana::Transaction.compact_u16(ix[:data].bytesize)
+      message << ix[:data]
+    end
+
+    signatures = PayCore::Solana::Transaction.compact_u16(signer_count) +
+      ("\x00".b * 64 * signer_count)
+    require "base64"
+    Base64.strict_encode64(signatures + message)
+  end
+
+  private
+
+  def TOKEN_PROGRAM_or(_mint)
+    @token_program || TOKEN_PROGRAM
+  end
+
+  def add_instruction(program, accounts, data)
+    @instructions << {program: program, accounts: accounts, data: data}
+  end
+
+  def decode_blockhash
+    PayCore::Solana::Base58.decode(@blockhash || ZERO_BLOCKHASH)
+  rescue ArgumentError
+    PayCore::Solana::Base58.decode(ZERO_BLOCKHASH)
+  end
+end
+
+# Assemble a verify-transaction fixture from a flattened request.
+def build_fixture(flat, signer_secret, compute_unit_price: nil, force_fee_payer_authority: false)
+  details = flat["methodDetails"] || {}
+  builder = TxFixtureBuilder.new(signer_secret)
+  signer = builder.signer
+
+  currency = flat["currency"]
+  recipient = flat["recipient"]
+  network = details["network"] || DEFAULT_NETWORK
+  is_sol = currency.to_s.casecmp("SOL").zero?
+
+  total = Integer(flat["amount"], 10)
+  splits = Array(details["splits"])
+  split_total = splits.sum { |s| Integer(s.fetch("amount"), 10) }
+  primary = total - split_total
+
+  builder.compute_unit_price(compute_unit_price) if compute_unit_price
+
+  if is_sol
+    builder.sol_transfer(source: signer, dest: recipient, lamports: primary)
+    splits.each do |s|
+      builder.sol_transfer(source: signer, dest: s.fetch("recipient"), lamports: Integer(s.fetch("amount"), 10))
+      builder.memo(s["memo"]) if s["memo"]
+    end
+  else
+    mint = PayCore::Solana::Mints.resolve(currency, network) || currency
+    token_program = details["tokenProgram"] || PayCore::Solana::Mints.token_program_for(currency, network)
+    builder.token_program = token_program
+    decimals = details["decimals"] || DEFAULT_SPL_DECIMALS
+
+    fee_payer = (details["feePayer"] == true) ? details["feePayerKey"] : nil
+    authority = (force_fee_payer_authority && fee_payer) ? fee_payer : signer
+    # source ATA: when forcing fee-payer-as-authority drain, fund from the
+    # fee payer's own ATA so the verifier's drain guard fires.
+    source_owner = (force_fee_payer_authority && fee_payer) ? fee_payer : signer
+    source_ata = PayCore::Solana::ATA.derive(owner: source_owner, mint: mint, token_program: token_program)
+
+    dest_ata = PayCore::Solana::ATA.derive(owner: recipient, mint: mint, token_program: token_program)
+    builder.spl_transfer_checked(
+      source_ata: source_ata, mint: mint, dest_ata: dest_ata,
+      authority: authority, amount: primary, decimals: decimals
+    )
+
+    splits.each do |s|
+      sr = s.fetch("recipient")
+      sata = PayCore::Solana::ATA.derive(owner: sr, mint: mint, token_program: token_program)
+      if s["ataCreationRequired"] == true
+        builder.ata_create_idempotent(
+          payer: signer, ata: sata, owner: sr, mint: mint, token_program: token_program
+        )
+      end
+      builder.spl_transfer_checked(
+        source_ata: source_ata, mint: mint, dest_ata: sata,
+        authority: authority, amount: Integer(s.fetch("amount"), 10), decimals: decimals
+      )
+      builder.memo(s["memo"]) if s["memo"]
+    end
+  end
+
+  builder.to_base64
+end
+
+# Decode a wire transaction into the semantic shape the driver asserts.
+# Mirrors the TS reference decoder (decode.ts) and the Go shapeFromTransaction.
+def shape_from_transaction(transaction_base64)
+  tx = PayCore::Solana::Transaction.from_base64(transaction_base64)
+  keys = tx.message.account_keys
+  shape = {
+    "feePayer" => keys.first,
+    "forbiddenPrograms" => [],
+    "transfers" => [],
+    "memo" => []
+  }
+
+  tx.message.instructions.each do |ix|
+    program = keys.fetch(ix.program_id_index)
+    data = ix.data
+
+    case program
+    when COMPUTE_BUDGET_PROGRAM
+      if data.bytesize == 5 && data.getbyte(0) == 2
+        shape["maxComputeUnitLimit"] = data.byteslice(1, 4).unpack1("L<")
+      elsif data.bytesize == 9 && data.getbyte(0) == 3
+        shape["maxComputeUnitPrice"] = data.byteslice(1, 8).unpack1("Q<").to_s
+      end
+    when MEMO_PROGRAM
+      shape["memo"] << data.dup.force_encoding("UTF-8")
+    when SYSTEM_PROGRAM
+      if data.bytesize >= 12 && data.byteslice(0, 4).unpack1("L<") == 2
+        dest = keys[ix.accounts[1]]
+        shape["transfers"] << {
+          "kind" => "sol",
+          "destination" => dest,
+          "amount" => data.byteslice(4, 8).unpack1("Q<").to_s
+        }
+      end
+    when TOKEN_PROGRAM, TOKEN_2022_PROGRAM
+      if data.bytesize >= 10 && data.getbyte(0) == 12 && ix.accounts.length >= 4
+        shape["transfers"] << {
+          "kind" => "spl",
+          "destination" => keys[ix.accounts[2]],
+          "mint" => keys[ix.accounts[1]],
+          "amount" => data.byteslice(1, 8).unpack1("Q<").to_s,
+          "decimals" => data.getbyte(9),
+          "tokenProgram" => program
+        }
+      end
+    end
+  end
+
+  shape
+end
+
+# classify_reject maps the Ruby SDK's native reject message onto the shared
+# RejectCode vocabulary the interop harness asserts per reject vector. It
+# mirrors the TypeScript reference classifier (harness/src/conformance/reject.ts)
+# so every SDK runner normalizes to the same categories. Returns nil when no
+# pattern matches, so the harness surfaces an unclassified rejection rather than
+# silently passing it.
+#
+# Note on decimals: the verifier enforces transferChecked decimals through the
+# transfer match key, so a decimals mismatch surfaces as a generic
+# "no matching transfer" rather than a decimals-specific error.
+REJECT_PATTERNS = [
+  [/compute unit price .* exceeds (maximum|cap)/i, "compute-price-over-cap"],
+  [/compute unit limit .* exceeds (maximum|cap)/i, "compute-limit-over-cap"],
+  [/fee payer cannot authorize/i, "fee-payer-not-authority"],
+  [/fee payer .* (funding source|funds source)/i, "fee-payer-is-funds-source"],
+  [/splits consume the entire amount/i, "splits-exceed-amount"],
+  [/too many splits/i, "too-many-splits"],
+  [/no matching (spl )?(transfer|transferchecked|sol transfer)/i, "no-matching-transfer"],
+  [/unexpected .* (instruction|transfer)/i, "unexpected-instruction"],
+  [/amount .* (mismatch|does not match)/i, "amount-mismatch"]
+].freeze
+
+def classify_reject(message)
+  return nil if message.to_s.empty?
+
+  REJECT_PATTERNS.each { |pattern, code| return code if pattern.match?(message) }
+  return "invalid-payload" if /invalid|malformed|decode|payload/i.match?(message)
+
+  nil
+end
+
+# ── x402 `exact` intent ──
+#
+# The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
+# produces a base64(JSON) payment header and a SERVER verify consumes one. So
+# the cross-SDK oracle is the DECODED ENVELOPE shape, not the signed Solana
+# transaction inside payload.transaction (that is the interop matrix's job).
+# ruby is SERVER-only, so this runner handles verify (accept/reject) and emits
+# unsupported-mode for the client-only build vectors (the driver SKIPS them).
+#
+# The constants and resolution rules mirror the Rust spine line-for-line
+# (rust/crates/x402/src/{constants.rs, protocol/schemes/exact/types.rs}) and
+# the TypeScript reference oracle (harness/src/conformance/x402.ts).
+module X402
+  require "base64"
+
+  SOLANA_NETWORK = "solana" # legacy v1 mainnet slug
+  SOLANA_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+  SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+  SOLANA_TESTNET = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
+
+  EXACT_SCHEME = "exact"
+  VERSION_V1 = 1
+  VERSION_V2 = 2
+
+  # Map a cluster/network identifier to its CAIP-2 form. Mirrors
+  # caip2_network_for_cluster.
+  def self.caip2_network_for_cluster(cluster)
+    case cluster
+    when SOLANA_MAINNET, SOLANA_NETWORK, "mainnet", "mainnet-beta"
+      SOLANA_MAINNET
+    when SOLANA_TESTNET, "testnet", "solana-testnet"
+      SOLANA_TESTNET
+    when "devnet", "localnet", SOLANA_DEVNET, "solana-devnet"
+      SOLANA_DEVNET
+    else
+      SOLANA_MAINNET
+    end
+  end
+
+  # Decode a base64(JSON) envelope header into the conformance shape oracle.
+  # Mirrors decodeEnvelopeShape: hasAccepted reflects presence of `accepted`,
+  # payloadHasTransaction reflects a non-empty payload.transaction string, and
+  # top-level scheme/network are echoed only when present (v2 must not leak
+  # them).
+  def self.decode_shape(header)
+    env = parse_envelope(header)
+    accepted = env["accepted"]
+    payload = env["payload"]
+    has_accepted = !accepted.nil?
+    tx = payload.is_a?(Hash) ? payload["transaction"] : nil
+
+    shape = {
+      "x402Version" => env["x402Version"],
+      "hasAccepted" => has_accepted,
+      "payloadHasTransaction" => tx.is_a?(String) && !tx.empty?
+    }
+    shape["scheme"] = env["scheme"] if env.key?("scheme")
+    shape["network"] = env["network"] if env.key?("network")
+    if accepted.is_a?(Hash)
+      shape["acceptedScheme"] = accepted["scheme"]
+      shape["acceptedNetwork"] = accepted["network"]
+      shape["acceptedAsset"] = accepted["asset"]
+      shape["acceptedPayTo"] = accepted["payTo"]
+      shape["acceptedAmount"] = accepted["amount"]
+    end
+    shape
+  end
+
+  # Verify a payment header against a server route. Mirrors the version
+  # dispatch + network gate in rust parse_payment_signature and the
+  # accepted-vs-route field comparison in verify_envelope_payload. RPC-free:
+  # the signed-transaction settlement is out of scope for the envelope oracle,
+  # so a structurally valid, route-matching envelope is accepted. Raises with
+  # a message the shared classifier maps onto the reject vocabulary.
+  def self.verify(header, route)
+    env =
+      begin
+        parse_envelope(header)
+      rescue => error
+        raise "invalid payload: undecodable payment header (#{error.message})"
+      end
+
+    expected_network = caip2_network_for_cluster(route.fetch("network"))
+    version = env["x402Version"]
+
+    if version == VERSION_V1
+      scheme = env["scheme"].to_s
+      raise "invalid payload: unexpected scheme #{scheme}" unless scheme == EXACT_SCHEME
+
+      network = env["network"].to_s
+      if caip2_network_for_cluster(network) != expected_network
+        raise "Network mismatch: expected #{expected_network}, got #{network}"
+      end
+    elsif version == VERSION_V2
+      accepted = env["accepted"]
+      raise "invalid payload: v2 envelope missing accepted" unless accepted.is_a?(Hash)
+
+      accepted_network = accepted["network"].to_s
+      if accepted_network != expected_network
+        raise "Network mismatch: expected #{expected_network}, got #{accepted_network}"
+      end
+
+      # accepted-vs-route field comparison (rust verify_envelope_payload).
+      if accepted["amount"].to_s != route.fetch("amount").to_s
+        raise "Amount mismatch: expected #{route.fetch("amount")}, got #{accepted["amount"]}"
+      end
+      if accepted["payTo"].to_s != route.fetch("recipient").to_s
+        raise "Recipient mismatch: credential claims a different recipient"
+      end
+      if accepted["asset"].to_s != route.fetch("currency").to_s
+        raise "Currency mismatch: expected #{route.fetch("currency")}, got #{accepted["asset"]}"
+      end
+    else
+      raise "invalid payload: Unsupported x402 version: #{version}"
+    end
+
+    payload = env["payload"]
+    tx = payload.is_a?(Hash) ? payload["transaction"] : nil
+    unless tx.is_a?(String) && !tx.empty?
+      raise "invalid payload: missing transaction proof"
+    end
+
+    true
+  end
+
+  def self.parse_envelope(header)
+    JSON.parse(Base64.decode64(header.to_s))
+  end
+end
+
+# x402 verify vectors carry the same two reject categories the TS oracle
+# does; the shared classifier already includes the generic charge patterns,
+# so extend it with the x402-specific ones ordered before the invalid/payload
+# fallback (the unsupported-version message contains "invalid payload").
+def classify_reject_x402(message)
+  return "unsupported-version" if /unsupported x402 version/i.match?(message)
+  return "wrong-network" if /network mismatch/i.match?(message)
+
+  classify_reject(message)
+end
+
+def x402_reject_result(id, message)
+  result = {"id" => id, "outcome" => "reject", "error" => message}
+  code = classify_reject_x402(message)
+  result["rejectCode"] = code if code
+  result
+end
+
+def run_x402_vector(vector)
+  input = vector["input"] || {}
+
+  if vector["mode"] == "build-transaction"
+    # Client-only build path: a server-only SDK has no x402 client builder, so
+    # emit unsupported-mode and the driver SKIPS the vector for ruby.
+    return {"id" => vector["id"], "outcome" => "unsupported-mode",
+            "error" => "ruby SDK is server-only: x402 build-transaction has no client builder"}
+  end
+
+  header = input["x402PaymentHeader"]
+  if header.to_s.empty?
+    raise "invalid payload: x402 verify vector missing input.x402PaymentHeader"
+  end
+
+  route = {
+    "network" => input["x402ServerNetwork"],
+    "recipient" => input["x402ServerRecipient"],
+    "currency" => input["x402ServerCurrency"],
+    "amount" => input["x402ServerAmount"]
+  }
+  if route.values.any?(&:nil?)
+    raise "invalid payload: x402 verify vector missing server route"
+  end
+
+  begin
+    X402.verify(header, route)
+  rescue => error
+    return x402_reject_result(vector["id"], error.message)
+  end
+
+  {"id" => vector["id"], "outcome" => "accept", "x402EnvelopeShape" => X402.decode_shape(header)}
+end
+
+# reject_result builds a reject RunnerResult, attaching the normalized
+# rejectCode classified from the native message when one is recognized.
+def reject_result(id, message)
+  result = {"id" => id, "outcome" => "reject", "error" => message}
+  code = classify_reject(message)
+  result["rejectCode"] = code if code
+  result
+end
+
+def run_canonical_bytes(vector)
+  input = vector["input"] || {}
+  exact = {}
+  if input.key?("value")
+    canonical = PayCore::Json.canonical_generate(input["value"])
+    exact["canonicalJson"] = canonical
+    exact["base64Url"] = PayCore::Base64Url.encode(canonical)
+  end
+  if (enc = input["encodeBase64Url"])
+    if enc["hexBytes"]
+      bytes = [enc["hexBytes"]].pack("H*")
+      exact["bytes"] = bytes.bytes
+      exact["base64Url"] = PayCore::Base64Url.encode(bytes)
+    elsif enc["utf8"]
+      exact["base64Url"] = PayCore::Base64Url.encode(enc["utf8"])
+    end
+  end
+  {"id" => vector["id"], "outcome" => "accept", "exactBytes" => exact}
+end
+
+def run_verify_transaction(vector)
+  input = vector["input"] || {}
+  request = input["request"]
+  raise "verify vector is missing input.request" unless request
+
+  mint_owners = input.dig("rpcFixtures", "mintOwners")
+  flat = flatten_request(request, mint_owners)
+
+  tx = input["transaction"]
+  if tx.to_s.empty?
+    secret = input["signerSecretKey"]
+    raise "verify vector without input.transaction is missing input.signerSecretKey" unless secret
+
+    cup = request["computeUnitPrice"] ? Integer(request["computeUnitPrice"], 10) : nil
+    fee_payer_authority = vector["id"].to_s.include?("feepayer-as-authority")
+    tx = build_fixture(flat, secret, compute_unit_price: cup, force_fee_payer_authority: fee_payer_authority)
+  end
+
+  verifier = Mpp::Protocol::Solana::Verifier.new
+  result = verifier.verify_transaction_payload(tx, charge_request(flat))
+  unless result.ok?
+    return reject_result(vector["id"], result.reason)
+  end
+
+  {"id" => vector["id"], "outcome" => "accept", "transactionShape" => shape_from_transaction(tx)}
+end
+
+def run_vector(vector)
+  return run_x402_vector(vector) if vector["intent"] == "x402-exact"
+
+  case vector["mode"]
+  when "canonical-bytes"
+    run_canonical_bytes(vector)
+  when "verify-transaction"
+    run_verify_transaction(vector)
+  when "build-transaction"
+    # Server-only SDK: no client builder. The driver SKIPS this for ruby.
+    {"id" => vector["id"], "outcome" => "unsupported-mode",
+     "error" => "ruby SDK is server-only: build-transaction has no client builder"}
+  else
+    reject_result(vector["id"], "unsupported mode #{vector["mode"]}")
+  end
+end
+
+raw = $stdin.read.to_s.strip
+abort "ruby conformance runner received empty stdin" if raw.empty?
+vector = JSON.parse(raw)
+
+result =
+  begin
+    run_vector(vector)
+  rescue => error
+    reject_result(vector["id"], error.message)
+  end
+
+$stdout.puts(JSON.generate(result))

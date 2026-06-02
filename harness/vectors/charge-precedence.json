@@ -1,0 +1,74 @@
+[
+  {
+    "id": "charge-asset-over-currency-precedence",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Divergence class: top-level-vs-extra precedence. Both currency and asset are present but disagree. The top-level asset (mainnet USDC) must win over currency (devnet USDC). A divergent SDK that honored currency would transfer the wrong mint.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "mainnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "amount": "1000",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "charge-payto-over-recipient-precedence",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Divergence class: top-level-vs-extra precedence. Both recipient and payTo are present but disagree. The top-level payTo must win, so the transfer destination ATA is derived from payTo, not recipient.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+        "payTo": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "1000",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    }
+  }
+]

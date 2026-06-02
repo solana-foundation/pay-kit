@@ -1,0 +1,106 @@
+[
+  {
+    "id": "charge-spl-field-omitted-defaults",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Divergence class: field-omitted offer. decimals and tokenProgram are omitted; the SDK must default decimals to 6 and resolve the token program by currency (USDC devnet mint -> legacy SPL Token program).",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "maxComputeUnitLimit": 200000,
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "1000",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "charge-token2022-default-program-by-currency",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Divergence class: default tokenProgram-by-currency. PYUSD mainnet mint is a Token-2022 stablecoin; with tokenProgram omitted the SDK must default to the Token-2022 program, not legacy SPL Token.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "mainnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "amount": "1000",
+            "decimals": 6,
+            "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "charge-sol-native-build",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Native SOL charge: currency \"sol\" must produce a System Program transfer of lamports, no SPL token program and no ATA creation.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000000",
+        "currency": "sol",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "forbiddenPrograms": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        ],
+        "transfers": [
+          {
+            "kind": "sol",
+            "destination": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "amount": "1000000"
+          }
+        ]
+      }
+    }
+  }
+]

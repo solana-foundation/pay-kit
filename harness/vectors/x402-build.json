@@ -1,0 +1,34 @@
+[
+  {
+    "id": "x402-exact-v2-build",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "Client builds a v2 PAYMENT-SIGNATURE envelope from a devnet USDC offer. Asserts the canonical v2 shape: x402Version=2, hasAccepted=true, accepted echoes the offer (scheme/network/asset/payTo/amount), payloadHasTransaction=true, and NO top-level scheme/network (v2 must not leak the legacy fields).",
+    "input": {
+      "x402Version": 2,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA=="
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "acceptedScheme": "exact",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedAmount": "1000"
+      }
+    }
+  }
+]
