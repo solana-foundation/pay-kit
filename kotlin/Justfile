@@ -1,0 +1,31 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Install Kotlin deps (resolved on first Gradle invocation; no-op recipe).
+install:
+    gradle --version
+
+# Build the Kotlin SDK (no tests).
+build:
+    gradle build -x test
+
+# Run the Kotlin unit test suite.
+test:
+    gradle test
+
+# Format Kotlin sources (Kotlin Coding Conventions; ktlint when present).
+fmt:
+    (command -v ktlint >/dev/null && ktlint -F 'src/**/*.kt') || echo "ktlint not installed; relying on Kotlin Coding Conventions"
+
+# Lint Kotlin (detekt when present; otherwise compile).
+lint:
+    (command -v detekt >/dev/null && detekt) || gradle compileKotlin
+
+# Run tests with the >=90% line-coverage gate (jacocoTestCoverageVerification).
+test-cover:
+    gradle test jacocoTestCoverageVerification
+
+# Run all local Kotlin gates.
+check: build lint test-cover
