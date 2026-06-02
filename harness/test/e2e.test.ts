@@ -13,6 +13,11 @@ import {
   serverImplementations,
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
+import {
+  assertNonEmptyEligibility,
+  SOCKET_UNAVAILABLE_CI_MESSAGE,
+  socketGateMode,
+} from "../src/guards";
 
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
 
@@ -316,7 +321,27 @@ describe("mpp interop", () => {
   const activeClients = clientImplementations.filter(
     (implementation) => implementation.enabled,
   );
-  const socketAwareIt = socketSupport ? it : it.skip;
+  // P0: a sandbox that cannot bind a loopback socket must NOT green-skip
+  // the whole matrix under CI. Outside CI we still skip so a restricted
+  // local box does not go red. `socketAwareIt` registers a real test, a
+  // skip, or a hard-failing test depending on the gate mode.
+  const gateMode = socketGateMode(socketSupport);
+  const socketAwareIt = (
+    name: string,
+    body: () => void | Promise<void>,
+  ): void => {
+    if (gateMode === "run") {
+      it(name, body);
+      return;
+    }
+    if (gateMode === "fail") {
+      it(name, () => {
+        throw new Error(SOCKET_UNAVAILABLE_CI_MESSAGE);
+      });
+      return;
+    }
+    it.skip(name, body);
+  };
 
   for (const scenario of activeScenarios) {
     // Cross-server portability and idempotent-resubmit scenarios
@@ -343,6 +368,18 @@ describe("mpp interop", () => {
         (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
         (!scenario.clientIds || scenario.clientIds.includes(implementation.id)),
     );
+
+    // P0 zero-eligible guard: a selected scenario that resolves to no
+    // client, no server, or no pair asserts nothing. Register a hard
+    // failure (not a silent no-op) so the false green is visible.
+    it(`${scenario.id}: has at least one eligible client/server pair`, () => {
+      assertNonEmptyEligibility({
+        scenarioId: scenario.id,
+        clientCount: scenarioClients.length,
+        serverCount: scenarioServers.length,
+        pairCount: scenarioServers.length * scenarioClients.length,
+      });
+    });
 
     for (const serverImplementation of scenarioServers) {
       for (const clientImplementation of scenarioClients) {
@@ -482,6 +519,19 @@ describe("mpp interop", () => {
       (implementation) =>
         !scenario.clientIds || scenario.clientIds.includes(implementation.id),
     );
+    const resolvablePairs = pairs.filter(
+      ([aId, bId]) =>
+        activeServers.some((impl) => impl.id === aId) &&
+        activeServers.some((impl) => impl.id === bId),
+    );
+    it(`${scenario.id}: has at least one eligible cross-server pair`, () => {
+      assertNonEmptyEligibility({
+        scenarioId: scenario.id,
+        clientCount: eligibleClients.length,
+        serverCount: resolvablePairs.length,
+        pairCount: resolvablePairs.length * eligibleClients.length,
+      });
+    });
     for (const [aId, bId] of pairs) {
       const serverA = activeServers.find((impl) => impl.id === aId);
       const serverB = activeServers.find((impl) => impl.id === bId);
@@ -537,6 +587,14 @@ describe("mpp interop", () => {
     const eligibleClients = activeClients.filter(
       (impl) => !scenario.clientIds || scenario.clientIds.includes(impl.id),
     );
+    it(`${scenario.id}: has at least one eligible idempotent pair`, () => {
+      assertNonEmptyEligibility({
+        scenarioId: scenario.id,
+        clientCount: eligibleClients.length,
+        serverCount: eligibleServers.length,
+        pairCount: eligibleServers.length * eligibleClients.length,
+      });
+    });
     for (const serverImplementation of eligibleServers) {
       for (const clientImplementation of eligibleClients) {
         socketAwareIt(

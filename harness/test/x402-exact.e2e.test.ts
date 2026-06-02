@@ -113,10 +113,20 @@ describe("x402 exact intent — cross-language matrix", () => {
     return false;
   };
 
+  // P0: make the cross-language x402 gap explicit. The default x402
+  // matrix only self-pairs (ts<->ts, rust<->rust) plus the real-settling
+  // python pairings because the TS reference fixture carries a stub
+  // credential. A skipped cross pair must not read as asserted
+  // cross-language coverage. Surface the un-asserted cross pairs as a
+  // single tracked, logged marker so the gap is visible in the run output
+  // instead of looking green.
+  const crossLanguageUnasserted: string[] = [];
+
   for (const server of x402Servers) {
     for (const client of x402Clients) {
       if (!allowedPair(client.id, server.id)) {
-        it.skip(`${client.id} client ↔ ${server.id} server: pair not in default matrix`, () => {});
+        crossLanguageUnasserted.push(`${client.id} -> ${server.id}`);
+        it.skip(`${client.id} client ↔ ${server.id} server: cross-language x402 settlement NOT asserted (stub TS fixture; tracked follow-up)`, () => {});
         continue;
       }
       it(`${client.id} client ↔ ${server.id} server: happy path`, async () => {
@@ -147,4 +157,22 @@ describe("x402 exact intent — cross-language matrix", () => {
       }, 120_000);
     }
   }
+
+  it("cross-language x402 settlement is a tracked, un-asserted gap", () => {
+    if (crossLanguageUnasserted.length > 0) {
+      console.warn(
+        `[x402-matrix] cross-language x402 settlement is NOT asserted for ` +
+          `${crossLanguageUnasserted.length} pair(s): ${crossLanguageUnasserted.join(", ")}. ` +
+          `These read as skips, not green coverage. Tracked follow-up: a TS adapter ` +
+          `that emits a real PaymentProof so ts<->rust can settle end-to-end.`,
+      );
+    }
+    // Self-documenting assertion: the matrix only self-pairs (plus the
+    // real-settling python pairings) today; the stub TS fixture cannot
+    // cross-settle against rust.
+    expect(allowedPair("ts-x402", "rust-x402")).toBe(false);
+    expect(allowedPair("rust-x402", "ts-x402")).toBe(false);
+    expect(allowedPair("ts-x402", "ts-x402")).toBe(true);
+    expect(allowedPair("rust-x402", "rust-x402")).toBe(true);
+  });
 });

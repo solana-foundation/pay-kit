@@ -8,7 +8,28 @@ export type ImplementationDefinition = {
   // `intent` is in this list. Defaults to "charge" only for back-compat
   // with the existing MPP charge matrix.
   intents?: string[];
+  // The value the adapter is REQUIRED to emit in the `implementation`
+  // field of its ready/result JSON. The harness asserts this on every
+  // adapter message and fails loudly on mismatch, so an adapter that is
+  // accidentally wired to a different language's binary (e.g. an x402
+  // adapter that reuses the wrong charge client) cannot green-skip.
+  //
+  // Several adapter ids carry a protocol suffix (`ts-x402`, `go-x402`,
+  // `ruby-x402-server`) while the underlying fixture reports the bare
+  // language (`typescript`, `go`, `ruby`). `reportsAs` records the
+  // language id the fixture actually prints; when omitted it defaults to
+  // the adapter `id`.
+  reportsAs?: string;
 };
+
+// The `implementation` id an adapter is expected to emit. Defaults to the
+// adapter id; adapters whose fixture reports the bare language override via
+// `reportsAs`.
+export function expectedReportedImplementation(
+  implementation: ImplementationDefinition,
+): string {
+  return implementation.reportsAs ?? implementation.id;
+}
 
 function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolean {
   const selected = process.env[envName];
@@ -103,6 +124,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("ts-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
+    reportsAs: "typescript",
   },
   {
     id: "rust-x402",
@@ -121,6 +143,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
     intents: ["x402-exact"],
+    reportsAs: "rust",
   },
   {
     id: "go-x402",
@@ -129,6 +152,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: ["sh", "-c", "cd go-client && go run ."],
     enabled: isEnabled("go-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
+    reportsAs: "go",
   },
   {
     id: "python-x402",
@@ -145,6 +169,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: ["python3", "python-x402-client/main.py"],
     enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", false),
     intents: ["x402-exact"],
+    reportsAs: "python",
   },
   {
     id: "swift-x402",
@@ -272,6 +297,9 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: ["sh", "-c", "cd go-server && ./paykit-server"],
     enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
     intents: ["charge", "x402-exact"],
+    // The Go umbrella server fixture reports the bare language tag
+    // `go-paykit`, not the adapter id `go`.
+    reportsAs: "go-paykit",
   },
   {
     id: "ts-x402",
@@ -287,6 +315,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("ts-x402", "X402_INTEROP_SERVERS", true),
     intents: ["x402-exact"],
+    reportsAs: "typescript",
   },
   {
     id: "rust-x402",
@@ -305,6 +334,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
     intents: ["x402-exact"],
+    reportsAs: "rust",
   },
   {
     id: "ruby-x402-server",
@@ -317,5 +347,6 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("ruby-x402-server", "X402_INTEROP_SERVERS", false),
     intents: ["x402-exact"],
+    reportsAs: "ruby",
   },
 ];

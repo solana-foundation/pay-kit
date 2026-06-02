@@ -135,6 +135,26 @@ export type ClientRunResult = {
 
 export type AdapterMessage = ReadyMessage | ClientRunResult;
 
+// P0: header-key normalization. Resubmit / cross-server assertions read
+// exact lower-case header keys (e.g. `payment-signature-sent`). An
+// adapter that emits `Payment-Signature` would otherwise silently fall
+// through to a different key and mask a replay-vector bug. Lower-case
+// every key once, at the harness boundary, before any assertion runs.
+// On a duplicate key after lower-casing, the last value wins (matches
+// how a single-valued header map collapses).
+export function normalizeResponseHeaders(
+  headers: Record<string, string> | undefined | null,
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  if (!headers) {
+    return normalized;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    normalized[key.toLowerCase()] = value;
+  }
+  return normalized;
+}
+
 export { chargeCanonicalJsonVectors } from "./intents/charge";
 
 export const interopScenarios: readonly InteropScenario[] = [

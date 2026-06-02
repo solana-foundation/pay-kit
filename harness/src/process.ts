@@ -1,12 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import type {
-  AdapterMessage,
-  ClientRunResult,
-  ReadyMessage,
+import {
+  normalizeResponseHeaders,
+  type AdapterMessage,
+  type ClientRunResult,
+  type ReadyMessage,
 } from "./contracts";
-import type { ImplementationDefinition } from "./implementations";
+import {
+  expectedReportedImplementation,
+  type ImplementationDefinition,
+} from "./implementations";
 
 type StderrCapture = {
   append(chunk: Buffer | string): void;
@@ -43,6 +47,34 @@ function snapshotStderr(child: ChildProcess): string {
   return capture ? capture.snapshot() : "";
 }
 
+// P0 false-green killer: assert the adapter reports the identity the
+// harness registered it under. An adapter wired to the wrong language's
+// binary (e.g. an x402 adapter that reuses a charge client of a different
+// language) would otherwise run silently under the wrong label and the
+// matrix would report green while asserting nothing about the intended
+// implementation. Only `ready`/`result` messages carry an
+// `implementation` field; lines without one (or non-object lines) are
+// left to the JSON-shape checks downstream.
+function assertAdapterIdentity(
+  implementation: ImplementationDefinition,
+  message: AdapterMessage,
+): void {
+  const reported = (message as { implementation?: unknown }).implementation;
+  if (typeof reported !== "string") {
+    return;
+  }
+  const expected = expectedReportedImplementation(implementation);
+  if (reported !== expected) {
+    throw new Error(
+      `Adapter identity mismatch: ${implementation.id} (role ${implementation.role}) ` +
+        `reported implementation="${reported}" but the harness expects "${expected}". ` +
+        `This usually means the adapter is wired to the wrong binary. ` +
+        `If the fixture intentionally reports a different language tag, set ` +
+        `\`reportsAs\` on the implementation definition.`,
+    );
+  }
+}
+
 async function waitForJsonMessage<T extends AdapterMessage>(
   child: ChildProcess,
   implementation: ImplementationDefinition,
@@ -62,8 +94,9 @@ async function waitForJsonMessage<T extends AdapterMessage>(
             return;
           }
 
+          let parsed: T;
           try {
-            resolve(JSON.parse(line) as T);
+            parsed = JSON.parse(line) as T;
           } catch (error) {
             const tail = snapshotStderr(child);
             reject(
@@ -73,7 +106,21 @@ async function waitForJsonMessage<T extends AdapterMessage>(
                   (tail ? `\nlast stderr: ${tail}` : ""),
               ),
             );
+            return;
           }
+
+          // P0 false-green killer: a label mismatch is a hard, loud
+          // failure, never a swallowed parse error. Kill the adapter so
+          // it cannot keep running under the wrong identity.
+          try {
+            assertAdapterIdentity(implementation, parsed);
+          } catch (error) {
+            child.kill("SIGTERM");
+            reject(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+
+          resolve(parsed);
         });
 
         child.once("exit", (code) => {
@@ -87,9 +134,11 @@ async function waitForJsonMessage<T extends AdapterMessage>(
         });
       }),
       delay(timeoutMs).then(() => {
+        const tail = snapshotStderr(child);
         child.kill("SIGTERM");
         throw new Error(
-          `Timed out waiting for adapter ${implementation.id} output after ${timeoutMs}ms`,
+          `Timed out waiting for adapter ${implementation.id} output after ${timeoutMs}ms;` +
+            ` last stderr: ${tail || "<empty>"}`,
         );
       }),
     ]);
@@ -174,7 +223,13 @@ export async function runClient(
     );
   }
 
-  return result;
+  // P0: normalize header keys to lower-case at the boundary so resubmit /
+  // cross-server assertions cannot be fooled by an adapter that emits
+  // mixed-case header keys.
+  return {
+    ...result,
+    responseHeaders: normalizeResponseHeaders(result.responseHeaders),
+  };
 }
 
 async function waitForExit(child: ChildProcess, label: string): Promise<void> {
