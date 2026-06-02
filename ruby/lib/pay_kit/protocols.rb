@@ -12,11 +12,12 @@ module PayKit
   #   #detect?(request)             -> Boolean   (does this request carry our envelope?)
   #
   # Adapters are stateless aside from the frozen config. Replay state
-  # lives inside the wrapped server (`X402::Server::Exact::SettlementCache`,
-  # `Mpp::Server`'s store).
+  # lives inside the wrapped server
+  # (`PayKit::Protocols::X402::Server::Exact::SettlementCache`,
+  # `PayKit::Protocols::Mpp::Server`'s store).
   module Protocols
-    # Sentinel returned by `PayKit::Protocols::X402.exact` so gates can
-    # express `accept: PayKit::Protocols::X402.exact` even though the
+    # Sentinel returned by `PayKit::Protocols::X402Adapter.exact` so gates can
+    # express `accept: PayKit::Protocols::X402Adapter.exact` even though the
     # symbol-form `accept: :x402` still works. Frozen, comparable
     # against the `:x402` symbol via `#protocol`.
     ProtocolRef = Data.define(:protocol, :scheme) do

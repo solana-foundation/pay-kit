@@ -13,7 +13,7 @@ class ExampleTest < Minitest::Test
     ) do
       require_relative "../examples/sinatra/app"
 
-      response = Rack::MockRequest.new(PayKitSinatraExample).get("/health")
+      response = Rack::MockRequest.new(SinatraExample).get("/health")
 
       assert_equal 200, response.status
       assert_equal({"ok" => true}, JSON.parse(response.body))

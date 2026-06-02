@@ -38,9 +38,9 @@ module PayKit
         # Long-lived caches shared across every request this middleware
         # instance handles. x402's SettlementCache prevents the same
         # signature from being broadcast twice; the MPP method cache
-        # avoids rebuilding `Mpp.create(...)` for every gate hit (the
+        # avoids rebuilding `PayKit::Protocols::Mpp.create(...)` for every gate hit (the
         # underlying ChallengeStore allocates buffers on construction).
-        @x402_settlement_cache = ::X402::Server::Exact::SettlementCache.new
+        @x402_settlement_cache = ::PayKit::Protocols::X402::Server::Exact::SettlementCache.new
         @mpp_method_cache = MppMethodCache.new
       end
 
@@ -72,14 +72,17 @@ module PayKit
       class << self
         def render_402(challenge)
           body = JSON.generate(challenge.to_h)
-          headers = {"content-type" => "application/json"}.merge(normalize_headers(challenge.headers))
+          headers = {
+            "content-type" => "application/json",
+            "cache-control" => "no-store"
+          }.merge(normalize_headers(challenge.headers))
           [402, headers, [body]]
         end
 
         def render_invalid(error)
           payload = {error: error.code.to_s, message: error.detail}
           payload[:spec_code] = error.spec_code if error.spec_code
-          [402, {"content-type" => "application/json"}, [JSON.generate(payload)]]
+          [402, {"content-type" => "application/json", "cache-control" => "no-store"}, [JSON.generate(payload)]]
         end
 
         # Rack 3 requires response header names to be lowercase. The
@@ -92,7 +95,7 @@ module PayKit
       end
     end
 
-    # Long-lived, thread-safe cache of `Mpp::Server::Charge` instances
+    # Long-lived, thread-safe cache of `PayKit::Protocols::Mpp::Server::Charge` instances
     # keyed by the tuple that defines a charge method: recipient +
     # currency + network + rpc URL + secret + realm + expires_in. Two
     # gates with the same tuple share a server (and its underlying
@@ -125,7 +128,7 @@ module PayKit
       def initialize(config:, pricing:, x402_settlement_cache: nil, mpp_method_cache: nil)
         @config = config
         @pricing_override = pricing
-        @x402_settlement_cache = x402_settlement_cache || ::X402::Server::Exact::SettlementCache.new
+        @x402_settlement_cache = x402_settlement_cache || ::PayKit::Protocols::X402::Server::Exact::SettlementCache.new
         @mpp_method_cache = mpp_method_cache || MppMethodCache.new
       end
 
@@ -190,7 +193,7 @@ module PayKit
               "drop :x402 from c.accept to use MPP only."
           end
 
-          ::PayKit::Protocols::X402.new(
+          ::PayKit::Protocols::X402Adapter.new(
             config: @config,
             exact_config_for: ->(gate, request) { build_x402_config(gate, request) }
           )
@@ -198,7 +201,7 @@ module PayKit
       end
 
       def mpp_adapter
-        @mpp_adapter ||= ::PayKit::Protocols::MPP.new(
+        @mpp_adapter ||= ::PayKit::Protocols::MppAdapter.new(
           server_for: ->(gate) { mpp_server_for(gate) }
         )
       end
@@ -208,7 +211,7 @@ module PayKit
       def build_x402_config(gate, request)
         signer = @config.x402.effective_signer ||
           raise(::PayKit::ConfigurationError, "PayKit.config.operator.signer not set")
-        ::X402::Server::Exact::Config.new(
+        ::PayKit::Protocols::X402::Server::Exact::Config.new(
           rpc_url: @config.effective_rpc_url,
           pay_to: gate.pay_to,
           facilitator_secret_key: signer.to_json_array,
@@ -241,7 +244,7 @@ module PayKit
       # intent — two gates with the same recipient/currency/network/rpc
       # share a server; gates that differ on any field (e.g. a
       # different `gate.pay_to`) get their own server with its own
-      # ChallengeStore. `Mpp.create(...)` allocates per-instance HMAC
+      # ChallengeStore. `PayKit::Protocols::Mpp.create(...)` allocates per-instance HMAC
       # state, so this is meaningful work to avoid per request.
       def mpp_server_for(gate)
         secret = @config.mpp.challenge_binding_secret ||
@@ -260,14 +263,14 @@ module PayKit
         key = [recipient, currency, network, rpc, secret, realm, expires_in, fee_payer_pubkey].freeze
 
         @mpp_method_cache.fetch(key) do
-          method = ::Mpp::Protocol::Solana.charge(
+          method = ::PayKit::Protocols::Mpp::Protocol::Solana.charge(
             recipient: recipient,
             currency: currency,
             network: network,
             rpc: rpc,
             fee_payer: fee_payer_account
           )
-          ::Mpp.create(
+          ::PayKit::Protocols::Mpp.create(
             method: method,
             secret_key: secret,
             realm: realm,
@@ -291,7 +294,7 @@ module PayKit
 
       # Plain network label for the MPP server (`mainnet`/`devnet`/
       # `localnet`). MPP does not require CAIP-2 on the wire; the
-      # `Mpp::Protocol::Solana.charge` factory takes the plain name.
+      # `PayKit::Protocols::Mpp::Protocol::Solana.charge` factory takes the plain name.
       def mpp_network_label_for(network)
         case network
         when :solana_mainnet then "mainnet"

@@ -14,7 +14,7 @@ require_relative "pay_kit"
 
 # One gem, one surface. x402 and MPP both gate the same routes; the
 # merchant doesn't care which protocol settled the request.
-class PayKitSinatraExample < Sinatra::Base
+class SinatraExample < Sinatra::Base
   # Let PayKit's PaymentRequired/InvalidProof bubble up to the Rack
   # middleware so it can serialize the 402.
   set :show_exceptions, false

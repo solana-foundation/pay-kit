@@ -107,8 +107,9 @@ module PayCore
       private
 
       # Subclasses can swap the raised error class without overriding every
-      # `raise` site. MPP uses this hook to emit its protocol `Mpp::Error`
-      # while leaving the canonical `RpcError` available to other consumers.
+      # `raise` site. A protocol layer uses this hook to emit its own
+      # protocol error while leaving the canonical `RpcError` available to
+      # other consumers.
       def rpc_error_class
         RpcError
       end

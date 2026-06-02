@@ -123,7 +123,7 @@ class PayKitGateTest < Minitest::Test
     end
   end
 
-  def test_mixed_denominations_raise
+  def test_mixed_currencies_raise
     PayKitTestHelpers.with_config(accept: %i[mpp]) do
       assert_raises(PayKit::ConfigurationError) do
         PayKit::Gate.build(
@@ -182,6 +182,31 @@ class PayKitGateTest < Minitest::Test
     end
   end
 
+  def test_gate_non_symbol_name_raises
+    PayKitTestHelpers.with_config(accept: %i[mpp]) do
+      assert_raises(PayKit::ConfigurationError) do
+        PayKit::Gate.build(name: "not_symbol", amount: usd("0.10"), default_pay_to: "x", accept_default: %i[mpp])
+      end
+    end
+  end
+
+  def test_gate_non_price_amount_raises
+    PayKitTestHelpers.with_config(accept: %i[mpp]) do
+      assert_raises(PayKit::ConfigurationError) do
+        PayKit::Gate.build(name: :bad, amount: "0.10", default_pay_to: "x", accept_default: %i[mpp])
+      end
+    end
+  end
+
+  def test_gate_empty_accept_raises
+    PayKitTestHelpers.with_config(accept: %i[mpp]) do
+      assert_raises(PayKit::ConfigurationError) do
+        PayKit::Gate.build(name: :bad, amount: usd("0.10"), pay_to: "x", accept: [],
+          default_pay_to: "x", accept_default: [])
+      end
+    end
+  end
+
   private
 
   def build(name, amount:, pay_to: nil, accept: nil, fee_within: nil, fee_on_top: nil, description: nil)
@@ -194,7 +219,7 @@ class PayKitGateTest < Minitest::Test
       fee_on_top: fee_on_top,
       description: description,
       accept_default: PayKit.config.accept,
-      default_pay_to: PayKit.config.pay_to
+      default_pay_to: PayKit.config.operator.effective_recipient
     )
   end
 

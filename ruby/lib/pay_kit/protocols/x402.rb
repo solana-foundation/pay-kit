@@ -2,18 +2,18 @@
 
 require_relative "../errors"
 require_relative "../challenge"
-require_relative "../../x402/server/exact"
+require_relative "x402/runtime"
 
 module PayKit
   module Protocols
-    # x402 adapter. Wraps `::X402::Server::Exact` for verification and
+    # x402 adapter. Wraps `::PayKit::Protocols::X402::Server::Exact` for verification and
     # settlement; produces `accepts[]` entries from `Gate` instances.
     #
     # The class-level `.exact` callable returns a frozen `ProtocolRef`
     # so gates can name the scheme explicitly:
     #
-    #   accept: PayKit::Protocols::X402.exact   # equivalent to accept: :x402
-    class X402
+    #   accept: PayKit::Protocols::X402Adapter.exact   # equivalent to accept: :x402
+    class X402Adapter
       EXACT_REF = ProtocolRef.new(protocol: :x402, scheme: :exact).freeze
       def self.exact = EXACT_REF
 
@@ -27,14 +27,14 @@ module PayKit
       end
 
       def detect?(request)
-        header_value(request, ::X402::Constants::PAYMENT_SIGNATURE_HEADER) ||
+        header_value(request, ::PayKit::Protocols::X402::Constants::PAYMENT_SIGNATURE_HEADER) ||
           header_value(request, "X-PAYMENT") # v1 legacy
       end
 
       def accepts_entry(gate, request)
         ensure_no_fees!(gate)
         exact_config = build_exact_config(gate, request)
-        ::X402::Server::Exact.exact_requirements(exact_config, resource: request.path).first.tap do |entry|
+        ::PayKit::Protocols::X402::Server::Exact.exact_requirements(exact_config, resource: request.path).first.tap do |entry|
           entry[:protocol] = "x402"
         end
       end
@@ -42,10 +42,10 @@ module PayKit
       def challenge_headers(gate, request)
         ensure_no_fees!(gate)
         exact_config = build_exact_config(gate, request)
-        challenge = ::X402::Server::Exact.exact_challenge(exact_config, resource: request.path)
+        challenge = ::PayKit::Protocols::X402::Server::Exact.exact_challenge(exact_config, resource: request.path)
         {
-          ::X402::Constants::PAYMENT_REQUIRED_HEADER =>
-            ::X402::Server::Exact.encode_payment_required(challenge)
+          ::PayKit::Protocols::X402::Constants::PAYMENT_REQUIRED_HEADER =>
+            ::PayKit::Protocols::X402::Server::Exact.encode_payment_required(challenge)
         }
       end
 
@@ -53,7 +53,7 @@ module PayKit
         ensure_no_fees!(gate)
         exact_config = build_exact_config(gate, request)
         payment_header = detect?(request)
-        signature = ::X402::Server::Exact.settle_exact_payment(
+        signature = ::PayKit::Protocols::X402::Server::Exact.settle_exact_payment(
           exact_config,
           payment_header,
           resource: request.path
@@ -70,12 +70,12 @@ module PayKit
           scheme: :exact,
           transaction: signature,
           settlement_headers: {
-            ::X402::Constants::PAYMENT_RESPONSE_HEADER => payment_response,
+            ::PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER => payment_response,
             exact_config.settlement_header => signature
           },
           raw: payment_header
         )
-      rescue ::X402::Error => e
+      rescue ::PayKit::Protocols::X402::Error => e
         raise InvalidProof.new(:payment_invalid, e.message)
       rescue => e
         raise InvalidProof.new(:payment_invalid, e.message)

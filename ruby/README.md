@@ -12,7 +12,7 @@ and the [Machine Payments Protocol](https://paymentauth.org). Sinatra and
 Rails ride on top of a pure Rack middleware.
 
 [![Ruby](https://img.shields.io/badge/ruby-3.2%2B-red)]()
-[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)]()
+[![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-90%25-brightgreen)]()
 
 ---
@@ -135,8 +135,12 @@ Two safety rails fire at boot:
 
 ## Run the example
 
-The runnable demo lives at [`examples/sinatra/`](examples/sinatra) —
-registry, inline pricing, dynamic pricing, multi-recipient fees, both protocols.
+Two runnable demos:
+[`examples/simple-server/`](examples/simple-server) is the smallest
+possible app (plain Rack, one gated endpoint), and
+[`examples/sinatra/`](examples/sinatra) shows the registry, inline
+pricing, dynamic pricing, and multi-recipient fees across both
+protocols.
 
 **Boot the server:**
 
@@ -185,7 +189,7 @@ address.
 
 Supported on the Ruby server:
 
-| Scheme             | Status |
+| Intent             | Status |
 |--------------------|--------|
 | `exact`            | ✅      |
 | `upto`             | —      |
@@ -206,7 +210,7 @@ Use MPP when:
 
 Supported on the Ruby server:
 
-| Scheme         | Status |
+| Intent         | Status |
 |----------------|--------|
 | `charge/pull`  | ✅      |
 | `charge/push`  | ✅      |
@@ -233,14 +237,14 @@ it does not pay. Drive the client side from:
 | **gate**     | A protected unit. Has an amount, optional fees, accepted protocols. |
 | **amount**   | The base amount a gate charges, before any `fee_on_top`. |
 | **total**    | What the customer pays: `amount + sum(fee_on_top)`. Derived. |
-| **price**    | Value object returned by `usd(…)`: number + denom + settlement. |
+| **price**    | Value object returned by `usd(…)`: number + currency + settlement. |
 | **fee_within** | Fee taken out of the amount. `pay_to` nets less. |
 | **fee_on_top** | Fee added to the amount. Customer pays more; `pay_to` nets full. |
 | **payment**  | Proof submitted by the client to pass a gate. |
 | **protocol** | `:x402` or `:mpp` (top-level dispatch). |
 | **scheme**   | x402 sub-form: `:exact`. MPP sub-form: `:charge`. |
 | **accept**   | Ordered preference list (protocols and stablecoins both). |
-| **denom**    | Fiat unit a price is quoted in (`:USD`, `:EUR`). |
+| **currency** | Fiat unit a price is quoted in (`:USD`, `:EUR`). |
 | **settlement** | On-chain asset that actually transfers (`:USDC`, `:USDT`). |
 
 ## Three primitives
@@ -308,7 +312,7 @@ Boot-time validations (all raise `PayKit::ConfigurationError`):
 
 - `pay_to` is required (gate kwarg or `c.operator.recipient`).
 - Fee recipient must differ from `pay_to`. Fold the fee into the amount instead.
-- All fee prices share one denomination with the amount.
+- All fee prices share one currency with the amount.
 - `sum(fee_within) <= amount`.
 - `accept: :x402` on a fee-bearing gate raises.
 
@@ -371,7 +375,7 @@ X402_INTEROP_SERVERS=ruby-x402-server pnpm test
 ## Spec
 
 This SDK implements the
-[Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org),
 plus the x402 exact scheme on Solana.
 
@@ -381,17 +385,22 @@ plus the x402 exact scheme on Solana.
 
 ```text
 ruby/
-├── lib/solana_pay_kit.rb       # Gem entry (require "solana_pay_kit")
-├── lib/pay_kit/                # PayKit surface
-│   ├── config.rb, pricing.rb, gate.rb, price.rb, fee.rb, …
-│   ├── preflight.rb            # Boot-time soundness check + autobootstrap
-│   ├── protocols/{x402,mpp}.rb # Protocol adapters
-│   └── rack/payment_required.rb
-├── lib/mpp/                    # MPP layer (Mpp.create + protocol/server/sinatra)
-├── lib/x402/                   # x402 layer (X402::Server::Exact)
-├── lib/pay_core/               # Shared Solana primitives (JCS, headers, base58, …)
-├── examples/sinatra/           # Runnable PayKit demo
-└── test/                       # Minitest suite with line + branch coverage gates
+├── lib/solana_pay_kit.rb           # Gem entry (require "solana_pay_kit")
+├── lib/pay_core/                   # PayCore: protocol-agnostic primitives
+│   ├── base64_url.rb, json.rb, headers.rb, rfc3339_parser.rb, error_codes.rb
+│   └── solana/                     # base58, ata, mints, programs, rpc, transaction
+├── lib/pay_kit/                    # PayKit umbrella: the one public surface
+│   ├── config.rb, pricing.rb, gate.rb, price.rb, fee.rb, operator.rb, …
+│   ├── preflight.rb                # Boot-time soundness check + autobootstrap
+│   ├── rack/payment_required.rb    # Rack middleware + dispatcher
+│   └── protocols/                  # Protocol layer (server-only)
+│       ├── protocols.rb            # ProtocolRef
+│       ├── mpp.rb, x402.rb         # Gate adapters (MppAdapter, X402Adapter)
+│       ├── mpp/                    # MPP protocol: protocol/{core,intents,solana}, server
+│       └── x402/                   # x402 protocol: protocol/schemes/exact, server
+├── examples/simple-server/         # Plain-Rack demo, one gated endpoint
+├── examples/sinatra/               # Sinatra demo (registry, fees, dynamic pricing)
+└── test/                           # Minitest suite mirroring the lib tiers
 ```
 
 ## Coding convention

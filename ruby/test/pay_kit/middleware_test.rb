@@ -72,13 +72,13 @@ class PayKitMiddlewareTest < Minitest::Test
     # the helper's scope.
     PayKit.reset!
     PayKit.configure do |c|
-      c.pay_to = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj"
+      c.operator { |op| op.recipient = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj" }
       c.network = :solana_devnet
       c.accept = %i[x402 mpp]
       c.stablecoins = %i[USDC]
-      c.x402.facilitator = "https://example.test"
+      c.rpc_url = "https://example.test"
       c.mpp.realm = "Test"
-      c.mpp.secret = "test"
+      c.mpp.challenge_binding_secret = "test"
     end
     PayKit.pricing = TestPricing.new
   end
@@ -142,6 +142,37 @@ class PayKitMiddlewareTest < Minitest::Test
     assert_equal 402, last_response.status
     body = JSON.parse(last_response.body)
     assert_equal "0.25", body["accepts"].first["amount"]
+  end
+
+  # Regression: all PayKit 402 responses (payment_required challenge) must
+  # include Cache-Control: no-store so that proxies and browsers do not
+  # cache payment challenges or invalid-proof responses.
+  def test_402_payment_required_includes_cache_control_no_store
+    get "/report"
+
+    assert_equal 402, last_response.status
+    assert_equal "no-store", last_response.headers["cache-control"],
+      "PayKit 402 challenge response must include Cache-Control: no-store"
+  end
+
+  def test_render_402_class_method_includes_cache_control_no_store
+    challenge = PayKit::Challenge.new(
+      resource: "/report",
+      accepts: [],
+      headers: {}
+    )
+    _status, headers, _body = PayKit::Rack::PaymentRequired.render_402(challenge)
+
+    assert_equal "no-store", headers["cache-control"],
+      "render_402 must include Cache-Control: no-store"
+  end
+
+  def test_render_invalid_class_method_includes_cache_control_no_store
+    error = PayKit::InvalidProof.new(:bad_proof, "test error")
+    _status, headers, _body = PayKit::Rack::PaymentRequired.render_invalid(error)
+
+    assert_equal "no-store", headers["cache-control"],
+      "render_invalid must include Cache-Control: no-store"
   end
 
   private

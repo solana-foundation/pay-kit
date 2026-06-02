@@ -27,7 +27,7 @@ class PayKitMppAdapterTest < Minitest::Test
     fake_server = Object.new
     def fake_server.charge(*)
     end
-    ::PayKit::Protocols::MPP.new(server: fake_server)
+    ::PayKit::Protocols::MppAdapter.new(server: fake_server)
   end
 
   def test_splits_is_nil_when_gate_has_no_fees
@@ -93,7 +93,7 @@ class PayKitMppAdapterTest < Minitest::Test
         accept: %i[mpp]
       )
 
-      challenge_with_code = ::Mpp::Challenge.new(
+      challenge_with_code = ::PayKit::Protocols::Mpp::Challenge.new(
         www_authenticate: "Payment realm=\"X\"",
         body: {"code" => "challenge_expired", "error" => "challenge_expired", "message" => "challenge expired"},
         reason: "challenge expired"
@@ -102,7 +102,7 @@ class PayKitMppAdapterTest < Minitest::Test
       fake_server = Object.new
       fake_server.define_singleton_method(:charge) { |_authorization, **_kwargs| challenge_with_code }
 
-      adapter = ::PayKit::Protocols::MPP.new(server: fake_server)
+      adapter = ::PayKit::Protocols::MppAdapter.new(server: fake_server)
 
       env = ::Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Payment fake")
       request = ::Rack::Request.new(env)
@@ -131,7 +131,7 @@ class PayKitMppAdapterTest < Minitest::Test
         nil
       end
 
-      adapter = ::PayKit::Protocols::MPP.new(server: fake_server)
+      adapter = ::PayKit::Protocols::MppAdapter.new(server: fake_server)
       adapter.send(:perform, gate, nil, authorization: "Payment fake")
 
       assert_equal "order:42", captured[:kwargs][:external_id]

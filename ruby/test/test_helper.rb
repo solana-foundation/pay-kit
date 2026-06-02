@@ -6,21 +6,24 @@ if ENV["COVERAGE"] == "1"
   SimpleCov.start do
     add_filter "/test/"
     add_filter "/examples/"
-    # x402 production server helpers (`lib/x402/server/exact.rb` RPC
-    # methods + bin) are exercised through the cross-language interop
-    # harness rather than unit tests, so they remain excluded from
-    # the branch-coverage gate. Library types + verifier
-    # (`lib/x402/protocol/`, `lib/x402/constants.rb`, `lib/x402/error.rb`)
-    # are covered by `test/x402_server_exact_test.rb`.
-    add_filter "/lib/x402/"
-    # `lib/pay_kit/rack/` and `lib/pay_kit/protocols/` wrap live Solana
-    # RPC + signing through `X402::Server::Exact` and `Mpp::Server` and
-    # are exercised through the Sinatra example (manual curl DX) plus
-    # the cross-language interop harness; unit-testing them in isolation
-    # would require mocking out the entire SVM client stack, so they
-    # follow the same exclusion as `lib/x402/server/exact.rb`.
+    # The x402 protocol layer (wire types, verifier, exact server) binds
+    # live Solana RPC + a facilitator fee payer and is exercised through
+    # the cross-language interop harness rather than isolated unit tests,
+    # so the whole `protocols/x402/` tree stays out of the branch gate
+    # (the same exclusion the pre-refactor layout applied to `lib/x402/`).
+    add_filter "/lib/pay_kit/protocols/x402/"
+    # The umbrella adapters + their per-protocol loaders bridge the gate
+    # to each protocol over live Solana RPC + signing; they are exercised
+    # through the Sinatra example (manual curl DX) plus the interop
+    # harness. Unit-testing them in isolation would require mocking the
+    # entire SVM client stack.
+    add_filter "/lib/pay_kit/protocols/mpp.rb"
+    add_filter "/lib/pay_kit/protocols/x402.rb"
+    add_filter "/lib/pay_kit/protocols/mpp/runtime.rb"
+    add_filter "/lib/pay_kit/protocols/mpp/sinatra.rb"
+    # `lib/pay_kit/rack/` wraps the dispatch loop over the same live
+    # adapters; same rationale.
     add_filter "/lib/pay_kit/rack/"
-    add_filter "/lib/pay_kit/protocols/"
     # `lib/pay_kit/preflight.rb` issues live RPC calls (`getBalance`,
     # `getAccountInfo`) and Surfnet cheatcodes against the configured
     # endpoint at `PayKit.configure` time. Unit-testing it in isolation
@@ -42,7 +45,7 @@ $LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
 ENV["PAY_KIT_DISABLE_PREFLIGHT"] = "1"
 
 require "minitest/autorun"
-require "mpp"
+require "pay_kit"
 
 module RubyMppTestHelpers
   PROGRAMS = ::PayCore::Solana::Mints
@@ -85,7 +88,7 @@ module RubyMppTestHelpers
   end
 
   def charge_request(overrides = {})
-    Mpp::Protocol::Intents::ChargeRequest.new(
+    PayKit::Protocols::Mpp::Protocol::Intents::ChargeRequest.new(
       amount: "1000",
       currency: "SOL",
       recipient: pubkey(2),

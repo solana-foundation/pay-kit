@@ -2,8 +2,8 @@
 
 module PayCore
   # Generic HTTP auth-scheme + auth-param parser per RFC 7235 sec 2.1
-  # and 4.1, shared by solana-mpp and solana-x402. Protocol-specific
-  # bindings (e.g. constructing `Mpp::Protocol::Core::Challenge` from a parsed
+  # and 4.1, shared by the MPP and x402 protocol layers. Protocol-specific
+  # bindings (e.g. constructing a protocol challenge from a parsed
   # `Payment` challenge) live in their respective layers; this module
   # only owns the tokenisation, quote-aware splitting, escaping, and
   # auth-param key/value parsing.

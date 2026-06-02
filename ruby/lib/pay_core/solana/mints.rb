@@ -19,20 +19,35 @@ module PayCore
       MEMO_PROGRAM = Programs::MEMO_PROGRAM
       COMPUTE_BUDGET_PROGRAM = Programs::COMPUTE_BUDGET_PROGRAM
 
+      # Testnet stablecoin mints alias the devnet addresses, matching the
+      # Rust spine `rust/crates/mpp/src/protocol/solana.rs:19-26`
+      # (USDC_TESTNET == USDC_DEVNET, USDG_TESTNET == USDG_DEVNET,
+      # PYUSD_TESTNET == PYUSD_DEVNET). Without the explicit "testnet"
+      # entry, `resolve(currency, "testnet")` fell back to the MAINNET mint,
+      # so a testnet-configured server verified SPL transferChecked against
+      # the mainnet mint while a spec/rust client built against the devnet
+      # mint.
+      USDC_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+      USDG_DEVNET = "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7"
+      PYUSD_DEVNET = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM"
+
       MINTS = {
         "USDC" => {
-          "devnet" => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+          "devnet" => USDC_DEVNET,
+          "testnet" => USDC_DEVNET,
           "mainnet" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         },
         "USDT" => {
           "mainnet" => "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
         },
         "USDG" => {
-          "devnet" => "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
+          "devnet" => USDG_DEVNET,
+          "testnet" => USDG_DEVNET,
           "mainnet" => "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
         },
         "PYUSD" => {
-          "devnet" => "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
+          "devnet" => PYUSD_DEVNET,
+          "testnet" => PYUSD_DEVNET,
           "mainnet" => "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
         },
         "CASH" => {

@@ -4,4 +4,4 @@
 
 require_relative "app"
 
-run PayKitSinatraExample
+run SinatraExample

@@ -48,7 +48,7 @@ class PayKitDispatcherTest < Minitest::Test
       with_dispatcher do |middleware, _dispatcher|
         cache = middleware.instance_variable_get(:@x402_settlement_cache)
         refute_nil cache
-        assert_kind_of ::X402::Server::Exact::SettlementCache, cache
+        assert_kind_of ::PayKit::Protocols::X402::Server::Exact::SettlementCache, cache
 
         assert cache.put_if_absent("sig:abc")
         refute cache.put_if_absent("sig:abc"), "second put should observe the first"
