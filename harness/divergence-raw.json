@@ -695,19 +695,13 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_full123\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":{\"amount\":\"5000000\",\"currency\":\"0x20c0000000000000000000000000000000000002\",\"description\":\"Premium API access\",\"expires\":\"2026-01-29T13:00:00Z\",\"externalId\":\"order_12345\",\"recipient\":\"0xabcdef1234567890abcdef1234567890abcdef12\"},\"expires\":\"2026-01-29T12:05:00Z\",\"digest\":\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"}",
-        "canonical": "{\"description\":\"API access payment required\",\"digest\":\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\",\"expires\":\"2026-01-29T12:05:00Z\",\"id\":\"ch_full123\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"5000000\",\"currency\":\"0x20c0000000000000000000000000000000000002\",\"description\":\"Premium API access\",\"expires\":\"2026-01-29T13:00:00Z\",\"externalId\":\"order_12345\",\"recipient\":\"0xabcdef1234567890abcdef1234567890abcdef12\"}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_full123\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":{\"amount\":\"5000000\",\"currency\":\"0x20c0000000000000000000000000000000000002\",\"description\":\"Premium API access\",\"expires\":\"2026-01-29T13:00:00Z\",\"externalId\":\"order_12345\",\"recipient\":\"0xabcdef1234567890abcdef1234567890abcdef12\"},\"expires\":\"2026-01-29T12:05:00Z\",\"digest\":\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"}",
-        "canonical": "{\"description\":\"API access payment required\",\"digest\":\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\",\"expires\":\"2026-01-29T12:05:00Z\",\"id\":\"ch_full123\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"5000000\",\"currency\":\"0x20c0000000000000000000000000000000000002\",\"description\":\"Premium API access\",\"expires\":\"2026-01-29T13:00:00Z\",\"externalId\":\"order_12345\",\"recipient\":\"0xabcdef1234567890abcdef1234567890abcdef12\"}}"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -718,42 +712,34 @@
     },
     "challenge.format::full_challenge": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "semantic divergence",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
-        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\""
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "semantic divergence",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
-        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\""
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
+        "benign": true
       },
       "php": {
         "verdict": "PASS",
         "note": "byte-diff but semantically equal",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
         "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
         "benign": true
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "semantic divergence",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
-        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\""
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS",
         "note": "byte-diff but semantically equal",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
         "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
         "benign": true
       },
       "rust": {
-        "verdict": "DIVERGE",
-        "note": "semantic divergence",
-        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
-        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\""
+        "verdict": "PASS"
       },
       "typescript": {
         "verdict": "PASS"
@@ -767,10 +753,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_empty\",\"realm\":\"test.example.com\",\"method\":\"tempo\",\"intent\":\"authorize\",\"request\":[]}",
-        "canonical": "{\"id\":\"ch_empty\",\"intent\":\"authorize\",\"method\":\"tempo\",\"realm\":\"test.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -793,11 +776,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "PASS",
-        "note": "byte-diff but semantically equal",
-        "ours": "Payment id=\"ch_empty\", realm=\"test.example.com\", method=\"tempo\", intent=\"authorize\", request=\"W10\"",
-        "canonical": "Payment id=\"ch_empty\", realm=\"test.example.com\", method=\"tempo\", intent=\"authorize\", request=\"e30\"",
-        "benign": true
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -860,31 +839,19 @@
     },
     "challenge.parse::unescaped_quotes_in_description": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:parse_error:invalid auth parameter",
-        "canonical": "{\"description\":\"Payment for \",\"id\":\"ch_special\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"100\"}}"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:parse_error:./lua/pay_kit/protocol/core/headers.lua:46: invalid auth parameter",
-        "canonical": "{\"description\":\"Payment for \",\"id\":\"ch_special\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"100\"}}"
+        "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:parse_error:Invalid auth parameter",
-        "canonical": "{\"description\":\"Payment for \",\"id\":\"ch_special\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"100\"}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:parse_error:invalid auth parameter",
-        "canonical": "{\"description\":\"Payment for \",\"id\":\"ch_special\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{\"amount\":\"100\"}}"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -901,19 +868,13 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_escaped\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":[]}",
-        "canonical": "{\"description\":\"Pay \\\"premium\\\" API\",\"id\":\"ch_escaped\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_escaped\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":{}}",
-        "canonical": "{\"description\":\"Pay \\\"premium\\\" API\",\"id\":\"ch_escaped\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1074,8 +1035,7 @@
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "UNSUPPORTED",
-        "note": "runner_error"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1115,10 +1075,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_ws\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":[]}",
-        "canonical": "{\"id\":\"ch_ws\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -1141,10 +1098,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_order\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":[]}",
-        "canonical": "{\"id\":\"ch_order\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -1167,10 +1121,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_ext\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":[]}",
-        "canonical": "{\"id\":\"ch_ext\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -1193,10 +1144,7 @@
         "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"id\":\"ch_case\",\"realm\":\"api.example.com\",\"method\":\"tempo\",\"intent\":\"charge\",\"request\":[]}",
-        "canonical": "{\"id\":\"ch_case\",\"intent\":\"charge\",\"method\":\"tempo\",\"realm\":\"api.example.com\",\"request\":{}}"
+        "verdict": "PASS"
       },
       "python": {
         "verdict": "PASS"
@@ -1231,10 +1179,7 @@
         "verdict": "PASS"
       },
       "typescript": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       }
     },
     "challenge.parse::error_duplicate_parameters": {
@@ -1510,8 +1455,7 @@
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "UNSUPPORTED",
-        "note": "runner_error"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1522,10 +1466,7 @@
     },
     "credential.parse::error_missing_challenge": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
         "verdict": "PASS"
@@ -1548,28 +1489,16 @@
     },
     "credential.parse::error_missing_challenge_id": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
@@ -1606,10 +1535,7 @@
     },
     "receipt.parse::success_receipt": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "object mismatch",
-        "ours": "{\"status\":\"success\",\"method\":\"tempo\",\"timestamp\":\"2026-01-29T12:00:30Z\",\"reference\":\"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab\",\"challengeId\":\"\"}",
-        "canonical": "{\"method\":\"tempo\",\"reference\":\"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab\",\"status\":\"success\",\"timestamp\":\"2026-01-29T12:00:30Z\"}"
+        "verdict": "PASS"
       },
       "lua": {
         "verdict": "PASS"
@@ -1621,10 +1547,7 @@
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:parse_error:key not found: \"challengeId\"",
-        "canonical": "{\"method\":\"tempo\",\"reference\":\"0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab\",\"status\":\"success\",\"timestamp\":\"2026-01-29T12:00:30Z\"}"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1637,7 +1560,7 @@
       "go": {
         "verdict": "PASS",
         "note": "byte-diff but semantically equal",
-        "ours": "eyJzdGF0dXMiOiJzdWNjZXNzIiwibWV0aG9kIjoidGVtcG8iLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwiY2hhbGxlbmdlSWQiOiIifQ",
+        "ours": "eyJzdGF0dXMiOiJzdWNjZXNzIiwibWV0aG9kIjoidGVtcG8iLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIn0",
         "canonical": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0",
         "benign": true
       },
@@ -1655,10 +1578,7 @@
         "benign": true
       },
       "ruby": {
-        "verdict": "DIVERGE",
-        "note": "expected success, got error",
-        "ours": "error:format_error:key not found: \"challengeId\"",
-        "canonical": "{\"header\":\"eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0\"}"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1681,8 +1601,7 @@
         "verdict": "PASS"
       },
       "ruby": {
-        "verdict": "UNSUPPORTED",
-        "note": "runner_error"
+        "verdict": "PASS"
       },
       "rust": {
         "verdict": "PASS"
@@ -1716,25 +1635,16 @@
     },
     "receipt.parse::error_missing_status": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
         "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
@@ -1748,25 +1658,16 @@
     },
     "receipt.parse::error_missing_method": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
         "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
@@ -1780,25 +1681,16 @@
     },
     "receipt.parse::error_missing_reference": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
         "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
@@ -1812,25 +1704,16 @@
     },
     "receipt.parse::error_missing_timestamp": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
         "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
@@ -1844,37 +1727,22 @@
     },
     "receipt.parse::error_non_iso8601_timestamp": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "lua": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "php": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "python": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "ruby": {
         "verdict": "PASS"
       },
       "rust": {
-        "verdict": "DIVERGE",
-        "note": "expected error, got success",
-        "ours": "success",
-        "canonical": "error:parse_error"
+        "verdict": "PASS"
       },
       "typescript": {
         "verdict": "PASS"
@@ -2549,10 +2417,7 @@
     },
     "challenge.id::html_sensitive_request_canonicalization": {
       "go": {
-        "verdict": "DIVERGE",
-        "note": "byte mismatch (exact op)",
-        "ours": "{\"id\":\"1MZrSBSfUVDRi5B2GyKK-_nYXYPKCY1PpAyg4MEcO7Y\"}",
-        "canonical": "{\"id\":\"9wuIbToTGnzxJuu715tZMeGH5MS0xVO6FgpFLBXqWCY\"}"
+        "verdict": "PASS"
       },
       "lua": {
         "verdict": "PASS"

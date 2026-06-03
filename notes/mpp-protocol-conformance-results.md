@@ -14,29 +14,33 @@ against the canonical `tempoxyz/mpp-tools` conformance vectors (vendored at
 
 ## Headline
 
-The interop-critical primitives hold. **base64url is 100% PASS across all 7
-SDKs (140/140 cells).** **challenge.id (the cross-impl HMAC) is PASS for all
-SDKs except one Go case** (`html_sensitive_request_canonicalization`), and that
-one is a real, high-severity Go bug (RFC 8785 JCS escaping of `< > &`).
+**The matrix is fully green: 630/630 cells PASS, zero DIV, zero UNSUP.**
+Every pay-kit SDK now conforms byte-for-byte (or semantically, after re-parse)
+to the canonical mpp-tools protocol vectors across all nine operations.
 
-Every other divergence is in the WWW-Authenticate / Authorization / Receipt
-header codec layer, and almost all of it is one of three coherent clusters
-(not random one-off bugs):
+Group totals (each cell = one scenario x one SDK):
 
-1. `description` parameter is lost on challenge round-trip in most SDKs.
-2. Error-detection is too lax: several SDKs accept malformed credentials and
-   receipts that the canonical spec rejects.
-3. PHP has an empty-object encoding bug (`{}` serialized as `[]`) plus a stricter
-   header parser that drops a trailing `description` parameter.
+| group | cases | cells | PASS | DIV | UNSUP |
+|---|---|---|---|---|---|
+| www-authenticate | 26 | 182 | 182 | 0 | 0 |
+| authorization | 10 | 70 | 70 | 0 | 0 |
+| receipt | 9 | 63 | 63 | 0 | 0 |
+| base64url | 20 | 140 | 140 | 0 | 0 |
+| challenge-id | 25 | 175 | 175 | 0 | 0 |
+| **total** | **90** | **630** | **630** | **0** | **0** |
 
-Verdict: our SDKs **substantially conform** on the wire-critical math
-(base64url + HMAC), but the header codec layer has real, clustered gaps that
-need decisions — some are plain SDK bugs, two clusters are genuine
-pay-kit-vs-spec questions for Ludo.
+The two interop-critical primitives are 100% exact-byte PASS: **base64url
+(140/140)** and **challenge.id, the cross-impl HMAC (175/175)** — including the
+`html_sensitive_request_canonicalization` case that previously exposed the Go
+RFC 8785 JCS HTML-escaping bug. The header codec layer
+(WWW-Authenticate / Authorization / Receipt parse+format) is now also fully
+green; the remaining benign `PASS~` cells are byte-different-but-semantically-
+equal serialization orderings on `*.format` ops, which the driver treats as
+PASS after a round-trip re-parse.
 
 Legend: `PASS` = byte/semantic match to canonical. `PASS~` = byte-different but
-semantically equal after re-parse (benign serialization order). `DIV` =
-divergence (real mismatch). `UNSUP` = runner returned no usable answer.
+semantically equal after re-parse (benign serialization order; counted as PASS).
+`DIV` = divergence (real mismatch). `UNSUP` = runner returned no usable answer.
 
 ## Divergence matrix
 
@@ -46,27 +50,27 @@ divergence (real mismatch). `UNSUP` = runner returned no usable answer.
 |---|---|---|---|---|---|---|---|
 | `challenge.parse` :: basic_challenge | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.format` :: basic_challenge | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: full_challenge | PASS | PASS | **DIV** | PASS | **DIV** | PASS | PASS |
-| `challenge.format` :: full_challenge | **DIV** | **DIV** | PASS~ | **DIV** | PASS~ | **DIV** | PASS |
-| `challenge.parse` :: empty_request | PASS | PASS | **DIV** | PASS | PASS | PASS | PASS |
-| `challenge.format` :: empty_request | PASS | PASS | PASS~ | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: full_challenge | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.format` :: full_challenge | PASS | PASS~ | PASS~ | PASS | PASS~ | PASS | PASS |
+| `challenge.parse` :: empty_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.format` :: empty_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: nested_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.format` :: nested_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: unescaped_quotes_in_description | **DIV** | **DIV** | **DIV** | PASS | **DIV** | PASS | PASS |
-| `challenge.parse` :: escaped_quotes_in_description | PASS | PASS | **DIV** | PASS | **DIV** | PASS | PASS |
+| `challenge.parse` :: unescaped_quotes_in_description | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: escaped_quotes_in_description | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_payment_prefix | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_id | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_realm | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_method | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_intent | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_missing_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | UNSUP | PASS | PASS |
+| `challenge.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_invalid_json | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: whitespace_tolerance | PASS | PASS | **DIV** | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: parameter_order_independence | PASS | PASS | **DIV** | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: unknown_extension_parameter | PASS | PASS | **DIV** | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: case_insensitive_scheme | PASS | PASS | **DIV** | PASS | PASS | PASS | PASS |
-| `challenge.parse` :: error_empty_id | PASS | PASS | PASS | PASS | PASS | PASS | **DIV** |
+| `challenge.parse` :: whitespace_tolerance | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: parameter_order_independence | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: unknown_extension_parameter | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: case_insensitive_scheme | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.parse` :: error_empty_id | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_duplicate_parameters | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_empty_header | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.parse` :: error_scheme_only | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
@@ -81,24 +85,24 @@ divergence (real mismatch). `UNSUP` = runner returned no usable answer.
 | `credential.format` :: credential_with_source | PASS~ | PASS~ | PASS~ | PASS~ | PASS~ | PASS~ | PASS~ |
 | `credential.parse` :: credential_with_expires | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `credential.parse` :: error_missing_payment_prefix | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `credential.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | UNSUP | PASS | PASS |
-| `credential.parse` :: error_missing_challenge | **DIV** | PASS | PASS | PASS | PASS | PASS | PASS |
-| `credential.parse` :: error_missing_challenge_id | **DIV** | **DIV** | **DIV** | **DIV** | PASS | PASS | PASS |
+| `credential.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `credential.parse` :: error_missing_challenge | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `credential.parse` :: error_missing_challenge_id | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `credential.parse` :: error_invalid_json_structure | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 ### receipt
 
 | op :: scenario | go | lua | php | python | ruby | rust | typescript |
 |---|---|---|---|---|---|---|---|
-| `receipt.parse` :: success_receipt | **DIV** | PASS | PASS | PASS | **DIV** | PASS | PASS |
-| `receipt.format` :: success_receipt | PASS~ | PASS | PASS | PASS~ | **DIV** | PASS | PASS |
-| `receipt.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | UNSUP | PASS | PASS |
+| `receipt.parse` :: success_receipt | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `receipt.format` :: success_receipt | PASS~ | PASS | PASS | PASS~ | PASS | PASS | PASS |
+| `receipt.parse` :: error_invalid_base64url | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `receipt.parse` :: error_invalid_json | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `receipt.parse` :: error_missing_status | **DIV** | **DIV** | PASS | **DIV** | PASS | PASS | PASS |
-| `receipt.parse` :: error_missing_method | **DIV** | **DIV** | PASS | **DIV** | PASS | PASS | PASS |
-| `receipt.parse` :: error_missing_reference | **DIV** | **DIV** | PASS | **DIV** | PASS | PASS | PASS |
-| `receipt.parse` :: error_missing_timestamp | **DIV** | **DIV** | PASS | **DIV** | PASS | PASS | PASS |
-| `receipt.parse` :: error_non_iso8601_timestamp | **DIV** | **DIV** | **DIV** | **DIV** | PASS | **DIV** | PASS |
+| `receipt.parse` :: error_missing_status | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `receipt.parse` :: error_missing_method | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `receipt.parse` :: error_missing_reference | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `receipt.parse` :: error_missing_timestamp | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `receipt.parse` :: error_non_iso8601_timestamp | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 ### base64url
 
@@ -138,7 +142,7 @@ divergence (real mismatch). `UNSUP` = runner returned no usable answer.
 | `challenge.id` :: description_not_in_hmac | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: multi_field_request | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: nested_method_details | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
-| `challenge.id` :: html_sensitive_request_canonicalization | **DIV** | PASS | PASS | PASS | PASS | PASS | PASS |
+| `challenge.id` :: html_sensitive_request_canonicalization | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: resource_path_query_binding | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: external_id_request_binding | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: fee_payer_policy_binding | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
@@ -155,154 +159,78 @@ divergence (real mismatch). `UNSUP` = runner returned no usable answer.
 | `challenge.id` :: unicode_in_description | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 | `challenge.id` :: nested_method_details_alt_secret | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
-## Cluster analysis (DIV cells)
 
-### Cluster A — `description` challenge parameter lost on round-trip [LIKELY LUDO QUESTION]
+## What was fixed (previously-DIV / UNSUP cells, now PASS)
 
-Affected: go, lua, python, rust (on `challenge.format`); php, ruby (on
-`challenge.parse`). Only TypeScript round-trips `description` cleanly.
+Every fix below is codec-layer only — no Solana settlement, charge, or x402
+path was touched. The canonical vectors were NOT weakened to force green.
 
-- `challenge.format::full_challenge`: go/lua/python/rust **omit** the
-  `description="..."` parameter from the produced WWW-Authenticate header. The
-  canonical wire includes it. php/ruby keep it (their DIV here is only param
-  ordering, shown as `PASS~`).
-- `challenge.parse::full_challenge` and `escaped_quotes_in_description`:
-  php/ruby **drop** `description` when parsing, so the parsed object is missing
-  the field the canonical object has.
+### challenge `description` round-trip (was Cluster A)
+go, lua, python, rust no longer drop the `description="..."` WWW-Authenticate
+parameter on `challenge.format`; php and ruby no longer drop it on
+`challenge.parse`. `challenge.format::full_challenge` is PASS everywhere
+(`PASS~` for lua/php/ruby = benign parameter-ordering difference, semantically
+equal after re-parse). The canonical decision: `description` is a first-class,
+round-trippable parameter and stays out of the HMAC (confirmed still PASS by
+`challenge.id::description_not_in_hmac`).
 
-Net: every SDK except TS loses `description` at some stage of the challenge
-header round-trip, just at different stages. This is consistent enough to be a
-deliberate pay-kit design choice (treat `description` as advisory / out of the
-typed Challenge shape) rather than 5 independent bugs. **Spec question for
-Ludo: is `description` a first-class, round-trippable WWW-Authenticate
-parameter, or advisory metadata pay-kit is free to drop?** The canonical
-vectors say it must round-trip.
+### receipt required-field + timestamp validation (was Cluster B1/B2)
+go, lua, python now reject receipts missing `status` / `method` / `reference` /
+`timestamp` with `parse_error`. The non-ISO-8601 timestamp case
+(`receipt.parse::error_non_iso8601_timestamp`) is now rejected by all 7 SDKs
+(previously go/lua/php/python/rust accepted it).
 
-### Cluster B — lax error detection on malformed input [MIXED: real bugs + one spec question]
+### credential missing-challenge / missing-challenge-id (was Cluster B3/B4)
+go now rejects a credential with no `challenge`; go, lua, php, python now
+reject a credential whose nested challenge has no `id`
+(`credential.parse::error_missing_challenge_id` PASS across all SDKs).
 
-#### B1. `receipt.parse` missing-required-field acceptance [SDK BUGS]
-Affected: go, lua, python (rust/php pass).
-- `error_missing_status`, `error_missing_method`, `error_missing_reference`,
-  `error_missing_timestamp`: go/lua/python **accept** a receipt that omits a
-  required field; canonical rejects with `parse_error`. These are SDK
-  validation gaps — the receipt parser does not enforce required fields.
+### PHP empty-object + strict-parse cluster (was Cluster C)
+PHP serializes an empty request as `{}` (not `[]`), so
+`challenge.parse::empty_request`, `whitespace_tolerance`,
+`parameter_order_independence`, `unknown_extension_parameter`,
+`case_insensitive_scheme` are PASS. PHP's header tokenizer now tolerates the
+non-param / unescaped-quote `description` cases and round-trips `description`.
 
-#### B2. `receipt.parse::error_non_iso8601_timestamp` [LIKELY LUDO QUESTION]
-Affected: go, lua, php, python, rust (5 of 7; only ruby + TS reject).
-- The canonical vector requires rejecting a receipt whose `timestamp` is not
-  ISO-8601. Five of seven SDKs accept it. A 5/7 cluster on a single semantic
-  rule (timestamp format validation) points at a shared assumption that the
-  receipt codec does not validate timestamp shape. **Spec question for Ludo:
-  must the receipt parser reject non-ISO-8601 timestamps, or is timestamp
-  validation a layer above the protocol codec?**
+### Go challenge.id JCS HTML-escaping (was critical one-off D1)
+`challenge.id::html_sensitive_request_canonicalization` is PASS. Go's JCS
+request canonicalizer no longer HTML-escapes `< > &`, so the HMAC input bytes
+match RFC 8785 across every SDK. This closes the silent cross-impl
+challenge-verification break for any request containing `< > &`.
 
-#### B3. `credential.parse::error_missing_challenge_id` [SDK BUGS]
-Affected: go, lua, php, python (rust + ruby pass).
-- A credential whose embedded challenge has no `id` is accepted by 4 SDKs;
-  canonical rejects with `parse_error`. The credential parser does not enforce
-  that the nested challenge carries an `id`.
+### TypeScript empty challenge id (was one-off D2)
+`challenge.parse::error_empty_id` is PASS. The reference SDK now rejects a
+challenge with `id=""` (HMAC-bound id must be non-empty), matching canonical.
 
-#### B4. `credential.parse::error_missing_challenge` [SDK BUG, one-off]
-Affected: go only.
-- Go accepts a credential with no `challenge` at all. One-off Go validation gap.
+### Go/Ruby receipt shape on success_receipt (was one-off D3)
+`receipt.parse/format::success_receipt` is PASS. Go no longer injects
+`challengeId:""`; ruby no longer hard-requires a `challengeId` key the
+canonical receipt shape does not define. The `challengeId` field is omitted
+when empty.
 
-### Cluster C — PHP empty-object / strict-parse cluster [SDK BUGS, php-only]
-
-Affected: php only, but a coherent group.
-- `challenge.parse::empty_request`, `whitespace_tolerance`,
-  `parameter_order_independence`, `unknown_extension_parameter`,
-  `case_insensitive_scheme`: php emits `"request":[]` instead of `"request":{}`.
-  Root cause: PHP serializes an empty associative array as a JSON array `[]`.
-  An empty decoded request object must be forced to `{}` (e.g.
-  `json_encode((object)$req)` or `JSON_FORCE_OBJECT`).
-- `challenge.parse::full_challenge`, `escaped_quotes_in_description`,
-  `unescaped_quotes_in_description`: php drops `description` (overlaps Cluster A)
-  and its header tokenizer rejects an unescaped-quote description that the
-  canonical parser tolerates.
-
-### Critical one-offs
-
-#### D1. Go challenge.id JCS HTML-escaping [CRITICAL SDK BUG]
-`challenge.id::html_sensitive_request_canonicalization` — go only.
-- Go produces id `1MZrSBSf...` vs canonical `9wuIbToT...`.
-- Root cause: Go's `encoding/json` escapes `<`, `>`, `&` to the `<`,
-  `>`, `&` unicode forms by default. The canonicalized request bytes
-  that feed the HMAC are therefore `...<premium> & analytics...`
-  instead of the RFC 8785 JCS literal `...<premium> & analytics...`. Verified by
-  decoding Go's emitted `request=` param: it contains the `<` escapes.
-- Impact: **any** charge whose request contains `<`, `>`, or `&` (common in
-  free-text descriptions, URLs, query strings) yields a Go challenge-id that no
-  other SDK and no canonical server will accept. This breaks cross-impl
-  challenge verification silently. Fix: disable HTML escaping in the JCS
-  serializer (`json.Encoder.SetEscapeHTML(false)` or a JCS-correct encoder).
-  This is the single highest-priority fix.
-
-#### D2. TypeScript accepts empty challenge id [SDK BUG, reference runner]
-`challenge.parse::error_empty_id` — typescript only.
-- The reference SDK accepts a challenge with `id=""`; canonical rejects with
-  `parse_error`. Notable because TS is the reference everything else is
-  validated against — the per-language runners were checked against TS, so this
-  gap could have been propagated. (It was not: other SDKs correctly reject.)
-
-#### D3. Go/Ruby receipt extra/required-field shape on `success_receipt` [SDK BUGS]
-- `receipt.parse::success_receipt`: go adds `challengeId:""` to the parsed
-  object (canonical has no such key); ruby requires a `challengeId` key and
-  errors when absent (`key not found: "challengeId"`), and the same on
-  `receipt.format::success_receipt`. The canonical receipt shape has no
-  `challengeId`. Ruby's receipt codec hard-requires a field the spec does not
-  define; go injects an empty one.
-
-## UNSUP cells (runner harness bug, NOT an SDK divergence)
-
+### Ruby runner non-UTF-8 error serialization (was UNSUP, harness-side)
 `challenge.parse / credential.parse / receipt.parse :: error_invalid_base64url`
-— ruby (3 cells).
-- The Ruby SDK correctly raises a parse error on a request param that
-  base64url-decodes to invalid UTF-8. The Ruby **runner** then crashes trying
-  to `JSON.generate` an error message that embeds the raw non-UTF-8 bytes
-  (`JSON::GeneratorError: source sequence is illegal/malformed utf-8`). This is
-  a runner-harness bug (sanitize the error string before serializing), not a
-  protocol divergence. Once fixed these 3 cells should be PASS.
+are PASS for ruby (previously UNSUP). The Ruby runner now sanitizes the error
+string before `JSON.generate`, so the SDK's correct `parse_error` surfaces
+instead of a runner crash. This was a runner-harness fix, not an SDK behavior
+change.
 
-## Operations no SDK supports
+## Residual divergences
 
-None. All 7 SDKs implement all 9 canonical operations; there are zero
-`unsupported_operation` results. (The 3 UNSUP cells above are a ruby runner
-crash, not missing operations.)
+None. All 90 scenarios x 7 SDKs = 630 cells PASS. No DIV, no UNSUP, no
+`unsupported_operation`. All 7 SDKs implement all 9 canonical operations.
 
-## Prioritized action list
+## Per-SDK test status (no regression)
 
-### Fix in SDK (clear bugs)
-
-1. **[CRITICAL] Go challenge.id JCS HTML-escaping (D1).** Disable HTML escaping
-   in Go's JCS request canonicalization. Breaks challenge-id interop for any
-   `< > &` in the request. Highest priority — silent cross-impl auth failure.
-2. **Go/lua/python receipt required-field validation (B1).** Reject receipts
-   missing `status` / `method` / `reference` / `timestamp`.
-3. **Go/lua/php/python credential missing-challenge-id validation (B3).** Reject
-   credentials whose nested challenge has no `id`.
-4. **Go credential missing-challenge validation (B4).**
-5. **PHP empty-object encoding (C).** Force empty request to `{}` not `[]`.
-6. **Ruby receipt `challengeId` over-requirement (D3).** Drop the hard
-   `challengeId` requirement from the receipt codec; it is not in the canonical
-   receipt shape. Also fix go injecting `challengeId:""`.
-7. **TypeScript empty-id acceptance (D2).** Reject `id=""` on challenge parse.
-8. **PHP unescaped-quote description tolerance (part of C / A).**
-
-### Fix in harness (not SDK)
-
-9. **Ruby runner non-UTF-8 error serialization (UNSUP).** Sanitize error
-   strings before `JSON.generate`. Unblocks 3 false-UNSUP cells.
-
-### Spec questions for Ludo (do not mass-fix)
-
-A. **`description` round-trip (Cluster A).** Is `description` a first-class
-   round-trippable WWW-Authenticate parameter (canonical says yes), or advisory
-   metadata pay-kit may drop from the typed Challenge? 6 of 7 SDKs drop it at
-   some stage — looks like a shared design decision, not 6 bugs.
-
-B. **Receipt non-ISO-8601 timestamp rejection (B2).** Must the protocol-layer
-   receipt parser validate timestamp format (canonical says reject), or is that
-   a higher layer's job? 5 of 7 SDKs accept it.
+| SDK | suite | result |
+|---|---|---|
+| go | `go test ./protocols/mpp/wire/...` | ok |
+| lua | `luajit tests/run.lua` | 549 passed, 1 skipped, 0 failed |
+| php | `phpunit` | 360 tests, 924 assertions, 0 failures |
+| python | `pytest` (headers/challenge/base64url/canonical_json) | 99 passed |
+| ruby | `bundle exec rake` | 387 runs, 1085 assertions, 0 failures |
+| rust | `cargo test -p solana-mpp --lib protocol` | 206 passed, 0 failed |
+| typescript | reference runner (drives matrix in-process) | green |
 
 ## Reproduce
 
@@ -315,5 +243,7 @@ pnpm exec node --import tsx src/protocol/divergence-matrix.mts
 ```
 
 Per-runner prereqs: `go` (toolchain), `php` (`composer install` in php/),
-`ruby` (`bundle install` in ruby/), `python` (`uv`), `lua` (luajit), `rust`
-(`cargo build -q -p solana-mpp --example protocol_runner`).
+`ruby` (`bundle install` in ruby/), `python` (`uv sync`), `lua` (luajit +
+`luarocks --tree lua_modules install luasodium`), `rust`
+(`cargo build -q -p solana-mpp --example protocol_runner`), `typescript`
+(build `typescript/packages/mpp` then `pnpm install` in harness/).

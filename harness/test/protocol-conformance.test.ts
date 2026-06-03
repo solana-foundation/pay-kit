@@ -86,24 +86,12 @@ const smokeCases = (() => {
 // Each entry is `${op} :: ${scenario}` and is asserted to STILL diverge so the
 // gap fails loudly the moment the SDK conforms (mirrors KNOWN_TS_DIVERGENCES).
 //
-// ruby:
-//   receipt.parse :: success_receipt
-//     The canonical Payment-Receipt has no `challengeId` field; pay-kit's Ruby
-//     Receipt (pay_kit/protocols/mpp/protocol/core/receipt.rb) treats
-//     `challengeId` as required, so it rejects the canonical receipt wire as a
-//     parse_error. This is a schema mismatch (extra required field), not a
-//     base64url / JCS wire-math gap — those are byte-identical.
-// go:
-//   receipt.parse :: success_receipt
-//     The canonical Payment-Receipt has no `challengeId` field; pay-kit's Go
-//     ParseReceipt always emits `challengeId` (empty string when absent), so the
-//     parsed object carries an extra field versus the canonical golden. Same
-//     `challengeId` schema mismatch as Ruby, surfacing on the Go side as an
-//     extra output field rather than a parse rejection. Wire math is identical.
-const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
-  ruby: new Set<string>(["receipt.parse :: success_receipt"]),
-  go: new Set<string>(["receipt.parse :: success_receipt"]),
-};
+// Empty: every SDK now conforms to the canonical receipt shape. The Go
+// (`challengeId:""` injected) and Ruby (`challengeId` hard-required) schema
+// mismatches on `receipt.parse :: success_receipt` were both fixed in the
+// per-SDK protocol-conformance round, so there are no remaining known runner
+// divergences.
+const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {};
 
 const runners = discoverProtocolRunners();
 for (const runner of runners) {
