@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "pay_core/headers"
+require "pay_core/rfc3339_parser"
 
 module PayKit::Protocols::Mpp
   module Protocol
@@ -26,6 +27,7 @@ module PayKit::Protocols::Mpp
             "method" => challenge.method,
             "intent" => challenge.intent,
             "request" => challenge.request,
+            "description" => challenge.description,
             "expires" => challenge.expires,
             "digest" => challenge.digest,
             "opaque" => challenge.opaque
@@ -61,6 +63,7 @@ module PayKit::Protocols::Mpp
             intent: params.fetch("intent"),
             request: request,
             expires: params["expires"],
+            description: params["description"],
             digest: params["digest"],
             opaque: params["opaque"]
           )
@@ -71,16 +74,23 @@ module PayKit::Protocols::Mpp
           ::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate(receipt.to_h))
         end
 
-        # Parse a `Payment-Receipt` value.
+        # Parse a `Payment-Receipt` value. The canonical receipt shape
+        # (mpp-tools) requires `status`, `method`, `reference`, and `timestamp`
+        # and validates that the timestamp is ISO-8601 / RFC 3339. `challengeId`
+        # is advisory and not part of the canonical receipt shape, so it is
+        # accepted when present but never required.
         def parse_receipt(header)
           value = ::PayCore::Json.parse(::PayCore::Base64Url.decode(header))
+          timestamp = value.fetch("timestamp")
+          raise ArgumentError, "receipt timestamp must be ISO-8601" if ::PayCore::Rfc3339Parser.parse(timestamp).nil?
+
           Core::Receipt.new(
             status: value.fetch("status"),
             method: value.fetch("method"),
             reference: value.fetch("reference"),
-            challenge_id: value.fetch("challengeId"),
+            challenge_id: value["challengeId"],
             external_id: value["externalId"],
-            timestamp: value["timestamp"]
+            timestamp: timestamp
           )
         end
       end

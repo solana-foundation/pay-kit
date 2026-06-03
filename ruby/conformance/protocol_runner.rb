@@ -62,7 +62,11 @@ module ConformanceRunner
   end
 
   def fail(message, error_type)
-    {success: false, error: message.to_s, error_type: error_type}
+    # SDK error messages may embed raw bytes from an invalid base64url payload
+    # (e.g. a request param that decodes to non-UTF-8). Scrub to valid UTF-8 so
+    # the ABI response can be JSON-serialized instead of crashing the runner.
+    scrubbed = message.to_s.encode("UTF-8", invalid: :replace, undef: :replace)
+    {success: false, error: scrubbed, error_type: error_type}
   end
 
   def header_of(input)
@@ -137,7 +141,7 @@ module ConformanceRunner
       status: input.fetch("status"),
       method: input.fetch("method"),
       reference: input.fetch("reference"),
-      challenge_id: input.fetch("challengeId"),
+      challenge_id: input["challengeId"],
       external_id: input["externalId"],
       timestamp: input.fetch("timestamp")
     )
