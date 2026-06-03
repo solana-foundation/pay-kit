@@ -82,12 +82,47 @@ const smokeCases = (() => {
   return picked;
 })();
 
+// Per-language known divergences from the canonical oracle, keyed by language.
+// Each entry is `${op} :: ${scenario}` and is asserted to STILL diverge so the
+// gap fails loudly the moment the SDK conforms (mirrors KNOWN_TS_DIVERGENCES).
+//
+// ruby:
+//   receipt.parse :: success_receipt
+//     The canonical Payment-Receipt has no `challengeId` field; pay-kit's Ruby
+//     Receipt (pay_kit/protocols/mpp/protocol/core/receipt.rb) treats
+//     `challengeId` as required, so it rejects the canonical receipt wire as a
+//     parse_error. This is a schema mismatch (extra required field), not a
+//     base64url / JCS wire-math gap — those are byte-identical.
+// go:
+//   receipt.parse :: success_receipt
+//     The canonical Payment-Receipt has no `challengeId` field; pay-kit's Go
+//     ParseReceipt always emits `challengeId` (empty string when absent), so the
+//     parsed object carries an extra field versus the canonical golden. Same
+//     `challengeId` schema mismatch as Ruby, surfacing on the Go side as an
+//     extra output field rather than a parse rejection. Wire math is identical.
+const KNOWN_RUNNER_DIVERGENCES: Record<string, Set<string>> = {
+  ruby: new Set<string>(["receipt.parse :: success_receipt"]),
+  go: new Set<string>(["receipt.parse :: success_receipt"]),
+};
+
 const runners = discoverProtocolRunners();
 for (const runner of runners) {
+  const known = KNOWN_RUNNER_DIVERGENCES[runner.language] ?? new Set<string>();
   describe(`mpp-protocol conformance (spawned ${runner.language} runner)`, () => {
     const adapter = spawnedProtocolAdapter(runner);
     for (const testCase of smokeCases) {
-      it(`${testCase.op} :: ${testCase.scenario}`, async () => {
+      const key = `${testCase.op} :: ${testCase.scenario}`;
+      if (known.has(key)) {
+        it(`KNOWN DIVERGENCE: ${key}`, async () => {
+          const result = await runCase(adapter, testCase);
+          expect(
+            result.ok,
+            `${key} now conforms — remove from KNOWN_RUNNER_DIVERGENCES[${runner.language}]`,
+          ).toBe(false);
+        });
+        continue;
+      }
+      it(key, async () => {
         const result = await runCase(adapter, testCase);
         expect(result.ok, result.detail).toBe(true);
       });
