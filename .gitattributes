@@ -8,3 +8,49 @@ go/protocols/mpp/server/html/service-worker.gen.js linguist-generated
 lua/mpp/server/html_assets/gen.lua linguist-generated
 python/src/solana_mpp/server/html/template.gen.html linguist-generated
 python/src/solana_mpp/server/html/service_worker.gen.js linguist-generated
+
+# =============================================================================
+# Force PHP/Swift/Kotlin to count toward language stats
+#
+# Linguist's defaults mark `examples/` as documentation (excluded) and the
+# Laravel runtime artifacts inflate non-PHP bytes. The overrides below
+# re-include the SDK + example sources and mark the platform-generated
+# scaffolding as `generated` / `vendored` so it doesn't pollute the totals.
+# =============================================================================
+
+# ── PHP ──────────────────────────────────────────────────────────────────────
+
+# Laravel runtime artifacts — generated, not authored
+php/examples/laravel/storage/framework/** linguist-generated=true
+php/examples/laravel/bootstrap/cache/** linguist-generated=true
+php/.phpunit.result.cache linguist-generated=true
+php/examples/laravel/composer.lock linguist-generated=true
+
+# Composer deps — vendored (this is Linguist's default but spell it out so
+# `php/vendor/` doesn't sneak in if vendor.yml ever shifts)
+php/vendor/** linguist-vendored=true
+
+# Force the example app code to count (it's a real Laravel app, not docs)
+php/examples/laravel/app/** linguist-detectable=true
+php/examples/laravel/routes/** linguist-detectable=true
+php/examples/laravel/config/** linguist-detectable=true
+
+# ── Swift ────────────────────────────────────────────────────────────────────
+
+# Examples are real apps, not documentation — force-detect
+swift/Examples/** linguist-detectable=true
+
+# Xcode project files (XML/plist) bloat language stats — generated
+swift/Examples/iOSDemo/iOSDemo.xcodeproj/** linguist-generated=true
+
+# ── Kotlin ───────────────────────────────────────────────────────────────────
+
+# Examples are real apps — force-detect
+kotlin/examples/** linguist-detectable=true
+
+# Gradle wrapper is vendored boilerplate, not authored
+kotlin/examples/AndroidDemo/gradle/wrapper/** linguist-vendored=true
+
+# Android build artifacts (R.java, generated stubs) — generated when present
+**/build/generated/** linguist-generated=true
+**/local.properties linguist-generated=true
