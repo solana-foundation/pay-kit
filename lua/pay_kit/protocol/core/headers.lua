@@ -1,6 +1,7 @@
 local challenge = require('pay_kit.protocol.core.challenge')
 local types = require('pay_kit.protocol.core.types')
 local json = require('pay_kit.util.json')
+local expires = require('pay_kit.protocols.mpp.expires')
 
 local M = {
   WWW_AUTHENTICATE_HEADER = 'www-authenticate',
@@ -67,6 +68,16 @@ local function parse_auth_params(input)
         end
       end
       value = table.concat(out)
+      -- Permissive RFC 7235 quoted-string handling, matching the canonical
+      -- mpp-tools parser: any text between a closing quote and the next
+      -- comma (e.g. an unescaped inner quote that prematurely closed the
+      -- value) is ignored rather than treated as a malformed parameter.
+      local next_comma = input:find(',', i, true)
+      if next_comma then
+        i = next_comma + 1
+      else
+        i = #input + 1
+      end
     else
       local next_comma = input:find(',', i, true)
       if next_comma then
@@ -262,12 +273,17 @@ function M.format_www_authenticate(value)
     'intent="' .. escape_quoted(plain.intent) .. '"',
     'request="' .. escape_quoted(plain.request) .. '"',
   }
+  -- Emit optional params in the canonical mpp-tools wire order
+  -- (description before digest/expires). The canonical golden requires
+  -- `description` to round-trip as a first-class WWW-Authenticate parameter,
+  -- so it is emitted here even though it is also carried inside the request
+  -- payload and is excluded from the challenge-id HMAC.
+  if plain.description and plain.description ~= '' then
+    parts[#parts + 1] = 'description="' .. escape_quoted(plain.description) .. '"'
+  end
   if plain.expires and plain.expires ~= '' then
     parts[#parts + 1] = 'expires="' .. escape_quoted(plain.expires) .. '"'
   end
-  -- description is already encoded inside the request payload;
-  -- don't duplicate it as a top-level header param (non-ASCII descriptions
-  -- would make the header value invalid).
   if plain.digest and plain.digest ~= '' then
     parts[#parts + 1] = 'digest="' .. escape_quoted(plain.digest) .. '"'
   end
@@ -305,6 +321,16 @@ function M.parse_authorization(header)
   if type(value) ~= 'table' then
     return nil, 'credential payload must be a JSON object'
   end
+  -- The canonical mpp-tools spec rejects a credential whose embedded
+  -- challenge is absent or carries no `id`. Validate the nested challenge
+  -- shape before constructing it so malformed credentials surface as a
+  -- structured parse error rather than being accepted.
+  if type(value.challenge) ~= 'table' then
+    return nil, 'credential challenge must be a JSON object'
+  end
+  if not value.challenge.id or value.challenge.id == '' then
+    return nil, 'credential challenge missing required "id" field'
+  end
   local challenge_ok, challenge_value = pcall(challenge.challenge_from_table, value.challenge)
   if not challenge_ok then
     return nil, 'invalid credential challenge: ' .. tostring(challenge_value)
@@ -329,6 +355,20 @@ function M.parse_receipt(header)
   local ok, value = pcall(json.decode, payload)
   if not ok then
     error('invalid receipt JSON: ' .. value)
+  end
+  if type(value) ~= 'table' then
+    error('receipt payload must be a JSON object')
+  end
+  -- The canonical mpp-tools spec rejects a receipt that omits any required
+  -- field (status / method / reference / timestamp) and one whose timestamp
+  -- is not an ISO-8601 (RFC 3339) instant.
+  for _, field in ipairs({ 'status', 'method', 'reference', 'timestamp' }) do
+    if value[field] == nil or value[field] == '' then
+      error('receipt missing required "' .. field .. '" field')
+    end
+  end
+  if not expires.parse_rfc3339(value.timestamp) then
+    error('receipt timestamp is not a valid ISO-8601 instant: ' .. tostring(value.timestamp))
   end
   return value
 end
