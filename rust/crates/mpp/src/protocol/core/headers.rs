@@ -244,11 +244,8 @@ pub fn parse_receipt(header: &str) -> Result<ReceiptKind, Error> {
     // The canonical wire requires `timestamp` to be an ISO-8601 / RFC 3339
     // instant; reject anything that does not parse (e.g. "Jan 29 2026 12:00").
     let timestamp = &receipt.base().timestamp;
-    if time::OffsetDateTime::parse(
-        timestamp,
-        &time::format_description::well_known::Rfc3339,
-    )
-    .is_err()
+    if time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+        .is_err()
     {
         return Err(Error::Other(format!(
             "Receipt timestamp is not ISO-8601: {timestamp}"

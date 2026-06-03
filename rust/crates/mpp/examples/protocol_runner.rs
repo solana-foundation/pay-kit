@@ -45,7 +45,10 @@ fn main() {
     let request: Value = match serde_json::from_str(raw.trim()) {
         Ok(v) => v,
         Err(e) => {
-            emit(Outcome::Err(format!("invalid request JSON: {e}"), "runner_error"));
+            emit(Outcome::Err(
+                format!("invalid request JSON: {e}"),
+                "runner_error",
+            ));
             return;
         }
     };
@@ -95,16 +98,24 @@ fn text_field(input: &Value) -> Result<String, Outcome> {
 /// Canonicalize a request JSON value into the pay-kit base64url(JCS) shape,
 /// matching `Base64UrlJson::from_value` used across the protocol core.
 fn request_to_b64(request: &Value) -> Result<Base64UrlJson, Outcome> {
-    Base64UrlJson::from_value(request)
-        .map_err(|e| Outcome::Err(format!("request canonicalization failed: {e}"), "format_error"))
+    Base64UrlJson::from_value(request).map_err(|e| {
+        Outcome::Err(
+            format!("request canonicalization failed: {e}"),
+            "format_error",
+        )
+    })
 }
 
 /// Decode a base64url-JSON slot into a JSON value for the canonical object
 /// shape (the canonical vectors carry `request` as a decoded object, while
 /// the Rust struct keeps it as the raw base64url string).
 fn b64_to_value(b64: &Base64UrlJson) -> Result<Value, Outcome> {
-    b64.decode_value()
-        .map_err(|e| Outcome::Err(format!("base64url request decode failed: {e}"), "parse_error"))
+    b64.decode_value().map_err(|e| {
+        Outcome::Err(
+            format!("base64url request decode failed: {e}"),
+            "parse_error",
+        )
+    })
 }
 
 // ── challenge ──
@@ -205,7 +216,10 @@ fn credential_parse(input: &Value) -> Outcome {
         // (request kept as the raw base64url string) compares equal.
         Ok(cred) => match serde_json::to_value(&cred) {
             Ok(v) => Outcome::Ok(v),
-            Err(e) => Outcome::Err(format!("credential serialization failed: {e}"), "parse_error"),
+            Err(e) => Outcome::Err(
+                format!("credential serialization failed: {e}"),
+                "parse_error",
+            ),
         },
         Err(e) => Outcome::Err(e.to_string(), "parse_error"),
     }
@@ -293,7 +307,10 @@ fn base64url_decode_op(input: &Value) -> Outcome {
         Ok(bytes) => match String::from_utf8(bytes) {
             // Canonical base64url.decode yields UTF-8 text.
             Ok(s) => Outcome::Ok(json!({ "text": s })),
-            Err(e) => Outcome::Err(format!("decoded bytes are not UTF-8: {e}"), "encoding_error"),
+            Err(e) => Outcome::Err(
+                format!("decoded bytes are not UTF-8: {e}"),
+                "encoding_error",
+            ),
         },
         Err(e) => Outcome::Err(e.to_string(), "encoding_error"),
     }
@@ -304,7 +321,12 @@ fn base64url_decode_op(input: &Value) -> Outcome {
 fn challenge_id(input: &Value) -> Outcome {
     let obj = match input.as_object() {
         Some(o) => o,
-        None => return Outcome::Err("challenge.id input object expected".into(), "generation_error"),
+        None => {
+            return Outcome::Err(
+                "challenge.id input object expected".into(),
+                "generation_error",
+            )
+        }
     };
 
     let secret = match obj.get("secretKey").and_then(Value::as_str) {
