@@ -55,6 +55,65 @@ local function caip2_for(pay_kit_network)
   return CAIP2_DEVNET                          -- devnet and localnet share devnet CAIP-2
 end
 
+-- --- x402 v2 `payment-identifier` extension -------------------------
+--
+-- Mirrors the rust spine (rust/crates/x402/src/protocol/schemes/exact/
+-- types.rs): PaymentExtensions carries a typed `payment-identifier`
+-- (kebab-case wire key, #[serde(rename)]) whose `info` is camelCase
+-- { required?, id? }, plus a forward-compatible `other` map for unknown
+-- extensions that must round-trip verbatim (§5.1.2 echo-and-append).
+--
+-- The Lua SDK is SERVER-only: it advertises the extension on the
+-- PAYMENT-REQUIRED challenge and gates inbound credentials, but does not
+-- build outbound credentials (the echo-and-append client path lives in the
+-- rust/ts/go/python/swift/kotlin client SDKs). The shapes below exist so the
+-- server can publish info.required=true and read back the client's echoed
+-- info.id.
+
+local PAYMENT_IDENTIFIER_KEY = 'payment-identifier'
+
+-- Mirror rust's ^[A-Za-z0-9_-]{16,128}$ with an explicit length window plus
+-- a character-class match (Lua patterns lack regex quantifier bounds).
+local function payment_identifier_id_valid(id)
+  if type(id) ~= 'string' then return false end
+  if #id < 16 or #id > 128 then return false end
+  return id:match('^[A-Za-z0-9_%-]+$') ~= nil
+end
+
+-- rust PaymentExtensions::requires_payment_identifier:
+-- payment-identifier.info.required == true.
+local function extensions_requires_payment_identifier(extensions)
+  if type(extensions) ~= 'table' then return false end
+  local pid = extensions[PAYMENT_IDENTIFIER_KEY]
+  if type(pid) ~= 'table' or type(pid.info) ~= 'table' then return false end
+  return pid.info.required == true
+end
+
+-- Read the echoed client-side `payment-identifier.info.id` off a decoded
+-- credential's extensions, or nil if absent.
+local function extensions_payment_identifier_id(extensions)
+  if type(extensions) ~= 'table' then return nil end
+  local pid = extensions[PAYMENT_IDENTIFIER_KEY]
+  if type(pid) ~= 'table' or type(pid.info) ~= 'table' then return nil end
+  return pid.info.id
+end
+
+-- Build the server-advertised `extensions` object for the PAYMENT-REQUIRED
+-- challenge. Mirrors a rust server that sets
+-- PaymentRequiredEnvelope.extensions to a payment-identifier with
+-- info.required=true. Returns nil when the server does not require one, so
+-- the challenge omits the key entirely (rust skip_serializing_if =
+-- Option::is_none — never an empty {}/null).
+local function advertised_extensions(config)
+  local x402_cfg = config.x402 or {}
+  if x402_cfg.requires_payment_identifier ~= true then return nil end
+  return {
+    [PAYMENT_IDENTIFIER_KEY] = {
+      info = { required = true },
+    },
+  }
+end
+
 local function network_label(pay_kit_network)
   if pay_kit_network == 'solana_mainnet' then return 'mainnet' end
   if pay_kit_network == 'solana_devnet' then return 'devnet' end
@@ -140,11 +199,17 @@ end
 
 local function exact_challenge(config, gate, resource_path)
   local mint = gate:amount():primary_coin()
-  return {
+  local challenge = {
     x402Version = X402_VERSION_V2,
     resource    = {type = 'http', url = resource_path, uri = resource_path},
     accepts     = { exact_requirement(config, gate, resource_path, mint) },
   }
+  -- Advertise the v2 `payment-identifier` extension when the route requires
+  -- it. Omitted entirely otherwise (rust skip_serializing_if = Option::is_none
+  -- on PaymentRequiredEnvelope.extensions).
+  local extensions = advertised_extensions(config)
+  if extensions then challenge.extensions = extensions end
+  return challenge
 end
 
 local function encode_payment_required(challenge)
@@ -266,6 +331,25 @@ function Adapter:verify_and_settle(gate, req)
       ': accepted payment requirement does not match server challenge'
   end
 
+  -- x402 v2 `payment-identifier` reject gate. When this route advertised the
+  -- extension with info.required=true, the credential MUST echo back a valid
+  -- pay_-shaped id (^[A-Za-z0-9_-]{16,128}$); missing, empty, or
+  -- pattern-violating ids reject with HTTP 400 semantics. Mirrors the rust
+  -- spine (PaymentExtensions::requires_payment_identifier layered onto
+  -- verify_envelope_payload; coinbase payment_identifier.md §5.1.2).
+  if (config.x402 or {}).requires_payment_identifier == true then
+    local id = extensions_payment_identifier_id(credential.extensions)
+    if id == nil or id == '' then
+      return nil, errors.PAYMENT_IDENTIFIER_REQUIRED ..
+        ': credential echoed no id'
+    end
+    if not payment_identifier_id_valid(id) then
+      return nil, errors.PAYMENT_IDENTIFIER_REQUIRED ..
+        ': id is invalid: ' .. tostring(id) ..
+        ' does not match ^[A-Za-z0-9_-]{16,128}$'
+    end
+  end
+
   local payload = credential.payload
   if type(payload) ~= 'table' or type(payload.transaction) ~= 'string' then
     return nil, errors.INVALID_PROOF .. ': payment payload missing transaction'
@@ -360,6 +444,11 @@ M._private = {
   decode_payment_signature     = decode_payment_signature,
   network_label                = network_label,
   caip2_for                    = caip2_for,
+  advertised_extensions        = advertised_extensions,
+  payment_identifier_id_valid  = payment_identifier_id_valid,
+  extensions_requires_payment_identifier = extensions_requires_payment_identifier,
+  extensions_payment_identifier_id       = extensions_payment_identifier_id,
+  PAYMENT_IDENTIFIER_KEY       = PAYMENT_IDENTIFIER_KEY,
 }
 
 return M

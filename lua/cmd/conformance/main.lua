@@ -491,6 +491,20 @@ local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
 local LEGACY_NETWORK_SOLANA = 'solana'
 local LEGACY_NETWORK_DEVNET = 'solana-devnet'
 
+-- x402 v2 `payment-identifier` extension (rust types.rs PaymentExtensions:
+-- #[serde(rename = "payment-identifier")]). The id must match the spec
+-- pattern ^[A-Za-z0-9_-]{16,128}$ (rust PaymentIdentifierInfo / coinbase
+-- payment_identifier.md §5.1.2).
+local PAYMENT_IDENTIFIER_KEY = 'payment-identifier'
+
+-- Lua patterns lack regex quantifier bounds, so mirror ^[A-Za-z0-9_-]{16,128}$
+-- with an explicit character-class match plus a length window.
+local function payment_identifier_id_valid(id)
+  if type(id) ~= 'string' then return false end
+  if #id < 16 or #id > 128 then return false end
+  return id:match('^[A-Za-z0-9_%-]+$') ~= nil
+end
+
 -- Normalize any network identifier (CAIP-2 or legacy slug) to its CAIP-2
 -- form. Mirrors rust caip2_network_for_cluster (types.rs) and the SDK's
 -- pay_kit.protocols.x402 caip2_network_for_cluster.
@@ -549,6 +563,39 @@ local function decode_envelope_shape(header)
     if type(accepted.payTo) == 'string' then shape.acceptedPayTo = accepted.payTo end
     if accepted.amount ~= nil then shape.acceptedAmount = tostring(accepted.amount) end
   end
+
+  -- Surface the v2 extensions object (rust PaymentExtensions; TS reference
+  -- decodeEnvelopeShape). `hasExtensions` is false when the key is absent OR
+  -- present-but-empty: the echo-and-omit rule means a conforming build never
+  -- emits an empty `extensions: {}`, but a decoder must still classify a stray
+  -- `{}` as "no extensions". `extensionKeys` is sorted so the driver's
+  -- toEqual is order-independent.
+  local extensions = env.extensions
+  if type(extensions) == 'table' then
+    local keys = {}
+    for key in pairs(extensions) do
+      keys[#keys + 1] = key
+    end
+    table.sort(keys)
+    shape.hasExtensions = #keys > 0
+    shape.extensionKeys = keys
+    local pid = extensions[PAYMENT_IDENTIFIER_KEY]
+    shape.hasPaymentIdentifier = type(pid) == 'table'
+    if type(pid) == 'table' and type(pid.info) == 'table' then
+      if pid.info.required ~= nil then
+        shape.paymentIdentifierRequired = pid.info.required
+      end
+      if pid.info.id ~= nil then
+        shape.paymentIdentifierId = pid.info.id
+      end
+    end
+  else
+    -- No extensions object on the wire (the conforming echo-and-omit case).
+    -- Pin the absence explicitly so a vector can assert it.
+    shape.hasExtensions = false
+    shape.hasPaymentIdentifier = false
+    shape.extensionKeys = {}
+  end
   return shape
 end
 
@@ -605,6 +652,23 @@ local function run_x402_verify(vector)
     if tostring(accepted.asset or '') ~= tostring(input.x402ServerCurrency) then
       error('Currency mismatch: expected ' .. tostring(input.x402ServerCurrency)
         .. ', got ' .. tostring(accepted.asset))
+    end
+    -- Extensions reject gate (rust PaymentExtensions::requires_payment_identifier
+    -- + the coinbase spec's 400 when required-and-missing; TS reference
+    -- verifyPaymentHeader). When the route requires a payment-identifier, the
+    -- echoed credential MUST carry a valid pay_-shaped id. Missing, empty, or
+    -- pattern-violating ids reject as payment-identifier-required.
+    if input.x402ServerRequiresPaymentIdentifier == true then
+      local extensions = env.extensions
+      local pid = type(extensions) == 'table' and extensions[PAYMENT_IDENTIFIER_KEY] or nil
+      local id = type(pid) == 'table' and type(pid.info) == 'table' and pid.info.id or nil
+      if id == nil or id == '' then
+        error('payment-identifier required but credential echoed no id')
+      end
+      if not payment_identifier_id_valid(id) then
+        error('payment-identifier id is invalid: ' .. tostring(id)
+          .. ' does not match ^[A-Za-z0-9_-]{16,128}$')
+      end
     end
   else
     error('invalid payload: unsupported x402Version ' .. tostring(version))
@@ -693,6 +757,15 @@ local function classify_reject(message)
   -- "Network mismatch: ...").
   if has(m, 'wrong network') or has(m, 'network mismatch') then
     return 'wrong-network'
+  end
+  -- x402-exact extensions: the route required a payment-identifier id but the
+  -- credential echoed none / an invalid one (the SDK raises a message carrying
+  -- "payment-identifier ... required|missing|invalid"). Checked before the
+  -- generic invalid/payload fallback so it lands on its own category. Mirrors
+  -- reject.ts /payment.identifier .*(required|missing|invalid)/i.
+  if has(m, 'payment-identifier')
+    and (has(m, 'required') or has(m, 'missing') or has(m, 'invalid')) then
+    return 'payment-identifier-required'
   end
 
   if has(m, 'compute unit price') and has(m, 'exceed')

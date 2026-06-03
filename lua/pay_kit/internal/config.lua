@@ -21,6 +21,7 @@ Surface (issue #140):
     x402 = {
       facilitator_url = nil,                   -- delegated mode if set
       scheme          = "exact",
+      requires_payment_identifier = false,     -- advertise + require payment-identifier
     },
     mpp = {
       realm                    = "MyApp",
@@ -182,6 +183,18 @@ function M.configure(opts)
     if sig_err then return nil, sig_err:gsub('operator.signer', 'x402.signer') end
     x402_signer_override = x402.signer
   end
+  -- x402 v2 `payment-identifier` extension toggle. When true the server
+  -- advertises `payment-identifier` with info.required=true on the
+  -- PAYMENT-REQUIRED challenge and rejects any credential that does not echo
+  -- back a valid `pay_`-shaped id. Mirrors the rust spine
+  -- (PaymentExtensions::requires_payment_identifier + the coinbase 400 gate).
+  local x402_requires_payment_identifier = x402.requires_payment_identifier
+  if x402_requires_payment_identifier == nil then
+    x402_requires_payment_identifier = false
+  end
+  if type(x402_requires_payment_identifier) ~= 'boolean' then
+    return nil, 'pay_kit: x402.requires_payment_identifier must be a boolean or nil'
+  end
 
   -- MPP sub-config.
   local mpp = opts.mpp or {}
@@ -237,6 +250,7 @@ function M.configure(opts)
       facilitator_url  = x402_facilitator_url,
       signer_override  = x402_signer_override,
       delegated        = x402_facilitator_url ~= nil and x402_facilitator_url ~= '',
+      requires_payment_identifier = x402_requires_payment_identifier,
     },
     mpp = mpp_config,
   }

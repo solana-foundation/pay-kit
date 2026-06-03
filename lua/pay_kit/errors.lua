@@ -29,5 +29,6 @@ M.SIGNATURE_CONSUMED            = 'pay_kit: signature already consumed'
 M.WRONG_NETWORK                 = 'pay_kit: wrong network'
 M.CHARGE_REQUEST_MISMATCH       = 'pay_kit: charge request mismatch'
 M.CHALLENGE_VERIFICATION_FAILED = 'pay_kit: challenge verification failed'
+M.PAYMENT_IDENTIFIER_REQUIRED   = 'pay_kit: payment-identifier required'
 
 return M
