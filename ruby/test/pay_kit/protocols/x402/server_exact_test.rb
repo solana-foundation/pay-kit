@@ -415,6 +415,158 @@ class X402ServerExactTest < Minitest::Test
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
   end
 
+  # ── x402 v2 extensions (payment-identifier) ──
+  #
+  # Mirrors the rust spine (protocol/schemes/exact/types.rs:479-585) and the
+  # cross-SDK conformance vectors x402-ext-server-{accepts-valid-id,
+  # rejects-required-missing-id}.
+
+  Types = PayKit::Protocols::X402::Protocol::Schemes::Exact
+
+  def test_exact_challenge_omits_extensions_when_not_required
+    state = build_state
+    challenge = PayKit::Protocols::X402::Server::Exact.exact_challenge(state)
+
+    refute challenge.key?("extensions"),
+      "challenge must omit extensions entirely (no empty {}) when not required"
+  end
+
+  def test_exact_challenge_advertises_required_payment_identifier
+    state = build_state(payment_identifier_required: true)
+    challenge = PayKit::Protocols::X402::Server::Exact.exact_challenge(state)
+
+    assert_equal(
+      {"payment-identifier" => {"info" => {"required" => true}}},
+      challenge.fetch("extensions")
+    )
+  end
+
+  def test_settlement_accepts_required_payment_identifier_with_valid_id
+    state = build_state(payment_identifier_required: true, sender: ->(_state, _transaction) { "unit-settlement" })
+    extensions = {"payment-identifier" => {"info" => {"required" => true, "id" => "pay_abcdef1234567890abcdef1234567890"}}}
+
+    assert_equal "unit-settlement",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state, extensions: extensions))
+  end
+
+  def test_settlement_rejects_required_payment_identifier_when_missing_id
+    state = build_state(payment_identifier_required: true)
+    # Echoed extension carries info.required but no info.id.
+    extensions = {"payment-identifier" => {"info" => {"required" => true}}}
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state, extensions: extensions))
+    end
+    assert_match(/payment-identifier required but credential echoed no id/, error.message)
+  end
+
+  def test_settlement_rejects_required_payment_identifier_when_no_extensions_echoed
+    state = build_state(payment_identifier_required: true)
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    assert_match(/payment-identifier required but credential echoed no id/, error.message)
+  end
+
+  def test_settlement_rejects_required_payment_identifier_when_id_violates_pattern
+    state = build_state(payment_identifier_required: true)
+    extensions = {"payment-identifier" => {"info" => {"required" => true, "id" => "too-short"}}}
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state, extensions: extensions))
+    end
+    assert_match(/payment-identifier id is invalid/, error.message)
+  end
+
+  def test_settlement_ignores_payment_identifier_when_route_does_not_require_it
+    # When the route does not require a payment-identifier, an echoed id (or
+    # its absence) does not gate settlement.
+    state = build_state(sender: ->(_state, _transaction) { "unit-settlement" })
+    extensions = {"payment-identifier" => {"info" => {"id" => "pay_abcdef1234567890abcdef1234567890"}}}
+
+    assert_equal "unit-settlement",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state, extensions: extensions))
+  end
+
+  def test_generate_payment_identifier_id_matches_spec_pattern
+    20.times do
+      id = Types.generate_payment_identifier_id
+      assert_match(/\Apay_[0-9a-f]{32}\z/, id)
+      assert Types.payment_identifier_id_valid?(id), "generated id must satisfy ^[A-Za-z0-9_-]{16,128}$"
+    end
+  end
+
+  def test_generate_payment_identifier_id_is_unique
+    ids = Array.new(8) { Types.generate_payment_identifier_id }
+    assert_equal ids.length, ids.uniq.length, "generated ids must be unique"
+  end
+
+  def test_echo_extensions_returns_nil_when_inbound_absent
+    assert_nil Types.echo_extensions(nil)
+  end
+
+  def test_echo_extensions_preserves_unknown_keys_verbatim
+    inbound = {
+      "payment-identifier" => {"info" => {"required" => true}},
+      "future-extension" => {"info" => {"foo" => "bar"}}
+    }
+    echoed = Types.echo_extensions(inbound)
+
+    assert_equal inbound, echoed
+    refute_same inbound, echoed, "echo must deep-copy so the inbound is not mutated"
+    refute_same inbound["future-extension"], echoed["future-extension"]
+  end
+
+  def test_echo_extensions_rejects_non_object_inbound
+    assert_raises(ArgumentError) { Types.echo_extensions("not-an-object") }
+  end
+
+  def test_requires_payment_identifier_reflects_info_required
+    assert Types.requires_payment_identifier?({"payment-identifier" => {"info" => {"required" => true}}})
+    refute Types.requires_payment_identifier?({"payment-identifier" => {"info" => {"required" => false}}})
+    refute Types.requires_payment_identifier?({"payment-identifier" => {"info" => {}}})
+    refute Types.requires_payment_identifier?({})
+    refute Types.requires_payment_identifier?(nil)
+  end
+
+  def test_with_payment_identifier_id_appends_without_overwriting_server_fields
+    inbound = {"payment-identifier" => {"info" => {"required" => true}, "schema" => {"type" => "object"}}}
+    result = Types.with_payment_identifier_id(inbound, "pay_abcdef1234567890abcdef1234567890")
+
+    entry = result.fetch("payment-identifier")
+    assert_equal true, entry.dig("info", "required"), "server-side info.required must be preserved"
+    assert_equal "pay_abcdef1234567890abcdef1234567890", entry.dig("info", "id")
+    assert_equal({"type" => "object"}, entry.fetch("schema"), "server schema must be echoed verbatim")
+    # Inbound must not be mutated.
+    assert_nil inbound.dig("payment-identifier", "info", "id")
+  end
+
+  def test_with_payment_identifier_id_creates_entry_when_server_did_not_advertise
+    result = Types.with_payment_identifier_id(nil, "pay_abcdef1234567890abcdef1234567890")
+
+    assert_equal "pay_abcdef1234567890abcdef1234567890", result.dig("payment-identifier", "info", "id")
+  end
+
+  def test_extensions_empty_predicate
+    assert Types.extensions_empty?(nil)
+    assert Types.extensions_empty?({})
+    refute Types.extensions_empty?({"payment-identifier" => {"info" => {}}})
+  end
+
+  def test_payment_identifier_id_helpers
+    extensions = {"payment-identifier" => {"info" => {"id" => "pay_abcdef1234567890abcdef1234567890"}}}
+    assert_equal "pay_abcdef1234567890abcdef1234567890", Types.payment_identifier_id(extensions)
+    assert_nil Types.payment_identifier_id({})
+    assert_nil Types.payment_identifier_id(nil)
+
+    assert Types.payment_identifier_id_valid?("pay_abcdef1234567890abcdef1234567890")
+    refute Types.payment_identifier_id_valid?("short")
+    refute Types.payment_identifier_id_valid?("")
+    refute Types.payment_identifier_id_valid?(nil)
+    refute Types.payment_identifier_id_valid?("has space inside the identifier here")
+  end
+
   # Wallets inject a variable number of trailing Lighthouse guard
   # instructions (Phantom 1, Solflare 2). Per the official x402 SVM exact
   # contract Lighthouse is an allowed optional program in ANY optional
@@ -965,7 +1117,8 @@ class X402ServerExactTest < Minitest::Test
     account_checker: ->(_state, _account) { true },
     signature_confirmer: ->(_state, signature) { signature },
     settlement_cache: nil,
-    recent_blockhash_provider: -> {}
+    recent_blockhash_provider: -> {},
+    payment_identifier_required: false
   )
     kwargs = {
       rpc_url: "http://127.0.0.1:8899",
@@ -978,7 +1131,8 @@ class X402ServerExactTest < Minitest::Test
       account_checker: account_checker,
       signature_confirmer: signature_confirmer,
       settlement_cache: settlement_cache,
-      recent_blockhash_provider: recent_blockhash_provider
+      recent_blockhash_provider: recent_blockhash_provider,
+      payment_identifier_required: payment_identifier_required
     }
     unless extra_offered_mints.nil?
       kwargs[:extra_offered_mints] = extra_offered_mints.split(",").map(&:strip).reject(&:empty?)
@@ -986,12 +1140,13 @@ class X402ServerExactTest < Minitest::Test
     PayKit::Protocols::X402::Server::Exact::Config.new(**kwargs)
   end
 
-  def build_payment_header(state, resource: nil)
+  def build_payment_header(state, resource: nil, extensions: nil)
     X402ExactClientFixture.build_exact_payment_signature(
       requirement: PayKit::Protocols::X402::Server::Exact.exact_requirement(state, resource: resource),
       client_secret_key: JSON.generate(secret(1)),
       recent_blockhash: BLOCKHASH,
-      resource: {"type" => "http", "uri" => resource || "/protected"}
+      resource: {"type" => "http", "uri" => resource || "/protected"},
+      extensions: extensions
     )
   end
 
