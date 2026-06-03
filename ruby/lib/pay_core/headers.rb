@@ -132,7 +132,17 @@ module PayCore
         index += 1 while index < input.length && input[index] != "=" && input[index] != "," && input[index] != " " && input[index] != "\t"
         key = input[key_start...index]
         index += 1 while index < input.length && [" ", "\t"].include?(input[index])
-        raise ArgumentError, "invalid auth parameter" if key.empty? || index >= input.length || input[index] != "="
+
+        raise ArgumentError, "invalid auth parameter" if key.empty?
+
+        # A non-empty token with no `=value` (e.g. trailing text after an
+        # unescaped closing quote inside a description value) is skipped, not
+        # rejected. Matches the canonical mpp-tools / Rust permissive parser:
+        # parsers truncate at the quote boundary and ignore the remainder.
+        if index >= input.length || input[index] != "="
+          index += 1 while index < input.length && input[index] != ","
+          next
+        end
 
         index += 1
         index += 1 while index < input.length && [" ", "\t"].include?(input[index])
