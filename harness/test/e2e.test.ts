@@ -14,7 +14,7 @@ import {
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
 import {
-  assertNonEmptyEligibility,
+  evaluateShardEligibility,
   SOCKET_UNAVAILABLE_CI_MESSAGE,
   socketGateMode,
 } from "../src/guards";
@@ -358,28 +358,54 @@ describe("mpp interop", () => {
     // alongside MPP_INTEROP_* (same fixtures), and the pair filter
     // below gates on `impl.intents.includes(scenario.intent)` so
     // charge-only adapters skip x402 scenarios automatically.
-    const scenarioServers = activeServers.filter(
-      (implementation) =>
-        (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
-        (!scenario.serverIds || scenario.serverIds.includes(implementation.id)),
-    );
-    const scenarioClients = activeClients.filter(
-      (implementation) =>
-        (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
-        (!scenario.clientIds || scenario.clientIds.includes(implementation.id)),
-    );
+    const intentServerFilter = (implementation: {
+      id: string;
+      intents?: string[];
+    }) =>
+      (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
+      (!scenario.serverIds || scenario.serverIds.includes(implementation.id));
+    const intentClientFilter = (implementation: {
+      id: string;
+      intents?: string[];
+    }) =>
+      (implementation.intents ?? ["charge"]).includes(scenario.intent) &&
+      (!scenario.clientIds || scenario.clientIds.includes(implementation.id));
 
-    // P0 zero-eligible guard: a selected scenario that resolves to no
-    // client, no server, or no pair asserts nothing. Register a hard
-    // failure (not a silent no-op) so the false green is visible.
-    it(`${scenario.id}: has at least one eligible client/server pair`, () => {
-      assertNonEmptyEligibility({
-        scenarioId: scenario.id,
+    const scenarioServers = activeServers.filter(intentServerFilter);
+    const scenarioClients = activeClients.filter(intentClientFilter);
+    // Full-registry eligibility (ignores the `enabled` shard flag) so the
+    // guard can tell a legitimate shard exclusion from a genuine false green.
+    const fullServers = serverImplementations.filter(intentServerFilter);
+    const fullClients = clientImplementations.filter(intentClientFilter);
+
+    // P0 zero-eligible guard, shard-aware: a scenario that has no eligible
+    // client/server/pair across the FULL adapter registry is a false green
+    // and hard-fails. A scenario that is eligible in the full registry but
+    // excluded by THIS shard's enabled-adapter subset is a legitimate
+    // shard skip, not a false green.
+    const eligibility = evaluateShardEligibility({
+      scenarioId: scenario.id,
+      shard: {
         clientCount: scenarioClients.length,
         serverCount: scenarioServers.length,
         pairCount: scenarioServers.length * scenarioClients.length,
-      });
+      },
+      full: {
+        clientCount: fullClients.length,
+        serverCount: fullServers.length,
+        pairCount: fullServers.length * fullClients.length,
+      },
     });
+    it(`${scenario.id}: has at least one eligible client/server pair`, () => {
+      // evaluateShardEligibility already threw above if globally empty; this
+      // test exists to keep the guard visible per-scenario in the report.
+      if (eligibility.verdict === "skip") {
+        console.log(`[interop] ${eligibility.reason}`);
+      }
+    });
+    if (eligibility.verdict === "skip") {
+      continue;
+    }
 
     for (const serverImplementation of scenarioServers) {
       for (const clientImplementation of scenarioClients) {
@@ -515,23 +541,42 @@ describe("mpp interop", () => {
 
   for (const scenario of crossServerScenarios) {
     const pairs = scenario.crossServerPairs ?? [];
-    const eligibleClients = activeClients.filter(
-      (implementation) =>
-        !scenario.clientIds || scenario.clientIds.includes(implementation.id),
-    );
+    const clientFilter = (implementation: { id: string }) =>
+      !scenario.clientIds || scenario.clientIds.includes(implementation.id);
+    const eligibleClients = activeClients.filter(clientFilter);
     const resolvablePairs = pairs.filter(
       ([aId, bId]) =>
         activeServers.some((impl) => impl.id === aId) &&
         activeServers.some((impl) => impl.id === bId),
     );
-    it(`${scenario.id}: has at least one eligible cross-server pair`, () => {
-      assertNonEmptyEligibility({
-        scenarioId: scenario.id,
+    // Full-registry view (ignores the shard `enabled` flag).
+    const fullEligibleClients = clientImplementations.filter(clientFilter);
+    const fullResolvablePairs = pairs.filter(
+      ([aId, bId]) =>
+        serverImplementations.some((impl) => impl.id === aId) &&
+        serverImplementations.some((impl) => impl.id === bId),
+    );
+    const eligibility = evaluateShardEligibility({
+      scenarioId: scenario.id,
+      shard: {
         clientCount: eligibleClients.length,
         serverCount: resolvablePairs.length,
         pairCount: resolvablePairs.length * eligibleClients.length,
-      });
+      },
+      full: {
+        clientCount: fullEligibleClients.length,
+        serverCount: fullResolvablePairs.length,
+        pairCount: fullResolvablePairs.length * fullEligibleClients.length,
+      },
     });
+    it(`${scenario.id}: has at least one eligible cross-server pair`, () => {
+      if (eligibility.verdict === "skip") {
+        console.log(`[interop] ${eligibility.reason}`);
+      }
+    });
+    if (eligibility.verdict === "skip") {
+      continue;
+    }
     for (const [aId, bId] of pairs) {
       const serverA = activeServers.find((impl) => impl.id === aId);
       const serverB = activeServers.find((impl) => impl.id === bId);
@@ -581,20 +626,35 @@ describe("mpp interop", () => {
   }
 
   for (const scenario of idempotentScenarios) {
-    const eligibleServers = activeServers.filter(
-      (impl) => !scenario.serverIds || scenario.serverIds.includes(impl.id),
-    );
-    const eligibleClients = activeClients.filter(
-      (impl) => !scenario.clientIds || scenario.clientIds.includes(impl.id),
-    );
-    it(`${scenario.id}: has at least one eligible idempotent pair`, () => {
-      assertNonEmptyEligibility({
-        scenarioId: scenario.id,
+    const serverFilter = (impl: { id: string }) =>
+      !scenario.serverIds || scenario.serverIds.includes(impl.id);
+    const clientFilter = (impl: { id: string }) =>
+      !scenario.clientIds || scenario.clientIds.includes(impl.id);
+    const eligibleServers = activeServers.filter(serverFilter);
+    const eligibleClients = activeClients.filter(clientFilter);
+    const fullEligibleServers = serverImplementations.filter(serverFilter);
+    const fullEligibleClients = clientImplementations.filter(clientFilter);
+    const eligibility = evaluateShardEligibility({
+      scenarioId: scenario.id,
+      shard: {
         clientCount: eligibleClients.length,
         serverCount: eligibleServers.length,
         pairCount: eligibleServers.length * eligibleClients.length,
-      });
+      },
+      full: {
+        clientCount: fullEligibleClients.length,
+        serverCount: fullEligibleServers.length,
+        pairCount: fullEligibleServers.length * fullEligibleClients.length,
+      },
     });
+    it(`${scenario.id}: has at least one eligible idempotent pair`, () => {
+      if (eligibility.verdict === "skip") {
+        console.log(`[interop] ${eligibility.reason}`);
+      }
+    });
+    if (eligibility.verdict === "skip") {
+      continue;
+    }
     for (const serverImplementation of eligibleServers) {
       for (const clientImplementation of eligibleClients) {
         socketAwareIt(

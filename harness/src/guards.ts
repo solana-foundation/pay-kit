@@ -70,3 +70,74 @@ export function assertNonEmptyEligibility(params: {
     );
   }
 }
+
+// The verdict for a scenario's eligibility once the shard (currently-enabled
+// adapter subset) is taken into account.
+//
+//   - "run"  : the scenario has eligible clients/servers/pairs in this shard.
+//   - "skip" : the scenario is eligible against the FULL adapter registry but
+//              this shard's enabled subset excludes its adapters. That is a
+//              legitimate shard skip, not a false green.
+//
+// A scenario that resolves to zero eligibility against the FULL registry is a
+// genuine misconfiguration (false green) and still throws.
+export type EligibilityVerdict =
+  | { verdict: "run" }
+  | { verdict: "skip"; reason: string };
+
+// Decide whether a scenario should run, be skipped (shard exclusion), or hard
+// fail (globally empty) in a sharded interop matrix.
+//
+// `shard` holds the counts computed against the currently-enabled adapter
+// subset; `full` holds the same counts computed against the entire adapter
+// registry (ignoring the `enabled` flag). The full counts are what decides
+// between a legitimate shard skip and a false green:
+//
+//   - full set empty on any dimension  -> throw (genuine misconfiguration).
+//   - full set non-empty but shard set empty on any dimension -> skip.
+//   - both non-empty -> run.
+export function evaluateShardEligibility(params: {
+  scenarioId: string;
+  shard: { clientCount: number; serverCount: number; pairCount?: number };
+  full: { clientCount: number; serverCount: number; pairCount?: number };
+}): EligibilityVerdict {
+  const { scenarioId, shard, full } = params;
+
+  // First: a scenario that is empty across the FULL adapter registry is a
+  // real false green regardless of the shard. Surface it loudly.
+  assertNonEmptyEligibility({
+    scenarioId,
+    clientCount: full.clientCount,
+    serverCount: full.serverCount,
+    pairCount: full.pairCount,
+  });
+
+  // The full set covers this scenario, so any shard emptiness is purely a
+  // consequence of the enabled-adapter subset: a legitimate shard skip.
+  if (shard.clientCount === 0) {
+    return {
+      verdict: "skip",
+      reason:
+        `Scenario ${scenarioId} has no eligible client in the enabled adapter ` +
+        `subset (shard), but the full adapter registry does. Skipping in this shard.`,
+    };
+  }
+  if (shard.serverCount === 0) {
+    return {
+      verdict: "skip",
+      reason:
+        `Scenario ${scenarioId} has no eligible server in the enabled adapter ` +
+        `subset (shard), but the full adapter registry does. Skipping in this shard.`,
+    };
+  }
+  if (shard.pairCount !== undefined && shard.pairCount === 0) {
+    return {
+      verdict: "skip",
+      reason:
+        `Scenario ${scenarioId} has no client/server pair in the enabled adapter ` +
+        `subset (shard), but the full adapter registry does. Skipping in this shard.`,
+    };
+  }
+
+  return { verdict: "run" };
+}
