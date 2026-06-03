@@ -55,7 +55,7 @@ type Receipt struct {
 	Method      MethodName    `json:"method"`
 	Timestamp   string        `json:"timestamp"`
 	Reference   string        `json:"reference"`
-	ChallengeID string        `json:"challengeId"`
+	ChallengeID string        `json:"challengeId,omitempty"`
 	ExternalID  string        `json:"externalId,omitempty"`
 }
 
