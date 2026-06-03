@@ -218,8 +218,15 @@ function challenge_to_canonical(Challenge $challenge): array
         'realm' => $challenge->realm,
         'method' => $challenge->method,
         'intent' => $challenge->intent,
-        'request' => $challenge->decodeRequest(),
+        // Decode the stored base64url(JCS) request with OBJECT preservation so an
+        // empty `{}` survives as a JSON object, not the `[]` PHP's associative
+        // decode + json_encode would otherwise emit. The canonical wire and
+        // every other SDK echo an empty request as `{}`.
+        'request' => json_decode(Base64Url::decode($challenge->request), false, flags: JSON_THROW_ON_ERROR),
     ];
+    if ($challenge->description !== null) {
+        $object['description'] = $challenge->description;
+    }
     if ($challenge->expires !== '') {
         $object['expires'] = $challenge->expires;
     }
@@ -241,22 +248,30 @@ function challenge_to_canonical(Challenge $challenge): array
  *
  * @param array<string, mixed> $object
  */
-function challenge_from_canonical(array $object): Challenge
+function challenge_from_canonical(array $object, mixed $requestObj = null): Challenge
 {
     $request = $object['request'] ?? [];
     if (!is_array($request)) {
         throw new InvalidArgumentException('challenge.request must be an object');
     }
 
+    // Encode the request from the object-preserving input so an empty `{}`
+    // canonicalizes to `e30`, not the `[]` -> `W10` PHP's associative array
+    // would yield. The JCS math stays the SDK canonicalizer's.
+    $encodedRequest = $requestObj !== null
+        ? Base64Url::encode(canonicalize_preserving_objects($requestObj))
+        : Base64Url::encodeJson($request);
+
     return new Challenge(
         id: as_string($object['id'] ?? null, 'id'),
         realm: as_string($object['realm'] ?? null, 'realm'),
         method: as_string($object['method'] ?? null, 'method'),
         intent: as_string($object['intent'] ?? null, 'intent'),
-        request: Base64Url::encodeJson($request),
+        request: $encodedRequest,
         expires: opt_string($object['expires'] ?? null),
         digest: opt_string($object['digest'] ?? null),
         opaque: isset($object['opaque']) ? as_string($object['opaque'], 'opaque') : null,
+        description: isset($object['description']) ? as_string($object['description'], 'description') : null,
     );
 }
 
@@ -334,7 +349,10 @@ function dispatch(string $op, array $input, mixed $inputObj): array
             return challenge_to_canonical(Headers::parseWwwAuthenticate(require_header($input)));
 
         case 'challenge.format':
-            return ['header' => Headers::formatWwwAuthenticate(challenge_from_canonical($input))];
+            $requestObj = ($inputObj instanceof \stdClass && property_exists($inputObj, 'request'))
+                ? $inputObj->request
+                : null;
+            return ['header' => Headers::formatWwwAuthenticate(challenge_from_canonical($input, $requestObj))];
 
         case 'credential.parse':
             return Credential::fromAuthorizationHeader(require_header($input))->toArray();

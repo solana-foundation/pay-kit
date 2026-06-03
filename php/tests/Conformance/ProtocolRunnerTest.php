@@ -32,30 +32,11 @@ final class ProtocolRunnerTest extends TestCase
 
     /**
      * `${op} :: ${scenario}` keys where the PHP SDK does not match the
-     * canonical oracle. Each is a real SDK behavior, not a runner artifact:
-     *
-     *  - challenge.parse :: full_challenge / escaped_quotes_in_description
-     *      The strict PaymentChallenge parser drops unknown auth-params,
-     *      including a top-level `description`, which the canonical golden
-     *      object echoes.
-     *  - challenge.parse :: unescaped_quotes_in_description
-     *      The canonical parser is permissive (truncates at the quote
-     *      boundary); the PHP parser rejects the trailing garbage as an
-     *      invalid auth parameter.
-     *  - credential.parse :: error_missing_challenge_id
-     *      ChallengeEcho::fromArray does not reject an empty challenge `id`;
-     *      the canonical spec does.
-     *  - receipt.parse :: error_non_iso8601_timestamp
-     *      Receipt::fromArray does not validate the timestamp format; the
-     *      canonical spec rejects a non-ISO-8601 timestamp.
+     * canonical oracle. The PHP protocol header-codec / base64url /
+     * challenge-id layer now conforms to every canonical mpp-tools vector, so
+     * this list is empty; any future regression fails loudly here.
      */
-    private const KNOWN_DIVERGENCES = [
-        'challenge.parse :: full_challenge',
-        'challenge.parse :: unescaped_quotes_in_description',
-        'challenge.parse :: escaped_quotes_in_description',
-        'credential.parse :: error_missing_challenge_id',
-        'receipt.parse :: error_non_iso8601_timestamp',
-    ];
+    private const KNOWN_DIVERGENCES = [];
 
     public function testUnknownOperationIsUnsupported(): void
     {
