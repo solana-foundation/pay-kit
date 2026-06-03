@@ -1,0 +1,350 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "draft-ietf-httpauth-payment §5.1",
+  "description": "WWW-Authenticate header (Challenge) parsing and formatting",
+  "commands": {
+    "parse": "parse-www-authenticate",
+    "format": "format-www-authenticate"
+  },
+  "scenarios": [
+    {
+      "name": "basic_challenge",
+      "description": "Minimal challenge with only required fields",
+      "tags": ["happy-path", "required-fields"],
+      "object": {
+        "id": "ch_abc123",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "1000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      },
+      "wire": "Payment id=\"ch_abc123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIxMDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDEiLCJyZWNpcGllbnQiOiIweDEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2NzgifQ\"",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "full_challenge",
+      "description": "Challenge with all optional fields",
+      "tags": ["happy-path", "optional-fields"],
+      "object": {
+        "description": "API access payment required",
+        "digest": "sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=",
+        "expires": "2026-01-29T12:05:00Z",
+        "id": "ch_full123",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "5000000",
+          "currency": "0x20c0000000000000000000000000000000000002",
+          "description": "Premium API access",
+          "expires": "2026-01-29T13:00:00Z",
+          "externalId": "order_12345",
+          "recipient": "0xabcdef1234567890abcdef1234567890abcdef12"
+        }
+      },
+      "wire": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
+      "tests": {
+        "parse": true,
+        "format": true
+      }
+    },
+    {
+      "name": "empty_request",
+      "description": "Challenge with empty request object",
+      "tags": ["happy-path", "empty-request"],
+      "object": {
+        "id": "ch_empty",
+        "intent": "authorize",
+        "method": "tempo",
+        "realm": "test.example.com",
+        "request": {}
+      },
+      "wire": "Payment id=\"ch_empty\", realm=\"test.example.com\", method=\"tempo\", intent=\"authorize\", request=\"e30\"",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "nested_request",
+      "description": "Challenge with nested objects in request",
+      "tags": ["happy-path", "nested-object"],
+      "object": {
+        "id": "ch_nested",
+        "intent": "stream",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "deposit": "10000000",
+          "escrowContract": "0x1111111111111111111111111111111111111111",
+          "methodDetails": {
+            "chainId": 42431,
+            "feePayer": true
+          },
+          "recipient": "0x2222222222222222222222222222222222222222",
+          "voucherEndpoint": "https://api.example.com/vouchers"
+        }
+      },
+      "wire": "Payment id=\"ch_nested\", realm=\"api.example.com\", method=\"tempo\", intent=\"stream\", request=\"eyJjdXJyZW5jeSI6IjB4MjBjMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMSIsImRlcG9zaXQiOiIxMDAwMDAwMCIsImVzY3Jvd0NvbnRyYWN0IjoiMHgxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwibWV0aG9kRGV0YWlscyI6eyJjaGFpbklkIjo0MjQzMSwiZmVlUGF5ZXIiOnRydWV9LCJyZWNpcGllbnQiOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJ2b3VjaGVyRW5kcG9pbnQiOiJodHRwczovL2FwaS5leGFtcGxlLmNvbS92b3VjaGVycyJ9\"",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "unescaped_quotes_in_description",
+      "description": "Unescaped quotes in description value — parsers truncate at quote boundary, remaining text is ignored",
+      "tags": ["happy-path", "edge-case", "permissive-parsing"],
+      "object": {
+        "description": "Payment for ",
+        "id": "ch_special",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {
+          "amount": "100"
+        }
+      },
+      "wire": "Payment id=\"ch_special\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIxMDAifQ\", description=\"Payment for \"Premium\" service — 50% off!\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "escaped_quotes_in_description",
+      "description": "Escaped quoted-string values preserve embedded quotes",
+      "tags": ["happy-path", "edge-case", "quoted-string"],
+      "object": {
+        "description": "Pay \"premium\" API",
+        "id": "ch_escaped",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "Payment id=\"ch_escaped\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"e30\", description=\"Pay \\\"premium\\\" API\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "error_missing_payment_prefix",
+      "description": "Rejects header without Payment prefix",
+      "tags": ["error", "invalid-prefix"],
+      "wire": "Bearer token123",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_id",
+      "description": "Rejects challenge missing required id field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment realm=\"api\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_realm",
+      "description": "Rejects challenge missing required realm field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment id=\"abc\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_method",
+      "description": "Rejects challenge missing required method field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment id=\"abc\", realm=\"api\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_intent",
+      "description": "Rejects challenge missing required intent field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment id=\"abc\", realm=\"api\", method=\"tempo\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_request",
+      "description": "Rejects challenge missing required request field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment id=\"abc\", realm=\"api\", method=\"tempo\", intent=\"charge\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_invalid_base64url",
+      "description": "Rejects challenge with invalid base64url in request",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "Payment id=\"abc\", realm=\"api\", method=\"tempo\", intent=\"charge\", request=\"not-valid!!!\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_invalid_json",
+      "description": "Rejects challenge with valid base64url that decodes to non-JSON",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "Payment id=\"abc\", realm=\"api\", method=\"tempo\", intent=\"charge\", request=\"bm90IGpzb24\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "whitespace_tolerance",
+      "description": "Extra whitespace around separators is tolerated",
+      "tags": ["happy-path", "edge-case", "whitespace"],
+      "object": {
+        "id": "ch_ws",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "Payment  id=\"ch_ws\" ,  realm=\"api.example.com\" ,  method=\"tempo\" ,  intent=\"charge\" ,  request=\"e30\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "parameter_order_independence",
+      "description": "Parameters in non-canonical order are parsed correctly",
+      "tags": ["happy-path", "edge-case", "ordering"],
+      "object": {
+        "id": "ch_order",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "Payment request=\"e30\", realm=\"api.example.com\", intent=\"charge\", id=\"ch_order\", method=\"tempo\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "unknown_extension_parameter",
+      "description": "Unknown parameters are ignored during parsing",
+      "tags": ["happy-path", "edge-case", "extension"],
+      "object": {
+        "id": "ch_ext",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "Payment id=\"ch_ext\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"e30\", foo=\"bar\", baz=\"qux\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "case_insensitive_scheme",
+      "description": "Scheme name is case-insensitive per HTTP spec",
+      "tags": ["happy-path", "edge-case", "case-insensitive"],
+      "object": {
+        "id": "ch_case",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": "payment id=\"ch_case\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "error_empty_id",
+      "description": "Rejects challenge with empty id value",
+      "tags": ["error", "invalid-value"],
+      "wire": "Payment id=\"\", realm=\"api\", method=\"tempo\", intent=\"charge\", request=\"e30\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_duplicate_parameters",
+      "description": "Rejects challenge with duplicate parameter names",
+      "tags": ["error", "edge-case", "duplicate"],
+      "wire": "Payment id=\"a\", realm=\"api\", method=\"tempo\", intent=\"charge\", request=\"e30\", id=\"b\"",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_empty_header",
+      "description": "Rejects completely empty header value",
+      "tags": ["error", "empty"],
+      "wire": "",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_scheme_only",
+      "description": "Rejects header with scheme name but no parameters",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    }
+  ]
+}

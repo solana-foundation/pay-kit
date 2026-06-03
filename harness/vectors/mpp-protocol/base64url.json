@@ -1,0 +1,131 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "RFC 4648 §5",
+  "description": "Base64url encoding and decoding (no padding)",
+  "commands": {
+    "parse": "base64url-decode",
+    "format": "base64url-encode"
+  },
+  "scenarios": [
+    {
+      "name": "empty_string",
+      "description": "Empty string encodes to empty string",
+      "tags": ["happy-path"],
+      "decoded": "",
+      "encoded": "",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "hello_world",
+      "description": "Simple ASCII string",
+      "tags": ["happy-path"],
+      "decoded": "Hello, World!",
+      "encoded": "SGVsbG8sIFdvcmxkIQ",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "json_object",
+      "description": "JSON object encoding",
+      "tags": ["happy-path"],
+      "decoded": "{\"key\":\"value\"}",
+      "encoded": "eyJrZXkiOiJ2YWx1ZSJ9",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "url_chars",
+      "description": "URL with query parameters",
+      "tags": ["happy-path"],
+      "decoded": "https://example.com?foo=bar&baz=qux",
+      "encoded": "aHR0cHM6Ly9leGFtcGxlLmNvbT9mb289YmFyJmJhej1xdXg",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "padding_1_byte",
+      "description": "Single byte requires 2 padding chars (omitted)",
+      "tags": ["happy-path"],
+      "decoded": "a",
+      "encoded": "YQ",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "padding_2_bytes",
+      "description": "Two bytes require 1 padding char (omitted)",
+      "tags": ["happy-path"],
+      "decoded": "ab",
+      "encoded": "YWI",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "no_padding",
+      "description": "Three bytes require no padding",
+      "tags": ["happy-path"],
+      "decoded": "abc",
+      "encoded": "YWJj",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "url_safe_chars",
+      "description": "Characters that use - and _ instead of + and /",
+      "tags": ["happy-path", "edge-case"],
+      "decoded": ">>>???",
+      "encoded": "Pj4-Pz8_",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "special_ascii",
+      "description": "Special ASCII characters",
+      "tags": ["happy-path"],
+      "decoded": "!@#$%^&*()[]{}|;:,.<>?",
+      "encoded": "IUAjJCVeJiooKVtde318OzosLjw-Pw",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "whitespace",
+      "description": "Tabs and newlines",
+      "tags": ["happy-path"],
+      "decoded": "tabs\tand\nnewlines",
+      "encoded": "dGFicwlhbmQKbmV3bGluZXM",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}
