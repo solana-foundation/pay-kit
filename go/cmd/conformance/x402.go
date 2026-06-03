@@ -54,6 +54,17 @@ type X402EnvelopeShape struct {
 	AcceptedAsset         string `json:"acceptedAsset,omitempty"`
 	AcceptedPayTo         string `json:"acceptedPayTo,omitempty"`
 	AcceptedAmount        string `json:"acceptedAmount,omitempty"`
+
+	// v2 extensions echo shape (mirrors schema.ts X402EnvelopeShape).
+	// HasExtensions / HasPaymentIdentifier are NOT omitempty: a vector
+	// asserts the false case (echo-and-omit) explicitly, so the decoder
+	// must always emit the boolean. PaymentIdentifierRequired is a pointer
+	// so an absent `required` is distinguishable from `required:false`.
+	HasExtensions             bool     `json:"hasExtensions"`
+	HasPaymentIdentifier      bool     `json:"hasPaymentIdentifier"`
+	PaymentIdentifierRequired *bool    `json:"paymentIdentifierRequired,omitempty"`
+	PaymentIdentifierID       string   `json:"paymentIdentifierId,omitempty"`
+	ExtensionKeys             []string `json:"extensionKeys"`
 }
 
 const x402VersionV2 = 2
@@ -118,12 +129,36 @@ func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 		return nil, err
 	}
 
-	// Mirrors client.BuildPaymentHeader: no top-level scheme/network,
-	// accepted echoes the selected offer verbatim.
+	// Echo-and-append the advertised extensions (x402 v2 §5.1.2): echo the
+	// inbound challenge `extensions` object verbatim, and when the server
+	// marked payment-identifier info.required=true append a client id —
+	// the vector's pinned id when present, else a fresh generated one. This
+	// drives the production EchoExtensions / WithPaymentIdentifierID /
+	// GeneratePaymentIdentifierID, matching client.BuildPaymentHeaderWith
+	// Extensions and the rust spine.
+	extensions, err := x402.EchoExtensions(in.X402AdvertisedExtensions)
+	if err != nil {
+		return nil, fmt.Errorf("x402: echo extensions: %w", err)
+	}
+	if extensions != nil && extensions.RequiresPaymentIdentifier() && extensions.PaymentIdentifierID() == "" {
+		id := in.X402PaymentIdentifierID
+		if id == "" {
+			id = x402.GeneratePaymentIdentifierID()
+		}
+		extensions.WithPaymentIdentifierID(id)
+	}
+	if extensions != nil && extensions.IsEmpty() {
+		extensions = nil
+	}
+
+	// Mirrors client.BuildPaymentHeaderWithExtensions: no top-level
+	// scheme/network, accepted echoes the selected offer verbatim, the
+	// echoed extensions object omitted when none/empty.
 	credential := x402.Credential{
 		X402Version: x402VersionV2,
 		Payload:     x402.CredentialPayload{Transaction: tx},
 		Accepted:    entry,
+		Extensions:  extensions,
 	}
 
 	raw, err := json.Marshal(credential)
@@ -146,6 +181,7 @@ type credentialWire struct {
 	Payload     struct {
 		Transaction string `json:"transaction"`
 	} `json:"payload"`
+	Extensions json.RawMessage `json:"extensions"`
 }
 
 type acceptedWire struct {
@@ -175,6 +211,7 @@ func decodeX402EnvelopeShape(header string) (*X402EnvelopeShape, error) {
 		X402Version:           cw.X402Version,
 		HasAccepted:           len(cw.Accepted) > 0 && string(cw.Accepted) != "null",
 		PayloadHasTransaction: cw.Payload.Transaction != "",
+		ExtensionKeys:         []string{},
 	}
 	if cw.Scheme != nil {
 		shape.Scheme = *cw.Scheme
@@ -192,6 +229,32 @@ func decodeX402EnvelopeShape(header string) (*X402EnvelopeShape, error) {
 		shape.AcceptedAsset = aw.Asset
 		shape.AcceptedPayTo = aw.PayTo
 		shape.AcceptedAmount = aw.Amount
+	}
+
+	// Surface the v2 extensions object via the production PaymentExtensions
+	// parser (rename + flatten). hasExtensions is false when the key is
+	// absent OR present-but-empty (a conforming build never emits an empty
+	// `extensions: {}`, but a decoder must still classify a stray {} as
+	// "no extensions"). Mirrors harness/src/conformance/x402.ts
+	// decodeEnvelopeShape.
+	if len(cw.Extensions) > 0 && string(cw.Extensions) != "null" {
+		var ext x402.PaymentExtensions
+		if err := json.Unmarshal(cw.Extensions, &ext); err != nil {
+			return nil, fmt.Errorf("invalid payload: malformed extensions object: %w", err)
+		}
+		keys := ext.Keys()
+		if keys == nil {
+			keys = []string{}
+		}
+		shape.ExtensionKeys = keys
+		shape.HasExtensions = len(keys) > 0
+		if ext.PaymentIdentifier != nil {
+			shape.HasPaymentIdentifier = true
+			if r := ext.PaymentIdentifier.Info.Required; r != nil {
+				shape.PaymentIdentifierRequired = r
+			}
+			shape.PaymentIdentifierID = ext.PaymentIdentifier.Info.Id
+		}
 	}
 	return shape, nil
 }
@@ -233,6 +296,22 @@ func verifyX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 		}
 		if shape.AcceptedAsset != in.X402ServerCurrency {
 			return nil, fmt.Errorf("currency mismatch: expected %s, got %s", in.X402ServerCurrency, shape.AcceptedAsset)
+		}
+		// payment-identifier gate: when the route requires a
+		// payment-identifier, the echoed credential must carry a valid
+		// `pay_`-shaped id. Missing, empty, or pattern-violating ids are
+		// rejected (coinbase x402 spec: HTTP 400). Drives the production
+		// PaymentExtensions parse + IsValidPaymentIdentifierID, matching
+		// Adapter.VerifyAndSettle's payment-identifier reject and the rust
+		// spine's requires_payment_identifier gate.
+		if in.X402ServerRequiresPaymentIdentifier {
+			id := shape.PaymentIdentifierID
+			if id == "" {
+				return nil, fmt.Errorf("payment-identifier required but credential echoed no id")
+			}
+			if !x402.IsValidPaymentIdentifierID(id) {
+				return nil, fmt.Errorf("payment-identifier id is invalid: %q does not match ^[A-Za-z0-9_-]{16,128}$", id)
+			}
 		}
 	default:
 		return nil, fmt.Errorf("invalid payload: unsupported x402 version: %d", shape.X402Version)

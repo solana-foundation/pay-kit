@@ -78,6 +78,11 @@ type VectorInput struct {
 	X402ServerCurrency    string     `json:"x402ServerCurrency"`
 	X402ServerAmount      string     `json:"x402ServerAmount"`
 	X402PaymentHeader     string     `json:"x402PaymentHeader"`
+
+	// x402-exact v2 extensions inputs (mirror schema.ts VectorInput).
+	X402AdvertisedExtensions            json.RawMessage `json:"x402AdvertisedExtensions"`
+	X402PaymentIdentifierID             string          `json:"x402PaymentIdentifierId"`
+	X402ServerRequiresPaymentIdentifier bool            `json:"x402ServerRequiresPaymentIdentifier"`
 }
 
 // ChargeRequest mirrors schema.ts VectorChargeRequest.
@@ -199,6 +204,9 @@ var rejectPatterns = []rejectPattern{
 	// likewise precedes the fallback. Mirrors harness/src/conformance/reject.ts.
 	{regexp.MustCompile(`(?i)unsupported x402 version`), "unsupported-version"},
 	{regexp.MustCompile(`(?i)network mismatch`), "wrong-network"},
+	// payment-identifier gate: required-but-missing/invalid id. Mirrors
+	// harness/src/conformance/reject.ts payment-identifier-required.
+	{regexp.MustCompile(`(?i)payment.identifier .*(required|missing|invalid)`), "payment-identifier-required"},
 }
 
 var invalidPayloadPattern = regexp.MustCompile(`(?i)invalid|malformed|decode|payload`)
