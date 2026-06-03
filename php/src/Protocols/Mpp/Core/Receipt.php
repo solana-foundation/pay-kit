@@ -7,6 +7,7 @@ namespace PayKit\Protocols\Mpp\Core;
 use DateTimeImmutable;
 use DateTimeZone;
 use InvalidArgumentException;
+use PayKit\PayCore\Rfc3339Parser;
 use PayKit\PayCore\Wire\Json;
 
 /**
@@ -88,10 +89,20 @@ final class Receipt
      */
     public static function fromArray(array $value): self
     {
+        $timestamp = Json::optionalString($value['timestamp'] ?? null, 'timestamp');
+        // The canonical mpp-tools receipt vectors reject a non-ISO-8601
+        // timestamp (error_non_iso8601_timestamp). Validate the wire timestamp
+        // shape here, reusing the RFC 3339 grammar the challenge expiry path
+        // already enforces, so the receipt parser fails loudly on a malformed
+        // timestamp rather than carrying it forward.
+        if ($timestamp !== '' && Rfc3339Parser::parse($timestamp) === null) {
+            throw new InvalidArgumentException('Receipt timestamp must be an RFC 3339 / ISO 8601 date-time');
+        }
+
         return new self(
             status: Json::optionalString($value['status'] ?? null, 'status'),
             method: Json::optionalString($value['method'] ?? null, 'method'),
-            timestamp: Json::optionalString($value['timestamp'] ?? null, 'timestamp'),
+            timestamp: $timestamp,
             reference: Json::optionalString($value['reference'] ?? null, 'reference'),
             challengeId: Json::optionalString($value['challengeId'] ?? null, 'challengeId'),
             externalId: Json::optionalString($value['externalId'] ?? null, 'externalId'),

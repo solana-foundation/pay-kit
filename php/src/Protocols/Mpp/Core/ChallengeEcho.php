@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp\Core;
 
+use InvalidArgumentException;
 use PayKit\PayCore\Wire\Base64Url;
 use PayKit\PayCore\Wire\Json;
 
@@ -83,8 +84,17 @@ final class ChallengeEcho
             $request = Base64Url::encodeJson(Json::object($request, 'request'));
         }
 
+        // The canonical mpp-tools credential vectors reject a credential whose
+        // embedded challenge carries no `id` (error_missing_challenge_id). The
+        // rust spine enforces this via a non-optional `id` on PaymentChallenge;
+        // mirror that here so the credential parse fails loudly.
+        $id = Json::optionalString($value['id'] ?? null, 'id');
+        if ($id === '') {
+            throw new InvalidArgumentException('Credential challenge is missing required field "id"');
+        }
+
         return new self(
-            id: Json::optionalString($value['id'] ?? null, 'id'),
+            id: $id,
             realm: Json::optionalString($value['realm'] ?? null, 'realm'),
             method: Json::optionalString($value['method'] ?? null, 'method'),
             intent: Json::optionalString($value['intent'] ?? null, 'intent'),
