@@ -63,6 +63,7 @@ use PayKit\Protocols\Mpp\Core\ChallengeEcho;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;
+use PayKit\Protocols\X402\Exact\PaymentExtensions;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
@@ -312,6 +313,10 @@ function classify_reject(string $message): ?string
         // mismatch classifies precisely (mirrors reject.ts).
         '/unsupported x402 version/i' => 'unsupported-version',
         '/network mismatch/i' => 'wrong-network',
+        // x402-exact extensions: server required a payment-identifier id but
+        // the credential echoed none / an invalid one. Checked before the
+        // generic invalid/payload fallback (mirrors reject.ts).
+        '/payment.identifier .*(required|missing|invalid)/i' => 'payment-identifier-required',
     ];
 
     foreach ($patterns as $pattern => $code) {
@@ -583,6 +588,35 @@ function x402_envelope_shape(array $envelope): array
         }
     }
 
+    // Surface the v2 `extensions` object (rust PaymentExtensions; TS reference
+    // decodeEnvelopeShape). hasExtensions is false when the key is absent OR
+    // present-but-empty (a conforming echo-and-omit build never emits `{}`,
+    // but the decoder must still classify a stray `{}` as "no extensions").
+    $extensions = $envelope['extensions'] ?? null;
+    if (is_array($extensions)) {
+        $keys = array_map('strval', array_keys($extensions));
+        sort($keys);
+        $shape['hasExtensions'] = $keys !== [];
+        $shape['extensionKeys'] = $keys;
+        $pid = $extensions[PaymentExtensions::PAYMENT_IDENTIFIER_KEY] ?? null;
+        $shape['hasPaymentIdentifier'] = is_array($pid);
+        if (is_array($pid)) {
+            $info = is_array($pid['info'] ?? null) ? $pid['info'] : [];
+            if (array_key_exists('required', $info)) {
+                $shape['paymentIdentifierRequired'] = $info['required'];
+            }
+            if (array_key_exists('id', $info)) {
+                $shape['paymentIdentifierId'] = $info['id'];
+            }
+        }
+    } else {
+        // No extensions object on the wire (conforming echo-and-omit). Pin the
+        // absence explicitly so a vector can assert it.
+        $shape['hasExtensions'] = false;
+        $shape['hasPaymentIdentifier'] = false;
+        $shape['extensionKeys'] = [];
+    }
+
     return $shape;
 }
 
@@ -651,6 +685,29 @@ function verify_x402_header(string $header, array $route): array
                 'Currency mismatch: expected ' . ($route['currency'] ?? '') . ", got $acceptedAsset",
             );
         }
+
+        // Extensions reject gate: when the route requires a payment-identifier,
+        // the echoed credential must carry a valid `pay_`-shaped id. Missing,
+        // empty, or pattern-violating ids are rejected (coinbase spec: 400).
+        // Mirrors the PHP Adapter::verifyAndSettle gate + rust
+        // requires_payment_identifier reject-when-required-and-missing.
+        if (($route['requiresPaymentIdentifier'] ?? false) === true) {
+            $echoed = PaymentExtensions::fromArray(
+                is_array($envelope['extensions'] ?? null) ? $envelope['extensions'] : null,
+            );
+            $info = $echoed?->paymentIdentifier?->info;
+            if ($info === null || $info->id === null || $info->id === '') {
+                throw new InvalidArgumentException(
+                    'payment-identifier required but credential echoed no id',
+                );
+            }
+            if (!$info->hasValidId()) {
+                throw new InvalidArgumentException(
+                    'payment-identifier id is invalid: ' . $info->id
+                    . ' does not match ^[A-Za-z0-9_-]{16,128}$',
+                );
+            }
+        }
     } else {
         // Genuinely-unknown versions are rejected (rust exact.rs / Adapter
         // unsupported_x402_version arm).
@@ -714,6 +771,7 @@ function run_x402_vector(array $vector): array
         'recipient' => Json::optionalString($input['x402ServerRecipient'] ?? null, 'x402ServerRecipient'),
         'currency' => Json::optionalString($input['x402ServerCurrency'] ?? null, 'x402ServerCurrency'),
         'amount' => Json::optionalString($input['x402ServerAmount'] ?? null, 'x402ServerAmount'),
+        'requiresPaymentIdentifier' => ($input['x402ServerRequiresPaymentIdentifier'] ?? null) === true,
     ];
 
     $shape = verify_x402_header($header, $route);
