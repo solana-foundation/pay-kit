@@ -11,6 +11,7 @@ use PayKit\Payment;
 use PayKit\Protocol;
 use PayKit\PayCore\Rpc\RpcGateway;
 use PayKit\PayCore\Rpc\SolanaRpcGateway;
+use PayKit\Protocols\X402\Exact\PaymentExtensions;
 use PayKit\Protocols\X402\Exact\Verifier;
 use PayKit\Store\MemoryStore;
 use PayKit\Store\Store;
@@ -177,6 +178,14 @@ final class Adapter
             'resource'    => ['type' => 'http', 'url' => $request->getUri()->getPath()],
             'accepts'     => [$this->acceptsEntry($gate, $request)],
         ];
+        // Advertise the x402 v2 `extensions` object when the operator
+        // configured one (e.g. a required payment-identifier). Omit the key
+        // entirely when none is configured, never an empty `{}` (mirrors rust
+        // `PaymentRequiredEnvelope.extensions` skip_serializing_if = Option::is_none).
+        $extensions = $this->config->x402?->advertisedExtensions ?? null;
+        if (is_array($extensions) && $extensions !== []) {
+            $challenge['extensions'] = $extensions;
+        }
         return [
             'payment-required' => base64_encode(json_encode($challenge, JSON_THROW_ON_ERROR)),
         ];
@@ -232,6 +241,31 @@ final class Adapter
                 && ($acceptedExtra[$key] ?? null) !== $offerExtra[$key]) {
                 throw new InvalidProofException(
                     'pay_kit: charge_request_mismatch (extra.' . $key . ')',
+                );
+            }
+        }
+
+        // x402 v2 extensions reject gate. When the server advertised a
+        // payment-identifier with info.required = true, the credential MUST
+        // echo back a valid `pay_`-shaped id (^[A-Za-z0-9_-]{16,128}$) or the
+        // request is rejected (coinbase payment_identifier spec: HTTP 400).
+        // Mirrors rust `requires_payment_identifier` + the reject-when-required
+        // -and-missing check layered on verify_envelope_payload.
+        $advertised = PaymentExtensions::fromArray($this->config->x402?->advertisedExtensions ?? null);
+        if ($advertised !== null && $advertised->requiresPaymentIdentifier()) {
+            $echoed = PaymentExtensions::fromArray(
+                is_array($envelope['extensions'] ?? null) ? $envelope['extensions'] : null,
+            );
+            $info = $echoed?->paymentIdentifier?->info;
+            if ($info === null || $info->id === null || $info->id === '') {
+                throw new InvalidProofException(
+                    'pay_kit: payment-identifier required but credential echoed no id',
+                );
+            }
+            if (!$info->hasValidId()) {
+                throw new InvalidProofException(
+                    'pay_kit: payment-identifier id is invalid: ' . $info->id
+                    . ' does not match ^[A-Za-z0-9_-]{16,128}$',
                 );
             }
         }
