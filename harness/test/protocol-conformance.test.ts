@@ -17,20 +17,20 @@ import {
 
 const cases = collectProtocolCases();
 
-// Known divergences between pay-kit's TypeScript protocol core (mppx) and the
-// canonical mpp-tools oracle. Each entry is `${op} :: ${scenario}`. These are
-// asserted to STILL diverge so the gap is tracked, not silently green; when an
-// SDK fix lands, the divergence test fails loudly and the entry is removed.
+// Known divergences between pay-kit's TypeScript protocol surface (`@solana/mpp`,
+// which wraps mppx) and the canonical mpp-tools oracle. Each entry is
+// `${op} :: ${scenario}`. These are asserted to STILL diverge so the gap is
+// tracked, not silently green; when an SDK fix lands, the divergence test fails
+// loudly and the entry is removed.
 //
-// - challenge.parse :: error_empty_id
-//     The canonical spec (and pay-kit's own rust spine, protocol/core/
-//     headers.rs) reject a WWW-Authenticate challenge with an empty `id`
-//     parameter as parse_error. mppx@0.5.5 accepts it (its Zod `id` schema
-//     allows ""). base64url + challenge-id HMAC are byte-identical; this is a
-//     missing validation guard on the TS parse path, not a wire-math gap.
-const KNOWN_TS_DIVERGENCES = new Set<string>([
-  "challenge.parse :: error_empty_id",
-]);
+// (none) — `challenge.parse :: error_empty_id` previously diverged because
+//   mppx@0.5.x accepts a `WWW-Authenticate` challenge with an empty `id`
+//   parameter (its Zod `id` schema allows ""), while the canonical spec and
+//   pay-kit's rust spine (protocol/core/headers.rs) reject it as parse_error.
+//   pay-kit's `@solana/mpp` now guards this at its boundary
+//   (src/shared/challenge-guard.ts), rejecting an empty `id` on parse, so the
+//   TypeScript SDK conforms to the canonical golden.
+const KNOWN_TS_DIVERGENCES = new Set<string>([]);
 
 describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () => {
   it("expands a non-trivial set of canonical cases", () => {
