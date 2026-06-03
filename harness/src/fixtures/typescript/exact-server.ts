@@ -102,6 +102,7 @@ type DecodedCredential = {
     asset?: string;
     payTo?: string;
     amount?: string;
+    maxAmountRequired?: string;
   };
   payload?: {
     challengeId?: string;
@@ -179,7 +180,13 @@ function classifyCredential(
     };
   }
 
-  if (offer.maxAmountRequired !== credential.accepted.amount) {
+  // Clients echo the offer verbatim, which carries `maxAmountRequired`
+  // (the wire field) rather than a normalized `amount`. Accept either so a
+  // conformant client that echoes the raw offer is not wrongly rejected.
+  if (
+    offer.maxAmountRequired !==
+    (credential.accepted.amount ?? credential.accepted.maxAmountRequired)
+  ) {
     return {
       reject: {
         code: "charge_request_mismatch",
