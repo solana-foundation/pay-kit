@@ -16,6 +16,16 @@ let package = Package(
     ],
     targets: [
         .target(name: "SolanaPayKit"),
+        // Cross-SDK conformance-vector runner CLI. Reads one vector as JSON
+        // on stdin and emits one RunnerResult line on stdout, honoring the
+        // contract in harness/src/conformance/ts-runner.ts. Swift is a
+        // client-only SDK: it drives charge + x402-exact build paths and the
+        // canonical-bytes encoders, and emits unsupported-mode for the
+        // server verify vectors so the driver skips them.
+        .executableTarget(
+            name: "mpp-conformance",
+            dependencies: ["SolanaPayKit"]
+        ),
         .testTarget(
             name: "SolanaPayKitTests",
             dependencies: ["SolanaPayKit"]

@@ -74,11 +74,18 @@ let X402MemoMaxBytes: Int = 256
 ///   - nonceGenerator: Optional closure that returns 16 random bytes.
 ///     Defaults to `SystemRandomNumberGenerator`. Pass a fixed value in
 ///     tests to make the output deterministic.
+///   - extensions: Optional echoed-and-appended x402 v2 `extensions` object
+///     (see `buildX402Extensions`). Written straight onto the envelope's
+///     `extensions` field; omitted from the wire when `nil` or empty
+///     (echo-and-omit, mirrors rust `build_payment_header`'s fourth
+///     parameter and `skip_serializing_if = "Option::is_none"`). Legacy v1
+///     callers pass `nil`.
 public func buildX402PaymentHeader(
     signer: any SolanaSigner,
     rpc: RpcClient,
     offer: X402AcceptsEntry,
-    nonceGenerator: (() -> Data)? = nil
+    nonceGenerator: (() -> Data)? = nil,
+    extensions: X402PaymentExtensions? = nil
 ) async throws -> String {
     let payload = try await _buildPaymentPayload(
         signer: signer, rpc: rpc, offer: offer, nonceGenerator: nonceGenerator
@@ -86,12 +93,46 @@ public func buildX402PaymentHeader(
     let envelope = X402PaymentSignatureEnvelope(
         x402Version: X402Version,
         accepted: offer,
-        payload: payload
+        payload: payload,
+        extensions: extensions
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let json = try encoder.encode(envelope)
     return json.base64EncodedString()
+}
+
+/// Build the outbound x402 v2 `extensions` object from a server's inbound
+/// challenge extensions, applying the echo-and-append rule (§5.1.2):
+///
+/// 1. Echo the inbound extensions verbatim, preserving unknown extensions
+///    (rust `PaymentExtensions::echoing`). When the server advertised none,
+///    returns `nil` so the outbound omits `extensions` entirely.
+/// 2. When the echoed `payment-identifier.info.required == true`, populate
+///    `info.id` without overwriting the server's `info.required` or `schema`
+///    (rust `with_payment_identifier_id`). A pinned `paymentIdentifierID`
+///    forces a deterministic id; otherwise a fresh `pay_` id is generated
+///    via `generateX402PaymentIdentifierID`.
+///
+/// - Parameters:
+///   - inbound: The challenge `extensions` object (e.g. from
+///     `X402PaymentRequiredEnvelope.extensions`).
+///   - paymentIdentifierID: Optional pinned id. Pass to reuse an id across
+///     retries (idempotency) or for deterministic tests.
+///   - randomBytes: Optional 16-byte source for id generation (tests).
+public func buildX402Extensions(
+    echoing inbound: JSONValue?,
+    paymentIdentifierID: String? = nil,
+    randomBytes: (() -> Data)? = nil
+) throws -> X402PaymentExtensions? {
+    guard var extensions = try X402PaymentExtensions.echoing(inbound) else {
+        return nil
+    }
+    if extensions.requiresPaymentIdentifier {
+        let id = paymentIdentifierID ?? generateX402PaymentIdentifierID(randomBytes: randomBytes)
+        extensions = extensions.withPaymentIdentifierID(id)
+    }
+    return extensions
 }
 
 // MARK: - Internal payment builder
