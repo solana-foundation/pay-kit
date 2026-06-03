@@ -99,6 +99,22 @@ export type X402EnvelopeShape = {
   acceptedAsset?: string;
   acceptedPayTo?: string;
   acceptedAmount?: string;
+  // ── v2 extensions (rust PaymentExtensions) ──
+  // True iff the envelope carries a non-empty `extensions` object. A v2
+  // build that the server advertised no extensions for MUST NOT emit an
+  // empty `extensions: {}`, so this is false in that case (echo-and-omit).
+  hasExtensions?: boolean;
+  // True iff `extensions["payment-identifier"]` is present.
+  hasPaymentIdentifier?: boolean;
+  // `extensions["payment-identifier"].info.required`, surfaced verbatim.
+  paymentIdentifierRequired?: boolean;
+  // `extensions["payment-identifier"].info.id`, surfaced verbatim. Lets a
+  // vector assert the client generated/echoed a `pay_`-shaped id.
+  paymentIdentifierId?: string;
+  // The exact key list the outbound `extensions` carries, sorted. Pins
+  // the echo-and-append rule: an unknown server extension must survive
+  // verbatim alongside `payment-identifier`.
+  extensionKeys?: string[];
 };
 
 // An x402 `exact` offer (the server's PaymentRequirements / the v2
@@ -180,7 +196,12 @@ export type RejectCode =
   | "unsupported-version"
   // x402-exact: the credential's network does not match the server's
   // configured network (v1 legacy slug or v2 accepted.network).
-  | "wrong-network";
+  | "wrong-network"
+  // x402-exact extensions: the server advertised payment-identifier with
+  // info.required=true but the credential echoed no valid `pay_`-shaped
+  // id (missing, empty, or pattern-violating). The coinbase spec maps
+  // this to HTTP 400; the conformance oracle pins it as a reject category.
+  | "payment-identifier-required";
 
 export type VectorInput = {
   // build-transaction / verify-transaction
@@ -237,6 +258,24 @@ export type VectorInput = {
   // verify-transaction (x402): the base64 PAYMENT-SIGNATURE / X-PAYMENT
   // header value the server must verify. Pinned so verify needs no build.
   x402PaymentHeader?: string;
+
+  // ── x402-exact extensions inputs (rust PaymentExtensions) ────────────
+  // build-transaction (x402): the `extensions` object the server
+  // advertised on the inbound PAYMENT-REQUIRED. The client echoes it,
+  // preserving unknown keys verbatim. Omit to assert the echo-and-omit
+  // rule (no empty `extensions: {}` on the outbound).
+  x402AdvertisedExtensions?: Record<string, unknown>;
+  // build-transaction (x402): a pinned `pay_`-shaped id the client must
+  // populate into payment-identifier.info.id (so the build is
+  // deterministic; a real client calls generatePaymentIdentifierId()).
+  // When omitted and the advertised payment-identifier requires an id,
+  // the runner generates one and the vector asserts only the pattern.
+  x402PaymentIdentifierId?: string;
+  // verify-transaction (x402): when true, the server route requires a
+  // payment-identifier id. The server rejects the credential if the
+  // echoed `extensions["payment-identifier"].info.id` is missing or does
+  // not match ^[A-Za-z0-9_-]{16,128}$.
+  x402ServerRequiresPaymentIdentifier?: boolean;
 };
 
 export type ConformanceVector = {

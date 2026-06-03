@@ -82,12 +82,102 @@ export function toAcceptedValue(offer: X402Offer): Record<string, unknown> {
 
 type PaymentProof = { transaction: string };
 
+// ── x402 v2 extensions (rust types.rs PaymentExtensions et al.) ──
+//
+// The `extensions` object rides on BOTH the inbound PAYMENT-REQUIRED
+// challenge and the outbound PAYMENT-SIGNATURE credential. The client
+// echoes the inbound object back, fills required client-side fields
+// (e.g. payment-identifier.info.id), preserves unknown extensions
+// verbatim (forward-compat echo-and-append, x402 v2 §5.1.2), and omits
+// the object entirely when the server advertised none.
+//
+// The spec JSON key is kebab-case `payment-identifier` (rust
+// `#[serde(rename = "payment-identifier")]`). `info` is camelCase
+// `{ required?, id? }`; `schema?` is echoed verbatim.
+
+export const PAYMENT_IDENTIFIER_KEY = "payment-identifier";
+
+// rust `generate_payment_identifier_id`: `pay_` + 32 lowercase hex
+// (36 total), satisfying the spec pattern ^[A-Za-z0-9_-]{16,128}$ and
+// the canonical Solana ^pay_[a-zA-Z0-9_-]{10,120}$ shape.
+export const PAYMENT_IDENTIFIER_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+
+export type PaymentIdentifierInfo = { required?: boolean; id?: string };
+export type PaymentIdentifierExtension = {
+  info: PaymentIdentifierInfo;
+  schema?: unknown;
+};
+
+// Typed view over the v2 `extensions` object. Known extensions are
+// fielded out; unknown ones flow through verbatim under their own key so
+// the echo rule does not drop forward-compatible payloads. Mirrors rust
+// `PaymentExtensions { payment_identifier, #[serde(flatten)] other }`.
+export type PaymentExtensions = Record<string, unknown> & {
+  [PAYMENT_IDENTIFIER_KEY]?: PaymentIdentifierExtension;
+};
+
+export function generatePaymentIdentifierId(): string {
+  // 16 random bytes -> 32 hex chars; `pay_` prefix. Mirrors rust.
+  let hex = "";
+  for (let i = 0; i < 16; i += 1) {
+    hex += Math.floor(Math.random() * 256)
+      .toString(16)
+      .padStart(2, "0");
+  }
+  return `pay_${hex}`;
+}
+
+// rust `PaymentExtensions::echoing`: deep-copy the inbound extensions
+// blob so unknown keys round-trip verbatim. Returns undefined when the
+// server advertised no extensions (so the outbound omits the object).
+export function echoExtensions(
+  inbound: PaymentExtensions | undefined | null,
+): PaymentExtensions | undefined {
+  if (inbound === undefined || inbound === null) return undefined;
+  return JSON.parse(JSON.stringify(inbound)) as PaymentExtensions;
+}
+
+// rust `PaymentExtensions::requires_payment_identifier`:
+// payment-identifier.info.required === true.
+export function requiresPaymentIdentifier(
+  extensions: PaymentExtensions | undefined,
+): boolean {
+  return extensions?.[PAYMENT_IDENTIFIER_KEY]?.info?.required === true;
+}
+
+// rust `PaymentExtensions::with_payment_identifier_id`: set the
+// client-side id, creating the entry if the server did not advertise it,
+// preserving server-side info (required) and schema verbatim.
+export function withPaymentIdentifierId(
+  extensions: PaymentExtensions | undefined,
+  id: string,
+): PaymentExtensions {
+  const next: PaymentExtensions = extensions
+    ? (JSON.parse(JSON.stringify(extensions)) as PaymentExtensions)
+    : {};
+  const entry = (next[PAYMENT_IDENTIFIER_KEY] ?? { info: {} }) as
+    PaymentIdentifierExtension;
+  entry.info = { ...entry.info, id };
+  next[PAYMENT_IDENTIFIER_KEY] = entry;
+  return next;
+}
+
+// rust `PaymentExtensions::is_empty`: no payment_identifier and no other
+// keys. Callers use this to avoid emitting an empty `extensions: {}`.
+export function extensionsIsEmpty(
+  extensions: PaymentExtensions | undefined,
+): boolean {
+  if (!extensions) return true;
+  return Object.keys(extensions).length === 0;
+}
+
 type PaymentSignatureEnvelope = {
   scheme?: string;
   network?: string;
   x402Version: number;
   accepted?: Record<string, unknown>;
   payload: PaymentProof;
+  extensions?: PaymentExtensions;
 };
 
 function encodeEnvelope(envelope: PaymentSignatureEnvelope): string {
@@ -101,15 +191,22 @@ function encodeEnvelope(envelope: PaymentSignatureEnvelope): string {
 }
 
 // Build a v2 PAYMENT-SIGNATURE header. Mirrors rust `build_payment_header`:
-// no top-level scheme/network, accepted echoes the offer.
+// no top-level scheme/network, accepted echoes the offer. The optional
+// `extensions` is the echoed-and-appended inbound extensions object; when
+// undefined (or structurally empty) it is omitted entirely so the wire
+// never carries an empty `extensions: {}` (rust skip_serializing_if =
+// "Option::is_none" + PaymentExtensions::is_empty guidance).
 export function buildPaymentHeaderV2(
   offer: X402Offer,
   transaction: string,
+  extensions?: PaymentExtensions,
 ): string {
   return encodeEnvelope({
     x402Version: X402_VERSION_V2,
     accepted: toAcceptedValue(offer),
     payload: { transaction },
+    extensions:
+      extensions && !extensionsIsEmpty(extensions) ? extensions : undefined,
   });
 }
 
@@ -131,10 +228,11 @@ export function buildPaymentHeader(
   version: number,
   offer: X402Offer,
   transaction: string,
+  extensions?: PaymentExtensions,
 ): string {
   return version === X402_VERSION_V1
     ? buildPaymentHeaderV1(offer, transaction)
-    : buildPaymentHeaderV2(offer, transaction);
+    : buildPaymentHeaderV2(offer, transaction, extensions);
 }
 
 // Decode an envelope header into the conformance shape oracle.
@@ -159,6 +257,34 @@ export function decodeEnvelopeShape(header: string): X402EnvelopeShape {
     shape.acceptedPayTo = accepted.payTo as string | undefined;
     shape.acceptedAmount = accepted.amount as string | undefined;
   }
+  // Surface the v2 extensions object. `hasExtensions` is false when the
+  // key is absent OR present-but-empty (the echo-and-omit rule means a
+  // conforming build never emits an empty `extensions: {}`, but a decoder
+  // must still classify a stray `{}` as "no extensions").
+  const extensions = env.extensions;
+  if (extensions !== undefined && extensions !== null) {
+    const keys = Object.keys(extensions).sort();
+    shape.hasExtensions = keys.length > 0;
+    shape.extensionKeys = keys;
+    const pid = extensions[PAYMENT_IDENTIFIER_KEY] as
+      | PaymentIdentifierExtension
+      | undefined;
+    shape.hasPaymentIdentifier = pid !== undefined;
+    if (pid !== undefined) {
+      if (pid.info?.required !== undefined) {
+        shape.paymentIdentifierRequired = pid.info.required;
+      }
+      if (pid.info?.id !== undefined) {
+        shape.paymentIdentifierId = pid.info.id;
+      }
+    }
+  } else {
+    // No extensions object on the wire (the conforming echo-and-omit
+    // case). Pin the absence explicitly so a vector can assert it.
+    shape.hasExtensions = false;
+    shape.hasPaymentIdentifier = false;
+    shape.extensionKeys = [];
+  }
   return shape;
 }
 
@@ -167,6 +293,10 @@ export type X402ServerRoute = {
   recipient: string;
   currency: string;
   amount: string; // base units
+  // When true the route advertised payment-identifier with
+  // info.required=true: the credential MUST echo back a valid
+  // `pay_`-shaped id or the server rejects.
+  requiresPaymentIdentifier?: boolean;
 };
 
 // Verify a payment header against a server route. Mirrors the version
@@ -231,6 +361,23 @@ export function verifyPaymentHeader(
       throw new Error(
         `Currency mismatch: expected ${route.currency}, got ${acceptedAsset}`,
       );
+    }
+    // Extensions reject gate: when the route requires a payment-identifier,
+    // the echoed credential must carry a valid `pay_`-shaped id. Missing,
+    // empty, or pattern-violating ids are rejected (coinbase spec: 400).
+    if (route.requiresPaymentIdentifier) {
+      const pid = env.extensions?.[PAYMENT_IDENTIFIER_KEY];
+      const id = pid?.info?.id;
+      if (id === undefined || id === "") {
+        throw new Error(
+          "payment-identifier required but credential echoed no id",
+        );
+      }
+      if (!PAYMENT_IDENTIFIER_ID_PATTERN.test(id)) {
+        throw new Error(
+          `payment-identifier id is invalid: ${id} does not match ^[A-Za-z0-9_-]{16,128}$`,
+        );
+      }
     }
   } else {
     throw new Error(

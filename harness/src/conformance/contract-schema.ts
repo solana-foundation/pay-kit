@@ -74,6 +74,11 @@ const x402EnvelopeShapeSchema = {
     acceptedAsset: { type: "string" },
     acceptedPayTo: { type: "string" },
     acceptedAmount: { type: "string" },
+    hasExtensions: { type: "boolean" },
+    hasPaymentIdentifier: { type: "boolean" },
+    paymentIdentifierRequired: { type: "boolean" },
+    paymentIdentifierId: { type: "string" },
+    extensionKeys: { type: "array", items: { type: "string" } },
   },
 } as const;
 
@@ -94,6 +99,7 @@ const rejectCodeSchema = {
     "invalid-payload",
     "unsupported-version",
     "wrong-network",
+    "payment-identifier-required",
   ],
 } as const;
 

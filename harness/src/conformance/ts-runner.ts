@@ -25,7 +25,12 @@ import { classifyReject } from "./reject";
 import {
   buildPaymentHeader,
   decodeEnvelopeShape,
+  echoExtensions,
+  generatePaymentIdentifierId,
+  requiresPaymentIdentifier,
   verifyPaymentHeader,
+  withPaymentIdentifierId,
+  type PaymentExtensions,
 } from "./x402";
 import type {
   ConformanceVector,
@@ -149,7 +154,26 @@ function runX402Vector(vector: ConformanceVector): RunnerResult {
     // signs a Solana tx here; the interop matrix asserts that path.
     const transaction =
       input.x402PinnedTransaction ?? "AA==";
-    const header = buildPaymentHeader(version, input.x402Offer, transaction);
+
+    // Echo-and-append (x402 v2 §5.1.2): take the server's advertised
+    // extensions, preserve unknown keys verbatim, and fill the required
+    // client-side payment-identifier.info.id when the server requires it.
+    // When the server advertised nothing, echoExtensions returns undefined
+    // and the build omits the `extensions` object entirely (no empty {}).
+    let extensions: PaymentExtensions | undefined = echoExtensions(
+      input.x402AdvertisedExtensions as PaymentExtensions | undefined,
+    );
+    if (requiresPaymentIdentifier(extensions)) {
+      const id =
+        input.x402PaymentIdentifierId ?? generatePaymentIdentifierId();
+      extensions = withPaymentIdentifierId(extensions, id);
+    }
+    const header = buildPaymentHeader(
+      version,
+      input.x402Offer,
+      transaction,
+      extensions,
+    );
     return {
       id: vector.id,
       outcome: "accept",
@@ -176,6 +200,12 @@ function runX402Vector(vector: ConformanceVector): RunnerResult {
     recipient: input.x402ServerRecipient,
     currency: input.x402ServerCurrency,
     amount: input.x402ServerAmount,
+    ...(input.x402ServerRequiresPaymentIdentifier !== undefined
+      ? {
+          requiresPaymentIdentifier:
+            input.x402ServerRequiresPaymentIdentifier,
+        }
+      : {}),
   });
   return {
     id: vector.id,

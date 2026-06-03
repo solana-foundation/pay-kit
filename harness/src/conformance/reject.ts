@@ -27,6 +27,10 @@ const PATTERNS: Array<[RegExp, RejectCode]> = [
   // likewise precedes the fallback.
   [/unsupported x402 version/i, "unsupported-version"],
   [/network mismatch/i, "wrong-network"],
+  // x402-exact extensions: server required a payment-identifier id but the
+  // credential echoed none / an invalid one. Checked before the generic
+  // invalid/payload fallback.
+  [/payment.identifier .*(required|missing|invalid)/i, "payment-identifier-required"],
 ];
 
 // Classify a runner's native reject message onto the shared vocabulary.

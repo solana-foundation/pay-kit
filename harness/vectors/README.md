@@ -140,13 +140,29 @@ Two wire versions, both covered:
   the network matches, and (v2) the credential's `accepted` echoes the
   route's network/amount/recipient/asset.
 
+#### v2 extensions inputs (echo-and-append)
+
+- `build-transaction`: `x402AdvertisedExtensions` (the `extensions` object
+  the server advertised on the inbound PAYMENT-REQUIRED — the client echoes
+  it, preserving unknown keys verbatim and omitting an empty object) and
+  `x402PaymentIdentifierId` (a pinned `pay_`-shaped id; when omitted and the
+  advertised `payment-identifier` is `required`, the runner generates one).
+- `verify-transaction`: `x402ServerRequiresPaymentIdentifier` (when true the
+  route requires a `payment-identifier` id; the server rejects a credential
+  that echoed no valid id). See `docs/x402/extensions-spec.md`.
+
 ### x402 oracle shape (`x402EnvelopeShape`)
 
 `{ x402Version, scheme?, network?, hasAccepted, payloadHasTransaction,
 acceptedScheme?, acceptedNetwork?, acceptedAsset?, acceptedPayTo?,
-acceptedAmount? }`. Presence is meaningful: a v2 build MUST set
-`hasAccepted: true` and omit `scheme`/`network`; a v1 build MUST set
-`scheme: "exact"`, `network: <slug>`, and `hasAccepted: false`.
+acceptedAmount?, hasExtensions?, hasPaymentIdentifier?,
+paymentIdentifierRequired?, paymentIdentifierId?, extensionKeys? }`.
+Presence is meaningful: a v2 build MUST set `hasAccepted: true` and omit
+`scheme`/`network`; a v1 build MUST set `scheme: "exact"`, `network:
+<slug>`, and `hasAccepted: false`. The extension fields pin echo-and-append:
+`hasExtensions` is false when the server advertised none (no empty `{}`),
+`extensionKeys` is the sorted key list so an unknown extension must survive,
+and `paymentIdentifierId` (when pinned) is asserted exactly.
 
 ### x402 reject vocabulary
 
@@ -155,6 +171,9 @@ Two categories added to the shared `RejectCode` set:
 - `unsupported-version` — `x402Version` is neither 1 nor 2.
 - `wrong-network` — the credential's network (v1 slug or v2
   `accepted.network`) does not resolve to the server's configured network.
+- `payment-identifier-required` — the route required a `payment-identifier`
+  (`info.required = true`) but the credential echoed no valid `pay_`-shaped
+  id (missing/empty/pattern-violating). Coinbase spec maps this to HTTP 400.
 
 ### x402 seeded vectors (this change)
 
@@ -165,6 +184,21 @@ legacy v1 vectors ship separately):
 - `x402-exact-v2-verify-accept` — server accepts a matching v2 credential.
 - `x402-exact-unknown-version-reject` — `x402Version: 3` → reject
   `unsupported-version`.
+
+`x402-extensions.json`, 6 vectors (v2 extensions echo-and-append; see
+`docs/x402/extensions-spec.md`):
+
+- `x402-ext-echo-payment-identifier` — echo advertised `payment-identifier`,
+  generate a `pay_` id, keep `required`.
+- `x402-ext-echo-payment-identifier-pinned-id` — deterministic id append
+  without overwriting server `info.required`.
+- `x402-ext-preserve-unknown-verbatim` — unknown extension survives verbatim
+  alongside `payment-identifier`.
+- `x402-ext-omit-when-none-advertised` — no advertised extensions → outbound
+  omits `extensions` entirely (no empty `{}`).
+- `x402-ext-server-accepts-valid-id` — server accepts a valid echoed id.
+- `x402-ext-server-rejects-required-missing-id` — server rejects
+  (`payment-identifier-required`) when required and no valid id.
 
 Only the TS reference runner implements the x402 path today; the per-SDK
 x402 runners are the tracked follow-up (each drives its own production

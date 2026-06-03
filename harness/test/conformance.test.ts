@@ -234,6 +234,31 @@ function assertEnvelopeShape(
   if (expected.acceptedAmount !== undefined) {
     expect(actual.acceptedAmount).toBe(expected.acceptedAmount);
   }
+
+  // ── v2 extensions echo assertions ──
+  if (expected.hasExtensions !== undefined) {
+    expect(actual.hasExtensions).toBe(expected.hasExtensions);
+  }
+  if (expected.hasPaymentIdentifier !== undefined) {
+    expect(actual.hasPaymentIdentifier).toBe(expected.hasPaymentIdentifier);
+  }
+  if (expected.paymentIdentifierRequired !== undefined) {
+    expect(actual.paymentIdentifierRequired).toBe(
+      expected.paymentIdentifierRequired,
+    );
+  }
+  if (expected.extensionKeys !== undefined) {
+    expect(actual.extensionKeys).toEqual(expected.extensionKeys);
+  }
+  // A pinned id is asserted exactly; an unpinned-but-required id is
+  // asserted only against the spec pattern (the runner generated it).
+  if (expected.paymentIdentifierId !== undefined) {
+    expect(actual.paymentIdentifierId).toBe(expected.paymentIdentifierId);
+  } else if (expected.hasPaymentIdentifier && expected.paymentIdentifierRequired) {
+    expect(actual.paymentIdentifierId, "required id was not echoed").toMatch(
+      /^[A-Za-z0-9_-]{16,128}$/,
+    );
+  }
 }
 
 const vectors = loadVectors();
