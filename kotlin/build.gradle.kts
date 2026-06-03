@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "2.3.21"
     kotlin("plugin.serialization") version "2.3.21"
+    `java-library`
     jacoco
 }
 
@@ -13,6 +14,12 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    // Coroutines back the idiomatic suspend call surface (PayKitClient.get).
+    // OkHttp 4 is blocking, so the suspend methods offload the call onto
+    // Dispatchers.IO; this is the same bridge Retrofit's suspend adapter uses.
+    // `api`, not `implementation`: the public call surface returns suspend
+    // functions, so coroutines is part of the SDK's exported API.
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
     // BouncyCastle gives a deterministic Ed25519 signer that takes the raw
     // 32 byte seed format Solana keypair files (and the MPP interop
     // harness) ship in. The JDK Ed25519 provider does not expose that

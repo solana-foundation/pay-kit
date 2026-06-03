@@ -31,24 +31,70 @@ are resolved for you from the challenge.
 
 ## Quick start
 
-Drive an MPP-gated endpoint with `MppHttpClient`. Sensible defaults: a demo
-keypair signer and the hosted Surfpool RPC.
+The client is built [Retrofit](https://square.github.io/retrofit/)-style: a
+`PayKitClient.Builder` configures it, payment handling lives in an OkHttp
+interceptor, and the call surface is a small set of suspend functions returning
+a typed `PayResponse`.
 
 ```kotlin
+import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.protocols.mpp.client.JsonRpcClient
-import com.solana.paykit.protocols.mpp.client.MppHttpClient
 import com.solana.paykit.paycore.MemorySigner
 
 val signer = MemorySigner.fromSecretKey(walletSecretKeyBytes)
-val client = MppHttpClient(signer = signer, blockhashProvider = JsonRpcClient("https://402.surfnet.dev"))
+val client = PayKitClient.Builder()
+    .signer(signer)
+    .charge(blockhashProvider = JsonRpcClient("https://402.surfnet.dev"))
+    .build()
 
-val response = client.mppGet("https://402.surfnet.dev/paid") // 200 after the MPP retry
-println(response.header("Payment-Receipt"))                  // on-chain signature
+val result = client.get("https://402.surfnet.dev/paid") // 200 after the MPP retry
+println(result.status)        // 200
+println(result.paymentSent)   // true
+println(result.settlement)    // on-chain signature (Payment-Receipt)
+result.response.close()       // the caller owns the body
 ```
 
-The first request hits a `402`, the client builds and signs the charge
-transaction, then replays with `Authorization: Payment ...`. The currency,
-mint, token program, and decimals all come from the challenge body.
+The first request hits a `402`; the payment interceptor builds and signs the
+charge transaction, then replays with `Authorization: Payment ...`. The
+currency, mint, token program, and decimals all come from the challenge body.
+
+The same client and call surface drive both protocols. For x402 `exact`, swap
+the protocol on the builder:
+
+```kotlin
+val client = PayKitClient.Builder()
+    .signer(signer)
+    // RPC is only consulted when an offer omits extra.recentBlockhash.
+    // null network defaults to mainnet; pass "devnet" for Surfpool/devnet.
+    .x402(rpc = "https://402.surfnet.dev", network = "devnet")
+    .build()
+
+val result = client.get("https://402.surfnet.dev/protected")
+println(result.settlement) // x402 Payment-Response echo
+```
+
+A client may carry both protocols (call `charge(...)` and `x402(...)` on the
+same builder); on a `402` the first interceptor to recognise the challenge
+pays. There is also a DSL form:
+
+```kotlin
+val client = PayKitClient.httpClient {
+    signer(signer)
+    x402(rpcBlockhashProvider = { rpc.fetchRecentBlockhash() })
+}
+```
+
+### Design: 402 retry as an OkHttp interceptor
+
+The `402 -> pay -> retry` loop is not in the call methods. It is an OkHttp
+`Interceptor` (`PaymentInterceptor`) in the client's chain, exactly how
+Retrofit/OkHttp model auth and retry: on a `402` it buffers the body, parses
+the protocol challenge, builds and signs the credential through the signer,
+attaches the payment header, and replays the request once. One interceptor per
+protocol (`ChargeInterceptor`, `X402Interceptor`) is composed onto the OkHttp
+client by the builder. Bring your own OkHttp configuration (timeouts, logging,
+proxies) through `okHttpClient(...)`; pay-kit only layers its interceptor on
+top.
 
 ## Run the example
 
@@ -120,7 +166,7 @@ implementation("com.solanamobile:web3-solana:0.3.1")
 implementation("com.solanamobile:rpc-core:0.2.7")
 ```
 
-Pass your `SolanaSigner` to `MppHttpClient` / `X402HttpClient`; the rest of
+Pass your `SolanaSigner` to `PayKitClient.Builder().signer(...)`; the rest of
 the flow is unchanged.
 
 ## Solana dependencies
@@ -130,8 +176,9 @@ the flow is unchanged.
 | `com.solanamobile:web3-solana` | x402 exact transaction / instruction / SPL transfer layout | 0.3.1 |
 | `io.github.funkatronics:multimult` | Base58 codec shared with the Solana Mobile Kotlin stack | 0.2.3 |
 | `org.bouncycastle:bcprov-jdk18on` | Ed25519 sign + verify, off-curve PDA checks | 1.78.1 |
-| `com.squareup.okhttp3:okhttp` | HTTP client, JSON-RPC transport, 402 retry | 4.12.0 |
+| `com.squareup.okhttp3:okhttp` | HTTP client, JSON-RPC transport, 402-retry interceptor | 4.12.0 |
 | `org.jetbrains.kotlinx:kotlinx-serialization-json` | challenge / credential JSON | 1.9.0 |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-core` | suspend call surface (`PayKitClient.get`) | 1.10.1 |
 
 What `web3-solana` does not yet supply (and so stays hand-rolled in
 `paycore`): v0 `VersionedMessage` compilation, the ComputeBudget program, a
@@ -174,6 +221,12 @@ through Jacoco. Reports land at `build/reports/jacoco/test/`.
 ```text
 kotlin/
 ├── src/main/kotlin/com/solana/paykit/
+│   ├── client/                   # PayKitClient (builder) + payment interceptors
+│   │   ├── PayKitClient.kt       # builder + suspend call surface
+│   │   ├── PaymentInterceptor.kt # OkHttp interceptor: 402 -> pay -> retry
+│   │   ├── ChargeInterceptor.kt  # MPP charge credential build
+│   │   ├── X402Interceptor.kt    # x402 exact credential build
+│   │   └── PaymentResult.kt      # PayResponse (status, paymentSent, settlement)
 │   ├── paycore/                  # PayCore: protocol-agnostic primitives
 │   │   ├── Base58.kt             # Base58 codec (multimult-backed)
 │   │   ├── Base64Url.kt          # url-safe base64 (no padding)
@@ -185,11 +238,11 @@ kotlin/
 │   │   └── Transaction.kt        # legacy + v0 wire codec
 │   └── protocols/
 │       ├── mpp/                  # Machine Payments Protocol
-│       │   ├── client/           # Charge build + MppHttpClient / JSON-RPC
+│       │   ├── client/           # Charge build + JSON-RPC client
 │       │   └── core/             # canonical JSON, headers, wire types
 │       └── x402/                 # x402
 │           ├── exact/            # exact scheme wire types
-│           └── client/exact/     # payment build + X402HttpClient
+│           └── client/exact/     # payment build + RPC blockhash client
 ├── src/test/kotlin/com/solana/paykit/{paycore,protocols/mpp,protocols/x402}/
 │                                 # tests mirror the source tiers
 └── examples/                     # ChargeClient, X402Client, AndroidDemo

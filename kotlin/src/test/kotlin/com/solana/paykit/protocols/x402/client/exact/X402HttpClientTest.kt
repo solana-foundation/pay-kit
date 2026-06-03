@@ -1,8 +1,10 @@
 package com.solana.paykit.protocols.x402.client.exact
 
+import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.paycore.Network
 import java.util.Base64
+import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -11,12 +13,12 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
 /**
- * Unit tests for [X402HttpClient] and [X402RpcClient].
+ * x402 ``exact`` client tests, driving the unified [PayKitClient] with a
+ * [PayKitClient.Builder.x402] interceptor.
  *
  * Transport: on a 402 response with a ``payment-required`` header or
  * ``accepts[]`` JSON body the client must parse the challenge, build and
@@ -45,12 +47,10 @@ class X402HttpClientTest {
 
     private fun defaultClient(
         selection: ChallengeSelection = ChallengeSelection(network = "devnet"),
-    ) = X402HttpClient(
-        signer = signer,
-        rpcBlockhashProvider = fixedBlockhash,
-        selection = selection,
-        okHttp = OkHttpClient(),
-    )
+    ): PayKitClient = PayKitClient.Builder()
+        .signer(signer)
+        .x402(rpcBlockhashProvider = fixedBlockhash, selection = selection)
+        .build()
 
     // ── Challenge envelope helpers ────────────────────────────────────────────
 
@@ -68,13 +68,13 @@ class X402HttpClientTest {
     // ── Non-402 passthrough ───────────────────────────────────────────────────
 
     @Test
-    fun passesThroughNon402Response() {
+    fun passesThroughNon402Response() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
         val client = defaultClient()
         val result = client.get(server.url("/free").toString())
         try {
-            assertEquals(200, result.response.code)
-            assertNull(result.paymentSignatureSent, "no payment should be sent for a 200")
+            assertEquals(200, result.status)
+            assertEquals(false, result.paymentSent, "no payment should be sent for a 200")
         } finally {
             result.response.close()
         }
@@ -82,13 +82,13 @@ class X402HttpClientTest {
     }
 
     @Test
-    fun passesThroughOther4xxWithoutRetry() {
+    fun passesThroughOther4xxWithoutRetry() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(404).setBody("not found"))
         val client = defaultClient()
         val result = client.get(server.url("/missing").toString())
         try {
-            assertEquals(404, result.response.code)
-            assertNull(result.paymentSignatureSent)
+            assertEquals(404, result.status)
+            assertEquals(false, result.paymentSent)
         } finally {
             result.response.close()
         }
@@ -96,13 +96,13 @@ class X402HttpClientTest {
     }
 
     @Test
-    fun passesThroughServerErrorWithoutRetry() {
+    fun passesThroughServerErrorWithoutRetry() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(503).setBody("down"))
         val client = defaultClient()
         val result = client.get(server.url("/down").toString())
         try {
-            assertEquals(503, result.response.code)
-            assertNull(result.paymentSignatureSent)
+            assertEquals(503, result.status)
+            assertEquals(false, result.paymentSent)
         } finally {
             result.response.close()
         }
@@ -112,27 +112,25 @@ class X402HttpClientTest {
     // ── 402 retry with Payment-Required header ────────────────────────────────
 
     @Test
-    fun retries402WithPaymentSignatureHeader() {
-        // First response: 402 with payment-required header.
+    fun retries402WithPaymentSignatureHeader() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(402)
                 .addHeader("payment-required", devnetChallenge()),
         )
-        // Second response: 200 after payment.
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
-                .addHeader("x-fixture-settlement", "mock-settlement-sig")
+                .addHeader("Payment-Response", "mock-settlement-sig")
                 .setBody("""{"data":"unlocked"}"""),
         )
 
         val client = defaultClient()
         val result = client.get(server.url("/paid").toString())
         try {
-            assertEquals(200, result.response.code)
-            assertNotNull(result.paymentSignatureSent)
-            assertTrue(result.paymentSignatureSent!!.isNotEmpty())
+            assertEquals(200, result.status)
+            assertTrue(result.paymentSent)
+            assertEquals("mock-settlement-sig", result.settlement)
         } finally {
             result.response.close()
         }
@@ -146,7 +144,7 @@ class X402HttpClientTest {
     }
 
     @Test
-    fun retries402WithAcceptsJsonBody() {
+    fun retries402WithAcceptsJsonBody() = runBlocking {
         val body = """{"accepts":[{
             "scheme":"exact",
             "network":"${Network.SOLANA_DEVNET}",
@@ -164,8 +162,8 @@ class X402HttpClientTest {
 
         val result = defaultClient().get(server.url("/paid-body").toString())
         try {
-            assertEquals(200, result.response.code)
-            assertNotNull(result.paymentSignatureSent)
+            assertEquals(200, result.status)
+            assertTrue(result.paymentSent)
         } finally {
             result.response.close()
         }
@@ -173,7 +171,7 @@ class X402HttpClientTest {
     }
 
     @Test
-    fun paymentSignatureHeaderNameIsExact() {
+    fun paymentSignatureHeaderNameIsExact() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(402)
@@ -193,7 +191,7 @@ class X402HttpClientTest {
     // ── 402 without a valid challenge ─────────────────────────────────────────
 
     @Test
-    fun returnsOriginal402WhenChallengeIsMissing() {
+    fun returnsOriginal402WhenChallengeIsMissing() = runBlocking {
         // 402 with no payment-required header and no JSON body: the client
         // cannot satisfy it, so it returns the original 402 (go/python
         // contract) rather than throwing. The body must stay readable.
@@ -201,8 +199,8 @@ class X402HttpClientTest {
         val client = defaultClient()
         val result = client.get(server.url("/no-challenge").toString())
         try {
-            assertEquals(402, result.response.code, "original 402 must be handed back")
-            assertNull(result.paymentSignatureSent, "no payment was sent")
+            assertEquals(402, result.status, "original 402 must be handed back")
+            assertEquals(false, result.paymentSent, "no payment was sent")
             assertEquals("pay up", result.response.body?.string(), "body must be re-readable")
         } finally {
             result.response.close()
@@ -211,7 +209,7 @@ class X402HttpClientTest {
     }
 
     @Test
-    fun returnsOriginal402WhenNoChallengeMatchesSelection() {
+    fun returnsOriginal402WhenNoChallengeMatchesSelection() = runBlocking {
         // Server offers mainnet; client selection targets devnet-only USDT.
         val mainnetBody = """{"accepts":[{
             "scheme":"exact",
@@ -230,16 +228,17 @@ class X402HttpClientTest {
                 .setBody("nope"),
         )
         // Client selection: devnet-only currencies list → no match → return 402.
-        val client = X402HttpClient(
-            signer = signer,
-            rpcBlockhashProvider = fixedBlockhash,
-            selection = ChallengeSelection(network = "devnet", currencies = listOf("USDT")),
-            okHttp = OkHttpClient(),
-        )
+        val client = PayKitClient.Builder()
+            .signer(signer)
+            .x402(
+                rpcBlockhashProvider = fixedBlockhash,
+                selection = ChallengeSelection(network = "devnet", currencies = listOf("USDT")),
+            )
+            .build()
         val result = client.get(server.url("/mismatch").toString())
         try {
-            assertEquals(402, result.response.code)
-            assertNull(result.paymentSignatureSent)
+            assertEquals(402, result.status)
+            assertEquals(false, result.paymentSent)
             assertEquals("nope", result.response.body?.string())
         } finally {
             result.response.close()
@@ -247,10 +246,10 @@ class X402HttpClientTest {
         assertEquals(1, server.requestCount)
     }
 
-    // ── paymentSignatureSent field ─────────────────────────────────────────────
+    // ── settlement field ──────────────────────────────────────────────────────
 
     @Test
-    fun paymentSignatureSentMatchesRetryHeader() {
+    fun paymentSentMatchesRetryHeader() = runBlocking {
         server.enqueue(
             MockResponse()
                 .setResponseCode(402)
@@ -260,13 +259,12 @@ class X402HttpClientTest {
 
         val result = defaultClient().get(server.url("/paid").toString())
         try {
-            assertNotNull(result.paymentSignatureSent)
+            assertTrue(result.paymentSent)
             server.takeRequest()
             val retry = server.takeRequest()
-            assertEquals(
-                result.paymentSignatureSent,
+            assertNotNull(
                 retry.getHeader("Payment-Signature"),
-                "paymentSignatureSent must equal the header sent in the retry",
+                "a payment was sent, so the retry must carry Payment-Signature",
             )
         } finally {
             result.response.close()
@@ -276,11 +274,11 @@ class X402HttpClientTest {
     // ── Extra headers ─────────────────────────────────────────────────────────
 
     @Test
-    fun extraHeadersAreForwardedOnInitialRequest() {
+    fun extraHeadersAreForwardedOnInitialRequest() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200))
         defaultClient().get(
             server.url("/").toString(),
-            extraHeaders = mapOf("X-Custom-Header" to "hello"),
+            headers = mapOf("X-Custom-Header" to "hello"),
         ).response.close()
 
         val recorded = server.takeRequest()
@@ -307,7 +305,7 @@ class X402RpcClientTest {
         server.shutdown()
     }
 
-    private fun client() = X402RpcClient(server.url("/").toString(), OkHttpClient())
+    private fun client() = X402RpcClient(server.url("/").toString())
 
     @Test
     fun parsesGetLatestBlockhashSuccessfully() {

@@ -1,17 +1,14 @@
 package com.solana.paykit.interop
 
+import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
-import com.solana.paykit.protocols.mpp.client.Charge
 import com.solana.paykit.protocols.mpp.client.JsonRpcClient
-import com.solana.paykit.protocols.mpp.client.MppHttpClient
-import com.solana.paykit.protocols.mpp.core.MppHeaders
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -72,13 +69,13 @@ private fun runAdapter() {
         .callTimeout(150, TimeUnit.SECONDS)
         .build()
     val rpc = JsonRpcClient(rpcUrl, okHttp)
-    val client = MppHttpClient(
-        signer = signer,
-        blockhashProvider = rpc,
-        okHttp = okHttp,
-    )
+    val client = PayKitClient.Builder()
+        .signer(signer)
+        .okHttpClient(okHttp)
+        .charge(blockhashProvider = rpc)
+        .build()
 
-    val response = client.mppGet(targetUrl)
+    val response = runBlocking { client.get(targetUrl) }.response
     try {
         val status = response.code
         val responseHeaders = response.headers
@@ -155,13 +152,4 @@ internal fun parseSecretKey(raw: String): ByteArray {
         error("MPP_INTEROP_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
     }
     return bytes
-}
-
-// Suppress unused import warnings while keeping the public surface for
-// future extensions (signed-request body, header echo, debug logging).
-@Suppress("unused")
-private fun unusedReferences() {
-    val _h: MppHeaders = MppHeaders
-    val _c: Charge = Charge
-    val _b: Boolean = JsonPrimitive(true).jsonPrimitive.boolean
 }

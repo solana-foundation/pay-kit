@@ -126,8 +126,8 @@ convenience:
 ## SDK integration notes
 
 The demo uses two SDK entry points instead of the high-level
-`MppHttpClient`, because Mobile Wallet Adapter signs whole
-transactions while `MppHttpClient` expects a `SolanaSigner` that
+`PayKitClient`, because Mobile Wallet Adapter signs whole
+transactions while `PayKitClient` expects a `SolanaSigner` that
 signs message bytes:
 
 - `Charge.buildUnsignedChargeTransaction(walletPublicKey, request, blockhashProvider)`

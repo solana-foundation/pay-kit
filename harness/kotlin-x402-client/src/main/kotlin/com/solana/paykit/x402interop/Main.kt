@@ -1,10 +1,11 @@
 package com.solana.paykit.x402interop
 
+import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.protocols.x402.client.exact.ChallengeSelection
-import com.solana.paykit.protocols.x402.client.exact.X402HttpClient
 import com.solana.paykit.protocols.x402.client.exact.X402RpcClient
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -78,14 +79,16 @@ private fun runAdapter() {
 
     val rpcClient = X402RpcClient(rpcUrl, okHttp)
     val selection = ChallengeSelection(network = network, currencies = currencies)
-    val client = X402HttpClient(
-        signer = signer,
-        rpcBlockhashProvider = { rpcClient.fetchRecentBlockhash() },
-        selection = selection,
-        okHttp = okHttp,
-    )
+    val client = PayKitClient.Builder()
+        .signer(signer)
+        .okHttpClient(okHttp)
+        .x402(
+            rpcBlockhashProvider = { rpcClient.fetchRecentBlockhash() },
+            selection = selection,
+        )
+        .build()
 
-    val getResult = client.get(targetUrl)
+    val getResult = runBlocking { client.get(targetUrl) }
     val response = getResult.response
     try {
         val status = response.code
@@ -98,8 +101,8 @@ private fun runAdapter() {
             }
             // Inject "payment-signature-sent" so the harness can confirm the
             // payment flow happened (mirrors the Python adapter convention).
-            if (getResult.paymentSignatureSent != null) {
-                put("payment-signature-sent", getResult.paymentSignatureSent)
+            if (getResult.paymentHeader != null) {
+                put("payment-signature-sent", getResult.paymentHeader)
             }
         }
         val rawBody = response.body?.string() ?: ""
