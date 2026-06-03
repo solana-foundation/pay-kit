@@ -3,6 +3,7 @@
 require "base64"
 require "ed25519"
 require "json"
+require "securerandom"
 
 require "pay_core/solana/base58"
 require "pay_core/solana/mints"
@@ -181,6 +182,101 @@ module PayKit::Protocols::X402
           Base64.strict_decode64(transaction)
         rescue ArgumentError
           raise "payment payload transaction is not valid base64"
+        end
+
+        # ---- x402 v2 extensions (spine types.rs:479-585) ---------------
+        #
+        # The `extensions` object rides on BOTH the inbound PAYMENT-REQUIRED
+        # challenge and the outbound PAYMENT-SIGNATURE credential. The wire
+        # JSON key for the payment-identifier extension is kebab-case
+        # `payment-identifier` (spine `#[serde(rename = "payment-identifier")]`);
+        # its `info` is camelCase `{ required?, id? }` and `schema?` is echoed
+        # verbatim. Unknown extensions are preserved verbatim under their own
+        # key so the echo-and-append rule (x402 v2 §5.1.2) never drops a
+        # forward-compatible payload (spine `PaymentExtensions.other` flatten).
+        #
+        # Ruby ships SERVER support only, so the echo-and-append (client) path
+        # is exercised by the conformance reference; the SDK uses these helpers
+        # to ADVERTISE the extension on a challenge and to PARSE/GATE an
+        # inbound credential's echoed extension on verify.
+
+        # kebab-case wire key for the payment-identifier extension.
+        PAYMENT_IDENTIFIER_KEY = "payment-identifier"
+
+        # Spec pattern for a client-side idempotency id, ^[A-Za-z0-9_-]{16,128}$
+        # (spine types.rs:488).
+        PAYMENT_IDENTIFIER_ID_PATTERN = /\A[A-Za-z0-9_-]{16,128}\z/
+
+        # Spine `generate_payment_identifier_id`: `pay_` + 32 lowercase hex
+        # (36 total). Satisfies the spec pattern above and the canonical
+        # Solana `^pay_[a-zA-Z0-9_-]{10,120}$` shape. Reuse across retries of
+        # the same logical request for idempotency.
+        def generate_payment_identifier_id
+          "pay_" + SecureRandom.hex(16)
+        end
+
+        # Spine `PaymentExtensions::echoing`: deep-copy the inbound extensions
+        # blob so unknown keys round-trip verbatim. Returns nil when the server
+        # advertised no extensions (so the outbound omits the object). Raises
+        # when the inbound is present but not a JSON object.
+        def echo_extensions(inbound)
+          return nil if inbound.nil?
+          raise ArgumentError, "extensions must be a JSON object" unless inbound.is_a?(Hash)
+
+          deep_dup_json(inbound)
+        end
+
+        # Spine `PaymentExtensions::requires_payment_identifier`:
+        # payment-identifier.info.required == true.
+        def requires_payment_identifier?(extensions)
+          return false unless extensions.is_a?(Hash)
+
+          pid = extensions[PAYMENT_IDENTIFIER_KEY]
+          pid.is_a?(Hash) && pid.dig("info", "required") == true
+        end
+
+        # Spine `PaymentExtensions::with_payment_identifier_id`: set the
+        # client-side id, creating the entry if the server did not advertise
+        # one, preserving the server-side `info.required` and `schema`
+        # verbatim (does NOT overwrite server fields).
+        def with_payment_identifier_id(extensions, id)
+          next_ext = extensions.is_a?(Hash) ? deep_dup_json(extensions) : {}
+          entry = next_ext[PAYMENT_IDENTIFIER_KEY]
+          entry = {"info" => {}} unless entry.is_a?(Hash)
+          info = entry["info"].is_a?(Hash) ? entry["info"] : {}
+          entry["info"] = info.merge("id" => id)
+          next_ext[PAYMENT_IDENTIFIER_KEY] = entry
+          next_ext
+        end
+
+        # Spine `PaymentExtensions::is_empty`: no payment_identifier and no
+        # other keys. Callers use this to avoid emitting an empty
+        # `extensions: {}` object (spine skip_serializing_if = Option::is_none).
+        def extensions_empty?(extensions)
+          return true unless extensions.is_a?(Hash)
+
+          extensions.empty?
+        end
+
+        # Echoed payment-identifier id off a parsed credential's extensions,
+        # or nil. Used by the server reject gate.
+        def payment_identifier_id(extensions)
+          return nil unless extensions.is_a?(Hash)
+
+          extensions.dig(PAYMENT_IDENTIFIER_KEY, "info", "id")
+        end
+
+        # True when `id` is a non-empty string matching the spec pattern.
+        def payment_identifier_id_valid?(id)
+          id.is_a?(String) && !id.empty? && PAYMENT_IDENTIFIER_ID_PATTERN.match?(id)
+        end
+
+        def deep_dup_json(value)
+          case value
+          when Hash then value.each_with_object({}) { |(k, v), acc| acc[k] = deep_dup_json(v) }
+          when Array then value.map { |v| deep_dup_json(v) }
+          else value
+          end
         end
 
         # ---- Keypair / signer helpers ---------------------------------

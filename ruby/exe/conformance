@@ -384,6 +384,15 @@ module X402
 
   VERSION_V2 = 2
 
+  # kebab-case wire key for the payment-identifier extension (spine
+  # types.rs:519 #[serde(rename = "payment-identifier")]).
+  PAYMENT_IDENTIFIER_KEY = "payment-identifier"
+
+  # Spec pattern for a client-side idempotency id, ^[A-Za-z0-9_-]{16,128}$
+  # (spine types.rs:488). Matches the production SDK constant
+  # PayKit::Protocols::X402::Protocol::Schemes::Exact::PAYMENT_IDENTIFIER_ID_PATTERN.
+  PAYMENT_IDENTIFIER_ID_PATTERN = /\A[A-Za-z0-9_-]{16,128}\z/
+
   # Map a cluster/network identifier to its CAIP-2 form. Mirrors
   # caip2_network_for_cluster.
   def self.caip2_network_for_cluster(cluster)
@@ -425,6 +434,33 @@ module X402
       shape["acceptedPayTo"] = accepted["payTo"]
       shape["acceptedAmount"] = accepted["amount"]
     end
+
+    # ── v2 extensions echo oracle ──
+    #
+    # Surface the v2 `extensions` object. hasExtensions is false when the key
+    # is absent OR present-but-empty (a conforming echo-and-omit build never
+    # emits an empty `extensions: {}`, but a decoder must still classify a
+    # stray `{}` as "no extensions"). Mirrors decodeEnvelopeShape in
+    # harness/src/conformance/x402.ts.
+    extensions = env["extensions"]
+    if extensions.is_a?(Hash)
+      keys = extensions.keys.sort
+      shape["hasExtensions"] = !keys.empty?
+      shape["extensionKeys"] = keys
+      pid = extensions[PAYMENT_IDENTIFIER_KEY]
+      shape["hasPaymentIdentifier"] = !pid.nil?
+      if pid.is_a?(Hash)
+        info = pid["info"]
+        if info.is_a?(Hash)
+          shape["paymentIdentifierRequired"] = info["required"] unless info["required"].nil?
+          shape["paymentIdentifierId"] = info["id"] unless info["id"].nil?
+        end
+      end
+    else
+      shape["hasExtensions"] = false
+      shape["hasPaymentIdentifier"] = false
+      shape["extensionKeys"] = []
+    end
     shape
   end
 
@@ -464,6 +500,22 @@ module X402
       if accepted["asset"].to_s != route.fetch("currency").to_s
         raise "Currency mismatch: expected #{route.fetch("currency")}, got #{accepted["asset"]}"
       end
+
+      # Extensions reject gate: when the route requires a payment-identifier,
+      # the echoed credential MUST carry a valid `pay_`-shaped id. Missing,
+      # empty, or pattern-violating ids are rejected (coinbase spec §5.1.2,
+      # HTTP 400). Mirrors verifyPaymentHeader in harness/src/conformance/
+      # x402.ts and the production SDK gate in server/exact.rb
+      # (settle_exact_payment).
+      if route["requiresPaymentIdentifier"]
+        id = env.dig("extensions", PAYMENT_IDENTIFIER_KEY, "info", "id")
+        if id.nil? || id.to_s.empty?
+          raise "payment-identifier required but credential echoed no id"
+        end
+        unless PAYMENT_IDENTIFIER_ID_PATTERN.match?(id)
+          raise "payment-identifier id is invalid: #{id} does not match ^[A-Za-z0-9_-]{16,128}$"
+        end
+      end
     else
       raise "invalid payload: Unsupported x402 version: #{version}"
     end
@@ -489,6 +541,10 @@ end
 def classify_reject_x402(message)
   return "unsupported-version" if /unsupported x402 version/i.match?(message)
   return "wrong-network" if /network mismatch/i.match?(message)
+  # x402 v2 extensions: server required a payment-identifier id but the
+  # credential echoed none / an invalid one. Ordered before the generic
+  # invalid/payload fallback in classify_reject. Mirrors reject.ts.
+  return "payment-identifier-required" if /payment.identifier .*(required|missing|invalid)/i.match?(message)
 
   classify_reject(message)
 end
@@ -524,6 +580,9 @@ def run_x402_vector(vector)
   if route.values.any?(&:nil?)
     raise "invalid payload: x402 verify vector missing server route"
   end
+  # Optional extensions gate flag, added after the nil-check so a boolean
+  # never trips the missing-route guard above.
+  route["requiresPaymentIdentifier"] = input["x402ServerRequiresPaymentIdentifier"] == true
 
   begin
     X402.verify(header, route)

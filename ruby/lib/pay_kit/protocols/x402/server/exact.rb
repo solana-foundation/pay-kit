@@ -109,7 +109,8 @@ module PayKit::Protocols::X402
       # interop bin, not in this library.
       class Config
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer,
-          :fee_payer_secret_key, :amount, :resource_path, :settlement_header
+          :fee_payer_secret_key, :amount, :resource_path, :settlement_header,
+          :payment_identifier_required
 
         attr_accessor :transaction_sender, :settlement_cache, :account_checker, :signature_confirmer,
           :recent_blockhash_provider
@@ -124,6 +125,7 @@ module PayKit::Protocols::X402
           extra_offered_mints: [],
           resource_path: DEFAULT_RESOURCE_PATH,
           settlement_header: DEFAULT_SETTLEMENT_HEADER,
+          payment_identifier_required: false,
           transaction_sender: nil,
           settlement_cache: nil,
           account_checker: nil,
@@ -144,6 +146,7 @@ module PayKit::Protocols::X402
           @amount = (amount.is_a?(String) && amount.start_with?("$")) ? Exact.normalize_amount(amount) : amount.to_s
           @resource_path = (resource_path.nil? || resource_path.empty?) ? DEFAULT_RESOURCE_PATH : resource_path
           @settlement_header = (settlement_header.nil? || settlement_header.empty?) ? DEFAULT_SETTLEMENT_HEADER : settlement_header
+          @payment_identifier_required = payment_identifier_required == true
           @transaction_sender = transaction_sender || Exact.method(:send_transaction)
           @settlement_cache = settlement_cache || SettlementCache.new
           @account_checker = account_checker || Exact.method(:account_exists?)
@@ -191,7 +194,8 @@ module PayKit::Protocols::X402
             extra_offered_mints: env.fetch("X402_INTEROP_EXTRA_OFFERED_MINTS", "")
               .split(",").map(&:strip).reject(&:empty?),
             resource_path: env.fetch("X402_INTEROP_RESOURCE_PATH", DEFAULT_RESOURCE_PATH),
-            settlement_header: env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER)
+            settlement_header: env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER),
+            payment_identifier_required: env.fetch("X402_INTEROP_PAYMENT_IDENTIFIER_REQUIRED", "") == "true"
           )
         end
 
@@ -272,7 +276,7 @@ module PayKit::Protocols::X402
         end
 
         def exact_challenge(config, resource: nil)
-          {
+          challenge = {
             "x402Version" => Constants::X402_VERSION_V2,
             # Rust spine deserialises this into `ResourceInfo {url,
             # description?, mimeType?}` and the TS server fixture emits
@@ -285,6 +289,17 @@ module PayKit::Protocols::X402
             },
             "accepts" => exact_requirements(config, resource: resource)
           }
+          # x402 v2 extensions: advertise the payment-identifier extension
+          # with info.required=true when the route requires it. Omitted
+          # entirely otherwise so the wire never carries an empty
+          # `extensions: {}` (spine PaymentRequiredEnvelope.extensions is
+          # Option<Value> with skip_serializing_if = Option::is_none).
+          if config.payment_identifier_required
+            challenge["extensions"] = {
+              Types::PAYMENT_IDENTIFIER_KEY => {"info" => {"required" => true}}
+            }
+          end
+          challenge
         end
 
         def token_program_for_mint(mint)
@@ -341,6 +356,23 @@ module PayKit::Protocols::X402
           unless requirement
             # Mirrors Go reference (go/cmd/interop-server/main.go:856).
             raise "No matching payment requirements: accepted payment requirement does not match server challenge"
+          end
+
+          # x402 v2 extensions reject gate (coinbase spec §5.1.2, HTTP 400):
+          # when the route requires a payment-identifier, the echoed
+          # credential MUST carry a valid `pay_`-shaped id. Missing, empty, or
+          # pattern-violating ids are rejected. Mirrors the TS reference
+          # oracle (harness/src/conformance/x402.ts verifyPaymentHeader) and
+          # the spine PaymentExtensions::requires_payment_identifier check.
+          if config.payment_identifier_required
+            extensions = decoded["extensions"]
+            id = Types.payment_identifier_id(extensions)
+            if id.nil? || id.to_s.empty?
+              raise "payment-identifier required but credential echoed no id"
+            end
+            unless Types.payment_identifier_id_valid?(id)
+              raise "payment-identifier id is invalid: #{id} does not match ^[A-Za-z0-9_-]{16,128}$"
+            end
           end
 
           payload = decoded["payload"]

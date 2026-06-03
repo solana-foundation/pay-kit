@@ -21,7 +21,7 @@ module X402ExactClientFixture
   # Build a client-signed x402 payment envelope. Mirrors the spine
   # `PaymentSignatureEnvelope` shape at
   # `rust/crates/x402/src/protocol/schemes/exact/types.rs:482-493`.
-  def build_exact_payment_signature(requirement:, client_secret_key:, recent_blockhash:, resource: nil)
+  def build_exact_payment_signature(requirement:, client_secret_key:, recent_blockhash:, resource: nil, extensions: nil)
     raise ArgumentError, "only exact payment requirements can be signed" unless requirement["scheme"] == "exact"
 
     private_key = Exact.private_key_from_json(client_secret_key)
@@ -36,6 +36,10 @@ module X402ExactClientFixture
       payload: {transaction: Base64.strict_encode64(transaction)}
     }
     envelope[:resource] = resource if resource.is_a?(Hash)
+    # Echoed x402 v2 extensions object (e.g. the payment-identifier the
+    # server advertised, with info.id appended client-side). Omitted when
+    # nil so the wire never carries an empty `extensions: {}`.
+    envelope[:extensions] = extensions if extensions.is_a?(Hash)
 
     Base64.strict_encode64(JSON.generate(envelope))
   end
