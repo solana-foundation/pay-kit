@@ -265,12 +265,241 @@ public indirect enum JSONValue: Codable, Sendable, Equatable {
         case .null:          try container.encodeNil()
         }
     }
+
+    /// Decode this JSON value into a `Decodable` type by round-tripping
+    /// through `JSONEncoder`/`JSONDecoder`. Used to read the typed
+    /// `payment-identifier` extension out of the verbatim extensions map.
+    public func decode<T: Decodable>(_ type: T.Type) throws -> T {
+        let data = try JSONEncoder().encode(self)
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    /// Encode an `Encodable` value into a `JSONValue`, preserving its shape
+    /// so it can be re-emitted verbatim alongside unknown extensions.
+    public static func encoding<T: Encodable>(_ value: T) throws -> JSONValue {
+        let data = try JSONEncoder().encode(value)
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
 }
 
 /// The outer `PAYMENT-REQUIRED` JSON envelope that wraps the `accepts` list.
+///
+/// `extensions` is an untyped passthrough object on the challenge (rust
+/// `PaymentRequiredEnvelope.extensions: Option<serde_json::Value>`,
+/// `types.rs:458`): a server may advertise any extension. The client echoes
+/// it into the outbound credential via `X402PaymentExtensions.echoing`.
 public struct X402PaymentRequiredEnvelope: Codable, Sendable {
     public let x402Version: Int?
     public let accepts: [X402AcceptsEntry]
+    public let extensions: JSONValue?
+
+    public init(x402Version: Int?, accepts: [X402AcceptsEntry], extensions: JSONValue? = nil) {
+        self.x402Version = x402Version
+        self.accepts = accepts
+        self.extensions = extensions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case x402Version, accepts, extensions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        x402Version = try container.decodeIfPresent(Int.self, forKey: .x402Version)
+        accepts = try container.decode([X402AcceptsEntry].self, forKey: .accepts)
+        extensions = try container.decodeIfPresent(JSONValue.self, forKey: .extensions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(x402Version, forKey: .x402Version)
+        try container.encode(accepts, forKey: .accepts)
+        try container.encodeIfPresent(extensions, forKey: .extensions)
+    }
+}
+
+// MARK: - x402 v2 extensions (rust PaymentExtensions et al.)
+
+/// The kebab-case JSON key under which the `payment-identifier` extension
+/// rides on the `extensions` object. Hard rule from the rust spine
+/// (`#[serde(rename = "payment-identifier")]`, `types.rs:519`): the key is
+/// `payment-identifier`, not `paymentIdentifier`.
+public let X402PaymentIdentifierKey: String = "payment-identifier"
+
+/// Spec pattern for a `payment-identifier.info.id` value
+/// (`^[A-Za-z0-9_-]{16,128}$`, rust `types.rs:488`).
+public let X402PaymentIdentifierIDPattern: String = "^[A-Za-z0-9_-]{16,128}$"
+
+/// Client/server-side fields of the `payment-identifier` extension,
+/// serialized camelCase. Mirrors rust `PaymentIdentifierInfo`
+/// (`types.rs:483-493`). Both fields are omitted from the wire when `nil`
+/// (rust `skip_serializing_if = "Option::is_none"`).
+public struct X402PaymentIdentifierInfo: Codable, Sendable, Equatable {
+    /// Server-side: whether clients MUST populate `id`. When `true` and
+    /// `id` is missing, the server returns 400.
+    public let required: Bool?
+    /// Client-side idempotency key. Must match `^[A-Za-z0-9_-]{16,128}$`.
+    public let id: String?
+
+    public init(required: Bool? = nil, id: String? = nil) {
+        self.required = required
+        self.id = id
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case required, id
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(required, forKey: .required)
+        try container.encodeIfPresent(id, forKey: .id)
+    }
+}
+
+/// The `payment-identifier` extension. Echoed by the client into the
+/// outbound `PAYMENT-SIGNATURE` with `info.id` populated. Mirrors rust
+/// `PaymentIdentifierExtension` (`types.rs:500-507`): `info` defaults to an
+/// empty object, `schema` is echoed verbatim per x402 v2 §5.1.2 and omitted
+/// when absent.
+public struct X402PaymentIdentifierExtension: Codable, Sendable, Equatable {
+    public let info: X402PaymentIdentifierInfo
+    /// JSON Schema published by the server describing required client-side
+    /// fields. Echoed verbatim; omitted when absent.
+    public let schema: JSONValue?
+
+    public init(info: X402PaymentIdentifierInfo = X402PaymentIdentifierInfo(), schema: JSONValue? = nil) {
+        self.info = info
+        self.schema = schema
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case info, schema
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        info = try container.decodeIfPresent(X402PaymentIdentifierInfo.self, forKey: .info)
+            ?? X402PaymentIdentifierInfo()
+        schema = try container.decodeIfPresent(JSONValue.self, forKey: .schema)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(info, forKey: .info)
+        try container.encodeIfPresent(schema, forKey: .schema)
+    }
+}
+
+/// Typed view over the x402 v2 `extensions` object on
+/// `X402PaymentSignatureEnvelope`. The known `payment-identifier` extension
+/// is fielded out; every other extension this SDK does not type natively is
+/// retained verbatim under its own key so the echo-and-append rule
+/// (§5.1.2) never drops forward-compatible payloads.
+///
+/// Mirrors rust `PaymentExtensions { payment_identifier, #[serde(flatten)]
+/// other }` (`types.rs:514-527`): on the wire `payment-identifier` and every
+/// unknown extension are sibling keys of a single flat object. Modeled here
+/// as one verbatim `[String: JSONValue]` map (`raw`) so round-trips are
+/// byte-faithful and `payment-identifier` is parsed/edited through typed
+/// accessors without losing the rest.
+public struct X402PaymentExtensions: Codable, Sendable, Equatable {
+    /// The verbatim extensions object as received/built. Keys are the
+    /// extension ids (`payment-identifier`, plus any unknown ones).
+    public private(set) var raw: [String: JSONValue]
+
+    public init(raw: [String: JSONValue] = [:]) {
+        self.raw = raw
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        raw = try container.decode([String: JSONValue].self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(raw)
+    }
+
+    /// The typed `payment-identifier` extension, decoded from `raw` on
+    /// access (`nil` when the key is absent or malformed).
+    public var paymentIdentifier: X402PaymentIdentifierExtension? {
+        guard let value = raw[X402PaymentIdentifierKey] else { return nil }
+        return try? value.decode(X402PaymentIdentifierExtension.self)
+    }
+
+    /// True when no keys are populated. Lets callers avoid emitting an empty
+    /// `extensions: {}` object on outbound envelopes (rust
+    /// `PaymentExtensions::is_empty`, `types.rs:533-535`).
+    public var isEmpty: Bool { raw.isEmpty }
+
+    /// `payment-identifier.info.required == true` (rust
+    /// `requires_payment_identifier`, `types.rs:538-543`).
+    public var requiresPaymentIdentifier: Bool {
+        paymentIdentifier?.info.required == true
+    }
+
+    /// Set (or overwrite) the client-side `payment-identifier.info.id`,
+    /// creating the extension entry if the server did not advertise one.
+    /// Preserves the server's `info.required` and `schema` verbatim. Mirrors
+    /// rust `with_payment_identifier_id` (`types.rs:548-553`): the entry is
+    /// `get_or_insert_with(Default)` then `entry.info.id = Some(id)`.
+    public func withPaymentIdentifierID(_ id: String) -> X402PaymentExtensions {
+        var next = self
+        let existing = next.paymentIdentifier ?? X402PaymentIdentifierExtension()
+        let updatedInfo = X402PaymentIdentifierInfo(required: existing.info.required, id: id)
+        let updated = X402PaymentIdentifierExtension(info: updatedInfo, schema: existing.schema)
+        if let encoded = try? JSONValue.encoding(updated) {
+            next.raw[X402PaymentIdentifierKey] = encoded
+        }
+        return next
+    }
+
+    /// Echo a server's inbound extensions blob into a typed
+    /// `X402PaymentExtensions`. Returns `nil` when the inbound is `nil`
+    /// (rust `echoing(None) -> Ok(None)`, `types.rs:559-565`). Unknown keys
+    /// round-trip verbatim. Throws only when the inbound is not a JSON
+    /// object.
+    public static func echoing(_ inbound: JSONValue?) throws -> X402PaymentExtensions? {
+        guard let inbound else { return nil }
+        guard case let .object(object) = inbound else {
+            throw MppError.invalidJSON("x402 extensions must be a JSON object")
+        }
+        return X402PaymentExtensions(raw: object)
+    }
+}
+
+/// Generate a fresh `pay_`-prefixed idempotency id: `pay_` + 16 CSPRNG
+/// bytes rendered as 32 lowercase hex chars (36 total). Satisfies the
+/// `payment-identifier` spec pattern `^[A-Za-z0-9_-]{16,128}$` and the
+/// canonical Solana `^pay_[a-zA-Z0-9_-]{10,120}$` shape. Mirrors rust
+/// `generate_payment_identifier_id` (`types.rs:575-585`).
+///
+/// Per the spec, callers MUST reuse the same id across retries of the same
+/// logical request so the server can return a cached 200 instead of charging
+/// twice.
+///
+/// - Parameter randomBytes: Optional closure that returns 16 random bytes.
+///   Defaults to `SystemRandomNumberGenerator`. Pass a fixed value in tests
+///   to make the output deterministic.
+public func generateX402PaymentIdentifierID(randomBytes: (() -> Data)? = nil) -> String {
+    let bytes: Data
+    if let randomBytes {
+        bytes = randomBytes()
+    } else {
+        var rng = SystemRandomNumberGenerator()
+        var raw = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { raw[i] = rng.next() }
+        bytes = Data(raw)
+    }
+    return "pay_" + bytes.map { String(format: "%02x", $0) }.joined()
 }
 
 /// The `payload` field of a `Payment-Signature` envelope.
@@ -291,15 +520,30 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
     public let x402Version: Int
     public let accepted: X402AcceptsEntry?
     public let payload: X402PaymentPayload
+    /// Echoed extensions from the inbound `PAYMENT-REQUIRED` envelope, with
+    /// any required client-supplied fields filled in (e.g.
+    /// `payment-identifier.info.id`). Per x402 v2 §5.1.2 the client "must
+    /// include at least the info received; it may append additional info but
+    /// cannot delete or overwrite existing info". Omitted from the wire when
+    /// `nil` or structurally empty so the envelope never carries an empty
+    /// `extensions: {}` (rust `skip_serializing_if = "Option::is_none"` +
+    /// `PaymentExtensions::is_empty`).
+    public let extensions: X402PaymentExtensions?
 
-    public init(x402Version: Int, accepted: X402AcceptsEntry?, payload: X402PaymentPayload) {
+    public init(
+        x402Version: Int,
+        accepted: X402AcceptsEntry?,
+        payload: X402PaymentPayload,
+        extensions: X402PaymentExtensions? = nil
+    ) {
         self.x402Version = x402Version
         self.accepted = accepted
         self.payload = payload
+        self.extensions = extensions
     }
 
     private enum CodingKeys: String, CodingKey {
-        case x402Version, accepted, payload
+        case x402Version, accepted, payload, extensions
     }
 
     public init(from decoder: Decoder) throws {
@@ -307,6 +551,7 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
         x402Version = try container.decode(Int.self, forKey: .x402Version)
         accepted = try container.decodeIfPresent(X402AcceptsEntry.self, forKey: .accepted)
         payload = try container.decode(X402PaymentPayload.self, forKey: .payload)
+        extensions = try container.decodeIfPresent(X402PaymentExtensions.self, forKey: .extensions)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -323,6 +568,10 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
             try container.encodeIfPresent(accepted, forKey: .accepted)
         }
         try container.encode(payload, forKey: .payload)
+        // Omit empty/absent extensions entirely (echo-and-omit rule).
+        if let extensions, !extensions.isEmpty {
+            try container.encode(extensions, forKey: .extensions)
+        }
     }
 }
 
