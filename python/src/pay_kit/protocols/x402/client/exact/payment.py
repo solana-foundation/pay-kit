@@ -33,6 +33,13 @@ from pay_kit._paycore.solana import (
     default_token_program_for_currency,
     is_native_sol,
 )
+from pay_kit.protocols.x402.exact.extensions import (
+    echo_extensions,
+    extensions_is_empty,
+    generate_payment_identifier_id,
+    requires_payment_identifier,
+    with_payment_identifier_id,
+)
 from pay_kit.protocols.x402.exact.types import X402AcceptsEntry, X402Envelope, X402PayloadField
 from pay_kit.protocols.x402.exact.verify import COMPUTE_BUDGET_PROGRAM, X402_VERSION
 
@@ -69,6 +76,7 @@ def _default_memo_nonce() -> str:
     golden-vector tests can pin a fixed nonce.
     """
     return secrets.token_bytes(_MEMO_NONCE_BYTES).hex()
+
 
 # x402 ``exact`` CAIP-2 networks the client knows how to pay on.
 _SOLANA_CAIP2 = frozenset({SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2})
@@ -345,6 +353,8 @@ async def build_payment(
     *,
     recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
     memo_nonce: Callable[[], str] | None = None,
+    advertised_extensions: dict[str, Any] | None = None,
+    payment_identifier_id: str | None = None,
 ) -> X402Envelope:
     """Build a signed x402 ``exact`` payment transaction for ``requirement``.
 
@@ -353,7 +363,8 @@ async def build_payment(
     (cosigned server-side) and the client ``signer`` as transfer authority,
     signs the client's signature slot, and returns the
     :class:`~pay_kit.protocols.x402.exact.types.X402Envelope` carrying the
-    standard-base64 transaction. Mirrors rust ``build_payment``.
+    standard-base64 transaction. Mirrors rust ``build_payment`` /
+    ``build_payment_header``.
 
     The blockhash comes from ``requirement.extra.recentBlockhash`` when present,
     else ``recent_blockhash_provider`` (injected for offline unit tests), else
@@ -365,6 +376,17 @@ async def build_payment(
     (the Memo is what lets the facilitator distinguish concurrent identical
     transfers). ``memo_nonce`` overrides the default secure RNG source so
     deterministic / golden-vector tests can pin a fixed nonce.
+
+    ``advertised_extensions`` is the ``extensions`` object the server published
+    on the inbound ``PAYMENT-REQUIRED`` challenge. The client echoes it back
+    onto the outbound credential verbatim (preserving unknown extensions for
+    forward-compat, x402 v2 §5.1.2) and, when the server marked
+    ``payment-identifier.info.required = true``, fills ``info.id`` with
+    ``payment_identifier_id`` (or a freshly generated ``pay_`` id, reused across
+    retries for idempotency). When the server advertised nothing, the
+    ``extensions`` key is omitted entirely (no empty ``{}``). Mirrors rust
+    ``PaymentExtensions::{echoing, requires_payment_identifier,
+    with_payment_identifier_id, is_empty}``.
     """
     from solders.hash import Hash
     from solders.instruction import AccountMeta, Instruction
@@ -409,9 +431,7 @@ async def build_payment(
     use_fee_payer = (fee_payer_bool if fee_payer_bool is not None else fee_payer is not None) and (
         fee_payer is not None
     )
-    fee_payer_key = (
-        Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.keypair.pubkey()
-    )
+    fee_payer_key = Pubkey.from_string(cast("str", fee_payer)) if use_fee_payer else signer.keypair.pubkey()
 
     instructions: list[Any] = [
         _compute_unit_limit_ix(Instruction, Pubkey, _COMPUTE_UNIT_LIMIT),
@@ -513,6 +533,19 @@ async def build_payment(
     # resource (rust ``skip_serializing_if = Option::is_none``).
     if resource_info is not None:
         envelope["resource"] = resource_info
+
+    # Echo-and-append the v2 ``extensions`` object (x402 v2 §5.1.2). Echo the
+    # server's advertised extensions verbatim (unknown keys preserved), fill the
+    # required client-side payment-identifier.info.id when the server requires
+    # it, and omit the key entirely when the server advertised nothing or the
+    # echoed object is structurally empty. Mirrors rust ``build_payment_header``
+    # (payment.rs:139-147) + ``PaymentExtensions`` helpers.
+    extensions = echo_extensions(advertised_extensions)
+    if requires_payment_identifier(extensions):
+        payment_id = payment_identifier_id or generate_payment_identifier_id()
+        extensions = with_payment_identifier_id(extensions, payment_id)
+    if extensions is not None and not extensions_is_empty(extensions):
+        envelope["extensions"] = extensions
     return cast("X402Envelope", envelope)
 
 
@@ -560,12 +593,15 @@ async def build_payment_header(
     *,
     recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
     memo_nonce: Callable[[], str] | None = None,
+    advertised_extensions: dict[str, Any] | None = None,
+    payment_identifier_id: str | None = None,
 ) -> str:
     """Build the standard-base64 ``PAYMENT-SIGNATURE`` header value.
 
     Wraps :func:`build_payment` and base64-encodes the
     :class:`~pay_kit.protocols.x402.exact.types.X402Envelope` JSON. Mirrors rust
-    ``build_payment_header``.
+    ``build_payment_header``. ``advertised_extensions`` / ``payment_identifier_id``
+    drive the v2 extensions echo-and-append (see :func:`build_payment`).
     """
     envelope = await build_payment(
         signer,
@@ -573,6 +609,8 @@ async def build_payment_header(
         requirement,
         recent_blockhash_provider=recent_blockhash_provider,
         memo_nonce=memo_nonce,
+        advertised_extensions=advertised_extensions,
+        payment_identifier_id=payment_identifier_id,
     )
     payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")
