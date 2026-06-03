@@ -344,7 +344,7 @@ func credentialFromInput(input json.RawMessage) (wire.PaymentCredential, error) 
 	}
 	credential := wire.PaymentCredential{Challenge: echo, Source: raw.Source}
 	if len(raw.Payload) > 0 && string(raw.Payload) != "null" {
-		msg := json.RawMessage(raw.Payload)
+		msg := raw.Payload
 		credential.Payload = &msg
 	}
 	return credential, nil
@@ -405,8 +405,8 @@ func main() {
 func emit(resp response) {
 	out, err := json.Marshal(resp)
 	if err != nil {
-		fmt.Fprintf(os.Stdout, `{"success":false,"error":%q,"error_type":"runner_error"}`, err.Error())
+		fmt.Printf(`{"success":false,"error":%q,"error_type":"runner_error"}`, err.Error())
 		return
 	}
-	os.Stdout.Write(out)
+	fmt.Println(string(out))
 }
