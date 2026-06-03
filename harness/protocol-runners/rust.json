@@ -1,0 +1,5 @@
+{
+  "language": "rust",
+  "command": ["cargo", "run", "-q", "-p", "solana-mpp", "--example", "protocol_runner"],
+  "cwd": "rust"
+}
