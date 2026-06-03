@@ -157,6 +157,13 @@ type X402Config struct {
 	// Escape hatch only (DESIGN rule 3): leave nil to use the operator
 	// signer, which is the documented path.
 	Signer Signer
+	// RequirePaymentIdentifier advertises the x402 v2 `payment-identifier`
+	// extension with info.required=true on the 402 challenge, and rejects
+	// any submitted credential that does not echo a valid `pay_`-shaped id
+	// (coinbase x402 payment_identifier spec: HTTP 400). When false
+	// (default) the challenge carries no `extensions` object, matching the
+	// rust spine's PaymentRequiredEnvelope.extensions: None default.
+	RequirePaymentIdentifier bool
 }
 
 // MPPConfig groups the MPP-charge-specific knobs.

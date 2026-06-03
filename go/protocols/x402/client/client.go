@@ -115,6 +115,10 @@ type ChallengeSelection struct {
 type challengeEnvelope struct {
 	X402Version int                 `json:"x402Version"`
 	Accepts     []x402.AcceptsEntry `json:"accepts"`
+	// Extensions is the untyped v2 `extensions` passthrough the server
+	// advertised on the challenge (rust PaymentRequiredEnvelope.extensions).
+	// The client echoes it into the outbound credential. nil when absent.
+	Extensions json.RawMessage `json:"extensions"`
 }
 
 // ParseChallenge parses an x402 challenge from the `payment-required`
@@ -122,27 +126,41 @@ type challengeEnvelope struct {
 // one offer per the given preferences. Returns (nil, false) when no x402
 // offer is present or none matches the selection.
 func ParseChallenge(h http.Header, body []byte, sel ChallengeSelection) (*x402.AcceptsEntry, bool) {
+	entry, _, ok := ParseChallengeWithExtensions(h, body, sel)
+	return entry, ok
+}
+
+// ParseChallengeWithExtensions is ParseChallenge plus the verbatim v2
+// `extensions` object the server advertised on the matched challenge
+// envelope (rust PaymentRequiredEnvelope.extensions). The returned raw is
+// nil when the server advertised none; pass it to BuildPaymentHeaderWith
+// Extensions so the client echoes it back per x402 v2 §5.1.2.
+func ParseChallengeWithExtensions(h http.Header, body []byte, sel ChallengeSelection) (*x402.AcceptsEntry, json.RawMessage, bool) {
 	if raw := h.Get(paymentRequiredHeader); raw != "" {
 		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-			if entry := selectFromJSON(decoded, sel); entry != nil {
-				return entry, true
+			if entry, ext := selectFromJSON(decoded, sel); entry != nil {
+				return entry, ext, true
 			}
 		}
 	}
 	if len(body) > 0 {
-		if entry := selectFromJSON(body, sel); entry != nil {
-			return entry, true
+		if entry, ext := selectFromJSON(body, sel); entry != nil {
+			return entry, ext, true
 		}
 	}
-	return nil, false
+	return nil, nil, false
 }
 
-func selectFromJSON(raw []byte, sel ChallengeSelection) *x402.AcceptsEntry {
+func selectFromJSON(raw []byte, sel ChallengeSelection) (*x402.AcceptsEntry, json.RawMessage) {
 	var env challengeEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil
+		return nil, nil
 	}
-	return selectEntry(env.Accepts, sel)
+	entry := selectEntry(env.Accepts, sel)
+	if entry == nil {
+		return nil, nil
+	}
+	return entry, env.Extensions
 }
 
 // selectEntry implements the Rust select_requirement logic: keep Solana
@@ -252,8 +270,32 @@ func BuildPaymentHeader(
 	rpc solanatx.RPCClient,
 	entry *x402.AcceptsEntry,
 ) (string, error) {
+	return BuildPaymentHeaderWithExtensions(ctx, signer, rpc, entry, nil)
+}
+
+// BuildPaymentHeaderWithExtensions is BuildPaymentHeader plus the x402 v2
+// echo-and-append rule (§5.1.2). It echoes the inbound challenge
+// `extensions` object (advertised) into the outbound credential verbatim,
+// preserving unknown extensions, and when the server marks payment-identifier
+// info.required=true it appends a freshly generated `pay_`-shaped id
+// (GeneratePaymentIdentifierID) without overwriting the server's fields.
+// Pass advertised=nil (the server advertised no extensions) to omit the
+// `extensions` object entirely. Mirrors rust build_payment_header(...,
+// extensions) + PaymentExtensions::echoing + with_payment_identifier_id
+// (payment.rs:132-150, types.rs:548-565).
+func BuildPaymentHeaderWithExtensions(
+	ctx context.Context,
+	signer solanatx.Signer,
+	rpc solanatx.RPCClient,
+	entry *x402.AcceptsEntry,
+	advertised json.RawMessage,
+) (string, error) {
 	if entry == nil {
 		return "", errors.New("x402 client: nil accept entry")
+	}
+	extensions, err := echoAndAppendExtensions(advertised)
+	if err != nil {
+		return "", err
 	}
 	txBase64, err := buildTransaction(ctx, signer, rpc, entry)
 	if err != nil {
@@ -265,12 +307,37 @@ func BuildPaymentHeader(
 		Network:     entry.Network,
 		Payload:     x402.CredentialPayload{Transaction: txBase64},
 		Accepted:    entry,
+		Extensions:  extensions,
 	}
 	raw, err := json.Marshal(credential)
 	if err != nil {
 		return "", fmt.Errorf("x402 client: marshal credential: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// echoAndAppendExtensions implements the x402 v2 §5.1.2 echo-and-append
+// rule: echo the inbound challenge extensions verbatim, and when the server
+// requires a payment-identifier and the client has not already supplied an
+// id, generate a fresh `pay_`-shaped one. Returns nil when the server
+// advertised no extensions or the echoed object is empty, so the outbound
+// omits the `extensions` key (never an empty {}), matching rust
+// skip_serializing_if = Option::is_none + PaymentExtensions::is_empty.
+func echoAndAppendExtensions(advertised json.RawMessage) (*x402.PaymentExtensions, error) {
+	extensions, err := x402.EchoExtensions(advertised)
+	if err != nil {
+		return nil, fmt.Errorf("x402 client: echo extensions: %w", err)
+	}
+	if extensions == nil {
+		return nil, nil
+	}
+	if extensions.RequiresPaymentIdentifier() && extensions.PaymentIdentifierID() == "" {
+		extensions.WithPaymentIdentifierID(x402.GeneratePaymentIdentifierID())
+	}
+	if extensions.IsEmpty() {
+		return nil, nil
+	}
+	return extensions, nil
 }
 
 func buildTransaction(
@@ -457,11 +524,11 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-	entry, ok := ParseChallenge(resp.Header, respBody, t.Selection)
+	entry, advertised, ok := ParseChallengeWithExtensions(resp.Header, respBody, t.Selection)
 	if !ok {
 		return resp, nil // not an x402 offer we can satisfy; hand back the 402.
 	}
-	header, err := BuildPaymentHeader(req.Context(), t.Signer, t.RPC, entry)
+	header, err := BuildPaymentHeaderWithExtensions(req.Context(), t.Signer, t.RPC, entry, advertised)
 	if err != nil {
 		return nil, err
 	}

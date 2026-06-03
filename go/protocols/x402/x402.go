@@ -347,6 +347,14 @@ type Credential struct {
 	Network     string            `json:"network"`
 	Payload     CredentialPayload `json:"payload"`
 	Accepted    *AcceptsEntry     `json:"accepted,omitempty"`
+	// Extensions echoes the inbound PAYMENT-REQUIRED `extensions` object
+	// with any required client-supplied fields filled in (e.g.
+	// payment-identifier.info.id). Per x402 v2 §5.1.2 the client "must
+	// include at least the info received; it may append additional info
+	// but cannot delete or overwrite existing info". Omitted (never an
+	// empty {}) when the server advertised none (rust
+	// PaymentSignatureEnvelope.extensions, types.rs:606-607).
+	Extensions *PaymentExtensions `json:"extensions,omitempty"`
 }
 
 // CredentialPayload carries the protocol-specific bits the client
@@ -404,6 +412,13 @@ type ChallengeEnvelope struct {
 	X402Version int                   `json:"x402Version"`
 	Resource    ResourceRef           `json:"resource"`
 	Accepts     []paykit.AcceptsEntry `json:"accepts"`
+	// Extensions is the untyped v2 extensions passthrough the server
+	// advertises on the challenge (e.g. payment-identifier with
+	// info.required=true). The client echoes it into the outbound
+	// credential. Omitted when none, never an empty {} (rust
+	// PaymentRequiredEnvelope.extensions: Option<serde_json::Value>,
+	// types.rs:457-458).
+	Extensions json.RawMessage `json:"extensions,omitempty"`
 }
 
 // ResourceRef pins the protected resource the envelope advertises.
@@ -417,6 +432,7 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 		X402Version: x402Version,
 		Resource:    ResourceRef{Type: "http", URL: gate.Desc},
 		Accepts:     []paykit.AcceptsEntry{a.AcceptsEntry(gate)},
+		Extensions:  a.advertisedExtensions(),
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
@@ -425,6 +441,29 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 	return map[string]string{
 		paymentRequiredHeader: base64.StdEncoding.EncodeToString(raw),
 	}
+}
+
+// advertisedExtensions builds the v2 `extensions` object the challenge
+// carries. When X402Config.RequirePaymentIdentifier is set it advertises
+// the payment-identifier extension with info.required=true (the client
+// must echo a valid id back, else VerifyAndSettle rejects). Returns nil
+// otherwise so the challenge omits the object entirely, matching the rust
+// spine's PaymentRequiredEnvelope.extensions: None default.
+func (a *Adapter) advertisedExtensions() json.RawMessage {
+	if !a.cfg.X402.RequirePaymentIdentifier {
+		return nil
+	}
+	required := true
+	ext := PaymentExtensions{
+		PaymentIdentifier: &PaymentIdentifierExtension{
+			Info: PaymentIdentifierInfo{Required: &required},
+		},
+	}
+	raw, err := json.Marshal(ext)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
@@ -456,6 +495,31 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if credential.Accepted != nil {
 		if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
 			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
+		}
+	}
+
+	// payment-identifier gate: when the route requires a payment-identifier
+	// (X402Config.RequirePaymentIdentifier, advertised on the challenge),
+	// the credential MUST echo a valid `pay_`-shaped id. A missing or
+	// pattern-violating id is rejected before settlement (coinbase x402
+	// payment_identifier spec: HTTP 400). Layered on the accepted-vs-route
+	// checks above, matching rust requires_payment_identifier +
+	// reject-when-required-and-missing (verify_envelope_payload).
+	if a.cfg.X402.RequirePaymentIdentifier {
+		id := credential.Extensions.PaymentIdentifierID()
+		if id == "" {
+			return nil, &paykit.PaymentError{
+				Code: "payment_identifier_required",
+				Err:  errors.New("payment-identifier required but credential echoed no id"),
+				Gate: req.Gate,
+			}
+		}
+		if !IsValidPaymentIdentifierID(id) {
+			return nil, &paykit.PaymentError{
+				Code: "payment_identifier_required",
+				Err:  fmt.Errorf("payment-identifier id is invalid: %q does not match ^[A-Za-z0-9_-]{16,128}$", id),
+				Gate: req.Gate,
+			}
 		}
 	}
 
