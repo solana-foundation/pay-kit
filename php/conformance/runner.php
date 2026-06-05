@@ -518,7 +518,9 @@ function build_fixture(ChargeRequest $request, array $signerSecretKey): string
 const X402_SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const X402_SOLANA_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 const X402_SOLANA_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
+const X402_VERSION_V1     = 1;
 const X402_VERSION_V2     = 2;
+const X402_EXACT_SCHEME   = 'exact';
 
 /**
  * Normalize a legacy v1 network slug (or any cluster slug / CAIP-2 id) to its
@@ -651,9 +653,32 @@ function verify_x402_header(string $header, array $route): array
                 'Currency mismatch: expected ' . ($route['currency'] ?? '') . ", got $acceptedAsset",
             );
         }
+    } elseif ($version === X402_VERSION_V1) {
+        // v1 (legacy): no `accepted` object. The envelope commits only to a
+        // top-level scheme + plain network slug (siblings of `payload`). Bind
+        // scheme === "exact" and normalize the plain slug to a CAIP-2 chain id,
+        // gating it against the server route. Mirrors the PHP Adapter
+        // matchLegacyCredential + the rust v1 parse arm (server/exact.rs).
+        $scheme = $envelope['scheme'] ?? null;
+        if ($scheme !== X402_EXACT_SCHEME) {
+            throw new InvalidArgumentException(
+                'invalid payload: unsupported scheme ' . (is_scalar($scheme) ? (string) $scheme : 'unknown'),
+            );
+        }
+        $network = is_string($envelope['network'] ?? null) ? $envelope['network'] : '';
+        if ($network === '') {
+            throw new InvalidArgumentException('invalid payload: v1 envelope missing network');
+        }
+        $normalized = x402_caip2_for_cluster($network);
+        if ($normalized !== $expectedNetwork) {
+            throw new InvalidArgumentException(
+                "Network mismatch: expected $expectedNetwork, got $network",
+            );
+        }
     } else {
         // Genuinely-unknown versions are rejected (rust exact.rs / Adapter
-        // unsupported_x402_version arm).
+        // unsupported_x402_version arm). Adding v1 support must not widen the
+        // version gate.
         throw new InvalidArgumentException(
             'unsupported x402 version: ' . (is_scalar($version) ? (string) $version : 'unknown'),
         );
