@@ -17,50 +17,13 @@ parameters:
         - src/Frameworks/Symfony/*
         - src/Frameworks/Symfony/**
     treatPhpDocTypesAsCertain: false
-    reportUnmatchedIgnoredErrors: false
+    # Surface ignore-path drift instead of swallowing it: the
+    # SchemesProtocols rename left the old ignoreErrors entries
+    # pointing at directories that no longer exist, and a level-3
+    # rerun on the renamed handlers reports no errors, so every
+    # suppression had become dead config. Keeping this true means any
+    # future regression that needs a suppression must add a matching
+    # entry rather than silently relying on a stale one.
+    reportUnmatchedIgnoredErrors: true
     bootstrapFiles:
         - vendor/autoload.php
-    ignoreErrors:
-        # Brick\Math\BigDecimal returns BigDecimal; PHPStan can't
-        # follow chained `multipliedBy()->toInt()` without generics.
-        - identifier: method.notFound
-          path: src/Price.php
-        - identifier: method.notFound
-          path: src/Gate.php
-        # PSR-15 middleware uses Closure-typed callables PHPStan
-        # widens to mixed; runtime resolves them.
-        - identifier: argument.type
-          path: src/Http/RequirePayment.php
-        - identifier: method.notFound
-          path: src/Http/RequirePayment.php
-        - identifier: method.nonObject
-          path: src/Http/RequirePayment.php
-        # Solana-php SDK returns mixed from RPC; the adapter coerces
-        # and the verifier raises on shape mismatch.
-        - identifier: argument.type
-          path: src/Schemes/Mpp/Adapter.php
-        - identifier: method.notFound
-          path: src/Schemes/Mpp/Adapter.php
-        - identifier: argument.type
-          path: src/Schemes/X402/Adapter.php
-        - identifier: method.notFound
-          path: src/Schemes/X402/Adapter.php
-        - identifier: argument.type
-          path: src/Schemes/X402/Exact/Verifier.php
-        - identifier: method.notFound
-          path: src/Schemes/X402/Exact/Verifier.php
-        - identifier: argument.type
-          path: src/Preflight.php
-        # The Signer factory passes user-provided JSON to Keypair;
-        # the type-system mixed value is sanity-checked at runtime.
-        - identifier: argument.type
-          path: src/Signer.php
-        - identifier: argument.type
-          path: src/Signer/LocalSigner.php
-        # Tests intentionally pass placeholders that PHPStan widens.
-        - identifier: argument.type
-          path: tests/*
-        - identifier: method.alreadyNarrowedType
-          path: tests/*
-        - identifier: method.nonObject
-          path: tests/*

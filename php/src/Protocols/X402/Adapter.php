@@ -33,10 +33,8 @@ use Throwable;
  */
 final class Adapter
 {
-    private const PAYMENT_SIGNATURE_HEADER = 'payment-signature';
-    private const X402_VERSION             = 2;
-    private const TOKEN_PROGRAM            = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-    private const REPLAY_KEY_PREFIX        = 'x402-svm-exact:consumed:';
+    private const X402_VERSION      = 2;
+    private const REPLAY_KEY_PREFIX = 'x402-svm-exact:consumed:';
 
     /** @var \Closure():?string|null */
     private $recentBlockhashProvider = null;
