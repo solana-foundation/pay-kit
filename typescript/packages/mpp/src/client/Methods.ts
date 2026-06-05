@@ -11,7 +11,7 @@ import { buildSubscriptionActivationTransaction, subscription as subscription_ }
  *
  * @example
  * ```ts
- * import { Mppx, solana } from 'solana-mpp-sdk/client'
+ * import { Mppx, solana } from '@solana/mpp/client'
  *
  * const method = solana.charge({ signer })
  * const mppx = Mppx.create({ methods: [method] })

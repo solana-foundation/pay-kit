@@ -87,7 +87,7 @@ export {
     deriveSubscriptionPda,
     mapSubscriptionPeriodToHours,
 } from '../shared/subscription.js';
-// Re-export Mppx so consumers can do: import { Mppx, solana } from 'solana-mpp-sdk/client'
+// Re-export Mppx so consumers can do: import { Mppx, solana } from '@solana/mpp/client'
 export { Mppx } from 'mppx/client';
 // Re-export the challenge codec with pay-kit's canonical empty-id parse guard
 // applied, so clients parsing a `WWW-Authenticate` header reject a malformed

@@ -42,7 +42,7 @@ import { checkNetworkBlockhash } from './network-check.js';
  *
  * @example
  * ```ts
- * import { Mppx, solana } from 'solana-mpp-sdk/server'
+ * import { Mppx, solana } from '@solana/mpp/server'
  *
  * const mppx = Mppx.create({
  *   methods: [solana.charge({

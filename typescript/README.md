@@ -28,23 +28,41 @@ the [`demo/server/`](../demo/server) reference uses):
 
 ```ts
 import express from 'express'
-import { createMpp } from '@solana/mpp/server'
+import { Mppx, solana } from '@solana/mpp/server'
 
-const mpp = createMpp({
-  recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-  currency: 'USDC',
-  network: 'localnet',
-  rpcUrl: 'https://402.surfnet.dev:8899',
+const mppx = Mppx.create({
   secretKey: 'local-dev-secret',
-  realm: 'TypeScript MPP Example',
+  methods: [
+    solana.charge({
+      recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
+      currency: 'USDC',
+      network: 'localnet',
+      rpcUrl: 'https://402.surfnet.dev:8899',
+    }),
+  ],
 })
 
 const app = express()
 app.use(express.json())
 
-app.get('/paid', mpp.charge({ amount: '0.001', description: 'Paid endpoint' }),
-  (_req, res) => res.json({ ok: true, paid: true }),
-)
+app.get('/paid', async (req, res) => {
+  const result = await mppx.charge({
+    amount: '1000', // 0.001 USDC, in base units
+    currency: 'USDC',
+    description: 'Paid endpoint',
+  })(new Request(`http://localhost${req.url}`, { headers: req.headers as HeadersInit }))
+
+  if (result.status === 402) {
+    const challenge = result.challenge as Response
+    res.writeHead(challenge.status, Object.fromEntries(challenge.headers))
+    res.end(await challenge.text())
+    return
+  }
+
+  const response = result.withReceipt(Response.json({ ok: true, paid: true }))
+  res.writeHead(response.status, Object.fromEntries(response.headers))
+  res.end(await response.text())
+})
 
 app.listen(4567)
 ```
@@ -57,14 +75,15 @@ tokens not in the table.
 ### Client
 
 ```ts
-import { createMppClient } from '@solana/mpp/client'
+import { Mppx, solana } from '@solana/mpp/client'
 
-const client = createMppClient({ signer, rpcUrl })
-const res = await client.fetch('https://api.example/paid')
+const mppx = Mppx.create({ methods: [solana.charge({ signer, rpcUrl })] })
+const res = await mppx.fetch('https://api.example/paid')
 ```
 
-`createMppClient` returns a fetch-shaped helper whose transport replays
-402 responses with the appropriate `Authorization: Payment` credential.
+`Mppx.create({ methods: [...] })` returns a fetch-shaped helper whose
+transport replays 402 responses with the appropriate
+`Authorization: Payment` credential.
 
 ## Protocol compatibility matrix
 

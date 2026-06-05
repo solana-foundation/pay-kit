@@ -60,7 +60,7 @@ import * as Methods from '../Methods.js';
  *
  * @example
  * ```ts
- * import { Mppx, solana } from 'solana-mpp-sdk/client'
+ * import { Mppx, solana } from '@solana/mpp/client'
  *
  * const method = solana.charge({ signer, rpcUrl: 'https://api.devnet.solana.com' })
  * const mppx = Mppx.create({ methods: [method] })
