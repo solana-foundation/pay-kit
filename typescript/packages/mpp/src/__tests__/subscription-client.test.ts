@@ -286,6 +286,25 @@ describe('buildSubscriptionActivationTransaction', () => {
         // devnet network → public devnet RPC
         expect(urls.some(u => u.includes('devnet'))).toBe(true);
     });
+
+    test('normalizes a mixed-case network slug when resolving the default RPC URL', async () => {
+        const urls: string[] = [];
+        globalThis.fetch = async (input, init) => {
+            urls.push(String(input));
+            return defaultMockFetch()(input, init);
+        };
+        const signer = await generateKeyPairSigner();
+        const req = baseRequest();
+        // Upper-case mainnet slug must normalize (mainnet/mainnet-beta → mainnet)
+        // and resolve to the mainnet default RPC rather than falling through.
+        (req.methodDetails as { network: string }).network = 'MAINNET';
+        await buildSubscriptionActivationTransaction({
+            request: req,
+            signer,
+        });
+        expect(urls.some(u => u.includes('api.mainnet-beta.solana.com'))).toBe(true);
+        expect(urls.some(u => u.includes('devnet'))).toBe(false);
+    });
 });
 
 // ══════════════════════════════════════════════════════════════════════

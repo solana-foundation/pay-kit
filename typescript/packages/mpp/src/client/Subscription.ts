@@ -24,6 +24,7 @@ import { Credential, Method } from 'mppx';
 import {
     DEFAULT_RPC_URLS,
     MEMO_PROGRAM,
+    normalizeNetwork,
     SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
@@ -49,7 +50,7 @@ import {
  *
  * @example
  * ```ts
- * import { Mppx, solana } from 'solana-mpp-sdk/client'
+ * import { Mppx, solana } from '@solana/mpp/client'
  *
  * const method = solana.subscription({ signer, rpcUrl: 'https://api.devnet.solana.com' })
  * const mppx = Mppx.create({ methods: [method] })
@@ -76,13 +77,15 @@ export function subscription(parameters: subscription.Parameters) {
                 request: challenge.request,
                 rpcUrl:
                     parameters.rpcUrl ??
-                    DEFAULT_RPC_URLS[network || 'mainnet-beta'] ??
-                    DEFAULT_RPC_URLS['mainnet-beta'],
+                    DEFAULT_RPC_URLS[normalizeNetwork(network ?? 'mainnet')] ??
+                    DEFAULT_RPC_URLS.mainnet,
                 signer,
             });
 
             const rpc = createSolanaRpc(
-                parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'],
+                parameters.rpcUrl ??
+                    DEFAULT_RPC_URLS[normalizeNetwork(network ?? 'mainnet')] ??
+                    DEFAULT_RPC_URLS.mainnet,
             );
 
             if (broadcast) {
@@ -144,7 +147,8 @@ export async function buildSubscriptionActivationTransaction(
     const periodHours = mapSubscriptionPeriodToHours(periodUnit, Number(periodCount));
     assertPeriodHoursInRange(periodHours);
 
-    const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const rpcUrl =
+        parameters.rpcUrl ?? DEFAULT_RPC_URLS[normalizeNetwork(network ?? 'mainnet')] ?? DEFAULT_RPC_URLS.mainnet;
     const rpc = createSolanaRpc(rpcUrl);
 
     onProgress?.({
