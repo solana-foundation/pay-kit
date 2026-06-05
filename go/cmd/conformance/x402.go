@@ -56,7 +56,20 @@ type X402EnvelopeShape struct {
 	AcceptedAmount        string `json:"acceptedAmount,omitempty"`
 }
 
-const x402VersionV2 = 2
+const (
+	x402VersionV1 = 1
+	x402VersionV2 = 2
+
+	// exactScheme is the only x402 scheme. The legacy v1 envelope carries
+	// it as a top-level sibling of network and payload.
+	exactScheme = "exact"
+
+	// Plain legacy SVM network slugs the v1 wire uses instead of CAIP-2.
+	legacyNetworkMainnet = "solana"
+	legacyNetworkDevnet  = "solana-devnet"
+
+	solanaDevnetCAIP2 = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+)
 
 // runX402 dispatches an x402-exact vector by mode. build-transaction
 // produces an envelope and emits its shape; verify-transaction runs the
@@ -106,9 +119,6 @@ func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 	if in.X402Offer == nil {
 		return nil, fmt.Errorf("x402 build vector is missing input.x402Offer")
 	}
-	if in.X402Version != x402VersionV2 {
-		return nil, fmt.Errorf("x402 build vector has unsupported input.x402Version %d", in.X402Version)
-	}
 	tx := in.X402PinnedTransaction
 	if tx == "" {
 		return nil, fmt.Errorf("x402 build vector is missing input.x402PinnedTransaction")
@@ -118,12 +128,29 @@ func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 		return nil, err
 	}
 
-	// Mirrors client.BuildPaymentHeader: no top-level scheme/network,
-	// accepted echoes the selected offer verbatim.
-	credential := x402.Credential{
-		X402Version: x402VersionV2,
-		Payload:     x402.CredentialPayload{Transaction: tx},
-		Accepted:    entry,
+	var credential x402.Credential
+	switch in.X402Version {
+	case x402VersionV1:
+		// Mirrors client.BuildPaymentHeaderV1: top-level scheme + plain
+		// legacy network slug, NO accepted object (the v1 envelope binds
+		// only scheme+network).
+		credential = x402.Credential{
+			X402Version: x402VersionV1,
+			Scheme:      exactScheme,
+			Network:     v1NetworkForEntry(entry),
+			Payload:     x402.CredentialPayload{Transaction: tx},
+		}
+	case 0, x402VersionV2:
+		// Default producer: v2. No top-level scheme/network leakage,
+		// accepted echoes the selected offer verbatim. An absent version
+		// in the vector means "exercise the default producer".
+		credential = x402.Credential{
+			X402Version: x402VersionV2,
+			Payload:     x402.CredentialPayload{Transaction: tx},
+			Accepted:    entry,
+		}
+	default:
+		return nil, fmt.Errorf("x402 build vector has unsupported input.x402Version %d", in.X402Version)
 	}
 
 	raw, err := json.Marshal(credential)
@@ -132,6 +159,19 @@ func buildX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 	}
 	header := base64.StdEncoding.EncodeToString(raw)
 	return decodeX402EnvelopeShape(header)
+}
+
+// v1NetworkForEntry maps an offer's network to the plain legacy SVM slug
+// the v1 wire uses, mirroring the production client v1NetworkForEntry and
+// the rust v1_network_for_requirements: only the devnet family is
+// special-cased, everything else (mainnet, testnet) collapses to "solana".
+func v1NetworkForEntry(entry *x402.AcceptsEntry) string {
+	switch entry.Network {
+	case "devnet", "solana-devnet", "localnet", solanaDevnetCAIP2:
+		return legacyNetworkDevnet
+	default:
+		return legacyNetworkMainnet
+	}
 }
 
 // credentialWire is the decode-side shape of a base64(JSON) x402 envelope.
@@ -216,6 +256,18 @@ func verifyX402Envelope(vector Vector) (*X402EnvelopeShape, error) {
 	expectedNetwork := caip2NetworkForCluster(in.X402ServerNetwork)
 
 	switch shape.X402Version {
+	case x402VersionV1:
+		// v1 dual-accept arm: the envelope has no accepted object, so the
+		// server binds only the top-level scheme + network. The scheme
+		// must be "exact" and the plain network slug must normalize to
+		// the route's network. Mirrors the rust parse_payment_signature
+		// v1 arm (server/exact.rs) and the production verifyLegacyBinding.
+		if shape.Scheme != exactScheme {
+			return nil, fmt.Errorf("invalid payload: v1 scheme mismatch: expected %s, got %q", exactScheme, shape.Scheme)
+		}
+		if caip2NetworkForCluster(shape.Network) != expectedNetwork {
+			return nil, fmt.Errorf("network mismatch: expected %s, got %s", expectedNetwork, shape.Network)
+		}
 	case x402VersionV2:
 		// v2 gate: accepted must exist, its network/amount/recipient/asset
 		// must all match the route (accepted-vs-route comparison).
