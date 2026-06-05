@@ -205,6 +205,27 @@ class X402ServerExactTest < Minitest::Test
     assert_equal 200, status
     assert_equal "v1-http-settlement", headers.fetch("x-fixture-settlement")
     assert_equal true, body.fetch(:paid)
+    # A v1 credential gets the legacy X-PAYMENT-RESPONSE receipt header, not
+    # the v2 PAYMENT-RESPONSE (rust X402_V1_PAYMENT_RESPONSE_HEADER).
+    assert headers.key?(PayKit::Protocols::X402::Constants::X402_V1_PAYMENT_RESPONSE_HEADER),
+      "expected v1 settlement under X-PAYMENT-RESPONSE, got: #{headers.keys.inspect}"
+    refute headers.key?(PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER),
+      "v1 response must not use the v2 PAYMENT-RESPONSE header"
+  end
+
+  def test_protected_route_v2_uses_payment_response_header
+    # Symmetry with the v1 case: a v2 credential settles under PAYMENT-RESPONSE.
+    state = build_state(sender: ->(_state, _transaction) { "v2-http-settlement" })
+    payment_header = build_payment_header(state, resource: "/protected")
+
+    _status, headers, _body = PayKit::Protocols::X402::Server::Exact.response_for(
+      "/protected",
+      {"PAYMENT-SIGNATURE" => payment_header},
+      state
+    )
+
+    assert headers.key?(PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER)
+    refute headers.key?(PayKit::Protocols::X402::Constants::X402_V1_PAYMENT_RESPONSE_HEADER)
   end
 
   def test_protected_route_prefers_v2_header_over_v1

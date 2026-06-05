@@ -396,6 +396,23 @@ module PayKit::Protocols::X402
         #
         # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
         # at `rust/crates/x402/src/bin/interop_server.rs:316-324`.
+        # Pick the settlement-response header for a credential by its wire
+        # version: a v1 `X-PAYMENT` credential gets the legacy
+        # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
+        # `PAYMENT-RESPONSE`. Mirrors the rust split (constants.rs:22/31) and
+        # go/python/php/lua/swift. Falls back to the v2 header if the version
+        # cannot be read (the credential was already verified by settle).
+        def settlement_response_header(payment_header)
+          decoded = Types.decode_payment_signature(payment_header)
+          if decoded["x402Version"] == Constants::X402_VERSION_V1
+            Constants::X402_V1_PAYMENT_RESPONSE_HEADER
+          else
+            Constants::PAYMENT_RESPONSE_HEADER
+          end
+        rescue
+          Constants::PAYMENT_RESPONSE_HEADER
+        end
+
         def settle_exact_payment(config, payment_header, resource: nil)
           decoded = Types.decode_payment_signature(payment_header)
           requirements = exact_requirements(config, resource: resource)
@@ -605,7 +622,7 @@ module PayKit::Protocols::X402
                 200,
                 {
                   config.settlement_header => settlement,
-                  PAYMENT_RESPONSE_HEADER => payment_response
+                  settlement_response_header(payment_signature) => payment_response
                 },
                 {
                   ok: true,
