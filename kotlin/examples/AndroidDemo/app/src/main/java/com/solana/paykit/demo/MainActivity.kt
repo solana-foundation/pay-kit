@@ -94,8 +94,10 @@ private fun DemoScreen(
     walletAdapter: MobileWalletAdapter,
     sender: ActivityResultSender,
 ) {
-    // 10.0.2.2 is the Android emulator's loopback to the host machine.
-    // For 402.surfnet.dev override the merchant URL field at runtime.
+    // Defaults point at the hosted 402.surfnet.dev demo server. For a local
+    // server running on the host machine, set the merchant/RPC fields to
+    // http://10.0.2.2:<port> (the Android emulator's loopback alias,
+    // allow-listed in network_security_config.xml).
     var merchantUrl by remember { mutableStateOf("https://402.surfnet.dev/protected") }
     var rpcUrl by remember { mutableStateOf("https://402.surfnet.dev/rpc") }
     var status by remember { mutableStateOf(Status.idle()) }
