@@ -242,6 +242,16 @@ export function parseX402Challenge(
 
   const v1Header = find(X402_V1_PAYMENT_REQUIRED_HEADER);
   if (v1Header) {
+    // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
+    // (client/exact/payment.rs: serde_json::from_str on the header value),
+    // not base64. Accept both: raw JSON first (rust parity), then a base64
+    // envelope, so this oracle interoperates with either producer.
+    try {
+      const offer = parseV1ChallengeBody(v1Header);
+      if (offer) return offer;
+    } catch {
+      /* not raw JSON; try base64 */
+    }
     try {
       const decoded = Buffer.from(v1Header, "base64").toString("utf8");
       const offer = parseV1ChallengeBody(decoded);

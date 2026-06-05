@@ -28,10 +28,19 @@ declared v1.
 | Server challenge | `X-PAYMENT-REQUIRED` | `PAYMENT-REQUIRED` | constants.rs:19,28 |
 | Settlement result | `X-PAYMENT-RESPONSE` | `PAYMENT-RESPONSE` | constants.rs:22,31 |
 
-All envelope header values are **standard (padded) base64** of the envelope
-JSON, NOT base64url. The rust producer encodes with
+The **credential** header values (`X-PAYMENT` / `PAYMENT-SIGNATURE`) and the
+v2 **challenge** header (`PAYMENT-REQUIRED`) are **standard (padded) base64**
+of the envelope JSON, NOT base64url. The rust producer encodes with
 `base64::engine::general_purpose::STANDARD` (client/exact/payment.rs:110,
 175-178) and the server decodes with the same engine (server/exact.rs:308).
+
+**Exception — `X-PAYMENT-REQUIRED` (legacy v1 challenge header):** the rust
+client parses this header value as **RAW JSON**, not base64
+(`serde_json::from_str` on the header value, client/exact/payment.rs). pay-kit
+parsers therefore accept the X-PAYMENT-REQUIRED value as raw JSON (and, for
+robustness, also a base64 envelope). No pay-kit server emits this header (it
+emits v2 `PAYMENT-REQUIRED`); it exists only to interoperate with an external
+v1 server that sends it.
 
 ## SVM network names
 

@@ -324,8 +324,10 @@ async def test_server_accepts_legacy_x_payment_header(monkeypatch):
     payment = await adapter.verify_and_settle(gate, _LegacyReq(header))
     assert payment.protocol is Protocol.X402
     assert payment.transaction == "SIG-legacy-ok"
-    # The response receipt reports the route's CAIP-2 network for a legacy cred.
-    resp = json.loads(base64.b64decode(payment.settlement_headers["payment-response"]))
+    # A v1 credential gets the legacy X-PAYMENT-RESPONSE receipt header, NOT the
+    # v2 payment-response (rust X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
+    assert "payment-response" not in payment.settlement_headers
+    resp = json.loads(base64.b64decode(payment.settlement_headers["x-payment-response"]))
     assert resp["network"] == SOLANA_DEVNET_CAIP2
 
 

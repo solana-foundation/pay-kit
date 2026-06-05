@@ -324,12 +324,17 @@ final class Adapter
             'payer'       => $payload['transactionHash'] ?? '',
         ], JSON_THROW_ON_ERROR));
 
+        // v1 credentials get the legacy X-PAYMENT-RESPONSE receipt header; v2
+        // uses PAYMENT-RESPONSE (rust X402_V1_PAYMENT_RESPONSE_HEADER,
+        // constants.rs:22; matches go/lua/ruby/swift).
+        $responseHeader = ($version === self::X402_VERSION_V1) ? 'x-payment-response' : 'payment-response';
+
         return new Payment(
             protocol: Protocol::X402,
             transaction: $sig,
             gateName: null,
             settlementHeaders: [
-                'payment-response'                => $responseEnvelope,
+                $responseHeader                   => $responseEnvelope,
                 'x-payment-settlement-signature'  => $sig,
             ],
             raw: $header,

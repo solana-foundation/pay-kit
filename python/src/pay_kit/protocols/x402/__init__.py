@@ -56,6 +56,10 @@ __all__ = ["X402Adapter", "ExactVerifier", "X402_VERSION"]
 
 _SETTLEMENT_HEADER = "x-payment-settlement-signature"
 _RESPONSE_HEADER = "payment-response"
+# Legacy v1 clients read the settlement receipt under X-PAYMENT-RESPONSE; the
+# server must echo it there when it accepted a v1 credential (rust
+# X402_V1_PAYMENT_RESPONSE_HEADER, constants.rs:22).
+_RESPONSE_HEADER_LEGACY = "x-payment-response"
 _REPLAY_PREFIX = "x402-svm-exact:consumed:"
 
 
@@ -266,12 +270,16 @@ class X402Adapter:
             "ascii"
         )
 
+        # v1 credentials get the legacy X-PAYMENT-RESPONSE receipt header; v2
+        # uses PAYMENT-RESPONSE. Mirrors the rust v1/v2 settlement-response
+        # split (constants.rs:22/31) and the go/lua/ruby/swift behavior.
+        response_header = _RESPONSE_HEADER_LEGACY if version == X402_VERSION_V1 else _RESPONSE_HEADER
         return Payment(
             protocol=Protocol.X402,
             transaction=signature,
             gate_name=gate.name,
             settlement_headers={
-                _RESPONSE_HEADER: response_envelope,
+                response_header: response_envelope,
                 _SETTLEMENT_HEADER: signature,
             },
             raw=header,

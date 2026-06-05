@@ -58,7 +58,8 @@ public func parseX402Challenge(
 /// Source precedence mirrors the rust client
 /// (client/exact/payment.rs:232-262):
 /// 1. canonical `PAYMENT-REQUIRED` header (standard-base64 JSON);
-/// 2. legacy `X-PAYMENT-REQUIRED` header (standard-base64 JSON);
+/// 2. legacy `X-PAYMENT-REQUIRED` header (RAW JSON per the rust spine; a
+///    base64 envelope is also accepted for robustness);
 /// 3. the 402 JSON body (`{ "accepts": [...] }`), legacy/express fallback.
 ///
 /// The legacy header and body carry plain SVM network slugs and
@@ -79,8 +80,13 @@ public func parseX402ChallengeWithVersion(
         return parsed
     }
 
+    // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
+    // (client/exact/payment.rs: serde_json::from_str on the header value),
+    // not base64. Accept a base64 envelope first, then fall back to raw JSON
+    // (rust parity), so we interoperate with either producer.
     if let value = header(X402LegacyPaymentRequiredHeader),
-       let parsed = _selectFromHeader(value, selection: selection) {
+       let parsed = _selectFromHeader(value, selection: selection)
+        ?? _selectFromBody(value, selection: selection) {
         return parsed
     }
 
