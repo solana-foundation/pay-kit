@@ -40,6 +40,30 @@ module X402ExactClientFixture
     Base64.strict_encode64(JSON.generate(envelope))
   end
 
+  # Build a legacy v1 x402 payment envelope. Mirrors the spine
+  # `build_payment_header_v1` shape (client/exact/payment.rs:153-170):
+  # `x402Version=1`, top-level `scheme` + plain `network` siblings of
+  # `payload`, and NO `accepted` object. `network` is the legacy plain
+  # SVM slug (e.g. "solana-devnet"), not CAIP-2.
+  def build_v1_exact_payment_signature(requirement:, client_secret_key:, recent_blockhash:, network:)
+    raise ArgumentError, "only exact payment requirements can be signed" unless requirement["scheme"] == "exact"
+
+    private_key = Exact.private_key_from_json(client_secret_key)
+    transaction = build_transaction(
+      requirement: requirement,
+      private_key: private_key,
+      recent_blockhash: recent_blockhash
+    )
+    envelope = {
+      x402Version: Constants::X402_VERSION_V1,
+      scheme: Constants::EXACT_SCHEME,
+      network: network,
+      payload: {transaction: Base64.strict_encode64(transaction)}
+    }
+
+    Base64.strict_encode64(JSON.generate(envelope))
+  end
+
   def build_transaction(requirement:, private_key:, recent_blockhash:)
     signer = private_key.raw_public_key
     fee_payer = Exact.base58_decode(Exact.string_extra(requirement, "feePayer"))
