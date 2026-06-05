@@ -18,6 +18,7 @@ from typing import Any
 from pay_kit._paycore.errors import PaymentError
 from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
+    MAX_SPLITS,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
@@ -45,14 +46,9 @@ _COMPUTE_BUDGET_SET_PRICE_DISCRIMINATOR = 3
 MAX_COMPUTE_UNIT_LIMIT = 200_000
 MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
 
-# Maximum number of additional split recipients on a single charge.
-# Matches Rust ``splits.len() > 8`` guard in
-# ``rust/src/server/charge.rs::verify_versioned_transaction_pre_broadcast``
-# and the equivalent ``count($splits) > 8`` / ``splits.length > 8`` guards
-# in PHP and Ruby. A high split count balloons the transaction size and
-# the per-recipient ATA verification cost, so we reject early at the
-# pre-broadcast stage.
-MAX_SPLITS = 8
+# ``MAX_SPLITS`` (the split-recipient cap) is imported from
+# :mod:`pay_kit._paycore.solana` and re-exported here so the server verifier and
+# the client fail-fast check share one source of truth pinned to the Rust spine.
 
 # Legacy Solana memo program (v1). MPP charge transactions MUST use memo v2
 # (``MEMO_PROGRAM`` from :mod:`pay_kit._paycore.solana`). v1 had a different
