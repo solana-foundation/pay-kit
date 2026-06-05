@@ -5,6 +5,24 @@ import Foundation
 /// x402 protocol version constant emitted in the `Payment-Signature` envelope.
 public let X402Version: Int = 2
 
+/// Legacy x402 protocol version (v1). Mirrors the rust spine constant
+/// `X402_VERSION_V1` (constants.rs:10). The default producer stays
+/// `X402Version` (v2); this is emitted only when the server's challenge
+/// declared the legacy version.
+public let X402VersionLegacy: Int = 1
+
+/// Legacy client payment header carrying the base64 legacy envelope.
+/// Mirrors rust `X402_V1_PAYMENT_HEADER` (constants.rs:16).
+public let X402LegacyPaymentHeader: String = "X-PAYMENT"
+
+/// Legacy server challenge header. Mirrors rust
+/// `X402_V1_PAYMENT_REQUIRED_HEADER` (constants.rs:19).
+public let X402LegacyPaymentRequiredHeader: String = "X-PAYMENT-REQUIRED"
+
+/// Canonical v2 payment header. Mirrors rust `X402_V2_PAYMENT_HEADER`
+/// (constants.rs:25).
+public let X402PaymentHeader: String = "PAYMENT-SIGNATURE"
+
 /// One entry in the `accepts` array of a `PAYMENT-REQUIRED` challenge.
 ///
 /// The x402 pay_kit server stamps `extra.recentBlockhash`,
@@ -283,28 +301,50 @@ public struct X402PaymentPayload: Codable, Sendable {
     }
 }
 
-/// The `Payment-Signature` header value (base64 of this JSON).
+/// The client payment header value (base64 of this JSON).
 ///
-/// Mirrors the rust `PaymentSignatureEnvelope`:
-/// `{ x402Version, accepted, payload }`.
+/// Mirrors the rust `PaymentSignatureEnvelope` (types.rs:587-608), a single
+/// type covering both wire shapes:
+/// - Canonical (v2): `{ x402Version: 2, accepted, payload }`, carried in the
+///   `PAYMENT-SIGNATURE` header. `scheme`/`network` are `nil` and omitted.
+/// - Legacy (v1): `{ x402Version: 1, scheme, network, payload }`, carried in
+///   the `X-PAYMENT` header. `accepted` is `nil` and omitted; `scheme` and
+///   `network` (a plain SVM slug) are top-level siblings of `payload`.
+///
+/// `scheme`/`network`/`accepted` are skipped when `nil`, matching the rust
+/// `skip_serializing_if = "Option::is_none"` on each field.
 public struct X402PaymentSignatureEnvelope: Codable, Sendable {
     public let x402Version: Int
+    /// Top-level scheme (legacy v1 only; `nil` and omitted for v2).
+    public let scheme: String?
+    /// Top-level plain SVM network slug (legacy v1 only; `nil` for v2).
+    public let network: String?
     public let accepted: X402AcceptsEntry?
     public let payload: X402PaymentPayload
 
-    public init(x402Version: Int, accepted: X402AcceptsEntry?, payload: X402PaymentPayload) {
+    public init(
+        x402Version: Int,
+        scheme: String? = nil,
+        network: String? = nil,
+        accepted: X402AcceptsEntry?,
+        payload: X402PaymentPayload
+    ) {
         self.x402Version = x402Version
+        self.scheme = scheme
+        self.network = network
         self.accepted = accepted
         self.payload = payload
     }
 
     private enum CodingKeys: String, CodingKey {
-        case x402Version, accepted, payload
+        case x402Version, scheme, network, accepted, payload
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         x402Version = try container.decode(Int.self, forKey: .x402Version)
+        scheme = try container.decodeIfPresent(String.self, forKey: .scheme)
+        network = try container.decodeIfPresent(String.self, forKey: .network)
         accepted = try container.decodeIfPresent(X402AcceptsEntry.self, forKey: .accepted)
         payload = try container.decode(X402PaymentPayload.self, forKey: .payload)
     }
@@ -312,11 +352,15 @@ public struct X402PaymentSignatureEnvelope: Codable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(x402Version, forKey: .x402Version)
+        // Legacy v1 siblings; omitted (and thus absent on v2) when nil.
+        try container.encodeIfPresent(scheme, forKey: .scheme)
+        try container.encodeIfPresent(network, forKey: .network)
         // Echo the offered requirement verbatim when we captured it on the
         // wire (preserves maxTimeoutSeconds / resource / server extras the
         // typed entry does not model); fall back to the typed encoding for
         // in-code entries. Mirrors the rust client's `to_accepted_value`,
-        // which returns the original parsed object unchanged.
+        // which returns the original parsed object unchanged. The legacy v1
+        // envelope omits `accepted` entirely (it binds only scheme+network).
         if let raw = accepted?.raw {
             try container.encode(raw, forKey: .accepted)
         } else {
