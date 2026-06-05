@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from pay_kit import errors, kms
 from pay_kit._middleware import (
+    PayCore,
     is_paid,
     is_paid_for,
     payment,
@@ -97,6 +98,8 @@ __all__ = [
     "is_paid",
     "is_paid_for",
     "payment",
+    # framework-agnostic umbrella core
+    "PayCore",
     # errors
     "errors",
     "PayKitError",

@@ -27,8 +27,7 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pay_kit
-from pay_kit import Gate, usd
-from pay_kit._middleware import PayCore
+from pay_kit import Gate, PayCore, usd
 from pay_kit.errors import InvalidProofError, PaymentRequiredError
 
 pay_kit.configure(network="solana_localnet")

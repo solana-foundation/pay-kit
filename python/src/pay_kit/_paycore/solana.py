@@ -114,6 +114,15 @@ def is_native_sol(currency: str) -> bool:
     return currency.upper() == "SOL"
 
 
+# Maximum number of additional split recipients on a single charge. Pinned to
+# the Rust spine ``splits.len() > 8`` guard in
+# ``rust/src/server/charge.rs::verify_versioned_transaction_pre_broadcast`` and
+# the mirrored ``count($splits) > 8`` / ``splits.length > 8`` guards in PHP,
+# Ruby, Go, Lua. Shared by the client fail-fast check and the server
+# pre-broadcast verifier so the cap cannot drift between the two paths.
+MAX_SPLITS = 8
+
+
 @dataclass
 class MethodDetails:
     """Solana-specific challenge method details."""

@@ -8,6 +8,7 @@ from pay_kit._paycore.mints import derive_ata
 from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     COMPUTE_BUDGET_PROGRAM,
+    MAX_SPLITS,
     MEMO_PROGRAM,
     SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
@@ -108,9 +109,9 @@ async def build_charge_transaction(
     details = method_details or MethodDetails()
     amount_int = int(amount)
     # Cap split count, matching rust ``if splits.len() > 8`` (charge.rs:76-78);
-    # the server enforces MAX_SPLITS=8 too, but the client must fail fast.
-    if len(details.splits) > 8:
-        raise ValueError("too many splits: maximum is 8")
+    # the server enforces the same MAX_SPLITS cap, but the client must fail fast.
+    if len(details.splits) > MAX_SPLITS:
+        raise ValueError(f"too many splits: maximum is {MAX_SPLITS}")
     split_total = sum(int(split.amount) for split in details.splits)
     primary_amount = amount_int - split_total
     if primary_amount <= 0:
