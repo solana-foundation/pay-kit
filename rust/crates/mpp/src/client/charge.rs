@@ -14,7 +14,7 @@ use crate::protocol::core::{
     format_authorization, parse_www_authenticate, PaymentChallenge, PaymentCredential,
 };
 use crate::protocol::intents::ChargeRequest;
-use crate::protocol::solana::{programs, CredentialPayload, MethodDetails, Split};
+use crate::protocol::solana::{programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES};
 
 /// Build a charge transaction from challenge parameters.
 ///
@@ -426,8 +426,10 @@ fn push_memo_instruction(
         return Ok(());
     };
     let data = memo.as_bytes().to_vec();
-    if data.len() > 566 {
-        return Err(Error::Other("memo cannot exceed 566 bytes".into()));
+    if data.len() > MAX_MEMO_BYTES {
+        return Err(Error::Other(format!(
+            "memo cannot exceed {MAX_MEMO_BYTES} bytes"
+        )));
     }
     let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM)
         .map_err(|e| Error::Other(format!("Invalid memo program: {e}")))?;

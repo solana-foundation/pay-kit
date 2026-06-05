@@ -49,6 +49,7 @@ use crate::protocol::intents::{
     ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
     SubscriptionRequest,
 };
+use crate::protocol::solana::default_rpc_url;
 use crate::server::charge::VerificationError;
 use crate::store::{MemoryStore, Store};
 
@@ -693,15 +694,6 @@ impl SubscriptionServer {
     }
 }
 
-fn default_rpc_url(network: &str) -> &'static str {
-    match network {
-        "devnet" => "https://api.devnet.solana.com",
-        "testnet" => "https://api.testnet.solana.com",
-        "localnet" => "http://localhost:8899",
-        _ => "https://api.mainnet-beta.solana.com",
-    }
-}
-
 // ── Verify helpers ──────────────────────────────────────────────────────────
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
@@ -772,11 +764,10 @@ fn extract_subscriber_from_tx(
         None
     };
 
-    if fee_payer_in_play && fee_payer_pubkey.is_some() {
+    if let Some(fp) = fee_payer_pubkey.filter(|_| fee_payer_in_play) {
         // account_keys[0] is the fee-payer (the server's wallet); the
         // subscriber is the next signer that's neither the fee-payer
         // nor the puller.
-        let fp = fee_payer_pubkey.unwrap();
         for k in keys.iter().skip(1) {
             if *k != puller && *k != fp {
                 return Ok(*k);
