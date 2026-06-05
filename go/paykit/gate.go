@@ -9,7 +9,7 @@ import (
 // Fees maps a payout recipient to the fee they receive. Map shape so
 // one or many recipients use the same literal:
 //
-//	FeeOnTop: paykit.Fees{platform: paykit.MustParseUSD("0.30")}
+//	FeeOnTop: paykit.Fees{paykit.Address("<platform-pubkey>"): paykit.MustParseUSD("0.30")}
 type Fees = map[Address]Price
 
 // Gate is a protected unit. It carries the base amount, optional fees,

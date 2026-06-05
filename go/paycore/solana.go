@@ -1,4 +1,4 @@
-// Package protocol carries the Solana-specific protocol constants and
+// Package paycore carries the Solana-specific protocol constants and
 // method-detail/credential-payload wire types shared by the MPP server
 // and client. Program IDs, stablecoin mint tables, and default RPC URLs
 // mirror rust/src/protocol/solana.rs so the wire-format paths stay

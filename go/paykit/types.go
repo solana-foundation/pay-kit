@@ -135,7 +135,10 @@ func (p Price) Settlements() []Stablecoin {
 //
 //   - Signer == nil    -> signer.Demo()
 //   - Recipient == ""  -> Signer.Pubkey()
-//   - FeePayer == true is the recommended default for merchant flows.
+//
+// FeePayer defaults to false (the bool zero value); set it to true for
+// merchant flows where the operator signer also pays Solana network fees
+// on settlement.
 type Operator struct {
 	Recipient Address
 	Signer    Signer
