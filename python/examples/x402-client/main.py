@@ -23,8 +23,7 @@ import os
 import sys
 
 from pay_kit import Signer
-from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit.protocols.x402.client import x402_async_client
+from pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
 
 
 async def main(url: str) -> int:
