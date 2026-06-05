@@ -122,7 +122,7 @@ function M.usd(amount_str, ...)
   local fallback
   if #coins == 0 then
     -- Lazy-require to avoid cyclic deps with config.
-    local ok, config = pcall(require, 'pay_kit.config')
+    local ok, config = pcall(require, 'pay_kit.internal.config')
     if ok and config.current then
       local cfg = config.current()
       if cfg and cfg.stablecoins then fallback = cfg.stablecoins end
