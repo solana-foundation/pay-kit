@@ -146,11 +146,26 @@ def parse_x402_challenge(
     cheapest ``amount``. Returns ``None`` when no supported offer matches.
     Mirrors rust ``parse_x402_challenge_with_selection``.
     """
+    offer, _version = parse_x402_challenge_with_version(headers, body, selection)
+    return offer
+
+
+def parse_x402_challenge_with_version(
+    headers: Mapping[str, str],
+    body: str | None,
+    selection: ChallengeSelection,
+) -> tuple[X402AcceptsEntry | None, int]:
+    """Like :func:`parse_x402_challenge`, but also surfaces the DECLARED wire
+    version of the challenge the offer came from, so the transport can emit the
+    matching producer (v1 ``X-PAYMENT`` vs v2 ``PAYMENT-SIGNATURE``). Mirrors the
+    go ``ParseChallengeVersioned`` / swift ``parseX402ChallengeWithVersion``.
+    Returns ``(None, X402_VERSION)`` when no supported offer matches.
+    """
     header_value = _lookup_header(headers, "payment-required")
     if header_value:
-        offer = _select_from_header(header_value, selection)
+        offer, version = _select_from_header(header_value, selection)
         if offer is not None:
-            return offer
+            return offer, version
 
     # Legacy precedence after the canonical (v2) header: the ``X-PAYMENT-REQUIRED``
     # header carries the legacy challenge as a plain (not base64) JSON object, the
@@ -159,19 +174,19 @@ def parse_x402_challenge(
     # (rust/crates/x402/src/client/exact/payment.rs:246-253).
     legacy_header = _lookup_header(headers, X402_LEGACY_PAYMENT_REQUIRED_HEADER)
     if legacy_header:
-        offer = _select_from_body(legacy_header, selection)
+        offer, version = _select_from_body(legacy_header, selection)
         if offer is not None:
-            return offer
+            return offer, version
 
     # Final fallback: the legacy 402 JSON body ``{"accepts": [...]}`` with plain
     # SVM network slugs and ``maxAmountRequired``. Mirrors rust ``parse_accepts_
     # body`` (payment.rs:255-259).
     if body is not None:
-        offer = _select_from_body(body, selection)
+        offer, version = _select_from_body(body, selection)
         if offer is not None:
-            return offer
+            return offer, version
 
-    return None
+    return None, X402_VERSION
 
 
 def _lookup_header(headers: Mapping[str, str], name: str) -> str | None:
@@ -182,34 +197,36 @@ def _lookup_header(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
-def _select_from_header(header_value: str, selection: ChallengeSelection) -> X402AcceptsEntry | None:
+def _select_from_header(header_value: str, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
     try:
         decoded = base64.b64decode(header_value, validate=True)
         envelope = json.loads(decoded)
     except Exception:  # noqa: BLE001 - any decode failure means "no challenge here"
-        return None
+        return None, X402_VERSION
     return _select_from_envelope(envelope, selection)
 
 
-def _select_from_body(body: str, selection: ChallengeSelection) -> X402AcceptsEntry | None:
+def _select_from_body(body: str, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
     try:
         envelope = json.loads(body)
     except Exception:  # noqa: BLE001
-        return None
+        return None, X402_VERSION
     return _select_from_envelope(envelope, selection)
 
 
-def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> X402AcceptsEntry | None:
+def _select_from_envelope(envelope: object, selection: ChallengeSelection) -> tuple[X402AcceptsEntry | None, int]:
     if not isinstance(envelope, dict):
-        return None
+        return None, X402_VERSION
     envelope_dict = cast("dict[str, object]", envelope)
+    raw_version = envelope_dict.get("x402Version")
+    version = raw_version if isinstance(raw_version, int) else X402_VERSION
     accepts_raw = envelope_dict.get("accepts")
     if not isinstance(accepts_raw, list):
-        return None
+        return None, version
     entries = cast("list[object]", accepts_raw)
     accepts = [cast("dict[str, object]", entry) for entry in entries if isinstance(entry, dict)]
     _attach_envelope_resource(envelope_dict, accepts)
-    return _select_requirement(accepts, selection)
+    return _select_requirement(accepts, selection), version
 
 
 #: Private (non-wire) key under which the envelope-level v2 ``resource`` info is
