@@ -14,7 +14,7 @@ require "rack"
 # `gem install solana-pay-kit`. Running from the repo, point Ruby at the
 # in-tree library.
 $LOAD_PATH.unshift(File.expand_path("../../lib", __dir__))
-require "pay_kit"
+require "solana_pay_kit"
 
 PayKit.configure do |c|
   c.network = :solana_localnet
