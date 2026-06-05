@@ -22,8 +22,6 @@ use solana_transaction::Transaction;
 use crate::error::Error;
 use crate::program::subscriptions::{
     default_program_id, find_subscription_authority_pda, find_subscription_pda, parse_pubkey,
-    INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY, INSTRUCTION_SUBSCRIBE,
-    INSTRUCTION_TRANSFER_SUBSCRIPTION,
 };
 use crate::protocol::solana::CredentialPayload;
 
@@ -409,84 +407,6 @@ fn parse_subscription_authority_init_id(bytes: &[u8]) -> Result<i64, Error> {
     Ok(i64::from_le_bytes(raw))
 }
 
-// ── Instruction builders (v0, hand-rolled) ──
-
-fn build_init_subscription_authority_ix(
-    program_id: Pubkey,
-    subscriber: Pubkey,
-    subscription_authority: Pubkey,
-    mint: Pubkey,
-    subscriber_ata: Pubkey,
-    token_program: Pubkey,
-    system_program: Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(subscriber, true),
-            AccountMeta::new(subscription_authority, false),
-            AccountMeta::new_readonly(mint, false),
-            AccountMeta::new(subscriber_ata, false),
-            AccountMeta::new_readonly(token_program, false),
-            AccountMeta::new_readonly(system_program, false),
-        ],
-        data: vec![INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY],
-    }
-}
-
-fn build_subscribe_ix(
-    program_id: Pubkey,
-    subscriber: Pubkey,
-    payer: Pubkey,
-    plan_pda: Pubkey,
-    subscription_pda: Pubkey,
-    subscription_authority: Pubkey,
-    system_program: Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(subscriber, true),
-            AccountMeta::new(payer, true),
-            AccountMeta::new_readonly(plan_pda, false),
-            AccountMeta::new(subscription_pda, false),
-            AccountMeta::new_readonly(subscription_authority, false),
-            AccountMeta::new_readonly(system_program, false),
-        ],
-        data: vec![INSTRUCTION_SUBSCRIBE],
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_transfer_subscription_ix(
-    program_id: Pubkey,
-    puller: Pubkey,
-    subscription_pda: Pubkey,
-    plan_pda: Pubkey,
-    subscription_authority: Pubkey,
-    subscriber: Pubkey,
-    subscriber_ata: Pubkey,
-    recipient_ata: Pubkey,
-    mint: Pubkey,
-    token_program: Pubkey,
-) -> Instruction {
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(puller, true),
-            AccountMeta::new(subscription_pda, false),
-            AccountMeta::new_readonly(plan_pda, false),
-            AccountMeta::new_readonly(subscription_authority, false),
-            AccountMeta::new_readonly(subscriber, false),
-            AccountMeta::new(subscriber_ata, false),
-            AccountMeta::new(recipient_ata, false),
-            AccountMeta::new_readonly(mint, false),
-            AccountMeta::new_readonly(token_program, false),
-        ],
-        data: vec![INSTRUCTION_TRANSFER_SUBSCRIPTION],
-    }
-}
-
 /// Build a `CreateIdempotent` instruction for the SPL Associated Token
 /// Program. No-op when the ATA already exists; otherwise creates it and
 /// charges rent to `funder`.
@@ -852,23 +772,5 @@ mod tests {
         let limit_ix = compute_unit_limit_ix(200_000);
         assert_eq!(limit_ix.data[0], 2);
         assert_eq!(limit_ix.data.len(), 5);
-    }
-
-    #[test]
-    fn instruction_builders_produce_expected_discriminators() {
-        let program = default_program_id();
-        let any = Pubkey::new_unique();
-        let init_ix = build_init_subscription_authority_ix(program, any, any, any, any, any, any);
-        assert_eq!(
-            init_ix.data[0],
-            INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY
-        );
-
-        let sub_ix = build_subscribe_ix(program, any, any, any, any, any, any);
-        assert_eq!(sub_ix.data[0], INSTRUCTION_SUBSCRIBE);
-
-        let xfer_ix =
-            build_transfer_subscription_ix(program, any, any, any, any, any, any, any, any, any);
-        assert_eq!(xfer_ix.data[0], INSTRUCTION_TRANSFER_SUBSCRIPTION);
     }
 }

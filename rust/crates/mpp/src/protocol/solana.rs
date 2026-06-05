@@ -27,10 +27,14 @@ pub mod mints {
     pub const CASH_MAINNET: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
 }
 
+/// Maximum byte length of an SPL Memo instruction payload.
+pub const MAX_MEMO_BYTES: usize = 566;
+
 /// Default RPC URLs per network.
 pub fn default_rpc_url(network: &str) -> &'static str {
     match network {
         "devnet" => "https://api.devnet.solana.com",
+        "testnet" => "https://api.testnet.solana.com",
         "localnet" => "http://localhost:8899",
         _ => "https://api.mainnet-beta.solana.com",
     }
@@ -105,11 +109,12 @@ mod tests {
     }
 
     #[test]
+    fn default_rpc_url_testnet() {
+        assert_eq!(default_rpc_url("testnet"), "https://api.testnet.solana.com");
+    }
+
+    #[test]
     fn default_rpc_url_unknown_defaults_to_mainnet() {
-        assert_eq!(
-            default_rpc_url("testnet"),
-            "https://api.mainnet-beta.solana.com"
-        );
         assert_eq!(default_rpc_url(""), "https://api.mainnet-beta.solana.com");
         assert_eq!(
             default_rpc_url("anything"),

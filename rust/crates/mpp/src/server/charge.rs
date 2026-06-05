@@ -33,7 +33,9 @@ use crate::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt,
 };
 use crate::protocol::intents::ChargeRequest;
-use crate::protocol::solana::{programs, CredentialPayload, MethodDetails, Split};
+use crate::protocol::solana::{
+    default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
+};
 use crate::store::{MemoryStore, Store};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
@@ -52,14 +54,6 @@ fn detect_challenge_binding_secret() -> Result<String, Error> {
             "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass challenge_binding_secret explicitly."
         ))
     })
-}
-
-fn default_rpc_url(network: &str) -> &'static str {
-    match network {
-        "devnet" => "https://api.devnet.solana.com",
-        "localnet" => "http://localhost:8899",
-        _ => "https://api.mainnet-beta.solana.com",
-    }
 }
 
 // ── Configuration ──
@@ -1548,10 +1542,10 @@ fn verify_memo_instructions(
     let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
     for (label, memo) in expected_memos(external_id, splits) {
         let expected_data = memo.as_bytes();
-        if expected_data.len() > 566 {
-            return Err(VerificationError::invalid_payload(
-                "memo cannot exceed 566 bytes",
-            ));
+        if expected_data.len() > MAX_MEMO_BYTES {
+            return Err(VerificationError::invalid_payload(format!(
+                "memo cannot exceed {MAX_MEMO_BYTES} bytes"
+            )));
         }
 
         let mut found = false;
@@ -1959,10 +1953,10 @@ fn verify_parsed_memo_instructions(
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     for (label, memo) in expected_memos(external_id, splits) {
-        if memo.as_bytes().len() > 566 {
-            return Err(VerificationError::invalid_payload(
-                "memo cannot exceed 566 bytes",
-            ));
+        if memo.len() > MAX_MEMO_BYTES {
+            return Err(VerificationError::invalid_payload(format!(
+                "memo cannot exceed {MAX_MEMO_BYTES} bytes"
+            )));
         }
 
         let mut found = false;
