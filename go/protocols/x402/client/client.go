@@ -312,10 +312,10 @@ func BuildPaymentHeader(
 	}
 	credential := x402.Credential{
 		X402Version: x402Version,
-		Scheme:      entry.Scheme,
-		Network:     entry.Network,
-		Payload:     x402.CredentialPayload{Transaction: txBase64},
-		Accepted:    entry,
+		// v2 omits top-level scheme/network (they ride in `accepted`),
+		// matching the rust spine; only the v1 producer sets them.
+		Payload:  x402.CredentialPayload{Transaction: txBase64},
+		Accepted: entry,
 	}
 	raw, err := json.Marshal(credential)
 	if err != nil {

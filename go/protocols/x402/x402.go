@@ -364,11 +364,14 @@ func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.X402 }
 // Credential is the typed x402 credential the client posts in the
 // payment-signature header (base64 of this JSON).
 type Credential struct {
-	X402Version int               `json:"x402Version"`
-	Scheme      string            `json:"scheme"`
-	Network     string            `json:"network"`
-	Payload     CredentialPayload `json:"payload"`
-	Accepted    *AcceptsEntry     `json:"accepted,omitempty"`
+	X402Version int `json:"x402Version"`
+	// Scheme/Network are top-level only on the legacy v1 envelope; the v2
+	// producer omits them (the offer rides in `accepted`), matching the rust
+	// spine which sets scheme/network to None on v2 (client/exact/payment.rs).
+	Scheme   string            `json:"scheme,omitempty"`
+	Network  string            `json:"network,omitempty"`
+	Payload  CredentialPayload `json:"payload"`
+	Accepted *AcceptsEntry     `json:"accepted,omitempty"`
 }
 
 // CredentialPayload carries the protocol-specific bits the client

@@ -353,24 +353,47 @@ function Adapter:challenge_headers(gate, req)
   }
 end
 
+-- Classify a decoded credential by its x402Version FIELD (not by which
+-- header carried it), mirroring rust parse_payment_signature which decodes
+-- once and matches on envelope.x402_version (server/exact.rs:315-347): v2 ->
+-- canonical, v1 -> legacy (scheme must be exact), anything else -> reject.
+-- Returns (is_legacy, err).
+local function classify_credential(envelope)
+  local version = envelope.x402Version
+  if version == X402_VERSION_V2 then
+    return false, nil
+  elseif version == X402_VERSION_V1 then
+    if envelope.scheme ~= 'exact' then
+      return nil, errors.INVALID_PROOF .. ': x-payment scheme is not exact'
+    end
+    return true, nil
+  end
+  return nil, errors.INVALID_PROOF .. ': unsupported x402Version'
+end
+
 -- Resolve the inbound credential under the dual-accept rule: read the v2
 -- PAYMENT-SIGNATURE wire FIRST, then fall back to the legacy v1 X-PAYMENT
--- wire. Returns (envelope, is_legacy, raw_header) or (nil, err). The server
--- never rejects a v1 credential, but still rejects a genuinely-unknown
--- version (the per-wire decoders gate x402Version to 1 / 2 respectively).
--- Mirrors rust parse_payment_signature dispatch (server/exact.rs:316-346).
+-- wire. Returns (envelope, is_legacy, raw_header) or (nil, err). Dispatch is
+-- CONTENT-BASED: whichever header carried the credential, it is decoded once
+-- and classified on its x402Version field (so a v1 envelope is honoured even
+-- if it arrived on PAYMENT-SIGNATURE, and a genuinely-unknown version is
+-- still rejected) -- matching rust parse_payment_signature (server/exact.rs:315-347).
 local function resolve_credential(headers)
   local v2_header = read_payment_signature(headers)
   if type(v2_header) == 'string' and v2_header ~= '' then
-    local envelope, err = decode_payment_signature(v2_header)
+    local envelope, err = decode_envelope(v2_header, 'payment-signature')
     if err then return nil, nil, nil, err end
-    return envelope, false, v2_header
+    local is_legacy, cerr = classify_credential(envelope)
+    if cerr then return nil, nil, nil, cerr end
+    return envelope, is_legacy, v2_header
   end
   local legacy_header = read_legacy_payment(headers)
   if type(legacy_header) == 'string' and legacy_header ~= '' then
-    local envelope, err = decode_legacy_payment(legacy_header)
+    local envelope, err = decode_envelope(legacy_header, 'x-payment')
     if err then return nil, nil, nil, err end
-    return envelope, true, legacy_header
+    local is_legacy, cerr = classify_credential(envelope)
+    if cerr then return nil, nil, nil, cerr end
+    return envelope, is_legacy, legacy_header
   end
   return nil, nil, nil, errors.PAYMENT_REQUIRED
 end
