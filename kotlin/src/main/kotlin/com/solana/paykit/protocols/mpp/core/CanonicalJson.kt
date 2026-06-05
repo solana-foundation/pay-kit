@@ -45,7 +45,7 @@ internal object CanonicalJson {
         builder.append('{')
         // RFC 8785 sect. 3.2.3: sort by UTF-16 code unit order. Kotlin
         // String.compareTo is exactly that comparison.
-        val sortedKeys = value.keys.sortedWith(Comparator { a, b -> a.compareTo(b) })
+        val sortedKeys = value.keys.sorted()
         sortedKeys.forEachIndexed { index, key ->
             if (index > 0) builder.append(',')
             writeString(key, builder)

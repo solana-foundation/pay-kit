@@ -32,11 +32,11 @@ object Network {
      */
     fun toCaip2(network: String?): String {
         if (network == null) return SOLANA_MAINNET
-        val lowered = network.trim()
-        if (lowered == SOLANA_MAINNET || lowered == SOLANA_DEVNET || lowered == SOLANA_TESTNET) {
-            return lowered
+        val slug = network.trim()
+        if (slug == SOLANA_MAINNET || slug == SOLANA_DEVNET || slug == SOLANA_TESTNET) {
+            return slug
         }
-        return when (lowered) {
+        return when (slug) {
             "mainnet", "mainnet-beta", "solana" -> SOLANA_MAINNET
             "devnet", "solana-devnet", "localnet" -> SOLANA_DEVNET
             "testnet", "solana-testnet" -> SOLANA_TESTNET
