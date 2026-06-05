@@ -6,7 +6,7 @@ import { subscription as subscription_ } from './Subscription.js';
  *
  * @example
  * ```ts
- * import { Mppx, solana } from 'solana-mpp-sdk/server'
+ * import { Mppx, solana } from '@solana/mpp/server'
  *
  * const mppx = Mppx.create({
  *   methods: [solana.charge({ recipient: '...', network: 'devnet' })],
