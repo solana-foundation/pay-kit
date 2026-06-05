@@ -34,7 +34,7 @@ public struct X402Interceptor: PayKit.PaymentInterceptor {
     ) async throws -> PayKit.RetryResult {
         let rawHeaders = Self.allHeaders(from: response)
         let bodyStr = String(decoding: body, as: UTF8.self)
-        guard let offer = parseX402Challenge(
+        guard let challenge = parseX402ChallengeWithVersion(
             headers: rawHeaders,
             body: bodyStr,
             selection: selection
@@ -44,13 +44,18 @@ public struct X402Interceptor: PayKit.PaymentInterceptor {
             )
         }
 
-        let paymentHeader = try await buildX402PaymentHeader(
-            signer: signer, rpc: rpc, offer: offer
+        // Emit the version the server's challenge declared: legacy `X-PAYMENT`
+        // when it declared v1, otherwise the canonical `PAYMENT-SIGNATURE`.
+        let payment = try await buildX402PaymentForChallenge(
+            signer: signer,
+            rpc: rpc,
+            offer: challenge.offer,
+            declaredVersion: challenge.declaredVersion
         )
 
         var retry = request
-        retry.setValue(paymentHeader, forHTTPHeaderField: "Payment-Signature")
-        return .retry(request: retry, paymentSent: paymentHeader)
+        retry.setValue(payment.value, forHTTPHeaderField: payment.headerName)
+        return .retry(request: retry, paymentSent: payment.value)
     }
 
     // MARK: - Private helpers
