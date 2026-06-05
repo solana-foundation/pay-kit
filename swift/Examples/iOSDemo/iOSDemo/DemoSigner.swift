@@ -19,7 +19,7 @@ import SolanaPayKit
 //     devices). This is the deferred follow-up tracked in issue #113
 //     acceptance criteria item 6.
 //
-// The `SolanaSigner` protocol in `Sources/SolanaPayKit/SolanaSigner.swift`
+// The `SolanaSigner` protocol in `Sources/SolanaPayKit/PayCore/SolanaSigner.swift`
 // is the single integration point; nothing else in the demo needs to
 // change to switch signers.
 enum DemoSigner {
