@@ -70,7 +70,7 @@ final class Adapter
             'protocol' => 'mpp',
             'scheme'   => 'charge',
             'network'  => $this->config->network->caip2(),
-            'amount'   => (string) $this->totalUnits($gate, $coin),
+            'amount'   => (string) $this->totalUnits($gate),
             'currency' => $coin,
             'payTo'    => $payTo,
             'realm'    => $this->config->mpp->realm,
@@ -154,7 +154,7 @@ final class Adapter
         // here while advertising the total would let the verifier accept a
         // payment short by the on-top fee. fee-within gates are unaffected
         // (total == base).
-        $amount = (string) $this->totalUnits($gate, $coin);
+        $amount = (string) $this->totalUnits($gate);
         // Pay's MPP client reads request.methodDetails.network as the
         // short network slug ("mainnet" / "devnet" / "localnet") when
         // filtering challenges by active wallet
@@ -183,7 +183,7 @@ final class Adapter
             recipient: $payTo,
             description: $gate->description ?? '',
             externalId: $gate->externalId ?? '',
-            methodDetails: $methodDetails === [] ? null : $methodDetails,
+            methodDetails: $methodDetails,
         );
     }
 
@@ -226,7 +226,7 @@ final class Adapter
         return $primary?->value ?? $this->config->stablecoins[0]->value;
     }
 
-    private function totalUnits(Gate $gate, string $coin): int
+    private function totalUnits(Gate $gate): int
     {
         return $this->priceUnits($gate->total());
     }
