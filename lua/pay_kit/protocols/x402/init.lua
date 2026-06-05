@@ -67,6 +67,7 @@ local TOKEN_PROGRAM_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
 local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
 local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
+local CAIP2_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z'
 
 -- Plain SVM network slugs the legacy v1 wire carries instead of CAIP-2.
 local LEGACY_NETWORK_SOLANA  = 'solana'
@@ -92,6 +93,10 @@ local function caip2_network_for_cluster(network)
   if network == LEGACY_NETWORK_DEVNET or network == 'devnet'
     or network == 'localnet' or network == CAIP2_DEVNET then
     return CAIP2_DEVNET
+  end
+  if network == LEGACY_NETWORK_TESTNET or network == 'testnet'
+    or network == CAIP2_TESTNET then
+    return CAIP2_TESTNET
   end
   return network
 end
