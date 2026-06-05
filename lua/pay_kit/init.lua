@@ -14,33 +14,32 @@ Single module surface (mirrors `lua-resty-openidc`):
   pay_kit.paid()                              -- bool
   pay_kit.paid_for(name)                      -- bool
 
-Sub-modules:
+Umbrella re-exports (indexable off the returned table):
 
   pay_kit.signer                        -- Local signer factories
-  pay_kit.kms                           -- Remote-enclave signer factories (reserved, v1.5+)
+  pay_kit.kms                           -- Remote-enclave signer factories (reserved)
   pay_kit.errors                        -- Canonical error-string constants
-  pay_kit.schemes.{mpp, x402}           -- Protocol adapters
-  pay_kit.solana.rpc                    -- Cosocket-aware JSON-RPC client
+  pay_kit.operator                      -- Operator construction helpers
+
+Protocol adapters and the JSON-RPC client are not re-exported off the
+umbrella; `require` them directly:
+
+  require('pay_kit.protocols.mpp')      -- MPP adapter
+  require('pay_kit.protocols.x402')     -- x402 adapter
+  require('pay_kit.solana.rpc')         -- Cosocket-aware JSON-RPC client
 
 This file is intentionally thin: it pulls the umbrella surface from
 the dedicated sub-modules so the layout stays readable. Each sub-
 module is independently `require`able for callers that want only one
-piece (the Kong plugin only needs `signer` + `schemes.*`, for example).
-
-The phase-by-phase implementation lands across P1-P12; this entry
-point exposes whatever subset is ready as the work progresses, so
-that any consumer who pins to `pay_kit` gets the canonical path
-from the first commit even if a function inside still raises
-`pay_kit: not implemented`.
+piece (the Kong plugin only needs `signer` + the protocol adapters,
+for example).
 ]]
 
 local M = {}
 
 M._VERSION = '0.1.0'
 
--- Sub-module re-exports. `signer` and `kms` ship in P1; the rest
--- arrive in P2-P6 and the existing `require` calls in this file
--- update as each phase lands.
+-- Internal modules backing the top-level surface below.
 local config_mod     = require('pay_kit.internal.config')
 local price_mod      = require('pay_kit.internal.price')
 local registry_mod   = require('pay_kit.internal.registry')
