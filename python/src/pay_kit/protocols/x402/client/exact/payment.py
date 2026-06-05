@@ -33,8 +33,21 @@ from pay_kit._paycore.solana import (
     default_token_program_for_currency,
     is_native_sol,
 )
+from pay_kit.protocols.x402.exact.legacy import (
+    SOLANA_DEVNET_NAME,
+    SOLANA_NETWORK_NAME,
+    SOLANA_TESTNET_NAME,
+    X402_LEGACY_PAYMENT_REQUIRED_HEADER,
+    caip2_for_network,
+    legacy_network_for_caip2,
+)
 from pay_kit.protocols.x402.exact.types import X402AcceptsEntry, X402Envelope, X402PayloadField
-from pay_kit.protocols.x402.exact.verify import COMPUTE_BUDGET_PROGRAM, X402_VERSION
+from pay_kit.protocols.x402.exact.verify import (
+    COMPUTE_BUDGET_PROGRAM,
+    EXACT_SCHEME,
+    X402_VERSION,
+    X402_VERSION_V1,
+)
 
 if TYPE_CHECKING:
     from pay_kit.signer import LocalSigner
@@ -44,6 +57,7 @@ __all__ = [
     "parse_x402_challenge",
     "build_payment",
     "build_payment_header",
+    "build_payment_header_legacy",
 ]
 
 #: ComputeBudget SetComputeUnitLimit (disc 2, u32 LE). Matches the rust spine
@@ -138,6 +152,20 @@ def parse_x402_challenge(
         if offer is not None:
             return offer
 
+    # Legacy precedence after the canonical (v2) header: the ``X-PAYMENT-REQUIRED``
+    # header carries the legacy challenge as a plain (not base64) JSON object, the
+    # same shape the 402 body carries. Mirrors rust ``parse_x402_challenge_with_
+    # selection`` reading ``X402_V1_PAYMENT_REQUIRED_HEADER`` before the body
+    # (rust/crates/x402/src/client/exact/payment.rs:246-253).
+    legacy_header = _lookup_header(headers, X402_LEGACY_PAYMENT_REQUIRED_HEADER)
+    if legacy_header:
+        offer = _select_from_body(legacy_header, selection)
+        if offer is not None:
+            return offer
+
+    # Final fallback: the legacy 402 JSON body ``{"accepts": [...]}`` with plain
+    # SVM network slugs and ``maxAmountRequired``. Mirrors rust ``parse_accepts_
+    # body`` (payment.rs:255-259).
     if body is not None:
         offer = _select_from_body(body, selection)
         if offer is not None:
@@ -231,6 +259,11 @@ def _attach_envelope_resource(
         accept.setdefault(_RESOURCE_INFO_KEY, info)
 
 
+#: Plain legacy SVM network slugs accepted on the challenge-parse path
+#: alongside the canonical CAIP-2 ids.
+_LEGACY_NETWORK_NAMES = frozenset({SOLANA_NETWORK_NAME, SOLANA_DEVNET_NAME, SOLANA_TESTNET_NAME})
+
+
 def _is_solana_exact(offer: dict[str, object]) -> bool:
     scheme = offer.get("scheme")
     protocol = offer.get("protocol")
@@ -239,7 +272,23 @@ def _is_solana_exact(offer: dict[str, object]) -> bool:
     # accept the offer when it is absent but reject an explicit non-x402 value.
     if protocol is not None and protocol != "x402":
         return False
-    return scheme == "exact" and isinstance(network, str) and network in _SOLANA_CAIP2
+    if scheme != "exact" or not isinstance(network, str):
+        return False
+    # Canonical (v2) offers carry a CAIP-2 network; legacy offers carry a plain
+    # SVM slug. Accept both so the client can pay a legacy 402 challenge.
+    return network in _SOLANA_CAIP2 or network in _LEGACY_NETWORK_NAMES
+
+
+def _offer_network_caip2(offer: dict[str, object]) -> str | None:
+    """Normalize an offer's network (CAIP-2 or plain slug) to a CAIP-2 id."""
+    network = offer.get("network")
+    if not isinstance(network, str):
+        return None
+    if network in _SOLANA_CAIP2:
+        return network
+    if network in _LEGACY_NETWORK_NAMES:
+        return caip2_for_network(network)
+    return None
 
 
 def _amount_of(offer: dict[str, object]) -> int:
@@ -274,7 +323,9 @@ def _select_requirement(
     label = _mints_label_for_caip2(preferred)
 
     solana = [offer for offer in accepts if _is_solana_exact(offer)]
-    on_preferred = [offer for offer in solana if offer.get("network") == preferred]
+    # Compare on the normalized CAIP-2 network so a legacy offer naming
+    # ``solana``/``solana-devnet`` matches the preferred CAIP-2 selection.
+    on_preferred = [offer for offer in solana if _offer_network_caip2(offer) == preferred]
 
     if selection.currencies is not None:
         for wanted in selection.currencies:
@@ -576,3 +627,47 @@ async def build_payment_header(
     )
     payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     return base64.b64encode(payload).decode("ascii")
+
+
+async def build_payment_header_legacy(
+    signer: LocalSigner,
+    rpc: Any,
+    requirement: X402AcceptsEntry,
+    *,
+    recent_blockhash_provider: Callable[[], Awaitable[str] | str] | None = None,
+    memo_nonce: Callable[[], str] | None = None,
+) -> str:
+    """Build the legacy standard-base64 ``X-PAYMENT`` header value.
+
+    The legacy wire is a SEPARATE shape from the canonical (v2) producer: the
+    envelope is ``{x402Version: 1, scheme: "exact", network: <plain slug>,
+    payload: {transaction}}`` with ``scheme`` and ``network`` as TOP-LEVEL
+    siblings of ``payload`` and NO ``accepted`` object. The plain network slug
+    (``solana`` / ``solana-devnet``) is derived from the offer's network via
+    :func:`legacy_network_for_caip2`. Mirrors rust ``build_payment_header_v1``
+    (rust/crates/x402/src/client/exact/payment.rs:153-170).
+
+    The canonical (v2) producer (:func:`build_payment_header`) stays the
+    default; emit this legacy shape only when the server's challenge declared
+    the legacy version.
+    """
+    envelope = await build_payment(
+        signer,
+        rpc,
+        requirement,
+        recent_blockhash_provider=recent_blockhash_provider,
+        memo_nonce=memo_nonce,
+    )
+    # The legacy envelope commits only to scheme + plain network, not an
+    # ``accepted`` body. Reuse the signed transaction from the canonical build
+    # and re-wrap it in the legacy top-level shape.
+    payload_field = cast("dict[str, object]", envelope).get("payload")
+    network_caip2 = _str_field(cast("dict[str, object]", requirement), "network")
+    legacy_envelope: dict[str, object] = {
+        "x402Version": X402_VERSION_V1,
+        "scheme": EXACT_SCHEME,
+        "network": legacy_network_for_caip2(network_caip2),
+        "payload": payload_field,
+    }
+    encoded = json.dumps(legacy_envelope, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(encoded).decode("ascii")
