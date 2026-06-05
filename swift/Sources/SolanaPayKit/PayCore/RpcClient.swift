@@ -5,9 +5,9 @@ import Foundation
 /// always includes `recentBlockhash`, so this path is only exercised
 /// for ad-hoc callers that want the SDK to fetch one.
 ///
-/// URLSession-backed, no third-party dependency. Two methods:
-/// `getLatestBlockhash` and `sendTransaction`. Both speak the JSON-RPC
-/// shape Solana's RPC endpoint expects.
+/// URLSession-backed, no third-party dependency. Three methods:
+/// `getLatestBlockhash`, `getAccountOwner`, and `sendTransaction`. All
+/// speak the JSON-RPC shape Solana's RPC endpoint expects.
 public struct RpcClient: Sendable {
     public let endpoint: URL
     private let urlSession: URLSession

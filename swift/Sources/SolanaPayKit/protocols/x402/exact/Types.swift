@@ -12,7 +12,8 @@ public let X402Version: Int = 2
 /// `extra.memo`. All fields are optional from the client's perspective;
 /// the payment builder falls back gracefully when any are absent.
 public struct X402AcceptsEntry: Codable, Sendable {
-    /// Protocol name (`"x402"`). Optional in some server implementations.
+    /// x402 payment *scheme* identifier; must equal `"exact"` to be eligible.
+    /// Optional in some server implementations.
     public let scheme: String?
     /// CAIP-2 network identifier (e.g. `"solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"`).
     public let network: String
