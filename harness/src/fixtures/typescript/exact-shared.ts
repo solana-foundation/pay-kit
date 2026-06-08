@@ -52,6 +52,34 @@ function parseCsv(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+// Convert a human-readable price ("0.001", "$0.001", "0.001 USDC") into the
+// atomic base-unit integer string the x402 wire `amount`/`maxAmountRequired`
+// field carries. Mirrors the Rust spine: conformant clients (Rust/Swift/
+// Kotlin) parse `amount` as a u64 of base units, so the offer MUST advertise
+// base units scaled by `decimals`, never the decimal price itself.
+export function toBaseUnits(price: string, decimals: number): string {
+  const token = price.trim().replace(/^\$/, "").split(/\s+/)[0] ?? "";
+  if (
+    token === "" ||
+    (token.match(/\./g)?.length ?? 0) > 1 ||
+    !/^[0-9.]+$/.test(token)
+  ) {
+    throw new Error(`invalid price: ${price}`);
+  }
+  const [whole, frac = ""] = token.split(".");
+  // Reject more fractional digits than the mint supports rather than
+  // truncating, which would silently under-advertise the price (the Rust
+  // spine rejects the same input as too many decimal places).
+  if (frac.length > decimals) {
+    throw new Error(
+      `price ${price} has more than ${decimals} decimal places`,
+    );
+  }
+  const fracScaled = frac.padEnd(decimals, "0");
+  const combined = `${whole}${fracScaled}`.replace(/^0+(?=\d)/, "");
+  return combined === "" ? "0" : combined;
+}
+
 function readBase(): X402InteropEnvironment {
   return {
     rpcUrl: readRequiredEnv("X402_INTEROP_RPC_URL"),

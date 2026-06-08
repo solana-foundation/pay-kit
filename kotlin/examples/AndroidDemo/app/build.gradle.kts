@@ -1,17 +1,23 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("com.android.application")
     kotlin("android")
-    kotlin("plugin.serialization") version "1.9.25"
+    // From Kotlin 2.0 the Compose compiler ships in-tree and is enabled via
+    // this plugin instead of the standalone composeOptions compiler-extension
+    // pin (which only existed for Kotlin 1.x). Version is inherited from the
+    // root build's `apply false` declaration.
+    kotlin("plugin.compose")
+    kotlin("plugin.serialization") version "2.2.20"
 }
 
 android {
-    namespace = "com.solana.mpp.demo"
+    namespace = "com.solana.paykit.demo"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.solana.mpp.demo"
+        applicationId = "com.solana.paykit.demo"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -32,10 +38,6 @@ android {
 
     buildFeatures {
         compose = true
-    }
-
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.15"
     }
 
     compileOptions {
@@ -62,8 +64,13 @@ kotlin {
 }
 
 tasks.withType<KotlinCompile>().configureEach {
-    kotlinOptions {
-        jvmTarget = "17"
+    // The full SDK source set is compiled, including the x402 exact client
+    // (protocols/x402 + client/PayKitClient + client/X402Interceptor). The
+    // unified PayKitClient references the x402 package directly, so it cannot
+    // be excluded; its web3-solana dependency is declared below and resolves
+    // under the Kotlin 2.2 toolchain.
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -79,10 +86,19 @@ dependencies {
 
     // SDK runtime deps. The SDK sources are vendored above via
     // sourceSets, so we only need its transitive dependencies here.
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    // Pinned to 1.9.0 to match kotlin/build.gradle.kts and the version
+    // web3-solana transitively requires; the Kotlin 2.2 toolchain reads its
+    // metadata.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    // Coroutines back PayKitClient's suspend call surface (Dispatchers.IO).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
-    // multimult ships Base58 used by com.solana.mpp.crypto.Base58. The SDK
+    // web3-solana backs the vendored x402 exact client's SPL transferChecked
+    // builder (paycore lowers the resulting TransactionInstruction). Matches
+    // kotlin/build.gradle.kts.
+    implementation("com.solanamobile:web3-solana:0.3.1")
+    // multimult ships Base58 used by com.solana.paykit.paycore.Base58. The SDK
     // sources are vendored into this Android module via sourceSets, so the
     // dependency cannot be inherited from kotlin/build.gradle.kts and must
     // be declared explicitly here. We pin the Android variant (not -jvm)
@@ -94,11 +110,9 @@ dependencies {
     // or solana-mobile/mock-mwa-wallet for emulator testing) instead of
     // holding a private key locally.
     //
-    // Pinned to 2.0.0 (rather than 2.0.7) to match the Kotlin 1.9.x +
-    // AGP 8.5.x toolchain this demo uses. 2.0.7 transitively pulls
-    // androidx artifacts compiled against Kotlin 2.1, whose metadata
-    // the 1.9 compiler cannot read. The
-    // solana-mobile/solana-kotlin-compose-scaffold reference project
-    // pins 2.0.0 for the same reason.
+    // Pinned to 2.0.0 to match the
+    // solana-mobile/solana-kotlin-compose-scaffold reference project. The
+    // clientlib is consumed as a prebuilt AAR, so its own build toolchain
+    // does not constrain this module's Kotlin compiler version.
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.0")
 }

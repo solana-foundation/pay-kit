@@ -165,14 +165,21 @@ pub fn format_www_authenticate(challenge: &PaymentChallenge) -> Result<String, E
         ),
     ];
 
-    if let Some(ref expires) = challenge.expires {
-        parts.push(format!("expires=\"{}\"", escape_quoted_value(expires)?));
+    // `description` is a first-class, round-trippable WWW-Authenticate
+    // parameter on the canonical wire (it must survive format -> parse), so
+    // emit it as a top-level header param. Ordering follows the canonical
+    // golden: request, description, digest, expires.
+    if let Some(ref description) = challenge.description {
+        parts.push(format!(
+            "description=\"{}\"",
+            escape_quoted_value(description)?
+        ));
     }
-    // description is already encoded inside the `request` payload —
-    // don't duplicate it as a top-level header param (non-ASCII descriptions
-    // like em-dashes would make the header value invalid).
     if let Some(ref digest) = challenge.digest {
         parts.push(format!("digest=\"{}\"", escape_quoted_value(digest)?));
+    }
+    if let Some(ref expires) = challenge.expires {
+        parts.push(format!("expires=\"{}\"", escape_quoted_value(expires)?));
     }
     if let Some(ref opaque) = challenge.opaque {
         parts.push(format!("opaque=\"{}\"", escape_quoted_value(opaque.raw())?));
@@ -233,6 +240,18 @@ pub fn parse_receipt(header: &str) -> Result<ReceiptKind, Error> {
     let decoded = base64url_decode(token)?;
     let receipt: ReceiptKind = serde_json::from_slice(&decoded)
         .map_err(|e| Error::Other(format!("Invalid receipt JSON: {e}")))?;
+
+    // The canonical wire requires `timestamp` to be an ISO-8601 / RFC 3339
+    // instant; reject anything that does not parse (e.g. "Jan 29 2026 12:00").
+    let timestamp = &receipt.base().timestamp;
+    if time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+        .is_err()
+    {
+        return Err(Error::Other(format!(
+            "Receipt timestamp is not ISO-8601: {timestamp}"
+        )));
+    }
+
     Ok(receipt)
 }
 
@@ -690,8 +709,8 @@ mod tests {
         };
         let header = format_www_authenticate(&challenge).unwrap();
         assert!(header.contains("expires="));
-        // description is no longer emitted (it's inside the request payload)
-        assert!(!header.contains("description="));
+        // description is a first-class, round-trippable WWW-Authenticate param.
+        assert!(header.contains("description=\"Test\""));
         assert!(header.contains("digest="));
         assert!(header.contains("opaque="));
     }

@@ -78,3 +78,61 @@ jobs:
         env:
           MPP_INTEROP_CLIENTS: kotlin
           MPP_INTEROP_SERVERS: typescript
+
+  interop-kotlin-x402:
+    name: "Interop: Kotlin x402 client to Rust x402 server"
+    needs: test-kotlin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust x402 interop server
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin interop_server
+      - name: Install interop harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck interop harness
+        working-directory: harness
+        run: pnpm typecheck
+      # Pre-warm the Kotlin x402 client install so the harness adapter
+      # (harness/src/implementations.ts → kotlin-x402) can launch the
+      # script at build/install/.../bin/. The kotlin SDK is consumed via
+      # the composite build, so this also compiles the SDK.
+      - name: Pre-warm Gradle for the Kotlin x402 interop client
+        working-directory: harness/kotlin-x402-client
+        run: gradle installDist --no-daemon
+      # Real interop: the e2e harness boots an in-process Surfpool, funds
+      # the client wallet + USDC ATA, starts the rust-x402 server, runs the
+      # kotlin-x402 client against it for the x402-exact intent, and asserts
+      # HTTP 200 plus the on-chain recipient balance delta. MPP charge
+      # adapters are disabled so only the x402-exact matrix slice runs.
+      - name: Run Kotlin x402 client to Rust x402 server interop
+        working-directory: harness
+        env:
+          MPP_INTEROP_CLIENTS: ""
+          MPP_INTEROP_SERVERS: ""
+          MPP_INTEROP_INTENTS: x402-exact
+          X402_INTEROP_CLIENTS: kotlin-x402
+          X402_INTEROP_SERVERS: rust-x402
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000

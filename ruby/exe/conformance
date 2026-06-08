@@ -382,7 +382,10 @@ module X402
   SOLANA_DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
   SOLANA_TESTNET = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
 
+  VERSION_V1 = 1
   VERSION_V2 = 2
+
+  EXACT_SCHEME = "exact"
 
   # kebab-case wire key for the payment-identifier extension (spine
   # types.rs:519 #[serde(rename = "payment-identifier")]).
@@ -393,19 +396,13 @@ module X402
   # PayKit::Protocols::X402::Protocol::Schemes::Exact::PAYMENT_IDENTIFIER_ID_PATTERN.
   PAYMENT_IDENTIFIER_ID_PATTERN = /\A[A-Za-z0-9_-]{16,128}\z/
 
-  # Map a cluster/network identifier to its CAIP-2 form. Mirrors
-  # caip2_network_for_cluster.
+  # Map a cluster/network identifier to its CAIP-2 form. Delegates to the
+  # SDK's shared normalizer (PayCore::Solana::Caip2.for_cluster) so the
+  # legacy v1 plain slugs ("solana", "solana-devnet", "solana-testnet") and
+  # the CAIP-2 forms resolve identically here and in the production server.
+  # Mirrors the Rust spine caip2_network_for_cluster.
   def self.caip2_network_for_cluster(cluster)
-    case cluster
-    when SOLANA_MAINNET, SOLANA_NETWORK, "mainnet", "mainnet-beta"
-      SOLANA_MAINNET
-    when SOLANA_TESTNET, "testnet", "solana-testnet"
-      SOLANA_TESTNET
-    when "devnet", "localnet", SOLANA_DEVNET, "solana-devnet"
-      SOLANA_DEVNET
-    else
-      SOLANA_MAINNET
-    end
+    PayCore::Solana::Caip2.for_cluster(cluster)
   end
 
   # Decode a base64(JSON) envelope header into the conformance shape oracle.
@@ -515,6 +512,20 @@ module X402
         unless PAYMENT_IDENTIFIER_ID_PATTERN.match?(id)
           raise "payment-identifier id is invalid: #{id} does not match ^[A-Za-z0-9_-]{16,128}$"
         end
+      end
+    elsif version == VERSION_V1
+      # Legacy v1 envelope: top-level scheme + plain network, no `accepted`.
+      # Bind scheme + network only (mirrors rust parse_payment_signature v1
+      # arm, server/exact.rs:316-327); the amount/recipient/currency live on
+      # the signed transaction the envelope oracle does not inspect.
+      scheme = env["scheme"].to_s
+      unless scheme == EXACT_SCHEME
+        raise "invalid payload type: #{scheme.inspect}"
+      end
+
+      credential_network = caip2_network_for_cluster(env["network"])
+      if credential_network != expected_network
+        raise "Network mismatch: expected #{expected_network}, got #{env["network"]}"
       end
     else
       raise "invalid payload: Unsupported x402 version: #{version}"

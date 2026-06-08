@@ -1,0 +1,4 @@
+{
+  "language": "lua",
+  "command": ["luajit", "harness/lua-protocol-runner/runner.lua"]
+}

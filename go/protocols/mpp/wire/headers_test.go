@@ -3,7 +3,6 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -107,9 +106,10 @@ func TestParseWWWAuthenticateWithOpaqueAndDigest(t *testing.T) {
 	if parsed.Opaque.Raw() != opaque.Raw() {
 		t.Fatalf("opaque mismatch: got %q, want %q", parsed.Opaque.Raw(), opaque.Raw())
 	}
-	// description is no longer emitted in the header (it's inside the request payload)
-	if parsed.Description != "" {
-		t.Fatalf("expected empty description, got %q", parsed.Description)
+	// description round-trips as a top-level header param to match the
+	// canonical mpp-tools wire (format emits it, parse keeps it).
+	if parsed.Description != "description" {
+		t.Fatalf("expected description to round-trip, got %q", parsed.Description)
 	}
 }
 
@@ -442,17 +442,22 @@ func TestParseAuthParamsTrailingCommaBreak(t *testing.T) {
 	}
 }
 
-// TestParseAuthParamsMissingEquals proves that parseAuthParams returns an
-// error when a parameter name has no '=' separator at all, covering the
-// eq<=0 branch at headers.go:315.
+// TestParseAuthParamsMissingEquals proves that parseAuthParams permissively
+// skips a stray token with no '=' separator instead of failing the parse,
+// matching the canonical mpp-tools parser (this is what lets unescaped quotes
+// in a description value truncate at the quote boundary with trailing text
+// ignored, rather than aborting the parse).
 func TestParseAuthParamsMissingEquals(t *testing.T) {
-	// Input has no '=' character anywhere.
-	_, err := parseAuthParams("noequalsign")
-	if err == nil {
-		t.Fatal("expected error for param with no '=' separator")
+	// A stray token with no '=' is skipped; the valid param still parses.
+	params, err := parseAuthParams(`noequalsign, id="abc"`)
+	if err != nil {
+		t.Fatalf("expected stray token to be skipped, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid auth parameter") {
-		t.Fatalf("unexpected error: %v", err)
+	if params["id"] != "abc" {
+		t.Fatalf("expected id=abc after skipping stray token, got %v", params)
+	}
+	if _, exists := params["noequalsign"]; exists {
+		t.Fatalf("stray token must not become a param: %v", params)
 	}
 }
 

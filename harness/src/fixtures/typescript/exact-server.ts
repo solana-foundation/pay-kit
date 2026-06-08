@@ -21,6 +21,7 @@ import {
   PAYMENT_SIGNATURE_HEADER,
   X402_VERSION_V2,
   readX402ServerEnvironment,
+  toBaseUnits,
 } from "./exact-shared";
 
 const TOKEN_DECIMALS = 6;
@@ -46,6 +47,11 @@ type PaymentRequirement = {
 function buildRequirements(
   env: ReturnType<typeof readX402ServerEnvironment>,
 ): PaymentRequirement[] {
+  // The wire `amount` is atomic base units, not the decimal price. Mirror the
+  // Rust spine so Rust/Swift/Kotlin clients (which parse it as a u64) accept
+  // the offer.
+  const maxAmountRequired = toBaseUnits(env.price, TOKEN_DECIMALS);
+
   const primary: PaymentRequirement = {
     scheme: "exact",
     network: env.network,
@@ -54,7 +60,7 @@ function buildRequirements(
     mimeType: "application/json",
     payTo: env.payTo,
     asset: env.mint,
-    maxAmountRequired: env.price,
+    maxAmountRequired,
     maxTimeoutSeconds: 60,
     extra: {
       decimals: TOKEN_DECIMALS,
@@ -70,7 +76,7 @@ function buildRequirements(
     mimeType: "application/json",
     payTo: env.payTo,
     asset: mint,
-    maxAmountRequired: env.price,
+    maxAmountRequired,
     maxTimeoutSeconds: 60,
     extra: { decimals: TOKEN_DECIMALS },
   }));
@@ -96,6 +102,7 @@ type DecodedCredential = {
     asset?: string;
     payTo?: string;
     amount?: string;
+    maxAmountRequired?: string;
   };
   payload?: {
     challengeId?: string;
@@ -173,7 +180,13 @@ function classifyCredential(
     };
   }
 
-  if (offer.maxAmountRequired !== credential.accepted.amount) {
+  // Clients echo the offer verbatim, which carries `maxAmountRequired`
+  // (the wire field) rather than a normalized `amount`. Accept either so a
+  // conformant client that echoes the raw offer is not wrongly rejected.
+  if (
+    offer.maxAmountRequired !==
+    (credential.accepted.amount ?? credential.accepted.maxAmountRequired)
+  ) {
     return {
       reject: {
         code: "charge_request_mismatch",

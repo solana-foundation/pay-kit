@@ -50,12 +50,18 @@ from pay_kit.protocols.mpp.server._verify import _verify_local_transaction_inten
 from pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
     build_payment_header,
+    build_payment_header_legacy,
 )
 from pay_kit.protocols.x402.exact.extensions import (
     PAYMENT_IDENTIFIER_KEY,
     verify_payment_identifier,
 )
-from pay_kit.protocols.x402.exact.verify import X402_VERSION
+from pay_kit.protocols.x402.exact.legacy import caip2_for_network
+from pay_kit.protocols.x402.exact.verify import (
+    EXACT_SCHEME,
+    X402_VERSION_V1,
+    X402_VERSION_V2,
+)
 from pay_kit.signer import LocalSigner
 
 DEFAULT_NETWORK = "mainnet"
@@ -436,13 +442,14 @@ def _decode_envelope_shape(header_b64: str) -> dict[str, Any]:
 
 
 async def _x402_build_header(vector: dict[str, Any]) -> str:
-    """Drive the real pay_kit x402 client to build a v2 PAYMENT-SIGNATURE header.
+    """Drive the real pay_kit x402 client to build a payment header.
 
     The offer is the vector's ``x402Offer``. An ephemeral signer + pinned
     blockhash + pinned memo nonce keep the build deterministic and RPC-free;
     the resulting transaction is real but its bytes are not asserted (the
-    envelope shape is the oracle). Only the canonical v2 wire is built here;
-    the legacy v1 builder ships in a separate change.
+    envelope shape is the oracle). The default producer stays the canonical (v2)
+    ``PAYMENT-SIGNATURE`` wire; when the vector pins ``x402Version: 1`` the
+    runner drives the legacy ``X-PAYMENT`` producer instead.
     """
     inp = vector.get("input") or {}
     offer = inp.get("x402Offer")
@@ -457,6 +464,16 @@ async def _x402_build_header(vector: dict[str, Any]) -> str:
     payment_identifier_id = inp.get("x402PaymentIdentifierId")
 
     signer = LocalSigner.generate()
+    # The legacy v1 producer has no `extensions` concept, so it does not accept
+    # the echo-and-append kwargs; only the v2 producer does.
+    if inp.get("x402Version") == X402_VERSION_V1:
+        return await build_payment_header_legacy(
+            signer,
+            OfflineRPC(),
+            offer,
+            recent_blockhash_provider=lambda: _X402_PINNED_BLOCKHASH,
+            memo_nonce=lambda: _X402_PINNED_MEMO_NONCE,
+        )
     return await build_payment_header(
         signer,
         OfflineRPC(),
@@ -495,7 +512,7 @@ def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
     expected_network = _caip2_for_selection(inp.get("x402ServerNetwork") or DEFAULT_NETWORK)
     version = env.get("x402Version")
 
-    if version == X402_VERSION:
+    if version == X402_VERSION_V2:
         accepted = env.get("accepted")
         if not isinstance(accepted, dict):
             raise ValueError("invalid payload: v2 envelope missing accepted")
@@ -521,6 +538,15 @@ def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
             extensions if isinstance(extensions, dict) else None,
             required=bool(inp.get("x402ServerRequiresPaymentIdentifier")),
         )
+    elif version == X402_VERSION_V1:
+        # Legacy arm: no ``accepted`` object. Bind only scheme + the plain
+        # network slug (normalized to CAIP-2) against the route. Mirrors the v1
+        # arm of rust parse_payment_signature (server/exact.rs:316-327).
+        if env.get("scheme") != EXACT_SCHEME:
+            raise ValueError(f"invalid payload: legacy scheme {env.get('scheme')!r} is not exact")
+        network_slug = env.get("network") or ""
+        if caip2_for_network(network_slug) != expected_network:
+            raise ValueError(f"Network mismatch: expected {expected_network}, got {network_slug}")
     else:
         raise ValueError(f"invalid payload: Unsupported x402 version: {version}")
 

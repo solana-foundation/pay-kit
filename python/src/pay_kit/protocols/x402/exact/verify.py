@@ -18,7 +18,10 @@ from pay_kit.errors import InvalidProofError
 
 __all__ = [
     "ExactVerifier",
+    "EXACT_SCHEME",
     "X402_VERSION",
+    "X402_VERSION_V1",
+    "X402_VERSION_V2",
     "COMPUTE_BUDGET_PROGRAM",
     "MEMO_PROGRAM",
     "LIGHTHOUSE_PROGRAM",
@@ -26,8 +29,19 @@ __all__ = [
     "MAX_COMPUTE_UNIT_PRICE",
 ]
 
-#: x402 protocol version emitted in challenges and required on credentials.
-X402_VERSION = 2
+#: x402 ``exact`` scheme identifier (rust ``EXACT_SCHEME``, types.rs:6).
+EXACT_SCHEME = "exact"
+
+#: Legacy x402 protocol version. Mirrors the rust spine constant
+#: ``X402_VERSION_V1`` (rust/crates/x402/src/constants.rs:10).
+X402_VERSION_V1 = 1
+#: Canonical x402 protocol version used by current payments. Mirrors the rust
+#: spine ``X402_VERSION_V2`` (constants.rs:13).
+X402_VERSION_V2 = 2
+#: Default x402 protocol version emitted in challenges and required on the
+#: canonical credential path. Aliases the canonical (v2) version so existing
+#: call sites keep emitting/expecting the default producer's wire.
+X402_VERSION = X402_VERSION_V2
 
 #: ComputeBudget program id (instruction[0]/[1] guard).
 COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"

@@ -91,10 +91,14 @@ final class HeadersTest extends TestCase
         Headers::parseWwwAuthenticate('Payment id="id", realm="api", method="solana", intent="charge"');
     }
 
-    public function testRejectsInvalidAuthParameter(): void
+    public function testSkipsTokenWithoutValueAndRejectsMissingRequired(): void
     {
+        // A token with no `=` is not an auth-param: the canonical permissive
+        // parser (and the rust spine) skip it rather than erroring, so a bare
+        // `id` here is dropped and parsing fails on the now-missing required
+        // `id` field instead of an "invalid auth parameter" error.
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Invalid auth parameter');
+        $this->expectExceptionMessage('Missing "id" field');
 
         Headers::parseWwwAuthenticate('Payment id realm="api"');
     }

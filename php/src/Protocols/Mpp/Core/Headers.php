@@ -29,6 +29,12 @@ final class Headers
             sprintf('intent="%s"', self::escapeQuoted($challenge->intent)),
             sprintf('request="%s"', self::escapeQuoted($challenge->request)),
         ];
+        // The canonical mpp-tools wire round-trips `description` as a first-class
+        // WWW-Authenticate auth-param (parse keeps it, format emits it), so it
+        // survives a parse/format cycle byte-for-byte against the golden vectors.
+        if ($challenge->description !== null && $challenge->description !== '') {
+            $parts[] = sprintf('description="%s"', self::escapeQuoted($challenge->description));
+        }
         if ($challenge->expires !== '') {
             $parts[] = sprintf('expires="%s"', self::escapeQuoted($challenge->expires));
         }
@@ -218,6 +224,7 @@ final class Headers
             expires: $params['expires'] ?? '',
             digest: $params['digest'] ?? '',
             opaque: $params['opaque'] ?? null,
+            description: $params['description'] ?? null,
         );
     }
 
@@ -278,8 +285,17 @@ final class Headers
             while ($index < $length && ($value[$index] === ' ' || $value[$index] === "\t")) {
                 $index++;
             }
+            // A token with no `=` is not an auth-param: skip it and keep parsing,
+            // matching the rust spine and the canonical permissive parser. This
+            // makes the parser tolerate trailing tokens left after an unescaped
+            // quote truncates a quoted value (e.g. a `description` whose value
+            // contains a literal `"`), per the canonical
+            // `unescaped_quotes_in_description` vector.
             if ($key === '' || $index >= $length || $value[$index] !== '=') {
-                throw new InvalidArgumentException('Invalid auth parameter');
+                while ($index < $length && $value[$index] !== ',' && $value[$index] !== ' ' && $value[$index] !== "\t") {
+                    $index++;
+                }
+                continue;
             }
             $index++;
             while ($index < $length && ($value[$index] === ' ' || $value[$index] === "\t")) {

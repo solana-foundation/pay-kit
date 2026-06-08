@@ -6,25 +6,28 @@
 //
 //   MPP_CLIENT_SECRET_KEY_HEX=<hex>  ./run <target-url>
 
-package com.solana.mpp.examples
+package com.solana.paykit.examples
 
-import com.solana.mpp.client.Charge
-import com.solana.mpp.client.JsonRpcClient
-import com.solana.mpp.client.MppHttpClient
-import com.solana.mpp.crypto.MemorySigner
+import com.solana.paykit.client.PayKitClient
+import com.solana.paykit.paycore.MemorySigner
+import com.solana.paykit.protocols.mpp.client.JsonRpcClient
+import kotlinx.coroutines.runBlocking
 
-fun main(args: Array<String>) {
+fun main(args: Array<String>) = runBlocking {
     val target = args.firstOrNull() ?: error("usage: ChargeClient <url>")
     val keyHex = System.getenv("MPP_CLIENT_SECRET_KEY_HEX")
         ?: error("set MPP_CLIENT_SECRET_KEY_HEX")
     val secretKey = keyHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     val signer = MemorySigner.fromSecretKey(secretKey)
-    val rpc = JsonRpcClient("https://402.surfnet.dev")
-    val client = MppHttpClient(signer = signer, blockhashProvider = rpc)
+    val client = PayKitClient.Builder()
+        .signer(signer)
+        .charge(blockhashProvider = JsonRpcClient("https://402.surfnet.dev"))
+        .build()
 
-    val response = client.mppGet(target)
-    println("status:    ${response.code}")
-    response.header("Payment-Receipt")?.let { println("signature: $it") }
-    println("intent:    ${Charge::class.simpleName}")
+    val result = client.get(target)
+    result.response.use {
+        println("status:    ${result.status}")
+        result.settlement?.let { sig -> println("signature: $sig") }
+    }
 }

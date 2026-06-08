@@ -1,0 +1,524 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "draft-ietf-httpauth-payment \u00a75.1.1",
+  "description": "Challenge ID generation using HMAC-SHA256. HMAC input format: realm|method|intent|canonicalized_request|expires|digest|opaque (pipe-delimited). Output: base64url(HMAC-SHA256(secretKey, input), no padding).",
+  "commands": {
+    "generate": "generate-challenge-id"
+  },
+  "scenarios": [
+    {
+      "name": "required_fields_only",
+      "description": "HMAC with only required fields",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        }
+      },
+      "expected": "X6v1eo7fJ76gAxqY0xN9Jd__4lUyDDYmriryOM-5FO4"
+    },
+    {
+      "name": "with_expires",
+      "description": "HMAC with optional expires field",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        },
+        "expires": "2025-01-06T12:00:00Z"
+      },
+      "expected": "ChPX33RkKSZoSUyZcu8ai4hhkvjZJFkZVnvWs5s0iXI"
+    },
+    {
+      "name": "with_digest",
+      "description": "HMAC with optional digest field",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        },
+        "digest": "sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE"
+      },
+      "expected": "JHB7EFsPVb-xsYCo8LHcOzeX1gfXWVoUSzQsZhKAfKM"
+    },
+    {
+      "name": "with_expires_and_digest",
+      "description": "HMAC with both optional expires and digest fields",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        },
+        "expires": "2025-01-06T12:00:00Z",
+        "digest": "sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE"
+      },
+      "expected": "m39jbWWCIfmfJZSwCfvKFFtBl0Qwf9X4nOmDb21peLA"
+    },
+    {
+      "name": "with_opaque",
+      "description": "opaque is part of the HMAC input and changes the challenge ID",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        },
+        "opaque": "trace-123"
+      },
+      "expected": "Eygx23gBLxdo3J9NvD8HVzhbozPso8ICyOQNOXHADd0"
+    },
+    {
+      "name": "opaque_route_scope_binding",
+      "description": "Route-scope opaque metadata is part of the HMAC input",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "route-scope"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000"
+        },
+        "opaque": "eyJyb3V0ZSI6Ii9hcGkvcHJlbWl1bSJ9"
+      },
+      "expected": "s8WLcvXgjlaM4k4iYQqL3M7ADzb1grLYgRwvpVdpBmM"
+    },
+    {
+      "name": "description_not_in_hmac",
+      "description": "description field is not part of HMAC input, so ID matches required_fields_only even with description present",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "description-excluded"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        },
+        "description": "API access payment required"
+      },
+      "expected": "X6v1eo7fJ76gAxqY0xN9Jd__4lUyDDYmriryOM-5FO4"
+    },
+    {
+      "name": "multi_field_request",
+      "description": "HMAC with multiple fields in request",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000",
+          "currency": "0x1234",
+          "recipient": "0xabcd"
+        }
+      },
+      "expected": "_H5TOnnlW0zduQ5OhQ3EyLVze_TqxLDPda2CGZPZxOc"
+    },
+    {
+      "name": "nested_method_details",
+      "description": "HMAC with nested methodDetails in request",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "nested-object"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000",
+          "currency": "0x1234",
+          "methodDetails": {
+            "chainId": 42431
+          }
+        }
+      },
+      "expected": "TqujwpuDDg_zsWGINAd5XObO2rRe6uYufpqvtDmr6N8"
+    },
+    {
+      "name": "html_sensitive_request_canonicalization",
+      "description": "HMAC input preserves HTML-sensitive JSON string characters without escaping them",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "canonicalization"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1500",
+          "currency": "USD",
+          "description": "Access <premium> & analytics",
+          "recipient": "merchant"
+        }
+      },
+      "expected": "9wuIbToTGnzxJuu715tZMeGH5MS0xVO6FgpFLBXqWCY"
+    },
+    {
+      "name": "resource_path_query_binding",
+      "description": "Route and query resource discriminator is part of the HMAC input",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "resource-binding"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000",
+          "currency": "USD",
+          "recipient": "merchant",
+          "resource": "/charge/query-replay?tier=basic"
+        }
+      },
+      "expected": "URpwDjsh37QzVXUK0gyE_7jJlZHspUo4tJ5GadzFz_Y"
+    },
+    {
+      "name": "external_id_request_binding",
+      "description": "Server-issued externalId is part of the HMAC input when present in the request",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "metadata-binding"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "2500",
+          "currency": "USD",
+          "externalId": "server-order-123",
+          "recipient": "merchant"
+        }
+      },
+      "expected": "2wXyB6RZGUPTnpU-KA6xh2_xRn184dKN-YhPk7z5qe0"
+    },
+    {
+      "name": "fee_payer_policy_binding",
+      "description": "Fee-payer policy details are part of the HMAC input when declared by the server",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "fee-payer"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "5000",
+          "currency": "USD",
+          "methodDetails": {
+            "chainId": 42431,
+            "feePayer": true,
+            "maxFeePerGas": "1000000"
+          },
+          "recipient": "merchant"
+        }
+      },
+      "expected": "l-xhcq1GSJxmjOCnvS56QMWbPj1X_S0ebekGEouJJZg"
+    },
+    {
+      "name": "empty_request",
+      "description": "HMAC with empty request object",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "empty-request"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {}
+      },
+      "expected": "yLN7yChAejW9WNmb54HpJIWpdb1WWXeA3_aCx4dxmkU"
+    },
+    {
+      "name": "different_realm",
+      "description": "Different realm produces different ID",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "field-variation"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "payments.other.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        }
+      },
+      "expected": "3F5bOo2a9RUihdwKk4hGRvBvzQmVPBMDvW0YM-8GD00"
+    },
+    {
+      "name": "different_method",
+      "description": "Different method produces different ID",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "field-variation"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "stripe",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000"
+        }
+      },
+      "expected": "o0ra2sd7HcB4Ph0Vns69gRDUhSj5WNOnUopcDqKPLz4"
+    },
+    {
+      "name": "different_intent",
+      "description": "Different intent produces different ID",
+      "tags": [
+        "happy-path",
+        "cross-sdk-validated",
+        "field-variation"
+      ],
+      "input": {
+        "secretKey": "test-vector-secret",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "session",
+        "request": {
+          "amount": "1000000"
+        }
+      },
+      "expected": "aAY7_IEDzsznNYplhOSE8cERQxvjFcT4Lcn-7FHjLVE"
+    },
+    {
+      "name": "basic_charge",
+      "description": "Basic charge with full request fields",
+      "tags": [
+        "happy-path"
+      ],
+      "input": {
+        "secretKey": "test-secret-key-12345",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      },
+      "expected": "YVI_8tUw5BUXxTtM1O0KdwPkLNg8ZrNVPbNTylsJwX8"
+    },
+    {
+      "name": "with_expires_alt_secret",
+      "description": "Challenge with expires using alternate secret",
+      "tags": [
+        "happy-path",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-secret-key-12345",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "5000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0xabcdef1234567890abcdef1234567890abcdef12"
+        },
+        "expires": "2026-01-29T12:00:00Z"
+      },
+      "expected": "GpTpqXciXty8sPCn5pZj2uMx_rgFDI9pwk2Y9-6XWuE"
+    },
+    {
+      "name": "with_digest_alt_secret",
+      "description": "Challenge with digest using alternate secret",
+      "tags": [
+        "happy-path",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "my-server-secret",
+        "realm": "payments.example.org",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "250000",
+          "currency": "USD",
+          "recipient": "0x9999999999999999999999999999999999999999"
+        },
+        "digest": "sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE="
+      },
+      "expected": "qcJUPoapy4bFLznQjQUutwPLyXW7FvALrWA_sMENgAY"
+    },
+    {
+      "name": "full_challenge_alt_secret",
+      "description": "Full challenge with all optional fields using alternate secret",
+      "tags": [
+        "happy-path",
+        "optional-fields"
+      ],
+      "input": {
+        "secretKey": "test-secret-abc123",
+        "realm": "api.tempo.xyz",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "10000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f1B0F2",
+          "description": "API access fee",
+          "externalId": "order-12345"
+        },
+        "expires": "2026-02-01T00:00:00Z",
+        "digest": "sha-256=abc123def456"
+      },
+      "expected": "Lbvu8LQM8rkXaq05ehcvTgHlSxkRnUugtXsV394M5nA"
+    },
+    {
+      "name": "different_secret_different_id",
+      "description": "Same parameters as basic_charge but different secret produces different ID",
+      "tags": [
+        "happy-path",
+        "secret-variation"
+      ],
+      "input": {
+        "secretKey": "different-secret-key",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "1000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0x1234567890abcdef1234567890abcdef12345678"
+        }
+      },
+      "expected": "LbZG-raSf2z4hOinx0PVcwPMCstsj-gdEBieqxdlUyg"
+    },
+    {
+      "name": "empty_request_alt_secret",
+      "description": "Empty request with alternate secret",
+      "tags": [
+        "happy-path",
+        "empty-request"
+      ],
+      "input": {
+        "secretKey": "test-key",
+        "realm": "test.example.com",
+        "method": "tempo",
+        "intent": "authorize",
+        "request": {}
+      },
+      "expected": "MYEC2oq3_B3cHa_My1Lx3NQKn_iUiMfsns6361N0SX0"
+    },
+    {
+      "name": "unicode_in_description",
+      "description": "Request with unicode characters in description",
+      "tags": [
+        "happy-path",
+        "unicode"
+      ],
+      "input": {
+        "secretKey": "unicode-test-key",
+        "realm": "api.example.com",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "100",
+          "currency": "EUR",
+          "recipient": "0x1111111111111111111111111111111111111111",
+          "description": "Payment for caf\u00e9 \u2615"
+        }
+      },
+      "expected": "1_GKJqATKvVnIUY3f8MFq48bMs18JHz_3CBK8pu52yA"
+    },
+    {
+      "name": "nested_method_details_alt_secret",
+      "description": "Nested methodDetails with alternate secret",
+      "tags": [
+        "happy-path",
+        "nested-object"
+      ],
+      "input": {
+        "secretKey": "nested-test-key",
+        "realm": "api.tempo.xyz",
+        "method": "tempo",
+        "intent": "charge",
+        "request": {
+          "amount": "5000000",
+          "currency": "0x20c0000000000000000000000000000000000001",
+          "recipient": "0x2222222222222222222222222222222222222222",
+          "methodDetails": {
+            "chainId": 42431,
+            "feePayer": true
+          }
+        }
+      },
+      "expected": "WqQuVsD-d0Uij4uzx-W_MdUc4wo6wpIuvHNvPIw6G9M"
+    }
+  ]
+}

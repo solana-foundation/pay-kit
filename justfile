@@ -254,30 +254,32 @@ rb-test-cover:
     cd ruby && just test-cover
 
 # ── Kotlin ──
+# Recipes live in kotlin/Justfile. The wrappers below keep root orchestration
+# aligned with the language-local gate.
 
-# Install Kotlin deps (resolved on first Gradle invocation; no-op recipe).
+# Install Kotlin SDK dependencies
 kt-install:
-    cd kotlin && gradle --version
+    cd kotlin && just install
 
 # Build the Kotlin SDK
 kt-build:
-    cd kotlin && gradle build -x test
+    cd kotlin && just build
 
 # Run Kotlin unit tests
 kt-test:
-    cd kotlin && gradle test
+    cd kotlin && just test
 
-# Format Kotlin sources (Kotlin Coding Conventions; ktlint when present)
+# Format Kotlin sources
 kt-fmt:
-    cd kotlin && (command -v ktlint >/dev/null && ktlint -F src/**/*.kt) || echo "ktlint not installed; relying on Kotlin Coding Conventions"
+    cd kotlin && just fmt
 
-# Lint Kotlin (detekt when present)
+# Lint Kotlin SDK
 kt-lint:
-    cd kotlin && (command -v detekt >/dev/null && detekt) || gradle compileKotlin
+    cd kotlin && just lint
 
-# Coverage with ≥90% line gate (enforced by jacocoTestCoverageVerification)
+# Run Kotlin coverage with the >=90% line gate
 kt-test-cover:
-    cd kotlin && gradle test jacocoTestCoverageVerification
+    cd kotlin && just test-cover
 
 # ── HTML Payment Links ──
 

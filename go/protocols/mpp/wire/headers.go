@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Header names and scheme tokens for the HTTP Payment Authentication
@@ -88,14 +89,17 @@ func FormatWWWAuthenticate(challenge PaymentChallenge) (string, error) {
 		fmt.Sprintf(`intent="%s"`, escapeQuotedValue(string(challenge.Intent))),
 		fmt.Sprintf(`request="%s"`, escapeQuotedValue(challenge.Request.Raw())),
 	}
-	if challenge.Expires != "" {
-		parts = append(parts, fmt.Sprintf(`expires="%s"`, escapeQuotedValue(challenge.Expires)))
+	// Canonical mpp-tools field order: description, then digest, then expires.
+	// The description round-trips as a top-level header param so a parsed
+	// challenge re-serializes byte-identically to the canonical golden wire.
+	if challenge.Description != "" {
+		parts = append(parts, fmt.Sprintf(`description="%s"`, escapeQuotedValue(challenge.Description)))
 	}
-	// description is already encoded inside the request payload —
-	// don't duplicate it as a top-level header param (non-ASCII descriptions
-	// would make the header value invalid).
 	if challenge.Digest != "" {
 		parts = append(parts, fmt.Sprintf(`digest="%s"`, escapeQuotedValue(challenge.Digest)))
+	}
+	if challenge.Expires != "" {
+		parts = append(parts, fmt.Sprintf(`expires="%s"`, escapeQuotedValue(challenge.Expires)))
 	}
 	if challenge.Opaque != nil {
 		parts = append(parts, fmt.Sprintf(`opaque="%s"`, escapeQuotedValue(challenge.Opaque.Raw())))
@@ -120,6 +124,24 @@ func ParseAuthorization(header string) (PaymentCredential, error) {
 	var credential PaymentCredential
 	if err := json.Unmarshal(payload, &credential); err != nil {
 		return PaymentCredential{}, fmt.Errorf("invalid credential JSON: %w", err)
+	}
+	// The canonical wire requires an embedded challenge that carries an id.
+	// json.Unmarshal silently zero-fills missing fields, so validate the
+	// decoded shape against the raw object to reject credentials whose
+	// challenge is absent or whose challenge has no id.
+	var probe struct {
+		Challenge *struct {
+			ID string `json:"id"`
+		} `json:"challenge"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return PaymentCredential{}, fmt.Errorf("invalid credential JSON: %w", err)
+	}
+	if probe.Challenge == nil {
+		return PaymentCredential{}, fmt.Errorf("missing %q field", "challenge")
+	}
+	if probe.Challenge.ID == "" {
+		return PaymentCredential{}, fmt.Errorf("missing %q field", "challenge.id")
 	}
 	return credential, nil
 }
@@ -146,7 +168,35 @@ func ParseReceipt(header string) (Receipt, error) {
 	if err := json.Unmarshal(payload, &receipt); err != nil {
 		return Receipt{}, fmt.Errorf("invalid receipt JSON: %w", err)
 	}
+	// The canonical wire requires status, method, reference, and an
+	// ISO-8601 timestamp. json.Unmarshal zero-fills missing fields, so
+	// reject any receipt that omits a required field or carries a
+	// non-ISO-8601 timestamp.
+	if receipt.Status == "" {
+		return Receipt{}, fmt.Errorf("missing %q field", "status")
+	}
+	if receipt.Method == "" {
+		return Receipt{}, fmt.Errorf("missing %q field", "method")
+	}
+	if receipt.Reference == "" {
+		return Receipt{}, fmt.Errorf("missing %q field", "reference")
+	}
+	if receipt.Timestamp == "" {
+		return Receipt{}, fmt.Errorf("missing %q field", "timestamp")
+	}
+	if !isISO8601(receipt.Timestamp) {
+		return Receipt{}, fmt.Errorf("invalid timestamp: %q is not ISO-8601", receipt.Timestamp)
+	}
 	return receipt, nil
+}
+
+// isISO8601 reports whether s parses as an RFC 3339 / ISO-8601 timestamp.
+func isISO8601(s string) bool {
+	if _, err := time.Parse(time.RFC3339, s); err == nil {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339Nano, s)
+	return err == nil
 }
 
 // FormatReceipt formats a receipt as a header value.
@@ -304,55 +354,66 @@ func escapeQuotedValue(value string) string {
 	return value
 }
 
+// parseAuthParams permissively parses comma/whitespace-separated `key="value"`
+// (or `key=token`) auth params. It mirrors the canonical mpp-tools parser: a
+// quoted value terminates at the first unescaped closing quote, and any token
+// that is not a well-formed `key=` pair is silently skipped (it does not abort
+// the whole parse). This lets unescaped quotes inside a description value
+// truncate at the quote boundary with the remaining text ignored, instead of
+// failing the parse.
 func parseAuthParams(input string) (map[string]string, error) {
 	params := map[string]string{}
-	for len(strings.TrimSpace(input)) > 0 {
-		input = strings.TrimLeft(input, " \t,")
-		if input == "" {
+	chars := []rune(input)
+	i := 0
+	n := len(chars)
+	for i < n {
+		// Skip leading separators (whitespace and commas).
+		for i < n && (isSpaceRune(chars[i]) || chars[i] == ',') {
+			i++
+		}
+		if i >= n {
 			break
 		}
-		eq := strings.IndexByte(input, '=')
-		if eq <= 0 {
-			return nil, fmt.Errorf("invalid auth parameter")
+		// Read the key token up to '=' or whitespace.
+		keyStart := i
+		for i < n && chars[i] != '=' && !isSpaceRune(chars[i]) {
+			i++
 		}
-		key := strings.TrimSpace(input[:eq])
-		input = input[eq+1:]
+		if i >= n || chars[i] != '=' {
+			// Not a key=value token; skip the stray token and continue.
+			for i < n && !isSpaceRune(chars[i]) && chars[i] != ',' {
+				i++
+			}
+			continue
+		}
+		key := string(chars[keyStart:i])
+		i++ // consume '='
+		if i >= n {
+			break
+		}
 		var value string
-		if strings.HasPrefix(input, `"`) {
-			input = input[1:]
+		if chars[i] == '"' {
+			i++ // consume opening quote
 			var builder strings.Builder
-			escaped := false
-			consumed := -1
-			for i, ch := range input {
-				if escaped {
-					builder.WriteRune(ch)
-					escaped = false
-					continue
+			for i < n && chars[i] != '"' {
+				if chars[i] == '\\' && i+1 < n {
+					i++
+					builder.WriteRune(chars[i])
+				} else {
+					builder.WriteRune(chars[i])
 				}
-				if ch == '\\' {
-					escaped = true
-					continue
-				}
-				if ch == '"' {
-					value = builder.String()
-					consumed = i + 1
-					break
-				}
-				builder.WriteRune(ch)
+				i++
 			}
-			if consumed == -1 {
-				return nil, fmt.Errorf("unterminated quoted value")
+			if i < n {
+				i++ // consume closing quote
 			}
-			input = input[consumed:]
+			value = builder.String()
 		} else {
-			next := strings.IndexByte(input, ',')
-			if next == -1 {
-				value = strings.TrimSpace(input)
-				input = ""
-			} else {
-				value = strings.TrimSpace(input[:next])
-				input = input[next+1:]
+			valueStart := i
+			for i < n && !isSpaceRune(chars[i]) && chars[i] != ',' {
+				i++
 			}
+			value = string(chars[valueStart:i])
 		}
 		if _, exists := params[key]; exists {
 			return nil, fmt.Errorf("duplicate parameter: %s", key)
@@ -360,6 +421,10 @@ func parseAuthParams(input string) (map[string]string, error) {
 		params[key] = value
 	}
 	return params, nil
+}
+
+func isSpaceRune(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\r' || r == '\n'
 }
 
 // SortedHeaderParams is a test helper for deterministic comparisons.

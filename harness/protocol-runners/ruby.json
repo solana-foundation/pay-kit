@@ -1,0 +1,5 @@
+{
+  "language": "ruby",
+  "command": ["bundle", "exec", "ruby", "conformance/protocol_runner.rb"],
+  "cwd": "ruby"
+}

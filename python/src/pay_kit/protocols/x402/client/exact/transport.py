@@ -19,8 +19,11 @@ import httpx
 from pay_kit.protocols.x402.client.exact.payment import (
     ChallengeSelection,
     build_payment_header,
-    parse_x402_challenge,
+    build_payment_header_legacy,
+    parse_x402_challenge_with_version,
 )
+from pay_kit.protocols.x402.exact.legacy import X402_LEGACY_PAYMENT_HEADER
+from pay_kit.protocols.x402.exact.verify import X402_VERSION_V1
 
 if TYPE_CHECKING:
     from pay_kit.signer import LocalSigner
@@ -70,12 +73,20 @@ class PaymentTransport(httpx.AsyncBaseTransport):
         except Exception:  # noqa: BLE001 - a non-decodable body just means "header only"
             body = None
 
-        requirement = parse_x402_challenge(dict(response.headers), body, self._selection)
+        requirement, version = parse_x402_challenge_with_version(
+            dict(response.headers), body, self._selection
+        )
         if requirement is None:
             return response
 
+        # Emit the producer matching the challenge's declared version: a v1
+        # challenge gets the legacy X-PAYMENT credential, v2 (the default) gets
+        # PAYMENT-SIGNATURE. Mirrors the go/swift transports.
+        is_legacy = version == X402_VERSION_V1
+        builder = build_payment_header_legacy if is_legacy else build_payment_header
+        credential_header = X402_LEGACY_PAYMENT_HEADER if is_legacy else PAYMENT_SIGNATURE_HEADER
         try:
-            header_value = await build_payment_header(
+            header_value = await builder(
                 self._signer,
                 self._rpc,
                 requirement,
@@ -86,7 +97,7 @@ class PaymentTransport(httpx.AsyncBaseTransport):
             return response
 
         headers = dict(request.headers)
-        headers[PAYMENT_SIGNATURE_HEADER] = header_value
+        headers[credential_header] = header_value
         retry_request = httpx.Request(
             method=request.method,
             url=request.url,

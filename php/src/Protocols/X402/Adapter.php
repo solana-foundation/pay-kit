@@ -35,9 +35,28 @@ use Throwable;
 final class Adapter
 {
     private const PAYMENT_SIGNATURE_HEADER = 'payment-signature';
+    // Legacy x402 client payment header (coinbase/x402 SVM). v1 carries the
+    // credential here instead of PAYMENT-SIGNATURE; the server reads the v2
+    // header first, then falls back to this one. Mirrors the rust spine
+    // constants X402_V1_PAYMENT_HEADER / X402_V2_PAYMENT_HEADER.
+    private const PAYMENT_LEGACY_HEADER    = 'x-payment';
+    // x402 protocol versions. X402_VERSION is the version this server EMITS by
+    // default (the canonical current wire); X402_VERSION_V1 is the legacy wire
+    // this server still ACCEPTS on the dual-accept read path. Mirrors the rust
+    // X402_VERSION_V1 / X402_VERSION_V2 constants.
     private const X402_VERSION             = 2;
+    private const X402_VERSION_V1          = 1;
     private const TOKEN_PROGRAM            = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    private const EXACT_SCHEME             = 'exact';
     private const REPLAY_KEY_PREFIX        = 'x402-svm-exact:consumed:';
+
+    // Canonical CAIP-2 chain identifiers (match Network::caip2() + the rust
+    // spine types.rs). Used to normalize a legacy v1 plain network slug
+    // ("solana", "solana-devnet", "solana-testnet") to the chain id the route
+    // is pinned to, so the v1 network gate compares apples to apples.
+    private const CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+    private const CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+    private const CAIP2_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
 
     /** @var \Closure():?string|null */
     private $recentBlockhashProvider = null;
@@ -197,52 +216,46 @@ final class Adapter
         if ($signer === null) {
             throw new InvalidProofException('pay_kit: x402 requires operator.signer');
         }
+        // Dual-accept read: the canonical (current) credential rides the
+        // PAYMENT-SIGNATURE header; the legacy credential rides X-PAYMENT.
+        // Read the canonical header first, then fall back to the legacy one,
+        // mirroring the rust spine's read precedence. A server NEVER rejects a
+        // well-formed legacy credential just because it arrived on X-PAYMENT.
         $header = $request->getHeaderLine('Payment-Signature');
         if ($header === '') {
             $header = $request->getHeaderLine('PAYMENT-SIGNATURE');
         }
         if ($header === '') {
+            $header = $request->getHeaderLine('X-Payment');
+        }
+        if ($header === '') {
+            $header = $request->getHeaderLine('X-PAYMENT');
+        }
+        if ($header === '') {
             throw new InvalidProofException('pay_kit: payment required');
         }
 
-        // Decode credential.
-        $decoded = base64_decode($header, true);
-        if ($decoded === false) {
-            throw new InvalidProofException('invalid_exact_svm_payload_signature_base64');
-        }
-        try {
-            $envelope = json_decode($decoded, true, flags: JSON_THROW_ON_ERROR);
-        } catch (Throwable) {
-            throw new InvalidProofException('invalid_exact_svm_payload_signature_json');
-        }
-        if (!is_array($envelope) || ($envelope['x402Version'] ?? null) !== self::X402_VERSION) {
+        $envelope = $this->decodeCredential($header);
+        $offer    = $this->acceptsEntry($gate, $request);
+
+        // Version dispatch. The canonical wire commits to a full `accepted`
+        // requirement object (identity-key matched below); the legacy wire
+        // commits only to a top-level scheme + plain network slug, which the
+        // server normalizes and gates against its route. Adding legacy support
+        // must NOT widen the version gate: a genuinely-unknown version is still
+        // rejected. Mirrors rust parse_payment_signature (server/exact.rs).
+        $version = $envelope['x402Version'] ?? null;
+        if ($version === self::X402_VERSION) {
+            $this->matchCanonicalCredential($envelope, $offer);
+        } elseif ($version === self::X402_VERSION_V1) {
+            $this->matchLegacyCredential($envelope);
+        } else {
             throw new InvalidProofException('unsupported_x402_version');
         }
-        $accepted = $envelope['accepted'] ?? null;
-        $payload  = $envelope['payload']  ?? null;
-        if (!is_array($accepted) || !is_array($payload)) {
-            throw new InvalidProofException('invalid_exact_svm_payload_envelope');
-        }
 
-        // Identity-key match (cross-SDK PR #138 alignment).
-        $offer = $this->acceptsEntry($gate, $request);
-        foreach (['scheme', 'network', 'asset', 'payTo'] as $key) {
-            if (($accepted[$key] ?? null) !== ($offer[$key] ?? null)) {
-                throw new InvalidProofException(
-                    'pay_kit: charge_request_mismatch: '
-                    . 'accepted payment requirement does not match server challenge',
-                );
-            }
-        }
-        $offerExtra    = $offer['extra']    ?? [];
-        $acceptedExtra = $accepted['extra'] ?? [];
-        foreach (['feePayer', 'tokenProgram', 'memo'] as $key) {
-            if (array_key_exists($key, $offerExtra)
-                && ($acceptedExtra[$key] ?? null) !== $offerExtra[$key]) {
-                throw new InvalidProofException(
-                    'pay_kit: charge_request_mismatch (extra.' . $key . ')',
-                );
-            }
+        $payload = $envelope['payload'] ?? null;
+        if (!is_array($payload)) {
+            throw new InvalidProofException('invalid_exact_svm_payload_envelope');
         }
 
         // x402 v2 extensions reject gate. When the server advertised a
@@ -250,7 +263,9 @@ final class Adapter
         // echo back a valid `pay_`-shaped id (^[A-Za-z0-9_-]{16,128}$) or the
         // request is rejected (coinbase payment_identifier spec: HTTP 400).
         // Mirrors rust `requires_payment_identifier` + the reject-when-required
-        // -and-missing check layered on verify_envelope_payload.
+        // -and-missing check layered on verify_envelope_payload. The identity-
+        // key match itself now lives in matchCanonicalCredential (run by the
+        // version dispatch above); only the extensions gate is layered here.
         $advertised = PaymentExtensions::fromArray($this->config->x402?->advertisedExtensions ?? null);
         if ($advertised !== null && $advertised->requiresPaymentIdentifier()) {
             $echoed = PaymentExtensions::fromArray(
@@ -335,19 +350,28 @@ final class Adapter
             );
         }
 
+        // Echo the network the credential committed to in the settlement
+        // response: the canonical wire's `accepted.network` (CAIP-2) or the
+        // legacy wire's top-level plain network slug, falling back to the
+        // route's CAIP-2 id. Mirrors the rust v1/v2 settlement-response shape.
         $responseEnvelope = base64_encode(json_encode([
             'success'     => true,
             'transaction' => $sig,
-            'network'     => $accepted['network'] ?? $this->caip2(),
+            'network'     => $this->settlementNetwork($envelope),
             'payer'       => $payload['transactionHash'] ?? '',
         ], JSON_THROW_ON_ERROR));
+
+        // v1 credentials get the legacy X-PAYMENT-RESPONSE receipt header; v2
+        // uses PAYMENT-RESPONSE (rust X402_V1_PAYMENT_RESPONSE_HEADER,
+        // constants.rs:22; matches go/lua/ruby/swift).
+        $responseHeader = ($version === self::X402_VERSION_V1) ? 'x-payment-response' : 'payment-response';
 
         return new Payment(
             protocol: Protocol::X402,
             transaction: $sig,
             gateName: null,
             settlementHeaders: [
-                'payment-response'                => $responseEnvelope,
+                $responseHeader                   => $responseEnvelope,
                 'x-payment-settlement-signature'  => $sig,
             ],
             raw: $header,
@@ -384,5 +408,138 @@ final class Adapter
     private function caip2(): string
     {
         return $this->config->network->caip2();
+    }
+
+    /**
+     * Decode a base64(JSON) x402 credential header into its envelope array.
+     * Standard (padded) base64, matching the rust producer's STANDARD engine.
+     *
+     * @return array<string, mixed>
+     */
+    private function decodeCredential(string $header): array
+    {
+        $decoded = base64_decode($header, true);
+        if ($decoded === false) {
+            throw new InvalidProofException('invalid_exact_svm_payload_signature_base64');
+        }
+        try {
+            $envelope = json_decode($decoded, true, flags: JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            throw new InvalidProofException('invalid_exact_svm_payload_signature_json');
+        }
+        if (!is_array($envelope)) {
+            throw new InvalidProofException('invalid_exact_svm_payload_envelope');
+        }
+        return $envelope;
+    }
+
+    /**
+     * Validate a canonical (current-wire) credential against the server offer.
+     *
+     * The credential echoes the full `accepted` requirement it claims to be
+     * paying for; we identity-key match it against the route's offer
+     * (scheme/network/asset/payTo + extra.feePayer/tokenProgram/memo) so a
+     * credential that lies about its requirement is rejected before settlement.
+     * Mirrors the rust v2 arm + cross-SDK PR #138 alignment.
+     *
+     * @param array<string, mixed> $envelope
+     * @param array<string, mixed> $offer
+     */
+    private function matchCanonicalCredential(array $envelope, array $offer): void
+    {
+        $accepted = $envelope['accepted'] ?? null;
+        if (!is_array($accepted)) {
+            throw new InvalidProofException('invalid_exact_svm_payload_envelope');
+        }
+        foreach (['scheme', 'network', 'asset', 'payTo'] as $key) {
+            if (($accepted[$key] ?? null) !== ($offer[$key] ?? null)) {
+                throw new InvalidProofException(
+                    'pay_kit: charge_request_mismatch: '
+                    . 'accepted payment requirement does not match server challenge',
+                );
+            }
+        }
+        $offerExtra    = $offer['extra']    ?? [];
+        $acceptedExtra = $accepted['extra'] ?? [];
+        foreach (['feePayer', 'tokenProgram', 'memo'] as $key) {
+            if (array_key_exists($key, $offerExtra)
+                && ($acceptedExtra[$key] ?? null) !== $offerExtra[$key]) {
+                throw new InvalidProofException(
+                    'pay_kit: charge_request_mismatch (extra.' . $key . ')',
+                );
+            }
+        }
+    }
+
+    /**
+     * Validate a legacy-wire credential.
+     *
+     * The legacy wire carries no `accepted` object: it commits only to a
+     * top-level scheme + plain network slug (siblings of `payload`). The
+     * server binds scheme === "exact" and normalizes the plain slug to a
+     * CAIP-2 chain id, gating it against the route's pinned network. The inner
+     * transaction is then checked against the server-built offer with the
+     * IDENTICAL MUST-checks (compute budget, transferChecked, fee-payer,
+     * memo) the canonical path runs. Mirrors the rust v1 arm
+     * (server/exact.rs parse_payment_signature + find_matching_requirement).
+     *
+     * @param array<string, mixed> $envelope
+     */
+    private function matchLegacyCredential(array $envelope): void
+    {
+        $scheme = $envelope['scheme'] ?? null;
+        if ($scheme !== self::EXACT_SCHEME) {
+            throw new InvalidProofException(
+                'pay_kit: charge_request_mismatch: unsupported scheme '
+                . (is_scalar($scheme) ? (string) $scheme : 'unknown'),
+            );
+        }
+        $network = $envelope['network'] ?? null;
+        if (!is_string($network) || $network === '') {
+            throw new InvalidProofException('invalid_exact_svm_payload_envelope');
+        }
+        $normalized = self::caip2ForCluster($network);
+        $expected   = $this->caip2();
+        if ($normalized !== $expected) {
+            throw new InvalidProofException(
+                "Network mismatch: expected $expected, got $network",
+            );
+        }
+    }
+
+    /**
+     * Pick the network to echo in the settlement response: the canonical
+     * wire's `accepted.network` (CAIP-2) or the legacy wire's top-level plain
+     * network slug, falling back to the route's CAIP-2 id.
+     *
+     * @param array<string, mixed> $envelope
+     */
+    private function settlementNetwork(array $envelope): string
+    {
+        $accepted = $envelope['accepted'] ?? null;
+        if (is_array($accepted) && is_string($accepted['network'] ?? null) && $accepted['network'] !== '') {
+            return $accepted['network'];
+        }
+        if (is_string($envelope['network'] ?? null) && $envelope['network'] !== '') {
+            return $envelope['network'];
+        }
+        return $this->caip2();
+    }
+
+    /**
+     * Normalize a legacy v1 plain network slug (or any cluster slug / CAIP-2
+     * id) to its canonical CAIP-2 chain identifier. Mirrors the rust spine
+     * `caip2_network_for_cluster`: localnet collapses to the devnet CAIP-2 id
+     * by convention (Surfpool clones mainnet state but reuses devnet genesis).
+     */
+    private static function caip2ForCluster(string $cluster): string
+    {
+        return match ($cluster) {
+            self::CAIP2_MAINNET, 'solana', 'mainnet', 'mainnet-beta' => self::CAIP2_MAINNET,
+            self::CAIP2_TESTNET, 'testnet', 'solana-testnet'         => self::CAIP2_TESTNET,
+            'devnet', 'localnet'                                     => self::CAIP2_DEVNET,
+            self::CAIP2_DEVNET, 'solana-devnet'                      => self::CAIP2_DEVNET,
+            default                                                  => self::CAIP2_MAINNET,
+        };
     }
 }

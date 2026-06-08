@@ -70,7 +70,7 @@ module PayKit
           scheme: :exact,
           transaction: signature,
           settlement_headers: {
-            ::PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER => payment_response,
+            ::PayKit::Protocols::X402::Server::Exact.settlement_response_header(payment_header) => payment_response,
             exact_config.settlement_header => signature
           },
           raw: payment_header

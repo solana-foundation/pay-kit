@@ -7,6 +7,7 @@ Rust and Go implementations.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -23,6 +24,14 @@ PAYMENT_RECEIPT_HEADER = "payment-receipt"
 
 class ParseError(Exception):
     """Failed to parse a payment header."""
+
+
+# ISO-8601 / RFC 3339 timestamp: YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM).
+# Matches the canonical mpp-tools receipt timestamp validation; rejects loose
+# forms like "Jan 29 2026 12:00".
+_ISO8601_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,13 +104,15 @@ def format_www_authenticate(challenge: PaymentChallenge) -> str:
         f'intent="{_escape_quoted_value(challenge.intent)}"',
         f'request="{_escape_quoted_value(challenge.request)}"',
     ]
-    if challenge.expires:
-        parts.append(f'expires="{_escape_quoted_value(challenge.expires)}"')
-    # description is already encoded inside the `request` payload —
-    # don't duplicate it as a top-level header param (non-ASCII descriptions
-    # would make the header value invalid).
+    # Canonical mpp-tools order: description, digest, expires after request.
+    # description round-trips as a top-level header param (parse keeps it,
+    # format emits it) to match the canonical golden wire.
+    if challenge.description:
+        parts.append(f'description="{_escape_quoted_value(challenge.description)}"')
     if challenge.digest:
         parts.append(f'digest="{_escape_quoted_value(challenge.digest)}"')
+    if challenge.expires:
+        parts.append(f'expires="{_escape_quoted_value(challenge.expires)}"')
     if challenge.opaque is not None:
         parts.append(f'opaque="{_escape_quoted_value(challenge.opaque)}"')
 
@@ -134,6 +145,11 @@ def parse_authorization(header: str) -> PaymentCredential:
         raise ParseError("Invalid credential JSON structure")
 
     ch = data["challenge"]
+    if not isinstance(ch, dict):
+        raise ParseError("Invalid credential challenge structure")
+    # Canonical: the embedded challenge must carry a non-empty id.
+    if not ch.get("id"):
+        raise ParseError("Missing 'id' in credential challenge")
     echo = ChallengeEcho(
         id=str(ch.get("id", "")),
         realm=str(ch.get("realm", "")),
@@ -199,11 +215,20 @@ def parse_receipt(header: str) -> Receipt:
     if not isinstance(data, dict):
         raise ParseError("Invalid receipt JSON structure")
 
+    # Canonical: status / method / reference / timestamp are required.
+    for field in ("status", "method", "reference", "timestamp"):
+        if not data.get(field):
+            raise ParseError(f"Missing '{field}' in receipt")
+
+    timestamp = str(data["timestamp"])
+    if not _ISO8601_RE.match(timestamp):
+        raise ParseError(f"Invalid ISO-8601 timestamp in receipt: {timestamp!r}")
+
     return Receipt(
-        status=str(data.get("status", "")),
-        method=str(data.get("method", "")),
-        timestamp=str(data.get("timestamp", "")),
-        reference=str(data.get("reference", "")),
+        status=str(data["status"]),
+        method=str(data["method"]),
+        timestamp=timestamp,
+        reference=str(data["reference"]),
         challenge_id=str(data.get("challengeId", "")),
         external_id=str(data.get("externalId", "")),
     )

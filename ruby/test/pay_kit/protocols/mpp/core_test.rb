@@ -234,4 +234,57 @@ class CoreTest < Minitest::Test
     assert_equal "sig", parsed.reference
     assert_equal "order", parsed.external_id
   end
+
+  # The canonical receipt shape requires an ISO-8601 / RFC 3339 timestamp;
+  # parse_receipt must reject a non-conforming instant.
+  def test_parse_receipt_rejects_non_iso8601_timestamp
+    payload = {
+      "status" => "success",
+      "method" => "solana",
+      "reference" => "sig",
+      "timestamp" => "Jan 29 2026 12:00"
+    }
+    header = ::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate(payload))
+    assert_raises(ArgumentError) do
+      PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_receipt(header)
+    end
+  end
+
+  # `challengeId` is advisory: parse_receipt accepts a receipt that omits it,
+  # leaving challenge_id nil rather than raising.
+  def test_parse_receipt_without_challenge_id
+    payload = {
+      "status" => "success",
+      "method" => "solana",
+      "reference" => "sig",
+      "timestamp" => "2026-01-01T00:00:00Z"
+    }
+    header = ::PayCore::Base64Url.encode(::PayCore::Json.canonical_generate(payload))
+    parsed = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_receipt(header)
+    assert_nil parsed.challenge_id
+  end
+
+  # A nil or empty challenge_id is normalized to nil and dropped from the wire
+  # shape; a present one is kept.
+  def test_receipt_challenge_id_normalization
+    blank = PayKit::Protocols::Mpp::Protocol::Core::Receipt.new(status: "success", method: "solana", reference: "sig", challenge_id: "")
+    assert_nil blank.challenge_id
+    refute_includes blank.to_h, "challengeId"
+
+    nilled = PayKit::Protocols::Mpp::Protocol::Core::Receipt.new(status: "success", method: "solana", reference: "sig")
+    assert_nil nilled.challenge_id
+
+    present = PayKit::Protocols::Mpp::Protocol::Core::Receipt.new(status: "success", method: "solana", reference: "sig", challenge_id: "c1")
+    assert_equal "c1", present.to_h["challengeId"]
+  end
+
+  # parse_auth_params permissively skips a non-empty token that carries no
+  # `=value` (e.g. trailing text after an unescaped closing quote) instead of
+  # raising, matching the canonical mpp-tools / Rust parser.
+  def test_parse_auth_params_skips_stray_token
+    params = PayKit::Protocols::Mpp::Protocol::Core::Headers.parse_auth_params('id="abc", stray, realm="api"')
+    assert_equal "abc", params.fetch("id")
+    assert_equal "api", params.fetch("realm")
+    refute_includes params, "stray"
+  end
 end
