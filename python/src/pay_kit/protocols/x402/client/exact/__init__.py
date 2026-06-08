@@ -6,6 +6,7 @@ from pay_kit.protocols.x402.client.exact.payment import (
     ChallengeSelection,
     build_payment,
     build_payment_header,
+    build_payment_header_legacy,
     parse_x402_challenge,
 )
 from pay_kit.protocols.x402.client.exact.transport import (
@@ -20,6 +21,7 @@ __all__ = [
     "parse_x402_challenge",
     "build_payment",
     "build_payment_header",
+    "build_payment_header_legacy",
     "PaymentTransport",
     "X402Client",
     "x402_async_client",

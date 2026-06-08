@@ -794,6 +794,50 @@ async def test_transport_sends_payment_signature_header(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transport_sends_x_payment_header_for_v1_challenge(monkeypatch):
+    # A v1 challenge (x402Version:1 body) must make the transport emit the legacy
+    # X-PAYMENT credential, not v2 PAYMENT-SIGNATURE. Regression for the gap where
+    # the transport always built the v2 producer regardless of declared version.
+    import pay_kit.protocols.x402.client.exact.transport as tmod
+
+    async def fake_v1(*_a, **_k):
+        return "V1-CRED"
+
+    async def fake_v2(*_a, **_k):
+        return "V2-CRED"
+
+    monkeypatch.setattr(tmod, "build_payment_header_legacy", fake_v1)
+    monkeypatch.setattr(tmod, "build_payment_header", fake_v2)
+
+    v1_body = json.dumps({"x402Version": 1, "accepts": [_offer(network="solana-devnet")]})
+    seen_headers: list[dict[str, str]] = []
+
+    async def app(scope, receive, send):
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        seen_headers.append(headers)
+        if "x-payment" in headers or "payment-signature" in headers:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+            return
+        await send(
+            {"type": "http.response.start", "status": 402, "headers": [(b"content-type", b"application/json")]}
+        )
+        await send({"type": "http.response.body", "body": v1_body.encode()})
+
+    signer = Signer.generate()
+    inner = httpx.ASGITransport(app=app)
+    transport = PaymentTransport(signer, None, network="devnet", base_transport=inner)
+    async with httpx.AsyncClient(transport=transport, base_url="http://server") as client:
+        resp = await client.get("/protected")
+
+    assert resp.status_code == 200
+    assert len(seen_headers) == 2
+    # The retry carries the legacy X-PAYMENT credential, NOT v2 Payment-Signature.
+    assert seen_headers[1].get("x-payment") == "V1-CRED"
+    assert "payment-signature" not in seen_headers[1]
+
+
+@pytest.mark.asyncio
 async def test_transport_passes_through_non_402(monkeypatch):
     async def ok_app(scope, receive, send):
         await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})

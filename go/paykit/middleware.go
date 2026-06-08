@@ -46,12 +46,13 @@ func (c *Client) RequireFunc(resolve GateFunc) func(http.Handler) http.Handler {
 				return
 			}
 			pmt, err := adapter.VerifyAndSettle(&AdapterRequest{
-				Method:        r.Method,
-				Path:          r.URL.Path,
-				Host:          r.Host,
-				Authorization: r.Header.Get("Authorization"),
-				PaymentSig:    r.Header.Get("Payment-Signature"),
-				Gate:          &gate,
+				Method:           r.Method,
+				Path:             r.URL.Path,
+				Host:             r.Host,
+				Authorization:    r.Header.Get("Authorization"),
+				PaymentSig:       r.Header.Get("Payment-Signature"),
+				PaymentSigLegacy: r.Header.Get("X-PAYMENT"),
+				Gate:             &gate,
 			})
 			if err != nil {
 				var perr *PaymentError
@@ -100,10 +101,14 @@ func (c *Client) pickAdapter(gate *Gate, r *http.Request) Adapter {
 	}
 	auth := r.Header.Get("Authorization")
 	sig := r.Header.Get("Payment-Signature")
+	// The legacy x402 client posts its credential in X-PAYMENT instead of
+	// Payment-Signature; treat either as an x402 credential so the adapter
+	// can dual-accept both wire shapes.
+	legacySig := r.Header.Get("X-PAYMENT")
 	for _, s := range accept {
 		switch s {
 		case X402:
-			if sig != "" && c.x402Adapter != nil {
+			if (sig != "" || legacySig != "") && c.x402Adapter != nil {
 				return c.x402Adapter
 			}
 		case MPP:

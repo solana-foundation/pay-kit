@@ -264,8 +264,13 @@ func decodeCredentialTx(t *testing.T, header string) *solana.Transaction {
 	if cred.X402Version != 2 {
 		t.Errorf("x402Version: got %d", cred.X402Version)
 	}
-	if !strings.EqualFold(cred.Scheme, "exact") {
-		t.Errorf("scheme: got %q", cred.Scheme)
+	// v2 omits top-level scheme/network (they ride in `accepted`), matching
+	// the rust spine which serializes them as None on v2.
+	if cred.Scheme != "" || cred.Network != "" {
+		t.Errorf("v2 must omit top-level scheme/network: got scheme=%q network=%q", cred.Scheme, cred.Network)
+	}
+	if cred.Accepted == nil || !strings.EqualFold(cred.Accepted.Scheme, "exact") {
+		t.Errorf("v2 scheme must ride in accepted: got %+v", cred.Accepted)
 	}
 	tx, err := solanatx.DecodeTransactionBase64(cred.Payload.Transaction)
 	if err != nil {

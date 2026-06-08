@@ -103,6 +103,150 @@ class X402ServerExactTest < Minitest::Test
     refute_equal "\x00".b * 64, signed_transaction.byteslice(65, 64)
   end
 
+  # ---- Legacy x402 v1 dual-accept (server reads v1 X-PAYMENT) ----------
+  #
+  # The server emits v2 challenges by default but must still settle a
+  # legacy v1 credential: top-level scheme + plain network, no `accepted`
+  # object. Mirrors the Rust spine v1 arm of `parse_payment_signature` +
+  # `find_matching_requirement` (server/exact.rs:316-327, 438-446).
+
+  def test_settlement_accepts_v1_envelope_devnet
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "ruby-v1-settlement-signature"
+    })
+    payment_header = build_v1_payment_header(state, network: "solana-devnet")
+
+    settlement = PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+
+    assert_equal "ruby-v1-settlement-signature", settlement
+    # Fee payer (index 0) signature was applied before sending, identical to
+    # the v2 settlement tail.
+    refute_equal "\x00".b * 64, sent.fetch(0).byteslice(1, 64)
+  end
+
+  def test_settlement_v1_runs_identical_facilitator_checks_as_v2
+    # The MUST-checks after the version gate are shared: a v1 credential
+    # whose transfer amount drifts from the route is rejected by the same
+    # Verifier the v2 path uses, before broadcast.
+    sent = []
+    state = build_state(sender: ->(_state, transaction) {
+      sent << transaction
+      "should-not-reach"
+    })
+    header = build_v1_payment_header(state, network: "solana-devnet")
+    tampered = mutate_payment_transaction(header, resign: true) do |transaction|
+      replace_transfer_amount(transaction, 999_999)
+    end
+
+    assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, tampered)
+    end
+    assert_empty sent, "tampered v1 transfer must be rejected before broadcast"
+  end
+
+  def test_settlement_rejects_v1_wrong_network
+    state = build_state
+    # Route is devnet (NETWORK); a v1 credential claiming mainnet "solana"
+    # normalizes to a different CAIP-2 and fails the v1 network gate.
+    payment_header = build_v1_payment_header(state, network: "solana")
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+    end
+
+    assert_match(/Network mismatch/, error.message)
+  end
+
+  def test_settlement_rejects_v1_non_exact_scheme
+    state = build_state
+    header = build_v1_payment_header(state, network: "solana-devnet")
+    envelope = JSON.parse(Base64.decode64(header))
+    envelope["scheme"] = "upto"
+    tampered = Base64.strict_encode64(JSON.generate(envelope))
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, tampered)
+    end
+
+    assert_match(/invalid payload type/, error.message)
+  end
+
+  def test_settlement_rejects_genuinely_unknown_version
+    # Adding v1 must NOT widen the gate: an envelope shaped like v1 but
+    # carrying an unknown version is still rejected.
+    state = build_state
+    header = build_v1_payment_header(state, network: "solana-devnet")
+    envelope = JSON.parse(Base64.decode64(header))
+    envelope["x402Version"] = 9
+    tampered = Base64.strict_encode64(JSON.generate(envelope))
+
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, tampered)
+    end
+
+    assert_equal "unsupported x402Version: 9", error.message
+  end
+
+  def test_protected_route_accepts_v1_x_payment_header
+    # HTTP-layer dual-accept: a v1 client presents the credential in the
+    # legacy `X-PAYMENT` header (not `PAYMENT-SIGNATURE`). The server reads
+    # v2 first, falls back to v1, and settles.
+    state = build_state(sender: ->(_state, _transaction) { "v1-http-settlement" })
+    payment_header = build_v1_payment_header(state, network: "solana-devnet", resource: "/protected")
+
+    status, headers, body = PayKit::Protocols::X402::Server::Exact.response_for(
+      "/protected",
+      {"x-payment" => payment_header},
+      state
+    )
+
+    assert_equal 200, status
+    assert_equal "v1-http-settlement", headers.fetch("x-fixture-settlement")
+    assert_equal true, body.fetch(:paid)
+    # A v1 credential gets the legacy X-PAYMENT-RESPONSE receipt header, not
+    # the v2 PAYMENT-RESPONSE (rust X402_V1_PAYMENT_RESPONSE_HEADER).
+    assert headers.key?(PayKit::Protocols::X402::Constants::X402_V1_PAYMENT_RESPONSE_HEADER),
+      "expected v1 settlement under X-PAYMENT-RESPONSE, got: #{headers.keys.inspect}"
+    refute headers.key?(PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER),
+      "v1 response must not use the v2 PAYMENT-RESPONSE header"
+  end
+
+  def test_protected_route_v2_uses_payment_response_header
+    # Symmetry with the v1 case: a v2 credential settles under PAYMENT-RESPONSE.
+    state = build_state(sender: ->(_state, _transaction) { "v2-http-settlement" })
+    payment_header = build_payment_header(state, resource: "/protected")
+
+    _status, headers, _body = PayKit::Protocols::X402::Server::Exact.response_for(
+      "/protected",
+      {"PAYMENT-SIGNATURE" => payment_header},
+      state
+    )
+
+    assert headers.key?(PayKit::Protocols::X402::Constants::PAYMENT_RESPONSE_HEADER)
+    refute headers.key?(PayKit::Protocols::X402::Constants::X402_V1_PAYMENT_RESPONSE_HEADER)
+  end
+
+  def test_protected_route_prefers_v2_header_over_v1
+    # When both headers are present the v2 `PAYMENT-SIGNATURE` path wins,
+    # matching the documented dual-accept precedence.
+    state = build_state(sender: ->(_state, _transaction) { "v2-wins" })
+    v2_header = build_payment_header(state, resource: "/protected")
+    # A v1 header that would fail the network gate; if it were read the
+    # request would 402 instead of settling.
+    v1_header = build_v1_payment_header(state, network: "solana", resource: "/protected")
+
+    status, _headers, body = PayKit::Protocols::X402::Server::Exact.response_for(
+      "/protected",
+      {"PAYMENT-SIGNATURE" => v2_header, "X-PAYMENT" => v1_header},
+      state
+    )
+
+    assert_equal 200, status
+    assert_equal true, body.fetch(:paid)
+  end
+
   def test_settlement_rejects_accepted_requirement_drift
     state = build_state
     envelope = JSON.parse(Base64.decode64(build_payment_header(state)))
@@ -992,6 +1136,15 @@ class X402ServerExactTest < Minitest::Test
       client_secret_key: JSON.generate(secret(1)),
       recent_blockhash: BLOCKHASH,
       resource: {"type" => "http", "uri" => resource || "/protected"}
+    )
+  end
+
+  def build_v1_payment_header(state, network:, resource: nil)
+    X402ExactClientFixture.build_v1_exact_payment_signature(
+      requirement: PayKit::Protocols::X402::Server::Exact.exact_requirement(state, resource: resource),
+      client_secret_key: JSON.generate(secret(1)),
+      recent_blockhash: BLOCKHASH,
+      network: network
     )
   end
 

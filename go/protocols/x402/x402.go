@@ -29,7 +29,29 @@ const (
 	paymentRequiredHeader = "payment-required"
 	paymentResponseHeader = "payment-response"
 	settlementHeader      = "x-payment-settlement-signature"
-	x402Version           = 2
+
+	// paymentResponseHeaderLegacy is the legacy v1 settlement-response
+	// header. The server writes the settlement under this name when the
+	// credential was a v1 X-PAYMENT envelope. Mirrors the rust
+	// X402_V1_PAYMENT_RESPONSE_HEADER (constants.rs).
+	paymentResponseHeaderLegacy = "x-payment-response"
+
+	x402Version = 2
+
+	// x402VersionLegacy is the legacy x402 wire version. The server
+	// dual-accepts it (a legacy client posts an X-PAYMENT header whose
+	// envelope carries x402Version=1 with top-level scheme+network and no
+	// `accepted` object), while still emitting the canonical version-2
+	// challenge by default. Mirrors the rust spine X402_VERSION_V1
+	// (rust/crates/x402/src/constants.rs) and the parse_payment_signature
+	// version dispatch (server/exact.rs).
+	x402VersionLegacy = 1
+
+	// exactScheme is the only scheme x402-exact speaks. The legacy v1
+	// envelope binds scheme+network at the top level, so the server
+	// rejects a v1 credential whose scheme is not "exact". Mirrors the
+	// rust EXACT_SCHEME check in the v1 arm (server/exact.rs).
+	exactScheme = "exact"
 
 	// stablecoinDecimals is the mint decimal count advertised in the
 	// challenge. Every stablecoin in the paycore table (USDC, USDT, USDG,
@@ -342,11 +364,14 @@ func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.X402 }
 // Credential is the typed x402 credential the client posts in the
 // payment-signature header (base64 of this JSON).
 type Credential struct {
-	X402Version int               `json:"x402Version"`
-	Scheme      string            `json:"scheme"`
-	Network     string            `json:"network"`
-	Payload     CredentialPayload `json:"payload"`
-	Accepted    *AcceptsEntry     `json:"accepted,omitempty"`
+	X402Version int `json:"x402Version"`
+	// Scheme/Network are top-level only on the legacy v1 envelope; the v2
+	// producer omits them (the offer rides in `accepted`), matching the rust
+	// spine which sets scheme/network to None on v2 (client/exact/payment.rs).
+	Scheme   string            `json:"scheme,omitempty"`
+	Network  string            `json:"network,omitempty"`
+	Payload  CredentialPayload `json:"payload"`
+	Accepted *AcceptsEntry     `json:"accepted,omitempty"`
 }
 
 // CredentialPayload carries the protocol-specific bits the client
@@ -366,6 +391,7 @@ type SettlementResponse struct {
 	Transaction string `json:"transaction"`
 	Network     string `json:"network"`
 	Payer       string `json:"payer"`
+	ErrorReason string `json:"errorReason,omitempty"`
 }
 
 func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
@@ -429,7 +455,15 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 
 func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
 	ctx := context.Background()
+	// Dual-accept: prefer the canonical Payment-Signature credential, then
+	// fall back to the legacy X-PAYMENT header so a v1 client is honoured
+	// without the server speaking two header names anywhere else. Mirrors
+	// the rust spine reading the v2 path first then the v1 envelope
+	// (server/exact.rs parse_payment_signature dispatch).
 	sig := req.PaymentSig
+	if sig == "" {
+		sig = req.PaymentSigLegacy
+	}
 	if sig == "" {
 		return nil, &paykit.PaymentError{Code: "payment_required", Err: paykit.ErrPaymentRequired, Gate: req.Gate}
 	}
@@ -441,22 +475,37 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err := json.Unmarshal(credBytes, &credential); err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: fmt.Errorf("decode credential: %w", err), Gate: req.Gate}
 	}
-	if credential.X402Version != x402Version {
-		return nil, &paykit.PaymentError{Code: "version_mismatch", Err: fmt.Errorf("unsupported x402Version %d", credential.X402Version), Gate: req.Gate}
-	}
 
-	// Echoed-accepted binding: when the credential carries an `accepted`
-	// object it is the requirements the client claims to be paying for.
-	// Compare it against the ROUTE's requirements (never the other way),
-	// so a credential that lies about its accepted offer is rejected
-	// before any transaction processing or settlement. Targeted field
-	// checks first, then a structural backstop over the canonical
-	// accepted shape. Mirrors Rust verify_envelope_payload
-	// (server/exact.rs:490-541).
-	if credential.Accepted != nil {
-		if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
+	// Version dispatch. The legacy v1 envelope commits only to the
+	// top-level scheme + network (no `accepted` object), so the server
+	// binds those two fields. The canonical v2 envelope echoes the full
+	// `accepted` offer, which is compared field-by-field against the
+	// route. A genuinely-unknown version is rejected; supporting v1 does
+	// NOT widen the gate. Mirrors the rust parse_payment_signature arms
+	// (server/exact.rs): v1 binds scheme+network, v2 binds accepted, any
+	// other version is "Unsupported x402 version". The downstream
+	// structural transfer verification is identical for both versions.
+	switch credential.X402Version {
+	case x402VersionLegacy:
+		if err := a.verifyLegacyBinding(req.Gate, &credential); err != nil {
 			return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
 		}
+	case x402Version:
+		// Echoed-accepted binding: when the credential carries an
+		// `accepted` object it is the requirements the client claims to
+		// be paying for. Compare it against the ROUTE's requirements
+		// (never the other way), so a credential that lies about its
+		// accepted offer is rejected before any transaction processing
+		// or settlement. Targeted field checks first, then a structural
+		// backstop over the canonical accepted shape. Mirrors Rust
+		// verify_envelope_payload (server/exact.rs:490-541).
+		if credential.Accepted != nil {
+			if err := a.verifyAcceptedBinding(req.Gate, credential.Accepted); err != nil {
+				return nil, &paykit.PaymentError{Code: "charge_request_mismatch", Err: err, Gate: req.Gate}
+			}
+		}
+	default:
+		return nil, &paykit.PaymentError{Code: "version_mismatch", Err: fmt.Errorf("unsupported x402 version %d", credential.X402Version), Gate: req.Gate}
 	}
 
 	txBase64 := credential.Payload.Transaction
@@ -534,11 +583,22 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		Success:     true,
 		Transaction: signature.String(),
 		Network:     a.cfg.Network.CAIP2(),
+		Payer:       tx.Message.AccountKeys[0].String(),
 	}
 	respRaw, _ := json.Marshal(respEnvelope)
 	headers := map[string]string{
-		paymentResponseHeader: base64.StdEncoding.EncodeToString(respRaw),
-		settlementHeader:      signature.String(),
+		settlementHeader: signature.String(),
+	}
+	// Echo the settlement on the header name matching the credential's
+	// wire version: a legacy v1 client posted X-PAYMENT and expects the
+	// X-PAYMENT-RESPONSE header, while the canonical client gets
+	// payment-response. Mirrors the rust v1/v2 response header split
+	// (constants.rs X402_V1_PAYMENT_RESPONSE_HEADER vs
+	// X402_V2_PAYMENT_RESPONSE_HEADER).
+	if credential.X402Version == x402VersionLegacy {
+		headers[paymentResponseHeaderLegacy] = base64.StdEncoding.EncodeToString(respRaw)
+	} else {
+		headers[paymentResponseHeader] = base64.StdEncoding.EncodeToString(respRaw)
 	}
 	return &paykit.Payment{
 		Protocol:          paykit.X402,
@@ -547,6 +607,26 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		SettlementHeaders: headers,
 		Raw:               sig,
 	}, nil
+}
+
+// verifyLegacyBinding validates the legacy v1 envelope, which carries no
+// echoed `accepted` offer: it commits only to the top-level scheme and
+// network. The scheme must be "exact" and the plain network slug must
+// normalize to this route's network. The structural transaction verifier
+// (verifyExactTransaction) still proves the transfer matches the route's
+// recipient/amount/mint downstream, so the binding here is intentionally
+// the same scheme+network check the rust v1 arm performs
+// (server/exact.rs parse_payment_signature v1 arm).
+func (a *Adapter) verifyLegacyBinding(gate *paykit.Gate, credential *Credential) error {
+	if credential.Scheme != exactScheme {
+		return fmt.Errorf("scheme mismatch: expected %s, got %q", exactScheme, credential.Scheme)
+	}
+	route := a.routeAccepts(gate)
+	got := normalizeNetwork(credential.Network)
+	if got != route.Network {
+		return fmt.Errorf("network mismatch: expected %s, got %s", route.Network, credential.Network)
+	}
+	return nil
 }
 
 // verifyAcceptedBinding rejects a credential whose echoed `accepted`

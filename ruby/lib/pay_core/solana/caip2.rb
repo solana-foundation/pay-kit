@@ -12,6 +12,14 @@ module PayCore
       DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
       TESTNET = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
 
+      # Legacy plain SVM network slugs used on the x402 EXACT v1 wire, where
+      # networks are referenced by name rather than CAIP-2 ID. Mirrors the
+      # Rust spine `SOLANA_NETWORK`/`SOLANA_DEVNET`/`SOLANA_TESTNET` literals
+      # (rust/crates/x402/src/constants.rs:4 + protocol/schemes/exact/types.rs).
+      LEGACY_MAINNET = "solana"
+      LEGACY_DEVNET = "solana-devnet"
+      LEGACY_TESTNET = "solana-testnet"
+
       ALL = {
         "mainnet" => MAINNET,
         "devnet" => DEVNET,
@@ -26,6 +34,26 @@ module PayCore
         return network if network.to_s.start_with?("solana:")
 
         ALL[network.to_s] || network
+      end
+
+      # Normalize ANY cluster/network identifier to its canonical CAIP-2 ID,
+      # including the legacy plain SVM slugs the x402 v1 wire uses
+      # (`solana`, `solana-devnet`, `solana-testnet`) and the friendly
+      # cluster names. Mirrors the Rust spine `caip2_network_for_cluster`
+      # (rust/crates/x402/src/protocol/schemes/exact/types.rs:31-39) so the
+      # v1 network gate compares apples to apples against a CAIP-2 route
+      # network. Unknown identifiers fall back to mainnet, matching rust.
+      def for_cluster(cluster)
+        case cluster.to_s
+        when MAINNET, LEGACY_MAINNET, "mainnet", "mainnet-beta"
+          MAINNET
+        when TESTNET, LEGACY_TESTNET, "testnet"
+          TESTNET
+        when DEVNET, LEGACY_DEVNET, "devnet", "localnet"
+          DEVNET
+        else
+          MAINNET
+        end
       end
     end
   end

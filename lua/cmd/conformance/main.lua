@@ -586,7 +586,21 @@ local function run_x402_verify(vector)
   end
 
   local version = env.x402Version
-  if version == 2 then
+  if version == 1 then
+    -- Legacy v1 dual-accept arm. The v1 envelope carries scheme + network
+    -- as top-level siblings of payload (no accepted object), so the server
+    -- binds only scheme + network and normalizes the plain SVM slug via
+    -- caip2_network_for_cluster before the network gate. Mirrors the rust
+    -- parse_payment_signature v1 arm (server/exact.rs:316-327): there is no
+    -- accepted-vs-route field comparison because v1 has no accepted object.
+    local scheme = env.scheme
+    if scheme ~= 'exact' then
+      error('invalid payload: v1 envelope scheme is not exact')
+    end
+    if caip2_network_for_cluster(env.network or '') ~= expected_caip2 then
+      error('wrong network: credential network does not match server')
+    end
+  elseif version == 2 then
     local accepted = env.accepted
     if type(accepted) ~= 'table' then
       error('invalid payload: v2 envelope missing accepted')

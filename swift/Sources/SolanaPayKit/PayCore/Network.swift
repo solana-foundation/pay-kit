@@ -47,4 +47,51 @@ public enum SolanaNetwork {
         default: return "mainnet"
         }
     }
+
+    // MARK: - Legacy plain SVM network slugs
+
+    /// Legacy mainnet slug. Mirrors rust `SOLANA_NETWORK` (constants.rs:4).
+    public static let legacyMainnet = "solana"
+    /// Legacy devnet slug.
+    public static let legacyDevnet = "solana-devnet"
+    /// Legacy testnet slug.
+    public static let legacyTestnet = "solana-testnet"
+
+    /// Map an offer's network (CAIP-2 id or cluster slug) to the legacy
+    /// plain SVM slug used by the legacy `X-PAYMENT` envelope.
+    ///
+    /// Mirrors rust `v1_network_for_requirements`
+    /// (client/exact/payment.rs:393-404): devnet-family maps to
+    /// `"solana-devnet"`, everything else (including mainnet and testnet)
+    /// maps to `"solana"`.
+    public static func legacySlug(for network: String) -> String {
+        switch network {
+        case devnet, legacyDevnet:
+            return legacyDevnet
+        default:
+            switch network.lowercased() {
+            case "devnet", "solana-devnet":
+                return legacyDevnet
+            default:
+                return legacyMainnet
+            }
+        }
+    }
+
+    /// True when the string is a recognized Solana network — a CAIP-2 id or
+    /// a legacy plain slug. Mirrors the rust selection filter, which keeps an
+    /// offer whose network normalizes to a known Solana cluster
+    /// (`cluster_for_caip2_network`, client/exact/payment.rs:312) so legacy
+    /// challenge bodies carrying plain slugs are eligible for selection.
+    public static func isSolanaNetwork(_ network: String) -> Bool {
+        if network == mainnet || network == devnet || network == testnet { return true }
+        switch network.lowercased() {
+        case "mainnet", "mainnet-beta", "solana",
+             "devnet", "solana-devnet",
+             "testnet", "solana-testnet":
+            return true
+        default:
+            return false
+        }
+    }
 }

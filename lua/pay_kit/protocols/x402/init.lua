@@ -38,10 +38,28 @@ Adapter.__index = Adapter
 
 -- --- constants ------------------------------------------------------
 
+-- Legacy and current protocol versions. We mirror the rust spine's
+-- X402_VERSION_V1 / X402_VERSION_V2 constant naming (constants.rs:10,13);
+-- per the no-version-suffix naming rule for NEW symbols, every wire shape
+-- introduced here is named by its structure, not by a v1/v2 suffix.
+local X402_VERSION_V1 = 1
 local X402_VERSION_V2 = 2
+
+-- v2 wire headers (canonical, lowercased for the OpenResty header table).
 local PAYMENT_REQUIRED_HEADER  = 'payment-required'
 local PAYMENT_SIGNATURE_HEADER = 'payment-signature'
 local PAYMENT_RESPONSE_HEADER  = 'payment-response'
+
+-- Legacy v1 wire headers (rust constants.rs:16-22). The v1 credential and
+-- settlement travel on the X-PAYMENT* header family; the credential header
+-- is X-PAYMENT (a standard-base64 envelope whose scheme and network sit as
+-- top-level siblings of payload, with no accepted), and the settlement is
+-- emitted on X-PAYMENT-RESPONSE. The v1 challenge-request header
+-- (X-PAYMENT-REQUIRED) is a producer concern: this server emits v2
+-- challenges by default, so it never reads or writes that header.
+local LEGACY_PAYMENT_HEADER          = 'x-payment'
+local LEGACY_PAYMENT_RESPONSE_HEADER = 'x-payment-response'
+
 local DEFAULT_FIXTURE_SETTLEMENT_HEADER = 'x-payment-settlement-signature'
 local DEFAULT_MAX_TIMEOUT_SECONDS = 60
 local DEFAULT_DECIMALS = 6
@@ -49,10 +67,53 @@ local TOKEN_PROGRAM_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 
 local CAIP2_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
 local CAIP2_DEVNET  = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
+local CAIP2_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z'
+
+-- Plain SVM network slugs the legacy v1 wire carries instead of CAIP-2.
+local LEGACY_NETWORK_SOLANA  = 'solana'
+local LEGACY_NETWORK_DEVNET  = 'solana-devnet'
+local LEGACY_NETWORK_TESTNET = 'solana-testnet'
 
 local function caip2_for(pay_kit_network)
   if pay_kit_network == 'solana_mainnet' then return CAIP2_MAINNET end
   return CAIP2_DEVNET                          -- devnet and localnet share devnet CAIP-2
+end
+
+-- Normalize any network identifier (CAIP-2 or plain legacy slug) to its
+-- CAIP-2 form so the v1 and v2 network gates share a comparison basis.
+-- Mirrors rust caip2_network_for_cluster (types.rs:31-39): plain
+-- "solana" / "mainnet" -> mainnet CAIP-2; "solana-devnet" / "devnet" /
+-- "localnet" -> devnet CAIP-2; the CAIP-2 forms map to themselves.
+local function caip2_network_for_cluster(network)
+  if type(network) ~= 'string' then return '' end
+  if network == LEGACY_NETWORK_SOLANA or network == 'mainnet'
+    or network == 'mainnet-beta' or network == CAIP2_MAINNET then
+    return CAIP2_MAINNET
+  end
+  if network == LEGACY_NETWORK_DEVNET or network == 'devnet'
+    or network == 'localnet' or network == CAIP2_DEVNET then
+    return CAIP2_DEVNET
+  end
+  if network == LEGACY_NETWORK_TESTNET or network == 'testnet'
+    or network == CAIP2_TESTNET then
+    return CAIP2_TESTNET
+  end
+  return network
+end
+
+-- Map a pay-kit network to the plain SVM slug the legacy v1 settlement
+-- response carries. Mirrors rust v1_network_for_requirements
+-- (client/exact/payment.rs:393-404): devnet-family -> "solana-devnet",
+-- everything else -> "solana". (testnet stays available for completeness;
+-- the operator network only ever resolves to mainnet or devnet today.)
+local function legacy_network_slug(pay_kit_network)
+  if pay_kit_network == 'solana_devnet' or pay_kit_network == 'solana_localnet' then
+    return LEGACY_NETWORK_DEVNET
+  end
+  if pay_kit_network == 'solana_testnet' then
+    return LEGACY_NETWORK_TESTNET
+  end
+  return LEGACY_NETWORK_SOLANA
 end
 
 local function network_label(pay_kit_network)
@@ -153,20 +214,51 @@ end
 
 -- --- credential decoding -------------------------------------------
 
-local function decode_payment_signature(header_value)
+-- Decode a standard-base64 JSON credential envelope. The bytes are shared
+-- between the v1 X-PAYMENT and the v2 PAYMENT-SIGNATURE wires (rust decodes
+-- both via STANDARD base64, server/exact.rs:308); the version dispatch
+-- happens at the call site so each wire keeps its native shape.
+local function decode_envelope(header_value, label)
   if type(header_value) ~= 'string' or header_value == '' then
     return nil, errors.PAYMENT_REQUIRED
   end
   local decoded = base64_std.decode(header_value)
   if not decoded then
-    return nil, errors.INVALID_PROOF .. ': payment-signature base64 decode failed'
+    return nil, errors.INVALID_PROOF .. ': ' .. label .. ' base64 decode failed'
   end
   local envelope = cjson_safe.decode(decoded)
   if type(envelope) ~= 'table' then
-    return nil, errors.INVALID_PROOF .. ': payment-signature not a JSON object'
+    return nil, errors.INVALID_PROOF .. ': ' .. label .. ' not a JSON object'
   end
+  return envelope
+end
+
+-- Decode the v2 PAYMENT-SIGNATURE credential. v2 envelopes carry an
+-- `accepted` object and x402Version=2; the accepted-vs-offer identity match
+-- and the field comparison are run by the caller.
+local function decode_payment_signature(header_value)
+  local envelope, err = decode_envelope(header_value, 'payment-signature')
+  if err then return nil, err end
   if envelope.x402Version ~= X402_VERSION_V2 then
     return nil, errors.INVALID_PROOF .. ': unsupported x402Version'
+  end
+  return envelope
+end
+
+-- Decode a legacy v1 X-PAYMENT credential. The v1 envelope carries
+-- x402Version=1, scheme + network as top-level siblings of payload, and no
+-- accepted object (rust PaymentSignatureEnvelope, types.rs:587-608). The
+-- caller normalizes the plain network slug and runs the network gate; there
+-- is no accepted-vs-offer comparison because v1 has no accepted object
+-- (rust parse_payment_signature v1 arm, server/exact.rs:316-327).
+local function decode_legacy_payment(header_value)
+  local envelope, err = decode_envelope(header_value, 'x-payment')
+  if err then return nil, err end
+  if envelope.x402Version ~= X402_VERSION_V1 then
+    return nil, errors.INVALID_PROOF .. ': unsupported x402Version'
+  end
+  if envelope.scheme ~= 'exact' then
+    return nil, errors.INVALID_PROOF .. ': x-payment scheme is not exact'
   end
   return envelope
 end
@@ -226,10 +318,25 @@ function M.new(opts)
   }, Adapter)
 end
 
+-- Read the v2 credential header (PAYMENT-SIGNATURE) from a header table,
+-- tolerating the canonical-cased key OpenResty does not lowercase.
+local function read_payment_signature(headers)
+  return headers[PAYMENT_SIGNATURE_HEADER] or headers['PAYMENT-SIGNATURE']
+end
+
+-- Read the legacy v1 credential header (X-PAYMENT) from a header table.
+local function read_legacy_payment(headers)
+  return headers[LEGACY_PAYMENT_HEADER] or headers['X-PAYMENT']
+end
+
 function M.detect(headers)
   if type(headers) ~= 'table' then return false end
-  local sig = headers[PAYMENT_SIGNATURE_HEADER] or headers['PAYMENT-SIGNATURE']
-  return sig ~= nil and sig ~= ''
+  -- Dual-accept: the v2 PAYMENT-SIGNATURE wire is read first, then the
+  -- legacy v1 X-PAYMENT wire. A request carrying either credential is ours.
+  local sig = read_payment_signature(headers)
+  if sig ~= nil and sig ~= '' then return true end
+  local legacy = read_legacy_payment(headers)
+  return legacy ~= nil and legacy ~= ''
 end
 
 Adapter.detect = function(_, headers) return M.detect(headers) end
@@ -251,19 +358,75 @@ function Adapter:challenge_headers(gate, req)
   }
 end
 
+-- Classify a decoded credential by its x402Version FIELD (not by which
+-- header carried it), mirroring rust parse_payment_signature which decodes
+-- once and matches on envelope.x402_version (server/exact.rs:315-347): v2 ->
+-- canonical, v1 -> legacy (scheme must be exact), anything else -> reject.
+-- Returns (is_legacy, err).
+local function classify_credential(envelope)
+  local version = envelope.x402Version
+  if version == X402_VERSION_V2 then
+    return false, nil
+  elseif version == X402_VERSION_V1 then
+    if envelope.scheme ~= 'exact' then
+      return nil, errors.INVALID_PROOF .. ': x-payment scheme is not exact'
+    end
+    return true, nil
+  end
+  return nil, errors.INVALID_PROOF .. ': unsupported x402Version'
+end
+
+-- Resolve the inbound credential under the dual-accept rule: read the v2
+-- PAYMENT-SIGNATURE wire FIRST, then fall back to the legacy v1 X-PAYMENT
+-- wire. Returns (envelope, is_legacy, raw_header) or (nil, err). Dispatch is
+-- CONTENT-BASED: whichever header carried the credential, it is decoded once
+-- and classified on its x402Version field (so a v1 envelope is honoured even
+-- if it arrived on PAYMENT-SIGNATURE, and a genuinely-unknown version is
+-- still rejected) -- matching rust parse_payment_signature (server/exact.rs:315-347).
+local function resolve_credential(headers)
+  local v2_header = read_payment_signature(headers)
+  if type(v2_header) == 'string' and v2_header ~= '' then
+    local envelope, err = decode_envelope(v2_header, 'payment-signature')
+    if err then return nil, nil, nil, err end
+    local is_legacy, cerr = classify_credential(envelope)
+    if cerr then return nil, nil, nil, cerr end
+    return envelope, is_legacy, v2_header
+  end
+  local legacy_header = read_legacy_payment(headers)
+  if type(legacy_header) == 'string' and legacy_header ~= '' then
+    local envelope, err = decode_envelope(legacy_header, 'x-payment')
+    if err then return nil, nil, nil, err end
+    local is_legacy, cerr = classify_credential(envelope)
+    if cerr then return nil, nil, nil, cerr end
+    return envelope, is_legacy, legacy_header
+  end
+  return nil, nil, nil, errors.PAYMENT_REQUIRED
+end
+
 function Adapter:verify_and_settle(gate, req)
   local config = self._config_resolver()
   local headers = (req and req.headers) or {}
-  local credential, err = decode_payment_signature(
-    headers[PAYMENT_SIGNATURE_HEADER] or headers['PAYMENT-SIGNATURE']
-  )
+  local credential, is_legacy, raw_header, err = resolve_credential(headers)
   if err then return nil, err end
 
   local resource = (req and req.path) or '/'
   local offer = exact_requirement(config, gate, resource, gate:amount():primary_coin())
-  if not accepted_requirement_matches(credential.accepted, offer) then
-    return nil, errors.CHARGE_REQUEST_MISMATCH ..
-      ': accepted payment requirement does not match server challenge'
+
+  if is_legacy then
+    -- v1 binds only scheme + network (no accepted object). Normalize the
+    -- plain SVM slug and gate it against the server's CAIP-2, mirroring the
+    -- rust v1 arm (server/exact.rs:316-327). The facilitator MUST-checks
+    -- below are identical to v2 (both reach verify_transaction_shape).
+    if caip2_network_for_cluster(credential.network or '') ~= caip2_for(config.network) then
+      return nil, errors.WRONG_NETWORK ..
+        ': x-payment network does not match server challenge'
+    end
+  else
+    -- v2 binds the full accepted requirement against the server offer.
+    if not accepted_requirement_matches(credential.accepted, offer) then
+      return nil, errors.CHARGE_REQUEST_MISMATCH ..
+        ': accepted payment requirement does not match server challenge'
+    end
   end
 
   local payload = credential.payload
@@ -334,20 +497,34 @@ function Adapter:verify_and_settle(gate, req)
     return nil, errors.SIGNATURE_CONSUMED
   end
 
-  local response_body = cjson_safe.encode({
-    success     = true,
-    network     = offer.network,
-    transaction = signature,
-  })
+  -- Settlement response. v1 emits X-PAYMENT-RESPONSE carrying the plain SVM
+  -- network slug and the payer pubkey (rust v1 settlement shape
+  -- { success, transaction, network, payer }); v2 emits PAYMENT-RESPONSE
+  -- with the CAIP-2 network from the offer.
+  local settlement_headers = {
+    [DEFAULT_FIXTURE_SETTLEMENT_HEADER] = signature,
+  }
+  if is_legacy then
+    settlement_headers[LEGACY_PAYMENT_RESPONSE_HEADER] = cjson_safe.encode({
+      success     = true,
+      transaction = signature,
+      network     = credential.network or legacy_network_slug(config.network),
+      payer       = transfer and transfer.authority or nil,
+    })
+  else
+    settlement_headers[PAYMENT_RESPONSE_HEADER] = cjson_safe.encode({
+      success     = true,
+      network     = offer.network,
+      transaction = signature,
+    })
+  end
+
   return {
     protocol           = 'x402',
     scheme             = 'exact',
     transaction        = signature,
-    settlement_headers = {
-      [PAYMENT_RESPONSE_HEADER] = response_body,
-      [DEFAULT_FIXTURE_SETTLEMENT_HEADER] = signature,
-    },
-    raw                = headers[PAYMENT_SIGNATURE_HEADER] or headers['PAYMENT-SIGNATURE'],
+    settlement_headers = settlement_headers,
+    raw                = raw_header,
   }
 end
 
@@ -358,8 +535,14 @@ M._private = {
   exact_requirement            = exact_requirement,
   encode_payment_required      = encode_payment_required,
   decode_payment_signature     = decode_payment_signature,
+  decode_legacy_payment        = decode_legacy_payment,
+  resolve_credential           = resolve_credential,
   network_label                = network_label,
   caip2_for                    = caip2_for,
+  caip2_network_for_cluster    = caip2_network_for_cluster,
+  legacy_network_slug          = legacy_network_slug,
+  LEGACY_PAYMENT_HEADER          = LEGACY_PAYMENT_HEADER,
+  LEGACY_PAYMENT_RESPONSE_HEADER = LEGACY_PAYMENT_RESPONSE_HEADER,
 }
 
 return M

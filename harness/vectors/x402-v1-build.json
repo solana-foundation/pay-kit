@@ -1,0 +1,90 @@
+[
+  {
+    "id": "x402-exact-v1-build-devnet",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "Client builds a legacy v1 X-PAYMENT envelope from a devnet USDC offer. Asserts the v1 shape: x402Version=1, top-level scheme=\"exact\" and plain network slug \"solana-devnet\" (NOT CAIP-2), payloadHasTransaction=true, and NO accepted object (v1 commits only to scheme+network, unlike v2). Mirrors rust build_payment_header_v1 (client/exact/payment.rs:153-170) + v1_network_for_requirements (payment.rs:393-404).",
+    "input": {
+      "x402Version": 1,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 60,
+        "extra": { "feePayer": "6AfzJJo1KfhNWKe56wa5EWszTNQ7B1W5Kfh5SY2JkRGQ" }
+      },
+      "x402PinnedTransaction": "AA=="
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 1,
+        "scheme": "exact",
+        "network": "solana-devnet",
+        "hasAccepted": false,
+        "payloadHasTransaction": true
+      }
+    }
+  },
+  {
+    "id": "x402-exact-v1-build-mainnet-network-name",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "v1 SVM network-name mapping: a mainnet CAIP-2 offer produces the plain legacy slug \"solana\" (everything not devnet-family maps to \"solana\"). Confirms the producer emits a plain name, never the CAIP-2 string, on the top-level network field. Mirrors rust v1_network_for_requirements default arm (client/exact/payment.rs:402).",
+    "input": {
+      "x402Version": 1,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+        "amount": "10000",
+        "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300
+      },
+      "x402PinnedTransaction": "AA=="
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 1,
+        "scheme": "exact",
+        "network": "solana",
+        "hasAccepted": false,
+        "payloadHasTransaction": true
+      }
+    }
+  },
+  {
+    "id": "x402-exact-v2-build-default-producer",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "Default producer stays v2: with no version pinned, the client emits a v2 PAYMENT-SIGNATURE envelope (x402Version=2, accepted echoes the offer, NO top-level scheme/network). Guards that adding v1 support does not flip the default emitter. Mirrors rust build_payment_header (client/exact/payment.rs:132-150) being the default path.",
+    "input": {
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA=="
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "acceptedScheme": "exact",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedAmount": "1000"
+      }
+    }
+  }
+]

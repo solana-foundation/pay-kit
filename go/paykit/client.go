@@ -92,7 +92,13 @@ type AdapterRequest struct {
 	Host          string
 	Authorization string
 	PaymentSig    string
-	Gate          *Gate
+	// PaymentSigLegacy carries the legacy x402 `X-PAYMENT` header value
+	// (base64 of a top-level {x402Version, scheme, network, payload}
+	// envelope). The x402 adapter reads the canonical PaymentSig first
+	// and falls back to this so it dual-accepts both wire shapes without
+	// the middleware needing to know which version a client speaks.
+	PaymentSigLegacy string
+	Gate             *Gate
 }
 
 // Builder is the constructor each protocol package registers. paykit.New

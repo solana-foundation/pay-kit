@@ -309,24 +309,35 @@ module PayKit::Protocols::X402
           "x402-svm-exact:consumed:#{signature}"
         end
 
-        # ---- L8 settlement: verify + broadcast + confirm + record ----
+        # Resolve which offered requirement an inbound credential settles
+        # against, dispatching on the wire version. Mirrors the Rust spine
+        # version gate in `parse_payment_signature` plus the per-version
+        # match in `find_matching_requirement`
+        # (rust/crates/x402/src/server/exact.rs:315-346, 406-451):
         #
-        # Order MUST be:
-        #   (1) decode envelope
-        #   (2) verify structural constraints (11-rule Verifier)
-        #   (3) verify client signatures
-        #   (4) apply facilitator signature
-        #   (5) broadcast
-        #   (6) confirm via getSignatureStatuses poll
-        #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
-        #
-        # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
-        # at `rust/crates/x402/src/bin/interop_server.rs:316-324`.
-        def settle_exact_payment(config, payment_header, resource: nil)
-          decoded = Types.decode_payment_signature(payment_header)
-          requirements = exact_requirements(config, resource: resource)
-          raise "unsupported x402Version: #{decoded["x402Version"]}" unless decoded["x402Version"] == Constants::X402_VERSION_V2
+        #   - v2 (`x402Version == 2`): require an `accepted` object, bind it
+        #     to one offered requirement by the canonical identity tuple
+        #     (and enforce the resource-memo binding so a payment built for
+        #     one route cannot be replayed against another).
+        #   - v1 (`x402Version == 1`): require top-level `scheme == "exact"`
+        #     and a plain network that normalizes (via
+        #     `Caip2.for_cluster`) to the route's CAIP-2 network. v1 carries
+        #     no per-option `accepted`, so every offered option is on the
+        #     same scheme + network; settle against the first.
+        #   - any other version: reject. Adding v1 MUST NOT widen the gate
+        #     to silently accept a wire contract the server cannot read.
+        def select_settlement_requirement(config, decoded, requirements, resource: nil)
+          case decoded["x402Version"]
+          when Constants::X402_VERSION_V2
+            select_v2_requirement(requirements, decoded, resource: resource)
+          when Constants::X402_VERSION_V1
+            select_v1_requirement(config, requirements, decoded)
+          else
+            raise "unsupported x402Version: #{decoded["x402Version"]}"
+          end
+        end
 
+        def select_v2_requirement(requirements, decoded, resource: nil)
           accepted = decoded["accepted"]
           if resource.is_a?(String) && !resource.empty? && accepted.is_a?(Hash)
             accepted_memo = accepted.dig("extra", "memo")
@@ -342,6 +353,79 @@ module PayKit::Protocols::X402
             # Mirrors Go reference (go/cmd/interop-server/main.go:856).
             raise "No matching payment requirements: accepted payment requirement does not match server challenge"
           end
+
+          requirement
+        end
+
+        # Bind a legacy v1 credential to a route requirement. v1 commits to
+        # a scheme + plain network only — there is no `accepted` to match
+        # field-by-field — so this enforces scheme + network and then picks
+        # the first offered option, exactly like the Rust spine v1 arm of
+        # `find_matching_requirement` (server/exact.rs:438-446). The network
+        # is normalized through `Caip2.for_cluster` before the comparison so
+        # the plain v1 slug ("solana", "solana-devnet") is matched against
+        # the route's CAIP-2 network.
+        def select_v1_requirement(config, requirements, decoded)
+          scheme = decoded["scheme"]
+          unless scheme == Constants::EXACT_SCHEME
+            raise "invalid payload type: #{scheme.inspect}"
+          end
+
+          expected_network = ::PayCore::Solana::Caip2.for_cluster(config.network)
+          credential_network = ::PayCore::Solana::Caip2.for_cluster(decoded["network"])
+          if credential_network != expected_network
+            raise "Network mismatch: expected #{expected_network}, got #{decoded["network"]}"
+          end
+
+          requirement = requirements.first
+          raise "at least one payment option is required" unless requirement
+
+          requirement
+        end
+
+        # ---- L8 settlement: verify + broadcast + confirm + record ----
+        #
+        # Order MUST be:
+        #   (1) decode envelope
+        #   (2) verify structural constraints (11-rule Verifier)
+        #   (3) verify client signatures
+        #   (4) apply facilitator signature
+        #   (5) broadcast
+        #   (6) confirm via getSignatureStatuses poll
+        #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #
+        # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
+        # at `rust/crates/x402/src/bin/interop_server.rs:316-324`.
+        # Pick the settlement-response header for a credential by its wire
+        # version: a v1 `X-PAYMENT` credential gets the legacy
+        # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
+        # `PAYMENT-RESPONSE`. Mirrors the rust split (constants.rs:22/31) and
+        # go/python/php/lua/swift. Falls back to the v2 header if the version
+        # cannot be read (the credential was already verified by settle).
+        def settlement_response_header(payment_header)
+          decoded = Types.decode_payment_signature(payment_header)
+          if decoded["x402Version"] == Constants::X402_VERSION_V1
+            Constants::X402_V1_PAYMENT_RESPONSE_HEADER
+          else
+            Constants::PAYMENT_RESPONSE_HEADER
+          end
+        rescue
+          Constants::PAYMENT_RESPONSE_HEADER
+        end
+
+        def settle_exact_payment(config, payment_header, resource: nil)
+          decoded = Types.decode_payment_signature(payment_header)
+          requirements = exact_requirements(config, resource: resource)
+
+          # Dual-accept version dispatch. The server reads the v2
+          # `accepted`-bearing envelope first and falls back to the legacy
+          # v1 envelope (top-level scheme + plain network, no `accepted`),
+          # rejecting any genuinely-unknown version. Mirrors the Rust spine
+          # `parse_payment_signature` + `find_matching_requirement`
+          # (rust/crates/x402/src/server/exact.rs:315-346, 406-451). The
+          # facilitator MUST-checks after this gate are identical for both
+          # versions — both reach the same Verifier + settlement tail.
+          requirement = select_settlement_requirement(config, decoded, requirements, resource: resource)
 
           payload = decoded["payload"]
           unless payload.is_a?(Hash) && payload["transaction"].is_a?(String)
@@ -514,7 +598,17 @@ module PayKit::Protocols::X402
               {error: "payment_required"}
             ]
           when config.resource_path
+            # Dual-accept at the HTTP layer: read the v2 `PAYMENT-SIGNATURE`
+            # header first, then fall back to the legacy v1 `X-PAYMENT`
+            # header. The server still emits v2 challenges by default
+            # (see `exact_challenge`), but it must honour either credential
+            # shape on the way in. Mirrors the client dual-read precedence
+            # in the Rust spine (client/exact/payment.rs:232-262), inverted
+            # for the server.
             payment_signature = header_value(headers, Constants::PAYMENT_SIGNATURE_HEADER)
+            if payment_signature.nil? || payment_signature.empty?
+              payment_signature = header_value(headers, Constants::X402_V1_PAYMENT_HEADER)
+            end
             return payment_required_response(config, resource: path) if payment_signature.nil? || payment_signature.empty?
 
             begin
@@ -528,7 +622,7 @@ module PayKit::Protocols::X402
                 200,
                 {
                   config.settlement_header => settlement,
-                  PAYMENT_RESPONSE_HEADER => payment_response
+                  settlement_response_header(payment_signature) => payment_response
                 },
                 {
                   ok: true,

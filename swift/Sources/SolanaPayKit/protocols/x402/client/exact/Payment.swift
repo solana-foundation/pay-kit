@@ -17,6 +17,25 @@ let X402DefaultDecimals: UInt8 = 6
 
 // MARK: - Challenge parsing
 
+/// A selected x402 offer together with the protocol version the server's
+/// challenge declared. The version drives which payment shape the client
+/// emits in reply: legacy `X-PAYMENT` when the challenge declared `1`,
+/// otherwise the canonical `PAYMENT-SIGNATURE`.
+public struct X402ParsedChallenge: Sendable {
+    /// The selected offer to pay.
+    public let offer: X402AcceptsEntry
+    /// The `x402Version` the challenge declared, or `nil` when the source
+    /// (e.g. a bare express body) carried no version. A `nil` or non-1
+    /// version keeps the canonical producer; only an explicit `1` selects
+    /// the legacy producer.
+    public let declaredVersion: Int?
+
+    public init(offer: X402AcceptsEntry, declaredVersion: Int?) {
+        self.offer = offer
+        self.declaredVersion = declaredVersion
+    }
+}
+
 /// Parse an x402 challenge from response headers and/or body, applying the
 /// client's network + currency-preference selection.
 ///
@@ -31,18 +50,56 @@ public func parseX402Challenge(
     body: String?,
     selection: X402ChallengeSelection = X402ChallengeSelection()
 ) -> X402AcceptsEntry? {
-    if let headerValue = headers.first(where: { $0.name.lowercased() == "payment-required" })?.value,
-       let offer = _selectFromHeader(headerValue, selection: selection) {
-        return offer
+    parseX402ChallengeWithVersion(headers: headers, body: body, selection: selection)?.offer
+}
+
+/// Parse an x402 challenge and surface the version it declared.
+///
+/// Source precedence mirrors the rust client
+/// (client/exact/payment.rs:232-262):
+/// 1. canonical `PAYMENT-REQUIRED` header (standard-base64 JSON);
+/// 2. legacy `X-PAYMENT-REQUIRED` header (RAW JSON per the rust spine; a
+///    base64 envelope is also accepted for robustness);
+/// 3. the 402 JSON body (`{ "accepts": [...] }`), legacy/express fallback.
+///
+/// The legacy header and body carry plain SVM network slugs and
+/// `maxAmountRequired`; both are handled natively by the same selection +
+/// `effective*` accessors. Returns `nil` when no supported Solana exact
+/// offer matches.
+public func parseX402ChallengeWithVersion(
+    headers: [(name: String, value: String)],
+    body: String?,
+    selection: X402ChallengeSelection = X402ChallengeSelection()
+) -> X402ParsedChallenge? {
+    func header(_ name: String) -> String? {
+        headers.first { $0.name.lowercased() == name.lowercased() }?.value
+    }
+
+    if let value = header(X402PaymentRequiredHeaderName),
+       let parsed = _selectFromHeader(value, selection: selection) {
+        return parsed
+    }
+
+    // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
+    // (client/exact/payment.rs: serde_json::from_str on the header value),
+    // not base64. Accept a base64 envelope first, then fall back to raw JSON
+    // (rust parity), so we interoperate with either producer.
+    if let value = header(X402LegacyPaymentRequiredHeader),
+       let parsed = _selectFromHeader(value, selection: selection)
+        ?? _selectFromBody(value, selection: selection) {
+        return parsed
     }
 
     if let body = body,
-       let offer = _selectFromBody(body, selection: selection) {
-        return offer
+       let parsed = _selectFromBody(body, selection: selection) {
+        return parsed
     }
 
     return nil
 }
+
+/// Canonical v2 server challenge header name (lower-cased compare).
+let X402PaymentRequiredHeaderName = "PAYMENT-REQUIRED"
 
 // MARK: - Payment header building
 
@@ -88,6 +145,78 @@ public func buildX402PaymentHeader(
         accepted: offer,
         payload: payload
     )
+    return try _encodePaymentEnvelope(envelope)
+}
+
+/// Build the standard-base64 legacy `X-PAYMENT` header value for an x402
+/// exact offer.
+///
+/// The legacy envelope is `{ x402Version: 1, scheme: "exact",
+/// network: <plain SVM slug>, payload: { transaction } }` — `scheme` and
+/// `network` are top-level siblings of `payload` and there is NO `accepted`
+/// object (the legacy wire binds only scheme + network, unlike the canonical
+/// shape). The network is the plain slug (`solana` / `solana-devnet`), never
+/// the CAIP-2 id. Mirrors rust `build_payment_header_v1`
+/// (client/exact/payment.rs:153-170) + `v1_network_for_requirements`
+/// (payment.rs:393-404).
+///
+/// The transaction is built identically to the canonical path (same
+/// compute-budget + transfer + memo instructions); only the envelope shape
+/// differs. The output is standard base64 (not base64url).
+public func buildX402LegacyPaymentHeader(
+    signer: any SolanaSigner,
+    rpc: RpcClient,
+    offer: X402AcceptsEntry,
+    nonceGenerator: (() -> Data)? = nil
+) async throws -> String {
+    let payload = try await _buildPaymentPayload(
+        signer: signer, rpc: rpc, offer: offer, nonceGenerator: nonceGenerator
+    )
+    let envelope = X402PaymentSignatureEnvelope(
+        x402Version: X402VersionLegacy,
+        scheme: "exact",
+        network: SolanaNetwork.legacySlug(for: offer.network),
+        accepted: nil,
+        payload: payload
+    )
+    return try _encodePaymentEnvelope(envelope)
+}
+
+/// Build the payment header for the version the server's challenge declared.
+///
+/// Dispatches to the legacy `X-PAYMENT` producer when `x402Version == 1`,
+/// otherwise to the canonical `PAYMENT-SIGNATURE` producer. The canonical
+/// shape stays the default (`nil` / any non-1 version), so adding legacy
+/// support does not flip the default emitter. Mirrors the rust client, where
+/// the default producer is `build_payment_header` (v2) and `build_payment_
+/// header_v1` is emitted only for legacy peers.
+///
+/// - Returns: the base64 header value and the header name to set it under
+///   (`X-PAYMENT` for legacy, `PAYMENT-SIGNATURE` otherwise).
+public func buildX402PaymentForChallenge(
+    signer: any SolanaSigner,
+    rpc: RpcClient,
+    offer: X402AcceptsEntry,
+    declaredVersion: Int?,
+    nonceGenerator: (() -> Data)? = nil
+) async throws -> (headerName: String, value: String) {
+    if declaredVersion == X402VersionLegacy {
+        let value = try await buildX402LegacyPaymentHeader(
+            signer: signer, rpc: rpc, offer: offer, nonceGenerator: nonceGenerator
+        )
+        return (X402LegacyPaymentHeader, value)
+    }
+    let value = try await buildX402PaymentHeader(
+        signer: signer, rpc: rpc, offer: offer, nonceGenerator: nonceGenerator
+    )
+    return (X402PaymentHeader, value)
+}
+
+/// Encode a payment envelope to a standard-base64 header value.
+///
+/// Sorted keys for deterministic output. Standard base64 (padded), matching
+/// the rust producer's `general_purpose::STANDARD` engine — NOT base64url.
+private func _encodePaymentEnvelope(_ envelope: X402PaymentSignatureEnvelope) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     let json = try encoder.encode(envelope)
@@ -131,7 +260,11 @@ private func _buildPaymentPayload(
     instructions.append(Instructions.computeBudgetSetUnitLimit(units: X402ComputeUnitLimit))
     instructions.append(Instructions.computeBudgetSetUnitPrice(microLamports: X402ComputeUnitPrice))
 
-    let clusterLabel = SolanaNetwork.clusterLabel(for: offer.network)
+    // Normalize the offer's network (CAIP-2 id or legacy plain slug) to its
+    // canonical CAIP-2 form first, so legacy offers carrying `solana-devnet`
+    // resolve to the correct cluster mints rather than falling through to
+    // mainnet.
+    let clusterLabel = SolanaNetwork.clusterLabel(for: SolanaNetwork.caip2(for: offer.network))
     let mintAddress = Mints.resolveMint(currency: assetStr, cluster: clusterLabel)
 
     if let mintStr = mintAddress {
@@ -269,21 +402,23 @@ private func _appendX402Memo(
 private func _selectFromHeader(
     _ headerValue: String,
     selection: X402ChallengeSelection
-) -> X402AcceptsEntry? {
+) -> X402ParsedChallenge? {
     guard let data = Data(base64Encoded: headerValue),
-          let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data)
+          let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data),
+          let offer = _selectRequirement(from: envelope.accepts, selection: selection)
     else { return nil }
-    return _selectRequirement(from: envelope.accepts, selection: selection)
+    return X402ParsedChallenge(offer: offer, declaredVersion: envelope.x402Version)
 }
 
 private func _selectFromBody(
     _ body: String,
     selection: X402ChallengeSelection
-) -> X402AcceptsEntry? {
+) -> X402ParsedChallenge? {
     guard let data = body.data(using: .utf8),
-          let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data)
+          let envelope = try? JSONDecoder().decode(X402PaymentRequiredEnvelope.self, from: data),
+          let offer = _selectRequirement(from: envelope.accepts, selection: selection)
     else { return nil }
-    return _selectRequirement(from: envelope.accepts, selection: selection)
+    return X402ParsedChallenge(offer: offer, declaredVersion: envelope.x402Version)
 }
 
 private func _selectRequirement(
@@ -294,7 +429,12 @@ private func _selectRequirement(
     let clusterLabel = SolanaNetwork.clusterLabel(for: preferredNetwork)
 
     let solana = accepts.filter { _isSolanaExact($0) }
-    let onPreferred = solana.filter { $0.network == preferredNetwork }
+    // Normalize each offer's network (CAIP-2 id or legacy plain slug) to its
+    // CAIP-2 form before comparing against the preferred network, so legacy
+    // 402-body offers (`solana-devnet` etc.) match the same way v2 offers do.
+    // Mirrors rust `network_matches`, which normalizes the offer's
+    // network/cluster through `caip2_network_for_cluster`.
+    let onPreferred = solana.filter { SolanaNetwork.caip2(for: $0.network) == preferredNetwork }
 
     if let currencies = selection.currencies {
         for wanted in currencies {
@@ -316,9 +456,11 @@ private func _isSolanaExact(_ offer: X402AcceptsEntry) -> Bool {
     // Require an explicit `scheme == "exact"` (python parity): offers
     // without a scheme, or with a different scheme, are not eligible.
     guard offer.scheme == "exact" else { return false }
-    return offer.network == SolanaNetwork.mainnet
-        || offer.network == SolanaNetwork.devnet
-        || offer.network == SolanaNetwork.testnet
+    // Accept both CAIP-2 ids (v2 challenges) and legacy plain SVM slugs
+    // (`solana` / `solana-devnet` / `solana-testnet`, carried by legacy 402
+    // bodies). Mirrors the rust selection filter, which keeps any offer
+    // whose network normalizes to a known Solana cluster.
+    return SolanaNetwork.isSolanaNetwork(offer.network)
 }
 
 private func _effectiveAmountOf(_ offer: X402AcceptsEntry) -> UInt64 {

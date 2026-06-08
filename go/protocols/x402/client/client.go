@@ -51,6 +51,32 @@ const (
 	paymentSignatureHeader = "Payment-Signature"
 	x402Version            = 2
 
+	// Legacy v1 wire names. A v1 server advertises its challenge either in
+	// the X-PAYMENT-REQUIRED header or as a 402 JSON body, and a v1 client
+	// posts its credential in the X-PAYMENT header. The default producer
+	// stays v2 (Payment-Signature); the v1 producer is opt-in and only
+	// emitted when the challenge itself declared v1. Mirrors the rust
+	// constants X402_V1_PAYMENT_HEADER / X402_V1_PAYMENT_REQUIRED_HEADER
+	// (constants.rs) and the v1 dual-read precedence (client/exact/payment.rs).
+	paymentRequiredHeaderLegacy = "X-PAYMENT-REQUIRED"
+	paymentHeaderLegacy         = "X-PAYMENT"
+	x402VersionLegacy           = 1
+
+	// exactScheme is the only x402 scheme; the v1 envelope carries it as a
+	// top-level sibling of network and payload.
+	exactScheme = "exact"
+
+	// Plain legacy SVM network slugs. The v1 wire uses these instead of
+	// the v2 CAIP-2 ids. Mirrors the rust v1_network_for_requirements
+	// mapping (client/exact/payment.rs).
+	legacyNetworkMainnet = "solana"
+	legacyNetworkDevnet  = "solana-devnet"
+
+	// solanaDevnetCAIP2 is the canonical devnet/localnet chain id offers
+	// normalize to, used by the v1 network mapping to recognize a
+	// devnet-family offer regardless of which slug it arrived as.
+	solanaDevnetCAIP2 = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+
 	// Compute-budget values mirror the Rust client: a small fixed limit
 	// and a 1 microLamport priority price, both well under the server
 	// caps (maxComputeUnitLimit / maxComputeUnitPriceMicroLamports).
@@ -117,32 +143,57 @@ type challengeEnvelope struct {
 	Accepts     []x402.AcceptsEntry `json:"accepts"`
 }
 
-// ParseChallenge parses an x402 challenge from the `payment-required`
-// header and, failing that, the x402-express response body, then selects
-// one offer per the given preferences. Returns (nil, false) when no x402
-// offer is present or none matches the selection.
+// ParseChallenge parses an x402 challenge and selects one offer per the
+// given preferences. Returns (nil, false) when no x402 offer is present or
+// none matches the selection. It discards the declared wire version; use
+// [ParseChallengeVersioned] when the caller needs to emit the matching
+// producer.
 func ParseChallenge(h http.Header, body []byte, sel ChallengeSelection) (*x402.AcceptsEntry, bool) {
+	entry, _, ok := ParseChallengeVersioned(h, body, sel)
+	return entry, ok
+}
+
+// ParseChallengeVersioned parses an x402 challenge and reports both the
+// selected offer and the wire version the challenge declared, so the
+// client can emit the producer the server expects. The dual-read
+// precedence mirrors the rust spine (client/exact/payment.rs
+// parse_x402_challenge_with_selection): the canonical PAYMENT-REQUIRED
+// header first, then the legacy X-PAYMENT-REQUIRED header, then the 402
+// JSON body. The returned version is the envelope's declared x402Version
+// (defaulting to the canonical version when the field is absent), so the
+// transport can stay a v2 producer by default and only fall back to the
+// v1 producer when the server itself spoke v1.
+func ParseChallengeVersioned(h http.Header, body []byte, sel ChallengeSelection) (*x402.AcceptsEntry, int, bool) {
 	if raw := h.Get(paymentRequiredHeader); raw != "" {
 		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-			if entry := selectFromJSON(decoded, sel); entry != nil {
-				return entry, true
+			if entry, version := selectFromJSON(decoded, sel); entry != nil {
+				return entry, version, true
 			}
 		}
 	}
-	if len(body) > 0 {
-		if entry := selectFromJSON(body, sel); entry != nil {
-			return entry, true
+	if raw := h.Get(paymentRequiredHeaderLegacy); raw != "" {
+		if entry, version := selectFromJSON([]byte(raw), sel); entry != nil {
+			return entry, version, true
 		}
 	}
-	return nil, false
+	if len(body) > 0 {
+		if entry, version := selectFromJSON(body, sel); entry != nil {
+			return entry, version, true
+		}
+	}
+	return nil, 0, false
 }
 
-func selectFromJSON(raw []byte, sel ChallengeSelection) *x402.AcceptsEntry {
+func selectFromJSON(raw []byte, sel ChallengeSelection) (*x402.AcceptsEntry, int) {
 	var env challengeEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil
+		return nil, 0
 	}
-	return selectEntry(env.Accepts, sel)
+	version := env.X402Version
+	if version == 0 {
+		version = x402Version
+	}
+	return selectEntry(env.Accepts, sel), version
 }
 
 // selectEntry implements the Rust select_requirement logic: keep Solana
@@ -261,16 +312,66 @@ func BuildPaymentHeader(
 	}
 	credential := x402.Credential{
 		X402Version: x402Version,
-		Scheme:      entry.Scheme,
-		Network:     entry.Network,
-		Payload:     x402.CredentialPayload{Transaction: txBase64},
-		Accepted:    entry,
+		// v2 omits top-level scheme/network (they ride in `accepted`),
+		// matching the rust spine; only the v1 producer sets them.
+		Payload:  x402.CredentialPayload{Transaction: txBase64},
+		Accepted: entry,
 	}
 	raw, err := json.Marshal(credential)
 	if err != nil {
 		return "", fmt.Errorf("x402 client: marshal credential: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// BuildPaymentHeaderV1 builds and signs the transaction the selected offer
+// asks for and returns the base64 legacy `X-PAYMENT` credential envelope.
+// The v1 wire shape carries the scheme and a plain network slug as
+// top-level siblings of payload and commits to NO `accepted` object
+// (unlike v2, the server binds only scheme+network). This is opt-in: the
+// default producer stays v2 ([BuildPaymentHeader]); a client emits this
+// only when the server's challenge declared v1. Mirrors the rust
+// build_payment_header_v1 (client/exact/payment.rs).
+func BuildPaymentHeaderV1(
+	ctx context.Context,
+	signer solanatx.Signer,
+	rpc solanatx.RPCClient,
+	entry *x402.AcceptsEntry,
+) (string, error) {
+	if entry == nil {
+		return "", errors.New("x402 client: nil accept entry")
+	}
+	txBase64, err := buildTransaction(ctx, signer, rpc, entry)
+	if err != nil {
+		return "", err
+	}
+	credential := x402.Credential{
+		X402Version: x402VersionLegacy,
+		Scheme:      exactScheme,
+		Network:     v1NetworkForEntry(entry),
+		Payload:     x402.CredentialPayload{Transaction: txBase64},
+		// No Accepted: the v1 envelope binds only scheme+network.
+	}
+	raw, err := json.Marshal(credential)
+	if err != nil {
+		return "", fmt.Errorf("x402 client: marshal v1 credential: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// v1NetworkForEntry maps an offer's network to the plain legacy SVM slug
+// the v1 wire uses: the devnet family (devnet/localnet, by cluster slug or
+// the shared devnet CAIP-2 id) maps to "solana-devnet" and everything else
+// maps to "solana". Mirrors the rust v1_network_for_requirements
+// (client/exact/payment.rs): only the devnet family is special-cased;
+// mainnet and testnet both collapse to the plain "solana" slug.
+func v1NetworkForEntry(entry *x402.AcceptsEntry) string {
+	switch entry.Network {
+	case "devnet", "solana-devnet", "localnet", solanaDevnetCAIP2:
+		return legacyNetworkDevnet
+	default:
+		return legacyNetworkMainnet
+	}
 }
 
 func buildTransaction(
@@ -457,18 +558,33 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-	entry, ok := ParseChallenge(resp.Header, respBody, t.Selection)
+	entry, version, ok := ParseChallengeVersioned(resp.Header, respBody, t.Selection)
 	if !ok {
 		return resp, nil // not an x402 offer we can satisfy; hand back the 402.
-	}
-	header, err := BuildPaymentHeader(req.Context(), t.Signer, t.RPC, entry)
-	if err != nil {
-		return nil, err
 	}
 
 	retry := req.Clone(req.Context())
 	if bodyBytes != nil {
 		retry.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
+	// Emit the wire version the server declared: a v1 challenge gets the
+	// legacy X-PAYMENT producer, everything else stays on the canonical
+	// Payment-Signature producer (the default). Mirrors the rust client
+	// emitting the version the server's challenge declared while keeping
+	// v2 the default producer.
+	if version == x402VersionLegacy {
+		header, err := BuildPaymentHeaderV1(req.Context(), t.Signer, t.RPC, entry)
+		if err != nil {
+			return nil, err
+		}
+		retry.Header.Set(paymentHeaderLegacy, header)
+		return t.base().RoundTrip(retry)
+	}
+
+	header, err := BuildPaymentHeader(req.Context(), t.Signer, t.RPC, entry)
+	if err != nil {
+		return nil, err
 	}
 	retry.Header.Set(paymentSignatureHeader, header)
 	return t.base().RoundTrip(retry)

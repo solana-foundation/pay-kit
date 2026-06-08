@@ -162,6 +162,113 @@ export function decodeEnvelopeShape(header: string): X402EnvelopeShape {
   return shape;
 }
 
+// A parsed offer selected from a v1/express 402 JSON body. Mirrors the
+// subset of rust `PaymentRequirements` the client commits to after
+// `parse_accepts_body` (client/exact/payment.rs:278-286): the legacy v1
+// challenge carries `accepts[]` with `maxAmountRequired`/`payTo`/`asset`.
+export type X402ParsedOffer = {
+  network: string;
+  amount: string;
+  asset: string;
+  payTo: string;
+};
+
+type V1ChallengeAccept = {
+  scheme?: string;
+  network?: string;
+  // v1 amount field; v2 spelling `amount` also accepted for robustness.
+  maxAmountRequired?: string;
+  amount?: string;
+  // v1 recipient field; legacy `recipient` also accepted.
+  payTo?: string;
+  recipient?: string;
+  // v1 asset field; legacy `currency` also accepted.
+  asset?: string;
+  currency?: string;
+};
+
+type V1ChallengeBody = {
+  x402Version?: number;
+  error?: string;
+  accepts?: V1ChallengeAccept[];
+};
+
+// Parse a v1 / x402-express 402 JSON BODY challenge into a selected offer.
+// Mirrors rust `parse_accepts_body` field fallbacks
+// (protocol/schemes/exact/types.rs:334-355): amount <- maxAmountRequired,
+// recipient <- payTo, currency <- asset. Picks the first Solana `accepts`
+// entry (the harness oracle uses single-offer v1 bodies). Returns
+// `undefined` when the body has no usable Solana offer. RPC-free.
+export function parseV1ChallengeBody(body: string): X402ParsedOffer | undefined {
+  let parsed: V1ChallengeBody;
+  try {
+    parsed = JSON.parse(body) as V1ChallengeBody;
+  } catch {
+    return undefined;
+  }
+  const accepts = parsed.accepts;
+  if (!Array.isArray(accepts) || accepts.length === 0) return undefined;
+  const offer = accepts[0];
+  const network = offer.network ?? "";
+  const amount = offer.maxAmountRequired ?? offer.amount ?? "";
+  const payTo = offer.payTo ?? offer.recipient ?? "";
+  const asset = offer.asset ?? offer.currency ?? "";
+  if (!network || !amount || !payTo || !asset) return undefined;
+  return { network, amount, asset, payTo };
+}
+
+// Parse an x402 challenge from response headers AND/OR body, in the rust
+// precedence order (client/exact/payment.rs:232-262): the v2
+// PAYMENT-REQUIRED header first, then the v1 X-PAYMENT-REQUIRED header,
+// then the v1/express body as the fallback. Returns the selected offer or
+// `undefined`. Header values are standard base64 of the challenge JSON.
+export function parseX402Challenge(
+  headers: Array<[string, string]>,
+  body: string | undefined,
+): X402ParsedOffer | undefined {
+  const find = (name: string): string | undefined =>
+    headers.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
+
+  const v2Header = find(X402_V2_PAYMENT_REQUIRED_HEADER);
+  if (v2Header) {
+    try {
+      const decoded = Buffer.from(v2Header, "base64").toString("utf8");
+      const offer = parseV1ChallengeBody(decoded);
+      if (offer) return offer;
+    } catch {
+      /* fall through to v1 header / body */
+    }
+  }
+
+  const v1Header = find(X402_V1_PAYMENT_REQUIRED_HEADER);
+  if (v1Header) {
+    // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
+    // (client/exact/payment.rs: serde_json::from_str on the header value),
+    // not base64. Accept both: raw JSON first (rust parity), then a base64
+    // envelope, so this oracle interoperates with either producer.
+    try {
+      const offer = parseV1ChallengeBody(v1Header);
+      if (offer) return offer;
+    } catch {
+      /* not raw JSON; try base64 */
+    }
+    try {
+      const decoded = Buffer.from(v1Header, "base64").toString("utf8");
+      const offer = parseV1ChallengeBody(decoded);
+      if (offer) return offer;
+    } catch {
+      /* fall through to body */
+    }
+  }
+
+  if (body) {
+    const offer = parseV1ChallengeBody(body);
+    if (offer) return offer;
+  }
+
+  return undefined;
+}
+
 export type X402ServerRoute = {
   network: string; // CAIP-2 or cluster slug; normalized via caip2NetworkForCluster
   recipient: string;
