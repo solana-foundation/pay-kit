@@ -176,6 +176,11 @@ func (s *ActiveSession) PrepareIncrement(amount uint64) (intents.SignedVoucher, 
 //
 // Mirrors rust ActiveSession::record_voucher.
 func (s *ActiveSession) RecordVoucher(voucher intents.SignedVoucher) error {
+	if voucher.Data.ChannelID != s.ChannelIDString() {
+		return fmt.Errorf(
+			"voucher channel %s does not match active session %s",
+			voucher.Data.ChannelID, s.ChannelIDString())
+	}
 	cumulative, err := parseCumulative(voucher.Data.Cumulative)
 	if err != nil {
 		return err
@@ -191,6 +196,17 @@ func (s *ActiveSession) RecordVoucher(voucher intents.SignedVoucher) error {
 	}
 	s.nonce = candidate
 	return nil
+}
+
+// ReconcileSettled reconciles the local watermark to a server-settled
+// cumulative, e.g. the Cumulative of a replayed commit receipt. It advances to
+// settled when that is ahead of the current watermark and never regresses, so
+// retrying a delivery the server already accepted (lost-response case) catches
+// the client up without recording the freshly prepared higher voucher.
+func (s *ActiveSession) ReconcileSettled(settled uint64) {
+	if settled > s.cumulative {
+		s.cumulative = settled
+	}
 }
 
 // VoucherAction signs a fresh increment and wraps it as a voucher action.

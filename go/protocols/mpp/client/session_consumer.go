@@ -79,8 +79,28 @@ func (c *SessionConsumer) CommitDirective(ctx context.Context, directive intents
 	if err != nil {
 		return intents.CommitReceipt{}, err
 	}
-	if err := c.session.RecordVoucher(voucher); err != nil {
-		return intents.CommitReceipt{}, err
+	// A replayed receipt means the server already settled this delivery, so its
+	// Cumulative is the authoritative settled position. Recording the freshly
+	// prepared (higher) voucher would push the local watermark past the server's
+	// state and let a later close sign for more than was agreed; skipping it
+	// entirely would instead leave the watermark behind the server when the
+	// original response was lost, so the next delivery signs a non-monotonic
+	// cumulative. Reconcile to the receipt cumulative on replay (never
+	// regressing); record the voucher on a fresh committed receipt.
+	switch receipt.Status {
+	case intents.CommitStatusReplayed:
+		settled, perr := parseCumulative(receipt.Cumulative)
+		if perr != nil {
+			return intents.CommitReceipt{}, fmt.Errorf("invalid replayed receipt cumulative: %w", perr)
+		}
+		c.session.ReconcileSettled(settled)
+	case intents.CommitStatusCommitted:
+		if err := c.session.RecordVoucher(voucher); err != nil {
+			return intents.CommitReceipt{}, err
+		}
+	default:
+		// A malformed or unknown status must not advance local state.
+		return intents.CommitReceipt{}, fmt.Errorf("unexpected commit receipt status: %q", receipt.Status)
 	}
 	return receipt, nil
 }

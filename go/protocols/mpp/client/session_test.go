@@ -194,6 +194,40 @@ func TestRecordVoucherInvalidAndMissingNonce(t *testing.T) {
 	}
 }
 
+func TestRecordVoucherRejectsForeignChannel(t *testing.T) {
+	s, _ := newSession(t)
+	foreign := intents.SignedVoucher{
+		Data: intents.VoucherData{
+			ChannelID:  solana.NewWallet().PublicKey().String(),
+			Cumulative: "100",
+			ExpiresAt:  intents.DefaultSessionExpiresAt,
+		},
+		Signature: "sig",
+	}
+	if err := s.RecordVoucher(foreign); err == nil || !strings.Contains(err.Error(), "does not match active session") {
+		t.Fatalf("recording a foreign-channel voucher should fail, got %v", err)
+	}
+	if s.Cumulative() != 0 {
+		t.Fatalf("watermark advanced on foreign voucher: %d", s.Cumulative())
+	}
+}
+
+func TestReconcileSettledAdvancesButNeverRegresses(t *testing.T) {
+	s, _ := newSession(t)
+	s.ReconcileSettled(100)
+	if s.Cumulative() != 100 {
+		t.Fatalf("cumulative = %d, want 100", s.Cumulative())
+	}
+	s.ReconcileSettled(40) // stale, must not regress
+	if s.Cumulative() != 100 {
+		t.Fatalf("cumulative regressed to %d, want 100", s.Cumulative())
+	}
+	s.ReconcileSettled(250)
+	if s.Cumulative() != 250 {
+		t.Fatalf("cumulative = %d, want 250", s.Cumulative())
+	}
+}
+
 func TestRecordVoucherKeepsLargerNonce(t *testing.T) {
 	s, _ := newSession(t)
 	nonce := uint64(7)

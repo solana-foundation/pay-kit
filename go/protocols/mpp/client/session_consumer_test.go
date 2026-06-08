@@ -244,6 +244,92 @@ func TestConsumerDuplicateDeliveryReplayedNotDoubleCounted(t *testing.T) {
 	if transport.count() != 1 {
 		t.Fatalf("server must record exactly one commit, got %d", transport.count())
 	}
+	// The local watermark must reflect the server's settled position (100), not
+	// the freshly prepared voucher (200) that the replay would otherwise record.
+	// Advancing it here would let a later close sign for more than was settled.
+	if got := consumer.Session().Cumulative(); got != 100 {
+		t.Fatalf("watermark advanced past settled position on replay: got %d, want 100", got)
+	}
+}
+
+// replayTransport always reports the delivery as already settled at a fixed
+// cumulative, regardless of the voucher it is sent.
+type replayTransport struct{ settled string }
+
+func (r replayTransport) Commit(_ context.Context, directive intents.MeteringDirective, _ intents.CommitPayload) (intents.CommitReceipt, error) {
+	return intents.CommitReceipt{
+		DeliveryID: directive.DeliveryID,
+		SessionID:  directive.SessionID,
+		Amount:     directive.Amount,
+		Cumulative: r.settled,
+		Status:     intents.CommitStatusReplayed,
+	}, nil
+}
+
+func TestConsumerReplayReconcilesWatermarkWhenBehind(t *testing.T) {
+	// Lost-response case: the server already settled this delivery at 100 but
+	// the client never recorded it (watermark still 0). On replay the client
+	// must reconcile to the server-settled 100, not jump to the prepared 250
+	// and not stay at 0 (which would make the next delivery non-monotonic).
+	session, _ := newSession(t)
+	consumer := NewSessionConsumer(session, replayTransport{settled: "100"})
+	sid := consumer.Session().ChannelIDString()
+
+	receipt, err := consumer.CommitDirective(context.Background(), directive(sid, "250"))
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if receipt.Status != intents.CommitStatusReplayed {
+		t.Fatalf("status: %q", receipt.Status)
+	}
+	if got := consumer.Session().Cumulative(); got != 100 {
+		t.Fatalf("watermark not reconciled to settled position: got %d, want 100", got)
+	}
+}
+
+func TestConsumerReplayNeverRegressesWatermark(t *testing.T) {
+	// The client is already ahead at 300; a stale replay settled at 100 must not
+	// regress the local watermark.
+	session, _ := newSession(t)
+	session.ReconcileSettled(300)
+	consumer := NewSessionConsumer(session, replayTransport{settled: "100"})
+	sid := consumer.Session().ChannelIDString()
+
+	if _, err := consumer.CommitDirective(context.Background(), directive(sid, "50")); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := consumer.Session().Cumulative(); got != 300 {
+		t.Fatalf("watermark regressed on stale replay: got %d, want 300", got)
+	}
+}
+
+// statusTransport returns a fixed (possibly unknown) status, to exercise the
+// consumer's rejection of malformed receipts.
+type statusTransport struct{ status intents.CommitStatus }
+
+func (s statusTransport) Commit(_ context.Context, directive intents.MeteringDirective, payload intents.CommitPayload) (intents.CommitReceipt, error) {
+	return intents.CommitReceipt{
+		DeliveryID: directive.DeliveryID,
+		SessionID:  directive.SessionID,
+		Amount:     directive.Amount,
+		Cumulative: payload.Voucher.Data.Cumulative,
+		Status:     s.status,
+	}, nil
+}
+
+func TestConsumerRejectsUnknownReceiptStatus(t *testing.T) {
+	session, _ := newSession(t)
+	consumer := NewSessionConsumer(session, statusTransport{status: "bogus"})
+	sid := consumer.Session().ChannelIDString()
+
+	_, err := consumer.CommitDirective(context.Background(), directive(sid, "100"))
+	if err == nil || !strings.Contains(err.Error(), "unexpected commit receipt status") {
+		t.Fatalf("expected unknown-status rejection, got %v", err)
+	}
+	// A malformed receipt must not advance local state.
+	if consumer.Session().Cumulative() != 0 {
+		t.Fatalf("watermark advanced on unknown status: %d", consumer.Session().Cumulative())
+	}
 }
 
 func TestConsumerDuplicateDeliveryReplayMonotonic(t *testing.T) {
