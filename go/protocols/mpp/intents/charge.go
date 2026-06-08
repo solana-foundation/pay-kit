@@ -1,9 +1,10 @@
-// Package intents carries the MPP intent request bodies. Today this is
-// the charge intent (ChargeRequest, with string-encoded base-unit
-// amounts so JSON consumers without u64 safety stay correct), plus the
-// ParseUnits helper that converts a human-readable decimal amount into
-// base units at the SDK boundary. Wire format mirrors
-// rust/src/protocol/intents/charge.rs.
+// Package intents carries the MPP intent request bodies: the charge intent
+// (ChargeRequest, with string-encoded base-unit amounts so JSON consumers
+// without u64 safety stay correct) and the session intent (SessionRequest plus
+// the SessionAction credential union and signed vouchers). It also exposes the
+// ParseUnits helper that converts a human-readable decimal amount into base
+// units at the SDK boundary. Wire format mirrors
+// rust/crates/mpp/src/protocol/intents/{charge,session}.rs.
 package intents
 
 import (

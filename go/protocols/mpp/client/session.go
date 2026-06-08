@@ -1,0 +1,354 @@
+// Client-side session intent implementation.
+//
+// ActiveSession tracks an open payment channel and signs cumulative vouchers
+// for each metered API call. Vouchers are Ed25519-signed over the on-chain
+// Borsh voucher layout used by the payment-channels program, so the same bytes
+// the server verifies on the HTTP credential are the bytes the on-chain settle
+// instruction consumes.
+//
+// Scope is client-only PUSH (payment-channel) plus pull/clientVoucher: the
+// client signs cumulative vouchers off-chain. Pull/operatedVoucher (the
+// multi-delegator program) and the server verification path are out of scope.
+//
+// Behavior mirrors rust/crates/mpp/src/client/session.rs so the cross-language
+// SDKs produce byte-identical voucher signatures and credentials.
+package client
+
+import (
+	"fmt"
+	"strconv"
+
+	solana "github.com/gagliardetto/solana-go"
+
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
+	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+)
+
+// VoucherSigner signs the 48-byte voucher preimage with the ephemeral session
+// key. It is the minimal Ed25519 message-signing surface shared with the
+// charge client (solanatx.Signer satisfies it), so memory signers, hardware
+// wallets, and cloud KMS backends all work unchanged.
+type VoucherSigner = solanatx.Signer
+
+// ActiveSession tracks the client-side state of an active payment session.
+//
+// It holds the session signing key and advances the cumulative watermark with
+// each signed voucher. Vouchers are cumulative high-water marks: each one MUST
+// strictly exceed the previous, and the signer's public key is the
+// authorizedSigner passed to the server in the open action.
+//
+// ActiveSession is not safe for concurrent use; serialize access from one
+// goroutine or guard it with a mutex.
+//
+// Mirrors rust ActiveSession in rust/crates/mpp/src/client/session.rs.
+type ActiveSession struct {
+	channelID  solana.PublicKey
+	cumulative uint64
+	nonce      uint64
+	expiresAt  int64
+	signer     VoucherSigner
+}
+
+// NewActiveSession creates a session tracker for the channel obtained after
+// opening, signing vouchers with signer until DefaultSessionExpiresAt.
+//
+// Mirrors rust ActiveSession::new.
+func NewActiveSession(channelID solana.PublicKey, signer VoucherSigner) *ActiveSession {
+	return NewActiveSessionAt(channelID, signer, intents.DefaultSessionExpiresAt)
+}
+
+// NewActiveSessionAt creates a session tracker with an explicit voucher expiry.
+//
+// Mirrors rust ActiveSession::new_with_expiry.
+func NewActiveSessionAt(channelID solana.PublicKey, signer VoucherSigner, expiresAt int64) *ActiveSession {
+	return &ActiveSession{
+		channelID: channelID,
+		expiresAt: expiresAt,
+		signer:    signer,
+	}
+}
+
+// SetExpiresAt updates the expiry timestamp used for subsequent vouchers.
+//
+// Mirrors rust ActiveSession::set_expires_at.
+func (s *ActiveSession) SetExpiresAt(expiresAt int64) { s.expiresAt = expiresAt }
+
+// Cumulative returns the current cumulative watermark (base units).
+func (s *ActiveSession) Cumulative() uint64 { return s.cumulative }
+
+// Nonce returns the current voucher nonce counter.
+func (s *ActiveSession) Nonce() uint64 { return s.nonce }
+
+// ExpiresAt returns the expiry timestamp applied to new vouchers.
+func (s *ActiveSession) ExpiresAt() int64 { return s.expiresAt }
+
+// ChannelID returns the on-chain channel address.
+func (s *ActiveSession) ChannelID() solana.PublicKey { return s.channelID }
+
+// ChannelIDString returns the channel address as base58.
+//
+// Mirrors rust ActiveSession::channel_id_str.
+func (s *ActiveSession) ChannelIDString() string { return s.channelID.String() }
+
+// AuthorizedSigner returns the session signing key as base58, for the open
+// action payload.
+//
+// Mirrors rust ActiveSession::authorized_signer.
+func (s *ActiveSession) AuthorizedSigner() string { return s.signer.PublicKey().String() }
+
+// SignVoucher signs a voucher with an absolute cumulative amount and advances
+// the local watermark. cumulative MUST strictly exceed the current watermark.
+//
+// Mirrors rust ActiveSession::sign_voucher.
+func (s *ActiveSession) SignVoucher(cumulative uint64) (intents.SignedVoucher, error) {
+	voucher, err := s.PrepareVoucher(cumulative)
+	if err != nil {
+		return intents.SignedVoucher{}, err
+	}
+	if err := s.RecordVoucher(voucher); err != nil {
+		return intents.SignedVoucher{}, err
+	}
+	return voucher, nil
+}
+
+// SignIncrement signs a voucher adding amount to the current cumulative.
+//
+// Mirrors rust ActiveSession::sign_increment.
+func (s *ActiveSession) SignIncrement(amount uint64) (intents.SignedVoucher, error) {
+	next, err := addCumulative(s.cumulative, amount)
+	if err != nil {
+		return intents.SignedVoucher{}, err
+	}
+	return s.SignVoucher(next)
+}
+
+// PrepareVoucher signs a voucher without advancing the local watermark.
+//
+// This keeps ack/commit transports safe to retry: a failed commit can be
+// retried with the same cumulative amount without the local state drifting
+// ahead of the server. cumulative MUST strictly exceed the current watermark.
+//
+// Mirrors rust ActiveSession::prepare_voucher.
+func (s *ActiveSession) PrepareVoucher(cumulative uint64) (intents.SignedVoucher, error) {
+	if cumulative <= s.cumulative {
+		return intents.SignedVoucher{}, fmt.Errorf(
+			"voucher cumulative %d must exceed current watermark %d", cumulative, s.cumulative)
+	}
+
+	nonce := s.nonce + 1
+	data := intents.VoucherData{
+		ChannelID:  s.ChannelIDString(),
+		Cumulative: strconv.FormatUint(cumulative, 10),
+		ExpiresAt:  s.expiresAt,
+		Nonce:      &nonce,
+	}
+
+	preimage, err := paymentchannels.VoucherMessageBytes(s.channelID, cumulative, s.expiresAt)
+	if err != nil {
+		return intents.SignedVoucher{}, fmt.Errorf("voucher preimage: %w", err)
+	}
+	sig, err := s.signer.Sign(preimage)
+	if err != nil {
+		return intents.SignedVoucher{}, fmt.Errorf("sign voucher: %w", err)
+	}
+
+	return intents.SignedVoucher{Data: data, Signature: sig.String()}, nil
+}
+
+// PrepareIncrement signs a voucher adding amount to the current cumulative
+// without advancing the watermark.
+//
+// Mirrors rust ActiveSession::prepare_increment.
+func (s *ActiveSession) PrepareIncrement(amount uint64) (intents.SignedVoucher, error) {
+	next, err := addCumulative(s.cumulative, amount)
+	if err != nil {
+		return intents.SignedVoucher{}, err
+	}
+	return s.PrepareVoucher(next)
+}
+
+// RecordVoucher advances the local watermark to a prepared voucher the server
+// has accepted. The voucher cumulative MUST strictly exceed the current
+// watermark; the nonce advances to the larger of the current nonce and the
+// voucher nonce (or +1 when the voucher omits a nonce).
+//
+// Mirrors rust ActiveSession::record_voucher.
+func (s *ActiveSession) RecordVoucher(voucher intents.SignedVoucher) error {
+	cumulative, err := parseCumulative(voucher.Data.Cumulative)
+	if err != nil {
+		return err
+	}
+	if cumulative <= s.cumulative {
+		return fmt.Errorf(
+			"voucher cumulative %d must exceed current watermark %d", cumulative, s.cumulative)
+	}
+	s.cumulative = cumulative
+	candidate := s.nonce + 1
+	if voucher.Data.Nonce != nil && *voucher.Data.Nonce > candidate {
+		candidate = *voucher.Data.Nonce
+	}
+	s.nonce = candidate
+	return nil
+}
+
+// VoucherAction signs a fresh increment and wraps it as a voucher action.
+//
+// Mirrors rust ActiveSession::voucher_action.
+func (s *ActiveSession) VoucherAction(amount uint64) (intents.SessionAction, error) {
+	voucher, err := s.SignIncrement(amount)
+	if err != nil {
+		return intents.SessionAction{}, err
+	}
+	return intents.NewVoucherAction(intents.VoucherPayload{Voucher: voucher}), nil
+}
+
+// CloseAction builds a cooperative close action. When finalIncrement > 0 it
+// signs one last voucher for the remaining balance before closing; otherwise
+// the close carries no voucher.
+//
+// Mirrors rust ActiveSession::close_action.
+func (s *ActiveSession) CloseAction(finalIncrement uint64) (intents.SessionAction, error) {
+	payload := intents.ClosePayload{ChannelID: s.ChannelIDString()}
+	if finalIncrement > 0 {
+		voucher, err := s.SignIncrement(finalIncrement)
+		if err != nil {
+			return intents.SessionAction{}, err
+		}
+		payload.Voucher = &voucher
+	}
+	return intents.NewCloseAction(payload), nil
+}
+
+// OpenAction builds a push-mode open action. Call this after the on-chain open
+// transaction has confirmed; the session channel ID MUST match the confirmed
+// channel address.
+//
+// Mirrors rust ActiveSession::open_action.
+func (s *ActiveSession) OpenAction(deposit uint64, openTxSignature string) intents.SessionAction {
+	return intents.NewOpenAction(intents.OpenPayloadPush(
+		s.ChannelIDString(),
+		strconv.FormatUint(deposit, 10),
+		s.AuthorizedSigner(),
+		openTxSignature,
+	))
+}
+
+// OpenPaymentChannelAction builds a payment-channel push open action carrying
+// the full channel parameters.
+//
+// Mirrors rust ActiveSession::open_payment_channel_action.
+func (s *ActiveSession) OpenPaymentChannelAction(
+	deposit uint64,
+	payer, payee, mint string,
+	salt uint64,
+	gracePeriod uint32,
+	openTxSignature string,
+) intents.SessionAction {
+	return s.OpenPaymentChannelActionWithMode(
+		intents.SessionModePush, deposit, payer, payee, mint, salt, gracePeriod, openTxSignature)
+}
+
+// OpenPaymentChannelActionWithMode builds a payment-channel open action with an
+// explicit submission mode (push, or pull when the operator broadcasts).
+//
+// Mirrors rust ActiveSession::open_payment_channel_action_with_mode.
+func (s *ActiveSession) OpenPaymentChannelActionWithMode(
+	mode intents.SessionMode,
+	deposit uint64,
+	payer, payee, mint string,
+	salt uint64,
+	gracePeriod uint32,
+	openTxSignature string,
+) intents.SessionAction {
+	return intents.NewOpenAction(intents.OpenPayloadPaymentChannelWithMode(
+		mode,
+		s.ChannelIDString(),
+		strconv.FormatUint(deposit, 10),
+		payer, payee, mint,
+		salt, gracePeriod,
+		s.AuthorizedSigner(),
+		openTxSignature,
+	))
+}
+
+// OpenPullAction builds a pull-mode (SPL delegation) open action. The session
+// channel ID is used as the token account, so callers should construct the
+// ActiveSession with the delegated token account pubkey as the channel ID.
+//
+// Mirrors rust ActiveSession::open_pull_action.
+func (s *ActiveSession) OpenPullAction(approvedAmount uint64, owner, approveTxSignature string) intents.SessionAction {
+	return intents.NewOpenAction(intents.OpenPayloadPull(
+		s.ChannelIDString(),
+		strconv.FormatUint(approvedAmount, 10),
+		owner,
+		s.AuthorizedSigner(),
+		approveTxSignature,
+	))
+}
+
+// TopUpAction builds a top-up action after a top-up transaction confirms.
+//
+// Mirrors rust ActiveSession::topup_action.
+func (s *ActiveSession) TopUpAction(newDeposit uint64, topupTxSignature string) intents.SessionAction {
+	return intents.NewTopUpAction(intents.TopUpPayload{
+		ChannelID:  s.ChannelIDString(),
+		NewDeposit: strconv.FormatUint(newDeposit, 10),
+		Signature:  topupTxSignature,
+	})
+}
+
+// SerializeSessionCredential builds an Authorization header value for a session
+// action, echoing the challenge and JCS-canonicalizing the credential. The
+// result is "Payment <base64url(JCS(PaymentCredential))>".
+//
+// Mirrors the credential framing rust uses for session actions
+// (rust/crates/mpp/src/protocol/core/headers.rs format_authorization).
+func SerializeSessionCredential(challenge core.PaymentChallenge, action intents.SessionAction) (string, error) {
+	credential, err := core.NewPaymentCredential(challenge.ToEcho(), action)
+	if err != nil {
+		return "", err
+	}
+	return core.FormatAuthorization(credential)
+}
+
+// ParseSessionChallenge parses a WWW-Authenticate header value into the
+// challenge and the decoded session request.
+//
+// It rejects non-session intents so callers do not accidentally treat a charge
+// challenge as a session.
+func ParseSessionChallenge(header string) (core.PaymentChallenge, intents.SessionRequest, error) {
+	challenge, err := core.ParseWWWAuthenticate(header)
+	if err != nil {
+		return core.PaymentChallenge{}, intents.SessionRequest{}, err
+	}
+	if !challenge.Intent.IsSession() {
+		return core.PaymentChallenge{}, intents.SessionRequest{}, fmt.Errorf(
+			"challenge intent %q is not a session", challenge.Intent)
+	}
+	var request intents.SessionRequest
+	if err := challenge.Request.Decode(&request); err != nil {
+		return core.PaymentChallenge{}, intents.SessionRequest{}, fmt.Errorf("decode session request: %w", err)
+	}
+	return challenge, request, nil
+}
+
+// addCumulative adds amount to current, rejecting u64 overflow so a wrapped
+// watermark can never be signed.
+func addCumulative(current, amount uint64) (uint64, error) {
+	next := current + amount
+	if next < current {
+		return 0, fmt.Errorf("voucher cumulative overflows u64: %d + %d", current, amount)
+	}
+	return next, nil
+}
+
+// parseCumulative parses a decimal voucher cumulative into base units.
+func parseCumulative(raw string) (uint64, error) {
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid voucher cumulative %q", raw)
+	}
+	return value, nil
+}
