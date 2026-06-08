@@ -49,6 +49,25 @@ __all__ = [
 # DEFAULT_SESSION_EXPIRES_AT.
 DEFAULT_SESSION_EXPIRES_AT = 4_102_444_800
 
+_U64_MAX = 2**64 - 1
+
+
+def _parse_base_units(raw: object) -> int:
+    """Parse a canonical unsigned base-unit decimal string into a ``u64``.
+
+    Rejects empty, signed, fractional, non-ASCII-digit, or out-of-range values,
+    matching the rust/Go typed ``u64`` parsers so a malformed amount (e.g.
+    ``"-1"``) cannot slip past zero/max-cap checks or fail later when packed for
+    Solana.
+    """
+    s = str(raw)
+    if not (s.isascii() and s.isdigit()):
+        raise ValueError(f"invalid base-unit amount {raw!r}")
+    value = int(s, 10)
+    if value > _U64_MAX:
+        raise ValueError(f"base-unit amount {raw!r} exceeds u64 range")
+    return value
+
 # On-chain funding mechanism for a session. Advertised by the server in
 # ``SessionRequest.modes``; the client picks the mode it will use in its open
 # action. Mirrors rust SessionMode (rename_all="camelCase").
@@ -387,7 +406,7 @@ class OpenPayload:
         else:
             raise ValueError(f"open payload: unknown mode {self.mode!r}")
         try:
-            return int(raw, 10)
+            return _parse_base_units(raw)
         except ValueError as exc:
             raise ValueError(f"invalid deposit amount: {raw}") from exc
 
@@ -482,6 +501,11 @@ class VoucherData:
             cumulative = data["cumulative"]
         else:
             cumulative = ""
+        # The wire value may arrive as a JSON number; coerce to str so the
+        # base-unit accessors (message_bytes, record_voucher) parse it as a
+        # decimal string rather than raising TypeError.
+        if not isinstance(cumulative, str):
+            cumulative = str(cumulative)
         nonce = data.get("nonce")
         return cls(
             channel_id=data.get("channelId", ""),
@@ -512,7 +536,7 @@ class VoucherData:
         if len(channel) != 32:
             raise ValueError(f"channelId must be 32 bytes, got {len(channel)}")
         try:
-            cumulative = int(self.cumulative, 10)
+            cumulative = _parse_base_units(self.cumulative)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
         return channel + struct.pack("<Q", cumulative) + struct.pack("<q", self.expires_at)
@@ -745,7 +769,7 @@ class MeteringDirective:
         Mirrors rust ``MeteringDirective::amount_base_units``.
         """
         try:
-            return int(self.amount, 10)
+            return _parse_base_units(self.amount)
         except ValueError as exc:
             raise ValueError(f"invalid metering amount: {self.amount}") from exc
 
@@ -795,7 +819,7 @@ class MeteringUsage:
         Mirrors rust ``MeteringUsage::amount_base_units``.
         """
         try:
-            return int(self.amount, 10)
+            return _parse_base_units(self.amount)
         except ValueError as exc:
             raise ValueError(f"invalid metering usage amount: {self.amount}") from exc
 
@@ -845,14 +869,14 @@ class CommitReceipt:
     def amount_base_units(self) -> int:
         """Parse ``amount`` as base units."""
         try:
-            return int(self.amount, 10)
+            return _parse_base_units(self.amount)
         except ValueError as exc:
             raise ValueError(f"invalid commit receipt amount: {self.amount}") from exc
 
     def cumulative_base_units(self) -> int:
         """Parse ``cumulative`` as base units."""
         try:
-            return int(self.cumulative, 10)
+            return _parse_base_units(self.cumulative)
         except ValueError as exc:
             raise ValueError(f"invalid commit receipt cumulative: {self.cumulative}") from exc
 

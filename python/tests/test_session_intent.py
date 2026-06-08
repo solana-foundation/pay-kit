@@ -214,6 +214,15 @@ def test_open_payload_payment_channel_and_tx_helpers():
     assert p.update_delegation_tx == "update-tx"
 
 
+def test_deposit_amount_rejects_non_u64_values() -> None:
+    # Negative, fractional, non-digit, and over-u64 deposits must be rejected
+    # like the rust/Go typed u64 parsers, not silently coerced.
+    for bad in ("-1", "1.5", "0x10", " 10", "", str(2**64)):
+        p = OpenPayload.push("chan1", bad, "signer1", "txsig")
+        with pytest.raises(ValueError):
+            p.deposit_amount()
+
+
 def test_open_payload_pull_payment_channel_uses_channel_id_and_deposit():
     p = OpenPayload.payment_channel_with_mode(
         "pull", "chan1", "1000000", "payer1", "payee1", "mint1", 99, 45, "signer1", "pending"

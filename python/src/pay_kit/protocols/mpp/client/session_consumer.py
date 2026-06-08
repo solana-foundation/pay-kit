@@ -90,10 +90,14 @@ class SessionConsumer:
         valid base-unit integer, or whose amount is zero. The prepare/record
         split makes a failed commit safe to retry without double-counting: the
         voucher is prepared (no watermark advance), sent, and only recorded once
-        the transport returns a receipt. A server ``replayed`` receipt is
-        honored unconditionally — the recorded voucher cumulative is strictly
-        greater than the prior watermark so the watermark advances exactly once.
-        Mirrors rust ``SessionConsumer::commit_directive``.
+        the transport returns a ``committed`` receipt. A ``replayed`` receipt
+        means the server already settled this delivery, so its ``cumulative`` is
+        the authoritative settled position: recording the freshly prepared
+        (higher) voucher would push the watermark past the server's state, while
+        skipping it entirely would leave it behind when the original response was
+        lost (making the next delivery non-monotonic). On replay the watermark is
+        reconciled to the receipt cumulative (never regressing). Mirrors rust
+        ``SessionConsumer::commit_directive``.
         """
         self._validate_directive(directive)
         amount = directive.amount_base_units()
@@ -104,7 +108,17 @@ class SessionConsumer:
         payload = CommitPayload(delivery_id=directive.delivery_id, voucher=voucher)
 
         receipt = self._transport.commit(directive, payload)
-        self._session.record_voucher(payload.voucher)
+        if receipt.status == "replayed":
+            try:
+                settled = int(str(receipt.cumulative), 10)
+            except ValueError as exc:
+                raise ValueError("invalid replayed receipt cumulative") from exc
+            self._session.reconcile_settled(settled)
+        elif receipt.status == "committed":
+            self._session.record_voucher(payload.voucher)
+        else:
+            # A malformed or unknown status must not advance local state.
+            raise ValueError(f"unexpected commit receipt status: {receipt.status!r}")
         return receipt
 
     def _validate_directive(self, directive: MeteringDirective) -> None:
