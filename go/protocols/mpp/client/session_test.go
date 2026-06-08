@@ -218,13 +218,34 @@ func TestReconcileSettledAdvancesButNeverRegresses(t *testing.T) {
 	if s.Cumulative() != 100 {
 		t.Fatalf("cumulative = %d, want 100", s.Cumulative())
 	}
-	s.ReconcileSettled(40) // stale, must not regress
-	if s.Cumulative() != 100 {
-		t.Fatalf("cumulative regressed to %d, want 100", s.Cumulative())
+	if s.Nonce() != 1 {
+		t.Fatalf("nonce = %d, want 1 (advance bumps nonce)", s.Nonce())
+	}
+	s.ReconcileSettled(40) // stale, must not regress or touch the nonce
+	if s.Cumulative() != 100 || s.Nonce() != 1 {
+		t.Fatalf("stale reconcile changed state: cumulative=%d nonce=%d", s.Cumulative(), s.Nonce())
 	}
 	s.ReconcileSettled(250)
-	if s.Cumulative() != 250 {
-		t.Fatalf("cumulative = %d, want 250", s.Cumulative())
+	if s.Cumulative() != 250 || s.Nonce() != 2 {
+		t.Fatalf("cumulative=%d nonce=%d, want 250/2", s.Cumulative(), s.Nonce())
+	}
+}
+
+func TestDeliveryAfterReplayDoesNotReuseSettledNonce(t *testing.T) {
+	// After a lost-response replay reconciles to the settled cumulative, the
+	// next prepared voucher must carry a fresh nonce, not the settled one.
+	s, _ := newSession(t)
+	replayed, err := s.PrepareIncrement(100)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	s.ReconcileSettled(100)
+	next, err := s.PrepareIncrement(50)
+	if err != nil {
+		t.Fatalf("prepare next: %v", err)
+	}
+	if next.Data.Nonce == nil || replayed.Data.Nonce == nil || *next.Data.Nonce <= *replayed.Data.Nonce {
+		t.Fatalf("next nonce %v must exceed replayed nonce %v", next.Data.Nonce, replayed.Data.Nonce)
 	}
 }
 

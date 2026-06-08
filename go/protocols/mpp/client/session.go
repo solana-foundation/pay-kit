@@ -203,9 +203,14 @@ func (s *ActiveSession) RecordVoucher(voucher intents.SignedVoucher) error {
 // settled when that is ahead of the current watermark and never regresses, so
 // retrying a delivery the server already accepted (lost-response case) catches
 // the client up without recording the freshly prepared higher voucher.
+//
+// When it advances, the request nonce also advances by one, mirroring the
+// RecordVoucher accounting for the delivery the server settled, so the next
+// prepared voucher does not reuse the already-settled nonce.
 func (s *ActiveSession) ReconcileSettled(settled uint64) {
 	if settled > s.cumulative {
 		s.cumulative = settled
+		s.nonce++
 	}
 }
 
