@@ -181,9 +181,14 @@ impl ActiveSession {
     /// it is ahead of the current watermark and never regresses, so retrying a
     /// delivery the server already accepted (lost-response case) catches the
     /// client up without recording the freshly prepared higher voucher.
+    ///
+    /// When it advances, the request nonce also advances by one, mirroring the
+    /// `record_voucher` accounting for the delivery the server settled, so the
+    /// next prepared voucher does not reuse the already-settled nonce.
     pub fn reconcile_settled(&mut self, settled: u64) {
         if settled > self.cumulative {
             self.cumulative = settled;
+            self.nonce += 1;
         }
     }
 
@@ -427,13 +432,31 @@ mod tests {
     #[test]
     fn reconcile_settled_advances_but_never_regresses() {
         let mut s = make_session();
+        // Advancing the watermark also bumps the request nonce.
         s.reconcile_settled(100);
         assert_eq!(s.cumulative, 100);
-        // A lower settled value (e.g. a stale replayed receipt) does not regress.
+        assert_eq!(s.nonce, 1);
+        // A lower settled value (e.g. a stale replayed receipt) does not regress
+        // and does not touch the nonce.
         s.reconcile_settled(40);
         assert_eq!(s.cumulative, 100);
+        assert_eq!(s.nonce, 1);
         s.reconcile_settled(250);
         assert_eq!(s.cumulative, 250);
+        assert_eq!(s.nonce, 2);
+    }
+
+    #[tokio::test]
+    async fn delivery_after_replay_does_not_reuse_settled_nonce() {
+        // After a lost-response replay reconciles to the settled cumulative, the
+        // next prepared voucher must carry a fresh nonce, not the one already
+        // settled by the server.
+        let mut s = make_session();
+        let replayed = s.prepare_increment(100).await.unwrap();
+        let replayed_nonce = replayed.data.nonce.unwrap();
+        s.reconcile_settled(100); // server settled the lost delivery at 100
+        let next = s.prepare_increment(50).await.unwrap();
+        assert!(next.data.nonce.unwrap() > replayed_nonce);
     }
 
     #[tokio::test]
