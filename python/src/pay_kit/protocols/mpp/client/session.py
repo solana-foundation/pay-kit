@@ -253,10 +253,13 @@ class ActiveSession:
         ``settled`` when it is ahead of the current value and never regresses,
         so retrying a delivery the server already accepted (lost-response case)
         catches the client up without recording the freshly prepared higher
-        voucher.
+        voucher. When it advances, the request nonce also advances by one,
+        mirroring ``record_voucher`` for the delivery the server settled, so the
+        next prepared voucher does not reuse the already-settled nonce.
         """
         if settled > self._cumulative:
             self._cumulative = settled
+            self._nonce += 1
 
     def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the
