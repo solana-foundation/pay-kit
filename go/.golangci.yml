@@ -30,6 +30,12 @@ linters:
   exclusions:
     paths:
       - examples/simple-server
+      # Codama-generated on-chain program clients (regenerated via
+      # `pnpm run payment-channels:go` in skills/.../codegen). These files carry
+      # a "DO NOT EDIT" header, so lint findings can't be fixed in place; the
+      # generator's output is byte-for-byte reproducible and matches the
+      # gagliardetto/solana-go generated-client conventions.
+      - protocols/programs/.*/.*\.go
     rules:
       - path: _test\.go
         linters:

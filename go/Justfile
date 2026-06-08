@@ -19,11 +19,22 @@ test:
 fmt:
     gofmt -s -w .
 
-# Lint pipeline: gofmt-check + go vet + staticcheck
+# Lint pipeline: gofmt-check + go vet + staticcheck.
+# Codama-generated program clients under protocols/programs/<name>/ carry a
+# "DO NOT EDIT" header and follow gagliardetto/solana-go's generated-client
+# idioms (unkeyed VariantType literals, embedded-field selectors), which trip
+# `go vet -composites` and staticcheck QF1008. They are byte-for-byte
+# reproducible from idl/<name>.json, so we exclude the generated dirs from the
+# authored-code lint gates — mirroring the golangci-lint path exclusion and the
+# Rust crate's pure-passthrough src/generated/ treatment.
 lint:
     test -z "$(gofmt -s -l . | tee /dev/stderr)"
-    go vet ./...
-    go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+    # -composites is disabled module-wide because the generated clients (and any
+    # package importing them, e.g. the parity guard) surface gagliardetto's
+    # unkeyed VariantType literals; golangci-lint's govet (the CI gate) already
+    # runs with composites off, so this keeps the local justfile vet aligned.
+    go vet -composites=false $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
+    go run honnef.co/go/tools/cmd/staticcheck@latest $(go list ./... | grep -v '/protocols/programs/paymentchannels$')
 
 # Run module-deps audit (govulncheck)
 audit:
