@@ -224,12 +224,18 @@ class ActiveSession:
     def record_voucher(self, voucher: SignedVoucher) -> None:
         """Advance the local watermark to a prepared voucher the server accepted.
 
-        The voucher cumulative MUST strictly exceed the current watermark; the
-        nonce advances to the larger of the current nonce + 1 and the voucher
-        nonce. Mirrors rust ``ActiveSession::record_voucher``.
+        The voucher's channel MUST match this session and its cumulative MUST
+        strictly exceed the current watermark; the nonce advances to the larger
+        of the current nonce + 1 and the voucher nonce. Mirrors rust
+        ``ActiveSession::record_voucher``.
         """
+        if voucher.data.channel_id != self.channel_id_string:
+            raise ValueError(
+                f"voucher channel {voucher.data.channel_id} does not match "
+                f"active session {self.channel_id_string}"
+            )
         try:
-            cumulative = int(voucher.data.cumulative, 10)
+            cumulative = int(str(voucher.data.cumulative), 10)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
         if cumulative <= self._cumulative:
@@ -239,6 +245,18 @@ class ActiveSession:
         if voucher.data.nonce is not None and voucher.data.nonce > candidate:
             candidate = voucher.data.nonce
         self._nonce = candidate
+
+    def reconcile_settled(self, settled: int) -> None:
+        """Reconcile the local watermark to a server-settled cumulative.
+
+        Used for a ``replayed`` commit receipt: advances the watermark to
+        ``settled`` when it is ahead of the current value and never regresses,
+        so retrying a delivery the server already accepted (lost-response case)
+        catches the client up without recording the freshly prepared higher
+        voucher.
+        """
+        if settled > self._cumulative:
+            self._cumulative = settled
 
     def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the

@@ -30,27 +30,38 @@ from pay_kit.protocols.mpp.intents.session import (
 class _RecordingTransport:
     """In-process commit transport that records payloads and echoes a receipt.
 
-    ``replay_delivery_ids`` returns a ``replayed`` receipt (server already saw
-    the delivery) so the consumer's idempotency handling can be exercised.
+    Models server-side dedupe by deliveryId: re-committing a deliveryId already
+    seen returns a ``replayed`` receipt pinned to the cumulative first settled
+    for it, so the consumer's idempotency handling can be exercised.
     """
 
-    def __init__(self, fail: bool = False, replay_delivery_ids: set[str] | None = None) -> None:
+    def __init__(self, fail: bool = False) -> None:
         self.commits: list[CommitPayload] = []
         self.fail = fail
-        self.replay_delivery_ids = replay_delivery_ids or set()
+        # The cumulative first settled per deliveryId.
+        self._settled: dict[str, str] = {}
 
     def commit(self, directive: MeteringDirective, payload: CommitPayload) -> CommitReceipt:
         if self.fail:
             raise ValueError("commit failed")
+        prior = self._settled.get(directive.delivery_id)
+        if prior is not None:
+            return CommitReceipt(
+                delivery_id=directive.delivery_id,
+                session_id=directive.session_id,
+                amount=directive.amount,
+                cumulative=prior,
+                status="replayed",
+            )
         cumulative = payload.voucher.data.cumulative
+        self._settled[directive.delivery_id] = cumulative
         self.commits.append(payload)
-        status = "replayed" if directive.delivery_id in self.replay_delivery_ids else "committed"
         return CommitReceipt(
             delivery_id=directive.delivery_id,
             session_id=directive.session_id,
             amount=directive.amount,
             cumulative=cumulative,
-            status=status,
+            status="committed",
         )
 
 
@@ -170,24 +181,83 @@ def test_failed_commit_does_not_advance_local_watermark() -> None:
     assert consumer.session.cumulative == 250
 
 
-def test_replayed_receipt_is_honored_and_watermark_not_double_advanced() -> None:
-    # Server reports the second, fresh-id delivery as replayed; the consumer
-    # honors it and advances the watermark exactly once for that delivery.
-    transport = _RecordingTransport(replay_delivery_ids={"d2"})
-    consumer = _consumer(transport)
+class _ReplayTransport:
+    """Transport that reports every commit as already settled at a fixed
+    cumulative, regardless of the voucher it is sent."""
 
-    first = _directive(consumer.session.channel_id_string, 100, delivery_id="d1")
-    r1 = consumer.commit_directive(first)
+    def __init__(self, settled: str) -> None:
+        self.settled = settled
+
+    def commit(self, directive: MeteringDirective, _payload: CommitPayload) -> CommitReceipt:
+        return CommitReceipt(
+            delivery_id=directive.delivery_id,
+            session_id=directive.session_id,
+            amount=directive.amount,
+            cumulative=self.settled,
+            status="replayed",
+        )
+
+
+def test_duplicate_delivery_dedup_keeps_watermark_at_settled() -> None:
+    # Re-committing the same deliveryId returns a replayed receipt pinned to the
+    # originally settled cumulative; the watermark does not advance past it and
+    # the server records exactly one commit.
+    transport = _RecordingTransport()
+    consumer = _consumer(transport)
+    d = _directive(consumer.session.channel_id_string, 100, delivery_id="d1")
+
+    r1 = consumer.commit_directive(d)
     assert r1.status == "committed"
     assert consumer.session.cumulative == 100
 
-    second = _directive(consumer.session.channel_id_string, 40, delivery_id="d2")
-    r2 = consumer.commit_directive(second)
+    r2 = consumer.commit_directive(d)
     assert r2.status == "replayed"
-    assert consumer.session.cumulative == 140
-    # A re-ack of the SAME directive object is rejected locally: prepare_increment
-    # advances past the watermark, but a stale duplicate cumulative cannot regress.
-    assert len(transport.commits) == 2
+    assert r2.cumulative == "100"
+    assert consumer.session.cumulative == 100
+    assert len(transport.commits) == 1
+
+
+def test_replayed_receipt_reconciles_watermark_when_behind() -> None:
+    # Lost-response case: the server already settled this delivery at 100 but the
+    # client never recorded it (watermark still 0). On replay the client must
+    # reconcile to the server-settled 100, not jump to the prepared 250 and not
+    # stay at 0 (which would make the next delivery non-monotonic).
+    consumer = _consumer(_ReplayTransport(settled="100"))
+    receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
+    assert receipt.status == "replayed"
+    assert consumer.session.cumulative == 100
+
+
+class _StatusTransport:
+    """Transport that returns a fixed (possibly unknown) status."""
+
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+    def commit(self, directive: MeteringDirective, payload: CommitPayload) -> CommitReceipt:
+        return CommitReceipt(
+            delivery_id=directive.delivery_id,
+            session_id=directive.session_id,
+            amount=directive.amount,
+            cumulative=payload.voucher.data.cumulative,
+            status=self.status,  # type: ignore[arg-type]
+        )
+
+
+def test_unknown_receipt_status_is_rejected_and_does_not_advance() -> None:
+    consumer = _consumer(_StatusTransport(status="bogus"))
+    with pytest.raises(ValueError, match="unexpected commit receipt status"):
+        consumer.commit_directive(_directive(consumer.session.channel_id_string, 100))
+    assert consumer.session.cumulative == 0
+
+
+def test_replayed_receipt_never_regresses_watermark() -> None:
+    # The client is already ahead at 300; a stale replay settled at 100 must not
+    # regress the local watermark.
+    consumer = _consumer(_ReplayTransport(settled="100"))
+    consumer.session.reconcile_settled(300)
+    consumer.commit_directive(_directive(consumer.session.channel_id_string, 50))
+    assert consumer.session.cumulative == 300
 
 
 def test_fresh_delivery_advances_after_prior() -> None:
