@@ -27,11 +27,13 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	solana "github.com/gagliardetto/solana-go"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -68,6 +70,7 @@ type VectorInput struct {
 	Value           json.RawMessage  `json:"value"`
 	EncodeBase64URL *EncodeBase64URL `json:"encodeBase64Url"`
 	ChallengeID     *ChallengeID     `json:"challengeId"`
+	VoucherPreimage *VoucherPreimage `json:"voucherPreimage"`
 
 	// x402-exact inputs (mirror schema.ts VectorInput x402 fields).
 	X402Offer             *X402Offer `json:"x402Offer"`
@@ -132,6 +135,14 @@ type ChallengeID struct {
 	Expires   string `json:"expires"`
 	Digest    string `json:"digest"`
 	Opaque    string `json:"opaque"`
+}
+
+// VoucherPreimage mirrors schema.ts VectorInput.voucherPreimage: the inputs to
+// the 48-byte session voucher message bytes.
+type VoucherPreimage struct {
+	ChannelID        string `json:"channelId"`
+	CumulativeAmount string `json:"cumulativeAmount"`
+	ExpiresAt        int64  `json:"expiresAt"`
 }
 
 // Transfer mirrors schema.ts TransactionShape.transfers element.
@@ -511,6 +522,29 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 		eb.Base64URL = wire.ComputeChallengeID(
 			c.SecretKey, c.Realm, c.Method, c.Intent, c.Request, c.Expires, c.Digest, c.Opaque,
 		)
+	}
+	if v := in.VoucherPreimage; v != nil {
+		// The 48-byte session voucher preimage, computed by the production SDK
+		// glue (paymentchannels.VoucherMessageBytes) so a byte mismatch is
+		// caught here cross-SDK rather than behind a live channel.
+		channel, err := solana.PublicKeyFromBase58(v.ChannelID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid voucher channelId: %w", err)
+		}
+		cumulative, err := strconv.ParseUint(v.CumulativeAmount, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid voucher cumulativeAmount: %w", err)
+		}
+		preimage, err := paymentchannels.VoucherMessageBytes(channel, cumulative, v.ExpiresAt)
+		if err != nil {
+			return nil, err
+		}
+		ints := make([]int, len(preimage))
+		for i, b := range preimage {
+			ints[i] = int(b)
+		}
+		eb.Bytes = ints
+		eb.Base64URL = wire.Base64URLEncode(preimage)
 	}
 	return eb, nil
 }

@@ -1,0 +1,41 @@
+[
+  {
+    "id": "session-voucher-preimage-frozen",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "48-byte Ed25519 voucher preimage channelId(32)||cumulative LE u64||expiresAt LE i64. Frozen cross-SDK vector (matches the rust/Go/Python unit vectors). Pins the single most load-bearing session invariant byte-for-byte.",
+    "input": {
+      "voucherPreimage": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "cumulativeAmount": "42",
+        "expiresAt": 1234
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,42,0,0,0,0,0,0,0,210,4,0,0,0,0,0,0],
+        "base64Url": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkqAAAAAAAAANIEAAAAAAAA"
+      }
+    }
+  },
+  {
+    "id": "session-voucher-preimage-large-cumulative",
+    "intent": "session",
+    "mode": "canonical-bytes",
+    "description": "Voucher preimage with a near-u64-max cumulative, asserting little-endian u64 packing has no precision loss.",
+    "input": {
+      "voucherPreimage": {
+        "channelId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "cumulativeAmount": "18446744073709551607",
+        "expiresAt": 4102444800
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "exactBytes": {
+        "bytes": [9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,247,255,255,255,255,255,255,255,0,87,134,244,0,0,0,0]
+      }
+    }
+  }
+]

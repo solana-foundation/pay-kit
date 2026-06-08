@@ -236,6 +236,17 @@ export type VectorInput = {
     opaque?: string;
   };
 
+  // canonical-bytes (session): the 48-byte Ed25519 voucher preimage
+  // `channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64`.
+  // The runner emits it as exactBytes (hex/bytes/base64Url). This pins the
+  // single most load-bearing session invariant byte-for-byte across SDKs.
+  // Mirrors the program voucher_message_bytes layout.
+  voucherPreimage?: {
+    channelId: string;
+    cumulativeAmount: string;
+    expiresAt: number;
+  };
+
   // ── x402-exact inputs ────────────────────────────────────────────────
   // build-transaction (x402): the offer the client selects + wraps into a
   // payment header. The runner emits the decoded X402EnvelopeShape.
@@ -280,7 +291,7 @@ export type VectorInput = {
 
 export type ConformanceVector = {
   id: string;
-  intent: "charge" | "x402-exact";
+  intent: "charge" | "x402-exact" | "session";
   mode: VectorMode;
   description?: string;
   input: VectorInput;
