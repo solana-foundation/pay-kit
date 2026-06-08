@@ -153,6 +153,13 @@ impl ActiveSession {
 
     /// Record a prepared voucher as accepted by the server.
     pub fn record_voucher(&mut self, voucher: &SignedVoucher) -> Result<()> {
+        if voucher.data.channel_id != self.channel_id_str() {
+            return Err(Error::Other(format!(
+                "voucher channel {} does not match active session {}",
+                voucher.data.channel_id,
+                self.channel_id_str()
+            )));
+        }
         let cumulative = voucher
             .data
             .cumulative
@@ -167,6 +174,17 @@ impl ActiveSession {
         self.cumulative = cumulative;
         self.nonce = self.nonce.max(voucher.data.nonce.unwrap_or(self.nonce + 1));
         Ok(())
+    }
+
+    /// Reconcile the local watermark to a server-settled cumulative, e.g. the
+    /// `cumulative` of a `replayed` commit receipt. Advances to `settled` when
+    /// it is ahead of the current watermark and never regresses, so retrying a
+    /// delivery the server already accepted (lost-response case) catches the
+    /// client up without recording the freshly prepared higher voucher.
+    pub fn reconcile_settled(&mut self, settled: u64) {
+        if settled > self.cumulative {
+            self.cumulative = settled;
+        }
     }
 
     /// Sign a voucher adding `amount` to the current cumulative.
@@ -387,6 +405,35 @@ mod tests {
         s.record_voucher(&without_nonce).unwrap();
         assert_eq!(s.cumulative, 15);
         assert_eq!(s.nonce, 1);
+    }
+
+    #[test]
+    fn record_voucher_rejects_foreign_channel() {
+        let mut s = make_session();
+        let foreign = SignedVoucher {
+            data: VoucherData {
+                channel_id: Pubkey::new_unique().to_string(),
+                cumulative: "100".to_string(),
+                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce: Some(1),
+            },
+            signature: "sig".to_string(),
+        };
+        let err = s.record_voucher(&foreign).unwrap_err();
+        assert!(err.to_string().contains("does not match active session"));
+        assert_eq!(s.cumulative, 0);
+    }
+
+    #[test]
+    fn reconcile_settled_advances_but_never_regresses() {
+        let mut s = make_session();
+        s.reconcile_settled(100);
+        assert_eq!(s.cumulative, 100);
+        // A lower settled value (e.g. a stale replayed receipt) does not regress.
+        s.reconcile_settled(40);
+        assert_eq!(s.cumulative, 100);
+        s.reconcile_settled(250);
+        assert_eq!(s.cumulative, 250);
     }
 
     #[tokio::test]
