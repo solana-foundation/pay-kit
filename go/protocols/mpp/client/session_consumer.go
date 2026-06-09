@@ -93,6 +93,18 @@ func (c *SessionConsumer) CommitDirective(ctx context.Context, directive intents
 		if perr != nil {
 			return intents.CommitReceipt{}, fmt.Errorf("invalid replayed receipt cumulative: %w", perr)
 		}
+		// The server is untrusted: clamp to the voucher just prepared in this
+		// call. An honest lost-response replay settles at or below it (the
+		// session is single-threaded), so a server reporting a higher cumulative
+		// cannot push the watermark past what the client actually signed —
+		// otherwise the next voucher would over-authorize up to the deposit.
+		prepared, perr := parseCumulative(voucher.Data.Cumulative)
+		if perr != nil {
+			return intents.CommitReceipt{}, fmt.Errorf("invalid prepared voucher cumulative: %w", perr)
+		}
+		if settled > prepared {
+			settled = prepared
+		}
 		c.session.ReconcileSettled(settled)
 	case intents.CommitStatusCommitted:
 		if err := c.session.RecordVoucher(voucher); err != nil {

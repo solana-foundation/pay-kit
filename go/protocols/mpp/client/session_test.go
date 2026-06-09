@@ -314,19 +314,19 @@ func TestSignIncrementOverflowRejected(t *testing.T) {
 
 func TestNonceIncrementsPerVoucher(t *testing.T) {
 	s, _ := newSession(t)
-	v1, err := s.SignIncrement(10)
+	first, err := s.SignIncrement(10)
 	if err != nil {
 		t.Fatalf("sign increment 1: %v", err)
 	}
-	v2, err := s.SignIncrement(10)
+	second, err := s.SignIncrement(10)
 	if err != nil {
 		t.Fatalf("sign increment 2: %v", err)
 	}
-	if v1.Data.Nonce == nil || *v1.Data.Nonce != 1 {
-		t.Fatalf("v1 nonce = %v, want 1", v1.Data.Nonce)
+	if first.Data.Nonce == nil || *first.Data.Nonce != 1 {
+		t.Fatalf("first voucher nonce = %v, want 1", first.Data.Nonce)
 	}
-	if v2.Data.Nonce == nil || *v2.Data.Nonce != 2 {
-		t.Fatalf("v2 nonce = %v, want 2", v2.Data.Nonce)
+	if second.Data.Nonce == nil || *second.Data.Nonce != 2 {
+		t.Fatalf("second voucher nonce = %v, want 2", second.Data.Nonce)
 	}
 }
 

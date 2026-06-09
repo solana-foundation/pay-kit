@@ -252,8 +252,9 @@ func BuildTopUpInstruction(params TopUpParams) (solana.Instruction, error) {
 //     so its Accounts() accessor type-asserts to a pointer-receiver interface
 //     and panics; passing the builder's own GetAccounts() avoids that path.
 //
-// The result's ProgramID() is always GuoKrza... regardless of any package-level
-// state.
+// The result's ProgramID() is the current package program id (the production
+// ProgramID by default, or whatever SetProgramID last set for a non-mainnet
+// cluster).
 func materialize(impl ag_binary.EncoderDecoder, accounts []*solana.AccountMeta) (solana.Instruction, error) {
 	buf := new(bytes.Buffer)
 	if err := ag_binary.NewBorshEncoder(buf).Encode(impl); err != nil {

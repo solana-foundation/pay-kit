@@ -303,6 +303,23 @@ func TestConsumerReplayNeverRegressesWatermark(t *testing.T) {
 	}
 }
 
+func TestConsumerReplayClampedToPreparedVoucher(t *testing.T) {
+	// A malicious/buggy server cannot push the watermark past the voucher the
+	// client just signed: it reports a replay settled far above the prepared
+	// cumulative (250), but the watermark must clamp to the prepared value, not
+	// the inflated server value, so the next voucher does not over-authorize.
+	session, _ := newSession(t)
+	consumer := NewSessionConsumer(session, replayTransport{settled: "1000000"})
+	sid := consumer.Session().ChannelIDString()
+
+	if _, err := consumer.CommitDirective(context.Background(), directive(sid, "250")); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := consumer.Session().Cumulative(); got != 250 {
+		t.Fatalf("watermark not clamped to prepared voucher: got %d, want 250", got)
+	}
+}
+
 // statusTransport returns a fixed (possibly unknown) status, to exercise the
 // consumer's rejection of malformed receipts.
 type statusTransport struct{ status intents.CommitStatus }

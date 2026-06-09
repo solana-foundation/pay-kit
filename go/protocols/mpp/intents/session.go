@@ -893,6 +893,12 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 		v.Cumulative = *wire.CumulativeAmount
 	case wire.CumulativeAlias != nil:
 		v.Cumulative = *wire.CumulativeAlias
+	default:
+		// rust models cumulative as a required (non-Option) String, so a voucher
+		// without "cumulativeAmount"/"cumulative" is malformed; reject it here
+		// rather than leave Cumulative empty and fail with a cryptic parse error
+		// later when the voucher is signed or recorded.
+		return fmt.Errorf("voucher data missing cumulativeAmount")
 	}
 	return nil
 }
