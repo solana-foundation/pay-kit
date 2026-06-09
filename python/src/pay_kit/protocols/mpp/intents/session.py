@@ -202,11 +202,17 @@ def _salt_from_wire(value: Any) -> int | None:
         return None
     if isinstance(value, bool):
         raise ValueError("salt must be a decimal string or unsigned 64-bit integer")
+    # rust deserializes salt as u64 and rejects negative / out-of-range values;
+    # match that here rather than letting a malformed salt fail later inside
+    # struct.pack. Accept an int directly (no float precision loss) or a strict
+    # unsigned-decimal string.
     if isinstance(value, int):
+        if not 0 <= value <= _U64_MAX:
+            raise ValueError(f"salt out of u64 range: {value}")
         return value
     if isinstance(value, str):
         try:
-            return int(value, 10)
+            return _parse_base_units(value)
         except ValueError as exc:
             raise ValueError(f"salt must be a decimal string: {value}") from exc
     raise ValueError("salt must be a decimal string or unsigned 64-bit integer")
