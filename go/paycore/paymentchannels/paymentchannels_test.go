@@ -34,6 +34,39 @@ func TestProgramIDIsProduction(t *testing.T) {
 	}
 }
 
+func TestSetProgramIDOverridesDerivation(t *testing.T) {
+	// SetProgramID lets a consumer target a non-mainnet (devnet/localnet)
+	// deployment at a different address; it must move PDA derivation and pin the
+	// generated package. Restore the production default for other tests.
+	t.Cleanup(func() { SetProgramID(solana.MustPublicKeyFromBase58(ProgramID)) })
+
+	custom := solana.NewWallet().PublicKey()
+	SetProgramID(custom)
+	if !ProgramPubkey().Equals(custom) {
+		t.Fatalf("ProgramPubkey not overridden: %s", ProgramPubkey())
+	}
+	if !generated.ProgramID.Equals(custom) {
+		t.Fatalf("generated ProgramID not pinned to override: %s", generated.ProgramID)
+	}
+
+	payer := solana.NewWallet().PublicKey()
+	payee := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	signer := solana.NewWallet().PublicKey()
+	overridden, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	if err != nil {
+		t.Fatalf("FindChannelPDA: %v", err)
+	}
+	SetProgramID(solana.MustPublicKeyFromBase58(ProgramID))
+	production, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	if err != nil {
+		t.Fatalf("FindChannelPDA: %v", err)
+	}
+	if overridden.Equals(production) {
+		t.Fatal("channel PDA did not change with the program id override")
+	}
+}
+
 func TestVoucherMessageBytesLayout(t *testing.T) {
 	const cumulative uint64 = 42
 	const expiresAt int64 = 1234

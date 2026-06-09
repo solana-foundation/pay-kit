@@ -54,6 +54,16 @@ func ProgramPubkey() solana.PublicKey {
 	return programPubkey
 }
 
+// SetProgramID overrides the program id used for PDA derivation and instruction
+// emission, for SDK consumers targeting a non-mainnet deployment (a devnet or
+// localnet program is deployed at a different address). It also pins the
+// generated package so Instruction.ProgramID() agrees. The default is the
+// canonical mainnet ProgramID; callers on mainnet never need this.
+func SetProgramID(id solana.PublicKey) {
+	programPubkey = id
+	generated.SetProgramID(id)
+}
+
 // Distribution is a single payout recipient and its basis-point share.
 // Mirrors the Distribution struct in
 // rust/crates/mpp/src/program/payment_channels.rs.
