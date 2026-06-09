@@ -96,12 +96,25 @@ impl<T: CommitTransport> SessionConsumer<T> {
         // the server when the original response was lost, so the next delivery
         // signs a non-monotonic cumulative. Reconcile to the receipt cumulative
         // on replay (never regressing); record the voucher on a fresh commit.
+        //
+        // The server is untrusted: clamp the reported cumulative to the voucher
+        // just prepared in this call. An honest lost-response replay settles at
+        // or below it (single-threaded session), so a server reporting a higher
+        // cumulative cannot push the watermark past what the client actually
+        // signed — otherwise the next voucher would over-authorize up to the
+        // on-chain deposit.
         if receipt.status == CommitStatus::Replayed {
             let settled = receipt
                 .cumulative
                 .parse::<u64>()
                 .map_err(|_| Error::Other("invalid replayed receipt cumulative".to_string()))?;
-            self.session.reconcile_settled(settled);
+            let prepared = payload
+                .voucher
+                .data
+                .cumulative
+                .parse::<u64>()
+                .map_err(|_| Error::Other("invalid prepared voucher cumulative".to_string()))?;
+            self.session.reconcile_settled(settled.min(prepared));
         } else {
             self.session.record_voucher(&payload.voucher)?;
         }
@@ -395,5 +408,25 @@ mod tests {
         let receipt = consumer.commit_directive(&directive).await.unwrap();
         assert_eq!(receipt.status, CommitStatus::Replayed);
         assert_eq!(consumer.session().cumulative, 300);
+    }
+
+    #[tokio::test]
+    async fn replayed_receipt_cumulative_is_clamped_to_prepared_voucher() {
+        // A malicious/buggy server cannot push the watermark past the voucher
+        // the client just signed: it reports a replay settled far above the
+        // prepared cumulative, but the watermark must clamp to the prepared
+        // value (250), not the inflated server value, so the next voucher does
+        // not over-authorize.
+        let channel_id = Pubkey::new_unique();
+        let session = ActiveSession::new(channel_id, signer());
+        let transport = ReplayTransport {
+            settled_cumulative: "1000000".to_string(),
+        };
+        let mut consumer = SessionConsumer::new(session, transport);
+        let directive = directive(consumer.session().channel_id_str(), 250);
+
+        let receipt = consumer.commit_directive(&directive).await.unwrap();
+        assert_eq!(receipt.status, CommitStatus::Replayed);
+        assert_eq!(consumer.session().cumulative, 250);
     }
 }
