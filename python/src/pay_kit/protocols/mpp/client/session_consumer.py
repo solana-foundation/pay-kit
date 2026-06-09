@@ -20,6 +20,7 @@ from pay_kit.protocols.mpp.intents.session import (
     CommitReceipt,
     MeteredEnvelope,
     MeteringDirective,
+    _parse_base_units,
 )
 
 __all__ = [
@@ -109,11 +110,15 @@ class SessionConsumer:
 
         receipt = self._transport.commit(directive, payload)
         if receipt.status == "replayed":
-            try:
-                settled = int(str(receipt.cumulative), 10)
-            except ValueError as exc:
-                raise ValueError("invalid replayed receipt cumulative") from exc
-            self._session.reconcile_settled(settled)
+            settled = receipt.cumulative_base_units()
+            # The server is untrusted: clamp to the voucher just prepared in this
+            # call. An honest lost-response replay settles at or below it (the
+            # session is single-threaded), so a server reporting a higher
+            # cumulative cannot push the watermark past what the client actually
+            # signed - otherwise the next voucher would over-authorize up to the
+            # on-chain deposit.
+            prepared = _parse_base_units(payload.voucher.data.cumulative)
+            self._session.reconcile_settled(min(settled, prepared))
         elif receipt.status == "committed":
             self._session.record_voucher(payload.voucher)
         else:

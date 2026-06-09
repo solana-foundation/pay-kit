@@ -229,6 +229,17 @@ def test_replayed_receipt_reconciles_watermark_when_behind() -> None:
     assert consumer.session.cumulative == 100
 
 
+def test_replayed_receipt_cumulative_is_clamped_to_prepared_voucher() -> None:
+    # A malicious/buggy server cannot push the watermark past the voucher the
+    # client just signed: it reports a replay settled far above the prepared
+    # cumulative (250), but the watermark must clamp to the prepared value, not
+    # the inflated server value, so the next voucher does not over-authorize.
+    consumer = _consumer(_ReplayTransport(settled="1000000"))
+    receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
+    assert receipt.status == "replayed"
+    assert consumer.session.cumulative == 250
+
+
 class _StatusTransport:
     """Transport that returns a fixed (possibly unknown) status."""
 

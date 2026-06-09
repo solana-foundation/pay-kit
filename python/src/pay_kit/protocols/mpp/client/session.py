@@ -42,6 +42,7 @@ from pay_kit.protocols.mpp.intents.session import (
     TopUpPayload,
     VoucherData,
     VoucherPayload,
+    _parse_base_units,
 )
 
 __all__ = [
@@ -234,7 +235,7 @@ class ActiveSession:
                 f"voucher channel {voucher.data.channel_id} does not match active session {self.channel_id_string}"
             )
         try:
-            cumulative = int(str(voucher.data.cumulative), 10)
+            cumulative = _parse_base_units(voucher.data.cumulative)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
         if cumulative <= self._cumulative:
