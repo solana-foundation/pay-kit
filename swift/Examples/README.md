@@ -2,10 +2,12 @@
 
 Sample clients exercising the `SolanaPayKit` package.
 
-- `ChargeClient/` — minimal CLI that performs a `mpp/charge/pull` against
-  a 402-protected endpoint. Mirrors `rust/examples/payment_link_server.rs`
-  on the client side.
-
-Planned: `iOSDemo/` — SwiftUI app targeting the Solana Seeker dev
-kit, end-to-end charge intent flow against `https://402.surfnet.dev`.
-Tracked as a separate deliverable to keep the SDK PR focused.
+- [`PayKitClient/`](PayKitClient) — headless CLI driver. Picks the
+  protocol via a positional arg (`mpp` or `x402`), reads the signer
+  seed from `PAYKIT_CLIENT_SECRET_KEY_HEX`, replays a 402-gated request
+  once with the payment header attached. Source-only — add an
+  executable target to `Package.swift` locally to run it.
+- [`PayKitDemo/`](PayKitDemo) — SwiftUI iOS app that drives the SDK
+  end-to-end against `pay server demo`. Keychain-backed signer, in-app
+  Surfpool topup, carousel of demo gateway endpoints, append-only
+  result log. See its README for the run recipe.

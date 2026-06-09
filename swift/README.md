@@ -126,20 +126,21 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 
 ## Examples
 
-The `Examples/` directory hosts sample clients (a Solana Seeker demo
-app is planned):
+The `Examples/` directory hosts sample clients:
 
-- [`ChargeClient/`](Examples/ChargeClient) — headless MPP charge client.
-- [`X402Client/`](Examples/X402Client) — headless x402 exact client; probes
-  a gated resource, builds the `Payment-Signature` header through a signer,
-  and replays once.
+- [`PayKitClient/`](Examples/PayKitClient) — headless CLI that drives
+  MPP or x402 against any 402-gated URL. `swift run PayKitClient mpp <url>`
+  or `... x402 <url>`.
+- [`PayKitDemo/`](Examples/PayKitDemo) — SwiftUI iOS app that wires the
+  SDK into an end-to-end UX: Keychain-backed signer, Surfpool topup, a
+  carousel of demo gateway endpoints, and an append-only result log.
 
-Both are source-only so the default `swift build` stays library-only; add an
-executable target to `Package.swift` locally to run them. For an end-to-end
-exercise, run the interop adapter at
+The CLI is source-only so the default `swift build` stays library-only;
+add an executable target to `Package.swift` locally to run it. For
+interop coverage, run the interop adapter at
 [`harness/swift-client/`](../harness/swift-client) (MPP) or
-[`harness/swift-x402-client/`](../harness/swift-x402-client) (x402) against
-any registered server.
+[`harness/swift-x402-client/`](../harness/swift-x402-client) (x402)
+against any registered server.
 
 ### Drive a TypeScript server
 
@@ -219,17 +220,17 @@ swift/
 ├── Sources/SolanaPayKit/
 │   ├── SolanaPayKit.swift     # PayKit namespace: HttpClient, DataRequest, interceptor
 │   ├── PayCore/               # Solana primitives + RPC (vendored, no umbrella dep)
-│   └── protocols/
-│       ├── mpp/
-│       │   ├── client/
+│   └── Protocols/
+│       ├── Mpp/
+│       │   ├── Client/
 │       │   │   ├── Charge.swift      # MPP charge intent wire-signing pull path
 │       │   │   └── HTTPClient.swift  # ChargeInterceptor (402 -> Authorization: Payment)
-│       │   └── core/                 # Payment WWW-Authenticate / Authorization, models
-│       └── x402/
-│           ├── client/exact/
+│       │   └── Core/                 # Payment WWW-Authenticate / Authorization, models
+│       └── X402/
+│           ├── Client/Exact/
 │           │   ├── Payment.swift     # x402 challenge parse + payment building
 │           │   └── Transport.swift   # X402Interceptor (402 -> Payment-Signature)
-│           └── exact/Types.swift     # x402 wire-format Codable types
+│           └── Exact/Types.swift     # x402 wire-format Codable types
 ├── Tests/SolanaPayKitTests/   # swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```
