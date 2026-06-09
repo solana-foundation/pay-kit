@@ -231,8 +231,7 @@ class ActiveSession:
         """
         if voucher.data.channel_id != self.channel_id_string:
             raise ValueError(
-                f"voucher channel {voucher.data.channel_id} does not match "
-                f"active session {self.channel_id_string}"
+                f"voucher channel {voucher.data.channel_id} does not match active session {self.channel_id_string}"
             )
         try:
             cumulative = int(str(voucher.data.cumulative), 10)
