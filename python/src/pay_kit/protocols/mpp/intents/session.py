@@ -68,6 +68,7 @@ def _parse_base_units(raw: object) -> int:
         raise ValueError(f"base-unit amount {raw!r} exceeds u64 range")
     return value
 
+
 # On-chain funding mechanism for a session. Advertised by the server in
 # ``SessionRequest.modes``; the client picks the mode it will use in its open
 # action. Mirrors rust SessionMode (rename_all="camelCase").

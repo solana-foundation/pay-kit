@@ -17,7 +17,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from pay_kit.protocols.mpp.client.session import ActiveSession
-from pay_kit.protocols.mpp.client.session_consumer import SessionConsumer
+from pay_kit.protocols.mpp.client.session_consumer import CommitTransport, SessionConsumer
 from pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     CommitPayload,
@@ -73,7 +73,7 @@ def _channel() -> Pubkey:
     return Pubkey.from_string("11111111111111111111111111111112")
 
 
-def _consumer(transport: _RecordingTransport) -> SessionConsumer:
+def _consumer(transport: CommitTransport) -> SessionConsumer:
     return SessionConsumer(ActiveSession(_channel(), _signer()), transport)
 
 
@@ -188,7 +188,8 @@ class _ReplayTransport:
     def __init__(self, settled: str) -> None:
         self.settled = settled
 
-    def commit(self, directive: MeteringDirective, _payload: CommitPayload) -> CommitReceipt:
+    def commit(self, directive: MeteringDirective, payload: CommitPayload) -> CommitReceipt:
+        del payload  # always reports the fixed settled cumulative, ignores the voucher
         return CommitReceipt(
             delivery_id=directive.delivery_id,
             session_id=directive.session_id,
