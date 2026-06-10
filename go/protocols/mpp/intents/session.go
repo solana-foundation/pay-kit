@@ -8,12 +8,13 @@ package intents
 // rust/crates/mpp/src/protocol/intents/session.rs.
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"strconv"
 
-	"github.com/mr-tron/base58"
+	"github.com/gagliardetto/solana-go"
+
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 )
 
 // DefaultSessionExpiresAt is the default session voucher/directive expiry:
@@ -910,20 +911,15 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 // Mirrors rust VoucherData::message_bytes (which delegates to
 // payment_channels::voucher_message_bytes).
 func (v VoucherData) MessageBytes() ([]byte, error) {
-	channelID, err := base58.Decode(v.ChannelID)
+	channelID, err := solana.PublicKeyFromBase58(v.ChannelID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid channelId %q: %w", v.ChannelID, err)
-	}
-	if len(channelID) != 32 {
-		return nil, fmt.Errorf("channelId must be 32 bytes, got %d", len(channelID))
 	}
 	cumulative, err := strconv.ParseUint(v.Cumulative, 10, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid voucher cumulative")
 	}
-	out := make([]byte, 48)
-	copy(out[:32], channelID)
-	binary.LittleEndian.PutUint64(out[32:40], cumulative)
-	binary.LittleEndian.PutUint64(out[40:48], uint64(v.ExpiresAt))
-	return out, nil
+	// Delegate to the canonical packer so the 48-byte layout has a single
+	// source of truth, mirroring rust VoucherData::message_bytes.
+	return paymentchannels.VoucherMessageBytes(channelID, cumulative, v.ExpiresAt)
 }
