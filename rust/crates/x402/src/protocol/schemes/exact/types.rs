@@ -233,9 +233,18 @@ pub struct PaymentRequirements {
 
 impl PaymentRequirements {
     /// Canonical v2 accepted object for the selected SVM exact requirement.
+    ///
+    /// When a v2 challenge was parsed, the original `accepted` block is echoed
+    /// back to preserve any non-spec fields the server may rely on, but
+    /// canonical fields required by the x402 v2 `exact` spec are filled in if
+    /// the server omitted them, and bare network slugs are normalized to
+    /// CAIP-2. This defends against resource servers (e.g. venice.ai as of
+    /// 2026-06) that emit 402 challenges missing `scheme`, `maxTimeoutSeconds`,
+    /// or using bare `"solana"` instead of CAIP-2 — verbatim-echoing those
+    /// would produce a PaymentPayload the facilitator rejects.
     pub fn to_accepted_value(&self) -> serde_json::Value {
         if let Some(accepted) = &self.accepted {
-            return accepted.clone();
+            return self.patch_echoed_accepted(accepted);
         }
 
         serde_json::json!({
@@ -247,6 +256,31 @@ impl PaymentRequirements {
             "maxTimeoutSeconds": self.max_age.unwrap_or(300),
             "extra": self.canonical_extra_value(),
         })
+    }
+
+    /// Fill canonical fields the server omitted, without overwriting any
+    /// value it did provide. Non-spec keys (e.g. `protocol`, `version`) are
+    /// preserved for forward-compat with servers that depend on them.
+    fn patch_echoed_accepted(&self, accepted: &serde_json::Value) -> serde_json::Value {
+        let Some(obj) = accepted.as_object() else {
+            return accepted.clone();
+        };
+        let mut obj = obj.clone();
+
+        obj.entry("scheme".to_string())
+            .or_insert_with(|| serde_json::Value::String(EXACT_SCHEME.to_string()));
+        obj.entry("maxTimeoutSeconds".to_string())
+            .or_insert_with(|| serde_json::Value::from(self.max_age.unwrap_or(300)));
+
+        // Normalize bare cluster slugs (e.g. "solana") to CAIP-2.
+        if let Some(net) = obj.get("network").and_then(serde_json::Value::as_str) {
+            if !net.contains(':') {
+                let canonical = caip2_network_for_cluster(net).to_string();
+                obj.insert("network".to_string(), serde_json::Value::String(canonical));
+            }
+        }
+
+        serde_json::Value::Object(obj)
     }
 
     /// Canonical v2 resource object associated with this requirement.
@@ -724,6 +758,128 @@ mod tests {
             Some("mainnet-beta")
         );
         assert_eq!(cluster_for_caip2_network("foo:bar"), None);
+    }
+
+    /// Helper for the loose-challenge tests below: build a `PaymentRequirements`
+    /// that mirrors what `parse_x402_challenge` would produce from an inbound
+    /// 402 body, with `accepted` set to the verbatim raw block.
+    fn requirements_with_echoed_accepted(accepted: serde_json::Value) -> PaymentRequirements {
+        PaymentRequirements {
+            network: SOLANA_MAINNET.to_string(),
+            cluster: Some("mainnet-beta".to_string()),
+            recipient: "8qUL23aSj7mDWdoLMXGHFvnVCT9wd7jXcysiekroADEL".to_string(),
+            amount: "5000000".to_string(),
+            currency: mints::USDC_MAINNET.to_string(),
+            decimals: None,
+            token_program: None,
+            resource: String::new(),
+            description: None,
+            max_age: None,
+            recent_blockhash: None,
+            fee_payer: Some(true),
+            fee_payer_key: Some("BFK9TLC3edb13K6v4YyH3DwPb5DSUpkWvb7XnqCL9b4F".to_string()),
+            extra: None,
+            accepted: Some(accepted),
+            resource_info: None,
+        }
+    }
+
+    /// Regression for the venice.ai-style 402 challenge (observed 2026-06):
+    /// missing `scheme`, missing `maxTimeoutSeconds`, bare `"solana"` network,
+    /// and non-spec `protocol`/`version` keys. The patched echo must inject
+    /// the canonical fields and CAIP-2-ify the network while preserving any
+    /// extras the server sent.
+    #[test]
+    fn to_accepted_value_patches_loose_solana_challenge() {
+        let loose = serde_json::json!({
+            "protocol": "x402",
+            "version": 2,
+            "network": "solana",
+            "asset": mints::USDC_MAINNET,
+            "amount": "5000000",
+            "payTo": "8qUL23aSj7mDWdoLMXGHFvnVCT9wd7jXcysiekroADEL",
+            "extra": {
+                "feePayer": "BFK9TLC3edb13K6v4YyH3DwPb5DSUpkWvb7XnqCL9b4F",
+                "name": "USD Coin",
+                "version": "2"
+            }
+        });
+        let req = requirements_with_echoed_accepted(loose);
+
+        let patched = req.to_accepted_value();
+        let obj = patched.as_object().expect("patched accepted is an object");
+
+        assert_eq!(
+            obj.get("scheme").and_then(|v| v.as_str()),
+            Some(EXACT_SCHEME),
+            "patch must inject `scheme: \"exact\"` when the server omits it — \
+             x402 v2 `exact` facilitators reject PaymentPayloads without it",
+        );
+        assert_eq!(
+            obj.get("maxTimeoutSeconds").and_then(|v| v.as_u64()),
+            Some(300),
+            "patch must inject a default `maxTimeoutSeconds` when the server omits it",
+        );
+        assert_eq!(
+            obj.get("network").and_then(|v| v.as_str()),
+            Some(SOLANA_MAINNET),
+            "bare cluster slug `\"solana\"` must be normalized to its canonical CAIP-2 \
+             identifier — facilitators key off CAIP-2",
+        );
+        // Non-spec keys the server sent should pass through untouched.
+        assert_eq!(obj.get("protocol").and_then(|v| v.as_str()), Some("x402"));
+        assert_eq!(obj.get("version").and_then(|v| v.as_u64()), Some(2));
+        // Server-provided required fields are preserved.
+        assert_eq!(obj.get("amount").and_then(|v| v.as_str()), Some("5000000"));
+        assert_eq!(
+            obj.get("payTo").and_then(|v| v.as_str()),
+            Some("8qUL23aSj7mDWdoLMXGHFvnVCT9wd7jXcysiekroADEL"),
+        );
+    }
+
+    /// Servers that already emit canonical `accepted` blocks must round-trip
+    /// verbatim — the patch must only ever fill in missing fields, never
+    /// overwrite a value the server provided.
+    #[test]
+    fn to_accepted_value_does_not_overwrite_canonical_fields() {
+        let canonical = serde_json::json!({
+            "scheme": "exact",
+            "network": SOLANA_MAINNET,
+            "amount": "1000",
+            "asset": mints::USDC_MAINNET,
+            "payTo": "8qUL23aSj7mDWdoLMXGHFvnVCT9wd7jXcysiekroADEL",
+            "maxTimeoutSeconds": 60,
+            "extra": {"feePayer": "BFK9TLC3edb13K6v4YyH3DwPb5DSUpkWvb7XnqCL9b4F"},
+        });
+        let req = requirements_with_echoed_accepted(canonical.clone());
+
+        assert_eq!(
+            req.to_accepted_value(),
+            canonical,
+            "canonical accepted block must round-trip unchanged — \
+             patch must not overwrite server-provided values",
+        );
+    }
+
+    /// CAIP-2 networks (e.g. `eip155:8453` or `solana:5eyk…`) must not be
+    /// rewritten — only bare cluster slugs get normalized.
+    #[test]
+    fn to_accepted_value_preserves_caip2_network() {
+        let with_caip2 = serde_json::json!({
+            "network": "eip155:8453",
+            "asset": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "amount": "5000000",
+            "payTo": "0x2670b922ef37c7df47158725c0cc407b5382293f",
+            "extra": {"name": "USD Coin", "version": "2"},
+        });
+        let req = requirements_with_echoed_accepted(with_caip2);
+
+        let patched = req.to_accepted_value();
+        assert_eq!(
+            patched.get("network").and_then(|v| v.as_str()),
+            Some("eip155:8453"),
+            "already-CAIP-2 networks must pass through untouched",
+        );
     }
 
     #[test]
