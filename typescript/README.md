@@ -24,7 +24,7 @@ currency, give it your wallet address, and gate a route in two lines.
 ## Quick start
 
 Gate an Express route by passing the MPP middleware (the same wiring
-the [`demo/server/`](../demo/server) reference uses):
+the [`playground/server/`](../playground/server) reference uses):
 
 ```ts
 import express from 'express'
@@ -120,16 +120,17 @@ signature through replay storage, and emits the same receipt shape.
 
 ## Examples
 
-The TypeScript demo at [`demo/`](../demo) wires the server-side SDK
-into an Express app exposing several stablecoin-gated endpoints
-(`/api/v1/stocks/quote/:symbol`, `/api/v1/weather/:city`, ...).
+The TypeScript playground at [`playground/`](../playground) wires the
+server-side SDK into an Express app exposing every primitive the kit
+ships (`/api/v1/stocks/quote/:symbol`, `/api/v1/weather/:city`, x402,
+subscriptions, sessions, ...).
 
-### Run the demo server
+### Run the playground
 
 ```bash
-cd demo/server
+cd playground
 pnpm install
-pnpm dev          # listens on http://localhost:3000
+pnpm dev          # Vite on :5173, Express on :3000
 ```
 
 ### Drive it from a client

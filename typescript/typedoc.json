@@ -1,0 +1,22 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": [
+    "packages/mpp/src/index.ts",
+    "packages/mpp/src/client/index.ts",
+    "packages/mpp/src/server/index.ts"
+  ],
+  "out": "../docs/api/typescript",
+  "name": "@solana/mpp",
+  "readme": "none",
+  "includeVersion": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "hideGenerator": true,
+  "tsconfig": "packages/mpp/tsconfig.json",
+  "plugin": ["typedoc-plugin-markdown"],
+  "useCodeBlocks": true,
+  "indexFormat": "table",
+  "parametersFormat": "table",
+  "propertiesFormat": "table",
+  "expandObjects": true
+}

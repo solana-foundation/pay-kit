@@ -1,0 +1,18 @@
+{
+  "name": "paykit-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "PLAYGROUND_PORT=${PLAYGROUND_PORT:-3000} concurrently -n server,app -c cyan,magenta \"PORT=$PLAYGROUND_PORT pnpm -C server dev\" \"PLAYGROUND_PORT=$PLAYGROUND_PORT pnpm -C app dev\"",
+    "dev:server": "pnpm -C server dev",
+    "dev:app": "pnpm -C app dev",
+    "build": "pnpm -C app build && pnpm -C server build",
+    "start": "pnpm -C server start",
+    "docs:gen": "tsx scripts/gen-docs.ts"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -295,9 +295,107 @@ html-build:
 html-build-test:
     cd html && npm run build:test
 
-# Run payment link E2E tests (requires Surfpool on :8899 and demo server on :3000)
+# Run payment link E2E tests (requires Surfpool on :8899 and playground server on :3000)
 html-test-e2e:
     cd html && npm run test:e2e
+
+# ── API docs ──
+#
+# Every language emits markdown into a single tree at `docs/api/<lang>/`.
+# Run `just docs` for the full sweep, `just docs-<lang>` for one, or
+# `just docs-index` to refresh the top-level `docs/api/README.md` aggregator.
+#
+# Tools used:
+#   ts     typedoc + typedoc-plugin-markdown   (devDep)
+#   rs     cargo +nightly rustdoc --output-format json + scripts/rustdoc-to-md.mjs
+#   go     gomarkdoc                            (`go install` on demand)
+#   py     pydoc-markdown                       (devDep)
+#   rb     YARD::Registry walk via scripts/yard_to_md.rb
+#   php    PHP tokenizer + Reflection via scripts/php-doc-to-md.php
+#   lua    Comment + signature extraction via scripts/lua-doc-to-md.lua
+#   kt     Dokka GFM                            (plugin in build.gradle.kts)
+#   swift  sourcedocs                           (`brew install sourcedocs`)
+
+docs_out := justfile_directory() + "/docs/api"
+
+# TypeScript — typedoc-plugin-markdown
+docs-ts: ts-install
+    cd typescript && pnpm docs
+
+# Rust — nightly rustdoc JSON + JS converter
+docs-rs:
+    @if ! rustup toolchain list 2>/dev/null | grep -q nightly; then \
+        echo "Rust nightly required: rustup toolchain install nightly"; \
+        exit 1; \
+    fi
+    @mkdir -p {{docs_out}}/rust
+    @rm -rf rust/target/doc-json
+    cd rust && for crate in $(cargo metadata --no-deps --format-version 1 \
+        | python3 -c "import sys,json; print(' '.join(p['name'] for p in json.load(sys.stdin)['packages']))"); do \
+        echo "rustdoc → $crate"; \
+        RUSTC_BOOTSTRAP=1 cargo +nightly rustdoc -p "$crate" \
+            --target-dir target/doc-json \
+            -- -Z unstable-options --output-format json 2>/dev/null || true; \
+    done
+    node scripts/rustdoc-to-md.mjs {{docs_out}}/rust $(find rust/target/doc-json/doc -maxdepth 1 -name '*.json' 2>/dev/null)
+
+# Go — gomarkdoc (one .md per package)
+docs-go:
+    @mkdir -p {{docs_out}}/go
+    @if ! command -v gomarkdoc >/dev/null 2>&1; then \
+        echo "Installing gomarkdoc…"; \
+        go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest; \
+    fi
+    cd go && gomarkdoc \
+        --output '{{docs_out}}/go/{{{{.Dir}}}}.md' \
+        ./...
+
+# Python — pydoc-markdown (config: python/pydoc-markdown.yml)
+docs-py:
+    @mkdir -p {{docs_out}}/python
+    cd python && uv run --extra dev pydoc-markdown
+
+# Ruby — YARD::Registry walker
+docs-rb:
+    @mkdir -p {{docs_out}}/ruby
+    cd ruby && bundle exec ruby scripts/yard_to_md.rb
+
+# PHP — tokenizer + reflection walker
+docs-php:
+    @mkdir -p {{docs_out}}/php
+    cd php && php ../scripts/php-doc-to-md.php {{docs_out}}/php src
+
+# Lua — comment extraction
+docs-lua:
+    @mkdir -p {{docs_out}}/lua
+    cd lua && lua ../scripts/lua-doc-to-md.lua {{docs_out}}/lua pay_kit mpp plugins
+
+# Kotlin — Dokka GFM
+docs-kt:
+    cd kotlin && ./gradlew dokkaGfm
+
+# Swift — sourcedocs
+docs-swift:
+    @if ! command -v sourcedocs >/dev/null 2>&1; then \
+        echo "Install: brew install sourcedocs"; exit 1; \
+    fi
+    @mkdir -p {{docs_out}}/swift
+    cd swift && sourcedocs generate --output-folder {{docs_out}}/swift \
+        --module-name SolanaPayKit \
+        --clean
+
+# Build every language's markdown API docs + the aggregator.
+docs: docs-ts docs-rs docs-go docs-py docs-rb docs-lua docs-kt docs-swift docs-php docs-index
+
+# Emit docs/api/README.md aggregator linking to each language. Safe to re-run.
+docs-index:
+    @mkdir -p {{docs_out}}
+    @bash scripts/render-docs-index.sh > {{docs_out}}/README.md
+    @echo "Wrote {{docs_out}}/README.md"
+
+# Wipe every generated docs/api directory.
+docs-clean:
+    rm -rf docs/api rust/target/doc-json
 
 # ── Orchestration ──
 

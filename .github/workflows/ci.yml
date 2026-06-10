@@ -175,6 +175,17 @@ jobs:
         # users link against.
         run: cargo llvm-cov -p solana-mpp --ignore-filename-regex 'src/bin/|src/program/|client/multi_delegate' --json --output-path coverage.json
 
+      # Library tests for solana-x402. Separate from the llvm-cov step
+      # above because x402 doesn't share solana-mpp's 90% coverage floor
+      # yet, but its tests still gate PRs — in particular the loose-402
+      # challenge regression suite (`to_accepted_value_patches_loose_*`)
+      # that catches resource servers emitting non-canonical Solana x402
+      # `accepted` blocks (missing `scheme`, bare network slug, missing
+      # `maxTimeoutSeconds`).
+      - name: Run solana-x402 library tests
+        working-directory: rust
+        run: cargo test -p solana-x402 --lib
+
       - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
         working-directory: rust
         run: |
@@ -256,7 +267,7 @@ jobs:
       - run: pnpm test:integration
 
   test-payment-links-demo:
-    name: "Payment links E2E: Demo (TypeScript)"
+    name: "Payment links E2E: Playground (TypeScript)"
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -298,25 +309,26 @@ jobs:
       - name: Build TypeScript SDK
         working-directory: typescript
         run: pnpm build
-      - name: Install demo server dependencies
-        working-directory: demo/server
+      - name: Install playground server dependencies
+        working-directory: playground/server
         run: pnpm install --frozen-lockfile
       - name: Install HTML dependencies & Playwright
         working-directory: html
         run: npm install && npx playwright install chromium
-      - name: Start demo server
-        working-directory: demo/server
+      - name: Start playground server
+        working-directory: playground/server
         run: npx tsx index.ts &
         env:
           NETWORK: localnet
-      - name: Wait for demo server
+          PLAYGROUND_DISABLE_SIDECAR: "1"
+      - name: Wait for playground server
         working-directory: .
         run: |
           for i in $(seq 1 15); do
             curl -sf http://localhost:3000/api/v1/health && break
             sleep 1
           done
-      - name: Run Playwright tests (Demo)
+      - name: Run Playwright tests (Playground)
         working-directory: html
         run: npm run test:e2e:demo
 

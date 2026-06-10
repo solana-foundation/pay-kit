@@ -3,6 +3,7 @@ plugins {
     kotlin("plugin.serialization") version "2.3.21"
     `java-library`
     jacoco
+    id("org.jetbrains.dokka") version "1.9.20"
 }
 
 group = "com.solana.paykit"
@@ -76,4 +77,12 @@ tasks.jacocoTestCoverageVerification {
 
 tasks.check {
     dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
+// Dokka GFM — emit GitHub-flavored markdown to the unified docs/api/kotlin/
+// tree alongside the other languages' MD output. Invoke via
+// `./gradlew dokkaGfm` or `just docs-kt`.
+tasks.named<org.jetbrains.dokka.gradle.DokkaTask>("dokkaGfm") {
+    outputDirectory.set(rootDir.parentFile.resolve("docs/api/kotlin"))
+    moduleName.set("com.solana.paykit")
 }
