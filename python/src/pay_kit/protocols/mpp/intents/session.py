@@ -14,7 +14,6 @@ charge intent so callers keep a stable amount-parsing entry point.
 
 from __future__ import annotations
 
-import struct
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -527,26 +526,26 @@ class VoucherData:
 
         Layout (exactly 48 bytes): ``channel_id``\\ (32, base58-decoded) ||
         ``cumulative_amount`` little-endian ``u64`` (offset 32) || ``expires_at``
-        little-endian ``i64`` (offset 40). The ``channel_id`` MUST decode to
-        exactly 32 bytes. Mirrors rust ``VoucherData::message_bytes`` and the Go
-        ``VoucherData.MessageBytes``.
+        little-endian ``i64`` (offset 40). Delegates to the canonical packer so
+        the 48-byte layout has a single source of truth, mirroring rust
+        ``VoucherData::message_bytes`` (which calls ``voucher_message_bytes``).
         """
         # Lazy import so the module imports without solders installed, matching
-        # the charge intent's discipline and avoiding an import cycle with the
-        # on-chain glue module.
+        # the charge intent's discipline (no cycle: the glue does not import the
+        # intent layer).
         from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
+        from pay_kit.protocols.mpp._paymentchannels import voucher_message_bytes
+
         try:
-            channel = bytes(Pubkey.from_string(self.channel_id))
+            channel = Pubkey.from_string(self.channel_id)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"invalid channelId {self.channel_id!r}") from exc
-        if len(channel) != 32:
-            raise ValueError(f"channelId must be 32 bytes, got {len(channel)}")
         try:
             cumulative = _parse_base_units(self.cumulative)
         except ValueError as exc:
             raise ValueError("invalid voucher cumulative") from exc
-        return channel + struct.pack("<Q", cumulative) + struct.pack("<q", self.expires_at)
+        return voucher_message_bytes(channel, cumulative, self.expires_at)
 
 
 @dataclass
