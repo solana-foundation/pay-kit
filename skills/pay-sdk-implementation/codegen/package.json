@@ -6,7 +6,8 @@
   "scripts": {
     "subscriptions:rust": "tsx ./generate-subscriptions-client.ts",
     "payment-channels:rust": "tsx ./generate-payment-channels-client.ts",
-    "payment-channels:go": "tsx ./generate-payment-channels-client-go.ts"
+    "payment-channels:go": "tsx ./generate-payment-channels-client-go.ts",
+    "payment-channels:python": "tsx ./generate-payment-channels-client-py.ts"
   },
   "dependencies": {
     "@codama/nodes-from-anchor": "^1.4.1",
