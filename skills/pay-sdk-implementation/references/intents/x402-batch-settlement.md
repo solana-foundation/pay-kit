@@ -26,7 +26,7 @@ The MPP session intent already does on-chain batching: the
 payment-channels program holds funds; vouchers authorize cumulative
 spend; close settles. The biggest implementation overlap with
 `x402/batch-settlement` is voucher / cumulative semantics — see
-`rust/src/protocol/intents/session.rs::SignedVoucher`
+`rust/crates/mpp/src/protocol/intents/session.rs::SignedVoucher`
 (lines 656-705) and the cumulative monotonicity rule.
 
 When the x402-kit reference is available, much of the voucher logic
@@ -35,7 +35,7 @@ program differ.
 
 ## When to implement
 
-Last in the x402 sequence — after `exact` and `upto` are interop-green.
+Last in the x402 sequence — after `exact` and `upto` are harness-green.
 Batch settlement is the most complex of the three because it requires:
 
 - Lifecycle state in the server (open / accumulate / settle / close).
@@ -65,7 +65,7 @@ Batch settlement is the most complex of the three because it requires:
      `x402-batch:consumed:<sig>`, `solana-charge:consumed:<sig>`
      (already used by MPP charge).
 5. **Test plan** — unit (sequence monotonicity, replay,
-   settle-idempotency), integration (Surfpool full lifecycle), interop.
+   settle-idempotency), integration (Surfpool full lifecycle), harness.
 
 ## README matrix row
 

@@ -12,7 +12,7 @@ mpp-sdk/
 ├── lua/
 ├── <new-lang>/  ← what you are creating
 ├── harness/
-│   └── <new-lang>-client/   ← interop adapter (see interop-harness.md)
+│   └── <new-lang>-client/   ← harness adapter (see harness.md)
 ├── .github/workflows/ci.yml ← add a job (see ci-quality-coverage.md)
 └── justfile     ← add recipes (see "justfile recipes" below)
 ```
@@ -49,9 +49,9 @@ in the intent leaves translate directly:
 │   │   ├── session.<ext>            ← Session client (open, voucher, commit, close)
 │   │   ├── http_stream.<ext>        ← Optional: SSE / metered streaming helper
 │   │   └── payment_channels.<ext>   ← Optional: payment-channels program client
-│   └── bin/                         ← or `cmd/`, `scripts/` — interop adapters
-│       ├── interop_client.<ext>
-│       └── interop_server.<ext>
+│   └── bin/                         ← or `cmd/`, `scripts/` — harness adapters
+│       ├── harness_client.<ext>
+│       └── harness_server.<ext>
 ├── examples/
 │   └── payment_link_server.<ext>    ← One protected endpoint on :3001-ish
 └── tests/
@@ -61,14 +61,14 @@ in the intent leaves translate directly:
 
 The Rust crate is the canonical reference for everything in `src/`:
 
-- `rust/src/lib.rs` — public re-exports the new SDK must mirror.
-- `rust/src/protocol/core/{challenge,headers,types}.rs` — wire format.
-- `rust/src/protocol/intents/{charge,session}.rs` — intent request types.
-- `rust/src/protocol/solana.rs` — program/mint constants.
-- `rust/src/server/{mod,charge,session,html,axum}.rs` — server side.
-- `rust/src/client/{mod,charge,session,...}.rs` — client side.
-- `rust/src/store.rs` — replay store trait.
-- `rust/src/bin/interop_{client,server}.rs` — interop adapter shape.
+- `rust/crates/mpp/src/lib.rs` — public re-exports the new SDK must mirror.
+- `rust/crates/mpp/src/protocol/core/{challenge,headers,types}.rs` — wire format.
+- `rust/crates/mpp/src/protocol/intents/{charge,session}.rs` — intent request types.
+- `rust/crates/mpp/src/protocol/solana.rs` — program/mint constants.
+- `rust/crates/mpp/src/server/{mod,charge,session,html,axum}.rs` — server side.
+- `rust/crates/mpp/src/client/{mod,charge,session,...}.rs` — client side.
+- `rust/crates/mpp/src/store.rs` — replay store trait.
+- `rust/crates/mpp/src/bin/harness_{client,server}.rs` — harness adapter shape.
 - `rust/examples/payment_link_server.rs` — minimal protected example.
 - `rust/Cargo.toml` — manifest pattern (atomic Solana crate pinning).
 
