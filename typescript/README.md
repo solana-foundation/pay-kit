@@ -39,27 +39,20 @@ at `https://402.surfnet.dev:8899`.
 // server.ts
 import express from 'express'
 import { configure, createPayKit, usd } from '@solana/pay-kit'
+import { requirePayment } from '@solana/pay-kit/express'
 
 const paykit = createPayKit(await configure({ rpcUrl: 'https://402.surfnet.dev:8899' }))
 
 const app = express()
-app.get('/report', async (req, res) => {
-  const request = new Request(new URL(req.url, 'http://127.0.0.1:4567'), {
-    headers: req.headers as HeadersInit,
-  })
-  const result = await paykit.requirePayment(request, usd('0.10'))
-  const response =
-    result.status === 402 ? result.response : result.withSettlement(new Response('premium content'))
-  res.writeHead(response.status, Object.fromEntries(response.headers))
-  res.end(await response.text())
+app.get('/report', requirePayment(paykit, usd('0.10')), (_req, res) => {
+  res.send('premium content')
 })
 app.listen(4567)
 ```
 
-`requirePayment` returns a result object: `status: 402` carries a
-ready-to-send challenge `Response`, `status: 200` carries the verified
-`payment` and a `withSettlement` wrapper that merges the settlement
-headers into your response.
+The middleware halts the request with a 402 challenge if no valid
+payment was sent; when one was, it verifies and settles it, sets the
+settlement headers on the response, and hands control to your handler.
 
 Hit `/report` with [`pay curl`](#run-the-example) and the customer
 walks through Touch ID and a USDC payment.
@@ -71,6 +64,7 @@ When more than one route is paid, lift the prices into a single
 
 ```ts
 import { configure, createPayKit, createPricing, usd } from '@solana/pay-kit'
+import { payment, requirePayment } from '@solana/pay-kit/express'
 
 const config = await configure({ rpcUrl: 'https://402.surfnet.dev:8899' })
 
@@ -81,9 +75,12 @@ const pricing = createPricing(config, {
 
 const paykit = createPayKit(config, { pricing })
 
-// In the route handlers:
-//   await paykit.requirePayment(request, 'report')
-//   await paykit.requirePayment(request, 'apiCall')
+app.get('/report', requirePayment(paykit, 'report'), (req, res) => {
+  res.json({ content: 'premium', tx: payment(req)?.transaction })
+})
+app.get('/api/data', requirePayment(paykit, 'apiCall'), (_req, res) => {
+  res.json({ data: [] })
+})
 ```
 
 Gates are validated at construction — wrong currency, fee math that
@@ -350,6 +347,47 @@ the Ruby, Python, PHP, and Lua SDKs so processes running different
 SDKs can exchange traffic during local development. It is public by
 design and refused on mainnet at boot.
 
+## Middleware
+
+The framework shims sit on the dispatcher, the same way Ruby's Rack
+middleware, Python's FastAPI/Flask/Django shims, and PHP's PSR-15
+middleware sit on theirs.
+
+**Express / Connect** (`@solana/pay-kit/express`) — typed against
+`node:http`, so it adds no framework dependency and also fits Polka and
+plain `node:http` servers:
+
+```ts
+import { paid, payment, requirePayment } from '@solana/pay-kit/express'
+
+app.get('/report', requirePayment(paykit, 'report'), (req, res) => {
+  res.json({ ok: true, tx: payment(req)?.transaction })
+})
+```
+
+**Hono** (`@solana/pay-kit/hono`) — works with any framework whose
+context exposes the web request as `c.req.raw`:
+
+```ts
+import { requirePayment } from '@solana/pay-kit/hono'
+
+app.use('/report', requirePayment(paykit, 'report'))
+app.get('/report', c => c.json({ ok: true, tx: paykit.payment(c.req.raw)?.transaction }))
+```
+
+**Fetch handlers** (Cloudflare Workers, Bun, Deno, Next.js) — wrap the
+handler instead of chaining middleware:
+
+```ts
+import { usd, withPayment } from '@solana/pay-kit'
+
+export default {
+  fetch: withPayment(paykit, usd('0.10'), (request, payment) =>
+    Response.json({ ok: true, tx: payment.transaction }),
+  ),
+}
+```
+
 ## Web-standard core
 
 The dispatcher is framework-free: it takes a web-standard `Request`
@@ -358,8 +396,8 @@ one adapter contract (`detect` / `acceptsEntry` / `challengeHeaders` /
 `verifyAndSettle`); the MPP adapter wraps `@solana/mpp`'s charge
 method and caches one handler per (recipient, splits) shape. Verified
 payments are tracked per `Request`, so `paid()` and `payment()` answer
-for the same request object the route handler holds. Express and Hono
-middleware shims are tracked in the interface todo.
+for the same request object the route handler holds — which is why the
+Hono shim needs no context plumbing at all.
 
 ---
 
@@ -412,7 +450,9 @@ typescript/
 │       ├── config.ts, gate.ts, price.ts, pricing.ts, signer.ts, errors.ts, …
 │       ├── adapter.ts            # The protocol adapter contract
 │       ├── adapters/mpp.ts       # MPP charge adapter over @solana/mpp
-│       └── paykit.ts             # Dispatcher: requirePayment / paid / payment
+│       ├── paykit.ts             # Dispatcher: requirePayment / paid / payment
+│       ├── express.ts, hono.ts   # Framework middleware (subpath exports)
+│       └── handler.ts            # withPayment() for fetch-style runtimes
 ├── packages/mpp/        # @solana/mpp: protocol layer (client + server + sessions)
 ├── vitest.config*.ts    # test configurations
 └── package.json         # workspace scripts
