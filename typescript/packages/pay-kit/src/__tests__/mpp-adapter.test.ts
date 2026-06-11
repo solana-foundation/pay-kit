@@ -47,11 +47,24 @@ describe('createMppAdapter', () => {
         expect(entry.splits).toBeUndefined();
     });
 
-    it('lowers within fees to splits and reduces the primary amount', async () => {
+    it('lowers within fees to splits carved from the customer total', async () => {
         const { adapter } = await setup();
         const entry = await adapter.acceptsEntry(gate({ [PLATFORM]: usd('0.30') }), new Request('http://t/m'));
-        expect(entry.amount).toBe('9700000');
+        // The wire amount is the customer total; the verifier derives the
+        // primary transfer as amount − Σsplits (here 9_700_000 to the seller).
+        expect(entry.amount).toBe('10000000');
         expect(entry.splits).toEqual([{ amount: '300000', recipient: PLATFORM }]);
+    });
+
+    it('adds on-top fees to the customer total', async () => {
+        const { adapter } = await setup();
+        const onTop = Gate.create(
+            { amount: usd('10.00'), feeOnTop: { [PLATFORM]: usd('0.50') }, name: 'ticket', payTo: SELLER },
+            { accept: ['mpp'], payTo: SELLER },
+        );
+        const entry = await adapter.acceptsEntry(onTop, new Request('http://t/m'));
+        expect(entry.amount).toBe('10500000');
+        expect(entry.splits).toEqual([{ amount: '500000', recipient: PLATFORM }]);
     });
 
     it('issues an MPP challenge for credential-less requests', async () => {

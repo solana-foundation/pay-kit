@@ -6,7 +6,14 @@ import { ConfigurationError, InvalidProofError } from './errors.js';
 import { Gate } from './gate.js';
 import type { Payment } from './payment.js';
 import { Price } from './price.js';
-import { DynamicGate, gateDefaults, type GateResolver, type InlineGateParams, type Pricing } from './pricing.js';
+import {
+    createPricing,
+    DynamicGate,
+    gateDefaults,
+    type GateResolver,
+    type InlineGateParams,
+    Pricing,
+} from './pricing.js';
 
 /**
  * Anything that names a gate: a {@link Gate}, a catalogue name, a bare
@@ -50,11 +57,14 @@ export type PayKit = {
  * Builds the PayKit dispatcher from a boot config: gate resolution, protocol
  * adapter selection, 402 rendering, settlement-header propagation.
  *
+ * `pricing` accepts either a built {@link Pricing} or inline gate
+ * definitions, which are validated immediately against the config defaults.
+ *
  * @example
  * ```ts
- * const config = await configure({ network: 'solana_localnet' });
- * const pricing = createPricing(config, { report: { amount: usd('0.10') } });
- * const paykit = createPayKit(config, { pricing });
+ * const paykit = createPayKit(await configure(), {
+ *   pricing: { report: { amount: usd('0.10') } },
+ * });
  *
  * // In a fetch-style handler:
  * const result = await paykit.requirePayment(request, 'report');
@@ -64,7 +74,10 @@ export type PayKit = {
  */
 export function createPayKit(
     config: PayKitConfig,
-    options: { adapters?: readonly ProtocolAdapter[]; pricing?: Pricing } = {},
+    options: {
+        adapters?: readonly ProtocolAdapter[];
+        pricing?: Pricing | Readonly<Record<string, GateResolver | InlineGateParams>>;
+    } = {},
 ): PayKit {
     const adapters =
         options.adapters ??
@@ -73,7 +86,10 @@ export function createPayKit(
             if (protocol !== 'mpp') throw new ConfigurationError(`No adapter for protocol "${protocol}".`);
             return createMppAdapter(config);
         });
-    const pricing = options.pricing;
+    const pricing =
+        options.pricing === undefined || options.pricing instanceof Pricing
+            ? options.pricing
+            : createPricing(config, options.pricing);
     const payments = new WeakMap<Request, Payment>();
     const defaults = gateDefaults(config);
 

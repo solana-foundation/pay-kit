@@ -54,7 +54,7 @@ export {
     type InlineGateParams,
     Pricing,
 } from './pricing.js';
-export { caip2, type Network, type Protocol, toSolanaNetwork } from './protocol.js';
+export { caip2, type Network, type NetworkSlug, toNetwork, type Protocol, toSolanaNetwork } from './protocol.js';
 export { type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
 // Replay-protection stores (memory, Redis, Upstash, Cloudflare KV) come from mppx.
 export { Store } from 'mppx';

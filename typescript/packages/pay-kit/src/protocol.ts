@@ -6,6 +6,24 @@ export type Protocol = 'mpp' | 'x402';
  */
 export type Network = 'solana_devnet' | 'solana_localnet' | 'solana_mainnet';
 
+/** Solana-style network slugs, accepted anywhere a {@link Network} is. */
+export type NetworkSlug = 'devnet' | 'localnet' | 'mainnet-beta' | 'mainnet';
+
+/** Normalizes a canonical network name or Solana slug to the canonical name. */
+export function toNetwork(value: Network | NetworkSlug): Network {
+    switch (value) {
+        case 'devnet':
+            return 'solana_devnet';
+        case 'localnet':
+            return 'solana_localnet';
+        case 'mainnet':
+        case 'mainnet-beta':
+            return 'solana_mainnet';
+        default:
+            return value;
+    }
+}
+
 /**
  * Maps a PayKit network name to the Solana network slug used by
  * `@solana/mpp` (`mainnet` / `devnet` / `localnet`).

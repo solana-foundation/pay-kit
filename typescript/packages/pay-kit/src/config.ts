@@ -3,8 +3,8 @@ import type { Store } from 'mppx';
 
 import { ConfigurationError, DemoSignerOnMainnetError, ProtocolNotSupportedError } from './errors.js';
 import { type Stablecoin, STABLECOINS } from './price.js';
-import { type Network, type Protocol, toSolanaNetwork } from './protocol.js';
-import { type PayKitSigner, Signer } from './signer.js';
+import { type Network, type NetworkSlug, type Protocol, toNetwork, toSolanaNetwork } from './protocol.js';
+import { type KeychainSigner, type PayKitSigner, Signer } from './signer.js';
 
 /** MPP protocol options. */
 export type MppOptions = {
@@ -25,8 +25,11 @@ export type OperatorParams = {
     readonly feePayer?: boolean;
     /** Settlement address. Defaults to the signer's public key. */
     readonly recipient?: string;
-    /** Defaults to the demo signer (refused on mainnet). */
-    readonly signer?: PayKitSigner;
+    /**
+     * Defaults to the demo signer (refused on mainnet). Raw kit / Keychain
+     * signers are accepted and wrapped via {@link Signer.from}.
+     */
+    readonly signer?: KeychainSigner | PayKitSigner;
 };
 
 /** Resolved operator identity. */
@@ -41,7 +44,8 @@ export type ConfigureParams = {
     /** Ordered protocol preference. TypeScript currently supports `['mpp']` only. */
     readonly accept?: readonly Protocol[];
     readonly mpp?: MppOptions;
-    readonly network?: Network;
+    /** Canonical name (`solana_localnet`) or Solana slug (`localnet`). */
+    readonly network?: Network | NetworkSlug;
     readonly operator?: OperatorParams;
     /** Run boot-time safety checks. */
     readonly preflight?: boolean;
@@ -100,7 +104,7 @@ function resolveChallengeBindingSecret(network: Network, provided: string | unde
  * ```
  */
 export async function configure(params: ConfigureParams = {}): Promise<PayKitConfig> {
-    const network = params.network ?? 'solana_localnet';
+    const network = toNetwork(params.network ?? 'solana_localnet');
 
     const accept = params.accept ?? ['mpp'];
     if (accept.length === 0) throw new ConfigurationError('accept must list at least one protocol.');
@@ -121,7 +125,13 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         }
     }
 
-    const signer = params.operator?.signer ?? (await Signer.demo());
+    const provided = params.operator?.signer;
+    const signer =
+        provided === undefined
+            ? await Signer.demo()
+            : 'pubkey' in provided
+              ? provided
+              : Signer.from(provided, { feePayer: params.operator?.feePayer });
     if (signer.isDemo && network === 'solana_mainnet') {
         throw new DemoSignerOnMainnetError(
             'The demo signer is public and must not be used on mainnet. Provide operator.signer.',

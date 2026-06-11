@@ -25,11 +25,12 @@ function splitsFor(gate: Gate): readonly Split[] {
 }
 
 /**
- * The on-wire transfer to `payTo`: the gate amount minus `within` fees
- * (those settle as separate splits, alongside `on_top` fees).
+ * The on-wire `amount` is the customer's total; the charge verifier carves
+ * the splits out of it (`primary = amount − Σsplits`). With all fees lowered
+ * to splits, `payTo` nets `gate.amount − Σwithin` — exactly `gate.payout()`.
  */
-function primaryAmount(gate: Gate): bigint {
-    return gate.feeWithin().reduce((amount, fee) => amount - fee.price.baseUnits(), gate.amount.baseUnits());
+function totalAmount(gate: Gate): bigint {
+    return gate.total().baseUnits();
 }
 
 /**
@@ -78,7 +79,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
 
     function optionsFor(gate: Gate) {
         return {
-            amount: primaryAmount(gate).toString(),
+            amount: totalAmount(gate).toString(),
             ...(gate.description ? { description: gate.description } : {}),
             ...(gate.externalId ? { externalId: gate.externalId } : {}),
             ...(config.mpp.expiresIn > 0
@@ -92,7 +93,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
             const { coin } = coinFor(gate);
             const splits = splitsFor(gate);
             return Promise.resolve({
-                amount: primaryAmount(gate).toString(),
+                amount: totalAmount(gate).toString(),
                 currency: coin,
                 network: caip2(config.network),
                 payTo: gate.payTo,
