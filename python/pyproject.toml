@@ -14,6 +14,10 @@ dependencies = [
     "solana>=0.35",
     "pydantic>=2",
     "pydantic-settings>=2",
+    # Required by the codama-py generated payment-channels client
+    # (pay_kit/protocols/programs/paymentchannels).
+    "anchorpy>=0.21",
+    "borsh-construct>=0.1",
 ]
 
 [project.optional-dependencies]
@@ -92,6 +96,10 @@ exclude = ["**/__pycache__", "src/pay_kit/protocols/programs/paymentchannels"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# anchorpy ships a pytest plugin for on-chain workspace tests that imports
+# pytest-xprocess at collection time; we only use anchorpy's Borsh helpers,
+# so keep the plugin out of the suite.
+addopts = "-p no:pytest_anchorpy"
 
 [tool.coverage.run]
 source = ["pay_kit"]
