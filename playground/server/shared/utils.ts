@@ -27,17 +27,19 @@ export function toWebRequest(req: ExpressReq): globalThis.Request {
   return new globalThis.Request(url, init)
 }
 
+/** Log a settlement-signature link for quick eyeball debugging in the terminal. */
+export function logTx(path: string, reference: string): void {
+  const studio = process.env.STUDIO_PORT ?? '18488'
+  console.log(`  ${green('✓')} ${path}  ${dim('tx:')} ${cyan(`http://localhost:${studio}/?t=${reference}`)}`)
+}
+
 /** Log a payment receipt link for quick eyeball debugging in the terminal. */
 export function logPayment(path: string, response: Response): void {
   const receipt = response.headers.get('Payment-Receipt')
   if (!receipt) return
   try {
     const json = JSON.parse(Buffer.from(receipt, 'base64url').toString()) as { reference?: string }
-    if (json.reference) {
-      const studio = process.env.STUDIO_PORT ?? '18488'
-      const url = `http://localhost:${studio}/?t=${json.reference}`
-      console.log(`  ${green('✓')} ${path}  ${dim('tx:')} ${cyan(url)}`)
-    }
+    if (json.reference) logTx(path, json.reference)
   } catch {
     /* Receipt format may vary — ignore */
   }

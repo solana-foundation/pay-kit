@@ -10,16 +10,15 @@ import {
   getBase58Encoder,
   type KeyPairSigner,
 } from '@solana/kit'
+import { configure } from '@solana/pay-kit'
 
 import { registerCharges } from './modules/charges.js'
 import { registerFaucet } from './modules/faucet.js'
 import { registerX402 } from './modules/x402.js'
 import { registerSubscriptions } from './modules/subscriptions.js'
 import { registerSessions } from './modules/sessions.js'
-import { registerSessionsGemini } from './modules/sessions-gemini.js'
 import { registerDocs } from './modules/docs.js'
 import { bootstrapPlan, planInfoFor } from './shared/plan-bootstrap.js'
-import { startSessionsSidecar, stopSidecar, type SidecarHandle } from './shared/sidecar.js'
 import {
   USDC_DECIMALS,
   USDC_MINT,
@@ -79,15 +78,8 @@ async function bootstrapFunding() {
 
 await bootstrapFunding()
 
-const sidecar: SidecarHandle = await startSessionsSidecar()
 const planId = await bootstrapPlan(RPC_URL, feePayerSigner, RECIPIENT)
 const plan = planId ? planInfoFor(planId) : null
-
-process.on('exit', () => stopSidecar(sidecar))
-process.on('SIGINT', () => {
-  stopSidecar(sidecar)
-  process.exit(0)
-})
 
 // ── Express ──
 
@@ -133,25 +125,23 @@ app.get('/api/v1/config', (_req: Request, res: Response) => {
     rpcUrl: RPC_URL,
     feePayer: feePayerSigner.address,
     planId: plan?.planId,
-    sessionsAvailable: !!sidecar.url,
-    payInstallHint:
-      sidecar.url
-        ? ''
-        : sidecar.detail ?? 'Install the `pay` CLI to enable Sessions: brew install pay',
     endpoints,
   })
 })
 
 // ── Modules ──
 
-registerFaucet(app, RPC_URL)
-registerCharges(app, {
-  recipient: RECIPIENT,
-  network: NETWORK,
-  secretKey: SECRET_KEY,
-  feePayerSigner,
+// Charges run on @solana/pay-kit; the boot config is the single source the
+// gates, the dispatcher, and the protocol adapter all derive from.
+const payConfig = await configure({
+  network: NETWORK as 'localnet' | 'devnet' | 'mainnet',
   rpcUrl: RPC_URL,
+  operator: { recipient: RECIPIENT, signer: feePayerSigner },
+  mpp: { challengeBindingSecret: SECRET_KEY },
 })
+
+registerFaucet(app, RPC_URL)
+registerCharges(app, payConfig)
 
 if (plan) {
   registerSubscriptions(app, {
@@ -164,8 +154,13 @@ if (plan) {
   })
 }
 
-registerSessions(app, sidecar)
-registerSessionsGemini(app)
+registerSessions(app, {
+  recipient: RECIPIENT,
+  network: NETWORK,
+  secretKey: SECRET_KEY,
+  feePayerSigner,
+  rpcUrl: RPC_URL,
+})
 registerX402(app, {
   recipient: RECIPIENT,
   rpcUrl: RPC_URL,
@@ -194,8 +189,7 @@ app.listen(PORT, () => {
   console.log(`  ${colors.dim('Recipient')}   ${colors.green(RECIPIENT)}`)
   console.log(`  ${colors.dim('Fee payer')}   ${colors.green(feePayerSigner.address)}`)
   console.log(`  ${colors.dim('Plan')}        ${plan ? colors.green(plan.planId) : colors.yellow('— not bootstrapped')}`)
-  console.log(`  ${colors.dim('Sessions')}    ${sidecar.url ? colors.green(sidecar.url) : colors.yellow(`disabled (${sidecar.reason})`)}`)
-  if (sidecar.detail) console.log(`  ${colors.dim(sidecar.detail)}`)
+  console.log(`  ${colors.dim('Sessions')}    ${colors.green('enabled (in-process)')}`)
   console.log()
 })
 
@@ -217,6 +211,8 @@ function buildEndpointList(plan: boolean) {
     title: string
     description: string
     cost: string
+    /** Machine-readable per-delivery price in base units (sessions only). */
+    unitPrice?: string
     params?: Array<{ name: string; default: string; description?: string }>
   }> = [
     {
@@ -310,6 +306,7 @@ function buildEndpointList(plan: boolean) {
       title: 'Metered stream',
       description: 'Pay-per-chunk SSE delivery via session vouchers.',
       cost: '0.0001 USDC / chunk',
+      unitPrice: '100',
     },
     {
       id: 'sessions-compute',
@@ -319,6 +316,7 @@ function buildEndpointList(plan: boolean) {
       title: 'Pay-per-call compute',
       description: 'Voucher-billed inference; cap 0.50 USDC per session.',
       cost: '0.005 USDC / call',
+      unitPrice: '5000',
     },
   ]
 
@@ -328,7 +326,7 @@ function buildEndpointList(plan: boolean) {
       primitive: 'subscription',
       method: 'GET',
       path: '/api/v1/premium/feed',
-      title: 'Premium feed',
+      title: 'Subscription',
       description: 'Subscription-gated headlines. Activate once per period.',
       cost: '0.10 USDC / day',
     })

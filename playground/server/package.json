@@ -8,12 +8,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.21.0",
-    "@google/genai": "^1.0.0",
+    "@solana-program/token": "^0.11.0",
     "@solana/kit": "^6.5.0",
     "@solana/mpp": "file:../../typescript/packages/mpp",
-    "@solana-program/token": "^0.11.0",
+    "@solana/pay-kit": "file:../../typescript/packages/pay-kit",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
     "mppx": "^0.5.8",
     "x402": "^1.1.0",
     "x402-express": "^1.1.0",
@@ -24,6 +24,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^25.5.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "x402-fetch": "^1.2.0"
   }
 }

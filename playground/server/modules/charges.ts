@@ -1,8 +1,9 @@
-import type { Express, Request, Response as ExpressResponse } from 'express'
-import type { KeyPairSigner } from '@solana/kit'
+import type { Express, Request, Response as ExpressResponse, RequestHandler } from 'express'
+import { type PayKitConfig, type Price, createPayKit, toSolanaNetwork, usd } from '@solana/pay-kit'
+import { payment, requirePayment } from '@solana/pay-kit/express'
 import { Mppx, solana } from '@solana/mpp/server'
 import YahooFinance from 'yahoo-finance2'
-import { toWebRequest, logPayment } from '../shared/utils.js'
+import { logPayment, logTx, toWebRequest } from '../shared/utils.js'
 import { USDC_DECIMALS, USDC_MINT } from '../shared/constants.js'
 
 const yahoo = new YahooFinance({ suppressNotices: ['yahooSurvey'] })
@@ -18,22 +19,22 @@ const WEATHER: Record<string, { temperature: number; conditions: string; humidit
   'dubai': { temperature: 38, conditions: 'Sunny', humidity: 30 },
 }
 
-const PRODUCTS: Record<string, { name: string; price: number; seller: string; description: string }> = {
+const PRODUCTS: Record<string, { name: string; price: Price; seller: string; description: string }> = {
   'sol-hoodie': {
     name: 'Solana Hoodie',
-    price: 2_000_000,
+    price: usd('2.00'),
     seller: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
     description: 'Premium Solana-branded hoodie',
   },
   'validator-mug': {
     name: 'Validator Mug',
-    price: 1_000_000,
+    price: usd('1.00'),
     seller: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
     description: 'Ceramic mug for node operators',
   },
   'nft-sticker-pack': {
     name: 'NFT Sticker Pack',
-    price: 500_000,
+    price: usd('0.50'),
     seller: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
     description: 'Holographic sticker collection',
   },
@@ -53,234 +54,210 @@ const FORTUNES = [
   'If you continually give, you will continually have.',
 ]
 
-interface RegisterOptions {
-  recipient: string
-  network: string
-  secretKey: string
-  feePayerSigner: KeyPairSigner
-  rpcUrl?: string
+/** Percentage of a price in basis points, e.g. bps(usd('2.00'), 500) → usd('0.10'). */
+function bps(price: Price, basisPoints: number): Price {
+  const units = (price.baseUnits() * BigInt(basisPoints)) / 10_000n
+  return usd(`${units / 1_000_000n}.${(units % 1_000_000n).toString().padStart(6, '0')}`)
 }
 
-const Web = globalThis
-
-function asString(v: unknown): string {
-  return Array.isArray(v) ? String(v[0] ?? '') : String(v ?? '')
+function display(price: Price): string {
+  return `${Number(price.amount).toFixed(2)} USDC`
 }
 
-async function forward(res: ExpressResponse, response: globalThis.Response): Promise<void> {
-  res.writeHead(response.status, Object.fromEntries(response.headers))
-  res.end(await response.text())
+/** Last path segment of the request URL — the express `:param` for our routes. */
+function lastSegment(request: globalThis.Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.split('/').pop() ?? '')
 }
 
-export function registerCharges(app: Express, opts: RegisterOptions): void {
-  const { recipient, network, secretKey, feePayerSigner, rpcUrl } = opts
+/** Express 5 types route params as `string | string[]`; ours are single-valued. */
+function param(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? (value[0] ?? '') : (value ?? '')
+}
+
+export function registerCharges(app: Express, config: PayKitConfig): void {
+  const platform = config.operator.recipient
+
+  const paykit = createPayKit(config, {
+    pricing: {
+      stockQuote: (request) => ({
+        amount: usd('0.01'),
+        description: `Stock quote: ${lastSegment(request)}`,
+      }),
+      stockSearch: (request) => ({
+        amount: usd('0.01'),
+        description: `Stock search: ${new URL(request.url).searchParams.get('q') ?? ''}`,
+      }),
+      stockHistory: (request) => ({
+        amount: usd('0.05'),
+        description: `Stock history: ${lastSegment(request)}`,
+      }),
+      weather: (request) => ({
+        amount: usd('0.01'),
+        description: `Weather for ${lastSegment(request)}`,
+      }),
+      marketplaceBuy: (request) => {
+        const product = PRODUCTS[lastSegment(request)]! // validated before payment, below
+        const referrer = new URL(request.url).searchParams.get('referrer')
+        return {
+          amount: product.price,
+          payTo: product.seller,
+          description: `Purchase: ${product.name}`,
+          feeOnTop: {
+            [platform]: bps(product.price, PLATFORM_FEE_BPS),
+            ...(referrer ? { [referrer]: bps(product.price, REFERRAL_FEE_BPS) } : {}),
+          },
+        }
+      },
+    },
+  })
+
+  /** Log the settlement signature once a gated handler runs. */
+  const logged =
+    (handler: RequestHandler): RequestHandler =>
+    (req, res, next) => {
+      const tx = payment(req)?.transaction
+      if (tx) logTx(req.path, tx)
+      return handler(req, res, next)
+    }
 
   // ── Stocks ──
-  const stocksMppx = Mppx.create({
-    secretKey,
-    methods: [
-      solana.charge({
-        recipient,
-        network,
-        ...(rpcUrl && { rpcUrl }),
-        signer: feePayerSigner,
-        currency: USDC_MINT,
-        decimals: USDC_DECIMALS,
-      }),
-    ],
-  })
 
-  app.get('/api/v1/stocks/quote/:symbol', async (req: Request, res: ExpressResponse) => {
-    const symbol = asString(req.params.symbol)
-    const result = await stocksMppx.charge({
-      amount: '10000',
-      currency: USDC_MINT,
-      description: `Stock quote: ${symbol}`,
-    })(toWebRequest(req))
+  app.get(
+    '/api/v1/stocks/quote/:symbol',
+    requirePayment(paykit, 'stockQuote'),
+    logged(async (req, res) => {
+      try {
+        res.json(await yahoo.quote(param(req.params.symbol)))
+      } catch (err) {
+        console.error('stocks/quote error:', err)
+        res.status(500).json({ error: 'Failed to fetch quote' })
+      }
+    }),
+  )
 
-    if (result.status === 402) return forward(res, result.challenge as globalThis.Response)
-
-    try {
-      const quote = await yahoo.quote(symbol)
-      const response = result.withReceipt(Web.Response.json(quote)) as globalThis.Response
-      logPayment(req.path, response)
-      await forward(res, response)
-    } catch (err) {
-      console.error('stocks/quote error:', err)
-      res.status(500).json({ error: 'Failed to fetch quote' })
-    }
-  })
-
-  app.get('/api/v1/stocks/search', async (req: Request, res: ExpressResponse) => {
-    const q = req.query.q as string | undefined
-    if (!q) {
-      res.status(400).json({ error: 'Missing ?q= parameter' })
+  const requireQuery = (name: string): RequestHandler => (req, res, next) => {
+    if (typeof req.query[name] !== 'string' || !req.query[name]) {
+      res.status(400).json({ error: `Missing ?${name}= parameter` })
       return
     }
-    const result = await stocksMppx.charge({
-      amount: '10000',
-      currency: USDC_MINT,
-      description: `Stock search: ${q}`,
-    })(toWebRequest(req))
+    next()
+  }
 
-    if (result.status === 402) return forward(res, result.challenge as globalThis.Response)
-
-    try {
-      const { quotes } = await yahoo.search(q)
-      await forward(res, result.withReceipt(Web.Response.json(quotes)) as globalThis.Response)
-    } catch (err) {
-      console.error('stocks/search error:', err)
-      res.status(500).json({ error: 'Failed to search' })
-    }
-  })
-
-  app.get('/api/v1/stocks/history/:symbol', async (req: Request, res: ExpressResponse) => {
-    const symbol = asString(req.params.symbol)
-    const result = await stocksMppx.charge({
-      amount: '50000',
-      currency: USDC_MINT,
-      description: `Stock history: ${symbol}`,
-    })(toWebRequest(req))
-
-    if (result.status === 402) return forward(res, result.challenge as globalThis.Response)
-
-    try {
-      const range = (req.query.range as string) || '1mo'
-      const rangeToDays: Record<string, number> = {
-        '1d': 1,
-        '5d': 5,
-        '1mo': 30,
-        '3mo': 90,
-        '6mo': 180,
-        '1y': 365,
+  app.get(
+    '/api/v1/stocks/search',
+    requireQuery('q'),
+    requirePayment(paykit, 'stockSearch'),
+    logged(async (req, res) => {
+      try {
+        const { quotes } = await yahoo.search(req.query.q as string)
+        res.json(quotes)
+      } catch (err) {
+        console.error('stocks/search error:', err)
+        res.status(500).json({ error: 'Failed to search' })
       }
-      const days = rangeToDays[range] ?? 30
-      const period1 = new Date(Date.now() - days * 86_400_000)
-      const chart = await yahoo.chart(symbol, { period1 })
-      await forward(res, result.withReceipt(Web.Response.json(chart)) as globalThis.Response)
-    } catch (err) {
-      console.error('stocks/history error:', err)
-      res.status(500).json({ error: 'Failed to fetch history' })
-    }
-  })
+    }),
+  )
+
+  const RANGE_TO_DAYS: Record<string, number> = { '1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365 }
+
+  app.get(
+    '/api/v1/stocks/history/:symbol',
+    requirePayment(paykit, 'stockHistory'),
+    logged(async (req, res) => {
+      try {
+        const days = RANGE_TO_DAYS[(req.query.range as string) ?? '1mo'] ?? 30
+        const period1 = new Date(Date.now() - days * 86_400_000)
+        res.json(await yahoo.chart(param(req.params.symbol), { period1 }))
+      } catch (err) {
+        console.error('stocks/history error:', err)
+        res.status(500).json({ error: 'Failed to fetch history' })
+      }
+    }),
+  )
 
   // ── Weather ──
-  const weatherMppx = Mppx.create({
-    secretKey,
-    methods: [
-      solana.charge({
-        recipient,
-        network,
-        ...(rpcUrl && { rpcUrl }),
-        signer: feePayerSigner,
-        currency: USDC_MINT,
-        decimals: USDC_DECIMALS,
-      }),
-    ],
-  })
 
-  app.get('/api/v1/weather/:city', async (req: Request, res: ExpressResponse) => {
-    const rawCity = asString(req.params.city)
-    const city = rawCity.toLowerCase().replace(/\s+/g, '-')
-    const result = await weatherMppx.charge({
-      amount: '10000',
-      currency: USDC_MINT,
-      description: `Weather for ${rawCity}`,
-    })(toWebRequest(req))
+  const cityKey = (value: string | string[] | undefined) => param(value).toLowerCase().replace(/\s+/g, '-')
 
-    if (result.status === 402) return forward(res, result.challenge as globalThis.Response)
-
-    const data = WEATHER[city]
-    if (!data) {
-      res.status(404).json({
-        error: `City not found. Available: ${Object.keys(WEATHER).join(', ')}`,
-      })
+  const requireKnownCity: RequestHandler = (req, res, next) => {
+    if (!WEATHER[cityKey(req.params.city)]) {
+      res.status(404).json({ error: `City not found. Available: ${Object.keys(WEATHER).join(', ')}` })
       return
     }
-    await forward(
-      res,
-      result.withReceipt(Web.Response.json({ city: rawCity, ...data })) as globalThis.Response,
-    )
-  })
+    next()
+  }
 
-  // ── Marketplace (splits) ──
+  app.get(
+    '/api/v1/weather/:city',
+    requireKnownCity,
+    requirePayment(paykit, 'weather'),
+    logged((req, res) => {
+      res.json({ city: param(req.params.city), ...WEATHER[cityKey(req.params.city)]! })
+    }),
+  )
+
+  // ── Marketplace (multi-recipient fees) ──
+
   app.get('/api/v1/marketplace/products', (_req: Request, res: ExpressResponse) => {
     res.json(
       Object.entries(PRODUCTS).map(([id, p]) => ({
         id,
         name: p.name,
         description: p.description,
-        price: `${(p.price / 1_000_000).toFixed(2)} USDC`,
-        priceRaw: String(p.price),
+        price: display(p.price),
+        priceRaw: p.price.baseUnits().toString(),
       })),
     )
   })
 
-  app.get('/api/v1/marketplace/buy/:productId', async (req: Request, res: ExpressResponse) => {
-    const productId = asString(req.params.productId)
-    const product = PRODUCTS[productId]
-    if (!product) {
+  const requireKnownProduct: RequestHandler = (req, res, next) => {
+    if (!PRODUCTS[param(req.params.productId)]) {
       res.status(404).json({ error: 'Product not found' })
       return
     }
-    const referrer = req.query.referrer as string | undefined
-    const platformFee = Math.floor((product.price * PLATFORM_FEE_BPS) / 10_000)
-    const referralFee = referrer ? Math.floor((product.price * REFERRAL_FEE_BPS) / 10_000) : 0
-    const total = product.price + platformFee + referralFee
+    next()
+  }
 
-    const splits: Array<{ recipient: string; amount: string; memo?: string }> = [
-      { recipient, amount: String(platformFee), memo: 'platform fee (5%)' },
-    ]
-    if (referrer) splits.push({ recipient: referrer, amount: String(referralFee), memo: 'referral (2%)' })
-
-    const marketMppx = Mppx.create({
-      secretKey,
-      methods: [
-        solana.charge({
-          recipient: product.seller,
-          network,
-          ...(rpcUrl && { rpcUrl }),
-          signer: feePayerSigner,
-          currency: USDC_MINT,
-          decimals: USDC_DECIMALS,
-          splits,
-        }),
-      ],
-    })
-
-    const result = await marketMppx.charge({
-      amount: String(total),
-      currency: USDC_MINT,
-      description: `Purchase: ${product.name}`,
-    })(toWebRequest(req))
-
-    if (result.status === 402) return forward(res, result.challenge as globalThis.Response)
-
-    const response = result.withReceipt(
-      Web.Response.json({
+  app.get(
+    '/api/v1/marketplace/buy/:productId',
+    requireKnownProduct,
+    requirePayment(paykit, 'marketplaceBuy'),
+    logged((req, res) => {
+      const product = PRODUCTS[param(req.params.productId)]!
+      const referrer = req.query.referrer as string | undefined
+      const platformFee = bps(product.price, PLATFORM_FEE_BPS)
+      const referralFee = referrer ? bps(product.price, REFERRAL_FEE_BPS) : undefined
+      const total = referralFee
+        ? product.price.plus(platformFee).plus(referralFee)
+        : product.price.plus(platformFee)
+      res.json({
         product: product.name,
         breakdown: {
-          seller: `${(product.price / 1_000_000).toFixed(2)} USDC`,
-          platformFee: `${(platformFee / 1_000_000).toFixed(2)} USDC`,
-          ...(referrer ? { referralFee: `${(referralFee / 1_000_000).toFixed(2)} USDC` } : {}),
-          total: `${(total / 1_000_000).toFixed(2)} USDC`,
+          seller: display(product.price),
+          platformFee: display(platformFee),
+          ...(referralFee ? { referralFee: display(referralFee) } : {}),
+          total: display(total),
         },
         status: 'purchased',
-      }),
-    ) as globalThis.Response
-    logPayment(req.path, response)
-    await forward(res, response)
-  })
+      })
+    }),
+  )
 
   // ── Fortune (payment link with HTML challenge) ──
+  //
+  // Stays on the protocol layer directly: `html: true` serves an interactive
+  // payment page on 402, a protocol-level feature the pay-kit dispatcher
+  // (which renders the cross-SDK JSON challenge body) deliberately does not
+  // wrap. Dropping down a layer is the intended escape hatch.
+
   const fortuneMppx = Mppx.create({
-    secretKey,
+    secretKey: config.mpp.challengeBindingSecret,
     methods: [
       solana.charge({
-        recipient,
-        network,
-        ...(rpcUrl && { rpcUrl }),
-        signer: feePayerSigner,
+        recipient: config.operator.recipient,
+        network: toSolanaNetwork(config.network),
+        rpcUrl: config.rpcUrl,
+        signer: config.operator.signer.signer,
         currency: USDC_MINT,
         decimals: USDC_DECIMALS,
         html: true,
@@ -307,8 +284,9 @@ export function registerCharges(app: Express, opts: RegisterOptions): void {
     }
 
     const fortune = FORTUNES[Math.floor(Math.random() * FORTUNES.length)]
-    const response = result.withReceipt(Web.Response.json({ fortune })) as globalThis.Response
+    const response = result.withReceipt(globalThis.Response.json({ fortune })) as globalThis.Response
     logPayment(req.path, response)
-    await forward(res, response)
+    res.writeHead(response.status, Object.fromEntries(response.headers))
+    res.end(await response.text())
   })
 }
