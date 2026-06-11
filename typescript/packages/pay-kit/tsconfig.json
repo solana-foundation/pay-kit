@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "exclude": ["src/__tests__/*-integration.test.ts"]
+}
