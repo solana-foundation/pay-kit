@@ -1,0 +1,224 @@
+// Voucher verifier for the MPP session server.
+//
+// Pure function — given a current channel snapshot and a signed voucher,
+// decide whether to accept (and what the new watermark would be), reject,
+// or treat as an idempotent replay. The caller persists any accepted
+// delta through `store.updateChannel` (typically inside its own
+// re-read-and-recheck closure to be safe under concurrency).
+//
+// Mirrors the 9-step verifier in
+// `rust/crates/mpp/src/server/session.rs::SessionServer::verify_voucher`
+// (lines ~427–543). Step numbering below matches the Rust source.
+
+import type { SignedVoucher } from '../../shared/session-types.js';
+import { verifyVoucherSignature } from '../../shared/voucher.js';
+import type { ChannelState } from './store.js';
+
+/**
+ * Reasons a voucher can be rejected. Stable string tags so the caller
+ * can map to HTTP statuses / log levels without parsing free text.
+ */
+export type VoucherRejectReason =
+    | 'below-min-delta'
+    | 'channel-close-pending'
+    | 'channel-finalized'
+    | 'cumulative-not-monotonic'
+    | 'exceeds-deposit'
+    | 'expired'
+    | 'invalid-cumulative'
+    | 'invalid-signature';
+
+/** Verification outcome: the voucher advanced the channel watermark. */
+export interface VoucherVerifyAccepted {
+    /** New cumulative watermark to persist. */
+    readonly newCumulative: bigint;
+    /** Expiry of the now-highest voucher (i64 seconds). */
+    readonly newExpiresAt: bigint;
+    /** Signature to persist as `highestVoucherSignature`. */
+    readonly newSignature: string;
+    readonly status: 'accepted';
+}
+
+/** Verification outcome: an already-accepted voucher was re-submitted (idempotent). */
+export interface VoucherVerifyReplayed {
+    /** Existing watermark, returned for caller convenience. */
+    readonly newCumulative: bigint;
+    readonly status: 'replayed';
+}
+
+/** Verification outcome: the voucher was rejected. See {@link VoucherRejectReason}. */
+export interface VoucherVerifyRejected {
+    /** Human-readable detail. Safe to log; not stable. */
+    readonly detail: string;
+    readonly reason: VoucherRejectReason;
+    readonly status: 'rejected';
+}
+
+/** Union of the three voucher verification outcomes. */
+export type VoucherVerifyResult = VoucherVerifyAccepted | VoucherVerifyRejected | VoucherVerifyReplayed;
+
+/** Arguments to {@link verifyVoucherForChannel}. */
+export interface VerifyVoucherArgs {
+    /**
+     * Authoritative deposit cap. Passed in (rather than read off `state`)
+     * because some callers carry an updated cap after a recent top-up
+     * that hasn't yet been written back into the store.
+     */
+    readonly deposit: bigint;
+    /** Optional minimum delta from the previous cumulative. */
+    readonly minVoucherDelta?: bigint | undefined;
+    /**
+     * Unix seconds, defaults to `Math.floor(Date.now() / 1000)`. Exposed
+     * for tests and for callers that already have a clock.
+     */
+    readonly nowSeconds?: bigint | undefined;
+    /** Voucher being submitted. */
+    readonly signed: SignedVoucher;
+    /** Channel snapshot — typically read just before calling. */
+    readonly state: ChannelState;
+}
+
+/**
+ * Verify a voucher against a channel snapshot.
+ *
+ * Returns a verdict; the caller is responsible for persisting any
+ * accepted delta via `store.updateChannel`. The verifier is pure —
+ * no store, network, or clock side effects (clock is injectable).
+ *
+ * Mirrors `SessionServer::verify_voucher` in Rust. Expiry is checked
+ * here rather than inside the signature helper (Rust intermixes the
+ * two; we keep them separate so callers can override `nowSeconds`).
+ */
+export async function verifyVoucherForChannel(args: VerifyVoucherArgs): Promise<VoucherVerifyResult> {
+    const { state, signed, deposit } = args;
+    const { data } = signed;
+
+    // 1. Parse new_cumulative from payload
+    let newCumulative: bigint;
+    try {
+        newCumulative = parseU64(data.cumulativeAmount);
+    } catch (error) {
+        return reject('invalid-cumulative', errorMessage(error));
+    }
+
+    // 2. Channel must not be finalized
+    if (state.finalized) {
+        return reject('channel-finalized', `Channel ${state.channelId} is already finalized`);
+    }
+
+    // 3. Channel must not be in close-pending
+    if (state.closeRequestedAt !== undefined) {
+        return reject(
+            'channel-close-pending',
+            `Channel ${state.channelId} close is pending — no further vouchers accepted`,
+        );
+    }
+
+    // 4. Idempotent replay: same cumulative AND same signature
+    if (newCumulative === state.cumulative && state.highestVoucherSignature === signed.signature) {
+        // Rust still re-verifies the signature on the replay path. We do
+        // the same so a replay of a forged voucher can't slip through.
+        const ok = await safeVerifySignature(signed, state.authorizedSigner);
+        if (!ok.ok) return ok.reject;
+        const expiresAt = toBigInt(data.expiresAt);
+        if (expiresAt <= currentTime(args.nowSeconds)) {
+            return reject('expired', 'Voucher has expired');
+        }
+        return { newCumulative, status: 'replayed' };
+    }
+
+    // 5. Must strictly exceed watermark (non-replay case)
+    if (newCumulative <= state.cumulative) {
+        return reject(
+            'cumulative-not-monotonic',
+            `Voucher cumulative ${newCumulative} must exceed watermark ${state.cumulative}`,
+        );
+    }
+
+    // 6. Must not exceed deposit
+    if (newCumulative > deposit) {
+        return reject('exceeds-deposit', `Voucher cumulative ${newCumulative} exceeds deposit ${deposit}`);
+    }
+
+    // 7. Min delta check
+    const delta = newCumulative - state.cumulative;
+    const minDelta = args.minVoucherDelta ?? 0n;
+    if (minDelta > 0n && delta < minDelta) {
+        return reject('below-min-delta', `Voucher delta ${delta} is below minimum ${minDelta}`);
+    }
+
+    // 8. Verify signature (Ed25519 over the 48-byte canonical payload)
+    const sigCheck = await safeVerifySignature(signed, state.authorizedSigner);
+    if (!sigCheck.ok) return sigCheck.reject;
+
+    // 9. Expiry — caller may override `nowSeconds` for deterministic tests.
+    const expiresAt = toBigInt(data.expiresAt);
+    if (expiresAt <= currentTime(args.nowSeconds)) {
+        return reject('expired', 'Voucher has expired');
+    }
+
+    return {
+        newCumulative,
+        newExpiresAt: expiresAt,
+        newSignature: signed.signature,
+        status: 'accepted',
+    };
+}
+
+// ── helpers ──
+
+function reject(reason: VoucherRejectReason, detail: string): VoucherVerifyRejected {
+    return { detail, reason, status: 'rejected' };
+}
+
+async function safeVerifySignature(
+    signed: SignedVoucher,
+    authorizedSigner: string,
+): Promise<{ ok: false; reject: VoucherVerifyRejected } | { ok: true }> {
+    try {
+        const valid = await verifyVoucherSignature({
+            signatureBase58: signed.signature,
+            signerBase58: authorizedSigner,
+            voucher: signed.data,
+        });
+        if (!valid) {
+            return { ok: false, reject: reject('invalid-signature', 'Voucher signature verification failed') };
+        }
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            reject: reject('invalid-signature', errorMessage(error)),
+        };
+    }
+}
+
+function parseU64(value: string): bigint {
+    if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid cumulative in voucher: ${value}`);
+    }
+    const parsed = BigInt(value);
+    if (parsed < 0n || parsed > (1n << 64n) - 1n) {
+        throw new Error(`Cumulative ${value} outside u64 range`);
+    }
+    return parsed;
+}
+
+function toBigInt(value: bigint | number | string): bigint {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number') {
+        if (!Number.isSafeInteger(value)) throw new Error(`expiresAt is not a safe integer: ${value}`);
+        return BigInt(value);
+    }
+    return BigInt(value);
+}
+
+function currentTime(override: bigint | undefined): bigint {
+    if (override !== undefined) return override;
+    return BigInt(Math.floor(Date.now() / 1000));
+}
+
+function errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return String(error);
+}

@@ -7,7 +7,9 @@ const U64_MAX = (1n << 64n) - 1n;
  * Priced cumulative amount for the current metered operation.
  */
 export interface SessionUsagePrice {
+    /** Absolute cumulative amount to record, in base units. */
     readonly cumulativeAmount: AmountLike;
+    /** Delta reported in the watermark event. Defaults to target − current. */
     readonly deltaAmount?: AmountLike | undefined;
 }
 
@@ -15,9 +17,13 @@ export interface SessionUsagePrice {
  * Context passed to a usage pricing function.
  */
 export interface SessionUsagePricingContext {
+    /** Session cumulative when the first usage sample of this operation arrived, in base units. */
     readonly baselineCumulativeAmount: string;
+    /** Cumulative the session has accepted so far, in base units. */
     readonly currentCumulativeAmount: string;
+    /** Open-session state from the fetch client. */
     readonly open: SessionFetchOpenState;
+    /** Highest locally recorded watermark, in base units. */
     readonly targetCumulativeAmount?: string | undefined;
 }
 
@@ -139,11 +145,14 @@ export class SessionUsageMeter<Usage> {
 
 export declare namespace SessionUsageMeter {
     interface Parameters<Usage> {
+        /** Session fetch client that owns the open session and voucher commits. */
         readonly client: SessionFetchClient;
+        /** Converts provider usage samples into absolute cumulative amounts. */
         readonly priceUsage: SessionUsagePricer<Usage>;
     }
 
     interface RecordOptions {
+        /** Commit immediately instead of waiting for the live-commit interval. */
         readonly force?: boolean | undefined;
     }
 }

@@ -15,7 +15,9 @@ export interface CommitTransport {
 
 export declare namespace CommitTransport {
     interface CommitParameters {
+        /** Directive issued when the delivery was reserved. */
         readonly directive: MeteringDirective;
+        /** Signed commit body to send. */
         readonly payload: CommitPayload;
     }
 }
@@ -89,7 +91,9 @@ export class SessionConsumer<Transport extends CommitTransport = CommitTransport
 
 export declare namespace SessionConsumer {
     interface Parameters<Transport extends CommitTransport = CommitTransport> {
+        /** Session that signs commit vouchers. */
         readonly session: ActiveSession;
+        /** Transport that delivers commit payloads to the server. */
         readonly transport: Transport;
     }
 }
@@ -136,8 +140,11 @@ export class MeteredDelivery<Payload, Transport extends CommitTransport = Commit
 
 export declare namespace MeteredDelivery {
     interface Parameters<Payload, Transport extends CommitTransport = CommitTransport> {
+        /** Consumer that commits the delivery on `ack()`. */
         readonly consumer: SessionConsumer<Transport>;
+        /** Directive to commit once the payload is processed. */
         readonly metering: MeteringDirective;
+        /** The delivered application payload. */
         readonly payload: Payload;
     }
 }
@@ -183,9 +190,13 @@ export class HttpCommitTransport implements CommitTransport {
 
 export declare namespace HttpCommitTransport {
     interface Parameters {
+        /** `Authorization` header value sent with each commit. */
         readonly authorization?: string | undefined;
+        /** Fallback commit endpoint when a directive carries no `commitUrl`. */
         readonly commitUrl?: string | undefined;
+        /** Underlying fetch. Defaults to `globalThis.fetch`. */
         readonly fetch?: typeof globalThis.fetch | undefined;
+        /** Extra headers merged into each commit request. */
         readonly headers?: HeadersInit | undefined;
     }
 }

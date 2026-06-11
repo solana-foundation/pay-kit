@@ -15,10 +15,24 @@ export type {
 } from './ChallengeSelection.js';
 export { buildChargeTransaction, charge } from './Charge.js';
 export {
+    buildCreateFixedDelegationInstruction,
+    buildInitMultiDelegateInstruction,
+    buildInitMultiDelegateTx,
+    buildUpdateDelegationTx,
+    DELEGATION_SEED,
+    deriveDelegatedTokenAccount,
+    findFixedDelegationPda,
+    findMultiDelegatePda,
+    MULTI_DELEGATE_SEED,
+    MULTI_DELEGATOR_PROGRAM,
+} from './MultiDelegate.js';
+export type { MultiDelegateInstruction, MultiDelegateTxParameters } from './MultiDelegate.js';
+export {
     buildOpenPaymentChannelTransaction,
     createPaymentChannelSessionOpener,
     createServerOpenedPaymentChannelSessionOpener,
     derivePaymentChannelOpen,
+    PENDING_SERVER_SIGNATURE,
 } from './PaymentChannels.js';
 export type { PaymentChannelOpen, PaymentChannelOpenTransaction } from './PaymentChannels.js';
 export {
@@ -28,6 +42,7 @@ export {
     parseSseEventBlock,
     SseDecoder,
 } from './HttpStream.js';
+export type { MeteredSseEvent, SseEvent } from './HttpStream.js';
 export { solana } from './Methods.js';
 export {
     ActiveSession,
@@ -35,6 +50,7 @@ export {
     serializeSessionCredential,
     session,
     sessionContextSchema,
+    sessionRequestModes,
     voucherMessageBytes,
 } from './Session.js';
 export type {

@@ -1111,7 +1111,7 @@ type CredentialPayload = {
 };
 
 /** The request portion of a challenge, matching the Methods.ts schema. */
-type ChallengeRequest = {
+export type ChallengeRequest = {
     amount: string;
     currency: string;
     externalId?: string;
