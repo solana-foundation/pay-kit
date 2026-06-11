@@ -85,35 +85,153 @@ body {
   height: 100%;
 }
 
-.body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.sidebar {
-  width: 260px;
-  border-right: 1px solid var(--border);
-  background: var(--surface);
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-  flex-shrink: 0;
-  transition: width 0.2s ease, border 0.2s ease;
-}
-
-.sidebar.collapsed {
-  width: 0;
-  overflow: hidden;
-  border-right: none;
-}
-
 .main {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+
+/* ── Top nav (horizontal endpoint picker, iOS-tile style) ── */
+
+/* Apple HIG system colors. Subtle gradient — bottom is ~8-10% darker than top.
+ * Dark-theme defaults; light overrides below. */
+:root {
+  --ios-blue:    #0A84FF;
+  --ios-blue-2:  #0070DB;
+  --ios-yellow:  #FFD60A;
+  --ios-yellow-2:#F0BD00;
+  --ios-pink:    #FF375F;
+  --ios-pink-2:  #E22A4F;
+  --ios-gray:    #8E8E93;
+  --ios-gray-2:  #76767B;
+}
+
+[data-theme='light'] {
+  --ios-blue:    #007AFF;
+  --ios-blue-2:  #0066D6;
+  --ios-yellow:  #FFCC00;
+  --ios-yellow-2:#E5B800;
+  --ios-pink:    #FF2D55;
+  --ios-pink-2:  #E22247;
+  --ios-gray:    #8E8E93;
+  --ios-gray-2:  #76767B;
+}
+
+.topnav {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.topnav-scroll {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.topnav-scroll::-webkit-scrollbar { height: 6px; }
+.topnav-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* iOS app-tile look: rounded rectangle, very subtle vertical gradient, white text. */
+.topnav-pill {
+  --tile: var(--ios-gray);
+  --tile-2: var(--ios-gray-2);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 200px;
+  max-width: 240px;
+  height: 110px;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--tile) 0%, var(--tile-2) 100%);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.topnav-pill:hover { filter: brightness(1.06); transform: translateY(-2px); }
+.topnav-pill:active { transform: translateY(0); filter: brightness(0.94); }
+
+.topnav-pill.active {
+  box-shadow:
+    0 0 0 3px var(--bg),
+    0 0 0 5px var(--tile),
+    0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+/* Family color → blue / yellow / pink. charge + x402 share the "pay" tile. */
+.topnav-pill.pay          { --tile: var(--ios-blue);   --tile-2: var(--ios-blue-2); }
+.topnav-pill.subscription { --tile: var(--ios-yellow); --tile-2: var(--ios-yellow-2); color: #1a1a1a; }
+.topnav-pill.session      { --tile: var(--ios-pink);   --tile-2: var(--ios-pink-2); }
+.topnav-pill.docs         { --tile: var(--ios-gray);   --tile-2: var(--ios-gray-2); }
+
+/* Yellow tile uses dark text — overrides the white-text defaults below. */
+.topnav-pill.subscription .title  { color: #0a0a0a; }
+.topnav-pill.subscription .desc   { color: rgba(0, 0, 0, 0.78); }
+.topnav-pill.subscription .cost   { color: rgba(0, 0, 0, 0.66); }
+.topnav-pill.subscription .method { background: rgba(0, 0, 0, 0.18); color: #0a0a0a; }
+
+.topnav-pill .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.topnav-pill .method {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  letter-spacing: 0.03em;
+}
+
+.topnav-pill .title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #fff;
+  flex: 1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.topnav-pill .desc {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 400;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+
+.topnav-pill .cost {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* ── Header ── */
@@ -760,6 +878,15 @@ body {
 .event-msg.info { color: var(--accent); font-family: var(--font-mono); }
 .event-msg.dim { color: var(--fg-muted); font-family: var(--font-mono); }
 
+.event-link {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.event-link:hover { text-decoration: underline; }
+
 .event-detail {
   position: relative;
   color: var(--fg-muted);
@@ -807,6 +934,23 @@ body {
 .code-block pre code .com { color: var(--fg-muted); }
 .code-block pre code .fn { color: var(--yellow); }
 .code-block pre code .var { color: var(--accent); }
+
+/* ── highlight.js token theme (themed via existing palette tokens) ── */
+.code-block pre code.hljs { background: transparent; padding: 0; color: var(--fg); display: block; }
+.hljs-comment, .hljs-quote { color: var(--fg-muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-meta-keyword, .hljs-doctag { color: var(--purple); }
+.hljs-string, .hljs-attr, .hljs-template-tag, .hljs-template-variable, .hljs-symbol, .hljs-bullet { color: var(--green); }
+.hljs-number, .hljs-literal, .hljs-regexp { color: var(--orange); }
+.hljs-title, .hljs-section, .hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--yellow); }
+.hljs-title.class_, .hljs-class .hljs-title, .hljs-type, .hljs-tag .hljs-name { color: var(--cyan); }
+.hljs-variable, .hljs-template-tag .hljs-string, .hljs-params { color: var(--fg); }
+.hljs-attribute, .hljs-property { color: var(--accent); }
+.hljs-meta, .hljs-meta-string { color: var(--fg-muted); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+.hljs-deletion { color: var(--red); }
+.hljs-addition { color: var(--green); }
+.hljs-builtin-name, .hljs-function .hljs-title { color: var(--cyan); }
 
 .copy-btn {
   position: absolute;
@@ -869,6 +1013,20 @@ body {
 
 .code-wrap {
   padding: 14px 20px;
+}
+
+/* Stacked Client / Server sections inside a single code panel. */
+.code-section + .code-section { margin-top: 24px; }
+
+/* GitHub-style h2 — moderate weight, light bottom border, ample breathing room. */
+.code-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  margin: 0 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* ── Meta pill (port) ── */
@@ -1162,6 +1320,18 @@ body {
   letter-spacing: 0.04em;
   margin-bottom: 8px;
 }
+
+.docs-card-pending-snippet {
+  padding: 16px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.docs-card-pending-snippet a { color: var(--accent); text-decoration: none; font-style: normal; }
+.docs-card-pending-snippet a:hover { text-decoration: underline; }
 
 /* ── Docs groups (Server+Client, Server, Client) ── */
 

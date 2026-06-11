@@ -1,14 +1,14 @@
 /**
- * Regenerate `app/src/lib/docs.gen.ts` from the per-language READMEs.
+ * Diagnostic for `app/src/lib/docs.gen.ts` — scans the per-language READMEs
+ * and reports which ones expose a usable quickstart code block.
  *
- * Reads each {lang}/README.md, extracts the first fenced code block under
- * the "Quick start" heading, and emits a typed module.
- *
- * Today this script is a placeholder — the in-tree docs.gen.ts is hand
- * curated so it can include the framework name and install command. To
- * automate, point each entry at a specific markdown anchor and use
- * `gray-matter` or a markdown AST walker (e.g. unified/remark) to
- * extract the snippet block.
+ * Today this script is a placeholder and does NOT write docs.gen.ts. The
+ * in-tree docs.gen.ts derives language cards from the generated snippets
+ * manifest (snippets.gen.json, produced by scripts/gen-snippets.mjs) and
+ * falls back to curated per-language entries for languages whose snippets
+ * haven't been migrated to `<lang>/docs/snippets/` yet. To automate the
+ * curated half, point each entry at a specific markdown anchor and use a
+ * markdown AST walker (e.g. unified/remark) to extract the snippet block.
  *
  * Run with: pnpm docs:gen
  */
@@ -45,9 +45,9 @@ async function main() {
   }
   console.log()
   console.log(
-    'docs.gen.ts is currently hand curated for layout reasons (framework + install per language).',
+    'docs.gen.ts derives cards from snippets.gen.json (run `pnpm gen-snippets`), with curated',
   )
-  console.log('Wire this script up if you want full automation — see header comment for the plan.')
+  console.log('fallbacks for unmigrated languages — see the header comment for the automation plan.')
   void writeFile
 }
 

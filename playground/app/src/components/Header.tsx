@@ -4,37 +4,15 @@ import type { Balances } from '../lib/wallet'
 interface Props {
   theme: 'dark' | 'light'
   onToggleTheme: () => void
-  sidebarOpen: boolean
-  onToggleSidebar: () => void
   walletReady: boolean
   address: string | null
   balances: Balances | null
   onOpenWallet: () => void
 }
 
-export function Header({
-  theme,
-  onToggleTheme,
-  sidebarOpen,
-  onToggleSidebar,
-  walletReady,
-  address,
-  balances,
-  onOpenWallet,
-}: Props) {
+export function Header({ theme, onToggleTheme, walletReady, address, balances, onOpenWallet }: Props) {
   return (
     <div className="header">
-      <button
-        className="icon-btn"
-        onClick={onToggleSidebar}
-        title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-        aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <rect x="1" y="2" width="14" height="12" rx="2" stroke="currentColor" strokeWidth="1.5" />
-          <line x1="6" y1="2" x2="6" y2="14" stroke="currentColor" strokeWidth="1.5" opacity={sidebarOpen ? 1 : 0.4} />
-        </svg>
-      </button>
       <svg
         width="22"
         height="22"

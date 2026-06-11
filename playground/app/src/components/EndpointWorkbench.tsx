@@ -101,9 +101,9 @@ export function EndpointWorkbench({
   }, [epId, endpoint, endpoints, setSearchParams])
 
   const pushLog = useCallback(
-    (message: string, kind: LogLine['kind'], detail?: string) => {
+    (message: string, kind: LogLine['kind'], detail?: string, link?: LogLine['link']) => {
       setLogIdSeed((id) => {
-        setLog((prev) => [...prev, { id, ts: nowIso(), message, kind, detail }])
+        setLog((prev) => [...prev, { id, ts: nowIso(), message, kind, detail, link }])
         return id + 1
       })
     },
@@ -216,35 +216,26 @@ async function* runFlow(
   paramValues: Record<string, string>,
   primitive: Primitive,
 ): AsyncGenerator<FlowProgress> {
-  if (primitive === 'session') {
-    // Sessions sidecar lives behind a proxy — we hit it directly so users can
-    // see real HTTP. The kit's session client is not yet wired into the
-    // playground; for now we emit a structured trace from the raw response.
-    yield { type: 'request', url, method: endpoint.method }
-    const init: RequestInit = { method: endpoint.method }
-    const started = performance.now()
-    const res = await fetch(url, init)
-    const latencyMs = Math.round(performance.now() - started)
-    const headers: Record<string, string> = {}
-    res.headers.forEach((v, k) => (headers[k] = v))
-    try {
-      const data = await res.clone().json()
-      yield { type: 'success', data, status: res.status, headers, latencyMs }
-    } catch {
-      yield { type: 'success', data: await res.text(), status: res.status, headers, latencyMs }
-    }
-    return
-  }
   void paramValues
-  for await (const step of payAndFetch(url, { primitive, init: { method: endpoint.method } })) {
+  for await (const step of payAndFetch(url, {
+    primitive,
+    unitPrice: endpoint.unitPrice,
+    init: { method: endpoint.method },
+  })) {
     yield step
   }
+}
+
+/** Build a pay.sh receipt link for a settled signature. */
+function receiptLink(signature: string): LogLine['link'] {
+  if (!signature) return undefined
+  return { href: `https://pay.sh/receipt/${signature}`, label: 'View receipt' }
 }
 
 function handleProgress(
   progress: FlowProgress,
   advance: (key: string, status: FlowStep['status'], ts?: string) => void,
-  pushLog: (message: string, kind: LogLine['kind'], detail?: string) => void,
+  pushLog: (message: string, kind: LogLine['kind'], detail?: string, link?: LogLine['link']) => void,
   setResponse: (p: ResponsePayload) => void,
 ): void {
   switch (progress.type) {
@@ -272,19 +263,25 @@ function handleProgress(
       pushLog(`Confirming ${progress.signature.slice(0, 12)}…`, 'dim')
       break
     case 'paid':
-      pushLog(`Settled on-chain: ${progress.signature.slice(0, 16)}…`, 'ok')
+      pushLog(`Settled on-chain: ${progress.signature.slice(0, 16)}…`, 'ok', undefined, receiptLink(progress.signature))
       advance('settle', 'completed')
       break
     case 'activated':
-      pushLog(`Subscription activated: ${progress.signature.slice(0, 16)}…`, 'ok')
+      pushLog(
+        `Subscription activated: ${progress.signature.slice(0, 16)}…`,
+        'ok',
+        undefined,
+        receiptLink(progress.signature),
+      )
       advance('activate', 'completed')
       break
     case 'voucher':
-      pushLog(`Voucher signed (cumulative ${progress.cumulative})`, 'info')
+      pushLog(`Voucher signed (cumulative ${fmtUnits(progress.cumulative, 6, 'USDC')})`, 'info')
       advance('voucher', 'completed')
       break
     case 'success': {
       advance('ok', 'completed')
+      advance('deliver', 'completed')
       const detail =
         typeof progress.data === 'string'
           ? progress.data

@@ -16,6 +16,8 @@ export interface Endpoint {
   title: string
   description: string
   cost: string
+  /** Machine-readable per-delivery price in base units (sessions only). */
+  unitPrice?: string
   params?: ParamSpec[]
   /** Optional override of which primitive-page the endpoint lives on. Defaults to the primitive's page. */
   page?: 'charges' | 'subscriptions' | 'sessions' | 'x402'
@@ -27,8 +29,6 @@ export interface ConfigResponse {
   rpcUrl: string
   feePayer?: string
   planId?: string
-  sessionsAvailable: boolean
-  payInstallHint: string
   endpoints: Endpoint[]
 }
 
@@ -40,6 +40,8 @@ export interface LogLine {
   message: string
   kind: LogKind
   detail?: string
+  /** Optional external URL — rendered as a trailing link in the entry. */
+  link?: { href: string; label: string }
 }
 
 export type FlowStepStatus = 'pending' | 'in-progress' | 'completed' | 'failed'

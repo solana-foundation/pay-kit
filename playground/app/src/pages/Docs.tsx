@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { CodeBlock } from '../components/CodeBlock'
 import { LANG_DOCS, type LangDoc } from '../lib/docs.gen'
 import { CopyButton } from '../components/CopyButton'
 
@@ -78,8 +79,11 @@ export function Docs() {
           signing, and the 402 replay transparently.
         </p>
         <div className="code-block">
-          <pre>{`brew install pay     # or: npm install -g @solana/pay
-pay --sandbox curl http://localhost:3000/api/v1/stocks/quote/AAPL`}</pre>
+          <CodeBlock
+            language="bash"
+            text={`brew install pay     # or: npm install -g @solana/pay
+pay --sandbox curl http://localhost:3000/api/v1/stocks/quote/AAPL`}
+          />
           <CopyButton text={`brew install pay
 pay --sandbox curl http://localhost:3000/api/v1/stocks/quote/AAPL`} />
         </div>
@@ -97,10 +101,19 @@ function DocCard({ doc, hasApiDocs }: { doc: LangDoc; hasApiDocs: boolean }) {
       </div>
       <div className="docs-card-body">
         <div className="framework">{doc.framework}</div>
-        <div className="code-block">
-          <pre>{doc.snippet}</pre>
-          <CopyButton text={doc.snippet} />
-        </div>
+        {doc.snippet ? (
+          <div className="code-block">
+            <CodeBlock language={doc.id} text={doc.snippet} />
+            <CopyButton text={doc.snippet} />
+          </div>
+        ) : (
+          <div className="docs-card-pending-snippet">
+            Quickstart coming soon —{' '}
+            <a href={doc.href} target="_blank" rel="noopener">
+              see README ↗
+            </a>
+          </div>
+        )}
         <div className="docs-card-foot">
           {hasApiDocs ? (
             <Link to={`/docs/ref/${doc.id}`} className="docs-card-ref">

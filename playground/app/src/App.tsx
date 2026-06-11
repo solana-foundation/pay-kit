@@ -4,7 +4,7 @@ import { useTheme } from './hooks/useTheme'
 import { useKeyboard } from './hooks/useKeyboard'
 import { ConfigProvider, useConfig } from './hooks/useConfig'
 import { Header } from './components/Header'
-import { Sidebar } from './components/Sidebar'
+import { TopNav } from './components/TopNav'
 import { WalletSetup } from './components/WalletSetup'
 import { WalletModal } from './components/WalletModal'
 import { EndpointPicker } from './components/EndpointPicker'
@@ -39,10 +39,6 @@ function Shell() {
   const [walletReady, setWalletReady] = useState(!!loadSecretKey())
   const [address, setAddress] = useState<string | null>(null)
   const [balances, setBalances] = useState<Balances | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(() => {
-    const stored = localStorage.getItem('sidebarOpen')
-    return stored === null ? true : stored === 'true'
-  })
   const [showWallet, setShowWallet] = useState(false)
   const [showPicker, setShowPicker] = useState(false)
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null)
@@ -74,15 +70,8 @@ function Shell() {
     else navigate(`${target}?ep=${encodeURIComponent(ep.id)}`, { replace: true })
   }
 
-  const onToggleSidebar = () => {
-    const next = !sidebarOpen
-    setSidebarOpen(next)
-    localStorage.setItem('sidebarOpen', String(next))
-  }
-
   useKeyboard([
     { key: 'k', meta: true, handler: () => setShowPicker((v) => !v) },
-    { key: '\\', meta: true, handler: onToggleSidebar },
     { key: '.', meta: true, handler: toggleTheme },
     { key: 'Escape', handler: () => setShowPicker(false), preventDefault: false },
   ])
@@ -96,28 +85,22 @@ function Shell() {
       <Header
         theme={theme}
         onToggleTheme={toggleTheme}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={onToggleSidebar}
         walletReady={walletReady}
         address={address}
         balances={balances}
         onOpenWallet={() => setShowWallet(true)}
       />
-      <div className="body">
-        <div className={`sidebar${sidebarOpen ? '' : ' collapsed'}`}>
-          <Sidebar onEndpointClick={onEndpointClick} selectedEndpointId={selectedEndpointId} />
-        </div>
-        <div className="main">
-          <Routes>
-            <Route path="/" element={<Navigate to="/charges" replace />} />
-            <Route path="/charges" element={<Charges onBalanceChange={refreshBalances} />} />
-            <Route path="/subscriptions" element={<Subscriptions onBalanceChange={refreshBalances} />} />
-            <Route path="/sessions" element={<Sessions onBalanceChange={refreshBalances} />} />
-            <Route path="/x402" element={<X402 onBalanceChange={refreshBalances} />} />
-            <Route path="/docs" element={<Docs />} />
-            <Route path="/docs/ref/:lang" element={<ApiReference />} />
-          </Routes>
-        </div>
+      <TopNav selectedEndpointId={selectedEndpointId} onEndpointClick={onEndpointClick} />
+      <div className="main">
+        <Routes>
+          <Route path="/" element={<Navigate to="/charges" replace />} />
+          <Route path="/charges" element={<Charges onBalanceChange={refreshBalances} />} />
+          <Route path="/subscriptions" element={<Subscriptions onBalanceChange={refreshBalances} />} />
+          <Route path="/sessions" element={<Sessions onBalanceChange={refreshBalances} />} />
+          <Route path="/x402" element={<X402 onBalanceChange={refreshBalances} />} />
+          <Route path="/docs" element={<Docs />} />
+          <Route path="/docs/ref/:lang" element={<ApiReference />} />
+        </Routes>
       </div>
       {showWallet && (
         <WalletModal

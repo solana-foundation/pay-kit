@@ -1,4 +1,5 @@
-import type { Endpoint } from '../types'
+import type { Endpoint, Primitive } from '../types'
+import manifest from './snippets.gen.json'
 
 export const LANGUAGES = [
   'curl',
@@ -15,20 +16,10 @@ export const LANGUAGES = [
 ] as const
 
 export type Language = (typeof LANGUAGES)[number]
+export type Side = 'client' | 'server'
 
-export interface SnippetSet {
-  curl: string
-  pay: string
-  typescript: string
-  rust: string
-  go: string
-  python: string
-  ruby: string
-  php: string
-  lua: string
-  kotlin: string
-  swift: string
-}
+/** Per-language snippet bundle. Each side is optional. */
+export type SnippetSet = Record<Language, Partial<Record<Side, string>>>
 
 export function buildUrl(endpoint: Endpoint, paramValues: Record<string, string>): string {
   let url = endpoint.path
@@ -43,191 +34,205 @@ export function buildUrl(endpoint: Endpoint, paramValues: Record<string, string>
   return url
 }
 
+/**
+ * Generated manifest shape — emitted by playground/scripts/gen-snippets.mjs
+ * from each language's `<lang>/docs/snippets/` directory. Languages absent
+ * from the manifest fall through to the inline templates below.
+ */
+type Manifest = Partial<Record<Language, Partial<Record<Primitive, Partial<Record<Side, string>>>>>>
+
+const GEN: Manifest = manifest as Manifest
+
 export function buildSnippets(
   endpoint: Endpoint,
   paramValues: Record<string, string>,
   baseUrl: string,
 ): SnippetSet {
-  const path = buildUrl(endpoint, paramValues)
-  const fullUrl = baseUrl + path
-  const method = endpoint.method
-  const methodFlag = method !== 'GET' ? `-X ${method} ` : ''
-  const isCharge = endpoint.primitive === 'charge'
-  const isSub = endpoint.primitive === 'subscription'
-  const isX402 = endpoint.primitive === 'x402'
-  const isSession = endpoint.primitive === 'session'
+  const ctx: Ctx = {
+    endpoint,
+    path: buildUrl(endpoint, paramValues),
+    baseUrl,
+    fullUrl: baseUrl + buildUrl(endpoint, paramValues),
+    method: endpoint.method,
+    methodFlag: endpoint.method !== 'GET' ? `-X ${endpoint.method} ` : '',
+    primitive: endpoint.primitive,
+  }
 
   return {
-    curl: `curl -i ${methodFlag}${fullUrl}`,
-    pay: `pay --sandbox curl ${methodFlag}\\\n  ${fullUrl}`,
-    typescript: tsSnippet(endpoint, fullUrl, { isCharge, isSub, isX402, isSession }),
-    rust: rustSnippet(endpoint, fullUrl, { isX402 }),
-    go: goSnippet(endpoint, fullUrl, { isX402 }),
-    python: pythonSnippet(endpoint, fullUrl),
-    ruby: rubySnippet(endpoint, fullUrl),
-    php: phpSnippet(endpoint, fullUrl),
-    lua: luaSnippet(endpoint, fullUrl),
-    kotlin: kotlinSnippet(endpoint, fullUrl),
-    swift: swiftSnippet(endpoint, fullUrl),
+    curl: { client: `curl -i ${ctx.methodFlag}${ctx.fullUrl}` },
+    pay: { client: `pay --sandbox curl ${ctx.methodFlag}\\\n  ${ctx.fullUrl}` },
+    typescript: resolve('typescript', ctx, fallback.typescript),
+    rust: resolve('rust', ctx, fallback.rust),
+    go: resolve('go', ctx, fallback.go),
+    python: resolve('python', ctx, fallback.python),
+    ruby: resolve('ruby', ctx, fallback.ruby),
+    php: resolve('php', ctx, fallback.php),
+    lua: resolve('lua', ctx, fallback.lua),
+    kotlin: resolve('kotlin', ctx, fallback.kotlin),
+    swift: resolve('swift', ctx, fallback.swift),
   }
 }
 
-interface Flags {
-  isCharge?: boolean
-  isSub?: boolean
-  isX402?: boolean
-  isSession?: boolean
+interface Ctx {
+  endpoint: Endpoint
+  path: string
+  baseUrl: string
+  fullUrl: string
+  method: string
+  methodFlag: string
+  primitive: Primitive
 }
 
-function tsSnippet(_ep: Endpoint, url: string, f: Flags): string {
-  if (f.isSub) {
-    return `import { Mppx, solana } from '@solana/mpp/client'
-import { createKeyPairSignerFromBytes, getBase58Encoder } from '@solana/kit'
-
-const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))
-
-const method = solana.subscription({
-  signer,
-  rpcUrl: 'http://localhost:8899',
-})
-
-const mppx = Mppx.create({ methods: [method] })
-
-// First call activates the subscription on-chain.
-// Subsequent calls re-use the active subscription — no further payment.
-const res = await mppx.fetch('${url}')
-const data = await res.json()
-console.log(data)`
+/** Pull from the generated manifest first; fall back to the inline template
+ * for any language/(primitive, side) combo that hasn't been migrated yet.
+ *
+ * Placeholders (see docs/snippets-convention.md):
+ * - `${URL}`  — the full endpoint URL (client snippets fetch it)
+ * - `${PATH}` — the route path only (server snippets register it) */
+function resolve(
+  lang: Language,
+  ctx: Ctx,
+  fb: (ctx: Ctx) => Partial<Record<Side, string>>,
+): Partial<Record<Side, string>> {
+  const fromGen = GEN[lang]?.[ctx.primitive] ?? {}
+  const fromFb = fb(ctx)
+  const out: Partial<Record<Side, string>> = {}
+  for (const side of ['client', 'server'] as const) {
+    const body = fromGen[side] ?? fromFb[side]
+    if (body !== undefined) {
+      out[side] = body.replaceAll('${URL}', ctx.fullUrl).replaceAll('${PATH}', ctx.endpoint.path)
+    }
   }
-
-  if (f.isX402) {
-    return `import { wrapFetchWithPayment } from 'x402-fetch'
-import { createSigner } from 'x402/types'
-
-const signer = createSigner('solana-devnet', SECRET_KEY)
-const fetch = wrapFetchWithPayment(globalThis.fetch, signer)
-
-const res = await fetch('${url}')
-const data = await res.json()
-console.log(data)`
-  }
-
-  if (f.isSession) {
-    return `import { createPaymentChannelSessionOpener, SessionConsumer } from '@solana/mpp/client'
-
-const opener = createPaymentChannelSessionOpener({ signer, rpcUrl })
-const session = await opener.open({ url: '${url}' })
-
-const consumer = new SessionConsumer({ session })
-for await (const chunk of consumer.stream()) {
-  console.log(chunk.data, '— paid', chunk.cumulative)
-}`
-  }
-
-  return `import { Mppx, solana } from '@solana/mpp/client'
-import { createKeyPairSignerFromBytes, getBase58Encoder } from '@solana/kit'
-
-const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))
-
-const method = solana.charge({
-  signer,
-  rpcUrl: 'http://localhost:8899',
-})
-
-const mppx = Mppx.create({ methods: [method] })
-
-const res = await mppx.fetch('${url}')
-const data = await res.json()
-console.log(data)`
+  return out
 }
 
-function rustSnippet(_ep: Endpoint, url: string, f: Flags): string {
-  if (f.isX402) {
-    return `use pay_kit::client::{x402, ClientBuilder};
+// ─────────────────────────────────────────────────────────────────────
+// Inline fallbacks — used when the generated manifest doesn't yet have a
+// snippet for the (language, primitive, side) triple. As each language's
+// `<lang>/docs/snippets/` directory is populated and the manifest
+// regenerated, the corresponding fallback becomes dead code and can be
+// deleted.
+// ─────────────────────────────────────────────────────────────────────
 
-let client = ClientBuilder::new()
-    .with_x402_signer(signer)
-    .build();
+const fallback = {
+  typescript: (_: Ctx) => ({}), // migrated — manifest serves all four primitives
+  rust: (c: Ctx) => ({
+    client:
+      c.primitive === 'x402'
+        ? `use pay_kit::client::{x402, ClientBuilder};
 
-let res = client.get("${url}").send().await?;
+let client = ClientBuilder::new().with_x402_signer(signer).build();
+let res = client.get("${c.fullUrl}").send().await?;
 let data: serde_json::Value = res.json().await?;
 println!("{data}");`
-  }
-  return `use pay_kit::client::{mpp, ClientBuilder};
+        : `use pay_kit::client::{mpp, ClientBuilder};
 
 let client = ClientBuilder::new()
     .with_mpp_signer(signer)
     .rpc_url("http://localhost:8899")
     .build();
 
-let res = client.get("${url}").send().await?;
+let res = client.get("${c.fullUrl}").send().await?;
 let data: serde_json::Value = res.json().await?;
-println!("{data}");`
-}
+println!("{data}");`,
+    server: `use axum::{Router, routing::${c.method.toLowerCase()}};
+use pay_core::server::{${c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'}, ServerBuilder};
 
-function goSnippet(_ep: Endpoint, url: string, f: Flags): string {
-  if (f.isX402) {
-    return `import (
-    "github.com/solana-foundation/pay-kit/go"
-    _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+let gate = ServerBuilder::new()
+    .recipient(recipient)
+    .network("mainnet")
+    .signer(fee_payer)
+    .build_${c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'}();
+
+let app = Router::new()
+    .route("${c.endpoint.path}", ${c.method.toLowerCase()}(handler).layer(gate));`,
+  }),
+  go: (c: Ctx) => ({
+    server: `import (
+    "net/http"
+    "github.com/solana-foundation/pay-kit/go/server"
 )
 
-client := paykit.NewClient(paykit.WithX402Signer(signer))
-res, _ := client.Get("${url}")
-body, _ := io.ReadAll(res.Body)
-fmt.Println(string(body))`
-  }
-  return `import (
-    "github.com/solana-foundation/pay-kit/go"
-    _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-)
+gate := server.New${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}(server.Options{
+    Recipient: recipient, Network: "mainnet", Signer: feePayer,
+})
 
-client := paykit.NewClient(paykit.WithMPPSigner(signer))
-res, _ := client.Get("${url}")
-body, _ := io.ReadAll(res.Body)
-fmt.Println(string(body))`
-}
-
-function pythonSnippet(_ep: Endpoint, url: string): string {
-  return `from pay_kit.client import PayKitClient
+http.Handle("${c.endpoint.path}", gate.Wrap(handler))`,
+  }),
+  python: (c: Ctx) => ({
+    client: `from pay_kit.client import PayKitClient
 
 client = PayKitClient(signer=signer, rpc_url="http://localhost:8899")
-res = client.get("${url}")
-print(res.json())`
-}
+res = client.get("${c.fullUrl}")
+print(res.json())`,
+    server: `from flask import Flask
+from pay_kit.server import ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate
 
-function rubySnippet(_ep: Endpoint, url: string): string {
-  return `# Server-side example — Ruby ships the server gem; clients should use the \`pay\` CLI.
-require "solana_pay_kit"
-puts SolanaPayKit::Client.get("${url}").body`
-}
+app = Flask(__name__)
+gate = ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate(
+    recipient=RECIPIENT, network="mainnet", signer=fee_payer,
+)
 
-function phpSnippet(_ep: Endpoint, url: string): string {
-  return `<?php
-// Server-side example — PHP ships the server library; clients should use \`pay\`.
-$response = file_get_contents('${url}');
-echo $response;`
-}
+@app.route("${c.endpoint.path}", methods=["${c.method}"])
+@gate.guard
+def handler():
+    return {"ok": True}`,
+  }),
+  ruby: (c: Ctx) => ({
+    server: `require "sinatra"
+require "solana_pay_kit/server"
 
-function luaSnippet(_ep: Endpoint, url: string): string {
-  return `-- Server-side example — Lua ships the server library; clients should use \`pay\`.
-local http = require "resty.http"
-local res, err = http.new():request_uri("${url}")
-ngx.say(res.body)`
-}
+gate = SolanaPayKit::Server.${c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'}(
+  recipient: RECIPIENT, network: "mainnet", signer: fee_payer,
+)
 
-function kotlinSnippet(_ep: Endpoint, url: string): string {
-  return `import com.solanafoundation.paykit.PayKitClient
+${c.method.toLowerCase()} "${c.endpoint.path}" do
+  gate.guard(request) { json ok: true }
+end`,
+  }),
+  php: (c: Ctx) => {
+    const kind = c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'
+    return {
+      server: `<?php
+// Laravel route — pay-kit ships a PSR-15 middleware that wraps any framework.
+use SolanaFoundation\\PayKit\\Middleware\\${kind}Gate;
+
+Route::${c.method.toLowerCase()}('${c.endpoint.path}', fn () => response()->json(['ok' => true]))
+    ->middleware(${kind}Gate::class
+        ->recipient(env('PAY_RECIPIENT'))
+        ->network('mainnet')
+        ->signer(env('PAY_FEE_PAYER')));`,
+    }
+  },
+  lua: (c: Ctx) => {
+    const kind = c.primitive === 'session' ? 'session' : c.primitive === 'subscription' ? 'subscription' : 'charge'
+    return {
+      server: `-- nginx.conf — pay-kit ships an OpenResty access-phase middleware.
+location ${c.endpoint.path} {
+    access_by_lua_block {
+        local gate = require("pay_kit.${kind}")
+        gate.guard({
+            recipient = "$PAY_RECIPIENT",
+            network   = "mainnet",
+            signer    = "$PAY_FEE_PAYER",
+        })
+    }
+    content_by_lua_block { ngx.say('{"ok":true}') }
+}`,
+    }
+  },
+  kotlin: (c: Ctx) => ({
+    client: `import com.solanafoundation.paykit.PayKitClient
 
 val client = PayKitClient(signer = signer, rpcUrl = "http://localhost:8899")
-val res = client.get("${url}").execute()
-println(res.body?.string())`
-}
-
-function swiftSnippet(_ep: Endpoint, url: string): string {
-  return `import PayKit
+val res = client.get("${c.fullUrl}").execute()
+println(res.body?.string())`,
+  }),
+  swift: (c: Ctx) => ({
+    client: `import PayKit
 
 let client = PayKit.Client(signer: signer, rpcURL: URL(string: "http://localhost:8899")!)
-let (data, _) = try await client.get(URL(string: "${url}")!)
-print(String(data: data, encoding: .utf8) ?? "")`
+let (data, _) = try await client.get(URL(string: "${c.fullUrl}")!)
+print(String(data: data, encoding: .utf8) ?? "")`,
+  }),
 }

@@ -36,6 +36,11 @@ export function EventLog({ log, onClear }: Props) {
           <span className="event-ts">{fmtTime(line.ts)}</span>
           <div className="event-content">
             <div className={`event-msg ${line.kind}`}>{line.message}</div>
+            {line.link && (
+              <a className="event-link" href={line.link.href} target="_blank" rel="noopener noreferrer">
+                {line.link.label} ↗
+              </a>
+            )}
             {line.detail && (
               <div className="event-detail">
                 <pre className="event-detail-pre">{line.detail}</pre>

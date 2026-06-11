@@ -3,12 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-snippets.mjs",
+    "prebuild": "node scripts/gen-snippets.mjs",
     "dev": "PLAYGROUND_PORT=${PLAYGROUND_PORT:-3000} concurrently -n server,app -c cyan,magenta \"PORT=$PLAYGROUND_PORT pnpm -C server dev\" \"PLAYGROUND_PORT=$PLAYGROUND_PORT pnpm -C app dev\"",
     "dev:server": "pnpm -C server dev",
     "dev:app": "pnpm -C app dev",
-    "build": "pnpm -C app build && pnpm -C server build",
+    "build": "pnpm -C app build && pnpm -C server build && pnpm check-snippets",
     "start": "pnpm -C server start",
-    "docs:gen": "tsx scripts/gen-docs.ts"
+    "docs:gen": "tsx scripts/gen-docs.ts",
+    "gen-snippets": "node scripts/gen-snippets.mjs",
+    "check-snippets": "pnpm -C server exec tsc -p tsconfig.snippets.json"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

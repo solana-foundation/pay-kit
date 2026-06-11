@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { CodeBlock } from './CodeBlock'
 import { CopyButton } from './CopyButton'
 import { fmtDuration } from '../lib/format'
 import type { ResponsePayload } from '../types'
@@ -77,7 +78,11 @@ export function ResponsePane({ payload, running }: Props) {
       )}
 
       <div className="response-body" style={{ position: 'relative', marginTop: 12 }}>
-        <pre>{bodyText}</pre>
+        {payload.kind === 'json' ? (
+          <CodeBlock language="json" text={bodyText} />
+        ) : (
+          <pre>{bodyText}</pre>
+        )}
         <CopyButton text={bodyText} />
       </div>
     </div>
