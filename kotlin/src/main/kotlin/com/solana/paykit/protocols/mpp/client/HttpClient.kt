@@ -18,7 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * Minimal Solana JSON-RPC client used by the interop adapter to fetch
+ * Minimal Solana JSON-RPC client used by the harness adapter to fetch
  * a recent blockhash when the challenge does not pin one. Built on
  * OkHttp so the SDK does not pick up a heavyweight Solana stack as a
  * runtime dependency.

@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "mpp-sdk-interop",
+  "name": "mpp-sdk-harness",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
   "scripts": {

@@ -3,33 +3,33 @@
 // `src/implementations.ts` and asserts the happy-path scenario reaches
 // HTTP 200 with the fixture settlement header populated.
 //
-// Gated behind `X402_INTEROP_MATRIX=1` so the default `pnpm test` run
+// Gated behind `X402_HARNESS_MATRIX=1` so the default `pnpm test` run
 // in pay-kit does not require cargo or a live Surfpool RPC. The
 // canonical CI invocation is:
 //
-//   X402_INTEROP_MATRIX=1 \
-//   X402_INTEROP_RPC_URL=... \
-//   X402_INTEROP_PAY_TO=... \
-//   X402_INTEROP_CLIENT_SECRET_KEY=[...] \
-//   X402_INTEROP_FACILITATOR_SECRET_KEY=[...] \
+//   X402_HARNESS_MATRIX=1 \
+//   X402_HARNESS_RPC_URL=... \
+//   X402_HARNESS_PAY_TO=... \
+//   X402_HARNESS_CLIENT_SECRET_KEY=[...] \
+//   X402_HARNESS_FACILITATOR_SECRET_KEY=[...] \
 //   pnpm test x402-exact.e2e.test.ts
 
 import { afterAll, describe, expect, it } from "vitest";
-import { interopScenarios } from "../src/contracts";
+import { harnessScenarios } from "../src/contracts";
 import {
   clientImplementations,
   serverImplementations,
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
 
-const MATRIX_ENABLED = process.env.X402_INTEROP_MATRIX === "1";
+const MATRIX_ENABLED = process.env.X402_HARNESS_MATRIX === "1";
 
 const requiredEnvs = [
-  "X402_INTEROP_RPC_URL",
-  "X402_INTEROP_MINT",
-  "X402_INTEROP_PAY_TO",
-  "X402_INTEROP_CLIENT_SECRET_KEY",
-  "X402_INTEROP_FACILITATOR_SECRET_KEY",
+  "X402_HARNESS_RPC_URL",
+  "X402_HARNESS_MINT",
+  "X402_HARNESS_PAY_TO",
+  "X402_HARNESS_CLIENT_SECRET_KEY",
+  "X402_HARNESS_FACILITATOR_SECRET_KEY",
 ];
 
 function missingEnvs(): string[] {
@@ -38,7 +38,7 @@ function missingEnvs(): string[] {
   );
 }
 
-const happyPath = interopScenarios.find(
+const happyPath = harnessScenarios.find(
   scenario => scenario.id === "x402-exact-basic",
 );
 
@@ -60,7 +60,7 @@ afterAll(async () => {
 
 describe("x402 exact intent — cross-language matrix", () => {
   if (!MATRIX_ENABLED) {
-    it.skip("matrix is gated behind X402_INTEROP_MATRIX=1", () => {});
+    it.skip("matrix is gated behind X402_HARNESS_MATRIX=1", () => {});
     return;
   }
 
@@ -72,14 +72,14 @@ describe("x402 exact intent — cross-language matrix", () => {
 
   if (!happyPath) {
     it.fails("happy-path scenario x402-exact-basic missing from registry", () => {
-      throw new Error("x402-exact-basic scenario not found in interopScenarios");
+      throw new Error("x402-exact-basic scenario not found in harnessScenarios");
     });
     return;
   }
 
   // Pair restriction: the TS reference adapters speak a stub payload
   // (no real signed Solana transaction in the fixture) so they only
-  // interoperate with each other. The Rust spine adapters carry the
+  // harnesserate with each other. The Rust spine adapters carry the
   // canonical PaymentProof and are exercised end-to-end by the rust
   // crate's own integration tests (`cargo test -p solana-x402`).
   // The cross-language matrix asserts the harness wiring and the
@@ -92,7 +92,7 @@ describe("x402 exact intent — cross-language matrix", () => {
     // broadcast), so it can only be driven by a client that emits a real
     // signed Solana transaction. The rust-x402 client carries the
     // canonical PaymentProof and settles end-to-end against surfpool,
-    // mirroring the rust<->lua x402 interop pairing. The ts-x402 stub
+    // mirroring the rust<->lua x402 harness pairing. The ts-x402 stub
     // client (no real transaction) is intentionally excluded.
     if (clientId === "rust-x402" && serverId === "python") return true;
     // The Python pay_kit x402 client carries a real signed v0
@@ -135,10 +135,10 @@ describe("x402 exact intent — cross-language matrix", () => {
       }
       it(`${client.id} client ↔ ${server.id} server: happy path`, async () => {
         const env = {
-          X402_INTEROP_NETWORK: happyPath.network,
-          X402_INTEROP_PRICE: happyPath.price,
-          X402_INTEROP_RESOURCE_PATH: happyPath.resourcePath,
-          X402_INTEROP_SETTLEMENT_HEADER: happyPath.settlementHeader,
+          X402_HARNESS_NETWORK: happyPath.network,
+          X402_HARNESS_PRICE: happyPath.price,
+          X402_HARNESS_RESOURCE_PATH: happyPath.resourcePath,
+          X402_HARNESS_SETTLEMENT_HEADER: happyPath.settlementHeader,
         } satisfies Record<string, string>;
 
         const running = await startServer(server, env);
@@ -147,7 +147,7 @@ describe("x402 exact intent — cross-language matrix", () => {
         try {
           const targetUrl = `http://127.0.0.1:${running.ready.port}${happyPath.resourcePath}`;
           const result = await runClient(client, targetUrl, {
-            X402_INTEROP_TARGET_URL: targetUrl,
+            X402_HARNESS_TARGET_URL: targetUrl,
             ...env,
           });
 

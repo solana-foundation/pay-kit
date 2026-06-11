@@ -251,7 +251,7 @@ local function exact_requirement(config, gate, resource_path, mint)
     network             = caip2_for(config.network),
     asset               = mint,
     amount              = amount,
-    maxAmountRequired   = amount,           -- emit both spellings for cross-SDK interop
+    maxAmountRequired   = amount,           -- emit both spellings for cross-SDK harness
     payTo               = gate:pay_to(),
     maxTimeoutSeconds   = DEFAULT_MAX_TIMEOUT_SECONDS,
     extra               = extra,
@@ -526,7 +526,7 @@ function Adapter:verify_and_settle(gate, req)
   -- a Surfpool fixture but the server is configured for a non-localnet
   -- slug, reject up-front with the canonical wrong_network code rather
   -- than letting the broadcast hit the wrong cluster.
-  -- Only flag wrong_network for mainnet challenges; the interop matrix
+  -- Only flag wrong_network for mainnet challenges; the harness matrix
   -- shares devnet's CAIP-2 with surfpool-backed localnet fixtures, so a
   -- devnet label can legitimately carry a Surfpool-prefixed blockhash.
   if config.network == 'solana_mainnet' then

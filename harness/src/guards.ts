@@ -1,4 +1,4 @@
-// P0 false-green killers shared by the interop e2e suites.
+// P0 false-green killers shared by the harness e2e suites.
 //
 // A green test run must mean the matrix actually asserted something. Two
 // failure modes silently subvert that:
@@ -33,7 +33,7 @@ export function socketGateMode(socketSupport: boolean): SocketGateMode {
 }
 
 export const SOCKET_UNAVAILABLE_CI_MESSAGE =
-  "Loopback socket bind failed under CI. The interop matrix cannot run, so " +
+  "Loopback socket bind failed under CI. The harness matrix cannot run, so " +
   "this is a hard failure (not a skip): a sandbox that cannot bind loopback " +
   "must not let the whole matrix report green with zero assertions. Set CI=0 " +
   "to opt into the local skip behaviour.";
@@ -86,7 +86,7 @@ export type EligibilityVerdict =
   | { verdict: "skip"; reason: string };
 
 // Decide whether a scenario should run, be skipped (shard exclusion), or hard
-// fail (globally empty) in a sharded interop matrix.
+// fail (globally empty) in a sharded harness matrix.
 //
 // `shard` holds the counts computed against the currently-enabled adapter
 // subset; `full` holds the same counts computed against the entire adapter

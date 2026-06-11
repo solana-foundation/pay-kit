@@ -9,7 +9,7 @@ require "timeout"
 # Drives `harness/ruby-server/server.rb` as a subprocess to prove the
 # dual-protocol adapter boots correctly under both env namespaces.
 # Full settlement (RPC + chain) is exercised by the cross-language
-# interop matrix in CI; this test pins the adapter's boot contract and
+# harness matrix in CI; this test pins the adapter's boot contract and
 # the 402 challenge shape so a regression in the harness adapter is
 # caught at the gem-test level.
 class PayKitHarnessAdapterTest < Minitest::Test
@@ -62,19 +62,19 @@ class PayKitHarnessAdapterTest < Minitest::Test
 
   def x402_env
     {
-      "X402_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
-      "X402_INTEROP_PAY_TO" => COMMON_ENV["PAY_TO"],
-      "X402_INTEROP_MINT" => COMMON_ENV["MINT"],
-      "X402_INTEROP_FACILITATOR_SECRET_KEY" => JSON.generate((0..63).to_a)
+      "X402_HARNESS_RPC_URL" => "http://127.0.0.1:8899",
+      "X402_HARNESS_PAY_TO" => COMMON_ENV["PAY_TO"],
+      "X402_HARNESS_MINT" => COMMON_ENV["MINT"],
+      "X402_HARNESS_FACILITATOR_SECRET_KEY" => JSON.generate((0..63).to_a)
     }
   end
 
   def mpp_env
     {
-      "MPP_INTEROP_RPC_URL" => "http://127.0.0.1:8899",
-      "MPP_INTEROP_PAY_TO" => COMMON_ENV["PAY_TO"],
-      "MPP_INTEROP_MINT" => COMMON_ENV["MINT"],
-      "MPP_INTEROP_AMOUNT" => "100000"
+      "MPP_HARNESS_RPC_URL" => "http://127.0.0.1:8899",
+      "MPP_HARNESS_PAY_TO" => COMMON_ENV["PAY_TO"],
+      "MPP_HARNESS_MINT" => COMMON_ENV["MINT"],
+      "MPP_HARNESS_AMOUNT" => "100000"
     }
   end
 

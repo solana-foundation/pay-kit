@@ -186,7 +186,7 @@ class ChargeCredentialTest {
         // `quoted-string`. The Rust reference parser accepts both, so
         // an unquoted `request=<token>` (here a base64url payload
         // which is a valid token) must parse cleanly. Previously this
-        // test asserted rejection, which broke interop with compliant
+        // test asserted rejection, which broke harness with compliant
         // peers (see PR #105 codex review, Headers P2).
         val challenge = MppHeaders.parseWWWAuthenticate(
             """Payment id="challenge-9", realm="MPP Payment", method="solana", intent="charge", request=${encodedRequest()}""",
@@ -257,7 +257,7 @@ class ChargeCredentialTest {
                     "recipient": "platform111111111111111111111111111111",
                     "amount": "250",
                     "ataCreationRequired": true,
-                    "memo": "interop split"
+                    "memo": "harness split"
                   }
                 ],
                 "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"

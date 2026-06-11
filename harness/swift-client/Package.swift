@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "SwiftInteropClient",
+    name: "SwiftHarnessClient",
     platforms: [
         .macOS(.v13),
     ],
@@ -12,7 +12,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "SwiftInteropClient",
+            name: "SwiftHarnessClient",
             dependencies: [
                 .product(name: "SolanaPayKit", package: "swift"),
             ]

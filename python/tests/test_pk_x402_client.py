@@ -685,7 +685,7 @@ async def test_build_payment_header_envelope_shape():
 class _FakeRpc:
     """Stub for the server-side SolanaRpc broadcast surface."""
 
-    def __init__(self, *_a, signature: str = "SIG-client-interop", **_k):
+    def __init__(self, *_a, signature: str = "SIG-client-harness", **_k):
         self._signature = signature
 
     async def send_raw_transaction(self, _raw):
@@ -766,7 +766,7 @@ async def test_transport_402_then_pay_then_200(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert resp.headers["x-fixture-settlement"] == "SIG-client-interop"
+    assert resp.headers["x-fixture-settlement"] == "SIG-client-harness"
 
 
 @pytest.mark.asyncio

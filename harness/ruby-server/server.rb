@@ -3,14 +3,14 @@
 # Cross-language harness adapter that proves the PayKit dual-protocol
 # claim: one Ruby server, one /paid route, two settle paths (x402:exact
 # and mpp:charge). The harness orchestrator picks the protocol per
-# scenario by setting either `X402_INTEROP_*` or `MPP_INTEROP_*` env;
+# scenario by setting either `X402_HARNESS_*` or `MPP_HARNESS_*` env;
 # this adapter auto-detects which one is active and wires accordingly.
 #
 # x402 path: routes through PayKit::Pricing + dispatcher (one gate,
 # inline coercion). The x402 wire format is uniform across scenarios.
 #
 # MPP path: bypasses PayKit's gate DSL and drives PayKit::Protocols::Mpp::Server::Charge
-# directly. The interop matrix exercises facets PayKit's Gate doesn't
+# directly. The harness matrix exercises facets PayKit's Gate doesn't
 # model yet (per-split ataCreationRequired + memo, custom settlement
 # headers, push-mode credentials, replay-source idempotency) so the
 # harness builds the method + server with explicit knobs from env.
@@ -40,12 +40,12 @@ end
 
 # --- detect intent -----------------------------------------------------
 
-# When the harness orchestrator sets PAY_KIT_INTEROP_PROTOCOL the
+# When the harness orchestrator sets PAY_KIT_HARNESS_PROTOCOL the
 # adapter trusts that hint (the cross-language matrix populates both
-# X402_INTEROP_* and MPP_INTEROP_* from the same surfpool fixtures, so
+# X402_HARNESS_* and MPP_HARNESS_* from the same surfpool fixtures, so
 # namespace probing alone is ambiguous). Otherwise the adapter falls
 # back to "exactly one namespace must be populated".
-explicit_protocol = ENV["PAY_KIT_INTEROP_PROTOCOL"].to_s.strip.downcase
+explicit_protocol = ENV["PAY_KIT_HARNESS_PROTOCOL"].to_s.strip.downcase
 case explicit_protocol
 when "x402"
   x402_active = true
@@ -54,10 +54,10 @@ when "mpp", "charge"
   x402_active = false
   mpp_active = true
 else
-  x402_active = !ENV["X402_INTEROP_RPC_URL"].to_s.empty?
-  mpp_active  = !ENV["MPP_INTEROP_RPC_URL"].to_s.empty?
+  x402_active = !ENV["X402_HARNESS_RPC_URL"].to_s.empty?
+  mpp_active  = !ENV["MPP_HARNESS_RPC_URL"].to_s.empty?
   if x402_active == mpp_active
-    warn "ruby-server: set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or set PAY_KIT_INTEROP_PROTOCOL=x402|mpp"
+    warn "ruby-server: set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL=x402|mpp"
     exit 2
   end
 end
@@ -66,13 +66,13 @@ protocol = x402_active ? :x402 : :mpp
 # --- per-protocol setup -------------------------------------------------
 
 if x402_active
-  rpc_url            = require_env("X402_INTEROP_RPC_URL")
-  pay_to             = require_env("X402_INTEROP_PAY_TO")
-  facilitator_secret = require_env("X402_INTEROP_FACILITATOR_SECRET_KEY")
-  amount_raw         = optional_env("X402_INTEROP_PRICE", "$0.001")
-  mint_raw           = optional_env("X402_INTEROP_MINT", "USDC")
-  network_raw        = optional_env("X402_INTEROP_NETWORK", ::PayCore::Solana::Caip2::DEVNET)
-  resource_path      = optional_env("X402_INTEROP_RESOURCE_PATH", "/paid")
+  rpc_url            = require_env("X402_HARNESS_RPC_URL")
+  pay_to             = require_env("X402_HARNESS_PAY_TO")
+  facilitator_secret = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+  amount_raw         = optional_env("X402_HARNESS_PRICE", "$0.001")
+  mint_raw           = optional_env("X402_HARNESS_MINT", "USDC")
+  network_raw        = optional_env("X402_HARNESS_NETWORK", ::PayCore::Solana::Caip2::DEVNET)
+  resource_path      = optional_env("X402_HARNESS_RESOURCE_PATH", "/paid")
 
   amount_decimal = amount_raw.delete_prefix("$").sub(/\A0+(?=\d)/, "")
   network_sym = case network_raw
@@ -96,7 +96,7 @@ if x402_active
   amount_for_gate = amount_decimal
   pricing_class = Class.new(PayKit::Pricing) do
     define_method(:build_gates) do
-      gate :paid, amount: usd(amount_for_gate, mint_for_gate), description: "PayKit interop"
+      gate :paid, amount: usd(amount_for_gate, mint_for_gate), description: "PayKit harness"
     end
   end
   PayKit.pricing = pricing_class.new
@@ -105,19 +105,19 @@ if x402_active
 else
   # --- MPP direct-mode wiring -----------------------------------------
 
-  rpc_url           = require_env("MPP_INTEROP_RPC_URL")
-  pay_to            = require_env("MPP_INTEROP_PAY_TO")
-  mint_raw          = require_env("MPP_INTEROP_MINT")
-  amount_raw        = require_env("MPP_INTEROP_AMOUNT")
-  mpp_secret        = optional_env("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
-  network_raw       = optional_env("MPP_INTEROP_NETWORK", "localnet")
-  resource_path     = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
-  settlement_header = optional_env("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature")
-  decimals_raw      = optional_env("MPP_INTEROP_DECIMALS", "6")
-  asset_kind        = optional_env("MPP_INTEROP_ASSET_KIND", "spl")
-  splits_raw        = optional_env("MPP_INTEROP_SPLITS", "[]")
-  replay_amount     = ENV["MPP_INTEROP_REPLAY_SOURCE_AMOUNT"]
-  replay_path       = ENV["MPP_INTEROP_REPLAY_SOURCE_PATH"]
+  rpc_url           = require_env("MPP_HARNESS_RPC_URL")
+  pay_to            = require_env("MPP_HARNESS_PAY_TO")
+  mint_raw          = require_env("MPP_HARNESS_MINT")
+  amount_raw        = require_env("MPP_HARNESS_AMOUNT")
+  mpp_secret        = optional_env("MPP_HARNESS_SECRET_KEY", "pay-kit-harness-secret")
+  network_raw       = optional_env("MPP_HARNESS_NETWORK", "localnet")
+  resource_path     = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
+  settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature")
+  decimals_raw      = optional_env("MPP_HARNESS_DECIMALS", "6")
+  asset_kind        = optional_env("MPP_HARNESS_ASSET_KIND", "spl")
+  splits_raw        = optional_env("MPP_HARNESS_SPLITS", "[]")
+  replay_amount     = ENV["MPP_HARNESS_REPLAY_SOURCE_AMOUNT"]
+  replay_path       = ENV["MPP_HARNESS_REPLAY_SOURCE_PATH"]
 
   splits_for_method = JSON.parse(splits_raw)
   splits_for_method = nil if splits_for_method.is_a?(Array) && splits_for_method.empty?
@@ -144,7 +144,7 @@ else
   mpp_server = ::PayKit::Protocols::Mpp.create(
     method: method,
     secret_key: mpp_secret,
-    realm: "PayKit Interop",
+    realm: "PayKit Harness",
     settlement_header: settlement_header
   )
 
@@ -261,7 +261,7 @@ serve_mpp = proc do |conn, req|
   result = mpp_server.charge(
     authorization,
     amount: amount_units.to_s,
-    description: "PayKit interop protected content",
+    description: "PayKit harness protected content",
     splits: splits_for_method
   )
 

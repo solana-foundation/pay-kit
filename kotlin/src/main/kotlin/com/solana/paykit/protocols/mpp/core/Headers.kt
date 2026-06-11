@@ -213,7 +213,7 @@ object MppHeaders {
                 // Compliant peers (Rust ref included) emit short token
                 // values like `method=solana` unquoted. The Rust
                 // reference parses both forms; matching it keeps
-                // interop healthy.
+                // harness healthy.
                 val valueStart = index
                 while (index < value.length && !value[index].isWhitespace() && value[index] != ',') {
                     index += 1

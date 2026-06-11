@@ -1,5 +1,5 @@
 /**
- * Canonical interop test client (TypeScript).
+ * Canonical harness test client (TypeScript).
  *
  * Tests the full payment cycle against any MPP server:
  *   1. GET /health -> 200
@@ -40,7 +40,7 @@ const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3001';
 const FORTUNE_PATH = process.env.FORTUNE_PATH ?? '/fortune';
 const RPC_URL = process.env.RPC_URL ?? 'http://localhost:8899';
 
-console.log(`Interop test: TypeScript client -> ${SERVER_URL}`);
+console.log(`Harness test: TypeScript client -> ${SERVER_URL}`);
 console.log(`RPC: ${RPC_URL}`);
 
 // ---------------------------------------------------------------------------
@@ -450,7 +450,7 @@ async function main() {
     console.log(`OK -> ${data.fortune}`);
   }
 
-  console.log('\n  All interop tests passed');
+  console.log('\n  All harness tests passed');
 }
 
 main().catch((err) => {

@@ -1,4 +1,4 @@
-package com.solana.paykit.x402interop
+package com.solana.paykit.x402harness
 
 import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
@@ -20,25 +20,25 @@ import java.util.concurrent.TimeUnit
 /**
  * Cross-language harness adapter for the Kotlin x402 ``exact`` client.
  *
- * Mirrors the Rust spine interop client at
- * ``rust/crates/x402/src/bin/interop_client.rs``: GET the target, parse the
+ * Mirrors the Rust spine harness client at
+ * ``rust/crates/x402/src/bin/harness_client.rs``: GET the target, parse the
  * x402 challenge with the client's network + currency-preference selection,
  * build the ``Payment-Signature`` header, GET again with it, then print
  * exactly one result JSON line to stdout. All diagnostics go to stderr.
  *
  * Env contract (shared with the rust/python/ts clients):
  *
- * - ``X402_INTEROP_TARGET_URL``         required, the gated resource URL.
- * - ``X402_INTEROP_RPC_URL``            required, Solana RPC (blockhash fallback).
- * - ``X402_INTEROP_NETWORK``            CAIP-2 / slug; default devnet CAIP-2.
- * - ``X402_INTEROP_CLIENT_SECRET_KEY``  required, JSON int array.
- * - ``X402_INTEROP_PREFER_CURRENCIES``  optional, comma-separated preference list.
+ * - ``X402_HARNESS_TARGET_URL``         required, the gated resource URL.
+ * - ``X402_HARNESS_RPC_URL``            required, Solana RPC (blockhash fallback).
+ * - ``X402_HARNESS_NETWORK``            CAIP-2 / slug; default devnet CAIP-2.
+ * - ``X402_HARNESS_CLIENT_SECRET_KEY``  required, JSON int array.
+ * - ``X402_HARNESS_PREFER_CURRENCIES``  optional, comma-separated preference list.
  */
 fun main() {
     try {
         runAdapter()
     } catch (error: Throwable) {
-        System.err.println("kotlin-x402 interop adapter error: ${error.message}")
+        System.err.println("kotlin-x402 harness adapter error: ${error.message}")
         error.printStackTrace(System.err)
         val failure = buildJsonObject {
             put("type", "result")
@@ -59,12 +59,12 @@ private const val DEFAULT_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 private const val SETTLEMENT_HEADER = "x-fixture-settlement"
 
 private fun runAdapter() {
-    val targetUrl = requireEnv("X402_INTEROP_TARGET_URL")
-    val rpcUrl = requireEnv("X402_INTEROP_RPC_URL")
-    val network = System.getenv("X402_INTEROP_NETWORK")?.takeIf { it.isNotBlank() } ?: DEFAULT_NETWORK
-    val secretKey = parseSecretKey(requireEnv("X402_INTEROP_CLIENT_SECRET_KEY"))
+    val targetUrl = requireEnv("X402_HARNESS_TARGET_URL")
+    val rpcUrl = requireEnv("X402_HARNESS_RPC_URL")
+    val network = System.getenv("X402_HARNESS_NETWORK")?.takeIf { it.isNotBlank() } ?: DEFAULT_NETWORK
+    val secretKey = parseSecretKey(requireEnv("X402_HARNESS_CLIENT_SECRET_KEY"))
 
-    val preferRaw = System.getenv("X402_INTEROP_PREFER_CURRENCIES")
+    val preferRaw = System.getenv("X402_HARNESS_PREFER_CURRENCIES")
     val currencies: List<String>? = if (!preferRaw.isNullOrBlank()) {
         preferRaw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }
     } else null
@@ -112,7 +112,7 @@ private fun runAdapter() {
             JsonPrimitive(rawBody)
         }
         val settlementHeaderName =
-            (System.getenv("X402_INTEROP_SETTLEMENT_HEADER")?.takeIf { it.isNotBlank() }
+            (System.getenv("X402_HARNESS_SETTLEMENT_HEADER")?.takeIf { it.isNotBlank() }
                 ?: SETTLEMENT_HEADER).lowercase()
         val settlement = headerMap[settlementHeaderName]?.jsonPrimitive?.content
 
@@ -141,12 +141,12 @@ private fun requireEnv(name: String): String =
 
 /**
  * Parses the JSON-array-of-bytes form Solana keypair files use.
- * Identical to the MPP interop adapter's parseSecretKey.
+ * Identical to the MPP harness adapter's parseSecretKey.
  */
 internal fun parseSecretKey(raw: String): ByteArray {
     val element = Json.parseToJsonElement(raw)
     if (element !is JsonArray) {
-        error("X402_INTEROP_CLIENT_SECRET_KEY must be a JSON array of bytes")
+        error("X402_HARNESS_CLIENT_SECRET_KEY must be a JSON array of bytes")
     }
     val bytes = ByteArray(element.size)
     for ((index, value) in element.withIndex()) {
@@ -160,7 +160,7 @@ internal fun parseSecretKey(raw: String): ByteArray {
         bytes[index] = long.toInt().toByte()
     }
     if (bytes.size != 32 && bytes.size != 64) {
-        error("X402_INTEROP_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
+        error("X402_HARNESS_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
     }
     return bytes
 }

@@ -176,7 +176,7 @@ struct ChargeCredentialTests {
                 "recipient": "platform111111111111111111111111111111",
                 "amount": "250",
                 "ataCreationRequired": true,
-                "memo": "interop split"
+                "memo": "harness split"
               }
             ],
             "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"

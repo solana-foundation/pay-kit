@@ -468,15 +468,15 @@ Gates:
 
 The Lua server has one dual-protocol adapter at
 [`harness/lua-server/server.lua`](../harness/lua-server/server.lua)
-that reads either `MPP_INTEROP_*` or `X402_INTEROP_*` env (or the
-`PAY_KIT_INTEROP_PROTOCOL` hint when both namespaces are populated).
+that reads either `MPP_HARNESS_*` or `X402_HARNESS_*` env (or the
+`PAY_KIT_HARNESS_PROTOCOL` hint when both namespaces are populated).
 Focused harness commands:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=typescript  MPP_INTEROP_SERVERS=lua pnpm test
-MPP_INTEROP_CLIENTS=rust        MPP_INTEROP_SERVERS=lua pnpm test
-X402_INTEROP_CLIENTS=rust-x402  MPP_INTEROP_SERVERS=lua pnpm test
+MPP_HARNESS_CLIENTS=typescript  MPP_HARNESS_SERVERS=lua pnpm test
+MPP_HARNESS_CLIENTS=rust        MPP_HARNESS_SERVERS=lua pnpm test
+X402_HARNESS_CLIENTS=rust-x402  MPP_HARNESS_SERVERS=lua pnpm test
 ```
 
 CI runs the same matrix in `.github/workflows/lua.yml`.

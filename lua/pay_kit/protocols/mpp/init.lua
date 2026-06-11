@@ -143,7 +143,7 @@ end
 -- `primary` to `request.recipient`, so splits[] must contain ONLY
 -- the fee recipients (verifier-aligned; mirrors the Ruby PR #138
 -- fix to the splits primary exclusion).
--- Interop side-channel: allow the harness (or any adapter wiring) to
+-- Harness side-channel: allow the harness (or any adapter wiring) to
 -- inject the literal splits[] payload (carrying ataCreationRequired,
 -- memo, etc.) per gate name. The pay_kit gate model doesn't carry
 -- ataCreationRequired natively because it's an MPP wire concern, not

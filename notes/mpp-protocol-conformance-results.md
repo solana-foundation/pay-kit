@@ -29,7 +29,7 @@ Group totals (each cell = one scenario x one SDK):
 | challenge-id | 25 | 175 | 175 | 0 | 0 |
 | **total** | **90** | **630** | **630** | **0** | **0** |
 
-The two interop-critical primitives are 100% exact-byte PASS: **base64url
+The two harness-critical primitives are 100% exact-byte PASS: **base64url
 (140/140)** and **challenge.id, the cross-impl HMAC (175/175)** — including the
 `html_sensitive_request_canonicalization` case that previously exposed the Go
 RFC 8785 JCS HTML-escaping bug. The header codec layer

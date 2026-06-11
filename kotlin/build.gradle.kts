@@ -22,7 +22,7 @@ dependencies {
     // functions, so coroutines is part of the SDK's exported API.
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
     // BouncyCastle gives a deterministic Ed25519 signer that takes the raw
-    // 32 byte seed format Solana keypair files (and the MPP interop
+    // 32 byte seed format Solana keypair files (and the MPP harness
     // harness) ship in. The JDK Ed25519 provider does not expose that
     // wire-level seed import path on every JVM.
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")

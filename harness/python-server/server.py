@@ -2,7 +2,7 @@
 
 One TCP server, two settle paths (x402:exact and mpp:charge), picked per
 scenario by which env namespace the harness orchestrator sets (or by the
-explicit ``PAY_KIT_INTEROP_PROTOCOL`` hint). Mirrors ``harness/php-server/
+explicit ``PAY_KIT_HARNESS_PROTOCOL`` hint). Mirrors ``harness/php-server/
 server.php`` and the Ruby/Lua pay-kit-server pattern.
 
 This adapter routes every request through the unified ``pay_kit`` surface:
@@ -15,8 +15,8 @@ server.php``): x402 routes through the umbrella adapter, while MPP charge
 routes through the lower-level ``pay_kit.protocols.mpp`` handler. The umbrella's
 ticker-based currency model (``Stablecoin`` enum -> ``Mints.resolve``) is the
 right surface for x402, where the offer's ``asset`` is the resolved on-chain
-mint; but the interop MPP charge matrix runs in *pubkey mode* (the harness
-deploys the scenario mint at an arbitrary ``MPP_INTEROP_MINT`` pubkey, not the
+mint; but the harness MPP charge matrix runs in *pubkey mode* (the harness
+deploys the scenario mint at an arbitrary ``MPP_HARNESS_MINT`` pubkey, not the
 canonical USDC mint), so the MPP challenge must advertise that literal mint as
 its ``currency``. The lower-level ``pay_kit.protocols.mpp`` handler takes the raw mint
 directly, exactly as the PHP ``SolanaChargeHandler`` path does.
@@ -131,7 +131,7 @@ def _coin_for_mint(mint: str) -> Stablecoin:
     """Pick the settlement Stablecoin for the scenario mint.
 
     The harness sends an on-chain mint pubkey (pubkey mode) or a ticker
-    (symbol mode). The interop matrix's stablecoin is USDC; map any ticker we
+    (symbol mode). The harness matrix's stablecoin is USDC; map any ticker we
     recognise, else default to USDC. The on-chain mint is asserted by the
     harness from the SDK's own resolver, so the ticker only selects which
     6-decimal coin the offer advertises.
@@ -144,17 +144,17 @@ def _coin_for_mint(mint: str) -> Stablecoin:
 
 def _detect_x402() -> bool:
     """Decide which protocol this run exercises (mirror PHP detection)."""
-    explicit = optional_env("PAY_KIT_INTEROP_PROTOCOL", "").lower()
+    explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
     if explicit == "x402":
         return True
     if explicit in ("mpp", "charge"):
         return False
-    x402_set = bool(os.environ.get("X402_INTEROP_RPC_URL"))
-    mpp_set = bool(os.environ.get("MPP_INTEROP_RPC_URL"))
+    x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
+    mpp_set = bool(os.environ.get("MPP_HARNESS_RPC_URL"))
     if x402_set == mpp_set:
         print(
-            "set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, "
-            "or set PAY_KIT_INTEROP_PROTOCOL",
+            "set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, "
+            "or set PAY_KIT_HARNESS_PROTOCOL",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -174,17 +174,17 @@ class _Adapter:
     # -- x402 -----------------------------------------------------------------
 
     def _build_x402(self) -> None:
-        rpc_url = require_env("X402_INTEROP_RPC_URL")
-        pay_to = require_env("X402_INTEROP_PAY_TO")
-        facilitator_json = require_env("X402_INTEROP_FACILITATOR_SECRET_KEY")
-        amount_units = optional_env("X402_INTEROP_AMOUNT", "1000")
-        mint = optional_env("X402_INTEROP_MINT", "USDC")
+        rpc_url = require_env("X402_HARNESS_RPC_URL")
+        pay_to = require_env("X402_HARNESS_PAY_TO")
+        facilitator_json = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+        amount_units = optional_env("X402_HARNESS_AMOUNT", "1000")
+        mint = optional_env("X402_HARNESS_MINT", "USDC")
         network_raw = optional_env(
-            "X402_INTEROP_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+            "X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
         )
-        self.resource_path = optional_env("X402_INTEROP_RESOURCE_PATH", "/protected")
+        self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/protected")
         self.settlement_header = optional_env(
-            "X402_INTEROP_SETTLEMENT_HEADER", "x-fixture-settlement"
+            "X402_HARNESS_SETTLEMENT_HEADER", "x-fixture-settlement"
         ).lower()
         self.coin = _coin_for_mint(mint)
 
@@ -200,32 +200,32 @@ class _Adapter:
         self.config = config
         self.adapter = X402Adapter(config)
         self.pay_to = pay_to
-        decimals = int(optional_env("X402_INTEROP_DECIMALS", "6"))
+        decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
 
     # -- mpp ------------------------------------------------------------------
 
     def _build_mpp(self) -> None:
-        self.rpc_url = require_env("MPP_INTEROP_RPC_URL")
-        pay_to = require_env("MPP_INTEROP_PAY_TO")
+        self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
+        pay_to = require_env("MPP_HARNESS_PAY_TO")
         # Pubkey mode: the literal scenario mint pubkey is the MPP currency.
-        self.mint = require_env("MPP_INTEROP_MINT")
-        amount_units = require_env("MPP_INTEROP_AMOUNT")
-        secret = optional_env("MPP_INTEROP_SECRET_KEY", "mpp-interop-secret-key")
-        network_raw = optional_env("MPP_INTEROP_NETWORK", "localnet")
-        self.resource_path = optional_env("MPP_INTEROP_RESOURCE_PATH", "/paid")
+        self.mint = require_env("MPP_HARNESS_MINT")
+        amount_units = require_env("MPP_HARNESS_AMOUNT")
+        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
+        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
         self.settlement_header = optional_env(
-            "MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature"
+            "MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
         ).lower()
-        realm = optional_env("MPP_INTEROP_REALM", "MPP Interop")
-        self.splits = json.loads(optional_env("MPP_INTEROP_SPLITS", "[]"))
+        realm = optional_env("MPP_HARNESS_REALM", "MPP Harness")
+        self.splits = json.loads(optional_env("MPP_HARNESS_SPLITS", "[]"))
         if not isinstance(self.splits, list):
-            print("MPP_INTEROP_SPLITS must decode to a JSON array", file=sys.stderr)
+            print("MPP_HARNESS_SPLITS must decode to a JSON array", file=sys.stderr)
             sys.exit(2)
 
         fee_payer = None
-        fee_payer_raw = os.environ.get("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
+        fee_payer_raw = os.environ.get("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
         if fee_payer_raw:
             from solders.keypair import Keypair
 
@@ -238,7 +238,7 @@ class _Adapter:
         config = MppServerConfig(
             recipient=pay_to,
             currency=self.mint,
-            decimals=int(optional_env("MPP_INTEROP_DECIMALS", "6")),
+            decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
             network=network_raw,
             rpc_url=self.rpc_url,
             secret_key=secret,
@@ -250,17 +250,17 @@ class _Adapter:
         self.handler = Mpp(config)
         self.pay_to = pay_to
 
-        decimals = int(optional_env("MPP_INTEROP_DECIMALS", "6"))
+        decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
-        replay_path = os.environ.get("MPP_INTEROP_REPLAY_SOURCE_PATH") or ""
+        replay_path = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_PATH") or ""
         if replay_path:
-            replay_amount = os.environ.get("MPP_INTEROP_REPLAY_SOURCE_AMOUNT") or amount_units
+            replay_amount = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_AMOUNT") or amount_units
             self.routes[replay_path] = _base_units_to_human(replay_amount, decimals)
         self.replay_path = replay_path
 
     def charge_options(self) -> ChargeOptions:
         options = ChargeOptions(
-            description="PayKit Python interop protected content",
+            description="PayKit Python harness protected content",
             splits=self.splits or [],
         )
         if self.fee_payer is not None:
@@ -276,12 +276,12 @@ class _Adapter:
             amount=Price.usd(amount, self.coin),
             default_pay_to=self.pay_to,
             accept=(Protocol.X402,),
-            description="PayKit Python interop protected content",
+            description="PayKit Python harness protected content",
         )
 
 
-class InteropHandler(BaseHTTPRequestHandler):
-    server_version = "python-interop/1.0"
+class HarnessHandler(BaseHTTPRequestHandler):
+    server_version = "python-harness/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
@@ -397,7 +397,7 @@ class InteropHandler(BaseHTTPRequestHandler):
             )
             return
         except Exception as err:  # noqa: BLE001 framework guard
-            print(f"interop python server error: {err}", file=sys.stderr)
+            print(f"harness python server error: {err}", file=sys.stderr)
             self._issue_mpp_challenge(adapter, amount, options, message=str(err))
             return
 
@@ -443,7 +443,7 @@ class InteropHandler(BaseHTTPRequestHandler):
 def main() -> None:
     adapter = _Adapter()
     port = _free_port()
-    server = HTTPServer(("127.0.0.1", port), InteropHandler)
+    server = HTTPServer(("127.0.0.1", port), HarnessHandler)
     server.adapter = adapter  # type: ignore[attr-defined]
 
     ready = {

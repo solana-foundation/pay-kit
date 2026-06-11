@@ -1,7 +1,7 @@
 import Foundation
 
 /// Minimal Solana JSON-RPC client used by `Charge` when the server
-/// omits `recentBlockhash` from `methodDetails`. The interop harness
+/// omits `recentBlockhash` from `methodDetails`. The harness
 /// always includes `recentBlockhash`, so this path is only exercised
 /// for ad-hoc callers that want the SDK to fetch one.
 ///

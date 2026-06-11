@@ -2,7 +2,7 @@
 //
 // One TCP server, two settle paths (x402:exact and mpp:charge), picked
 // per scenario by which env namespace the harness orchestrator sets
-// (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors
+// (or by the explicit PAY_KIT_HARNESS_PROTOCOL hint). Mirrors
 // harness/lua-server/server.lua, harness/ruby-server/server.rb and
 // harness/php-server/server.php.
 //
@@ -46,15 +46,15 @@ type readyMessage struct {
 }
 
 func main() {
-	protocolMode := strings.ToLower(os.Getenv("PAY_KIT_INTEROP_PROTOCOL"))
+	protocolMode := strings.ToLower(os.Getenv("PAY_KIT_HARNESS_PROTOCOL"))
 	if protocolMode == "" {
 		switch {
-		case os.Getenv("X402_INTEROP_RPC_URL") != "":
+		case os.Getenv("X402_HARNESS_RPC_URL") != "":
 			protocolMode = "x402"
-		case os.Getenv("MPP_INTEROP_RPC_URL") != "":
+		case os.Getenv("MPP_HARNESS_RPC_URL") != "":
 			protocolMode = "mpp"
 		default:
-			log.Fatal("set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or PAY_KIT_INTEROP_PROTOCOL")
+			log.Fatal("set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or PAY_KIT_HARNESS_PROTOCOL")
 		}
 	}
 
@@ -64,10 +64,10 @@ func main() {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 
-	resourcePath := optionalEnv("X402_INTEROP_RESOURCE_PATH",
-		optionalEnv("MPP_INTEROP_RESOURCE_PATH", "/paid"))
-	settlementHeader := optionalEnv("X402_INTEROP_SETTLEMENT_HEADER",
-		optionalEnv("MPP_INTEROP_SETTLEMENT_HEADER", "x-payment-settlement-signature"))
+	resourcePath := optionalEnv("X402_HARNESS_RESOURCE_PATH",
+		optionalEnv("MPP_HARNESS_RESOURCE_PATH", "/paid"))
+	settlementHeader := optionalEnv("X402_HARNESS_SETTLEMENT_HEADER",
+		optionalEnv("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
@@ -94,15 +94,15 @@ func main() {
 }
 
 func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
-	rpcURL := requireEnv("X402_INTEROP_RPC_URL")
-	payTo := requireEnv("X402_INTEROP_PAY_TO")
-	facilitator := requireEnv("X402_INTEROP_FACILITATOR_SECRET_KEY")
-	amount := optionalEnv("X402_INTEROP_AMOUNT", "1000")
-	// The harness funds the scenario's mint (X402_INTEROP_MINT) and the
+	rpcURL := requireEnv("X402_HARNESS_RPC_URL")
+	payTo := requireEnv("X402_HARNESS_PAY_TO")
+	facilitator := requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	amount := optionalEnv("X402_HARNESS_AMOUNT", "1000")
+	// The harness funds the scenario's mint (X402_HARNESS_MINT) and the
 	// client pays in whatever mint the challenge advertises, so the gate
 	// must settle in that exact mint, not the USDC default (which resolves
 	// to the mainnet mint the fixtures never funded).
-	mint := optionalEnv("X402_INTEROP_MINT", "")
+	mint := optionalEnv("X402_HARNESS_MINT", "")
 
 	preflight := false
 	cfg := paykit.Config{
@@ -139,17 +139,17 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 }
 
 func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
-	rpcURL := requireEnv("MPP_INTEROP_RPC_URL")
-	payTo := requireEnv("MPP_INTEROP_PAY_TO")
-	mint := requireEnv("MPP_INTEROP_MINT")
-	price := optionalEnv("MPP_INTEROP_PRICE", "0.001")
-	mppSecret := optionalEnv("MPP_INTEROP_SECRET_KEY", "pay-kit-interop-secret")
-	network := optionalEnv("MPP_INTEROP_NETWORK", "localnet")
-	paymentMode := optionalEnv("MPP_INTEROP_PAYMENT_MODE", "pull")
-	replayPath := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_PATH")
-	replayAmount := os.Getenv("MPP_INTEROP_REPLAY_SOURCE_AMOUNT")
-	feePayerJSON := requireEnv("MPP_INTEROP_FEE_PAYER_SECRET_KEY")
-	splitsJSON := optionalEnv("MPP_INTEROP_SPLITS", "[]")
+	rpcURL := requireEnv("MPP_HARNESS_RPC_URL")
+	payTo := requireEnv("MPP_HARNESS_PAY_TO")
+	mint := requireEnv("MPP_HARNESS_MINT")
+	price := optionalEnv("MPP_HARNESS_PRICE", "0.001")
+	mppSecret := optionalEnv("MPP_HARNESS_SECRET_KEY", "pay-kit-harness-secret")
+	network := optionalEnv("MPP_HARNESS_NETWORK", "localnet")
+	paymentMode := optionalEnv("MPP_HARNESS_PAYMENT_MODE", "pull")
+	replayPath := os.Getenv("MPP_HARNESS_REPLAY_SOURCE_PATH")
+	replayAmount := os.Getenv("MPP_HARNESS_REPLAY_SOURCE_AMOUNT")
+	feePayerJSON := requireEnv("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
+	splitsJSON := optionalEnv("MPP_HARNESS_SPLITS", "[]")
 
 	feePayer := privateKeyFromJSON(feePayerJSON)
 	rpcClient := rpc.New(rpcURL)
@@ -177,7 +177,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 	// pins the credential against the route's live expected request
 	// (needed for cross-route replay rejection). Bypass
 	// server.PaymentMiddleware so the harness sees the same shape
-	// the existing Go interop server emits.
+	// the existing Go harness server emits.
 	handle := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "not_found", http.StatusNotFound)
@@ -186,7 +186,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		path := r.URL.Path
 		amt := price
 		if replayPath != "" && path == replayPath && replayAmount != "" {
-			amt = optionalEnv("MPP_INTEROP_REPLAY_SOURCE_PRICE", amt)
+			amt = optionalEnv("MPP_HARNESS_REPLAY_SOURCE_PRICE", amt)
 		}
 		opts := server.ChargeOptions{
 			Description: "Go PayKit harness " + path,
@@ -241,7 +241,7 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 func privateKeyFromJSON(raw string) solana.PrivateKey {
 	var ints []int
 	if err := json.Unmarshal([]byte(raw), &ints); err != nil {
-		log.Fatalf("MPP_INTEROP_FEE_PAYER_SECRET_KEY decode: %v", err)
+		log.Fatalf("MPP_HARNESS_FEE_PAYER_SECRET_KEY decode: %v", err)
 	}
 	b := make([]byte, len(ints))
 	for i, v := range ints {

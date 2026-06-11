@@ -1,12 +1,12 @@
 import Foundation
 import SolanaPayKit
 
-/// Swift interop adapter for the MPP charge harness. Mirrors the
-/// command-line shape of `rust/crates/mpp/src/bin/interop_client.rs`:
+/// Swift harness adapter for the MPP charge harness. Mirrors the
+/// command-line shape of `rust/crates/mpp/src/bin/harness_client.rs`:
 ///
-/// - Reads `MPP_INTEROP_TARGET_URL`, `MPP_INTEROP_RPC_URL`, and
-///   `MPP_INTEROP_CLIENT_SECRET_KEY` (JSON array of bytes).
-/// - Optional `MPP_INTEROP_SETTLEMENT_HEADER` (defaults to
+/// - Reads `MPP_HARNESS_TARGET_URL`, `MPP_HARNESS_RPC_URL`, and
+///   `MPP_HARNESS_CLIENT_SECRET_KEY` (JSON array of bytes).
+/// - Optional `MPP_HARNESS_SETTLEMENT_HEADER` (defaults to
 ///   `x-fixture-settlement`).
 /// - Sends the unauthenticated request, parses the 402 WWW-Authenticate,
 ///   signs through `PayKit.HttpClient.mpp`, emits one `result` JSON line
@@ -15,11 +15,11 @@ import SolanaPayKit
 /// All diagnostics go to stderr. Stdout is reserved for the harness
 /// handshake.
 
-struct InteropError: Error { let message: String }
+struct HarnessError: Error { let message: String }
 
 func readEnv(_ name: String) throws -> String {
     guard let value = ProcessInfo.processInfo.environment[name], !value.isEmpty else {
-        throw InteropError(message: "\(name) is required")
+        throw HarnessError(message: "\(name) is required")
     }
     return value
 }
@@ -27,18 +27,18 @@ func readEnv(_ name: String) throws -> String {
 func readKeypair(_ name: String) throws -> Data {
     let raw = try readEnv(name)
     guard let data = raw.data(using: .utf8) else {
-        throw InteropError(message: "\(name) is not valid UTF-8")
+        throw HarnessError(message: "\(name) is not valid UTF-8")
     }
     guard
         let bytes = try? JSONSerialization.jsonObject(with: data) as? [Int]
     else {
-        throw InteropError(message: "\(name) is not a JSON array of bytes")
+        throw HarnessError(message: "\(name) is not a JSON array of bytes")
     }
     var validated: [UInt8] = []
     validated.reserveCapacity(bytes.count)
     for value in bytes {
         guard value >= 0, value <= 255 else {
-            throw InteropError(
+            throw HarnessError(
                 message: "\(name) contains non-byte value \(value); expected 0...255"
             )
         }
@@ -75,19 +75,19 @@ func writeStderr(_ message: String) {
 }
 
 @main
-struct InteropEntry {
+struct HarnessEntry {
     static func main() async {
         do {
-            let targetURLString = try readEnv("MPP_INTEROP_TARGET_URL")
+            let targetURLString = try readEnv("MPP_HARNESS_TARGET_URL")
             guard let targetURL = URL(string: targetURLString) else {
-                throw InteropError(message: "MPP_INTEROP_TARGET_URL is not a URL")
+                throw HarnessError(message: "MPP_HARNESS_TARGET_URL is not a URL")
             }
-            let rpcURLString = try readEnv("MPP_INTEROP_RPC_URL")
+            let rpcURLString = try readEnv("MPP_HARNESS_RPC_URL")
             guard let rpcURL = URL(string: rpcURLString) else {
-                throw InteropError(message: "MPP_INTEROP_RPC_URL is not a URL")
+                throw HarnessError(message: "MPP_HARNESS_RPC_URL is not a URL")
             }
-            let secret = try readKeypair("MPP_INTEROP_CLIENT_SECRET_KEY")
-            let settlementHeader = ProcessInfo.processInfo.environment["MPP_INTEROP_SETTLEMENT_HEADER"]
+            let secret = try readKeypair("MPP_HARNESS_CLIENT_SECRET_KEY")
+            let settlementHeader = ProcessInfo.processInfo.environment["MPP_HARNESS_SETTLEMENT_HEADER"]
                 ?? "x-fixture-settlement"
 
             let signer = try MemorySigner(secretKey: secret)
@@ -104,8 +104,8 @@ struct InteropEntry {
                 body: response.body,
                 settlement: response.settlementSignature
             )
-        } catch let error as InteropError {
-            writeStderr("interop error: \(error.message)")
+        } catch let error as HarnessError {
+            writeStderr("harness error: \(error.message)")
             emitResult(0, ok: false, headers: [:], body: Data(error.message.utf8), settlement: nil)
             exit(1)
         } catch {

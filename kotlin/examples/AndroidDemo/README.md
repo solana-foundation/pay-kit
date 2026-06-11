@@ -72,7 +72,7 @@ The single screen exposes two text fields:
 - Merchant URL. Defaults to `https://402.surfnet.dev/protected`.
 - Solana RPC URL. Defaults to `https://402.surfnet.dev/rpc`.
 
-For a local surfpool + interop server on the host machine, point
+For a local surfpool + harness server on the host machine, point
 both at `http://10.0.2.2:<port>` from inside the emulator (Android's
 loopback alias for the host). The app permits cleartext HTTP only
 for `10.0.2.2`, `127.0.0.1`, and `localhost` via

@@ -1,4 +1,4 @@
-"""Regression tests for the Python interop adapter at
+"""Regression tests for the Python harness adapter at
 ``harness/python-server/server.py``.
 
 Spawns the adapter as a subprocess, reads the ``ready`` handshake JSON
@@ -52,12 +52,12 @@ def _fake_keypair_json() -> str:
 def adapter_env() -> dict[str, str]:
     return {
         **os.environ,
-        "MPP_INTEROP_RPC_URL": "http://127.0.0.1:8899",
-        "MPP_INTEROP_NETWORK": "localnet",
-        "MPP_INTEROP_MINT": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "MPP_INTEROP_AMOUNT": "1000",
-        "MPP_INTEROP_PAY_TO": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
-        "MPP_INTEROP_FEE_PAYER_SECRET_KEY": _fake_keypair_json(),
+        "MPP_HARNESS_RPC_URL": "http://127.0.0.1:8899",
+        "MPP_HARNESS_NETWORK": "localnet",
+        "MPP_HARNESS_MINT": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "MPP_HARNESS_AMOUNT": "1000",
+        "MPP_HARNESS_PAY_TO": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "MPP_HARNESS_FEE_PAYER_SECRET_KEY": _fake_keypair_json(),
     }
 
 

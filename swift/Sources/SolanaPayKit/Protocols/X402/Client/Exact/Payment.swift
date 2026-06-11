@@ -83,7 +83,7 @@ public func parseX402ChallengeWithVersion(
     // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
     // (client/exact/payment.rs: serde_json::from_str on the header value),
     // not base64. Accept a base64 envelope first, then fall back to raw JSON
-    // (rust parity), so we interoperate with either producer.
+    // (rust parity), so we harnesserate with either producer.
     if let value = header(X402LegacyPaymentRequiredHeader),
        let parsed = _selectFromHeader(value, selection: selection)
         ?? _selectFromBody(value, selection: selection) {

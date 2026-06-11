@@ -74,7 +74,7 @@ class ExactVerifier:
     Decodes a standard-base64 (padded) versioned transaction and confirms it
     matches the route's advertised requirement. Each failure raises
     :class:`InvalidProofError` carrying the canonical reject string the
-    cross-language interop harness substring-matches against. Mirrors the
+    cross-language harness substring-matches against. Mirrors the
     rust ``verify_exact_instructions`` ordering exactly.
     """
 

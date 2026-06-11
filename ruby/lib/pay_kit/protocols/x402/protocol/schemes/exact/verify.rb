@@ -10,7 +10,7 @@ module PayKit::Protocols::X402
         # `rust/crates/x402/src/protocol/schemes/exact/verify.rs` and
         # raises canonical reject tokens (e.g.
         # `invalid_exact_svm_payload_amount_mismatch`) that the
-        # cross-language interop harness substring-matches against.
+        # cross-language harness substring-matches against.
         #
         # Rules (mirrors spine verify.rs):
         #   1. Instruction count 3..=6                          (verify.rs:230-235)
@@ -42,7 +42,7 @@ module PayKit::Protocols::X402
 
           # Verify all non-managed client signatures on a versioned
           # transaction. Mirrors the spine ordering at
-          # `rust/crates/x402/src/bin/interop_server.rs:316-324`: the
+          # `rust/crates/x402/src/bin/harness_server.rs:316-324`: the
           # envelope is validated BEFORE the facilitator co-signs,
           # otherwise a partially-signed envelope leaks back to a
           # malformed-envelope attacker.

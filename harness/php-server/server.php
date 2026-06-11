@@ -7,11 +7,11 @@ declare(strict_types=1);
  *
  * One TCP server, two settle paths (x402:exact and mpp:charge),
  * picked per scenario by which env namespace the harness orchestrator
- * sets (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors
+ * sets (or by the explicit PAY_KIT_HARNESS_PROTOCOL hint). Mirrors
  * harness/lua-server/server.lua and the Ruby pay-kit-server pattern.
  *
  * Drives the harness contract:
- *   1. Read env (PAY_KIT_INTEROP_PROTOCOL OR exclusive MPP_/X402_).
+ *   1. Read env (PAY_KIT_HARNESS_PROTOCOL OR exclusive MPP_/X402_).
  *   2. Boot the PayKit umbrella + register one gate at the requested amount.
  *   3. Listen on a free TCP port; print {"type":"ready",...} on stdout.
  *   4. Route GET /<resource> through the matching protocol adapter.
@@ -79,17 +79,17 @@ function secret_key_from_json(string $raw): string
 
 // ── Detect intent ───────────────────────────────────────────────────────────
 
-$explicit = strtolower(optional_env('PAY_KIT_INTEROP_PROTOCOL', ''));
+$explicit = strtolower(optional_env('PAY_KIT_HARNESS_PROTOCOL', ''));
 $x402Active = false;
 if ($explicit === 'x402') {
     $x402Active = true;
 } elseif ($explicit === 'mpp' || $explicit === 'charge') {
     $x402Active = false;
 } else {
-    $x402Set = (getenv('X402_INTEROP_RPC_URL') ?: '') !== '';
-    $mppSet  = (getenv('MPP_INTEROP_RPC_URL') ?: '') !== '';
+    $x402Set = (getenv('X402_HARNESS_RPC_URL') ?: '') !== '';
+    $mppSet  = (getenv('MPP_HARNESS_RPC_URL') ?: '') !== '';
     if ($x402Set === $mppSet) {
-        fwrite(STDERR, "set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or set PAY_KIT_INTEROP_PROTOCOL\n");
+        fwrite(STDERR, "set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL\n");
         exit(2);
     }
     $x402Active = $x402Set;
@@ -98,30 +98,30 @@ if ($explicit === 'x402') {
 // ── Per-protocol env read ───────────────────────────────────────────────────
 
 if ($x402Active) {
-    $rpcUrl       = require_env('X402_INTEROP_RPC_URL');
-    $payTo        = require_env('X402_INTEROP_PAY_TO');
-    $facilitatorSecretJson = require_env('X402_INTEROP_FACILITATOR_SECRET_KEY');
-    $amountUnits  = optional_env('X402_INTEROP_AMOUNT', '1000');
-    $mint         = optional_env('X402_INTEROP_MINT', 'USDC');
-    $networkRaw   = optional_env('X402_INTEROP_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1');
-    $resourcePath = optional_env('X402_INTEROP_RESOURCE_PATH', '/paid');
-    $settlementHeader = optional_env('X402_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
+    $rpcUrl       = require_env('X402_HARNESS_RPC_URL');
+    $payTo        = require_env('X402_HARNESS_PAY_TO');
+    $facilitatorSecretJson = require_env('X402_HARNESS_FACILITATOR_SECRET_KEY');
+    $amountUnits  = optional_env('X402_HARNESS_AMOUNT', '1000');
+    $mint         = optional_env('X402_HARNESS_MINT', 'USDC');
+    $networkRaw   = optional_env('X402_HARNESS_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1');
+    $resourcePath = optional_env('X402_HARNESS_RESOURCE_PATH', '/paid');
+    $settlementHeader = optional_env('X402_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
 } else {
-    $rpcUrl       = require_env('MPP_INTEROP_RPC_URL');
-    $payTo        = require_env('MPP_INTEROP_PAY_TO');
-    $mint         = require_env('MPP_INTEROP_MINT');
-    $amountUnits  = require_env('MPP_INTEROP_AMOUNT');
-    $mppSecret    = optional_env('MPP_INTEROP_SECRET_KEY', 'pay-kit-interop-secret');
-    $networkRaw   = optional_env('MPP_INTEROP_NETWORK', 'localnet');
-    $resourcePath = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid');
-    $settlementHeader = optional_env('MPP_INTEROP_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
-    $paymentMode  = optional_env('MPP_INTEROP_PAYMENT_MODE', 'pull');
-    $replayPath   = getenv('MPP_INTEROP_REPLAY_SOURCE_PATH') ?: null;
-    $replayAmount = getenv('MPP_INTEROP_REPLAY_SOURCE_AMOUNT') ?: null;
+    $rpcUrl       = require_env('MPP_HARNESS_RPC_URL');
+    $payTo        = require_env('MPP_HARNESS_PAY_TO');
+    $mint         = require_env('MPP_HARNESS_MINT');
+    $amountUnits  = require_env('MPP_HARNESS_AMOUNT');
+    $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret');
+    $networkRaw   = optional_env('MPP_HARNESS_NETWORK', 'localnet');
+    $resourcePath = optional_env('MPP_HARNESS_RESOURCE_PATH', '/paid');
+    $settlementHeader = optional_env('MPP_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');
+    $paymentMode  = optional_env('MPP_HARNESS_PAYMENT_MODE', 'pull');
+    $replayPath   = getenv('MPP_HARNESS_REPLAY_SOURCE_PATH') ?: null;
+    $replayAmount = getenv('MPP_HARNESS_REPLAY_SOURCE_AMOUNT') ?: null;
     /** @var mixed $splitsDecoded */
-    $splitsDecoded = json_decode(optional_env('MPP_INTEROP_SPLITS', '[]'), true, flags: JSON_THROW_ON_ERROR);
+    $splitsDecoded = json_decode(optional_env('MPP_HARNESS_SPLITS', '[]'), true, flags: JSON_THROW_ON_ERROR);
     $splits = is_array($splitsDecoded) ? $splitsDecoded : [];
-    $feePayer = Keypair::fromSecretKey(secret_key_from_json(require_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY')));
+    $feePayer = Keypair::fromSecretKey(secret_key_from_json(require_env('MPP_HARNESS_FEE_PAYER_SECRET_KEY')));
 }
 
 // ── Boot the SDK ────────────────────────────────────────────────────────────
@@ -148,14 +148,14 @@ if ($x402Active) {
     $handler = new SolanaChargeHandler(
         challenges: new ChargeServer(
             secretKey: $mppSecret,
-            realm:     'MPP Interop',
+            realm:     'MPP Harness',
             blockhashProvider: fn (): string => $rpc->getLatestBlockhash()['blockhash'],
         ),
         rpc:        $rpc,
         feePayer:   $feePayer,
         network:    $networkRaw,
         settlementHeader: $settlementHeader,
-        replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-interop-replay-' . getmypid()),
+        replayStore: new FileStore(sys_get_temp_dir() . '/mpp-php-harness-replay-' . getmypid()),
     );
 }
 
@@ -212,7 +212,7 @@ function build_charge_request(string $amount, string $mint, string $payTo, strin
         amount:        $amount,
         currency:      $mint,
         recipient:     $payTo,
-        description:   'PHP interop protected content',
+        description:   'PHP harness protected content',
         methodDetails: $methodDetails,
     );
 }
@@ -365,7 +365,7 @@ while (is_resource($listener)) {
                 try {
                     $payment = $adapter->verifyAndSettle($gate, $psrReq);
                     // The harness reads the settlement signature from a
-                    // configurable header name (X402_INTEROP_SETTLEMENT_HEADER);
+                    // configurable header name (X402_HARNESS_SETTLEMENT_HEADER);
                     // the default is x-payment-settlement-signature but
                     // scenarios override it (e.g. x-fixture-settlement).
                     $headers = array_merge(
@@ -396,7 +396,7 @@ while (is_resource($listener)) {
         }
         fclose($conn);
     } catch (Throwable $error) {
-        fwrite(STDERR, 'interop php server error: ' . $error->getMessage() . "\n");
+        fwrite(STDERR, 'harness php server error: ' . $error->getMessage() . "\n");
         if (is_resource($conn)) {
             try {
                 write_response($conn, 500, ['content-type' => 'application/json'], ['error' => $error->getMessage()]);

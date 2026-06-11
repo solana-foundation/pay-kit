@@ -56,12 +56,12 @@ use solana_mpp::{
 const DEFAULT_RESOURCE_PATH: &str = "/protected";
 const HEALTH_PATH: &str = "/health";
 const DEFAULT_PRICE: &str = "0.001";
-const DEFAULT_SECRET_KEY: &str = "mpp-interop-secret-key";
+const DEFAULT_SECRET_KEY: &str = "mpp-harness-secret-key";
 const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 const DEFAULT_TOKEN_DECIMALS: u8 = 6;
 
 #[derive(Clone)]
-struct InteropState {
+struct HarnessState {
     mpp: Mpp,
     price: String,
     push_mode: bool,
@@ -98,12 +98,12 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let runtime = Arc::clone(&runtime);
                 thread::spawn(move || {
                     if let Err(error) = handle_connection(stream, &state, &runtime) {
-                        write_stderr_line(&format!("interop rust server error: {error}"));
+                        write_stderr_line(&format!("harness rust server error: {error}"));
                     }
                 });
             }
             Err(error) => {
-                write_stderr_line(&format!("interop rust server accept error: {error}"));
+                write_stderr_line(&format!("harness rust server accept error: {error}"));
             }
         }
     }
@@ -111,25 +111,25 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>> {
-    let rpc_url = read_required_env("MPP_INTEROP_RPC_URL")?;
-    let network = env::var("MPP_INTEROP_NETWORK").unwrap_or_else(|_| "localnet".to_string());
-    let mint = read_required_env("MPP_INTEROP_MINT")?;
-    let pay_to = read_required_env("MPP_INTEROP_PAY_TO")?;
+fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>> {
+    let rpc_url = read_required_env("MPP_HARNESS_RPC_URL")?;
+    let network = env::var("MPP_HARNESS_NETWORK").unwrap_or_else(|_| "localnet".to_string());
+    let mint = read_required_env("MPP_HARNESS_MINT")?;
+    let pay_to = read_required_env("MPP_HARNESS_PAY_TO")?;
     // B34 / push-mode: routes driven in push mode must not advertise a
     // server-side fee payer (see charge.rs: push credentials are rejected
     // when method_details.fee_payer == true). The fee payer secret key is
     // still required for pull-mode runs; we just keep `fee_payer` off the
     // Config so the challenge omits feePayer/feePayerKey.
-    let push_mode = env::var("MPP_INTEROP_PAYMENT_MODE")
+    let push_mode = env::var("MPP_HARNESS_PAYMENT_MODE")
         .map(|v| v == "push")
         .unwrap_or(false);
     let fee_payer: Arc<dyn SolanaSigner> =
-        Arc::new(read_memory_signer("MPP_INTEROP_FEE_PAYER_SECRET_KEY")?);
-    let price = env::var("MPP_INTEROP_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
+        Arc::new(read_memory_signer("MPP_HARNESS_FEE_PAYER_SECRET_KEY")?);
+    let price = env::var("MPP_HARNESS_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
     let replay_source = match (
-        env::var("MPP_INTEROP_REPLAY_SOURCE_PATH"),
-        env::var("MPP_INTEROP_REPLAY_SOURCE_PRICE"),
+        env::var("MPP_HARNESS_REPLAY_SOURCE_PATH"),
+        env::var("MPP_HARNESS_REPLAY_SOURCE_PRICE"),
     ) {
         (Ok(resource_path), Ok(price)) => Some(ReplaySource {
             price,
@@ -138,14 +138,14 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
         _ => None,
     };
     let challenge_binding_secret =
-        env::var("MPP_INTEROP_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
-    let decimals = match env::var("MPP_INTEROP_DECIMALS") {
+        env::var("MPP_HARNESS_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
+    let decimals = match env::var("MPP_HARNESS_DECIMALS") {
         Ok(raw) if !raw.is_empty() => raw.parse::<u8>()?,
         _ => DEFAULT_TOKEN_DECIMALS,
     };
     let splits = read_splits()?;
 
-    Ok(InteropState {
+    Ok(HarnessState {
         mpp: Mpp::new(Config {
             recipient: pay_to,
             currency: mint,
@@ -153,7 +153,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             network,
             rpc_url: Some(rpc_url),
             challenge_binding_secret: Some(challenge_binding_secret),
-            realm: Some("MPP Interop".to_string()),
+            realm: Some("MPP Harness".to_string()),
             fee_payer: !push_mode,
             fee_payer_signer: if push_mode { None } else { Some(fee_payer) },
             store: None,
@@ -162,9 +162,9 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
         price,
         push_mode,
         replay_source,
-        resource_path: env::var("MPP_INTEROP_RESOURCE_PATH")
+        resource_path: env::var("MPP_HARNESS_RESOURCE_PATH")
             .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string()),
-        settlement_header: env::var("MPP_INTEROP_SETTLEMENT_HEADER")
+        settlement_header: env::var("MPP_HARNESS_SETTLEMENT_HEADER")
             .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string()),
         splits,
     })
@@ -172,7 +172,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
 
 fn handle_connection(
     mut stream: TcpStream,
-    state: &InteropState,
+    state: &HarnessState,
     runtime: &tokio::runtime::Runtime,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -264,7 +264,7 @@ fn handle_connection(
 }
 
 fn payment_challenge_header(
-    state: &InteropState,
+    state: &HarnessState,
     price: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let challenge = state.mpp.charge_with_options(
@@ -280,7 +280,7 @@ fn payment_challenge_header(
 }
 
 fn settle_payment(
-    state: &InteropState,
+    state: &HarnessState,
     runtime: &tokio::runtime::Runtime,
     authorization: &str,
     price: &str,
@@ -301,7 +301,7 @@ fn settle_payment(
 }
 
 fn expected_request_for_route(
-    state: &InteropState,
+    state: &HarnessState,
     price: &str,
 ) -> Result<ChargeRequest, Box<dyn std::error::Error + Send + Sync>> {
     let challenge = state.mpp.charge_with_options(
@@ -316,7 +316,7 @@ fn expected_request_for_route(
     Ok(challenge.request.decode()?)
 }
 
-fn route_price<'a>(state: &'a InteropState, path: &str) -> Option<&'a str> {
+fn route_price<'a>(state: &'a HarnessState, path: &str) -> Option<&'a str> {
     if path == state.resource_path {
         return Some(state.price.as_str());
     }
@@ -360,7 +360,7 @@ fn read_required_env(name: &str) -> Result<String, Box<dyn std::error::Error + S
 }
 
 fn read_splits() -> Result<Vec<Split>, Box<dyn std::error::Error + Send + Sync>> {
-    match env::var("MPP_INTEROP_SPLITS") {
+    match env::var("MPP_HARNESS_SPLITS") {
         Ok(raw) if !raw.trim().is_empty() => Ok(serde_json::from_str(&raw)?),
         _ => Ok(Vec::new()),
     }

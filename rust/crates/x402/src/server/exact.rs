@@ -557,7 +557,7 @@ impl X402 {
                 // to catch "production server saw a Surfpool-localnet
                 // keypair", which is impossible to even encounter when the
                 // server itself is talking to a local simulator (e.g. CI/
-                // interop runs against Surfpool on 127.0.0.1).
+                // harness runs against Surfpool on 127.0.0.1).
                 if !is_loopback_rpc(&self.rpc_url()) {
                     check_network_blockhash(
                         &self.config.network,

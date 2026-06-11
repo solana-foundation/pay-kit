@@ -72,7 +72,7 @@ export type VectorRpcFixtures = {
 // x402 oracle: a CLIENT build emits a base64(JSON) payment header and a
 // SERVER verify consumes one, so the cross-SDK contract is the DECODED
 // ENVELOPE shape, never raw transaction bytes (the signed Solana
-// transaction inside `payload.transaction` is the interop matrix's job).
+// transaction inside `payload.transaction` is the harness matrix's job).
 //
 // v2 (canonical): { x402Version: 2, accepted: <offer object>, payload: { transaction } }
 //   header PAYMENT-SIGNATURE; no top-level scheme/network.
@@ -246,7 +246,7 @@ export type VectorInput = {
   // build-transaction (x402): a pinned base64 transaction proof so the
   // build path is deterministic and RPC-free. The conformance oracle is
   // the envelope shape, not the signed-transaction bytes; a real SDK
-  // signs a Solana tx here, verified by the interop matrix.
+  // signs a Solana tx here, verified by the harness matrix.
   x402PinnedTransaction?: string;
   // verify-transaction (x402): the server's configured route. The server
   // verifies the submitted `paymentHeader` against this network/recipient/

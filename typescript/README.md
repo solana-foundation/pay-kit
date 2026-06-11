@@ -213,7 +213,7 @@ The packaged TypeScript surface does not ship it yet:
 | `batch-settlement` | —      |
 
 A TypeScript x402 `exact` reference (client and server) lives in the
-interop harness at
+harness at
 [`harness/src/fixtures/typescript/`](../harness/src/fixtures/typescript)
 and passes the cross-language conformance suite; packaging it as a
 pay-kit protocol adapter is tracked in
@@ -420,7 +420,7 @@ pnpm test:integration
 
 ## Harness
 
-The cross-language interop harness lives in [`../harness`](../harness).
+The cross-language harness lives in [`../harness`](../harness).
 The TypeScript SDK ships both the reference client
 (`harness/ts-client`) and the in-process reference server used by every
 other SDK's adapter.

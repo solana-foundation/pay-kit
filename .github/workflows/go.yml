@@ -76,8 +76,8 @@ jobs:
           args: --timeout=5m
           skip-cache: true
 
-  interop-go:
-    name: Go PayKit interop (mpp charge + x402 exact)
+  harness-go:
+    name: Go PayKit harness (mpp charge + x402 exact)
     needs: test-go
     runs-on: ubuntu-latest
     steps:
@@ -93,8 +93,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-go-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-go-interop-
+          key: ${{ runner.os }}-cargo-go-harness-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-go-harness-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -109,30 +109,30 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust interop client
+      - name: Build Rust harness client
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client
-      - name: Build Rust x402 interop client
+        run: cargo build -p solana-mpp --bin harness_client
+      - name: Build Rust x402 harness client
         working-directory: rust
-        run: cargo build -p solana-x402 --bin interop_client
-      - name: Install interop harness
+        run: cargo build -p solana-x402 --bin harness_client
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .
-      - name: Run Go PayKit interop matrix (mpp charge + x402 exact)
+      - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
         working-directory: harness
         env:
           # Only the go server runs in this job, so every generated pair
           # targets it: no testNamePattern filter and no skipped rows.
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: go
-          MPP_INTEROP_INTENTS: charge,x402-exact
-          # selectInteropScenarios reads MPP_INTEROP_SCENARIOS for the
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: go
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          # selectHarnessScenarios reads MPP_HARNESS_SCENARIOS for the
           # whole active set (x402 included), so x402-exact-basic must be
           # listed here. Charge scenarios the go server is eligible for:
           # basic, splits (Token + Token-2022), symbol resolution,
@@ -140,10 +140,10 @@ jobs:
           # rejection, sum-equals-amount, and the two L6 fault-matrix
           # codes (wrong_network / charge_request_mismatch); plus the
           # x402 exact scheme.
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
-          X402_INTEROP_CLIENTS: rust-x402,go-x402
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
+          X402_HARNESS_CLIENTS: rust-x402,go-x402
           # Pin the x402 server set to the main go server (the rust-x402 /
           # ts-x402 server fixtures default on; exclude them so the only
           # x402 server is the go paykit server under test).
-          X402_INTEROP_SERVERS: go
+          X402_HARNESS_SERVERS: go
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

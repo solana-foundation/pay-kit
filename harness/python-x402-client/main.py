@@ -1,18 +1,18 @@
 """Cross-language harness adapter for the Python pay_kit x402 ``exact`` client.
 
-Mirrors the Rust spine interop client
-(``rust/crates/x402/src/bin/interop_client.rs``): GET the target, parse the
+Mirrors the Rust spine harness client
+(``rust/crates/x402/src/bin/harness_client.rs``): GET the target, parse the
 x402 challenge with the client's network + currency-preference selection, build
 the ``PAYMENT-SIGNATURE`` header, GET again with it, then print exactly one
 result JSON line to stdout. All diagnostics go to stderr.
 
 Env contract (shared with the rust/ts clients):
 
-* ``X402_INTEROP_TARGET_URL``        - required, the gated resource URL.
-* ``X402_INTEROP_RPC_URL``           - required, Solana RPC (blockhash fallback).
-* ``X402_INTEROP_NETWORK``           - CAIP-2 / slug; default devnet CAIP-2.
-* ``X402_INTEROP_CLIENT_SECRET_KEY`` - required, JSON int array (Signer.bytes).
-* ``X402_INTEROP_PREFER_CURRENCIES`` - optional, comma-separated preference list.
+* ``X402_HARNESS_TARGET_URL``        - required, the gated resource URL.
+* ``X402_HARNESS_RPC_URL``           - required, Solana RPC (blockhash fallback).
+* ``X402_HARNESS_NETWORK``           - CAIP-2 / slug; default devnet CAIP-2.
+* ``X402_HARNESS_CLIENT_SECRET_KEY`` - required, JSON int array (Signer.bytes).
+* ``X402_HARNESS_PREFER_CURRENCIES`` - optional, comma-separated preference list.
 """
 
 from __future__ import annotations
@@ -101,13 +101,13 @@ def _emit(result: dict[str, Any]) -> None:
 
 
 async def _run() -> None:
-    target_url = _require_env("X402_INTEROP_TARGET_URL")
-    rpc_url = _require_env("X402_INTEROP_RPC_URL")
-    network = os.environ.get("X402_INTEROP_NETWORK") or DEFAULT_NETWORK
-    secret = _require_env("X402_INTEROP_CLIENT_SECRET_KEY")
+    target_url = _require_env("X402_HARNESS_TARGET_URL")
+    rpc_url = _require_env("X402_HARNESS_RPC_URL")
+    network = os.environ.get("X402_HARNESS_NETWORK") or DEFAULT_NETWORK
+    secret = _require_env("X402_HARNESS_CLIENT_SECRET_KEY")
     signer = Signer.json(secret)
 
-    prefer_raw = os.environ.get("X402_INTEROP_PREFER_CURRENCIES")
+    prefer_raw = os.environ.get("X402_HARNESS_PREFER_CURRENCIES")
     currencies = None
     if prefer_raw:
         currencies = [entry.strip() for entry in prefer_raw.split(",") if entry.strip()] or None

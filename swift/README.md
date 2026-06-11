@@ -137,7 +137,7 @@ The `Examples/` directory hosts sample clients:
 
 The CLI is source-only so the default `swift build` stays library-only;
 add an executable target to `Package.swift` locally to run it. For
-interop coverage, run the interop adapter at
+harness coverage, run the harness adapter at
 [`harness/swift-client/`](../harness/swift-client) (MPP) or
 [`harness/swift-x402-client/`](../harness/swift-x402-client) (x402)
 against any registered server.
@@ -146,15 +146,15 @@ against any registered server.
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=typescript pnpm exec vitest run
+MPP_HARNESS_CLIENTS=swift MPP_HARNESS_SERVERS=typescript pnpm exec vitest run
 ```
 
 ### Drive the Rust x402 server
 
 ```bash
 cd harness
-X402_INTEROP_CLIENTS=swift-x402 X402_INTEROP_SERVERS=rust-x402 \
-  MPP_INTEROP_INTENTS=x402-exact MPP_INTEROP_SCENARIOS=x402-exact-basic \
+X402_HARNESS_CLIENTS=swift-x402 X402_HARNESS_SERVERS=rust-x402 \
+  MPP_HARNESS_INTENTS=x402-exact MPP_HARNESS_SCENARIOS=x402-exact-basic \
   pnpm exec vitest run test/e2e.test.ts \
   --testNamePattern "swift-x402 client pays rust-x402 server"
 ```
@@ -195,16 +195,16 @@ swift test --enable-code-coverage
 Coverage artifacts live in `swift/.build/debug/codecov/`. CI uploads
 them as the `swift-coverage` artifact.
 
-## Interop
+## Harness
 
-The Swift interop adapter lives at
+The Swift harness adapter lives at
 [`harness/swift-client`](../harness/swift-client). Focused harness
 commands:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=typescript pnpm exec vitest run
-MPP_INTEROP_CLIENTS=swift MPP_INTEROP_SERVERS=rust       pnpm exec vitest run
+MPP_HARNESS_CLIENTS=swift MPP_HARNESS_SERVERS=typescript pnpm exec vitest run
+MPP_HARNESS_CLIENTS=swift MPP_HARNESS_SERVERS=rust       pnpm exec vitest run
 ```
 
 ## Spec

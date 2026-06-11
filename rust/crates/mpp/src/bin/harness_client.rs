@@ -9,7 +9,7 @@ use serde_json::json;
 
 /// Write a line to stdout, swallowing `BrokenPipe` (EPIPE) errors instead of
 /// panicking the way Rust's default `println!` macro would when the harness
-/// has stopped reading our pipe. Mirrors the helper in `interop_server.rs`.
+/// has stopped reading our pipe. Mirrors the helper in `harness_server.rs`.
 fn write_stdout_line(line: &str) {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -30,11 +30,11 @@ const SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let target_url = read_required_env("MPP_INTEROP_TARGET_URL")?;
-    let rpc_url = read_required_env("MPP_INTEROP_RPC_URL")?;
-    let signer = read_memory_signer("MPP_INTEROP_CLIENT_SECRET_KEY")?;
+    let target_url = read_required_env("MPP_HARNESS_TARGET_URL")?;
+    let rpc_url = read_required_env("MPP_HARNESS_RPC_URL")?;
+    let signer = read_memory_signer("MPP_HARNESS_CLIENT_SECRET_KEY")?;
     let settlement_header =
-        env::var("MPP_INTEROP_SETTLEMENT_HEADER").unwrap_or_else(|_| SETTLEMENT_HEADER.to_string());
+        env::var("MPP_HARNESS_SETTLEMENT_HEADER").unwrap_or_else(|_| SETTLEMENT_HEADER.to_string());
 
     let http = reqwest::Client::new();
     let first_response = http.get(&target_url).send().await?;

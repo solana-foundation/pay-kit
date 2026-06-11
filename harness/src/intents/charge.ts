@@ -1,4 +1,4 @@
-import type { InteropScenario } from "../contracts";
+import type { HarnessScenario } from "../contracts";
 
 export type CanonicalJsonVector = {
   id: string;
@@ -75,7 +75,7 @@ export const chargeCanonicalJsonRejectVectors: readonly { id: string; reason: st
   { id: "infinity", reason: "Infinity" },
 ];
 
-export const chargeScenarios: readonly InteropScenario[] = [
+export const chargeScenarios: readonly HarnessScenario[] = [
   {
     id: "charge-basic",
     intent: "charge",
@@ -101,7 +101,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
         recipientKey: "platform",
         amount: "250",
         ataCreationRequired: true,
-        memo: "interop split",
+        memo: "harness split",
       },
     ],
     expectedStatus: 200,
@@ -115,10 +115,10 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // Push-mode B34: the server route is built WITHOUT
     // methodDetails.feePayer so the credential is not rejected by the
     // server-side fee payer guard (see charge.rs / SolanaChargeHandler).
-    // Server fixtures honour MPP_INTEROP_PAYMENT_MODE=push by omitting
+    // Server fixtures honour MPP_HARNESS_PAYMENT_MODE=push by omitting
     // the fee payer signer when constructing the charge method.
     // Excluded: lua and python ship push support in their SDKs but do
-    // not yet have an interop server fixture under harness/.
+    // not yet have an harness server fixture under harness/.
     id: "charge-push",
     intent: "charge",
     paymentMode: "push",
@@ -144,7 +144,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     // G39: cross-SDK agreement on the canonical code for a network
     // mismatch failure class. Gated on serverIds = ts+rust because PHP,
-    // Ruby, Lua, Go, Python interop servers have not yet wired the
+    // Ruby, Lua, Go, Python harness servers have not yet wired the
     // canonical code injection at the 402 boundary. Each L6 follow-up
     // PR adds its server id here.
     expectedCode: "wrong_network",
@@ -215,14 +215,14 @@ export const chargeScenarios: readonly InteropScenario[] = [
         recipientKey: "platform",
         amount: "250",
         ataCreationRequired: true,
-        memo: "interop token2022 split",
+        memo: "harness token2022 split",
       },
     ],
     expectedStatus: 200,
   },
   {
     // G07. 9-decimal SPL mint. Harness deploys the mint with data[44]=9,
-    // adapters receive MPP_INTEROP_DECIMALS=9 and must build the
+    // adapters receive MPP_HARNESS_DECIMALS=9 and must build the
     // challenge with `decimals: 9`. Assertion helper checks
     // transferChecked data[9] equals 9.
     id: "charge-decimals-9",
@@ -234,12 +234,12 @@ export const chargeScenarios: readonly InteropScenario[] = [
     resourcePath: "/protected/decimals-9",
     settlementHeader: "x-fixture-settlement",
     decimals: 9,
-    // The Rust interop server fixture computes amount as
+    // The Rust harness server fixture computes amount as
     // `price * 10^decimals`, which diverges from the TS fixture's
     // env-driven amount. Restricting to TS plus env-driven adapters
     // keeps the assertion's primary delta aligned with the on-wire
-    // amount. ruby reads MPP_INTEROP_AMOUNT directly
-    // and threads MPP_INTEROP_DECIMALS into the SDK, so it inherits
+    // amount. ruby reads MPP_HARNESS_AMOUNT directly
+    // and threads MPP_HARNESS_DECIMALS into the SDK, so it inherits
     // the TS-compatible shape.
     serverIds: ["typescript", "ruby"],
     expectedStatus: 200,
@@ -264,7 +264,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
         recipientKey: "platform",
         amount: "250",
         ataCreationRequired: true,
-        memo: "interop split idempotent",
+        memo: "harness split idempotent",
       },
     ],
     expectedStatus: 200,
@@ -311,9 +311,9 @@ export const chargeScenarios: readonly InteropScenario[] = [
     decimals: 9,
     // Only the TS server fixture currently threads currency="sol"
     // through the env. Rust/Ruby/PHP server fixtures default decimals
-    // to 6 and pass MPP_INTEROP_MINT straight to the SDK.
-    // ruby reads MPP_INTEROP_ASSET_KIND and maps "sol"
-    // to currency="SOL" + MPP_INTEROP_DECIMALS=9, so it joins the
+    // to 6 and pass MPP_HARNESS_MINT straight to the SDK.
+    // ruby reads MPP_HARNESS_ASSET_KIND and maps "sol"
+    // to currency="SOL" + MPP_HARNESS_DECIMALS=9, so it joins the
     // SOL-native pair list too.
     serverIds: ["typescript", "ruby"],
     expectedStatus: 200,
@@ -377,7 +377,7 @@ export const chargeScenarios: readonly InteropScenario[] = [
     // secret, surfacing as canonical `challenge_verification_failed`.
     // Only TS client is wired because the manual capture/re-submit
     // flow lives in the TS adapter. PHP/Ruby/Go servers are not in
-    // any pair yet because their interop fixtures don't reject HMAC
+    // any pair yet because their harness fixtures don't reject HMAC
     // mismatches with the canonical code; this is a tracked gap.
     id: "charge-cross-server-portability",
     intent: "charge",

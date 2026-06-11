@@ -78,7 +78,7 @@ _LEGACY_TO_CANONICAL = {
     # Compute-budget allowlist failures and splits-count cap. Mirrors the
     # Rust / PHP / Ruby pre-broadcast guards: the wire body still surfaces
     # ``payment_invalid`` to the client so the canonical-codes classifier
-    # in the interop harness routes the failure the same way every other
+    # in the harness routes the failure the same way every other
     # SDK does.
     "compute-budget-invalid": CODE_PAYMENT_INVALID,
     "compute-budget-cap-exceeded": CODE_PAYMENT_INVALID,

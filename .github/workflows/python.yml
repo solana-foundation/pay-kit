@@ -51,8 +51,8 @@ jobs:
           name: python-coverage
           path: python/coverage.json
 
-  interop-python:
-    name: Python interop matrix
+  harness-python:
+    name: Python harness matrix
     runs-on: ubuntu-latest
     needs: test-python
     steps:
@@ -68,8 +68,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-python-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-python-interop-
+          key: ${{ runner.os }}-cargo-python-harness-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-python-harness-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -84,10 +84,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       # Critical order: install + build the TypeScript workspace BEFORE
-      # installing the interop harness. harness has
+      # installing the harness. harness has
       # ``"@solana/mpp": "file:../typescript/packages/mpp"`` which
       # pnpm copies into node_modules at install time. If the typescript
-      # package has no dist/ at that moment, the TS interop client crashes
+      # package has no dist/ at that moment, the TS harness client crashes
       # with ``Cannot find module '@solana/mpp/dist/client/index.js''`` on
       # boot and the harness reports "Adapter exited before signaling
       # readiness/result (code 1)". html-assets.gen.ts is committed in
@@ -98,31 +98,31 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust interop adapters
+      - name: Build Rust harness adapters
         working-directory: rust
         run: |
-          cargo build -p solana-mpp --bin interop_client --bin interop_server
-          cargo build -p solana-x402 --bin interop_client --bin interop_server
-      - name: Install interop harness
+          cargo build -p solana-mpp --bin harness_client --bin harness_server
+          cargo build -p solana-x402 --bin harness_client --bin harness_server
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
-      - name: Focused TS-to-Python interop
+      - name: Focused TS-to-Python harness
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: python
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
-      - name: Focused Rust-to-Python interop
+      - name: Focused Rust-to-Python harness
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: python
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
       # x402 exact: drive the Python pay_kit x402 client (a real signed v0
       # VersionedTransaction) against the full-settling rust and python x402
       # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
-      # client keypair into X402_INTEROP_CLIENT_SECRET_KEY. The matrix pairs
-      # every active client x active server, so the MPP_INTEROP_* selectors are
+      # client keypair into X402_HARNESS_CLIENT_SECRET_KEY. The matrix pairs
+      # every active client x active server, so the MPP_HARNESS_* selectors are
       # also set to keep the default charge-enabled adapters (typescript, php,
       # go) out of this x402 run. ts-x402 is excluded: its stub server expects a
       # payload.challengeId and never broadcasts a real transaction, so it
@@ -132,10 +132,10 @@ jobs:
       - name: Focused python-x402 -> rust/python x402 servers
         working-directory: harness
         env:
-          MPP_INTEROP_INTENTS: x402-exact
-          MPP_INTEROP_SCENARIOS: x402-exact-basic
-          MPP_INTEROP_CLIENTS: python-x402
-          MPP_INTEROP_SERVERS: rust-x402,python
-          X402_INTEROP_CLIENTS: python-x402
-          X402_INTEROP_SERVERS: rust-x402,python
+          MPP_HARNESS_INTENTS: x402-exact
+          MPP_HARNESS_SCENARIOS: x402-exact-basic
+          MPP_HARNESS_CLIENTS: python-x402
+          MPP_HARNESS_SERVERS: rust-x402,python
+          X402_HARNESS_CLIENTS: python-x402
+          X402_HARNESS_SERVERS: rust-x402,python
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

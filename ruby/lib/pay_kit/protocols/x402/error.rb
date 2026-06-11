@@ -7,7 +7,7 @@ module PayKit::Protocols::X402
   # specific reject class they care about.
   #
   # The leaf classes embed their canonical reject token (the string
-  # the cross-language interop harness greps for) so the wire body
+  # the cross-language harness greps for) so the wire body
   # remains stable across ports: raising `PaymentInvalid.new(reason)`
   # serializes that reason verbatim, never the Ruby class name.
   class Error < StandardError
@@ -54,7 +54,7 @@ module PayKit::Protocols::X402
     # Subclassed under PaymentInvalid so a single `rescue` covers the
     # whole verifier-reject family. Each subclass carries a fixed
     # canonical reject token in its message so the cross-language
-    # interop harness can substring-match without seeing the Ruby
+    # harness can substring-match without seeing the Ruby
     # class name.
     class PaymentInvalid < Error; end
   end

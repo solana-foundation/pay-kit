@@ -22,7 +22,7 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.solana.paykit.x402interop.MainKt")
+    mainClass.set("com.solana.paykit.x402harness.MainKt")
 }
 
 tasks.named<JavaExec>("run") {

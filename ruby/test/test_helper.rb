@@ -8,13 +8,13 @@ if ENV["COVERAGE"] == "1"
     add_filter "/examples/"
     # The x402 protocol layer (wire types, verifier, exact server) binds
     # live Solana RPC + a facilitator fee payer and is exercised through
-    # the cross-language interop harness rather than isolated unit tests,
+    # the cross-language harness rather than isolated unit tests,
     # so the whole `protocols/x402/` tree stays out of the branch gate
     # (the same exclusion the pre-refactor layout applied to `lib/x402/`).
     add_filter "/lib/pay_kit/protocols/x402/"
     # The umbrella adapters + their per-protocol loaders bridge the gate
     # to each protocol over live Solana RPC + signing; they are exercised
-    # through the Sinatra example (manual curl DX) plus the interop
+    # through the Sinatra example (manual curl DX) plus the harness
     # harness. Unit-testing them in isolation would require mocking the
     # entire SVM client stack.
     add_filter "/lib/pay_kit/protocols/mpp.rb"

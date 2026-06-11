@@ -1,4 +1,4 @@
-// Canonical interop test client (Go).
+// Canonical harness test client (Go).
 //
 // Tests the full payment cycle against any MPP server:
 //
@@ -44,34 +44,34 @@ type adapterResult struct {
 }
 
 func main() {
-	if os.Getenv("X402_INTEROP_TARGET_URL") != "" {
+	if os.Getenv("X402_HARNESS_TARGET_URL") != "" {
 		if err := runX402Adapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
-	if os.Getenv("MPP_INTEROP_TARGET_URL") != "" {
+	if os.Getenv("MPP_HARNESS_TARGET_URL") != "" {
 		if err := runProcessAdapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
-	runLegacyInterop()
+	runLegacyHarness()
 }
 
 // runX402Adapter drives the x402 (exact) client against the target. It
-// mirrors the Rust x402 interop_client contract: read the offer from the
+// mirrors the Rust x402 harness_client contract: read the offer from the
 // 402 challenge, select by preferred network + currency order, build and
 // submit the Payment-Signature credential, then report the JSON result.
 func runX402Adapter(stdout io.Writer) error {
-	targetURL := os.Getenv("X402_INTEROP_TARGET_URL")
-	rpcURL := os.Getenv("X402_INTEROP_RPC_URL")
+	targetURL := os.Getenv("X402_HARNESS_TARGET_URL")
+	rpcURL := os.Getenv("X402_HARNESS_RPC_URL")
 	if rpcURL == "" {
-		return fmt.Errorf("X402_INTEROP_RPC_URL is required")
+		return fmt.Errorf("X402_HARNESS_RPC_URL is required")
 	}
-	signer, err := readPrivateKeyEnv("X402_INTEROP_CLIENT_SECRET_KEY")
+	signer, err := readPrivateKeyEnv("X402_HARNESS_CLIENT_SECRET_KEY")
 	if err != nil {
 		return err
 	}
@@ -79,8 +79,8 @@ func runX402Adapter(stdout io.Writer) error {
 		Signer: signer,
 		RPC:    rpc.New(rpcURL),
 		Selection: x402client.ChallengeSelection{
-			Network:    os.Getenv("X402_INTEROP_NETWORK"),
-			Currencies: parseCurrencies(os.Getenv("X402_INTEROP_PREFER_CURRENCIES")),
+			Network:    os.Getenv("X402_HARNESS_NETWORK"),
+			Currencies: parseCurrencies(os.Getenv("X402_HARNESS_PREFER_CURRENCIES")),
 		},
 	}
 	resp, err := (&http.Client{Transport: transport}).Get(targetURL)
@@ -123,13 +123,13 @@ func parseCurrencies(raw string) []string {
 }
 
 func runProcessAdapter(stdout io.Writer) error {
-	targetURL := os.Getenv("MPP_INTEROP_TARGET_URL")
-	rpcURL := os.Getenv("MPP_INTEROP_RPC_URL")
+	targetURL := os.Getenv("MPP_HARNESS_TARGET_URL")
+	rpcURL := os.Getenv("MPP_HARNESS_RPC_URL")
 	if rpcURL == "" {
-		return fmt.Errorf("MPP_INTEROP_RPC_URL is required")
+		return fmt.Errorf("MPP_HARNESS_RPC_URL is required")
 	}
 
-	signer, err := readPrivateKeyEnv("MPP_INTEROP_CLIENT_SECRET_KEY")
+	signer, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY")
 	if err != nil {
 		return err
 	}
@@ -200,12 +200,12 @@ func parseResponseBody(raw []byte) any {
 	return string(raw)
 }
 
-func runLegacyInterop() {
+func runLegacyHarness() {
 	serverURL := envOrDefault("SERVER_URL", "http://localhost:3001")
 	fortunePath := envOrDefault("FORTUNE_PATH", "/fortune")
 	rpcURL := envOrDefault("RPC_URL", "http://localhost:8899")
 
-	fmt.Printf("Interop test: Go client → %s\n", serverURL)
+	fmt.Printf("Harness test: Go client → %s\n", serverURL)
 	fmt.Printf("RPC: %s\n", rpcURL)
 
 	ctx := context.Background()
@@ -312,7 +312,7 @@ func runLegacyInterop() {
 	fortune, _ := data["fortune"].(string)
 	fmt.Printf("OK → %s\n", fortune)
 
-	fmt.Println("\n  ✓ All interop tests passed")
+	fmt.Println("\n  ✓ All harness tests passed")
 }
 
 // envOrDefault reads an env var with a fallback default.

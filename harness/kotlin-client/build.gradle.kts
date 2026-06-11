@@ -22,7 +22,7 @@ kotlin {
 }
 
 application {
-    mainClass.set("com.solana.paykit.interop.MainKt")
+    mainClass.set("com.solana.paykit.harness.MainKt")
 }
 
 tasks.named<JavaExec>("run") {

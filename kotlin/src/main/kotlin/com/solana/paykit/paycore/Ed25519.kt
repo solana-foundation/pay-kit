@@ -75,8 +75,8 @@ object Ed25519 {
      * Normalises a raw secret-key input into a 32 byte seed.
      *
      * Solana's canonical keypair file ships 64 bytes (32 byte seed
-     * concatenated with 32 byte public key). The MPP interop harness
-     * passes `MPP_INTEROP_CLIENT_SECRET_KEY` as a JSON array of those 64
+     * concatenated with 32 byte public key). The MPP harness
+     * passes `MPP_HARNESS_CLIENT_SECRET_KEY` as a JSON array of those 64
      * bytes. Some other tools ship the seed alone (32 bytes). This helper
      * accepts either.
      */

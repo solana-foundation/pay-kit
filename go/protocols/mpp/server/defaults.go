@@ -4,7 +4,7 @@
 // the Tier-2 pinned-field backstop and per-route expected-charge checks,
 // and renders the payment-link HTML page. The wire format and validation
 // order mirror the Rust reference (rust/src/server/charge.rs) so the
-// cross-language interop harness exercises identical behavior.
+// cross-language harness exercises identical behavior.
 package server
 
 import "os"

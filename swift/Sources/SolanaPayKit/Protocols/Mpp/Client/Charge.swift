@@ -98,7 +98,7 @@ public enum Charge {
     ///
     /// `recentBlockhash` is taken from `methodDetails.recentBlockhash`
     /// when present; otherwise the optional `rpc` argument is used to
-    /// fetch one. The interop harness always provides
+    /// fetch one. The harness always provides
     /// `recentBlockhash`, so `rpc` is only needed for ad-hoc callers.
     public static func buildChargeTransaction(
         request: ChargeRequest,

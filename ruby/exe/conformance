@@ -332,7 +332,7 @@ def shape_from_transaction(transaction_base64)
 end
 
 # classify_reject maps the Ruby SDK's native reject message onto the shared
-# RejectCode vocabulary the interop harness asserts per reject vector. It
+# RejectCode vocabulary the harness asserts per reject vector. It
 # mirrors the TypeScript reference classifier (harness/src/conformance/reject.ts)
 # so every SDK runner normalizes to the same categories. Returns nil when no
 # pattern matches, so the harness surfaces an unclassified rejection rather than
@@ -367,7 +367,7 @@ end
 # The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
 # produces a base64(JSON) payment header and a SERVER verify consumes one. So
 # the cross-SDK oracle is the DECODED ENVELOPE shape, not the signed Solana
-# transaction inside payload.transaction (that is the interop matrix's job).
+# transaction inside payload.transaction (that is the harness matrix's job).
 # ruby is SERVER-only, so this runner handles verify (accept/reject) and emits
 # unsupported-mode for the client-only build vectors (the driver SKIPS them).
 #

@@ -27,7 +27,7 @@ const TOKEN_DECIMALS: u8 = 6;
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 #[derive(Clone)]
-struct InteropState {
+struct HarnessState {
     x402: X402,
     rpc_url: String,
     fee_payer: Arc<MemorySigner>,
@@ -35,7 +35,7 @@ struct InteropState {
     resource_path: String,
     settlement_header: String,
     /// Additional currencies (beyond `Config.currency`) this server offers
-    /// for the same route. Populated from `X402_INTEROP_EXTRA_OFFERED_MINTS`
+    /// for the same route. Populated from `X402_HARNESS_EXTRA_OFFERED_MINTS`
     /// (comma-separated mint addresses). Empty for single-currency runs.
     extra_offered_mints: Vec<String>,
 }
@@ -64,30 +64,30 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let runtime = Arc::clone(&runtime);
                 thread::spawn(move || {
                     if let Err(error) = handle_connection(stream, &state, &runtime) {
-                        eprintln!("interop rust server error: {error}");
+                        eprintln!("harness rust server error: {error}");
                     }
                 });
             }
-            Err(error) => eprintln!("interop rust server accept error: {error}"),
+            Err(error) => eprintln!("harness rust server accept error: {error}"),
         }
     }
 
     Ok(())
 }
 
-fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>> {
-    let rpc_url = read_required_env("X402_INTEROP_RPC_URL")?;
-    let network = env::var("X402_INTEROP_NETWORK")
+fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>> {
+    let rpc_url = read_required_env("X402_HARNESS_RPC_URL")?;
+    let network = env::var("X402_HARNESS_NETWORK")
         .unwrap_or_else(|_| solana_x402::exact::SOLANA_DEVNET.to_string());
-    let mint = env::var("X402_INTEROP_MINT")
+    let mint = env::var("X402_HARNESS_MINT")
         .unwrap_or_else(|_| solana_x402::exact::mints::USDC_DEVNET.to_string());
-    let pay_to = read_required_env("X402_INTEROP_PAY_TO")?;
-    let fee_payer = Arc::new(read_memory_signer("X402_INTEROP_FACILITATOR_SECRET_KEY")?);
+    let pay_to = read_required_env("X402_HARNESS_PAY_TO")?;
+    let fee_payer = Arc::new(read_memory_signer("X402_HARNESS_FACILITATOR_SECRET_KEY")?);
     let price = normalize_price(
-        &env::var("X402_INTEROP_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string()),
+        &env::var("X402_HARNESS_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string()),
     )?;
 
-    let extra_offered_mints: Vec<String> = env::var("X402_INTEROP_EXTRA_OFFERED_MINTS")
+    let extra_offered_mints: Vec<String> = env::var("X402_HARNESS_EXTRA_OFFERED_MINTS")
         .ok()
         .map(|raw| {
             raw.split(',')
@@ -107,7 +107,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
         Some(all)
     };
 
-    Ok(InteropState {
+    Ok(HarnessState {
         x402: X402::new(Config {
             recipient: pay_to,
             currency: mint,
@@ -132,8 +132,8 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
 
 /// Build the full list of payment options this server advertises. The
 /// primary currency comes from `Config.currency`; any additional mints in
-/// `X402_INTEROP_EXTRA_OFFERED_MINTS` are appended.
-fn payment_options(state: &InteropState) -> Vec<PaymentOption<'static>> {
+/// `X402_HARNESS_EXTRA_OFFERED_MINTS` are appended.
+fn payment_options(state: &HarnessState) -> Vec<PaymentOption<'static>> {
     // SAFETY: the strings live as long as the leaked allocation does. We
     // leak intentionally because adapter binaries are short-lived and the
     // allocations need 'static lifetimes for `PaymentOption<'static>`.
@@ -178,7 +178,7 @@ fn payment_options(state: &InteropState) -> Vec<PaymentOption<'static>> {
 
 fn handle_connection(
     mut stream: TcpStream,
-    state: &InteropState,
+    state: &HarnessState,
     runtime: &tokio::runtime::Runtime,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -275,7 +275,7 @@ fn handle_connection(
 /// `fee_payer` fields automatically — same value at 402-time and verify-time
 /// so the deepEqual binding match is stable.
 fn build_offered_requirements(
-    state: &InteropState,
+    state: &HarnessState,
     offered: &[PaymentOption<'_>],
 ) -> Result<Vec<PaymentRequirements>, Box<dyn std::error::Error + Send + Sync>> {
     offered
@@ -307,7 +307,7 @@ fn payment_required_header_for(
 }
 
 fn settle_payment(
-    state: &InteropState,
+    state: &HarnessState,
     runtime: &tokio::runtime::Runtime,
     payment_header: &str,
     offered: &[PaymentOption<'_>],
@@ -411,7 +411,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_price_accepts_interop_money_shape() {
+    fn normalize_price_accepts_harness_money_shape() {
         assert_eq!(normalize_price("$0.001").unwrap(), "0.001");
         assert_eq!(normalize_price("0.001 USDC").unwrap(), "0.001");
     }

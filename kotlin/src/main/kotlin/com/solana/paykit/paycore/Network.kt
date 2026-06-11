@@ -27,7 +27,7 @@ object Network {
      * `null` defaults to mainnet, matching the rust spine
      * (`select_requirement` uses `.unwrap_or(SOLANA_MAINNET)`) and the
      * Python client default. `localnet` shares the devnet CAIP-2 (Surfpool
-     * behaviour). Callers that want devnet (e.g. the interop harness) pass an
+     * behaviour). Callers that want devnet (e.g. the harness) pass an
      * explicit network slug or CAIP-2 id.
      */
     fun toCaip2(network: String?): String {

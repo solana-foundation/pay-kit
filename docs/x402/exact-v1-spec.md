@@ -39,7 +39,7 @@ client parses this header value as **RAW JSON**, not base64
 (`serde_json::from_str` on the header value, client/exact/payment.rs). pay-kit
 parsers therefore accept the X-PAYMENT-REQUIRED value as raw JSON (and, for
 robustness, also a base64 envelope). No pay-kit server emits this header (it
-emits v2 `PAYMENT-REQUIRED`); it exists only to interoperate with an external
+emits v2 `PAYMENT-REQUIRED`); it exists only to harnesserate with an external
 v1 server that sends it.
 
 ## SVM network names

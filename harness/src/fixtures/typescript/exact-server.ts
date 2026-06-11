@@ -1,6 +1,6 @@
-// TypeScript reference x402 `exact` interop server.
+// TypeScript reference x402 `exact` harness server.
 //
-// Wire-compatible with `rust/crates/x402/src/bin/interop_server.rs`:
+// Wire-compatible with `rust/crates/x402/src/bin/harness_server.rs`:
 // - 402 carries a `PAYMENT-REQUIRED` header whose value is the
 //   base64 of the JSON envelope `{x402Version, accepts, resource}`.
 // - The credential is delivered in the `PAYMENT-SIGNATURE` header.
@@ -359,7 +359,7 @@ async function main() {
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     if (!address || typeof address === "string") {
-      throw new Error("Failed to bind TypeScript x402 interop server");
+      throw new Error("Failed to bind TypeScript x402 harness server");
     }
 
     console.log(

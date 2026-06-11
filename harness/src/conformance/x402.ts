@@ -3,7 +3,7 @@
 // The x402 charge is HTTP-shaped, not transaction-shaped: a CLIENT build
 // produces a base64(JSON) payment header and a SERVER verify consumes one.
 // So the cross-SDK oracle is the DECODED ENVELOPE shape, not the signed
-// Solana transaction inside `payload.transaction` (that is the interop
+// Solana transaction inside `payload.transaction` (that is the harness
 // matrix's job). This module mirrors the Rust spine line-for-line:
 //   - build v2 -> rust `build_payment_header`  (PAYMENT-SIGNATURE)
 //   - build v1 -> rust `build_payment_header_v1` (X-PAYMENT)
@@ -371,7 +371,7 @@ export function parseX402Challenge(
     // The rust spine parses X-PAYMENT-REQUIRED as RAW JSON
     // (client/exact/payment.rs: serde_json::from_str on the header value),
     // not base64. Accept both: raw JSON first (rust parity), then a base64
-    // envelope, so this oracle interoperates with either producer.
+    // envelope, so this oracle harnesserates with either producer.
     try {
       const offer = parseV1ChallengeBody(v1Header);
       if (offer) return offer;

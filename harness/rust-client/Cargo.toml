@@ -1,5 +1,5 @@
 [package]
-name = "mpp-interop-tests"
+name = "mpp-harness-tests"
 version = "0.1.0"
 edition = "2021"
 publish = false

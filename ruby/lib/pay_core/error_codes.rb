@@ -70,7 +70,7 @@ module PayCore
     # Substring patterns that classify an SDK error message into a canonical
     # code when no explicit code was set at raise time. Ordered; first match
     # wins. Mirrors harness/src/canonical-codes.ts and
-    # rust/src/bin/interop_server.rs::classify_canonical_code.
+    # rust/src/bin/harness_server.rs::classify_canonical_code.
     MESSAGE_PATTERNS = [
       [/already consumed/i, CODE_SIGNATURE_CONSUMED],
       # Solana RPC's own duplicate-signature reject text. Surfaces when

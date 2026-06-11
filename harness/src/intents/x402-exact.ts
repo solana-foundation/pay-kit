@@ -1,8 +1,8 @@
-import type { InteropScenario } from "../contracts";
+import type { HarnessScenario } from "../contracts";
 
 // Canonical x402 `exact` intent scenarios. The harness contract (env
 // vars, ready/result JSON shapes, capabilities) mirrors the Rust spine
-// (`rust/crates/x402/src/bin/interop_{client,server}.rs`). The matrix
+// (`rust/crates/x402/src/bin/harness_{client,server}.rs`). The matrix
 // pairs each x402 client against each x402 server registered in
 // `implementations.ts`; the default-matrix pair set is restricted in
 // `test/x402-exact.e2e.test.ts` while the TS reference adapter ships
@@ -13,7 +13,7 @@ import type { InteropScenario } from "../contracts";
 // reuse the canonical L6 set declared in `canonical-codes.ts`; the
 // matrix asserts each x402 server adapter classifies the failure
 // to the same canonical snake_case code as every other adapter.
-export const x402ExactScenarios: readonly InteropScenario[] = [
+export const x402ExactScenarios: readonly HarnessScenario[] = [
   {
     id: "x402-exact-basic",
     intent: "x402-exact",
@@ -67,7 +67,7 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     // settlement (cosign + broadcast), so it cannot accept ts-x402's
     // stub credential which carries no real Solana transaction. The
     // rust-x402 client drives the lua server end-to-end against
-    // surfpool in the lua interop matrix step. Re-add lua here once
+    // surfpool in the lua harness matrix step. Re-add lua here once
     // ts-x402 emits a typed PaymentProof.
     serverIds: ["ts-x402", "rust-x402"],
   },
@@ -90,11 +90,11 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     clientIds: ["ts-x402"],
     // Only the TS reference client today implements the
     // capture/re-submit flow that e2e.test.ts's cross-server runner
-    // expects (reads MPP_INTEROP_RESUBMIT_URL, emits firstStatus).
+    // expects (reads MPP_HARNESS_RESUBMIT_URL, emits firstStatus).
     // The rust-x402 client's `payment-signature-sent` echo (added in
     // this PR) is consumed by the alternate runner in
     // harness/test/cross-server-scenarios.test.ts which is gated
-    // behind X402_INTEROP_CROSS_SERVER=1 and not run in this CI step.
+    // behind X402_HARNESS_CROSS_SERVER=1 and not run in this CI step.
     // Re-add rust-x402 to clientIds when the rust spine grows
     // resubmit-URL support so e2e.test.ts can drive it.
     serverIds: ["ts-x402"],
@@ -116,7 +116,7 @@ export const x402ExactScenarios: readonly InteropScenario[] = [
     expectedStatus: 402,
     expectedCode: "signature_consumed",
     // Driven by the TS client only: e2e.test.ts's idempotent runner
-    // requires the client to read MPP_INTEROP_RESUBMIT_URL and emit a
+    // requires the client to read MPP_HARNESS_RESUBMIT_URL and emit a
     // `firstStatus` field, which the rust spine client does not do
     // yet. Real-settling-server coverage of signature_consumed lives
     // in the rust crate's own integration tests until the rust client

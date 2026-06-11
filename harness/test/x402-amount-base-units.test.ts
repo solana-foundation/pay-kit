@@ -13,11 +13,11 @@ import { toBaseUnits } from "../src/fixtures/typescript/exact-shared";
  * `toBaseUnits` is the TS reference server's price -> base-unit scaling.
  * It mirrors the Rust spine's price normalization: strip a leading `$`,
  * take the first whitespace token, then scale by `decimals`. These
- * cases lock byte-identical output against the Rust interop server,
+ * cases lock byte-identical output against the Rust harness server,
  * which advertises "1000" for price "0.001" at 6 decimals.
  */
 describe("toBaseUnits (x402 exact amount scaling)", () => {
-  it("scales the canonical interop price to base units", () => {
+  it("scales the canonical harness price to base units", () => {
     expect(toBaseUnits("0.001", 6)).toBe("1000");
   });
 

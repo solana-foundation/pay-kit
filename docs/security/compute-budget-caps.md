@@ -70,4 +70,4 @@ flip to required and surface drift the same way as the other SDKs.
    above. Append a fixture row to
    `charge-compute-budget-over-cap` in
    `harness/src/intents/charge.ts` once the SDK is wired into the
-   interop harness.
+   harness.

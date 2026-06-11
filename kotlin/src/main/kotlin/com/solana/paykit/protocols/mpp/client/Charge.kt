@@ -51,7 +51,7 @@ class ChargeCredentialBuilder(private val transactionProvider: ChargeTransaction
 }
 
 /**
- * Provides recent blockhashes to the charge builder. The interop adapter
+ * Provides recent blockhashes to the charge builder. The harness adapter
  * supplies one that proxies a JSON-RPC `getLatestBlockhash` call. Tests
  * pin a fixed blockhash for determinism.
  */

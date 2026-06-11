@@ -1145,7 +1145,7 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "settlement-signature", body.fetch(:settlement).fetch(:transaction)
     assert_equal NETWORK, body.fetch(:settlement).fetch(:network)
     # Canonical x402 v2 PAYMENT-RESPONSE header. Mirrors Rust spine
-    # (rust/crates/x402/src/bin/interop_server.rs L221-231) and TS fixture
+    # (rust/crates/x402/src/bin/harness_server.rs L221-231) and TS fixture
     # (harness/src/fixtures/typescript/exact-server.ts L322-331).
     # Header value is raw JSON (not base64) with exactly the canonical
     # PaymentResponse shape: { success, network, transaction }.
@@ -1161,7 +1161,7 @@ class X402ServerExactTest < Minitest::Test
     # Simulate a cross-server replay: a credential built for server A (with a
     # different payTo) is presented to server B. Server B must reject with a
     # 4xx response whose body carries one of the canonical reject tokens that
-    # the interop cross-server scenarios harness searches for.
+    # the harness cross-server scenarios harness searches for.
     server_a = build_state
     other_pay_to = "11111111111111111111111111111113"
     server_b = PayKit::Protocols::X402::Server::Exact::Config.new(
@@ -1203,7 +1203,7 @@ class X402ServerExactTest < Minitest::Test
 
   def test_resource_path_and_settlement_header_env_overrides
     # Cross-server scenarios drive route + header name via
-    # X402_INTEROP_RESOURCE_PATH and X402_INTEROP_SETTLEMENT_HEADER. The
+    # X402_HARNESS_RESOURCE_PATH and X402_HARNESS_SETTLEMENT_HEADER. The
     # server MUST honor those overrides instead of hardcoding /protected
     # and x-fixture-settlement.
     state = build_state_with_overrides(

@@ -169,7 +169,7 @@ jobs:
           SURFPOOL_REPORT: "1"
         # Lock to library scope: solana-mpp only (x402 has its own
         # coverage budget tracked separately), exclude bin entrypoints
-        # (interop harness), on-chain program crates under src/program/,
+        # (harness), on-chain program crates under src/program/,
         # and the multi_delegate client which only drives the on-chain
         # program. Reported coverage reflects the SDK surface downstream
         # users link against.
@@ -222,7 +222,7 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
-  # Go tests, lint, coverage, and interop live in the dedicated go.yml
+  # Go tests, lint, coverage, and harness live in the dedicated go.yml
   # workflow (triggered on pull_request and workflow_call). Kept out of
   # ci.yml so there is a single "Go tests" check rather than two.
 
@@ -398,8 +398,8 @@ jobs:
         working-directory: html
         run: npm run test:e2e:rust
 
-  interop:
-    name: "Interop: TypeScript harness"
+  harness:
+    name: "Harness: TypeScript harness"
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -411,8 +411,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-interop-
+          key: ${{ runner.os }}-cargo-harness-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-harness-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -431,10 +431,10 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust interop adapters
+      - name: Build Rust harness adapters
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client --bin interop_server
-      - name: Install interop harness
+        run: cargo build -p solana-mpp --bin harness_client --bin harness_server
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
       - uses: ruby/setup-ruby@v1
@@ -442,36 +442,36 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
-      - name: Run Rust client interop smoke
+      - name: Run Rust client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: typescript
-      - name: Run Rust server interop smoke
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: typescript
+      - name: Run Rust server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: rust
-      - name: Run Rust end-to-end interop smoke
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: rust
+      - name: Run Rust end-to-end harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: rust
-      - name: Run Ruby server interop smoke
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: rust
+      - name: Run Ruby server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: ruby
-      - name: Run Rust client to Ruby server interop smoke
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: ruby
+      - name: Run Rust client to Ruby server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: ruby
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: ruby

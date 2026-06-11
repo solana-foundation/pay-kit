@@ -10,7 +10,7 @@ import Foundation
 /// so a single `PayKit.HttpClient` shape drives both. Drive it through
 /// `PayKit.HttpClient.x402(signer:rpc:selection:)`.
 ///
-/// Mirrors the Python `x402` transport and the rust interop client
+/// Mirrors the Python `x402` transport and the rust harness client
 /// pattern.
 public struct X402Interceptor: PayKit.PaymentInterceptor {
     public let signer: any SolanaSigner

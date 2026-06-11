@@ -1,4 +1,4 @@
-package com.solana.paykit.interop
+package com.solana.paykit.harness
 
 import com.solana.paykit.client.PayKitClient
 import com.solana.paykit.paycore.MemorySigner
@@ -16,10 +16,10 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 /**
- * Interop adapter for the MPP Kotlin client.
+ * Harness adapter for the MPP Kotlin client.
  *
  * Reads the env-var contract documented at
- * harness/README.md and skills/pay-sdk-implementation/references/interop-harness.md,
+ * harness/README.md and skills/pay-sdk-implementation/references/harness.md,
  * pays the target URL, and emits exactly one `result` JSON line on
  * stdout. Anything else (BouncyCastle init chatter, OkHttp HTTP2
  * complaints, JVM warnings) must go to stderr so the harness parses a
@@ -31,7 +31,7 @@ fun main() {
     try {
         runAdapter()
     } catch (error: Throwable) {
-        System.err.println("kotlin interop adapter error: ${error.message}")
+        System.err.println("kotlin harness adapter error: ${error.message}")
         error.printStackTrace(System.err)
         // Emit a structured failure result so the harness fails the
         // scenario cleanly instead of timing out on missing stdout.
@@ -50,16 +50,16 @@ fun main() {
 }
 
 private fun runAdapter() {
-    val targetUrl = requireEnv("MPP_INTEROP_TARGET_URL")
-    val rpcUrl = requireEnv("MPP_INTEROP_RPC_URL")
-    val secretKey = parseSecretKey(requireEnv("MPP_INTEROP_CLIENT_SECRET_KEY"))
-    val settlementHeader = System.getenv("MPP_INTEROP_SETTLEMENT_HEADER")
+    val targetUrl = requireEnv("MPP_HARNESS_TARGET_URL")
+    val rpcUrl = requireEnv("MPP_HARNESS_RPC_URL")
+    val secretKey = parseSecretKey(requireEnv("MPP_HARNESS_CLIENT_SECRET_KEY"))
+    val settlementHeader = System.getenv("MPP_HARNESS_SETTLEMENT_HEADER")
         ?: "x-fixture-settlement"
 
     val signer = MemorySigner.fromSecretKey(secretKey)
     // Surfpool-backed RPCs and proxied charge servers can take >10s to
     // respond on the first warm-up, well beyond OkHttp's default 10s read
-    // timeout. The interop harness already enforces a 180s per-scenario
+    // timeout. The harness already enforces a 180s per-scenario
     // ceiling, so generous client-side timeouts surface real server hangs
     // without flagging warm-up latency as a failure.
     val okHttp = OkHttpClient.Builder()
@@ -121,12 +121,12 @@ private fun requireEnv(name: String): String =
 
 /**
  * Parses the JSON-array-of-bytes form Solana keypair files use and the
- * MPP interop harness ships in MPP_INTEROP_CLIENT_SECRET_KEY.
+ * MPP harness ships in MPP_HARNESS_CLIENT_SECRET_KEY.
  */
 internal fun parseSecretKey(raw: String): ByteArray {
     val element = Json.parseToJsonElement(raw)
     if (element !is JsonArray) {
-        error("MPP_INTEROP_CLIENT_SECRET_KEY must be a JSON array of bytes")
+        error("MPP_HARNESS_CLIENT_SECRET_KEY must be a JSON array of bytes")
     }
     val bytes = ByteArray(element.size)
     for ((index, value) in element.withIndex()) {
@@ -149,7 +149,7 @@ internal fun parseSecretKey(raw: String): ByteArray {
     }
     // Sanity check the size before handing off to MemorySigner.
     if (bytes.size != 32 && bytes.size != 64) {
-        error("MPP_INTEROP_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
+        error("MPP_HARNESS_CLIENT_SECRET_KEY must be 32 or 64 bytes (got ${bytes.size})")
     }
     return bytes
 }

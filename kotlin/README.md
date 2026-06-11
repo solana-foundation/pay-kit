@@ -188,7 +188,7 @@ fallback gap is tracked at
 
 ## Harness
 
-The interop adapters live outside the shipped library:
+The harness adapters live outside the shipped library:
 
 - [`harness/kotlin-client`](../harness/kotlin-client) drives an MPP server.
 - [`harness/kotlin-x402-client`](../harness/kotlin-x402-client) drives an
@@ -196,7 +196,7 @@ The interop adapters live outside the shipped library:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=kotlin MPP_INTEROP_SERVERS=typescript pnpm test
+MPP_HARNESS_CLIENTS=kotlin MPP_HARNESS_SERVERS=typescript pnpm test
 ```
 
 ## Coverage

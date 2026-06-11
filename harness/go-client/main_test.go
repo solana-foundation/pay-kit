@@ -23,9 +23,9 @@ func TestReadPrivateKeyEnvParsesJSONByteArray(t *testing.T) {
 		t.Fatalf("marshal private key: %v", err)
 	}
 
-	t.Setenv("MPP_INTEROP_CLIENT_SECRET_KEY", string(raw))
+	t.Setenv("MPP_HARNESS_CLIENT_SECRET_KEY", string(raw))
 
-	got, err := readPrivateKeyEnv("MPP_INTEROP_CLIENT_SECRET_KEY")
+	got, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY")
 	if err != nil {
 		t.Fatalf("read private key: %v", err)
 	}
@@ -35,9 +35,9 @@ func TestReadPrivateKeyEnvParsesJSONByteArray(t *testing.T) {
 }
 
 func TestReadPrivateKeyEnvRejectsInvalidLength(t *testing.T) {
-	t.Setenv("MPP_INTEROP_CLIENT_SECRET_KEY", "[1,2,3]")
+	t.Setenv("MPP_HARNESS_CLIENT_SECRET_KEY", "[1,2,3]")
 
-	_, err := readPrivateKeyEnv("MPP_INTEROP_CLIENT_SECRET_KEY")
+	_, err := readPrivateKeyEnv("MPP_HARNESS_CLIENT_SECRET_KEY")
 	if err == nil {
 		t.Fatal("expected invalid private key length to fail")
 	}
@@ -77,7 +77,7 @@ func TestParseResponseBodyKeepsPlainText(t *testing.T) {
 }
 
 func TestRunProcessAdapterRequiresRPCURL(t *testing.T) {
-	t.Setenv("MPP_INTEROP_TARGET_URL", "http://127.0.0.1/protected")
+	t.Setenv("MPP_HARNESS_TARGET_URL", "http://127.0.0.1/protected")
 
 	if err := runProcessAdapter(io.Discard); err == nil {
 		t.Fatal("expected missing RPC URL to fail")

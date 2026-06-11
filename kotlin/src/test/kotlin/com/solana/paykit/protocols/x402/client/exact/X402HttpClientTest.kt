@@ -26,7 +26,7 @@ import okhttp3.mockwebserver.MockWebServer
  * ``Payment-Signature`` header.
  *
  * Mirrors the Python PaymentTransport tests and the Rust
- * ``interop_client.rs`` end-to-end flow.
+ * ``harness_client.rs`` end-to-end flow.
  */
 class X402HttpClientTest {
 

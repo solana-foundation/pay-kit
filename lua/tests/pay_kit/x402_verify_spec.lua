@@ -2,7 +2,7 @@
 P5-late x402 11-rule structural verifier. Negative-path coverage:
 each rule emits the right canonical reject string the cross-language
 harness substring-matches against. Positive-path end-to-end coverage
-runs through the interop harness (a real Solana tx fixture).
+runs through the harness (a real Solana tx fixture).
 ]]
 
 local helper = require('tests.test_helper')

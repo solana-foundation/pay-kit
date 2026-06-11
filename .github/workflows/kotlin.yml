@@ -36,8 +36,8 @@ jobs:
             kotlin/build/reports/jacoco/test/html/
           if-no-files-found: ignore
 
-  interop-kotlin:
-    name: "Interop: Kotlin client to TypeScript server"
+  harness-kotlin:
+    name: "Harness: Kotlin client to TypeScript server"
     needs: test-kotlin
     runs-on: ubuntu-latest
     steps:
@@ -63,24 +63,24 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Install interop harness
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
-      - name: Pre-warm Gradle for the Kotlin interop client
+      - name: Pre-warm Gradle for the Kotlin harness client
         working-directory: harness/kotlin-client
         run: gradle installDist --no-daemon
-      - name: Run Kotlin client interop smoke
+      - name: Run Kotlin client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
         env:
-          MPP_INTEROP_CLIENTS: kotlin
-          MPP_INTEROP_SERVERS: typescript
+          MPP_HARNESS_CLIENTS: kotlin
+          MPP_HARNESS_SERVERS: typescript
 
-  interop-kotlin-x402:
-    name: "Interop: Kotlin x402 client to Rust x402 server"
+  harness-kotlin-x402:
+    name: "Harness: Kotlin x402 client to Rust x402 server"
     needs: test-kotlin
     runs-on: ubuntu-latest
     steps:
@@ -106,33 +106,33 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust x402 interop server
+      - name: Build Rust x402 harness server
         working-directory: rust
-        run: cargo build -p solana-x402 --bin interop_server
-      - name: Install interop harness
+        run: cargo build -p solana-x402 --bin harness_server
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
       # Pre-warm the Kotlin x402 client install so the harness adapter
       # (harness/src/implementations.ts → kotlin-x402) can launch the
       # script at build/install/.../bin/. The kotlin SDK is consumed via
       # the composite build, so this also compiles the SDK.
-      - name: Pre-warm Gradle for the Kotlin x402 interop client
+      - name: Pre-warm Gradle for the Kotlin x402 harness client
         working-directory: harness/kotlin-x402-client
         run: gradle installDist --no-daemon
-      # Real interop: the e2e harness boots an in-process Surfpool, funds
+      # Real harness: the e2e harness boots an in-process Surfpool, funds
       # the client wallet + USDC ATA, starts the rust-x402 server, runs the
       # kotlin-x402 client against it for the x402-exact intent, and asserts
       # HTTP 200 plus the on-chain recipient balance delta. MPP charge
       # adapters are disabled so only the x402-exact matrix slice runs.
-      - name: Run Kotlin x402 client to Rust x402 server interop
+      - name: Run Kotlin x402 client to Rust x402 server harness
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: ""
-          MPP_INTEROP_SERVERS: ""
-          MPP_INTEROP_INTENTS: x402-exact
-          X402_INTEROP_CLIENTS: kotlin-x402
-          X402_INTEROP_SERVERS: rust-x402
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-exact
+          X402_HARNESS_CLIENTS: kotlin-x402
+          X402_HARNESS_SERVERS: rust-x402
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000

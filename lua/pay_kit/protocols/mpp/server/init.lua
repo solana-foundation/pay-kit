@@ -101,7 +101,7 @@ function Server:charge_with_options(amount, options)
   -- zero or below. Rejecting at challenge issuance time mirrors the Rust /
   -- TypeScript server fixtures and surfaces a canonical 402 with code
   -- `payment_invalid` before any HMAC is computed, so a misconfigured route
-  -- (or an interop scenario whose splits sum to the full amount) gets the
+  -- (or an harness scenario whose splits sum to the full amount) gets the
   -- same machine-readable code from every SDK.
   if type(options.splits) == 'table' and #options.splits > 0 then
     if #options.splits > 8 then

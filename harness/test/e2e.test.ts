@@ -7,7 +7,7 @@ import {
   getTransactionDecoder,
 } from "@solana/kit";
 import { Surfnet } from "surfpool-sdk";
-import { InteropScenario, selectInteropScenarios } from "../src/contracts";
+import { HarnessScenario, selectHarnessScenarios } from "../src/contracts";
 import {
   clientImplementations,
   serverImplementations,
@@ -41,7 +41,7 @@ function tokenProgramAddress(
 // to adapters and the on-chain mint is `scenario.expectedMint` (the
 // pubkey each SDK's resolver is expected to return). For SOL-native
 // scenarios there is no mint at all.
-function onChainMintFor(scenario: InteropScenario): string | null {
+function onChainMintFor(scenario: HarnessScenario): string | null {
   if (isSolNative(scenario)) {
     return null;
   }
@@ -56,11 +56,11 @@ function onChainMintFor(scenario: InteropScenario): string | null {
   return scenario.asset;
 }
 
-function isSolNative(scenario: InteropScenario): boolean {
+function isSolNative(scenario: HarnessScenario): boolean {
   return scenario.assetKind === "sol";
 }
 
-function scenarioDecimals(scenario: InteropScenario): number {
+function scenarioDecimals(scenario: HarnessScenario): number {
   if (typeof scenario.decimals === "number") {
     return scenario.decimals;
   }
@@ -71,7 +71,7 @@ const runningServers: RunningServer[] = [];
 
 let surfnet: Surfnet | undefined;
 let surfnetDrainTimer: NodeJS.Timeout | undefined;
-let interopEnv: Record<string, string> | undefined;
+let harnessEnv: Record<string, string> | undefined;
 let splitRecipients: Record<string, string> = {};
 
 type CompiledInstruction = {
@@ -130,7 +130,7 @@ async function getLamportBalance(
 // scenarios it reads recipient lamports.
 async function getPrimaryRecipientBalance(
   surfnet: Surfnet,
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
   owner: string,
   mint: string | null,
   tokenProgram: string,
@@ -156,14 +156,14 @@ function createSplMintAccountData(decimals: number): Uint8Array {
 }
 
 const socketSupport = await canBindLocalSocket();
-const activeScenarios = selectInteropScenarios(
-  process.env.MPP_INTEROP_INTENTS,
-  process.env.MPP_INTEROP_SCENARIOS,
+const activeScenarios = selectHarnessScenarios(
+  process.env.MPP_HARNESS_INTENTS,
+  process.env.MPP_HARNESS_SCENARIOS,
 );
 const baseScenario = activeScenarios[0];
 
 if (!baseScenario) {
-  throw new Error("No interop scenarios are active");
+  throw new Error("No harness scenarios are active");
 }
 
 beforeAll(async () => {
@@ -276,23 +276,23 @@ beforeAll(async () => {
     surfnet.fundSol(client.publicKey, CLIENT_SOL_FUND_LAMPORTS);
   }
 
-  interopEnv = {
-    MPP_INTEROP_RPC_URL: surfnet.rpcUrl,
-    MPP_INTEROP_NETWORK: baseScenario.network,
-    MPP_INTEROP_MINT: baseScenario.asset,
-    MPP_INTEROP_PRICE: baseScenario.price,
-    MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key",
-    MPP_INTEROP_PAY_TO: payTo.publicKey,
-    MPP_INTEROP_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
-    MPP_INTEROP_FEE_PAYER_SECRET_KEY: JSON.stringify(
+  harnessEnv = {
+    MPP_HARNESS_RPC_URL: surfnet.rpcUrl,
+    MPP_HARNESS_NETWORK: baseScenario.network,
+    MPP_HARNESS_MINT: baseScenario.asset,
+    MPP_HARNESS_PRICE: baseScenario.price,
+    MPP_HARNESS_SECRET_KEY: "mpp-harness-secret-key",
+    MPP_HARNESS_PAY_TO: payTo.publicKey,
+    MPP_HARNESS_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
+    MPP_HARNESS_FEE_PAYER_SECRET_KEY: JSON.stringify(
       Array.from(surfnet.payerSecretKey),
     ),
     // x402-shaped twins of the same surfpool fixtures so x402 scenarios
     // can reuse the matrix's funded keypairs.
-    X402_INTEROP_RPC_URL: surfnet.rpcUrl,
-    X402_INTEROP_PAY_TO: payTo.publicKey,
-    X402_INTEROP_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
-    X402_INTEROP_FACILITATOR_SECRET_KEY: JSON.stringify(
+    X402_HARNESS_RPC_URL: surfnet.rpcUrl,
+    X402_HARNESS_PAY_TO: payTo.publicKey,
+    X402_HARNESS_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
+    X402_HARNESS_FACILITATOR_SECRET_KEY: JSON.stringify(
       Array.from(surfnet.payerSecretKey),
     ),
   };
@@ -314,7 +314,7 @@ afterAll(() => {
   }
 });
 
-describe("mpp interop", () => {
+describe("mpp harness", () => {
   const activeServers = serverImplementations.filter(
     (implementation) => implementation.enabled,
   );
@@ -354,8 +354,8 @@ describe("mpp interop", () => {
       continue;
     }
     // The x402-exact intent reuses this matrix's surfpool + funded
-    // keypairs. `environmentForScenario` emits X402_INTEROP_* shadows
-    // alongside MPP_INTEROP_* (same fixtures), and the pair filter
+    // keypairs. `environmentForScenario` emits X402_HARNESS_* shadows
+    // alongside MPP_HARNESS_* (same fixtures), and the pair filter
     // below gates on `impl.intents.includes(scenario.intent)` so
     // charge-only adapters skip x402 scenarios automatically.
     const intentServerFilter = (implementation: {
@@ -400,7 +400,7 @@ describe("mpp interop", () => {
       // evaluateShardEligibility already threw above if globally empty; this
       // test exists to keep the guard visible per-scenario in the report.
       if (eligibility.verdict === "skip") {
-        console.log(`[interop] ${eligibility.reason}`);
+        console.log(`[harness] ${eligibility.reason}`);
       }
     });
     if (eligibility.verdict === "skip") {
@@ -412,13 +412,13 @@ describe("mpp interop", () => {
         socketAwareIt(
           `${scenario.id}: ${clientImplementation.id} client pays ${serverImplementation.id} server`,
           async () => {
-            if (!surfnet || !interopEnv) {
+            if (!surfnet || !harnessEnv) {
               throw new Error(
-                "Surfpool interop environment was not initialized",
+                "Surfpool harness environment was not initialized",
               );
             }
 
-            const scenarioEnv = environmentForScenario(interopEnv, scenario);
+            const scenarioEnv = environmentForScenario(harnessEnv, scenario);
             const scenarioTokenProgram = tokenProgramAddress(scenario.tokenProgram);
             // On-chain mint pubkey (resolved expectedMint in symbol mode,
             // literal asset in pubkey mode, or null for SOL-native). The
@@ -428,7 +428,7 @@ describe("mpp interop", () => {
             const initialBalance = await getPrimaryRecipientBalance(
               surfnet,
               scenario,
-              scenarioEnv.MPP_INTEROP_PAY_TO,
+              scenarioEnv.MPP_HARNESS_PAY_TO,
               onChainMint,
               scenarioTokenProgram,
             );
@@ -453,7 +453,7 @@ describe("mpp interop", () => {
             const finalBalance = await getPrimaryRecipientBalance(
               surfnet,
               scenario,
-              scenarioEnv.MPP_INTEROP_PAY_TO,
+              scenarioEnv.MPP_HARNESS_PAY_TO,
               onChainMint,
               scenarioTokenProgram,
             );
@@ -571,7 +571,7 @@ describe("mpp interop", () => {
     });
     it(`${scenario.id}: has at least one eligible cross-server pair`, () => {
       if (eligibility.verdict === "skip") {
-        console.log(`[interop] ${eligibility.reason}`);
+        console.log(`[harness] ${eligibility.reason}`);
       }
     });
     if (eligibility.verdict === "skip") {
@@ -587,13 +587,13 @@ describe("mpp interop", () => {
         socketAwareIt(
           `${scenario.id}: ${clientImplementation.id} client, A=${aId} B=${bId}`,
           async () => {
-            if (!surfnet || !interopEnv) {
-              throw new Error("Surfpool interop environment was not initialized");
+            if (!surfnet || !harnessEnv) {
+              throw new Error("Surfpool harness environment was not initialized");
             }
-            const envA = environmentForScenario(interopEnv, scenario);
+            const envA = environmentForScenario(harnessEnv, scenario);
             const envB = {
-              ...environmentForScenario(interopEnv, scenario),
-              MPP_INTEROP_SECRET_KEY: "mpp-interop-secret-key-server-b",
+              ...environmentForScenario(harnessEnv, scenario),
+              MPP_HARNESS_SECRET_KEY: "mpp-harness-secret-key-server-b",
             };
             const a = await startServer(serverA, envA);
             runningServers.push(a);
@@ -603,7 +603,7 @@ describe("mpp interop", () => {
             const bUrl = `http://127.0.0.1:${b.ready.port}${scenario.resourcePath}`;
             const result = await runClient(clientImplementation, aUrl, {
               ...envA,
-              MPP_INTEROP_RESUBMIT_URL: bUrl,
+              MPP_HARNESS_RESUBMIT_URL: bUrl,
             });
             const resultPayload = JSON.stringify(result, null, 2);
             const firstStatus = (result as unknown as { firstStatus?: number })
@@ -649,7 +649,7 @@ describe("mpp interop", () => {
     });
     it(`${scenario.id}: has at least one eligible idempotent pair`, () => {
       if (eligibility.verdict === "skip") {
-        console.log(`[interop] ${eligibility.reason}`);
+        console.log(`[harness] ${eligibility.reason}`);
       }
     });
     if (eligibility.verdict === "skip") {
@@ -660,16 +660,16 @@ describe("mpp interop", () => {
         socketAwareIt(
           `${scenario.id}: ${clientImplementation.id} client pays ${serverImplementation.id} server twice`,
           async () => {
-            if (!surfnet || !interopEnv) {
-              throw new Error("Surfpool interop environment was not initialized");
+            if (!surfnet || !harnessEnv) {
+              throw new Error("Surfpool harness environment was not initialized");
             }
-            const env = environmentForScenario(interopEnv, scenario);
+            const env = environmentForScenario(harnessEnv, scenario);
             const server = await startServer(serverImplementation, env);
             runningServers.push(server);
             const url = `http://127.0.0.1:${server.ready.port}${scenario.resourcePath}`;
             const result = await runClient(clientImplementation, url, {
               ...env,
-              MPP_INTEROP_RESUBMIT_URL: url,
+              MPP_HARNESS_RESUBMIT_URL: url,
             });
             const resultPayload = JSON.stringify(result, null, 2);
             const firstStatus = (result as unknown as { firstStatus?: number })
@@ -694,27 +694,27 @@ describe("mpp interop", () => {
 
 function environmentForScenario(
   baseEnv: Record<string, string>,
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
 ): Record<string, string> {
   const env: Record<string, string> = {
     ...baseEnv,
-    MPP_INTEROP_AMOUNT: scenario.amount,
-    MPP_INTEROP_MINT: scenario.asset,
-    MPP_INTEROP_NETWORK: scenario.network,
-    MPP_INTEROP_PAYMENT_MODE: scenario.paymentMode ?? "pull",
-    MPP_INTEROP_PRICE: scenario.price,
-    MPP_INTEROP_RESOURCE_PATH: scenario.resourcePath,
-    MPP_INTEROP_DECIMALS: String(scenarioDecimals(scenario)),
-    MPP_INTEROP_ASSET_KIND: isSolNative(scenario) ? "sol" : "spl",
+    MPP_HARNESS_AMOUNT: scenario.amount,
+    MPP_HARNESS_MINT: scenario.asset,
+    MPP_HARNESS_NETWORK: scenario.network,
+    MPP_HARNESS_PAYMENT_MODE: scenario.paymentMode ?? "pull",
+    MPP_HARNESS_PRICE: scenario.price,
+    MPP_HARNESS_RESOURCE_PATH: scenario.resourcePath,
+    MPP_HARNESS_DECIMALS: String(scenarioDecimals(scenario)),
+    MPP_HARNESS_ASSET_KIND: isSolNative(scenario) ? "sol" : "spl",
     ...(scenario.replaySource
       ? {
-          MPP_INTEROP_REPLAY_SOURCE_AMOUNT: scenario.replaySource.amount,
-          MPP_INTEROP_REPLAY_SOURCE_PATH: scenario.replaySource.resourcePath,
-          MPP_INTEROP_REPLAY_SOURCE_PRICE: scenario.replaySource.price,
+          MPP_HARNESS_REPLAY_SOURCE_AMOUNT: scenario.replaySource.amount,
+          MPP_HARNESS_REPLAY_SOURCE_PATH: scenario.replaySource.resourcePath,
+          MPP_HARNESS_REPLAY_SOURCE_PRICE: scenario.replaySource.price,
         }
       : {}),
-    MPP_INTEROP_SETTLEMENT_HEADER: scenario.settlementHeader,
-    MPP_INTEROP_SPLITS: JSON.stringify(
+    MPP_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+    MPP_HARNESS_SPLITS: JSON.stringify(
       (scenario.splits ?? []).map((split) => ({
         recipient: splitRecipients[split.recipientKey],
         amount: split.amount,
@@ -726,33 +726,33 @@ function environmentForScenario(
     ),
   };
   if (typeof scenario.clientComputeUnitLimit === "number") {
-    env.MPP_INTEROP_COMPUTE_UNIT_LIMIT = String(scenario.clientComputeUnitLimit);
+    env.MPP_HARNESS_COMPUTE_UNIT_LIMIT = String(scenario.clientComputeUnitLimit);
   }
   if (typeof scenario.clientComputeUnitPrice === "string") {
-    env.MPP_INTEROP_COMPUTE_UNIT_PRICE = scenario.clientComputeUnitPrice;
+    env.MPP_HARNESS_COMPUTE_UNIT_PRICE = scenario.clientComputeUnitPrice;
   }
   if (scenario.intent === "x402-exact") {
     // Adapters that auto-detect protocol by env namespace
     // (e.g. the Ruby adapter) prefer this explicit hint - the
-    // matrix populates both MPP_INTEROP_* and X402_INTEROP_* shadows
+    // matrix populates both MPP_HARNESS_* and X402_HARNESS_* shadows
     // from the same surfpool fixtures, so namespace probing alone
     // is ambiguous.
-    env.PAY_KIT_INTEROP_PROTOCOL = "x402";
-    env.X402_INTEROP_AMOUNT = scenario.amount;
-    env.X402_INTEROP_MINT = scenario.asset;
-    env.X402_INTEROP_NETWORK = scenario.network;
-    env.X402_INTEROP_PRICE = scenario.price;
-    env.X402_INTEROP_RESOURCE_PATH = scenario.resourcePath;
-    env.X402_INTEROP_SETTLEMENT_HEADER = scenario.settlementHeader;
+    env.PAY_KIT_HARNESS_PROTOCOL = "x402";
+    env.X402_HARNESS_AMOUNT = scenario.amount;
+    env.X402_HARNESS_MINT = scenario.asset;
+    env.X402_HARNESS_NETWORK = scenario.network;
+    env.X402_HARNESS_PRICE = scenario.price;
+    env.X402_HARNESS_RESOURCE_PATH = scenario.resourcePath;
+    env.X402_HARNESS_SETTLEMENT_HEADER = scenario.settlementHeader;
   } else {
-    env.PAY_KIT_INTEROP_PROTOCOL = "mpp";
+    env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
   return env;
 }
 
 async function expectSettledTransactionShape(
   surfnet: Surfnet,
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
   scenarioEnv: Record<string, string>,
   settlement: unknown,
 ): Promise<void> {
@@ -761,7 +761,7 @@ async function expectSettledTransactionShape(
   }
 
   const transaction = await fetchTransactionBase64(
-    scenarioEnv.MPP_INTEROP_RPC_URL,
+    scenarioEnv.MPP_HARNESS_RPC_URL,
     settlement,
   );
   const message = decodeTransactionMessage(transaction);
@@ -773,7 +773,7 @@ async function expectSettledTransactionShape(
   // u64 LE lamports amount.
   if (isSolNative(scenario)) {
     expectSystemProgramTransfer(message, {
-      destination: scenarioEnv.MPP_INTEROP_PAY_TO,
+      destination: scenarioEnv.MPP_HARNESS_PAY_TO,
       amount: primaryDelta(scenario),
     });
     return;
@@ -794,7 +794,7 @@ async function expectSettledTransactionShape(
     message,
     {
       destination: surfnet.getAta(
-        scenarioEnv.MPP_INTEROP_PAY_TO,
+        scenarioEnv.MPP_HARNESS_PAY_TO,
         onChainMint,
         tokenProgram,
       ),
@@ -1061,7 +1061,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 async function splitBalances(
   surfnet: Surfnet,
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
   mint: string | null,
   tokenProgram: string,
   missingAsZero: boolean,
@@ -1089,7 +1089,7 @@ async function splitBalances(
   return balances;
 }
 
-function primaryDelta(scenario: InteropScenario): bigint {
+function primaryDelta(scenario: HarnessScenario): bigint {
   return (
     BigInt(scenario.amount) -
     (scenario.splits ?? []).reduce(
@@ -1100,7 +1100,7 @@ function primaryDelta(scenario: InteropScenario): bigint {
 }
 
 function expectedSplitDeltas(
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
 ): Record<string, bigint> {
   const deltas: Record<string, bigint> = {};
   for (const split of scenario.splits ?? []) {
@@ -1110,7 +1110,7 @@ function expectedSplitDeltas(
 }
 
 function expectedZeroSplitDeltas(
-  scenario: InteropScenario,
+  scenario: HarnessScenario,
 ): Record<string, bigint> {
   const deltas: Record<string, bigint> = {};
   for (const split of scenario.splits ?? []) {

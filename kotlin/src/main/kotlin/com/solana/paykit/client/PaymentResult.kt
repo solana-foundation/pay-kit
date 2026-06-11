@@ -22,7 +22,7 @@ data class PayResponse(
      * The credential header value the client sent on the paid retry, when a
      * payment was made (the ``Authorization: Payment ...`` value for MPP, the
      * ``Payment-Signature`` value for x402). ``null`` when no payment was made.
-     * Surfaced so interop adapters can echo the exact sent credential.
+     * Surfaced so harness adapters can echo the exact sent credential.
      */
     val paymentHeader: String?,
     /**

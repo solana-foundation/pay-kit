@@ -296,7 +296,7 @@ end
 -- parse_authorization returns `(value, nil)` on success and `(nil, err)` on
 -- any malformed input (missing scheme, oversize token, bad base64url,
 -- invalid JSON, malformed inner challenge). Callers across the SDK
--- (`examples/simple-server.lua`, the Kong plugin handler, the interop
+-- (`examples/simple-server.lua`, the Kong plugin handler, the harness
 -- harness) already use the `(value, err)` shape; the previous
 -- `error(...)` exits surfaced to those callers as 500-style unwinds
 -- instead of structured 402 responses, which codex PR #103 review

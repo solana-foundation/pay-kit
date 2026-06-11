@@ -1,8 +1,8 @@
-// TypeScript reference x402 `exact` interop client.
+// TypeScript reference x402 `exact` harness client.
 //
-// Shares the same `X402_INTEROP_*` env-var contract and ready/result
+// Shares the same `X402_HARNESS_*` env-var contract and ready/result
 // JSON protocol as the Rust spine (`rust/crates/x402/src/bin/
-// interop_client.rs`). Sends an unpaid GET, parses the base64
+// harness_client.rs`). Sends an unpaid GET, parses the base64
 // `PAYMENT-REQUIRED` envelope, selects an offer (`preferredCurrencies`
 // first) and resubmits with `PAYMENT-SIGNATURE`. Prints one result
 // JSON line to stdout.

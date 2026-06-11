@@ -467,7 +467,7 @@ end
 -- produces a base64(JSON) payment header and a SERVER verify consumes one.
 -- The cross-SDK oracle is therefore the DECODED ENVELOPE shape, not the
 -- signed Solana transaction inside `payload.transaction` (that is the
--- interop matrix's job). This mirrors the TS reference
+-- harness matrix's job). This mirrors the TS reference
 -- (harness/src/conformance/x402.ts) and the Rust spine line-for-line.
 --
 -- The Lua SDK is SERVER-only, so:
@@ -689,7 +689,7 @@ local function run_x402_verify(vector)
   end
 
   -- Payload must carry a transaction proof (envelope oracle only checks
-  -- presence; the signed-transaction settlement is the interop matrix's job).
+  -- presence; the signed-transaction settlement is the harness matrix's job).
   local payload = env.payload
   if type(payload) ~= 'table'
     or type(payload.transaction) ~= 'string'
@@ -737,7 +737,7 @@ local function run_vector(vector)
 end
 
 -- Map the Lua SDK's native reject message onto the shared cross-SDK
--- RejectCode vocabulary the interop harness asserts per reject vector
+-- RejectCode vocabulary the harness asserts per reject vector
 -- (see harness/vectors/charge-rejects.json `expect.rejectCode`). The
 -- match is done on the lowercased message with plain substring checks
 -- (string.find with `plain = true`) so Lua-pattern magic characters in

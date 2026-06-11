@@ -5,7 +5,7 @@
 // WWW-Authenticate / Authorization / Payment-Receipt header
 // parser/formatter pair. The wire format mirrors
 // rust/src/protocol/core/{challenge,headers,types}.rs so the
-// cross-language interop harness exercises byte-identical output.
+// cross-language harness exercises byte-identical output.
 package wire
 
 import (

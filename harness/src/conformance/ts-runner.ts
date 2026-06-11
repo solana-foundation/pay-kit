@@ -151,7 +151,7 @@ function runX402Vector(vector: ConformanceVector): RunnerResult {
     const version = input.x402Version ?? 2;
     // Deterministic, RPC-free: the conformance oracle is the envelope, so
     // the signed-transaction proof is a pinned placeholder. A real SDK
-    // signs a Solana tx here; the interop matrix asserts that path.
+    // signs a Solana tx here; the harness matrix asserts that path.
     const transaction =
       input.x402PinnedTransaction ?? "AA==";
 

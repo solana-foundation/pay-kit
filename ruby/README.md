@@ -367,9 +367,9 @@ Focused harness commands:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=ruby pnpm test
-MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=ruby pnpm test
-X402_INTEROP_SERVERS=ruby-x402-server pnpm test
+MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=ruby pnpm test
+MPP_HARNESS_CLIENTS=rust       MPP_HARNESS_SERVERS=ruby pnpm test
+X402_HARNESS_SERVERS=ruby-x402-server pnpm test
 ```
 
 ## Spec

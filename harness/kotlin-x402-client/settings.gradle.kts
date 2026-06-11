@@ -12,5 +12,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "mpp-kotlin-x402-interop-client"
+rootProject.name = "mpp-kotlin-x402-harness-client"
 includeBuild("../../kotlin")

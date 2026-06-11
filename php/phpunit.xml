@@ -23,7 +23,7 @@
       <!-- PayCore HttpFactory is a thin nyholm/psr7 wrapper. -->
       <file>src/PayCore/HttpFactory.php</file>
       <!-- The x402 11-rule structural verifier + cosign/broadcast
-           path is exercised end-to-end by the harness interop step
+           path is exercised end-to-end by the harness step
            (rust-x402 client -> php server). Unit-level coverage of
            the verifier requires synthesising a byte-perfect v0
            transaction at PHP level; the harness step is the real

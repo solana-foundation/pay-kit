@@ -23,7 +23,7 @@ interface SolanaSigner {
  * In-memory Ed25519 signer backed by BouncyCastle.
  *
  * Production wallet integrations should provide their own SolanaSigner.
- * MemorySigner is intended for tests, examples, and the interop adapter
+ * MemorySigner is intended for tests, examples, and the harness adapter
  * where the harness ships secret keys as raw byte arrays.
  */
 class MemorySigner private constructor(
@@ -53,8 +53,8 @@ class MemorySigner private constructor(
 
         /**
          * Accepts the Solana canonical 64 byte secret-key format or a raw
-         * 32 byte seed. The MPP interop harness ships secret keys as 64
-         * byte arrays via MPP_INTEROP_CLIENT_SECRET_KEY.
+         * 32 byte seed. The MPP harness ships secret keys as 64
+         * byte arrays via MPP_HARNESS_CLIENT_SECRET_KEY.
          */
         fun fromSecretKey(secretKey: ByteArray): MemorySigner =
             fromSeed(Ed25519.seedFromSecretKey(secretKey))

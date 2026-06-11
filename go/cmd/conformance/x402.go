@@ -14,7 +14,7 @@ import (
 // produces a base64(JSON) payment header and a SERVER verify consumes one.
 // The cross-SDK oracle is therefore the DECODED ENVELOPE shape, never the
 // signed Solana transaction inside `payload.transaction` (that is the
-// interop matrix's job, see harness/src/conformance/x402.ts). This runner
+// harness matrix's job, see harness/src/conformance/x402.ts). This runner
 // path mirrors the TypeScript reference (harness/src/conformance/x402.ts)
 // and drives the real Go pay_kit x402 wire types:
 //   - build  -> x402.Credential envelope wrapping (v2 echoes the offer in

@@ -205,8 +205,8 @@ export async function runClient(
     // Inject both protocol-namespaced TARGET_URLs so an MPP client and
     // an x402 client driven by the same matrix loop each find their
     // expected env var.
-    MPP_INTEROP_TARGET_URL: targetUrl,
-    X402_INTEROP_TARGET_URL: targetUrl,
+    MPP_HARNESS_TARGET_URL: targetUrl,
+    X402_HARNESS_TARGET_URL: targetUrl,
     ...extraEnv,
   });
 

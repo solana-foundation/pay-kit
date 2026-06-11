@@ -26,7 +26,7 @@ declare(strict_types=1);
  *
  * x402-exact (intent === "x402-exact"): the cross-SDK oracle is the decoded
  * ENVELOPE shape, not the signed Solana transaction inside
- * payload.transaction (that is the interop matrix's job). PHP is server-only,
+ * payload.transaction (that is the harness matrix's job). PHP is server-only,
  * so:
  *
  *   - build-transaction (x402)  -> unsupported (no client envelope builder)
@@ -628,7 +628,7 @@ function x402_envelope_shape(array $envelope): array
  * (Protocols\X402\Adapter::verifyAndSettle) and the rust spine version
  * dispatch + network gate + v2 accepted-vs-route comparison. RPC-free: the
  * inner signed-transaction 11-rule structural check and broadcast are out of
- * scope for the envelope oracle (the interop matrix owns those), so a
+ * scope for the envelope oracle (the harness matrix owns those), so a
  * structurally valid, route-matching envelope is accepted here.
  *
  * Throws InvalidArgumentException with a message classify_reject maps onto the

@@ -190,7 +190,7 @@ class Mpp:
                     )
         self._rpc = config.rpc
         # Held by ``using_rpc`` to serialize per-request RPC swaps when
-        # the interop adapter (or any embedder) wants a fresh client
+        # the harness adapter (or any embedder) wants a fresh client
         # bound to the current event loop. The async lock is created
         # lazily on first use so construction does not require a
         # running loop.
@@ -207,7 +207,7 @@ class Mpp:
         which serialises only coroutines running on the SAME event
         loop. Embedders that share one ``Mpp`` instance across multiple
         OS threads (each running its own ``asyncio.run`` loop) MUST
-        provide their own thread-level coordination. The interop
+        provide their own thread-level coordination. The harness
         adapter ships a sequential ``HTTPServer`` (not ThreadingMixIn),
         so this lock is sufficient there; a ThreadingHTTPServer or
         Gunicorn-style worker pool would require either thread-local

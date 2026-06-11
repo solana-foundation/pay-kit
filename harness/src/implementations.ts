@@ -57,7 +57,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "tsx",
       "src/fixtures/typescript/charge-client.ts",
     ],
-    enabled: isEnabled("typescript", "MPP_INTEROP_CLIENTS", true),
+    enabled: isEnabled("typescript", "MPP_HARNESS_CLIENTS", true),
   },
   {
     id: "rust",
@@ -72,16 +72,16 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-p",
       "solana-mpp",
       "--bin",
-      "interop_client",
+      "harness_client",
     ],
-    enabled: isEnabled("rust", "MPP_INTEROP_CLIENTS", true),
+    enabled: isEnabled("rust", "MPP_HARNESS_CLIENTS", true),
   },
   {
     id: "go",
     label: "Go HTTP client",
     role: "client",
     command: ["sh", "-c", "cd go-client && go run ."],
-    enabled: isEnabled("go", "MPP_INTEROP_CLIENTS", false),
+    enabled: isEnabled("go", "MPP_HARNESS_CLIENTS", false),
   },
   {
     id: "swift",
@@ -90,25 +90,25 @@ export const clientImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd swift-client && swift run --quiet SwiftInteropClient",
+      "cd swift-client && swift run --quiet SwiftHarnessClient",
     ],
-    enabled: isEnabled("swift", "MPP_INTEROP_CLIENTS", false),
+    enabled: isEnabled("swift", "MPP_HARNESS_CLIENTS", false),
   },
   {
     id: "kotlin",
     label: "Kotlin HTTP client",
     role: "client",
     // Pre-warmed by `gradle installDist` in `.github/workflows/kotlin.yml`
-    // (the `interop-kotlin` job) so the script lands at this path. Local
+    // (the `harness-kotlin` job) so the script lands at this path. Local
     // runs can prime it with `(cd harness/kotlin-client && gradle installDist)`.
     command: [
       "sh",
       "-c",
-      "kotlin-client/build/install/mpp-kotlin-interop-client/bin/mpp-kotlin-interop-client",
+      "kotlin-client/build/install/mpp-kotlin-harness-client/bin/mpp-kotlin-harness-client",
     ],
     // Defaults off to match swift/php/ruby/go: opt-in via
-    // `MPP_INTEROP_CLIENTS=kotlin` (the interop-kotlin CI job sets this).
-    enabled: isEnabled("kotlin", "MPP_INTEROP_CLIENTS", false),
+    // `MPP_HARNESS_CLIENTS=kotlin` (the harness-kotlin CI job sets this).
+    enabled: isEnabled("kotlin", "MPP_HARNESS_CLIENTS", false),
   },
   {
     id: "ts-x402",
@@ -122,7 +122,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "tsx",
       "src/fixtures/typescript/exact-client.ts",
     ],
-    enabled: isEnabled("ts-x402", "X402_INTEROP_CLIENTS", true),
+    enabled: isEnabled("ts-x402", "X402_HARNESS_CLIENTS", true),
     intents: ["x402-exact"],
     reportsAs: "typescript",
   },
@@ -139,9 +139,9 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-p",
       "solana-x402",
       "--bin",
-      "interop_client",
+      "harness_client",
     ],
-    enabled: isEnabled("rust-x402", "X402_INTEROP_CLIENTS", true),
+    enabled: isEnabled("rust-x402", "X402_HARNESS_CLIENTS", true),
     intents: ["x402-exact"],
     reportsAs: "rust",
   },
@@ -150,7 +150,7 @@ export const clientImplementations: ImplementationDefinition[] = [
     label: "Go x402 exact client",
     role: "client",
     command: ["sh", "-c", "cd go-client && go run ."],
-    enabled: isEnabled("go-x402", "X402_INTEROP_CLIENTS", false),
+    enabled: isEnabled("go-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
     reportsAs: "go",
   },
@@ -163,11 +163,11 @@ export const clientImplementations: ImplementationDefinition[] = [
     // on sys.path like harness/python-server/server.py. Default OFF to match the
     // go/swift/kotlin/ruby adapters: the default matrix should not require a
     // Python toolchain on every contributor's machine. Opt in via
-    // `X402_INTEROP_CLIENTS=python-x402` (the focused python-x402 CI job sets
+    // `X402_HARNESS_CLIENTS=python-x402` (the focused python-x402 CI job sets
     // this). Carries a real signed Solana transaction, so it settles end-to-end
     // against the rust/ts/python x402 servers (see test/x402-exact.e2e.test.ts).
     command: ["python3", "python-x402-client/main.py"],
-    enabled: isEnabled("python-x402", "X402_INTEROP_CLIENTS", false),
+    enabled: isEnabled("python-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
     reportsAs: "python",
   },
@@ -180,7 +180,7 @@ export const clientImplementations: ImplementationDefinition[] = [
       "-c",
       "cd swift-x402-client && swift run --quiet SwiftX402Client",
     ],
-    enabled: isEnabled("swift-x402", "X402_INTEROP_CLIENTS", false),
+    enabled: isEnabled("swift-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
   },
   {
@@ -188,15 +188,15 @@ export const clientImplementations: ImplementationDefinition[] = [
     label: "Kotlin x402 exact client",
     role: "client",
     // Pre-warmed by `gradle installDist` in `.github/workflows/kotlin.yml`
-    // (the `interop-kotlin-x402` job) so the script lands at this path. Local
+    // (the `harness-kotlin-x402` job) so the script lands at this path. Local
     // runs can prime it with `(cd harness/kotlin-x402-client && gradle installDist)`.
     command: [
       "sh",
       "-c",
-      "kotlin-x402-client/build/install/mpp-kotlin-x402-interop-client/bin/mpp-kotlin-x402-interop-client",
+      "kotlin-x402-client/build/install/mpp-kotlin-x402-harness-client/bin/mpp-kotlin-x402-harness-client",
     ],
-    // Defaults off to match swift/go/etc: opt-in via `X402_INTEROP_CLIENTS=kotlin-x402`.
-    enabled: isEnabled("kotlin-x402", "X402_INTEROP_CLIENTS", false),
+    // Defaults off to match swift/go/etc: opt-in via `X402_HARNESS_CLIENTS=kotlin-x402`.
+    enabled: isEnabled("kotlin-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
   },
 ];
@@ -214,7 +214,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "tsx",
       "src/fixtures/typescript/charge-server.ts",
     ],
-    enabled: isEnabled("typescript", "MPP_INTEROP_SERVERS", true),
+    enabled: isEnabled("typescript", "MPP_HARNESS_SERVERS", true),
   },
   {
     id: "rust",
@@ -229,9 +229,9 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-p",
       "solana-mpp",
       "--bin",
-      "interop_server",
+      "harness_server",
     ],
-    enabled: isEnabled("rust", "MPP_INTEROP_SERVERS", true),
+    enabled: isEnabled("rust", "MPP_HARNESS_SERVERS", true),
   },
   {
     id: "php",
@@ -239,13 +239,13 @@ export const serverImplementations: ImplementationDefinition[] = [
     role: "server",
     // One adapter binary, two settle paths. The dual-protocol PHP
     // server (harness/php-server/server.php) reads either
-    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL
+    // X402_HARNESS_* or MPP_HARNESS_* (or PAY_KIT_HARNESS_PROTOCOL
     // for the matrix's both-namespaces shape) and routes through
     // the umbrella's X402 adapter (x402) or the lower-level
     // SolanaChargeHandler (mpp). Mirrors the Lua + Ruby
     // pay-kit-server pattern.
     command: ["php", "php-server/server.php"],
-    enabled: isEnabled("php", "MPP_INTEROP_SERVERS", true),
+    enabled: isEnabled("php", "MPP_HARNESS_SERVERS", true),
     intents: ["charge", "x402-exact"],
   },
   {
@@ -253,9 +253,9 @@ export const serverImplementations: ImplementationDefinition[] = [
     label: "Ruby PayKit server (dual protocol)",
     role: "server",
     // One adapter binary, two settle paths. The harness orchestrator
-    // sets either `X402_INTEROP_*` (x402-exact intent) or `MPP_INTEROP_*`
+    // sets either `X402_HARNESS_*` (x402-exact intent) or `MPP_HARNESS_*`
     // (charge intent); the adapter detects which one is active (via
-    // PAY_KIT_INTEROP_PROTOCOL hint or namespace probe) and routes
+    // PAY_KIT_HARNESS_PROTOCOL hint or namespace probe) and routes
     // through PayKit::Rack::Dispatcher (x402) or Mpp::Server::Charge
     // directly (mpp).
     command: [
@@ -263,7 +263,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../ruby && bundle exec ruby ../harness/ruby-server/server.rb",
     ],
-    enabled: isEnabled("ruby", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("ruby", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
   },
   {
@@ -272,7 +272,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     role: "server",
     // One adapter binary, two settle paths. The dual-protocol Lua
     // server (lua/harness/lua-server/server.lua) reads either
-    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL
+    // X402_HARNESS_* or MPP_HARNESS_* (or PAY_KIT_HARNESS_PROTOCOL
     // for the matrix's both-namespaces shape) and routes through
     // resty.pay_kit. Mirrors the Ruby pay-kit-server pattern.
     command: [
@@ -280,7 +280,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
     ],
-    enabled: isEnabled("lua", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("lua", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
   },
   {
@@ -289,21 +289,21 @@ export const serverImplementations: ImplementationDefinition[] = [
     role: "server",
     // One adapter binary, two settle paths. The dual-protocol Python
     // pay_kit server (harness/python-server/server.py) reads either
-    // X402_INTEROP_* or MPP_INTEROP_* (or PAY_KIT_INTEROP_PROTOCOL for the
+    // X402_HARNESS_* or MPP_HARNESS_* (or PAY_KIT_HARNESS_PROTOCOL for the
     // matrix's both-namespaces shape) and routes x402 through the umbrella's
     // X402Adapter and MPP charge through the lower-level
     // pay_kit.protocols.mpp handler (the umbrella's ticker-based currency
     // model fits x402's resolved-mint asset, but the pubkey-mode MPP charge
     // matrix needs the literal mint as currency). Same split as the PHP
     // adapter. Default OFF to match the other newly-landed adapters (PHP,
-    // Ruby): the default interop matrix should not require a Python toolchain
+    // Ruby): the default harness matrix should not require a Python toolchain
     // on every contributor's machine; opt in via
-    // ``MPP_INTEROP_SERVERS=python`` (charge) /
-    // ``MPP_INTEROP_SERVERS=python X402_INTEROP_CLIENTS=rust-x402`` with
-    // ``MPP_INTEROP_INTENTS=x402-exact`` (x402-exact), or the dedicated
+    // ``MPP_HARNESS_SERVERS=python`` (charge) /
+    // ``MPP_HARNESS_SERVERS=python X402_HARNESS_CLIENTS=rust-x402`` with
+    // ``MPP_HARNESS_INTENTS=x402-exact`` (x402-exact), or the dedicated
     // focused-matrix CI jobs in .github/workflows/python.yml.
     command: ["python3", "python-server/server.py"],
-    enabled: isEnabled("python", "MPP_INTEROP_SERVERS", false),
+    enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
   },
   {
@@ -311,7 +311,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     label: "Go PayKit umbrella server (dual protocol)",
     role: "server",
     command: ["sh", "-c", "cd go-server && ./paykit-server"],
-    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", true),
+    enabled: isEnabled("go", "MPP_HARNESS_SERVERS", true),
     intents: ["charge", "x402-exact"],
     // The Go umbrella server fixture reports the bare language tag
     // `go-paykit`, not the adapter id `go`.
@@ -329,7 +329,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "tsx",
       "src/fixtures/typescript/exact-server.ts",
     ],
-    enabled: isEnabled("ts-x402", "X402_INTEROP_SERVERS", true),
+    enabled: isEnabled("ts-x402", "X402_HARNESS_SERVERS", true),
     intents: ["x402-exact"],
     reportsAs: "typescript",
   },
@@ -346,9 +346,9 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-p",
       "solana-x402",
       "--bin",
-      "interop_server",
+      "harness_server",
     ],
-    enabled: isEnabled("rust-x402", "X402_INTEROP_SERVERS", true),
+    enabled: isEnabled("rust-x402", "X402_HARNESS_SERVERS", true),
     intents: ["x402-exact"],
     reportsAs: "rust",
   },
@@ -361,7 +361,7 @@ export const serverImplementations: ImplementationDefinition[] = [
       "-c",
       "cd ../ruby && bundle exec ruby ../harness/ruby-x402-server/server.rb",
     ],
-    enabled: isEnabled("ruby-x402-server", "X402_INTEROP_SERVERS", false),
+    enabled: isEnabled("ruby-x402-server", "X402_HARNESS_SERVERS", false),
     intents: ["x402-exact"],
     reportsAs: "ruby",
   },

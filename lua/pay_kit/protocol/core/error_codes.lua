@@ -15,7 +15,7 @@ backward compatibility:
 The Lua codebase used to mix two error shapes: `error('string')` in
 the PR A server core and `error({code = '...', message = '...'})` in
 the PR B Solana stack. Standardizing on the table shape lets every
-HTTP boundary (interop adapter, simple-server, Kong plugin) surface
+HTTP boundary (harness adapter, simple-server, Kong plugin) surface
 the same code field without per-callsite glue.
 
 Code set (matches Python and the cross-SDK fault matrix at audit v2):

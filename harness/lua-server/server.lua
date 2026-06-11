@@ -3,11 +3,11 @@
 --
 -- One TCP server, two settle paths (x402:exact and mpp:charge), picked
 -- per scenario by which env namespace the harness orchestrator sets
--- (or by the explicit PAY_KIT_INTEROP_PROTOCOL hint). Mirrors the
+-- (or by the explicit PAY_KIT_HARNESS_PROTOCOL hint). Mirrors the
 -- Ruby pay-kit-server pattern at harness/ruby-server/server.rb.
 --
 -- Drives the harness contract:
---   1. Read env (PAY_KIT_INTEROP_PROTOCOL OR exclusive MPP_/X402_).
+--   1. Read env (PAY_KIT_HARNESS_PROTOCOL OR exclusive MPP_/X402_).
 --   2. configure() + register one gate at the requested amount.
 --   3. Listen on a free TCP port; print {"type":"ready",...} on stdout.
 --   4. Route GET /<resource> through pay_kit.try_payment.
@@ -46,17 +46,17 @@ end
 
 -- --- detect intent --------------------------------------------------
 
-local explicit = (os.getenv('PAY_KIT_INTEROP_PROTOCOL') or ''):lower()
+local explicit = (os.getenv('PAY_KIT_HARNESS_PROTOCOL') or ''):lower()
 local x402_active
 if explicit == 'x402' then
   x402_active = true
 elseif explicit == 'mpp' or explicit == 'charge' then
   x402_active = false
 else
-  x402_active = (os.getenv('X402_INTEROP_RPC_URL') or '') ~= ''
-  local mpp_active = (os.getenv('MPP_INTEROP_RPC_URL') or '') ~= ''
+  x402_active = (os.getenv('X402_HARNESS_RPC_URL') or '') ~= ''
+  local mpp_active = (os.getenv('MPP_HARNESS_RPC_URL') or '') ~= ''
   if x402_active == mpp_active then
-    log('set exactly one of X402_INTEROP_RPC_URL / MPP_INTEROP_RPC_URL, or set PAY_KIT_INTEROP_PROTOCOL')
+    log('set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL')
     os.exit(2)
   end
 end
@@ -69,29 +69,29 @@ local rpc_url, pay_to, amount_units, mint, resource_path, network_raw
 local facilitator_secret_json, mpp_secret, settlement_header, mpp_fee_payer_json
 
 if x402_active then
-  rpc_url       = require_env('X402_INTEROP_RPC_URL')
-  pay_to        = require_env('X402_INTEROP_PAY_TO')
-  facilitator_secret_json = require_env('X402_INTEROP_FACILITATOR_SECRET_KEY')
-  amount_units  = optional_env('X402_INTEROP_AMOUNT', '1000')
-  mint          = optional_env('X402_INTEROP_MINT', 'USDC')
-  network_raw   = optional_env('X402_INTEROP_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')
-  resource_path = optional_env('X402_INTEROP_RESOURCE_PATH', '/paid')
-  settlement_header = optional_env('X402_INTEROP_SETTLEMENT_HEADER',
+  rpc_url       = require_env('X402_HARNESS_RPC_URL')
+  pay_to        = require_env('X402_HARNESS_PAY_TO')
+  facilitator_secret_json = require_env('X402_HARNESS_FACILITATOR_SECRET_KEY')
+  amount_units  = optional_env('X402_HARNESS_AMOUNT', '1000')
+  mint          = optional_env('X402_HARNESS_MINT', 'USDC')
+  network_raw   = optional_env('X402_HARNESS_NETWORK', 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')
+  resource_path = optional_env('X402_HARNESS_RESOURCE_PATH', '/paid')
+  settlement_header = optional_env('X402_HARNESS_SETTLEMENT_HEADER',
                                    'x-payment-settlement-signature')
 else
-  rpc_url       = require_env('MPP_INTEROP_RPC_URL')
-  pay_to        = require_env('MPP_INTEROP_PAY_TO')
-  mint          = require_env('MPP_INTEROP_MINT')
-  amount_units  = require_env('MPP_INTEROP_AMOUNT')
-  mpp_secret    = optional_env('MPP_INTEROP_SECRET_KEY', 'pay-kit-interop-secret')
-  network_raw   = optional_env('MPP_INTEROP_NETWORK', 'localnet')
-  resource_path = optional_env('MPP_INTEROP_RESOURCE_PATH', '/paid')
-  settlement_header = optional_env('MPP_INTEROP_SETTLEMENT_HEADER',
+  rpc_url       = require_env('MPP_HARNESS_RPC_URL')
+  pay_to        = require_env('MPP_HARNESS_PAY_TO')
+  mint          = require_env('MPP_HARNESS_MINT')
+  amount_units  = require_env('MPP_HARNESS_AMOUNT')
+  mpp_secret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret')
+  network_raw   = optional_env('MPP_HARNESS_NETWORK', 'localnet')
+  resource_path = optional_env('MPP_HARNESS_RESOURCE_PATH', '/paid')
+  settlement_header = optional_env('MPP_HARNESS_SETTLEMENT_HEADER',
                                    'x-payment-settlement-signature')
-  mpp_fee_payer_json = optional_env('MPP_INTEROP_FEE_PAYER_SECRET_KEY', nil)
+  mpp_fee_payer_json = optional_env('MPP_HARNESS_FEE_PAYER_SECRET_KEY', nil)
 end
 
-local splits_raw = optional_env('MPP_INTEROP_SPLITS', '[]')
+local splits_raw = optional_env('MPP_HARNESS_SPLITS', '[]')
 local splits_decoded = (function()
   local ok, parsed = pcall(cjson.decode, splits_raw)
   if not ok or type(parsed) ~= 'table' then return {} end
@@ -155,7 +155,7 @@ local ok, cfg_err = pay_kit.configure({
     fee_payer = operator_fee_payer,
   },
   mpp = {
-    realm                    = 'PayKit Interop',
+    realm                    = 'PayKit Harness',
     challenge_binding_secret = mpp_secret,
   },
 })

@@ -18,8 +18,8 @@ module PayKit::Protocols::X402
   module Server
     # Production x402-exact server. Mirrors the Rust spine
     # `rust/crates/x402/src/server/exact.rs` (`Config`, `X402`) plus the
-    # interop binary's request loop at
-    # `rust/crates/x402/src/bin/interop_server.rs`.
+    # harness binary's request loop at
+    # `rust/crates/x402/src/bin/harness_server.rs`.
     #
     # Responsibilities:
     # - Build `PAYMENT-REQUIRED` challenge envelopes from `Config`.
@@ -47,7 +47,7 @@ module PayKit::Protocols::X402
       DEFAULT_SETTLEMENT_HEADER = "x-fixture-settlement"
 
       # Canonical x402 v2 response header (spine constants.rs:31 +
-      # rust/crates/x402/src/bin/interop_server.rs:221-231).
+      # rust/crates/x402/src/bin/harness_server.rs:221-231).
       PAYMENT_RESPONSE_HEADER = Constants::PAYMENT_RESPONSE_HEADER
 
       DEFAULT_TOKEN_PROGRAM = ::PayCore::Solana::Mints::TOKEN_PROGRAM
@@ -105,8 +105,8 @@ module PayKit::Protocols::X402
       # (the spine `Config` struct). Holds resolved RPC URL,
       # facilitator signer, accepted mints, pay-to, and the replay
       # store. Constructed directly with typed kwargs; harness-
-      # specific env-var parsing (X402_INTEROP_*) lives in the
-      # interop bin, not in this library.
+      # specific env-var parsing (X402_HARNESS_*) lives in the
+      # harness bin, not in this library.
       class Config
         attr_reader :rpc_url, :network, :mint, :extra_offered_mints, :pay_to, :fee_payer,
           :fee_payer_secret_key, :amount, :resource_path, :settlement_header,
@@ -180,22 +180,22 @@ module PayKit::Protocols::X402
         private :fetch_recent_blockhash
 
         # Build a `Config` from the harness env vars
-        # (X402_INTEROP_*). Only used by the harness x402 adapter at
+        # (X402_HARNESS_*). Only used by the harness x402 adapter at
         # `harness/ruby-x402-server/server.rb`; production callers
         # should call `.new(...)` with typed kwargs directly.
-        def self.from_interop_env(env = ENV)
+        def self.from_harness_env(env = ENV)
           new(
-            rpc_url: required_env(env, "X402_INTEROP_RPC_URL"),
-            pay_to: required_env(env, "X402_INTEROP_PAY_TO"),
-            facilitator_secret_key: required_env(env, "X402_INTEROP_FACILITATOR_SECRET_KEY"),
-            amount: env.fetch("X402_INTEROP_PRICE", DEFAULT_PRICE),
-            network: env.fetch("X402_INTEROP_NETWORK", DEFAULT_NETWORK),
-            mint: env.fetch("X402_INTEROP_MINT", DEFAULT_MINT),
-            extra_offered_mints: env.fetch("X402_INTEROP_EXTRA_OFFERED_MINTS", "")
+            rpc_url: required_env(env, "X402_HARNESS_RPC_URL"),
+            pay_to: required_env(env, "X402_HARNESS_PAY_TO"),
+            facilitator_secret_key: required_env(env, "X402_HARNESS_FACILITATOR_SECRET_KEY"),
+            amount: env.fetch("X402_HARNESS_PRICE", DEFAULT_PRICE),
+            network: env.fetch("X402_HARNESS_NETWORK", DEFAULT_NETWORK),
+            mint: env.fetch("X402_HARNESS_MINT", DEFAULT_MINT),
+            extra_offered_mints: env.fetch("X402_HARNESS_EXTRA_OFFERED_MINTS", "")
               .split(",").map(&:strip).reject(&:empty?),
-            resource_path: env.fetch("X402_INTEROP_RESOURCE_PATH", DEFAULT_RESOURCE_PATH),
-            settlement_header: env.fetch("X402_INTEROP_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER),
-            payment_identifier_required: env.fetch("X402_INTEROP_PAYMENT_IDENTIFIER_REQUIRED", "") == "true"
+            resource_path: env.fetch("X402_HARNESS_RESOURCE_PATH", DEFAULT_RESOURCE_PATH),
+            settlement_header: env.fetch("X402_HARNESS_SETTLEMENT_HEADER", DEFAULT_SETTLEMENT_HEADER),
+            payment_identifier_required: env.fetch("X402_HARNESS_PAYMENT_IDENTIFIER_REQUIRED", "") == "true"
           )
         end
 
@@ -223,7 +223,7 @@ module PayKit::Protocols::X402
         def normalize_amount(price)
           amount = price.strip.delete_prefix("$").split.first
           whole, dot, fraction = amount.partition(".")
-          raise "X402_INTEROP_PRICE has too many decimal places: #{price}" if dot && fraction.length > DEFAULT_TOKEN_DECIMALS
+          raise "X402_HARNESS_PRICE has too many decimal places: #{price}" if dot && fraction.length > DEFAULT_TOKEN_DECIMALS
 
           fraction = fraction.ljust(DEFAULT_TOKEN_DECIMALS, "0")
           ((Integer(whole, 10) * 1_000_000) + Integer(fraction.empty? ? "0" : fraction, 10)).to_s
@@ -365,7 +365,7 @@ module PayKit::Protocols::X402
             requirements.find { |candidate| payment_requirement_matches?(accepted, candidate) }
           end
           unless requirement
-            # Mirrors Go reference (go/cmd/interop-server/main.go:856).
+            # Mirrors Go reference (go/cmd/harness-server/main.go:856).
             raise "No matching payment requirements: accepted payment requirement does not match server challenge"
           end
 
@@ -427,7 +427,7 @@ module PayKit::Protocols::X402
         #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
         #
         # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
-        # at `rust/crates/x402/src/bin/interop_server.rs:316-324`.
+        # at `rust/crates/x402/src/bin/harness_server.rs:316-324`.
         # Pick the settlement-response header for a credential by its wire
         # version: a v1 `X-PAYMENT` credential gets the legacy
         # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
@@ -614,7 +614,7 @@ module PayKit::Protocols::X402
 
         # ---- HTTP request dispatch -----------------------------------
         # Mirrors the spine request loop at
-        # `rust/crates/x402/src/bin/interop_server.rs` and returns the
+        # `rust/crates/x402/src/bin/harness_server.rs` and returns the
         # tuple shape `[status, headers, body]` that the bin's TCP
         # adapter serializes.
         def response_for(path, headers, config)

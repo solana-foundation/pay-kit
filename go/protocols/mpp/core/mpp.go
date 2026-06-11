@@ -8,7 +8,7 @@
 // transaction builders live in the `client` subpackage. The wire format
 // and module split mirror the Rust reference crate documented in
 // skills/pay-sdk-implementation; cross-language behavior is locked via
-// the interop harness at harness.
+// the harness at harness.
 package core
 
 import (

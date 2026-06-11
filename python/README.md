@@ -434,8 +434,8 @@ harness commands:
 
 ```bash
 cd harness
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=python pnpm test
-MPP_INTEROP_CLIENTS=rust       MPP_INTEROP_SERVERS=python pnpm test
+MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=python pnpm test
+MPP_HARNESS_CLIENTS=rust       MPP_HARNESS_SERVERS=python pnpm test
 ```
 
 ## Spec

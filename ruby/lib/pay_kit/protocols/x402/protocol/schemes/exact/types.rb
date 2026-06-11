@@ -73,7 +73,7 @@ module PayKit::Protocols::X402
 
         # Apply the facilitator-managed (fee-payer) signature to a
         # client-signed transaction. Mirrors the spine fee-payer
-        # signing step at `rust/crates/x402/src/bin/interop_server.rs:316-324`.
+        # signing step at `rust/crates/x402/src/bin/harness_server.rs:316-324`.
         def sign_transaction_with_fee_payer(transaction:, fee_payer_secret_key:)
           private_key = private_key_from_json(fee_payer_secret_key)
           bytes = transaction.b
@@ -98,7 +98,7 @@ module PayKit::Protocols::X402
         # exact-server.ts:141-143) only matches scheme/network/asset
         # and the v2 client leaves `amount` out of `accepted` to allow
         # a per-request facilitator to fill it in. Comparing them
-        # strictly broke cross-language interop ("No matching payment
+        # strictly broke cross-language harness ("No matching payment
         # requirements" against structurally compatible payloads).
         REQUIREMENT_IDENTITY_KEYS = %w[scheme network asset payTo].freeze
         REQUIREMENT_EXTRA_IDENTITY_KEYS = %w[feePayer tokenProgram memo].freeze

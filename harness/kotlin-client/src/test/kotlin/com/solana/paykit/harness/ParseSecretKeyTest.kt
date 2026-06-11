@@ -1,4 +1,4 @@
-package com.solana.paykit.interop
+package com.solana.paykit.harness
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

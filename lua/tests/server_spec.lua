@@ -241,8 +241,8 @@ t.test('charge_with_options threads explicit token_program override into methodD
   -- Token-2022 scenarios that use an arbitrary mint pubkey (not in the
   -- KNOWN_MINTS table) need a way to tell the SDK which token program
   -- owns the mint without modifying the stablecoin allowlist. Mirrors the
-  -- TOKEN_2022_PROGRAM threading path the lua interop adapter takes when
-  -- MPP_INTEROP_TOKEN_PROGRAM is set.
+  -- TOKEN_2022_PROGRAM threading path the lua harness adapter takes when
+  -- MPP_HARNESS_TOKEN_PROGRAM is set.
   local server = new_server()
   local challenge = server:charge_with_options('0.001', {
     token_program = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',

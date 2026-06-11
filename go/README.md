@@ -197,7 +197,7 @@ go test ./...
 The CI Go job runs the SDK packages with `-coverprofile` and enforces a
 91 percent line coverage gate via `scripts/check_coverage.sh`.
 
-## Interop
+## Harness
 
 The Go SDK plugs into the cross-SDK harness as a server
 (`harness/go-server`, both protocols) and as clients
@@ -207,12 +207,12 @@ as `go-x402` — drives the x402-exact client). Focused harness commands:
 ```bash
 cd harness
 # MPP charge
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go   pnpm test
-MPP_INTEROP_CLIENTS=go         MPP_INTEROP_SERVERS=rust pnpm test
+MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=go   pnpm test
+MPP_HARNESS_CLIENTS=go         MPP_HARNESS_SERVERS=rust pnpm test
 # x402 exact: go client -> go server
-MPP_INTEROP_SERVERS=go MPP_INTEROP_INTENTS=x402-exact \
-  MPP_INTEROP_SCENARIOS=x402-exact-basic \
-  X402_INTEROP_CLIENTS=go-x402 X402_INTEROP_SERVERS=go pnpm test
+MPP_HARNESS_SERVERS=go MPP_HARNESS_INTENTS=x402-exact \
+  MPP_HARNESS_SCENARIOS=x402-exact-basic \
+  X402_HARNESS_CLIENTS=go-x402 X402_HARNESS_SERVERS=go pnpm test
 ```
 
 ## Spec

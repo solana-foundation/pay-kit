@@ -314,7 +314,7 @@ module PayKit
           raise ::PayKit::ConfigurationError, "no mint table for network #{network.inspect}"
         end
         # Unknown symbol passes through as a literal mint pubkey. This
-        # lets the interop harness and other call sites supply mint
+        # lets the harness and other call sites supply mint
         # addresses directly (`usd("1.00", "4zMMC9srt5...".to_sym)`)
         # without forcing them through the symbol table.
         coin_str = coin.to_s

@@ -1,4 +1,4 @@
-//! Canonical interop test client.
+//! Canonical harness test client.
 //!
 //! Tests the full payment cycle against any MPP server:
 //!   1. GET /health → 200
@@ -23,7 +23,7 @@ async fn main() {
     let rpc_url =
         std::env::var("RPC_URL").unwrap_or_else(|_| "http://localhost:8899".to_string());
 
-    println!("Interop test: Rust client → {server_url}");
+    println!("Harness test: Rust client → {server_url}");
     println!("RPC: {rpc_url}");
 
     let http = reqwest::Client::new();
@@ -155,7 +155,7 @@ async fn main() {
     );
     println!("OK → {}", data["fortune"].as_str().unwrap_or("?"));
 
-    println!("\n  ✓ All interop tests passed");
+    println!("\n  ✓ All harness tests passed");
 }
 
 async fn rpc_call(

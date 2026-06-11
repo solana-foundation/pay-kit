@@ -14,7 +14,7 @@
 -- Reference operation map (lua/pay_kit/protocol/core/headers.lua + challenge.lua
 -- + types.lua, lua/pay_kit/util/base64url.lua). All of those modules are pure
 -- Lua and load under plain luajit without the native luasodium / cjson /
--- luasocket deps the live interop server needs.
+-- luasocket deps the live harness server needs.
 --
 -- ABI codec note: the SDK's pure-Lua util/json represents both `{}` and `[]`
 -- as a bare empty table and re-emits an empty table as `[]`. The conformance

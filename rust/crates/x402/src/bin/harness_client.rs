@@ -15,18 +15,18 @@ const SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let target_url = read_required_env("X402_INTEROP_TARGET_URL")?;
-    let rpc_url = read_required_env("X402_INTEROP_RPC_URL")?;
-    let network = env::var("X402_INTEROP_NETWORK").unwrap_or_else(|_| DEFAULT_NETWORK.to_string());
-    let signer = read_memory_signer("X402_INTEROP_CLIENT_SECRET_KEY")?;
+    let target_url = read_required_env("X402_HARNESS_TARGET_URL")?;
+    let rpc_url = read_required_env("X402_HARNESS_RPC_URL")?;
+    let network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| DEFAULT_NETWORK.to_string());
+    let signer = read_memory_signer("X402_HARNESS_CLIENT_SECRET_KEY")?;
 
-    // For multi-currency interop, the harness passes
-    //   X402_INTEROP_PREFER_CURRENCIES = "PYUSD,USDC"
+    // For multi-currency harness, the harness passes
+    //   X402_HARNESS_PREFER_CURRENCIES = "PYUSD,USDC"
     // to communicate the client's currency preference order. With no env
     // var set the client falls back to "cheapest amount on preferred
     // network" — same as before.
     let preferred_currencies: Option<Vec<String>> =
-        env::var("X402_INTEROP_PREFER_CURRENCIES").ok().map(|raw| {
+        env::var("X402_HARNESS_PREFER_CURRENCIES").ok().map(|raw| {
             raw.split(',')
                 .map(|entry| entry.trim().to_string())
                 .filter(|entry| !entry.is_empty())

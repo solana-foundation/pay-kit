@@ -69,7 +69,7 @@ DEFAULT_SPL_DECIMALS = 6
 
 # x402-exact build determinism: the conformance oracle is the DECODED
 # ENVELOPE shape, never the signed-transaction bytes inside
-# payload.transaction (that is the interop matrix's job). So the build path
+# payload.transaction (that is the harness matrix's job). So the build path
 # is pinned with a fixed blockhash + memo nonce and an ephemeral signer; the
 # resulting transaction is real and well-formed but its bytes are not
 # asserted. Mirrors the rust spine x402 client and the TS reference oracle
@@ -493,7 +493,7 @@ def _x402_verify(vector: dict[str, Any]) -> dict[str, Any]:
     version dispatch, the network gate (v1 legacy slug / v2 accepted.network),
     and the v2 accepted-vs-route field comparison. The signed-transaction
     settlement inside payload.transaction is intentionally out of scope (the
-    interop matrix's job), so a structurally valid, route-matching envelope is
+    harness matrix's job), so a structurally valid, route-matching envelope is
     accepted here. Returns the decoded envelope shape on accept; raises with a
     classifiable message on reject.
     """

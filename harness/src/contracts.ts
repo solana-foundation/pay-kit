@@ -6,9 +6,9 @@ export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
-export type InteropIntent = "charge" | "x402-exact";
+export type HarnessIntent = "charge" | "x402-exact";
 
-export type InteropScenarioSplit = {
+export type HarnessScenarioSplit = {
   recipientKey: string;
   amount: string;
   ataCreationRequired?: boolean;
@@ -19,9 +19,9 @@ export type TokenProgramVariant = "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM";
 
 export type CurrencyMode = "pubkey" | "symbol";
 
-export type InteropScenario = {
+export type HarnessScenario = {
   id: string;
-  intent: InteropIntent;
+  intent: HarnessIntent;
   // Settlement mode. Defaults to "pull" (server broadcasts the client's
   // signed transaction). "push" exercises the client-broadcast path: the
   // client builds, signs, broadcasts, and awaits confirmation locally,
@@ -33,14 +33,14 @@ export type InteropScenario = {
   price: string;
   amount: string;
   // The literal value the harness sends to each adapter as
-  // `MPP_INTEROP_MINT`. In `pubkey` mode (default) this is a 32+ char
+  // `MPP_HARNESS_MINT`. In `pubkey` mode (default) this is a 32+ char
   // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol
   // (e.g. "USDC") and the harness deploys the mint at the pubkey each
   // SDK's `Mints.resolve(symbol, network)` returns.
   asset: string;
   resourcePath: string;
   settlementHeader: string;
-  splits?: InteropScenarioSplit[];
+  splits?: HarnessScenarioSplit[];
   replaySource?: {
     resourcePath: string;
     price: string;
@@ -66,7 +66,7 @@ export type InteropScenario = {
   // Optional. Defaults to 6. Drives both the mint account `data[44]`
   // byte at deploy time and the assertion `decimals` byte at `data[9]`
   // of every transferChecked instruction. Adapters that accept a
-  // configurable decimals value read `MPP_INTEROP_DECIMALS` from env.
+  // configurable decimals value read `MPP_HARNESS_DECIMALS` from env.
   decimals?: number;
   // Optional. When set the harness pre-creates the platform recipient's
   // ATA for the scenario mint with a zero balance before the test
@@ -157,26 +157,26 @@ export function normalizeResponseHeaders(
 
 export { chargeCanonicalJsonVectors } from "./intents/charge";
 
-export const interopScenarios: readonly InteropScenario[] = [
+export const harnessScenarios: readonly HarnessScenario[] = [
   ...chargeScenarios,
   ...x402ExactScenarios,
 ];
 
-export const interopScenario: InteropScenario = {
-  ...(interopScenarios[0] as InteropScenario),
+export const harnessScenario: HarnessScenario = {
+  ...(harnessScenarios[0] as HarnessScenario),
 };
 
-export const supportedInteropIntents: readonly InteropIntent[] = Array.from(
-  new Set(interopScenarios.map((scenario) => scenario.intent)),
+export const supportedHarnessIntents: readonly HarnessIntent[] = Array.from(
+  new Set(harnessScenarios.map((scenario) => scenario.intent)),
 );
 
-export function selectInteropScenarios(
+export function selectHarnessScenarios(
   rawIntentSelection: string | undefined,
   rawScenarioSelection: string | undefined,
-): InteropScenario[] {
-  const selectedIntents = selectInteropIntents(rawIntentSelection);
+): HarnessScenario[] {
+  const selectedIntents = selectHarnessIntents(rawIntentSelection);
   const selectedScenarioIds = selectScenarioIds(rawScenarioSelection);
-  const selectedScenarios = interopScenarios.filter(
+  const selectedScenarios = harnessScenarios.filter(
     (scenario) =>
       selectedIntents.includes(scenario.intent) &&
       selectedScenarioIds.includes(scenario.id),
@@ -184,8 +184,8 @@ export function selectInteropScenarios(
 
   if (selectedScenarios.length === 0) {
     throw new Error(
-      `No interop scenarios matched MPP_INTEROP_INTENTS=${rawIntentSelection ?? "<default>"} ` +
-        `and MPP_INTEROP_SCENARIOS=${rawScenarioSelection ?? "<default>"}.`,
+      `No harness scenarios matched MPP_HARNESS_INTENTS=${rawIntentSelection ?? "<default>"} ` +
+        `and MPP_HARNESS_SCENARIOS=${rawScenarioSelection ?? "<default>"}.`,
     );
   }
 
@@ -193,7 +193,7 @@ export function selectInteropScenarios(
 }
 
 function selectScenarioIds(rawSelection: string | undefined): string[] {
-  const supported = interopScenarios.map((scenario) => scenario.id);
+  const supported = harnessScenarios.map((scenario) => scenario.id);
   if (!rawSelection || rawSelection.trim() === "") {
     return supported;
   }
@@ -206,7 +206,7 @@ function selectScenarioIds(rawSelection: string | undefined): string[] {
 
   if (unsupported.length > 0) {
     throw new Error(
-      `Unsupported MPP_INTEROP_SCENARIOS value(s): ${unsupported.join(", ")}. ` +
+      `Unsupported MPP_HARNESS_SCENARIOS value(s): ${unsupported.join(", ")}. ` +
         `Supported scenarios: ${supported.join(", ")}.`,
     );
   }
@@ -216,14 +216,14 @@ function selectScenarioIds(rawSelection: string | undefined): string[] {
 
 // The legacy MPP charge runner predates the x402-exact intent. To keep
 // the existing CI matrix's default behaviour (charge-only) stable while
-// still surfacing the new intent through `selectInteropIntents("x402-exact")`,
+// still surfacing the new intent through `selectHarnessIntents("x402-exact")`,
 // the empty-selection default is restricted to "charge". Callers that
 // want the full intent set should pass the explicit list.
-const DEFAULT_INTENTS: readonly InteropIntent[] = ["charge"];
+const DEFAULT_INTENTS: readonly HarnessIntent[] = ["charge"];
 
-export function selectInteropIntents(
+export function selectHarnessIntents(
   rawSelection: string | undefined,
-): InteropIntent[] {
+): HarnessIntent[] {
   if (!rawSelection || rawSelection.trim() === "") {
     return [...DEFAULT_INTENTS];
   }
@@ -233,15 +233,15 @@ export function selectInteropIntents(
     .map((value) => value.trim())
     .filter(Boolean);
   const unsupported = selected.filter(
-    (value) => !supportedInteropIntents.includes(value as never),
+    (value) => !supportedHarnessIntents.includes(value as never),
   );
 
   if (unsupported.length > 0) {
     throw new Error(
-      `Unsupported MPP_INTEROP_INTENTS value(s): ${unsupported.join(", ")}. ` +
-        `Supported intents: ${supportedInteropIntents.join(", ")}.`,
+      `Unsupported MPP_HARNESS_INTENTS value(s): ${unsupported.join(", ")}. ` +
+        `Supported intents: ${supportedHarnessIntents.join(", ")}.`,
     );
   }
 
-  return selected as InteropIntent[];
+  return selected as HarnessIntent[];
 }
