@@ -545,8 +545,7 @@ fn parse_rfc3339_seconds(s: &str) -> Result<i64, String> {
 mod tests {
     use super::*;
     use crate::protocol::intents::{
-        AuthenticateMethodDetails, AuthenticatePayload, SIGNATURE_SCHEME_SIWMPP,
-        SIGNATURE_TYPE_ED25519,
+        AuthenticatePayload, SIGNATURE_SCHEME_SIWMPP, SIGNATURE_TYPE_ED25519,
     };
     use ed25519_dalek::{Signer as _, SigningKey};
 

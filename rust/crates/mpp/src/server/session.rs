@@ -16,9 +16,17 @@
 //!
 //! # Note on on-chain verification
 //!
-//! `process_open` and `process_topup` currently trust the provided transaction
-//! signature and deposit amount. For production use, wire up full RPC account
+//! When `SessionConfig::rpc_url` is set, `process_open` (push mode) and
+//! `process_topup` confirm the provided transaction signature on-chain via
+//! `getSignatureStatuses` before persisting channel state. When `rpc_url` is
+//! `None`, the transaction signature and deposit amount are trusted as
+//! provided — suitable only for unit tests or deployments that verify
+//! transactions out of band. Even with `rpc_url` set, the deposit amount is
+//! taken from the payload; for full trustlessness, wire up RPC account
 //! verification before persisting channel state.
+//!
+//! Replayed `open` payloads for an existing channel are idempotent: they
+//! never reset the voucher watermark or any other channel state.
 
 use solana_pubkey::Pubkey;
 
@@ -344,6 +352,12 @@ impl<S: ChannelStore> SessionServer<S> {
     /// When `config.rpc_url` is set, confirms the open transaction is finalized
     /// on-chain before persisting — rejects the open if the tx is unknown or
     /// failed. Leave `rpc_url` as `None` in unit tests.
+    ///
+    /// Replayed opens are idempotent: when a channel already exists for the
+    /// session id with the same authorized signer, the existing state is
+    /// returned unchanged — the voucher watermark is never reset. Opens for an
+    /// existing channel are rejected when the channel is finalized or when the
+    /// payload's authorized signer differs from the stored one.
     pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
         let supports_mode = if self.config.modes.is_empty() {
             payload.mode == SessionMode::Push
@@ -382,7 +396,7 @@ impl<S: ChannelStore> SessionServer<S> {
         // Push mode: verify the payment-channel open tx is confirmed before persisting.
         if payload.mode == SessionMode::Push {
             if let Some(ref rpc_url) = self.config.rpc_url {
-                verify_open_signature(&payload.signature, rpc_url).map_err(|e| {
+                verify_transaction_signature(&payload.signature, rpc_url, "open").map_err(|e| {
                     tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
                     e
                 })?;
@@ -390,7 +404,7 @@ impl<S: ChannelStore> SessionServer<S> {
             }
         }
 
-        let state = ChannelState {
+        let fresh_state = ChannelState {
             channel_id: session_id.to_string(),
             authorized_signer: payload.authorized_signer.clone(),
             deposit,
@@ -405,12 +419,35 @@ impl<S: ChannelStore> SessionServer<S> {
             committed_deliveries: vec![],
         };
 
+        // Atomic check-and-insert: a replayed open re-passes all checks above
+        // (the referenced tx is genuinely confirmed), so it MUST NOT overwrite
+        // existing state — that would reset the voucher watermark and erase
+        // accepted vouchers before close.
+        let session_id_owned = session_id.to_string();
+        let authorized_signer = payload.authorized_signer.clone();
         self.store
-            .put_channel(session_id, state.clone())
+            .update_channel(
+                session_id,
+                Box::new(move |state_opt| match state_opt {
+                    Some(existing) => {
+                        if existing.finalized {
+                            return Err(StoreError::Internal(format!(
+                                "Channel {session_id_owned} is already finalized"
+                            )));
+                        }
+                        if existing.authorized_signer != authorized_signer {
+                            return Err(StoreError::Internal(format!(
+                                "Channel {session_id_owned} already exists with a different authorized signer"
+                            )));
+                        }
+                        // Idempotent replay: keep existing state untouched.
+                        Ok(existing)
+                    }
+                    None => Ok(fresh_state),
+                }),
+            )
             .await
-            .map_err(store_err)?;
-
-        Ok(state)
+            .map_err(store_err)
     }
 
     /// Verify a voucher, advance the watermark, and return the new cumulative.
@@ -544,13 +581,31 @@ impl<S: ChannelStore> SessionServer<S> {
 
     /// Process a `topup` action: atomically update the channel's deposit cap.
     ///
-    /// The new deposit must be greater than the current deposit.
-    /// In production, verify the top-up transaction on-chain first.
+    /// The new deposit must be greater than the current deposit and must not
+    /// exceed the configured max cap. Top-ups are rejected once the channel is
+    /// finalized or a close has been requested.
+    ///
+    /// When `config.rpc_url` is set, confirms the top-up transaction is
+    /// finalized on-chain before raising the deposit — rejects the top-up if
+    /// the tx is unknown or failed. When `rpc_url` is `None`, the provided
+    /// signature and deposit amount are trusted as-is; only use that mode in
+    /// unit tests or when the caller verifies the transaction out of band.
     pub async fn process_topup(&self, payload: &TopUpPayload) -> Result<ChannelState> {
         let new_deposit: u64 = payload
             .new_deposit
             .parse()
             .map_err(|_| Error::Other("Invalid new_deposit".to_string()))?;
+
+        // On-chain verification: confirm the top-up transaction was accepted
+        // (same RPC path as process_open).
+        if let Some(ref rpc_url) = self.config.rpc_url {
+            verify_transaction_signature(&payload.signature, rpc_url, "top-up").map_err(|e| {
+                tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
+                e
+            })?;
+            tracing::debug!(signature = %payload.signature, "top-up tx confirmed on-chain");
+        }
+
         let max_cap = self.config.max_cap;
         let cid = payload.channel_id.clone();
         self.store
@@ -559,6 +614,16 @@ impl<S: ChannelStore> SessionServer<S> {
                 Box::new(move |state_opt| {
                     let state = state_opt
                         .ok_or_else(|| StoreError::Internal(format!("Channel {cid} not found")))?;
+                    if state.finalized {
+                        return Err(StoreError::Internal(
+                            "Channel is already finalized".to_string(),
+                        ));
+                    }
+                    if state.close_requested_at.is_some() {
+                        return Err(StoreError::Internal(
+                            "Channel close is pending — no further top-ups accepted".to_string(),
+                        ));
+                    }
                     if new_deposit <= state.deposit {
                         return Err(StoreError::Internal(format!(
                             "New deposit {new_deposit} must exceed current deposit {}",
@@ -1007,28 +1072,31 @@ fn unix_now_i64() -> i64 {
 
 /// Confirm that `sig_str` is a finalized, successful transaction on-chain.
 ///
+/// `label` names the transaction in error messages (e.g. "open", "top-up").
 /// Uses the blocking `RpcClient` — consistent with the rest of this module.
 /// Returns an error if the signature is malformed, the tx was rejected, or
 /// the tx is not found (not yet processed or doesn't exist).
 #[cfg(feature = "server")]
-fn verify_open_signature(sig_str: &str, rpc_url: &str) -> Result<()> {
+fn verify_transaction_signature(sig_str: &str, rpc_url: &str, label: &str) -> Result<()> {
     use solana_rpc_client::rpc_client::RpcClient;
     use solana_signature::Signature;
     use std::str::FromStr;
 
     let sig = Signature::from_str(sig_str)
-        .map_err(|e| Error::Other(format!("invalid open tx signature '{sig_str}': {e}")))?;
+        .map_err(|e| Error::Other(format!("invalid {label} tx signature '{sig_str}': {e}")))?;
 
     let rpc = RpcClient::new(rpc_url.to_string());
 
     match rpc
         .get_signature_status(&sig)
-        .map_err(|e| Error::Other(format!("RPC error verifying open tx: {e}")))?
+        .map_err(|e| Error::Other(format!("RPC error verifying {label} tx: {e}")))?
     {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(Error::Other(format!("open tx was rejected on-chain: {e}"))),
+        Some(Err(e)) => Err(Error::Other(format!(
+            "{label} tx was rejected on-chain: {e}"
+        ))),
         None => Err(Error::Other(format!(
-            "open tx '{sig_str}' not found — not yet confirmed or does not exist"
+            "{label} tx '{sig_str}' not found — not yet confirmed or does not exist"
         ))),
     }
 }
@@ -1467,6 +1535,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.deposit, 10_000_000);
+    }
+
+    #[tokio::test]
+    async fn process_open_replay_does_not_reset_watermark() {
+        let server = make_server();
+        let payload = open_payload("chan1", 1_000_000, "signer1");
+        server.process_open(&payload).await.unwrap();
+
+        // Simulate accepted vouchers advancing the watermark.
+        server
+            .store
+            .update_channel(
+                "chan1",
+                Box::new(|state_opt| {
+                    let state = state_opt.unwrap();
+                    Ok(ChannelState {
+                        cumulative: 750_000,
+                        highest_voucher_signature: Some("voucher_sig".to_string()),
+                        highest_voucher_expires_at: Some(i64::MAX),
+                        ..state
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Replayed open (re-passes all open checks) must not mutate state.
+        let state = server.process_open(&payload).await.unwrap();
+        assert_eq!(state.cumulative, 750_000);
+        assert_eq!(
+            state.highest_voucher_signature.as_deref(),
+            Some("voucher_sig")
+        );
+
+        let stored = server.store.get_channel("chan1").await.unwrap().unwrap();
+        assert_eq!(stored.cumulative, 750_000);
+        assert_eq!(
+            stored.highest_voucher_signature.as_deref(),
+            Some("voucher_sig")
+        );
+        assert_eq!(stored.deposit, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn process_open_existing_channel_mismatched_signer_rejected() {
+        let server = make_server();
+        server
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap();
+
+        let err = server
+            .process_open(&open_payload("chan1", 1_000_000, "signer2"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("different authorized signer"),
+            "Expected mismatched signer error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_open_on_finalized_channel_rejected() {
+        let server = make_server();
+        let payload = open_payload("chan1", 1_000_000, "signer1");
+        server.process_open(&payload).await.unwrap();
+        server.mark_finalized("chan1").await.unwrap();
+
+        let err = server.process_open(&payload).await.unwrap_err();
+        assert!(
+            err.to_string().contains("finalized"),
+            "Expected finalized error, got: {err}"
+        );
     }
 
     // ── metered deliveries ──────────────────────────────────────────────────
@@ -1981,6 +2122,60 @@ mod tests {
             })
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn process_topup_close_pending_rejected() {
+        let server = make_server();
+        let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
+        server
+            .process_open(&open_payload(&chan, 1_000_000, "s"))
+            .await
+            .unwrap();
+        server
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
+            .await
+            .unwrap();
+
+        let err = server
+            .process_topup(&TopUpPayload {
+                channel_id: chan,
+                new_deposit: "5000000".to_string(),
+                signature: "sig".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("close is pending"),
+            "Expected close-pending error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_topup_finalized_rejected() {
+        let server = make_server();
+        let chan = "chan1";
+        server
+            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .await
+            .unwrap();
+        server.mark_finalized(chan).await.unwrap();
+
+        let err = server
+            .process_topup(&TopUpPayload {
+                channel_id: chan.to_string(),
+                new_deposit: "5000000".to_string(),
+                signature: "sig".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("finalized"),
+            "Expected finalized error, got: {err}"
+        );
     }
 
     // ── process_close ─────────────────────────────────────────────────────────
