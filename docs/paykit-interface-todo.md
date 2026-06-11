@@ -103,5 +103,7 @@ as its first protocol adapter.
 - [ ] `Payment.payer` is currently `undefined` in the MPP adapter — the mppx
       receipt (`method/reference/status/timestamp`) does not expose the
       settling wallet. Needs a receipt extension upstream.
-- [ ] Framework shims over the dispatcher (Express/Hono middleware) once the
-      core surface settles.
+- [x] Framework shims over the dispatcher: `@solana/pay-kit/express`
+      (Express/Connect, typed on `node:http`), `@solana/pay-kit/hono`
+      (any `c.req.raw` framework), and `withPayment()` for fetch-style
+      runtimes (Workers, Bun, Deno, Next.js).

@@ -35,6 +35,7 @@ export {
 } from './errors.js';
 export type { Fee, FeeKind } from './fee.js';
 export { Gate, type GateDefaults, type GateParams } from './gate.js';
+export { withPayment } from './handler.js';
 export type { Payment } from './payment.js';
 export {
     createPayKit,

@@ -12,6 +12,14 @@
         ".": {
             "types": "./dist/index.d.ts",
             "default": "./dist/index.js"
+        },
+        "./express": {
+            "types": "./dist/express.d.ts",
+            "default": "./dist/express.js"
+        },
+        "./hono": {
+            "types": "./dist/hono.d.ts",
+            "default": "./dist/hono.js"
         }
     },
     "files": [
