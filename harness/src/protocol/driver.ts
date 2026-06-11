@@ -6,11 +6,12 @@
 //   { success: false, error: <msg>, error_type: <type> }
 // over stdin -> stdout. This driver is transport-agnostic: a runner can be
 // in-process (the TypeScript reference runner) or a spawned subprocess
-// (per-language runners, wired the same way the live interop harness wires
+// (per-language runners, wired the same way the live harness wires
 // its client/server adapters in `src/process.ts`).
 
 import { Buffer } from "node:buffer";
 import {
+  durationLimitMs,
   type ProtocolCase,
   type ProtocolOperation,
 } from "./vectors";
@@ -96,10 +97,39 @@ function compareExact(
     : { ok, detail: `exact mismatch: want=${JSON.stringify(golden)} got=${JSON.stringify(got)}` };
 }
 
+// Canonical duration check (mirrors the canonical runner's
+// `compare_duration`): a result that is otherwise correct still fails when
+// the op's wall-clock exceeds the scenario's budget for this adapter.
+function compareDuration(
+  limitMs: number | null,
+  elapsedMs: number,
+): { ok: boolean; detail?: string } {
+  if (limitMs === null || elapsedMs <= limitMs) return { ok: true };
+  return {
+    ok: false,
+    detail: `duration exceeded: expected <= ${limitMs} ms, got ${elapsedMs.toFixed(1)} ms`,
+  };
+}
+
+export type RunCaseOptions = {
+  // Overrides the scenario-declared budget (`durationLimitMs(case, adapter)`)
+  // for this run. Used by the pay-kit extra that runs adapter-allow-listed
+  // adversarial cases against the TS reference with an explicit budget.
+  durationLimitMsOverride?: number | null;
+};
+
 export async function runCase(
   adapter: ProtocolAdapter,
   testCase: ProtocolCase,
+  options?: RunCaseOptions,
 ): Promise<CaseResult> {
+  const limitMs = options?.durationLimitMsOverride !== undefined
+    ? options.durationLimitMsOverride
+    : durationLimitMs(testCase, adapter.name);
+
+  // Only the primary op is timed, like the canonical runner (semantic
+  // re-parse calls are comparison plumbing, not the operation under test).
+  const startedAt = performance.now();
   let response: AdapterResponse;
   try {
     response = await adapter.runProtocolRequest({ op: testCase.op, input: testCase.input });
@@ -111,6 +141,15 @@ export async function runCase(
       detail: `adapter threw: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+  const elapsedMs = performance.now() - startedAt;
+
+  // Apply the budget the way the canonical runner does: only after the
+  // result itself passed comparison.
+  const withDuration = (result: CaseResult): CaseResult => {
+    if (!result.ok) return result;
+    const duration = compareDuration(limitMs, elapsedMs);
+    return duration.ok ? result : { ...result, ok: false, detail: duration.detail };
+  };
 
   if (testCase.expectSuccess) {
     if (!response.success) {
@@ -157,14 +196,14 @@ export async function runCase(
       const a = normalizeParsed(testCase.reparseWith, goldenParsed.result);
       const b = normalizeParsed(testCase.reparseWith, gotParsed.result);
       const cmp = compareExact(a, b);
-      return { op: testCase.op, scenario: testCase.scenario, ok: cmp.ok, detail: cmp.detail };
+      return withDuration({ op: testCase.op, scenario: testCase.scenario, ok: cmp.ok, detail: cmp.detail });
     }
 
     // Parse / exact ops: compare directly, with credential normalization.
     const golden = normalizeParsed(testCase.op, testCase.golden);
     const got = normalizeParsed(testCase.op, response.result);
     const cmp = compareExact(golden, got);
-    return { op: testCase.op, scenario: testCase.scenario, ok: cmp.ok, detail: cmp.detail };
+    return withDuration({ op: testCase.op, scenario: testCase.scenario, ok: cmp.ok, detail: cmp.detail });
   }
 
   // Error case.
@@ -177,12 +216,12 @@ export async function runCase(
     };
   }
   const ok = response.error_type === testCase.errorType;
-  return {
+  return withDuration({
     op: testCase.op,
     scenario: testCase.scenario,
     ok,
     detail: ok ? undefined : `want error_type=${testCase.errorType} got=${response.error_type}`,
-  };
+  });
 }
 
 export async function runAllCases(

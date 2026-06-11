@@ -7,7 +7,7 @@
 // `ProtocolAdapter` into the same `runCase` driver.
 
 import { describe, expect, it } from "vitest";
-import { collectProtocolCases } from "../src/protocol/vectors";
+import { caseRunsOnAdapter, collectProtocolCases } from "../src/protocol/vectors";
 import { runCase } from "../src/protocol/driver";
 import { typescriptProtocolAdapter } from "../src/protocol/runners/typescript";
 import {
@@ -39,6 +39,11 @@ describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () 
 
   for (const testCase of cases) {
     const key = `${testCase.op} :: ${testCase.scenario}`;
+    // Canonical adapter allow-list: cases carrying `adapters` only run
+    // against the listed languages (the adversarial ReDoS probe is
+    // python-only canonically). The TS reference still exercises them in
+    // the pay-kit extra block below.
+    if (!caseRunsOnAdapter(testCase, typescriptProtocolAdapter.name)) continue;
     if (KNOWN_TS_DIVERGENCES.has(key)) {
       it(`KNOWN DIVERGENCE: ${key}`, async () => {
         const result = await runCase(typescriptProtocolAdapter, testCase);
@@ -50,6 +55,74 @@ describe("mpp-protocol conformance (canonical vectors / TypeScript runner)", () 
     }
     it(key, async () => {
       const result = await runCase(typescriptProtocolAdapter, testCase);
+      expect(result.ok, result.detail).toBe(true);
+    });
+  }
+});
+
+// PAY-KIT EXTRA (not part of the canonical suite): adapter-allow-listed
+// adversarial cases — canonically python-only — are also driven through the
+// in-process TS reference adapter with a generous explicit budget, because
+// ReDoS-resistance matters to every parser. If the TS parser produces the
+// wrong result or blows the budget, that is a finding to report, not to
+// hide: the case either fails outright or lands in the asserted
+// known-divergence list below.
+const TS_ADVERSARIAL_BUDGET_MS = 5000;
+
+// Known adversarial divergences of the TS reference from the canonical
+// golden, mirroring KNOWN_TS_DIVERGENCES (asserted to STILL diverge, and
+// asserted NOT to be a duration blowout — the divergence must stay a fast
+// rejection, never a hang).
+//
+// - `challenge.parse :: adversarial_unclosed_quoted_extension`: the
+//   canonical golden (python adapter) IGNORES the malformed unclosed quoted
+//   extension auth-param (`fuzz="\\\\...`) and parses the challenge
+//   successfully. mppx's parser instead rejects the whole header with
+//   parse_error "Unterminated quoted-string.". The rejection is immediate
+//   (~2ms for the 12k-escape wire), so the TS parser is NOT
+//   ReDoS-vulnerable — it is stricter than canonical about malformed
+//   extension params it would otherwise discard.
+const KNOWN_TS_ADVERSARIAL_DIVERGENCES = new Set<string>([
+  "challenge.parse :: adversarial_unclosed_quoted_extension",
+]);
+
+describe("mpp-protocol conformance (pay-kit extra: adversarial cases vs TS reference)", () => {
+  const adversarialCases = cases.filter(
+    (testCase) => !caseRunsOnAdapter(testCase, typescriptProtocolAdapter.name),
+  );
+
+  it("covers the canonical python-only adversarial parse case", () => {
+    expect(adversarialCases.map((c) => `${c.op} :: ${c.scenario}`)).toContain(
+      "challenge.parse :: adversarial_unclosed_quoted_extension",
+    );
+  });
+
+  for (const testCase of adversarialCases) {
+    const key = `${testCase.op} :: ${testCase.scenario}`;
+    if (KNOWN_TS_ADVERSARIAL_DIVERGENCES.has(key)) {
+      it(`KNOWN DIVERGENCE: ${key} (budget ${TS_ADVERSARIAL_BUDGET_MS}ms)`, async () => {
+        const result = await runCase(typescriptProtocolAdapter, testCase, {
+          durationLimitMsOverride: TS_ADVERSARIAL_BUDGET_MS,
+        });
+        // Assert the divergence persists; remove the entry once mppx
+        // tolerates malformed extension params the way canonical does.
+        expect(
+          result.ok,
+          `${key} now conforms — remove from KNOWN_TS_ADVERSARIAL_DIVERGENCES`,
+        ).toBe(false);
+        // The divergence must never degrade into a performance failure: a
+        // duration blowout here means the TS parser started backtracking
+        // pathologically, which is a real ReDoS finding, not a tolerated gap.
+        expect(result.detail, `${key} blew the duration budget`).not.toMatch(
+          /duration exceeded/,
+        );
+      });
+      continue;
+    }
+    it(`${key} (budget ${TS_ADVERSARIAL_BUDGET_MS}ms)`, async () => {
+      const result = await runCase(typescriptProtocolAdapter, testCase, {
+        durationLimitMsOverride: TS_ADVERSARIAL_BUDGET_MS,
+      });
       expect(result.ok, result.detail).toBe(true);
     });
   }
@@ -75,6 +148,9 @@ const smokeCases = (() => {
   for (const c of cases) {
     if (!c.expectSuccess) continue;
     if (!smokeOps.has(c.op)) continue;
+    // Adapter-allow-listed cases are language-specific by definition, so
+    // they are never representative smoke cases.
+    if (c.adapters) continue;
     if (seen.has(c.op)) continue;
     seen.add(c.op);
     picked.push(c);
@@ -99,6 +175,7 @@ for (const runner of runners) {
   describe(`mpp-protocol conformance (spawned ${runner.language} runner)`, () => {
     const adapter = spawnedProtocolAdapter(runner);
     for (const testCase of smokeCases) {
+      if (!caseRunsOnAdapter(testCase, runner.language)) continue;
       const key = `${testCase.op} :: ${testCase.scenario}`;
       if (known.has(key)) {
         it(`KNOWN DIVERGENCE: ${key}`, async () => {

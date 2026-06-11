@@ -1,0 +1,857 @@
+{
+  "results": [
+    {
+      "name": "success_charge",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "HAnlGv9BjU3D07DgSQ15Xzikfx6gLIfjzHryAT-I_MU",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1000",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xabc123"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-success",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null
+    },
+    {
+      "name": "verification_error",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "glhsfq3RWpm8DwgcZ5TsLLXK3DymHJ4jtVe0d9pj754",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "999",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xfeedface"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/verification-failed",
+        "title": "Verification Failed",
+        "status": 402,
+        "detail": "Payment verification failed."
+      }
+    },
+    {
+      "name": "invalid_payload",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "CC0CELuirAHSWQhcgsavU3olrdiIRo65HukUr20fo70",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "100",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "not-hex"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/verification-failed",
+        "title": "Verification Failed",
+        "status": 402,
+        "detail": "Payment verification failed."
+      }
+    },
+    {
+      "name": "expired_challenge",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "CjGRuBJwI5cRVIsjqXfKZuuyZT6S96ZHWeLjKICDeCA",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "500",
+          "currency": "USD",
+          "expires": "2020-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xdeadbeef01"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/payment-expired",
+        "title": "Payment Expired",
+        "status": 402,
+        "detail": "Payment expired at 2020-01-01T00:00:00Z."
+      }
+    },
+    {
+      "name": "missing_authorization",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "e8Jr-MRHM4lA5FpirPjZyE6wXyhD0nJNWEEtsUjWKWM",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "600",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xmissingauth"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/payment-required",
+        "title": "Payment Required",
+        "status": 402,
+        "detail": "Payment is required."
+      }
+    },
+    {
+      "name": "mismatched_request",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "suIOvB2iDkV8P4_HXMxVXxCDWsdBy4lq81LUiMrbiTE",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xmismatch"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/invalid-challenge",
+        "title": "Invalid Challenge",
+        "status": 402,
+        "detail": "Challenge \"suIOvB2iDkV8P4_HXMxVXxCDWsdBy4lq81LUiMrbiTE\" is invalid: challenge was not issued by this server."
+      }
+    },
+    {
+      "name": "invalid_challenge_id",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "invalid-challenge-id",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "800",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xbadid"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/invalid-challenge",
+        "title": "Invalid Challenge",
+        "status": 402,
+        "detail": "Challenge \"invalid-challenge-id\" is invalid: challenge was not issued by this server."
+      }
+    },
+    {
+      "name": "missing_challenge_expires_rejected",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "1LBsi_ajm1XQTFwdzUegxptQnxNTA0ThYDXZ99Q8dzc",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "850",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xmissingexpires"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/invalid-challenge",
+        "title": "Invalid Challenge",
+        "status": 402,
+        "detail": "Challenge \"1LBsi_ajm1XQTFwdzUegxptQnxNTA0ThYDXZ99Q8dzc\" is invalid: challenge was not issued by this server."
+      }
+    },
+    {
+      "name": "no_receipt_header",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "FWrW33lRATJkHehQ4I4CPlqbPzc-t-Ar7U2ITkNVMg0",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "900",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xnoreceipt"
+        }
+      },
+      "receipt": null,
+      "accept_payment_observed": null
+    },
+    {
+      "name": "invalid_www_authenticate",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "challenge_parse_error: Missing request parameter.",
+        "content_type": "application/problem+json"
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/payment-required",
+        "title": "Payment Required",
+        "status": 402,
+        "detail": "Payment is required."
+      }
+    },
+    {
+      "name": "non_402_error",
+      "outcome": {
+        "ok": false,
+        "status": 500,
+        "error_type": "unexpected_status"
+      }
+    },
+    {
+      "name": "free_endpoint",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      }
+    },
+    {
+      "name": "problem_details_expired",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "CjGRuBJwI5cRVIsjqXfKZuuyZT6S96ZHWeLjKICDeCA",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "500",
+          "currency": "USD",
+          "expires": "2020-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xproblemexpired"
+        }
+      },
+      "problem_details": {
+        "type": "urn:payment:error:expired",
+        "title": "Challenge Expired",
+        "status": 402,
+        "detail": "Payment verification failed for problem_details_expired"
+      }
+    },
+    {
+      "name": "problem_details_verification_failed",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "glhsfq3RWpm8DwgcZ5TsLLXK3DymHJ4jtVe0d9pj754",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "999",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xproblemverifyfail"
+        }
+      },
+      "problem_details": {
+        "type": "urn:payment:error:verification-failed",
+        "title": "Payment Verification Failed",
+        "status": 402,
+        "detail": "Payment verification failed for problem_details_verification_failed"
+      }
+    },
+    {
+      "name": "problem_details_missing_auth",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "e8Jr-MRHM4lA5FpirPjZyE6wXyhD0nJNWEEtsUjWKWM",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "600",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xproblemmissingauth"
+        }
+      },
+      "problem_details": {
+        "type": "urn:payment:error:missing-credential",
+        "title": "Missing Payment Credential",
+        "status": 402,
+        "detail": "Payment credential required for problem_details_missing_auth"
+      }
+    },
+    {
+      "name": "post_body_charge",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "qTW5tFd6bIMreBLFYoCSSKZeQF9d5uCy_F9CZUh8xy8",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1200",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xpostbody"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-post-body",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null
+    },
+    {
+      "name": "post_body_preserved_on_retry",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "PEJBPnxYSFBY9OFHUle_6Ss-IYRP4kemQRRsEtsQdzA",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1500",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xpostpreserved"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-post-preserved",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "body_preserved": true,
+      "accept_payment_observed": null
+    },
+    {
+      "name": "body_digest_match",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "XX1SjSB627PyOw6t3UNQCNb6Ly_Okj1OU3FeBZOEryQ",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1600",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xdigestmatch"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-digest-match",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null
+    },
+    {
+      "name": "body_digest_mismatch",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required"
+      },
+      "challenge": {
+        "id": "Nv0LPIeOfSsXwCUJ349AJvT93u7b7zLE8Dbh7jCvg2A",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1700",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xdigestmismatch"
+        }
+      },
+      "problem_details": null
+    },
+    {
+      "name": "cache_headers_success",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "irPrZSJT7uISQ6WYw3jNmSFs7w2ZzBNpWSR1UXdBWeE",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1800",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xcacheheaders"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-cache-headers",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "initial_cache_control": "no-store",
+      "retry_cache_control": "private",
+      "accept_payment_observed": null
+    },
+    {
+      "name": "problem_details_retry_after_no_receipt",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "F4Voi2jxYelfD37BJUMj6wgkz68atNyUswal4yJH7SI",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "1900",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xretryafter"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/payment-insufficient",
+        "title": "Payment Insufficient",
+        "status": 402,
+        "detail": "Payment verification failed for problem_details_retry_after_no_receipt"
+      },
+      "initial_cache_control": "no-store",
+      "retry_cache_control": "no-store",
+      "retry_after": "60",
+      "receipt_on_error": false
+    },
+    {
+      "name": "accept_payment_preference",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "qMK7mbu9rYOdxpL8Rv20jQl3owRWJJy7chNKTQF-Dbg",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "2000",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xacceptpayment"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-accept-payment",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": "tempo/charge;q=0.9, stripe/charge;q=0.1"
+    },
+    {
+      "name": "idempotent_post_side_effect",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "VmmREzFG4IGUNEaBO7Gual8porbSErNJhOU_HubCoRw",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "2100",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xidempotent"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-idempotent",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null,
+      "side_effect_count": 1,
+      "idempotency_key_observed": "idem-123"
+    },
+    {
+      "name": "route_bound_basic_charge",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "L_jvfGqZp9Mlq84bcZ-Q2pV-B39oX_PFke_1fkItzTU",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "100",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant",
+          "resource": "/charge/route-basic"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xroutebasic"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-route-basic",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null
+    },
+    {
+      "name": "cross_route_credential_replay_rejected",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required",
+        "content_type": "application/problem+json"
+      },
+      "challenge": {
+        "id": "L_jvfGqZp9Mlq84bcZ-Q2pV-B39oX_PFke_1fkItzTU",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "100",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant",
+          "resource": "/charge/route-basic"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xroutereplay"
+        }
+      },
+      "problem_details": {
+        "type": "https://paymentauth.org/problems/invalid-challenge",
+        "title": "Invalid Challenge",
+        "status": 402,
+        "detail": "Challenge \"L_jvfGqZp9Mlq84bcZ-Q2pV-B39oX_PFke_1fkItzTU\" is invalid: credential amount does not match this route's requirements."
+      }
+    },
+    {
+      "name": "query_bound_charge",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "WmonVz3Z_wQpLOom0j75T1v8A5ufTMsmRFw0QWjCMUI",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "2300",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant",
+          "resource": "/charge/query-bound?tier=basic"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xquerybound"
+        }
+      },
+      "receipt": {
+        "status": "success",
+        "reference": "ref-query-bound",
+        "method": "tempo",
+        "timestamp": "2026-01-01T00:00:00Z"
+      },
+      "accept_payment_observed": null
+    },
+    {
+      "name": "query_replay_rejected",
+      "outcome": {
+        "ok": false,
+        "status": 402,
+        "error_type": "payment_required"
+      },
+      "challenge": {
+        "id": "ovS1GPSOCAIkfJRPlIs2x9PMaoUWYlocaeSNNJ02npU",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "2400",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant",
+          "resource": "/charge/query-replay?tier=basic"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xqueryreplay"
+        }
+      },
+      "problem_details": null
+    },
+    {
+      "name": "concurrent_replay_rejected",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "challenge": {
+        "id": "3r5vIjJ_9aB_uHszdsRvwE2ps9MYMXHea96N8USIBe8",
+        "method": "tempo",
+        "intent": "charge",
+        "realm": "conformance",
+        "request": {
+          "amount": "2200",
+          "currency": "USD",
+          "expires": "2099-01-01T00:00:00Z",
+          "recipient": "merchant"
+        }
+      },
+      "credential": {
+        "payload": {
+          "type": "transaction",
+          "signature": "0xconcurrent"
+        }
+      },
+      "concurrent_statuses": [
+        200,
+        402
+      ]
+    },
+    {
+      "name": "discovery_document",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "discovery_valid": true
+    },
+    {
+      "name": "json_rpc_mcp_payment",
+      "outcome": {
+        "ok": true,
+        "status": 200
+      },
+      "json_rpc_receipt": true
+    }
+  ]
+}

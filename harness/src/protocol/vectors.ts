@@ -68,13 +68,41 @@ function expectsSuccess(flag: TestExpectation | undefined): boolean {
   return flag === true;
 }
 
+// A scenario `wire` is either a literal header string or a constructed
+// shorthand for inputs too large to vendor literally: the materialized
+// wire is `prefix + repeat.repeat(count) + suffix`. Mirrors the canonical
+// runner's `scenario_wire`.
+export type ConstructedWire = {
+  prefix?: string;
+  repeat?: string;
+  count?: number;
+  suffix?: string;
+};
+
+export function materializeWire(wire: string | ConstructedWire): string {
+  if (typeof wire === "string") return wire;
+  const prefix = wire.prefix ?? "";
+  const repeat = wire.repeat ?? "";
+  const count = wire.count ?? 0;
+  const suffix = wire.suffix ?? "";
+  return `${prefix}${repeat.repeat(count)}${suffix}`;
+}
+
 export type HeaderScenario = {
   name: string;
   description?: string;
   tags?: string[];
   object?: Record<string, unknown>;
-  wire: string;
+  wire: string | ConstructedWire;
   tests: TestFlags;
+  // Adapter allow-list: when present, the scenario only runs against
+  // runners whose language name is listed (canonical runner skips it for
+  // every other adapter).
+  adapters?: string[];
+  // Wall-clock budgets (ms) for the operation; the per-adapter map wins
+  // over the scalar. Mirrors the canonical runner's `duration_limit_ms`.
+  maxDurationMs?: number;
+  maxDurationMsByAdapter?: Record<string, number>;
 };
 
 export type Base64Scenario = {
@@ -146,20 +174,43 @@ export function loadChallengeId(): VectorFile<ChallengeIdScenario> {
 // the driver feeds BOTH the golden wire and the adapter's produced wire
 // back through `reparseWith` and compares the parsed objects. base64url
 // and challenge.id are `exact` and never set `reparseWith`.
-export type ProtocolCase = {
+type ProtocolCaseBase = {
   op: ProtocolOperation;
   scenario: string;
   input: unknown;
+  // Carried over from the scenario: adapter allow-list and wall-clock
+  // budgets (see HeaderScenario). Both are enforced by the driver/test via
+  // `caseRunsOnAdapter` and `durationLimitMs`.
+  adapters?: string[];
+  maxDurationMs?: number;
+  maxDurationMsByAdapter?: Record<string, number>;
+};
+
+export type ProtocolCase = ProtocolCaseBase & ({
   expectSuccess: true;
   golden: unknown;
   reparseWith?: ProtocolOperation;
 } | {
-  op: ProtocolOperation;
-  scenario: string;
-  input: unknown;
   expectSuccess: false;
   errorType: string;
-};
+});
+
+// Canonical adapter filter: a case with an `adapters` allow-list only runs
+// against adapters whose name is listed; everything else runs everywhere.
+// Mirrors the canonical runner's scenario_adapters skip.
+export function caseRunsOnAdapter(testCase: ProtocolCase, adapterName: string): boolean {
+  if (!testCase.adapters || testCase.adapters.length === 0) return true;
+  return testCase.adapters.includes(adapterName);
+}
+
+// Canonical duration budget resolution: the per-adapter entry wins over the
+// scalar `maxDurationMs`; `null` means unbounded. Mirrors the canonical
+// runner's `duration_limit_ms`.
+export function durationLimitMs(testCase: ProtocolCase, adapterName: string): number | null {
+  const perAdapter = testCase.maxDurationMsByAdapter;
+  if (perAdapter && adapterName in perAdapter) return perAdapter[adapterName];
+  return testCase.maxDurationMs ?? null;
+}
 
 // Expand every vendored vector into the flat list of protocol cases a
 // runner must satisfy. Each scenario's `tests` flags decide which
@@ -174,23 +225,34 @@ export function collectProtocolCases(): ProtocolCase[] {
     file: VectorFile<HeaderScenario>,
   ) => {
     for (const s of file.scenarios) {
+      const wire = materializeWire(s.wire);
+      // Adapter allow-list and duration budgets carry through to every
+      // case derived from the scenario.
+      const limits = {
+        adapters: s.adapters,
+        maxDurationMs: s.maxDurationMs,
+        maxDurationMsByAdapter: s.maxDurationMsByAdapter,
+      };
+
       // Parse direction.
       const parseErr = expectsError(s.tests.parse);
       if (parseErr) {
         cases.push({
           op: parseOp,
           scenario: s.name,
-          input: { header: s.wire },
+          input: { header: wire },
           expectSuccess: false,
           errorType: parseErr,
+          ...limits,
         });
       } else if (expectsSuccess(s.tests.parse) && s.object) {
         cases.push({
           op: parseOp,
           scenario: s.name,
-          input: { header: s.wire },
+          input: { header: wire },
           expectSuccess: true,
           golden: s.object,
+          ...limits,
         });
       }
 
@@ -203,6 +265,7 @@ export function collectProtocolCases(): ProtocolCase[] {
           input: s.object,
           expectSuccess: false,
           errorType: formatErr,
+          ...limits,
         });
       } else if (expectsSuccess(s.tests.format) && s.object) {
         cases.push({
@@ -210,8 +273,9 @@ export function collectProtocolCases(): ProtocolCase[] {
           scenario: s.name,
           input: s.object,
           expectSuccess: true,
-          golden: { header: s.wire },
+          golden: { header: wire },
           reparseWith: parseOp,
+          ...limits,
         });
       }
     }

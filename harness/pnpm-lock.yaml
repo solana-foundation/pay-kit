@@ -16,7 +16,7 @@ importers:
         version: 6.8.0(typescript@5.9.3)
       '@solana/mpp':
         specifier: file:../typescript/packages/mpp
-        version: file:../typescript/packages/mpp(@solana/kit@6.8.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))
+        version: file:../typescript/packages/mpp(@solana/kit@6.8.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(typescript@5.9.3)
       mppx:
         specifier: ^0.5.5
         version: 0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
@@ -1583,13 +1583,17 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - utf-8-validate
 
-  '@solana/mpp@file:../typescript/packages/mpp(@solana/kit@6.8.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))':
+  '@solana/mpp@file:../typescript/packages/mpp(@solana/kit@6.8.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(typescript@5.9.3)':
     dependencies:
       '@solana-program/compute-budget': 0.15.0(@solana/kit@6.8.0(typescript@5.9.3))
       '@solana-program/system': 0.12.0(@solana/kit@6.8.0(typescript@5.9.3))
       '@solana-program/token': 0.11.0(@solana/kit@6.8.0(typescript@5.9.3))
       '@solana/kit': 6.8.0(typescript@5.9.3)
+      '@solana/program-client-core': 6.8.0(typescript@5.9.3)
       mppx: 0.5.17(typescript@5.9.3)(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+      - typescript
 
   '@solana/nominal-types@6.8.0(typescript@5.9.3)':
     optionalDependencies:

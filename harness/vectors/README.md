@@ -29,7 +29,7 @@ confirmation. Those stay in the surfpool matrix.
   a base64(JSON) payment header; a server `verify` consumes one. So the
   oracle is the DECODED ENVELOPE shape (`x402EnvelopeShape`), never the
   signed Solana transaction inside `payload.transaction` (that path is
-  the surfpool interop matrix's job). See "x402-exact intent" below.
+  the surfpool harness matrix's job). See "x402-exact intent" below.
 - `canonical-bytes`: the oracle IS exact bytes, because byte-for-byte
   agreement (canonical JSON / JCS, base64url, fixed-width byte encodings)
   is the whole point.

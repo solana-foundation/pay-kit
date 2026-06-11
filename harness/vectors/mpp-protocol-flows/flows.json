@@ -1,0 +1,520 @@
+{
+  "version": "1.0.0",
+  "cases": [
+    {
+      "name": "success_charge",
+      "path": "/charge/success",
+      "request": {
+        "amount": "1000",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xabc123"
+      },
+      "expected_signature": "0xabc123",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-success"
+      }
+    },
+    {
+      "name": "verification_error",
+      "path": "/charge/error",
+      "request": {
+        "amount": "999",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xfeedface"
+      },
+      "expected_signature": "0xfeedface",
+      "fail_verification": true
+    },
+    {
+      "name": "invalid_payload",
+      "path": "/charge/invalid-payload",
+      "request": {
+        "amount": "100",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "not-hex"
+      },
+      "expected_signature": "0xignore"
+    },
+    {
+      "name": "expired_challenge",
+      "path": "/charge/expired",
+      "request": {
+        "amount": "500",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2020-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xdeadbeef01"
+      },
+      "expected_signature": "0xdeadbeef01",
+      "check_expires": true
+    },
+    {
+      "name": "missing_authorization",
+      "path": "/charge/missing-authorization",
+      "request": {
+        "amount": "600",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xmissingauth"
+      },
+      "expected_signature": "0xmissingauth",
+      "skip_authorization": true
+    },
+    {
+      "name": "mismatched_request",
+      "path": "/charge/mismatched-request",
+      "request": {
+        "amount": "700",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xmismatch"
+      },
+      "expected_signature": "0xmismatch",
+      "mismatch_request": true
+    },
+    {
+      "name": "invalid_challenge_id",
+      "path": "/charge/invalid-challenge-id",
+      "request": {
+        "amount": "800",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xbadid"
+      },
+      "expected_signature": "0xbadid",
+      "invalid_challenge_id": true
+    },
+    {
+      "name": "missing_challenge_expires_rejected",
+      "path": "/charge/missing-challenge-expires",
+      "request": {
+        "amount": "850",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xmissingexpires"
+      },
+      "expected_signature": "0xmissingexpires",
+      "omit_challenge_expires": true
+    },
+    {
+      "name": "no_receipt_header",
+      "path": "/charge/no-receipt",
+      "request": {
+        "amount": "900",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xnoreceipt"
+      },
+      "expected_signature": "0xnoreceipt",
+      "omit_receipt": true
+    },
+    {
+      "name": "invalid_www_authenticate",
+      "path": "/charge/invalid-www-auth",
+      "request": {
+        "amount": "1001",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xwwwbork"
+      },
+      "expected_signature": "0xwwwbork",
+      "invalid_www_authenticate": true
+    },
+    {
+      "name": "non_402_error",
+      "path": "/charge/server-error",
+      "force_status": 500
+    },
+    {
+      "name": "free_endpoint",
+      "path": "/free",
+      "no_payment": true
+    },
+    {
+      "name": "problem_details_expired",
+      "path": "/charge/problem-expired",
+      "request": {
+        "amount": "500",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2020-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xproblemexpired"
+      },
+      "expected_signature": "0xproblemexpired",
+      "check_expires": true,
+      "expect_problem_details": {
+        "type": "urn:payment:error:expired",
+        "title": "Challenge Expired",
+        "status": 402
+      }
+    },
+    {
+      "name": "problem_details_verification_failed",
+      "path": "/charge/problem-verify-fail",
+      "request": {
+        "amount": "999",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xproblemverifyfail"
+      },
+      "expected_signature": "0xproblemverifyfail",
+      "fail_verification": true,
+      "expect_problem_details": {
+        "type": "urn:payment:error:verification-failed",
+        "title": "Payment Verification Failed",
+        "status": 402
+      }
+    },
+    {
+      "name": "problem_details_missing_auth",
+      "path": "/charge/problem-missing-auth",
+      "request": {
+        "amount": "600",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xproblemmissingauth"
+      },
+      "expected_signature": "0xproblemmissingauth",
+      "skip_authorization": true,
+      "expect_problem_details": {
+        "type": "urn:payment:error:missing-credential",
+        "title": "Missing Payment Credential",
+        "status": 402
+      }
+    },
+    {
+      "name": "post_body_charge",
+      "path": "/charge/post-body",
+      "http_method": "POST",
+      "body": "{\"data\":\"test payload\"}",
+      "request": {
+        "amount": "1200",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xpostbody"
+      },
+      "expected_signature": "0xpostbody",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-post-body"
+      }
+    },
+    {
+      "name": "post_body_preserved_on_retry",
+      "path": "/charge/post-body-preserved",
+      "http_method": "POST",
+      "body": "{\"items\":[1,2,3]}",
+      "request": {
+        "amount": "1500",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xpostpreserved"
+      },
+      "expected_signature": "0xpostpreserved",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-post-preserved"
+      },
+      "verify_body_preserved": true
+    },
+    {
+      "name": "body_digest_match",
+      "path": "/charge/body-digest-match",
+      "http_method": "POST",
+      "body": "{\"data\":\"digest-bound\"}",
+      "digest_binding": true,
+      "request": {
+        "amount": "1600",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xdigestmatch"
+      },
+      "expected_signature": "0xdigestmatch",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-digest-match"
+      }
+    },
+    {
+      "name": "body_digest_mismatch",
+      "path": "/charge/body-digest-mismatch",
+      "http_method": "POST",
+      "body": "{\"data\":\"original\"}",
+      "retry_body": "{\"data\":\"changed\"}",
+      "digest_binding": true,
+      "request": {
+        "amount": "1700",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xdigestmismatch"
+      },
+      "expected_signature": "0xdigestmismatch"
+    },
+    {
+      "name": "cache_headers_success",
+      "path": "/charge/cache-headers-success",
+      "check_cache_headers": true,
+      "request": {
+        "amount": "1800",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xcacheheaders"
+      },
+      "expected_signature": "0xcacheheaders",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-cache-headers"
+      }
+    },
+    {
+      "name": "problem_details_retry_after_no_receipt",
+      "path": "/charge/problem-retry-after",
+      "check_cache_headers": true,
+      "expect_retry_after": "60",
+      "request": {
+        "amount": "1900",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xretryafter"
+      },
+      "expected_signature": "0xretryafter",
+      "fail_verification": true,
+      "expect_problem_details": {
+        "type": "https://paymentauth.org/problems/payment-insufficient",
+        "title": "Payment Insufficient",
+        "status": 402
+      }
+    },
+    {
+      "name": "accept_payment_preference",
+      "path": "/charge/accept-payment",
+      "accept_payment": "tempo/charge;q=0.9, stripe/charge;q=0.1",
+      "request": {
+        "amount": "2000",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xacceptpayment"
+      },
+      "expected_signature": "0xacceptpayment",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-accept-payment"
+      }
+    },
+    {
+      "name": "idempotent_post_side_effect",
+      "path": "/charge/idempotent-post",
+      "http_method": "POST",
+      "body": "{\"event\":\"create\"}",
+      "idempotency_key": "idem-123",
+      "request": {
+        "amount": "2100",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xidempotent"
+      },
+      "expected_signature": "0xidempotent",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-idempotent"
+      }
+    },
+    {
+      "name": "route_bound_basic_charge",
+      "path": "/charge/route-basic",
+      "request": {
+        "amount": "100",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z",
+        "resource": "/charge/route-basic"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xroutebasic"
+      },
+      "expected_signature": "0xroutebasic",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-route-basic"
+      }
+    },
+    {
+      "name": "cross_route_credential_replay_rejected",
+      "path": "/charge/route-premium",
+      "challenge_path": "/charge/route-basic",
+      "request": {
+        "amount": "5000",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z",
+        "resource": "/charge/route-premium"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xroutereplay"
+      },
+      "expected_signature": "0xroutereplay"
+    },
+    {
+      "name": "query_bound_charge",
+      "path": "/charge/query-bound",
+      "initial_query": "?tier=basic",
+      "bind_request_resource": true,
+      "request": {
+        "amount": "2300",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xquerybound"
+      },
+      "expected_signature": "0xquerybound",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-query-bound"
+      }
+    },
+    {
+      "name": "query_replay_rejected",
+      "path": "/charge/query-replay",
+      "initial_query": "?tier=basic",
+      "retry_query": "?tier=premium",
+      "bind_request_resource": true,
+      "request": {
+        "amount": "2400",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xqueryreplay"
+      },
+      "expected_signature": "0xqueryreplay"
+    },
+    {
+      "name": "concurrent_replay_rejected",
+      "path": "/charge/concurrent-replay",
+      "concurrent_replay": true,
+      "request": {
+        "amount": "2200",
+        "currency": "USD",
+        "recipient": "merchant",
+        "expires": "2099-01-01T00:00:00Z"
+      },
+      "payload": {
+        "type": "transaction",
+        "signature": "0xconcurrent"
+      },
+      "expected_signature": "0xconcurrent",
+      "receipt": {
+        "status": "success",
+        "reference": "ref-concurrent"
+      }
+    },
+    {
+      "name": "discovery_document",
+      "path": "/openapi.json",
+      "discovery": true,
+      "no_payment": true
+    },
+    {
+      "name": "json_rpc_mcp_payment",
+      "path": "/rpc",
+      "json_rpc": true,
+      "payload": {
+        "type": "transaction",
+        "signature": "0xjsonrpc"
+      }
+    }
+  ]
+}

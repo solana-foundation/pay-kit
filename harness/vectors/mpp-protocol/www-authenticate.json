@@ -139,6 +139,30 @@
       }
     },
     {
+      "name": "adversarial_unclosed_quoted_extension",
+      "description": "Malformed quoted extension auth-param with many escapes is ignored without pathological parser backtracking",
+      "tags": ["happy-path", "edge-case", "quoted-string", "performance", "oss-319"],
+      "adapters": ["python"],
+      "maxDurationMsByAdapter": {
+        "python": 5000
+      },
+      "object": {
+        "id": "ch_redos",
+        "intent": "charge",
+        "method": "tempo",
+        "realm": "api.example.com",
+        "request": {}
+      },
+      "wire": {
+        "prefix": "Payment id=\"ch_redos\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"e30\", fuzz=\"",
+        "repeat": "\\",
+        "count": 12000
+      },
+      "tests": {
+        "parse": true
+      }
+    },
+    {
       "name": "error_missing_payment_prefix",
       "description": "Rejects header without Payment prefix",
       "tags": ["error", "invalid-prefix"],

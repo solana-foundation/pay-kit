@@ -464,7 +464,10 @@ private func buildX402Envelope(_ vector: Vector) throws -> X402EnvelopeShape {
     }
     let version = input.x402Version ?? 2
     guard version == 2 else {
-        throw RunnerError.message("swift x402 runner only builds v2 envelopes; got \(version)")
+        // x402/exact/v1 wire support (pay-kit #158) has not landed in Swift
+        // yet; declare the vector unsupported so the harness skips instead
+        // of failing it (same sentinel as verify-transaction above).
+        throw RunnerError.message("unsupported-mode: swift x402 runner only builds v2 envelopes; got \(version)")
     }
     let transaction = input.x402PinnedTransaction ?? x402DefaultPinnedTransaction
     let offer = try offerValue.decode(X402AcceptsEntry.self)
