@@ -60,6 +60,12 @@ describe('Gate', () => {
         ).toThrow(ConfigurationError);
     });
 
+    it('rejects fees routed to payTo itself', () => {
+        expect(() =>
+            Gate.create({ amount: usd('1.00'), feeWithin: { [SELLER]: usd('0.10') }, name: 'bad' }, DEFAULTS),
+        ).toThrow(ConfigurationError);
+    });
+
     it('rejects fee currencies that differ from the amount', () => {
         expect(() =>
             Gate.create({ amount: usd('1.00'), feeWithin: { [PLATFORM]: eur('0.10') }, name: 'bad' }, DEFAULTS),

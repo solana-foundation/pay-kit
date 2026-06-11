@@ -99,11 +99,17 @@ export class Gate {
             })),
         ];
 
+        const payTo = params.payTo ?? defaults.payTo;
         for (const fee of fees) {
             if (fee.price.currency !== params.amount.currency) {
                 throw new MixedCurrenciesError(
                     `Gate "${params.name}": fee to ${fee.recipient} is denominated in ` +
                         `${fee.price.currency} but the amount is in ${params.amount.currency}.`,
+                );
+            }
+            if (fee.recipient === payTo) {
+                throw new ConfigurationError(
+                    `Gate "${params.name}": fee recipient equals payTo. Fold the fee into the amount instead.`,
                 );
             }
         }
@@ -139,7 +145,7 @@ export class Gate {
             externalId: params.externalId,
             fees,
             name: params.name,
-            payTo: params.payTo ?? defaults.payTo,
+            payTo,
         });
     }
 
