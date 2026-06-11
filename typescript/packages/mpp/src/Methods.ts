@@ -3,17 +3,38 @@ import { Method, z } from 'mppx';
 const sessionMode = z.enum(['push', 'pull']);
 const sessionPullVoucherStrategy = z.enum(['clientVoucher', 'operatedVoucher']);
 
+/**
+ * `expiresAt` is an i64 on the wire, but JSON numbers above 2^53 - 1 lose
+ * precision in JavaScript — reject those at the parse boundary instead of
+ * surfacing a generic safe-integer error deep inside verification.
+ */
+const voucherExpiresAt = z.number().check(
+    z.refine(
+        value => Number.isSafeInteger(value),
+        'expiresAt is an i64 but exceeds JavaScript safe-integer precision (2^53 - 1); larger values cannot be represented as JSON numbers',
+    ),
+);
+
 const signedVoucher = z.object({
-    data: z.object({
-        /** Channel/session ID the voucher is bound to. */
-        channelId: z.string(),
-        /** Cumulative amount authorized in base units. */
-        cumulativeAmount: z.string(),
-        /** Unix timestamp at which this voucher expires. */
-        expiresAt: z.number(),
-        /** Optional client-side voucher counter. Not included in signed bytes. */
-        nonce: z.optional(z.number()),
-    }),
+    data: z
+        .object({
+            /** Channel/session ID the voucher is bound to. */
+            channelId: z.string(),
+            /** Legacy wire alias for cumulativeAmount (the Rust mirror accepts both). */
+            cumulative: z.optional(z.string()),
+            /** Cumulative amount authorized in base units. */
+            cumulativeAmount: z.optional(z.string()),
+            /** Unix timestamp at which this voucher expires. */
+            expiresAt: voucherExpiresAt,
+            /** Optional client-side voucher counter. Not included in signed bytes. */
+            nonce: z.optional(z.number()),
+        })
+        .check(
+            z.refine(
+                data => data.cumulativeAmount !== undefined || data.cumulative !== undefined,
+                'cumulativeAmount is required (legacy wire alias: cumulative)',
+            ),
+        ),
     /** Base58 Ed25519 signature over the canonical voucher bytes. */
     signature: z.string(),
 });

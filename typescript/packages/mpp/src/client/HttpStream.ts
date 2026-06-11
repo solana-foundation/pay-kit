@@ -169,6 +169,13 @@ export class MeteredSseSession<Transport extends CommitTransport = CommitTranspo
                 this.#directive = parsed.directive;
                 break;
             case 'usage':
+                // Mirror the Rust stream state machine: usage events may only
+                // refine the live directive's amount, never re-target deliveries.
+                if (this.#directive && parsed.usage.deliveryId !== this.#directive.deliveryId) {
+                    throw new Error(
+                        `usage delivery ${parsed.usage.deliveryId} does not match directive ${this.#directive.deliveryId}`,
+                    );
+                }
                 this.#usage = parsed.usage;
                 break;
             case 'done':
@@ -187,7 +194,6 @@ export class MeteredSseSession<Transport extends CommitTransport = CommitTranspo
             ? {
                   ...this.#directive,
                   amount: this.#usage.amount,
-                  deliveryId: this.#usage.deliveryId,
               }
             : this.#directive;
         return await this.#consumer.commitDirective(directive);

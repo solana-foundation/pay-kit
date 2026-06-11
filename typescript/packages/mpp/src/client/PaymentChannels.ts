@@ -1,5 +1,4 @@
 import {
-    AccountRole,
     type Address,
     address,
     appendTransactionMessageInstructions,
@@ -9,20 +8,12 @@ import {
     createTransactionMessage,
     generateKeyPairSigner,
     getAddressEncoder,
-    getArrayEncoder,
     getBase64EncodedWireTransaction,
     getProgramDerivedAddress,
-    getStructEncoder,
-    getU8Encoder,
-    getU16Encoder,
-    getU32Encoder,
     getU64Encoder,
     getUtf8Encoder,
-    type Instruction,
-    type InstructionWithSigners,
     partiallySignTransactionMessageWithSigners,
     pipe,
-    type ReadonlyUint8Array,
     setTransactionMessageFeePayer,
     setTransactionMessageLifetimeUsingBlockhash,
     type TransactionSigner,
@@ -32,11 +23,11 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     DEFAULT_RPC_URLS,
+    defaultTokenProgramForCurrency,
     normalizeNetwork,
     resolveStablecoinMint,
-    SYSTEM_PROGRAM,
-    TOKEN_PROGRAM,
 } from '../constants.js';
+import { findEventAuthorityPda, getOpenInstruction } from '../generated/payment-channels/index.js';
 import {
     ActiveSession,
     type AmountLike,
@@ -49,9 +40,10 @@ import type { SessionOpener } from './SessionFetch.js';
 const U64_MAX = (1n << 64n) - 1n;
 const PAYMENT_CHANNELS_PROGRAM = 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc';
 const RENT_SYSVAR = 'SysvarRent111111111111111111111111111111111';
-const OPEN_DISCRIMINATOR = 1;
 const DEFAULT_GRACE_PERIOD_SECONDS = 900;
-const PENDING_SERVER_SIGNATURE = '1111111111111111111111111111111111111111111111111111111111111111';
+
+/** Placeholder signature used while the operator still needs to broadcast the open transaction. */
+export const PENDING_SERVER_SIGNATURE = '1111111111111111111111111111111111111111111111111111111111111111';
 
 /**
  * Payment-channel open fields shared by client-built and server-built open flows.
@@ -128,27 +120,31 @@ export async function buildOpenPaymentChannelTransaction(
         owner: address(open.channelId),
         tokenProgram,
     });
-    const [eventAuthority] = await findEventAuthorityPda(programAddress);
+    const [eventAuthority] = await findEventAuthorityPda({ programAddress });
 
-    const instruction = getOpenPaymentChannelInstruction({
-        associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
-        authorizedSigner,
-        channel: address(open.channelId),
-        channelTokenAccount,
-        deposit: open.deposit,
-        eventAuthority,
-        gracePeriod: open.gracePeriod,
-        mint: mintAddress,
-        payee,
-        payer: signer,
-        payerTokenAccount,
-        programAddress,
-        recipients: open.recipients,
-        rent: address(RENT_SYSVAR),
-        salt: open.salt,
-        selfProgram: programAddress,
-        tokenProgram,
-    });
+    const instruction = getOpenInstruction(
+        {
+            associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
+            authorizedSigner,
+            channel: address(open.channelId),
+            channelTokenAccount,
+            eventAuthority,
+            mint: mintAddress,
+            openArgs: {
+                deposit: open.deposit,
+                gracePeriod: open.gracePeriod,
+                recipients: open.recipients.map(r => ({ bps: r.bps, recipient: r.recipient })),
+                salt: open.salt,
+            },
+            payee,
+            payer: signer,
+            payerTokenAccount,
+            rent: address(RENT_SYSVAR),
+            selfProgram: programAddress,
+            tokenProgram,
+        },
+        { programAddress },
+    );
     const latestBlockhash = request.recentBlockhash
         ? {
               blockhash: request.recentBlockhash as Blockhash,
@@ -377,28 +373,6 @@ interface FindPaymentChannelPdaParameters {
     readonly salt: bigint;
 }
 
-interface OpenPaymentChannelInstructionParameters {
-    readonly associatedTokenProgram: Address;
-    readonly authorizedSigner: Address;
-    readonly channel: Address;
-    readonly channelTokenAccount: Address;
-    readonly deposit: bigint;
-    readonly eventAuthority: Address;
-    readonly gracePeriod: number;
-    readonly mint: Address;
-    readonly payee: Address;
-    readonly payer: TransactionSigner;
-    readonly payerTokenAccount: Address;
-    readonly programAddress: Address;
-    readonly recipients: readonly { readonly bps: number; readonly recipient: Address }[];
-    readonly rent: Address;
-    readonly salt: bigint;
-    readonly selfProgram: Address;
-    readonly tokenProgram: Address;
-}
-
-type OpenPaymentChannelInstruction = InstructionWithSigners & Omit<Instruction, 'accounts'>;
-
 async function preparePaymentChannelOpen(
     parameters: derivePaymentChannelOpen.Parameters,
 ): Promise<PreparedPaymentChannelOpen> {
@@ -410,7 +384,9 @@ async function preparePaymentChannelOpen(
     }
 
     const programAddress = address(parameters.programAddress ?? request.programId ?? PAYMENT_CHANNELS_PROGRAM);
-    const tokenProgram = address(parameters.tokenProgram ?? TOKEN_PROGRAM);
+    // Mirror the Rust client: the token program defaults from the challenge
+    // currency (PYUSD/USDG/CASH are Token-2022 mints).
+    const tokenProgram = address(parameters.tokenProgram ?? defaultTokenProgramForCurrency(request.currency, network));
     const payer = address(parameters.payer);
     const payee = address(request.recipient);
     const mintAddress = address(mint);
@@ -457,72 +433,6 @@ async function findPaymentChannelPda(parameters: FindPaymentChannelPdaParameters
             getAddressEncoder().encode(parameters.authorizedSigner),
             getU64Encoder().encode(parameters.salt),
         ],
-    });
-}
-
-async function findEventAuthorityPda(programAddress: Address) {
-    return await getProgramDerivedAddress({
-        programAddress,
-        seeds: [getUtf8Encoder().encode('event_authority')],
-    });
-}
-
-function getOpenPaymentChannelInstruction(
-    parameters: OpenPaymentChannelInstructionParameters,
-): OpenPaymentChannelInstruction {
-    return {
-        accounts: [
-            {
-                address: parameters.payer.address,
-                role: AccountRole.WRITABLE_SIGNER,
-                signer: parameters.payer,
-            },
-            { address: parameters.payee, role: AccountRole.READONLY },
-            { address: parameters.mint, role: AccountRole.READONLY },
-            { address: parameters.authorizedSigner, role: AccountRole.READONLY },
-            { address: parameters.channel, role: AccountRole.WRITABLE },
-            { address: parameters.payerTokenAccount, role: AccountRole.WRITABLE },
-            { address: parameters.channelTokenAccount, role: AccountRole.WRITABLE },
-            { address: parameters.tokenProgram, role: AccountRole.READONLY },
-            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
-            { address: parameters.rent, role: AccountRole.READONLY },
-            { address: parameters.associatedTokenProgram, role: AccountRole.READONLY },
-            { address: parameters.eventAuthority, role: AccountRole.READONLY },
-            { address: parameters.selfProgram, role: AccountRole.READONLY },
-        ],
-        data: getOpenInstructionData(parameters),
-        programAddress: parameters.programAddress,
-    };
-}
-
-function getOpenInstructionData(parameters: OpenPaymentChannelInstructionParameters): ReadonlyUint8Array {
-    return getStructEncoder([
-        ['discriminator', getU8Encoder()],
-        [
-            'openArgs',
-            getStructEncoder([
-                ['salt', getU64Encoder()],
-                ['deposit', getU64Encoder()],
-                ['gracePeriod', getU32Encoder()],
-                [
-                    'recipients',
-                    getArrayEncoder(
-                        getStructEncoder([
-                            ['recipient', getAddressEncoder()],
-                            ['bps', getU16Encoder()],
-                        ]),
-                    ),
-                ],
-            ]),
-        ],
-    ]).encode({
-        discriminator: OPEN_DISCRIMINATOR,
-        openArgs: {
-            deposit: parameters.deposit,
-            gracePeriod: parameters.gracePeriod,
-            recipients: [...parameters.recipients],
-            salt: parameters.salt,
-        },
     });
 }
 
