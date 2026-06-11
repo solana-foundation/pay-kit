@@ -31,15 +31,16 @@
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
-        "@solana/keychain-memory": "^1.3.0",
-        "@solana/mpp": "workspace:^"
+        "@solana/keychain-memory": "^1.3.0"
     },
     "peerDependencies": {
         "@solana/kit": ">=6.5.0",
+        "@solana/mpp": ">=0.6.0",
         "mppx": ">=0.5.5"
     },
     "devDependencies": {
         "@solana/kit": "^6.5.0",
+        "@solana/mpp": "workspace:^",
         "@types/node": "^25.5.0",
         "mppx": "^0.5.5"
     }
