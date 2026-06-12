@@ -58,15 +58,7 @@ export function registerSubscriptions(app: Express, opts: RegisterOptions): void
   })
 
   app.get('/api/v1/premium/feed', async (req: Request, res: ExpressResponse) => {
-    const result = await (mppx as unknown as {
-      charge: (params: { amount: string; currency: string; description: string }) => (
-        request: globalThis.Request,
-      ) => Promise<{
-        status: number
-        challenge?: globalThis.Response
-        withReceipt: (r: globalThis.Response) => globalThis.Response
-      }>
-    }).charge({
+    const result = await mppx.subscription({
       amount: plan.amount,
       currency: plan.currency,
       description: plan.description,
