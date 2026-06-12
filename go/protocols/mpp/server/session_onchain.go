@@ -303,7 +303,15 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 	if state == nil {
 		return nil, fmt.Errorf("channel %s not found", channelID)
 	}
+	return s.settlementInstructionsForState(*state, channelID, merchant, "")
+}
 
+// settlementInstructionsForState derives the settlement instruction sequence
+// for an already-read channel snapshot. payerFallback, when non-empty, is
+// used as the distribute payer when the channel never recorded an operator
+// (mirrors the TypeScript closeAndSettleChannel `state.operator ?? recipient`
+// fallback); empty keeps the strict unknown-payer error.
+func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey, payerFallback string) ([]solana.Instruction, error) {
 	channel, err := solana.PublicKeyFromBase58(channelID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid channel id %q: %w", channelID, err)
@@ -358,12 +366,16 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
 	}
-	if state.Operator == nil {
+	payerAddress := payerFallback
+	if state.Operator != nil {
+		payerAddress = *state.Operator
+	}
+	if payerAddress == "" {
 		return nil, fmt.Errorf("channel %s payer is unknown; cannot derive the refund token account", channelID)
 	}
-	payer, err := solana.PublicKeyFromBase58(*state.Operator)
+	payer, err := solana.PublicKeyFromBase58(payerAddress)
 	if err != nil {
-		return nil, fmt.Errorf("invalid channel payer %q: %w", *state.Operator, err)
+		return nil, fmt.Errorf("invalid channel payer %q: %w", payerAddress, err)
 	}
 	payee, err := solana.PublicKeyFromBase58(s.config.Recipient)
 	if err != nil {
@@ -392,6 +404,70 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 		return nil, err
 	}
 	return append(instructions, distribute), nil
+}
+
+// SubmitOpenTxResult carries the verified channel facts plus the broadcast
+// signature of a server-submitted open. Mirrors SubmitOpenTxResult in
+// typescript/packages/mpp/src/server/session/on-chain.ts.
+type SubmitOpenTxResult struct {
+	VerifyOpenTxResult
+
+	// Signature of the broadcast open transaction (base58).
+	Signature string
+}
+
+// SubmitOpenTx validates a client-built payment-channel open transaction,
+// completes the fee-payer signature when payerSigner is required by the
+// transaction, broadcasts it, and waits for at least confirmed commitment.
+// Callers must not persist channel state for a transaction that never
+// landed. Used when the session is configured with the server open-tx
+// submitter. Mirrors submitOpenTx in
+// typescript/packages/mpp/src/server/session/on-chain.ts.
+func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, payerSigner solanatx.Signer, rpcClient solanatx.RPCClient) (SubmitOpenTxResult, error) {
+	if rpcClient == nil {
+		return SubmitOpenTxResult{}, fmt.Errorf("SubmitOpenTx requires an RPC client")
+	}
+	// Structural validation only: the transaction has not been broadcast yet,
+	// so there is no on-chain liveness to check.
+	verified, err := VerifyOpenTx(ctx, expected, payload, nil)
+	if err != nil {
+		return SubmitOpenTxResult{}, err
+	}
+	tx, err := solanatx.DecodeTransactionBase64(*payload.Transaction)
+	if err != nil {
+		return SubmitOpenTxResult{}, fmt.Errorf("decode open transaction: %w", err)
+	}
+	// Complete the fee-payer signature when the client left the slot for the
+	// server (the createServerOpenedPaymentChannelSessionOpener flow builds
+	// the open with the operator as fee payer and only partial-signs as the
+	// channel payer).
+	if payerSigner != nil && signerIsRequired(tx, payerSigner.PublicKey()) {
+		if err := solanatx.SignTransaction(tx, payerSigner); err != nil {
+			return SubmitOpenTxResult{}, fmt.Errorf("co-sign open transaction: %w", err)
+		}
+	}
+	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
+		return SubmitOpenTxResult{}, fmt.Errorf("open transaction is missing the fee-payer signature")
+	}
+	signature, err := solanatx.SendTransaction(ctx, rpcClient, tx)
+	if err != nil {
+		return SubmitOpenTxResult{}, fmt.Errorf("broadcast open transaction: %w", err)
+	}
+	if err := solanatx.WaitForConfirmation(ctx, rpcClient, signature); err != nil {
+		return SubmitOpenTxResult{}, fmt.Errorf("confirm open transaction: %w", err)
+	}
+	return SubmitOpenTxResult{VerifyOpenTxResult: verified, Signature: signature.String()}, nil
+}
+
+// signerIsRequired reports whether key is one of the transaction's required
+// signers.
+func signerIsRequired(tx *solana.Transaction, key solana.PublicKey) bool {
+	for _, signer := range tx.Message.Signers() {
+		if signer.Equals(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // confirmTransactionSignature checks once via getSignatureStatuses that the

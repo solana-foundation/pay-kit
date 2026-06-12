@@ -314,7 +314,9 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 	})
 	switch result.Status {
 	case VoucherVerifyRejected:
-		return 0, fmt.Errorf("%s", result.Detail)
+		// Surface the stable reject tag ahead of the detail, mirroring the
+		// TypeScript handler's "<reason>: <detail>" error shape.
+		return 0, fmt.Errorf("%s: %s", result.Reason, result.Detail)
 	case VoucherVerifyReplayed:
 		return result.NewCumulative, nil
 	}
