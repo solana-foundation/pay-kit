@@ -17,6 +17,8 @@
     "format": "prettier --write \"packages/*/src/**/*.ts\"",
     "format:check": "prettier --check \"packages/*/src/**/*.ts\"",
     "docs": "typedoc",
+    "docs:html": "typedoc --options typedoc.html.json",
+    "docs:serve": "typedoc --options typedoc.html.json && npx -y serve ../docs/api/typescript-html",
     "docs:watch": "typedoc --watch"
   },
   "prettier": "@solana/prettier-config-solana",
