@@ -1,25 +1,15 @@
 package main
 
-// Charges module mirroring typescript/examples/playground-api/modules/charges.ts:
-// stock data, weather, a marketplace purchase with multi-recipient splits
-// (all gated through the paykit umbrella client), and the fortune payment
-// link served straight from the protocol-layer MPP server with the HTML
-// challenge page enabled.
-//
-// Stock data divergence: the TypeScript example uses the yahoo-finance2
-// package; this port calls Yahoo's public chart/search HTTP endpoints with
-// plain net/http, so the response field set differs slightly (documented in
-// README.md). Payment gating semantics are identical either way: the 402
-// challenge fires before any upstream fetch.
+// Charge-gated endpoints: stock data, weather, a marketplace purchase with
+// multi-recipient splits (all gated through the paykit umbrella client), and
+// the fortune payment link served straight from the protocol-layer MPP
+// server with the HTML challenge page enabled. The 402 challenge fires
+// before any upstream fetch.
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
-	"net/url"
-	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -130,14 +120,24 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 		}
 	}
 
-	// Stocks.
+	// Stocks, backed by the same Yahoo Finance endpoints (and response
+	// shapes) as the yahoo-finance2 package the TypeScript server uses.
+	yahoo := newYahooClient()
+
 	mux.Handle("GET /api/v1/stocks/quote/{symbol}",
 		client.RequireFunc(staticGate("0.01", "stockQuote", func(r *http.Request) string {
 			return "Stock quote: " + r.PathValue("symbol")
 		}))(logged(func(w http.ResponseWriter, r *http.Request) {
-			quote, err := yahooQuote(r.Context(), r.PathValue("symbol"))
+			quote, err := yahoo.quote(r.Context(), r.PathValue("symbol"))
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "Failed to fetch quote")
+				return
+			}
+			if quote == nil {
+				// Unknown or delisted symbol: an empty 200 body, the way
+				// Express serializes res.json(undefined).
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
 				return
 			}
 			writeJSON(w, http.StatusOK, quote)
@@ -147,7 +147,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 		requireQuery("q", client.RequireFunc(staticGate("0.01", "stockSearch", func(r *http.Request) string {
 			return "Stock search: " + r.URL.Query().Get("q")
 		}))(logged(func(w http.ResponseWriter, r *http.Request) {
-			quotes, err := yahooSearch(r.Context(), r.URL.Query().Get("q"))
+			quotes, err := yahoo.search(r.Context(), r.URL.Query().Get("q"))
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "Failed to search")
 				return
@@ -159,7 +159,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 		client.RequireFunc(staticGate("0.05", "stockHistory", func(r *http.Request) string {
 			return "Stock history: " + r.PathValue("symbol")
 		}))(logged(func(w http.ResponseWriter, r *http.Request) {
-			history, err := yahooHistory(r.Context(), r.PathValue("symbol"), r.URL.Query().Get("range"))
+			history, err := yahoo.history(r.Context(), r.PathValue("symbol"), r.URL.Query().Get("range"))
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, "Failed to fetch history")
 				return
@@ -324,87 +324,4 @@ func requireKnownProduct(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// yahooGet fetches a Yahoo Finance public endpoint and decodes the JSON
-// response into out.
-func yahooGet(ctx context.Context, rawURL string, out any) error {
-	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(callCtx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("User-Agent", "pay-kit-playground/1.0")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("yahoo finance: HTTP %d", response.StatusCode)
-	}
-	return json.NewDecoder(response.Body).Decode(out)
-}
-
-// yahooChart fetches the chart endpoint and returns the first result object.
-func yahooChart(ctx context.Context, symbol, chartRange, interval string) (map[string]any, error) {
-	chartURL := fmt.Sprintf(
-		"https://query1.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=%s",
-		url.PathEscape(symbol), url.QueryEscape(chartRange), url.QueryEscape(interval))
-	var body struct {
-		Chart struct {
-			Result []map[string]any `json:"result"`
-			Error  *struct {
-				Description string `json:"description"`
-			} `json:"error"`
-		} `json:"chart"`
-	}
-	if err := yahooGet(ctx, chartURL, &body); err != nil {
-		return nil, err
-	}
-	if body.Chart.Error != nil {
-		return nil, fmt.Errorf("yahoo finance: %s", body.Chart.Error.Description)
-	}
-	if len(body.Chart.Result) == 0 {
-		return nil, fmt.Errorf("yahoo finance: empty chart result")
-	}
-	return body.Chart.Result[0], nil
-}
-
-// yahooQuote returns the live quote metadata for a ticker (the chart
-// endpoint's meta object: symbol, regularMarketPrice, currency, ...).
-func yahooQuote(ctx context.Context, symbol string) (any, error) {
-	result, err := yahooChart(ctx, symbol, "1d", "1d")
-	if err != nil {
-		return nil, err
-	}
-	if meta, ok := result["meta"]; ok {
-		return meta, nil
-	}
-	return result, nil
-}
-
-// yahooSearch returns the search endpoint's quotes array for a query.
-func yahooSearch(ctx context.Context, query string) (any, error) {
-	searchURL := "https://query1.finance.yahoo.com/v1/finance/search?q=" + url.QueryEscape(query)
-	var body struct {
-		Quotes []map[string]any `json:"quotes"`
-	}
-	if err := yahooGet(ctx, searchURL, &body); err != nil {
-		return nil, err
-	}
-	return body.Quotes, nil
-}
-
-// validHistoryRanges mirrors the TypeScript RANGE_TO_DAYS keys.
-var validHistoryRanges = map[string]bool{"1d": true, "5d": true, "1mo": true, "3mo": true, "6mo": true, "1y": true}
-
-// yahooHistory returns the full chart result (meta + timestamps + OHLCV
-// indicators) for a ticker over the requested range.
-func yahooHistory(ctx context.Context, symbol, chartRange string) (any, error) {
-	if !validHistoryRanges[chartRange] {
-		chartRange = "1mo"
-	}
-	return yahooChart(ctx, symbol, chartRange, "1d")
 }

@@ -22,9 +22,9 @@ import (
 // jokes mirrors the TypeScript JOKES table.
 var jokes = []string{
 	"Why do programmers prefer dark mode? Because light attracts bugs.",
-	"There are 10 types of people: those who understand binary and those who don't.",
+	"There are 10 types of people: those who understand binary and those who don’t.",
 	"A SQL query walks into a bar, sees two tables, and asks: \"Can I JOIN you?\"",
-	"A photon checks into a hotel; the bellhop asks if it has any luggage. \"No, I'm traveling light.\"",
+	"A photon checks into a hotel; the bellhop asks if it has any luggage. \"No, I’m traveling light.\"",
 }
 
 // facts mirrors the TypeScript FACTS table.

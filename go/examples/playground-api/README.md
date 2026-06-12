@@ -115,17 +115,11 @@ faithful behavior is served and listed here:
    the same response shapes for external x402 clients. The challenge
    advertises the configured `NETWORK` instead of the TypeScript example's
    hardcoded `solana-devnet` (localnet shares the devnet genesis hash).
-3. **Stock data source**: the TypeScript example uses the `yahoo-finance2`
-   package; this port calls Yahoo's public chart/search HTTP endpoints with
-   plain `net/http`, so the response field set differs slightly (the quote
-   endpoint returns the chart meta object: `symbol`, `regularMarketPrice`,
-   `currency`, ...). Gating semantics are identical: the 402 fires before
-   any upstream fetch.
-4. **402 body shape on paykit-gated routes**: the Go paykit middleware
-   renders `{error, resource, accepts[]}` with the MPP challenge in
-   `WWW-Authenticate`, the Go umbrella's canonical shape. The fortune
-   route stays on the protocol layer (`server.Mpp` with `HTML: true`),
-   byte-compatible with the other payment-link servers.
+
+The stocks endpoints call the same Yahoo Finance endpoints as the
+`yahoo-finance2` package the TypeScript server uses (v7 quote with crumb
+auth, v1 search, v8 chart) and apply the same field coercions, so the
+response bodies match the TypeScript server's field for field.
 
 ## Layout
 
@@ -134,12 +128,13 @@ Mirrors the TypeScript module structure as files of one `main` package:
 ```
 main.go            # bootstrap, fee payer, surfpool funding, /api/v1/{health,config}, CORS, SPA
 charges.go         # stocks/weather/marketplace + fortune payment link
+yahoo.go           # Yahoo Finance client matching yahoo-finance2's response shapes
 sessions.go        # in-process session methods + side-channel routes + receipt
 subscriptions.go   # documented 501 stub (no Go subscription method yet)
 x402.go            # embedded facilitator + x402-gated routes
 faucet.go          # SOL + USDC airdrop via surfpool cheatcodes
 docs.go            # generated-docs browser with path-escape guard
-constants.go       # USDC mint, programs, fund amounts
+constants.go       # example-specific constants (faucet amounts, USDC decimals)
 utils.go           # rpcCall, ANSI helpers, receipt logging
 ```
 
