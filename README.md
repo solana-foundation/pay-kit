@@ -112,6 +112,18 @@ The same surface is available in nine languages — server-side, client-side, or
 
 Each language directory has its own README with framework-specific snippets (Sinatra/Rails, Express, FastAPI, Axum, Gin, …).
 
+## Playground
+
+The [`playground/`](playground/) directory is a local web app that exercises every primitive in the kit end to end against the Solana Payment Sandbox (a hosted test validator — no real funds): single charges with multi-recipient splits, metered sessions that stream content against off-chain vouchers and settle the channel on-chain, subscriptions, and x402 endpoints. Generate a throwaway wallet in the browser, fund it from the built-in faucet, and watch each step of the 402 handshake — challenge, signing, broadcast, settlement — in the request timeline and event log, with a receipt link for every settled transaction.
+
+```bash
+cd playground
+pnpm install
+pnpm dev   # server on :3000, web app on :5173
+```
+
+![PayKit Playground](https://github.com/solana-foundation/pay-kit/raw/main/docs/assets/playground.png)
+
 ## License
 
 MIT
