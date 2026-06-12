@@ -437,6 +437,35 @@ func TestSessionOpenRejectsBadDeposits(t *testing.T) {
 	}
 }
 
+// TestSessionOpenRejectsEmptyStringFields pins that empty strings count as
+// missing on the push open path: transaction="" with no channelId (and the
+// all-empty variant) must reject gracefully instead of dereferencing a nil
+// ChannelID. Mirrors the falsy guard in
+// typescript/packages/mpp/src/server/Session.ts handleOpen.
+func TestSessionOpenRejectsEmptyStringFields(t *testing.T) {
+	session := newTestSession(t, nil)
+	signer := newTestVoucherSigner(t)
+	empty := ""
+
+	emptyTx := intents.OpenPayload{
+		Mode: intents.SessionModePush, Transaction: &empty,
+		AuthorizedSigner: signer.Address(), Signature: "sig",
+	}
+	if _, err := verifySessionAction(t, session, intents.NewOpenAction(emptyTx)); err == nil ||
+		!strings.Contains(err.Error(), "missing transaction or channelId") {
+		t.Fatalf("empty transaction error = %v", err)
+	}
+
+	emptyBoth := intents.OpenPayload{
+		Mode: intents.SessionModePush, Transaction: &empty, ChannelID: &empty,
+		AuthorizedSigner: signer.Address(), Signature: "sig",
+	}
+	if _, err := verifySessionAction(t, session, intents.NewOpenAction(emptyBoth)); err == nil ||
+		!strings.Contains(err.Error(), "missing transaction or channelId") {
+		t.Fatalf("empty transaction and channelId error = %v", err)
+	}
+}
+
 func TestSessionOpenReplaySemantics(t *testing.T) {
 	session := newTestSession(t, nil)
 	signer, channelID := openTrustedChannel(t, session, 1_000)

@@ -440,7 +440,11 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	if mode == intents.SessionModePull && s.core.config.PullVoucherStrategy == nil {
 		return "", fmt.Errorf("pull-mode open requires a pullVoucherStrategy on the server config")
 	}
-	if mode == intents.SessionModePush && payload.Transaction == nil && payload.ChannelID == nil {
+	// Empty strings count as missing, mirroring the falsy checks in the
+	// TypeScript handler (Session.ts) and OpenPayload::session_id in rust.
+	hasTransaction := payload.Transaction != nil && *payload.Transaction != ""
+	hasChannelID := payload.ChannelID != nil && *payload.ChannelID != ""
+	if mode == intents.SessionModePush && !hasTransaction && !hasChannelID {
 		return "", fmt.Errorf("open payload missing transaction or channelId")
 	}
 
@@ -449,7 +453,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	signature := payload.Signature
 
 	switch {
-	case payload.Transaction != nil && *payload.Transaction != "":
+	case hasTransaction:
 		// Payment-channel-backed open: push sessions and clientVoucher pull
 		// sessions whose deposit lives in an on-chain payment channel both
 		// attach the pre-signed open transaction.
