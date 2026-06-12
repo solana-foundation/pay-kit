@@ -30,6 +30,7 @@ __pycache__/
 .claude/
 .gocache
 .build/
+go/build/
 
 # Generated API docs — see `just docs`. Single tree at the repo root;
 # each language emits markdown into `docs/api/<lang>/`.
