@@ -106,7 +106,7 @@ class SessionSplit:
 
 @dataclass
 class SessionRequest:
-    """Session intent request — the payload embedded in a 402 challenge.
+    """Session intent request, the payload embedded in a 402 challenge.
 
     Describes the channel parameters: cap, currency, splits, network, etc.
     Mirrors rust ``SessionRequest``; optional fields are omitted from

@@ -307,7 +307,7 @@ def test_salt_serializes_as_string_and_accepts_number_and_huge_u64():
     back = OpenPayload.from_dict(d)
     assert back.salt == salt
 
-    # Legacy numeric salt — no float precision loss for a huge u64 because the
+    # Legacy numeric salt: no float precision loss for a huge u64 because the
     # dict carries a Python int (mirrors rust's number branch).
     legacy = {
         "mode": "push",
