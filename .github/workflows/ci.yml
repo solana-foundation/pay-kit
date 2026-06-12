@@ -41,6 +41,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports, so the
+      # type-aware lint rules need the package built first.
+      - run: pnpm --filter @solana/mpp build
       - run: pnpm lint
       - run: pnpm format:check
 
@@ -63,6 +66,8 @@ jobs:
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
       - run: pnpm typecheck
 
   test-ts:
@@ -84,6 +89,9 @@ jobs:
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
+
+      # @solana/pay-kit's tests import @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
 
       # Run ALL tests (unit + surfpool integration) with coverage
       - name: Run tests with coverage
@@ -123,9 +131,9 @@ jobs:
       - name: Verify committed gen files are up to date
         working-directory: .
         run: |
-          if ! git diff --quiet -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/; then
+          if ! git diff --quiet -- rust/crates/mpp/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/; then
             echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
-            git diff --stat -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/
+            git diff --stat -- rust/crates/mpp/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/
             exit 1
           fi
       - name: Upload HTML build artifacts
@@ -134,7 +142,7 @@ jobs:
           name: html-assets
           path: |
             html/dist/
-            rust/src/server/html/
+            rust/crates/mpp/src/server/html/
             go/protocols/mpp/server/html/
             lua/pay_kit/protocols/mpp/server/html_assets/
             python/src/pay_kit/protocols/mpp/server/html/

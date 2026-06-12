@@ -195,6 +195,22 @@ final class ProtocolRunnerTest extends TestCase
             foreach ($data->scenarios as $scenario) {
                 $tests = $scenario->tests ?? new \stdClass();
 
+                // Canonical adapter gating: a scenario with an `adapters`
+                // allow-list only runs on the listed adapters (mirrors the
+                // canonical vector runner). Skip anything not gated to php.
+                if (isset($scenario->adapters) && !in_array('php', $scenario->adapters, true)) {
+                    continue;
+                }
+
+                // Canonical constructed-wire shorthand: a `wire` object of
+                // {prefix, repeat, count} materializes to
+                // prefix . str_repeat(repeat, count).
+                $wire = $scenario->wire ?? null;
+                if (is_object($wire)) {
+                    $wire = ($wire->prefix ?? '') . str_repeat($wire->repeat ?? '', $wire->count ?? 0);
+                }
+                $scenario->wire = $wire;
+
                 if (isset($tests->parse)) {
                     if ($tests->parse === true && isset($scenario->object)) {
                         $cases[] = [

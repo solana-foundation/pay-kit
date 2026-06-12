@@ -49,7 +49,8 @@ export type SettleAndFinalizeInstruction<
     TAccountChannel extends AccountMeta<string> | string = string,
     TAccountInstructionsSysvar extends AccountMeta<string> | string = string,
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
-> = Instruction<TProgram> & InstructionWithAccounts<
+> = Instruction<TProgram> &
+    InstructionWithAccounts<
         [
             TAccountMerchant extends string
                 ? AccountSignerMeta<TAccountMerchant> & ReadonlySignerAccount<TAccountMerchant>
@@ -60,7 +61,8 @@ export type SettleAndFinalizeInstruction<
                 : TAccountInstructionsSysvar,
             ...TRemainingAccounts,
         ]
-    > & InstructionWithData<ReadonlyUint8Array>;
+    > &
+    InstructionWithData<ReadonlyUint8Array>;
 
 export type SettleAndFinalizeInstructionData = {
     discriminator: number;

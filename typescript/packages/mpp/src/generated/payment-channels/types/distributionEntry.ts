@@ -17,7 +17,7 @@ import {
 
 import { getU16Decoder, getU16Encoder } from '../safe-codecs.js';
 
-export type DistributionEntry = { bps: number, recipient: Address; };
+export type DistributionEntry = { bps: number; recipient: Address };
 
 export type DistributionEntryArgs = DistributionEntry;
 

@@ -819,7 +819,7 @@ export async function findFixedDelegationPda(args: {
 
 /** RPC shape needed by {@link submitInitMultiDelegateTxIfMissing}. */
 export interface MultiDelegateSubmitRpc extends SignatureStatusRpc {
-    getAccountInfo(address: Address, config?: unknown): { send(): Promise<{ value: unknown | null }> };
+    getAccountInfo(address: Address, config?: unknown): { send(): Promise<{ value: unknown }> };
     sendTransaction(wire: string, config?: unknown): { send(): Promise<Signature> };
 }
 

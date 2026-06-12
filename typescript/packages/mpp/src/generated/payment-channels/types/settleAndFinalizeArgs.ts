@@ -13,12 +13,7 @@ import {
 } from '@solana/kit';
 
 import { getU8Decoder, getU8Encoder } from '../safe-codecs.js';
-import {
-    getVoucherArgsDecoder,
-    getVoucherArgsEncoder,
-    type VoucherArgs,
-    type VoucherArgsArgs,
-} from './voucherArgs.js';
+import { getVoucherArgsDecoder, getVoucherArgsEncoder, type VoucherArgs, type VoucherArgsArgs } from './voucherArgs.js';
 
 export type SettleAndFinalizeArgs = {
     hasVoucher: number;
@@ -44,9 +39,6 @@ export function getSettleAndFinalizeArgsDecoder(): FixedSizeDecoder<SettleAndFin
     ]);
 }
 
-export function getSettleAndFinalizeArgsCodec(): FixedSizeCodec<
-    SettleAndFinalizeArgsArgs,
-    SettleAndFinalizeArgs
-> {
+export function getSettleAndFinalizeArgsCodec(): FixedSizeCodec<SettleAndFinalizeArgsArgs, SettleAndFinalizeArgs> {
     return combineCodec(getSettleAndFinalizeArgsEncoder(), getSettleAndFinalizeArgsDecoder());
 }

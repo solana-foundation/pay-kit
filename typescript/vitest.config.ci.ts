@@ -7,7 +7,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
     test: {
         include: ['packages/*/src/__tests__/*.test.ts'],
-        exclude: ['**/integration.test.ts'], // exclude surfpool-service-based tests only
+        // Exclude surfpool-service-based tests and the playground e2e suites
+        // (those need the playground server's dependencies and a sandbox).
+        exclude: ['**/integration.test.ts', '**/*-e2e.test.ts'],
         testTimeout: 30_000,
         globals: true,
         coverage: {

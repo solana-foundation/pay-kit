@@ -2,10 +2,7 @@ import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@so
 
 import type { SignedVoucher, VoucherData } from '../shared/session-types.js';
 import { encodeVoucherMessage } from '../shared/voucher.js';
-import {
-    type ChannelState,
-    createMemorySessionStore,
-} from '../server/session/store.js';
+import { type ChannelState, createMemorySessionStore } from '../server/session/store.js';
 import { verifyVoucherForChannel } from '../server/session/voucher.js';
 
 // Helpers ───────────────────────────────────────────────────────────────────
@@ -108,9 +105,9 @@ describe('createMemorySessionStore', () => {
 
         expect((await store.listChannels()).length).toBe(3);
         expect((await store.listChannels({ finalized: true })).map(s => s.channelId)).toEqual(['b']);
-        expect(
-            (await store.listChannels({ finalized: false, closePending: true })).map(s => s.channelId),
-        ).toEqual(['c']);
+        expect((await store.listChannels({ finalized: false, closePending: true })).map(s => s.channelId)).toEqual([
+            'c',
+        ]);
     });
 
     test('deleteChannel + markFinalized', async () => {
@@ -184,7 +181,8 @@ describe('verifyVoucherForChannel', () => {
         const state = makeState({
             authorizedSigner: signer.address,
             cumulative: 100n,
-            highestVoucherSignature: '5J6vbXSpEpGv4VLLqDhuRG6Tbj5n6dgEgvtTwTKpoSjvSwLTW9PSqQc6dpMUDPCvD3KZ5dGsmiTk5jzwYZyD8Xkz',
+            highestVoucherSignature:
+                '5J6vbXSpEpGv4VLLqDhuRG6Tbj5n6dgEgvtTwTKpoSjvSwLTW9PSqQc6dpMUDPCvD3KZ5dGsmiTk5jzwYZyD8Xkz',
         });
 
         const result = await verifyVoucherForChannel({ state, signed: voucher, deposit: 1_000n });

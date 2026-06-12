@@ -5,11 +5,7 @@
 // vouchers. The 402 challenge body is also snapshotted against the
 // canonical Methods.ts schema so future schema drifts are caught here.
 
-import {
-    generateKeyPairSigner,
-    getBase58Decoder,
-    type KeyPairSigner,
-} from '@solana/kit';
+import { generateKeyPairSigner, getBase58Decoder, type KeyPairSigner } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import * as Methods from '../Methods.js';
@@ -86,15 +82,21 @@ describe('session() request()', () => {
 
     beforeEach(() => {
         originalFetch = globalThis.fetch;
-        globalThis.fetch = vi.fn(async () =>
-            new Response(
-                JSON.stringify({
-                    id: 1,
-                    jsonrpc: '2.0',
-                    result: { value: { blockhash: 'MockBlockhash1111111111111111111111111111111', lastValidBlockHeight: 1 } },
-                }),
-                { status: 200, headers: { 'Content-Type': 'application/json' } },
-            ),
+        globalThis.fetch = vi.fn(
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        id: 1,
+                        jsonrpc: '2.0',
+                        result: {
+                            value: {
+                                blockhash: 'MockBlockhash1111111111111111111111111111111',
+                                lastValidBlockHeight: 1,
+                            },
+                        },
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                ),
         ) as typeof globalThis.fetch;
     });
 
@@ -738,9 +740,9 @@ describe('session() verify() open replay', () => {
         const method = makeMethod(store);
 
         await method.verify({ credential: openCred(signer.address), request: {} as never });
-        await expect(
-            method.verify({ credential: openCred(intruder.address), request: {} as never }),
-        ).rejects.toThrow(/authorizedSigner/);
+        await expect(method.verify({ credential: openCred(intruder.address), request: {} as never })).rejects.toThrow(
+            /authorizedSigner/,
+        );
 
         const state = await store.getChannel(channelId);
         expect(state?.authorizedSigner).toBe(signer.address);
@@ -754,9 +756,9 @@ describe('session() verify() open replay', () => {
         await method.verify({ credential: openCred(signer.address), request: {} as never });
         await store.markFinalized(channelId);
 
-        await expect(
-            method.verify({ credential: openCred(signer.address), request: {} as never }),
-        ).rejects.toThrow(/finalized/);
+        await expect(method.verify({ credential: openCred(signer.address), request: {} as never })).rejects.toThrow(
+            /finalized/,
+        );
     });
 });
 
@@ -1025,10 +1027,7 @@ describe('session() verify() voucher wire compatibility', () => {
 describe('session() verify() topUp hardening', () => {
     const channelId = '11111111111111111111111111111111';
 
-    async function openChannel(
-        method: ReturnType<typeof session>,
-        signer: KeyPairSigner,
-    ): Promise<void> {
+    async function openChannel(method: ReturnType<typeof session>, signer: KeyPairSigner): Promise<void> {
         await method.verify({
             credential: makeCred({
                 action: 'open',

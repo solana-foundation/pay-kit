@@ -237,7 +237,11 @@ describe('submitOpenTx confirmation', () => {
     test('polls until the signature is confirmed before returning', async () => {
         const [payer, payee, authorizedSigner] = await loadFixedSigners();
         const { open } = await buildClientOpen(payer, payee, authorizedSigner);
-        const rpc = makeSubmitRpc([null, { confirmationStatus: 'processed', err: null }, { confirmationStatus: 'confirmed', err: null }]);
+        const rpc = makeSubmitRpc([
+            null,
+            { confirmationStatus: 'processed', err: null },
+            { confirmationStatus: 'confirmed', err: null },
+        ]);
 
         const result = await submitOpenTx({
             confirm: { pollIntervalMs: 1, timeoutMs: 2_000 },

@@ -30,12 +30,7 @@ import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/
 
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/paymentChannels.js';
 import { getU8Decoder, getU8Encoder } from '../safe-codecs.js';
-import {
-    getTopUpArgsDecoder,
-    getTopUpArgsEncoder,
-    type TopUpArgs,
-    type TopUpArgsArgs,
-} from '../types/topUpArgs.js';
+import { getTopUpArgsDecoder, getTopUpArgsEncoder, type TopUpArgs, type TopUpArgsArgs } from '../types/topUpArgs.js';
 
 export const TOP_UP_DISCRIMINATOR = 3;
 
@@ -52,7 +47,8 @@ export type TopUpInstruction<
     TAccountMint extends AccountMeta<string> | string = string,
     TAccountTokenProgram extends AccountMeta<string> | string = string,
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
-> = Instruction<TProgram> & InstructionWithAccounts<
+> = Instruction<TProgram> &
+    InstructionWithAccounts<
         [
             TAccountPayer extends string
                 ? AccountSignerMeta<TAccountPayer> & WritableSignerAccount<TAccountPayer>
@@ -68,7 +64,8 @@ export type TopUpInstruction<
             TAccountTokenProgram extends string ? ReadonlyAccount<TAccountTokenProgram> : TAccountTokenProgram,
             ...TRemainingAccounts,
         ]
-    > & InstructionWithData<ReadonlyUint8Array>;
+    > &
+    InstructionWithData<ReadonlyUint8Array>;
 
 export type TopUpInstructionData = { discriminator: number; topUpArgs: TopUpArgs };
 export type TopUpInstructionDataArgs = { topUpArgs: TopUpArgsArgs };

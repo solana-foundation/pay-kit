@@ -8,18 +8,16 @@ import {
     setTransactionMessageLifetimeUsingBlockhash,
     signTransactionMessageWithSigners,
     type TransactionSigner,
-} from '@solana/kit'
+} from '@solana/kit';
 
-import type { ServerInstruction } from './on-chain.js'
+import type { ServerInstruction } from './on-chain.js';
 
 interface RpcWithBlockhash {
-    getLatestBlockhash: (config?: {
-        commitment?: 'confirmed' | 'finalized' | 'processed'
-    }) => {
+    getLatestBlockhash: (config?: { commitment?: 'confirmed' | 'finalized' | 'processed' }) => {
         send: () => Promise<{
-            value: { blockhash: Blockhash; lastValidBlockHeight: bigint }
-        }>
-    }
+            value: { blockhash: Blockhash; lastValidBlockHeight: bigint };
+        }>;
+    };
 }
 
 /**
@@ -36,13 +34,13 @@ export async function buildAndSignWireTransaction(
     signer: TransactionSigner,
     instructions: readonly ServerInstruction[],
 ): Promise<string> {
-    const { value: latestBlockhash } = await rpc.getLatestBlockhash({ commitment: 'confirmed' }).send()
+    const { value: latestBlockhash } = await rpc.getLatestBlockhash({ commitment: 'confirmed' }).send();
     const message = pipe(
         createTransactionMessage({ version: 0 }),
-        (m) => setTransactionMessageFeePayerSigner(signer, m),
-        (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
-        (m) => appendTransactionMessageInstructions(instructions, m),
-    )
-    const signed = await signTransactionMessageWithSigners(message)
-    return getBase64EncodedWireTransaction(signed)
+        m => setTransactionMessageFeePayerSigner(signer, m),
+        m => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+        m => appendTransactionMessageInstructions(instructions, m),
+    );
+    const signed = await signTransactionMessageWithSigners(message);
+    return getBase64EncodedWireTransaction(signed);
 }

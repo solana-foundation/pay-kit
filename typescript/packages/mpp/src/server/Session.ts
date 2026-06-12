@@ -109,7 +109,6 @@ export function session(parameters: session.Parameters) {
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
-        multiDelegateChain,
     } = parameters;
 
     if (cap <= 0n) {
@@ -129,7 +128,7 @@ export function session(parameters: session.Parameters) {
         throw new Error('pullVoucherStrategy is required when modes includes "pull"');
     }
     if (openTxSubmitter !== 'client' && openTxSubmitter !== 'server') {
-        throw new Error(`openTxSubmitter must be 'client' or 'server', got ${openTxSubmitter}`);
+        throw new Error(`openTxSubmitter must be 'client' or 'server', got ${String(openTxSubmitter)}`);
     }
     if (pricing.perDelivery !== undefined && pricing.perDelivery <= 0n) {
         throw new Error('pricing.perDelivery must be positive when set');
@@ -1121,14 +1120,14 @@ type CredentialPayload = {
         request: SessionRequest;
     };
     payload:
-        | { readonly action: 'close'; readonly channelId: string; readonly voucher?: SignedVoucher | undefined }
-        | { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher }
         | {
               readonly action: 'topUp';
               readonly channelId: string;
               readonly newDeposit: string;
               readonly signature: string;
           }
+        | { readonly action: 'close'; readonly channelId: string; readonly voucher?: SignedVoucher | undefined }
+        | { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher }
         | { readonly action: 'voucher'; readonly voucher: SignedVoucher }
         | (OpenPayload & { readonly action: 'open' });
 };
@@ -1173,8 +1172,6 @@ export declare namespace session {
         readonly minVoucherDelta?: bigint;
         /** Funding modes. Defaults to ['push']. */
         readonly modes?: readonly SessionMode[];
-        /** Optional multi-delegate chain config for operatedVoucher pulls. Reserved for Phase F+. */
-        readonly multiDelegateChain?: unknown;
         /** Solana network. Defaults to 'mainnet'. */
         readonly network?: string;
         /** Server submits the client's push-mode open tx itself. */

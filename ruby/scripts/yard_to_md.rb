@@ -25,7 +25,7 @@ def escape_md(text)
 end
 
 def render_method(meth)
-  buf = +"### `#{meth.scope == :class ? "." : "#"}#{meth.name}`\n\n"
+  buf = "### `#{(meth.scope == :class) ? "." : "#"}#{meth.name}`\n\n"
   if (sig = meth.signature)
     buf << "```ruby\n#{sig}\n```\n\n"
   end
@@ -44,7 +44,7 @@ def render_method(meth)
 end
 
 def render_namespace(ns)
-  buf = +"# `#{ns.path}`\n\n"
+  buf = "# `#{ns.path}`\n\n"
   buf << "#{ns.docstring}\n\n" unless ns.docstring.empty?
 
   classes = ns.children.select { |c| c.type == :class }

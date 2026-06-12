@@ -122,7 +122,7 @@ export async function verifyVoucherSignature(args: {
  * rejects under DOM lib types because `SharedArrayBuffer` is not assignable
  * to `ArrayBuffer`.
  */
-function toArrayBufferBacked(bytes: { [index: number]: number, byteLength: number; }): Uint8Array<ArrayBuffer> {
+function toArrayBufferBacked(bytes: { [index: number]: number; byteLength: number }): Uint8Array<ArrayBuffer> {
     const copy = new Uint8Array(new ArrayBuffer(bytes.byteLength));
     for (let i = 0; i < bytes.byteLength; i++) copy[i] = bytes[i] ?? 0;
     return copy;

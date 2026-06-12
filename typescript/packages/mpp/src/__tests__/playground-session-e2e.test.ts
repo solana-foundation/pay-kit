@@ -75,9 +75,7 @@ async function makeSignedVoucher(
     return { data, signature: getBase58Decoder().decode(new Uint8Array(sigBytes)) };
 }
 
-async function getSessionChallenge(
-    path: string,
-): Promise<Challenge.Challenge<SessionRequest, 'session', 'solana'>> {
+async function getSessionChallenge(path: string): Promise<Challenge.Challenge<SessionRequest, 'session', 'solana'>> {
     const res = await fetch(`${PLAYGROUND_URL}${path}`, { method: path.endsWith('/compute') ? 'POST' : 'GET' });
     expect(res.status).toBe(402);
     const challenge = Challenge.fromResponse(res) as Challenge.Challenge<SessionRequest, 'session', 'solana'>;

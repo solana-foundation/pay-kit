@@ -55,7 +55,8 @@ export type DistributeInstruction<
     TAccountEventAuthority extends AccountMeta<string> | string = string,
     TAccountSelfProgram extends AccountMeta<string> | string = 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
-> = Instruction<TProgram> & InstructionWithAccounts<
+> = Instruction<TProgram> &
+    InstructionWithAccounts<
         [
             TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel,
             TAccountPayer extends string ? WritableAccount<TAccountPayer> : TAccountPayer,
@@ -77,7 +78,8 @@ export type DistributeInstruction<
             TAccountSelfProgram extends string ? ReadonlyAccount<TAccountSelfProgram> : TAccountSelfProgram,
             ...TRemainingAccounts,
         ]
-    > & InstructionWithData<ReadonlyUint8Array>;
+    > &
+    InstructionWithData<ReadonlyUint8Array>;
 
 export type DistributeInstructionData = { discriminator: number; distributeArgs: DistributeArgs };
 export type DistributeInstructionDataArgs = { distributeArgs: DistributeArgsArgs };
@@ -191,9 +193,10 @@ export function getDistributeInstruction<
             'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc' as Address<'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc'>;
     }
 
-    const remainingAccounts: AccountMeta[] = args.recipientTokenAccounts.map(
-        recipientAddress => ({ address: recipientAddress, role: AccountRole.WRITABLE }),
-    );
+    const remainingAccounts: AccountMeta[] = args.recipientTokenAccounts.map(recipientAddress => ({
+        address: recipientAddress,
+        role: AccountRole.WRITABLE,
+    }));
 
     const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
     return Object.freeze({

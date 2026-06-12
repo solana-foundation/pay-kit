@@ -89,9 +89,7 @@ export interface ListChannelsFilter {
  * Implementations MUST guarantee the mutator runs without interleaving
  * with other `updateChannel` calls for the same channel id.
  */
-export type ChannelMutator = (
-    current: ChannelState | undefined,
-) => ChannelState | Promise<ChannelState>;
+export type ChannelMutator = (current: ChannelState | undefined) => ChannelState | Promise<ChannelState>;
 
 /**
  * Async store for per-channel state.
@@ -142,38 +140,41 @@ export function createMemorySessionStore(): SessionStore {
     }
 
     return {
-        async deleteChannel(channelId) {
+        deleteChannel(channelId) {
             data.delete(channelId);
+            return Promise.resolve();
         },
 
-        async getChannel(channelId) {
-            return data.get(channelId);
+        getChannel(channelId) {
+            return Promise.resolve(data.get(channelId));
         },
 
-        async listChannels(filter) {
+        listChannels(filter) {
             const all = Array.from(data.values());
-            if (!filter) return all;
-            return all.filter(state => {
-                if (filter.finalized !== undefined && state.finalized !== filter.finalized) {
-                    return false;
-                }
-                if (filter.closePending !== undefined) {
-                    const isCloseRequested = state.closeRequestedAt !== undefined;
-                    if (filter.closePending !== isCloseRequested) return false;
-                }
-                return true;
-            });
+            if (!filter) return Promise.resolve(all);
+            return Promise.resolve(
+                all.filter(state => {
+                    if (filter.finalized !== undefined && state.finalized !== filter.finalized) {
+                        return false;
+                    }
+                    if (filter.closePending !== undefined) {
+                        const isCloseRequested = state.closeRequestedAt !== undefined;
+                        if (filter.closePending !== isCloseRequested) return false;
+                    }
+                    return true;
+                }),
+            );
         },
 
         async markFinalized(channelId) {
-            return await withLock(channelId, async () => {
+            return await withLock(channelId, () => {
                 const current = data.get(channelId);
                 if (!current) {
                     throw new Error(`Channel ${channelId} not found`);
                 }
                 const next: ChannelState = { ...current, finalized: true };
                 data.set(channelId, next);
-                return next;
+                return Promise.resolve(next);
             });
         },
 

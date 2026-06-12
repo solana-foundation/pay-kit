@@ -31,12 +31,7 @@ import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/
 
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/paymentChannels.js';
 import { getU8Decoder, getU8Encoder } from '../safe-codecs.js';
-import {
-    getOpenArgsDecoder,
-    getOpenArgsEncoder,
-    type OpenArgs,
-    type OpenArgsArgs,
-} from '../types/openArgs.js';
+import { getOpenArgsDecoder, getOpenArgsEncoder, type OpenArgs, type OpenArgsArgs } from '../types/openArgs.js';
 
 export const OPEN_DISCRIMINATOR = 1;
 
@@ -60,7 +55,8 @@ export type OpenInstruction<
     TAccountEventAuthority extends AccountMeta<string> | string = string,
     TAccountSelfProgram extends AccountMeta<string> | string = 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
-> = Instruction<TProgram> & InstructionWithAccounts<
+> = Instruction<TProgram> &
+    InstructionWithAccounts<
         [
             TAccountPayer extends string
                 ? AccountSignerMeta<TAccountPayer> & WritableSignerAccount<TAccountPayer>
@@ -87,7 +83,8 @@ export type OpenInstruction<
             TAccountSelfProgram extends string ? ReadonlyAccount<TAccountSelfProgram> : TAccountSelfProgram,
             ...TRemainingAccounts,
         ]
-    > & InstructionWithData<ReadonlyUint8Array>;
+    > &
+    InstructionWithData<ReadonlyUint8Array>;
 
 export type OpenInstructionData = { discriminator: number; openArgs: OpenArgs };
 

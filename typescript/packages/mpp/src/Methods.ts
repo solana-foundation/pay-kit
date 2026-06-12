@@ -8,12 +8,14 @@ const sessionPullVoucherStrategy = z.enum(['clientVoucher', 'operatedVoucher']);
  * precision in JavaScript — reject those at the parse boundary instead of
  * surfacing a generic safe-integer error deep inside verification.
  */
-const voucherExpiresAt = z.number().check(
-    z.refine(
-        value => Number.isSafeInteger(value),
-        'expiresAt is an i64 but exceeds JavaScript safe-integer precision (2^53 - 1); larger values cannot be represented as JSON numbers',
-    ),
-);
+const voucherExpiresAt = z
+    .number()
+    .check(
+        z.refine(
+            value => Number.isSafeInteger(value),
+            'expiresAt is an i64 but exceeds JavaScript safe-integer precision (2^53 - 1); larger values cannot be represented as JSON numbers',
+        ),
+    );
 
 const signedVoucher = z.object({
     data: z
