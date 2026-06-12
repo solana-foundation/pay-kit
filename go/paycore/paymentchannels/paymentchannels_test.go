@@ -67,6 +67,71 @@ func TestSetProgramIDOverridesDerivation(t *testing.T) {
 	}
 }
 
+func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
+	custom := solana.NewWallet().PublicKey()
+	payer := solana.NewWallet().PublicKey()
+	payee := solana.NewWallet().PublicKey()
+	mint := solana.NewWallet().PublicKey()
+	signer := solana.NewWallet().PublicKey()
+
+	defaultPDA, _, err := FindChannelPDA(payer, payee, mint, signer, 1)
+	if err != nil {
+		t.Fatalf("FindChannelPDA: %v", err)
+	}
+	customPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, custom)
+	if err != nil {
+		t.Fatalf("FindChannelPDAForProgram: %v", err)
+	}
+	if defaultPDA.Equals(customPDA) {
+		t.Fatal("channel PDA did not change with the per-call program id")
+	}
+	zeroPDA, _, err := FindChannelPDAForProgram(payer, payee, mint, signer, 1, solana.PublicKey{})
+	if err != nil {
+		t.Fatalf("FindChannelPDAForProgram zero: %v", err)
+	}
+	if !zeroPDA.Equals(defaultPDA) {
+		t.Fatal("zero per-call program id should resolve to the package default")
+	}
+
+	params := OpenChannelParams{
+		Payer:            payer,
+		Payee:            payee,
+		Mint:             mint,
+		AuthorizedSigner: signer,
+		Salt:             1,
+		Deposit:          10,
+		GracePeriod:      900,
+		TokenProgram:     solana.TokenProgramID,
+		ProgramID:        custom,
+	}
+	ix, err := BuildOpenInstruction(params)
+	if err != nil {
+		t.Fatalf("BuildOpenInstruction: %v", err)
+	}
+	if !ix.ProgramID().Equals(custom) {
+		t.Fatalf("open instruction program id = %s, want per-call override", ix.ProgramID())
+	}
+	accounts := ix.Accounts()
+	if !accounts[4].PublicKey.Equals(customPDA) {
+		t.Fatalf("open channel account = %s, want PDA derived against the per-call program", accounts[4].PublicKey)
+	}
+
+	topUp, err := BuildTopUpInstruction(TopUpParams{
+		Payer:        payer,
+		Channel:      customPDA,
+		Mint:         mint,
+		Amount:       5,
+		TokenProgram: solana.TokenProgramID,
+		ProgramID:    custom,
+	})
+	if err != nil {
+		t.Fatalf("BuildTopUpInstruction: %v", err)
+	}
+	if !topUp.ProgramID().Equals(custom) {
+		t.Fatalf("top_up instruction program id = %s, want per-call override", topUp.ProgramID())
+	}
+}
+
 func TestVoucherMessageBytesLayout(t *testing.T) {
 	const cumulative uint64 = 42
 	const expiresAt int64 = 1234

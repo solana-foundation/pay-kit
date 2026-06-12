@@ -84,7 +84,14 @@ type OpenChannelParams struct {
 	Deposit          uint64
 	GracePeriod      uint32
 	Recipients       []Distribution
-	TokenProgram     solana.PublicKey
+
+	TokenProgram solana.PublicKey
+
+	// ProgramID is the payment-channels program targeted by this open. The
+	// zero value resolves to the package program id (ProgramPubkey, or the
+	// last SetProgramID override). Mirrors OpenChannelParams.program_id in
+	// rust/crates/mpp/src/program/payment_channels.rs.
+	ProgramID solana.PublicKey
 }
 
 // TopUpParams carries the inputs required to build a TopUp instruction.
@@ -96,6 +103,22 @@ type TopUpParams struct {
 	Mint         solana.PublicKey
 	Amount       uint64
 	TokenProgram solana.PublicKey
+
+	// ProgramID is the payment-channels program targeted by this top-up. The
+	// zero value resolves to the package program id (ProgramPubkey, or the
+	// last SetProgramID override). Mirrors the program_id argument of
+	// build_top_up_instruction in
+	// rust/crates/mpp/src/program/payment_channels.rs.
+	ProgramID solana.PublicKey
+}
+
+// resolveProgram resolves an optional per-call program id to the package
+// program id when unset.
+func resolveProgram(programID solana.PublicKey) solana.PublicKey {
+	if programID.IsZero() {
+		return programPubkey
+	}
+	return programID
 }
 
 // VoucherMessageBytes returns the 48-byte voucher preimage signed by the
@@ -120,6 +143,14 @@ func VoucherMessageBytes(channelID solana.PublicKey, cumulative uint64, expiresA
 // against the production program id. Mirrors find_channel_pda in
 // rust/crates/mpp/src/program/payment_channels.rs.
 func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64) (solana.PublicKey, uint8, error) {
+	return FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, programPubkey)
+}
+
+// FindChannelPDAForProgram derives the channel PDA against an explicit program
+// id, for callers honoring a per-challenge programId. Mirrors find_channel_pda
+// in rust/crates/mpp/src/program/payment_channels.rs, which takes program_id
+// as a parameter.
+func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, salt)
 	addr, bump, err := solana.FindProgramAddress(
@@ -131,7 +162,7 @@ func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt 
 			authorizedSigner.Bytes(),
 			saltLE,
 		},
-		programPubkey,
+		resolveProgram(programID),
 	)
 	if err != nil {
 		return solana.PublicKey{}, 0, fmt.Errorf("derive channel pda: %w", err)
@@ -144,9 +175,15 @@ func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt 
 // find_event_authority_pda in
 // rust/crates/mpp/src/program/payment_channels.rs.
 func FindEventAuthorityPDA() (solana.PublicKey, uint8, error) {
+	return FindEventAuthorityPDAForProgram(programPubkey)
+}
+
+// FindEventAuthorityPDAForProgram derives the event-authority PDA against an
+// explicit program id, for callers honoring a per-challenge programId.
+func FindEventAuthorityPDAForProgram(programID solana.PublicKey) (solana.PublicKey, uint8, error) {
 	addr, bump, err := solana.FindProgramAddress(
 		[][]byte{[]byte(eventAuthoritySeed)},
-		programPubkey,
+		resolveProgram(programID),
 	)
 	if err != nil {
 		return solana.PublicKey{}, 0, fmt.Errorf("derive event-authority pda: %w", err)
@@ -159,7 +196,8 @@ func FindEventAuthorityPDA() (solana.PublicKey, uint8, error) {
 // in the exact rust order using the production program id. Mirrors
 // build_open_instruction in rust/crates/mpp/src/program/payment_channels.rs.
 func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) {
-	channel, _, err := FindChannelPDA(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt)
+	programID := resolveProgram(params.ProgramID)
+	channel, _, err := FindChannelPDAForProgram(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, programID)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +209,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 	if err != nil {
 		return nil, fmt.Errorf("derive channel token account: %w", err)
 	}
-	eventAuthority, _, err := FindEventAuthorityPDA()
+	eventAuthority, _, err := FindEventAuthorityPDAForProgram(programID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +235,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 		SetRentAccount(solana.SysVarRentPubkey).
 		SetAssociatedTokenProgramAccount(solana.SPLAssociatedTokenAccountProgramID).
 		SetEventAuthorityAccount(eventAuthority).
-		SetSelfProgramAccount(programPubkey).
+		SetSelfProgramAccount(programID).
 		SetOpenArgs(generated.OpenArgs{
 			Salt:        params.Salt,
 			Deposit:     params.Deposit,
@@ -208,7 +246,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 	if _, err := builder.ValidateAndBuild(); err != nil {
 		return nil, fmt.Errorf("build open instruction: %w", err)
 	}
-	return materialize(builder, builder.GetAccounts())
+	return materialize(builder, builder.GetAccounts(), programID)
 }
 
 // BuildTopUpInstruction derives the payer/channel ATAs and builds the TopUp
@@ -237,7 +275,7 @@ func BuildTopUpInstruction(params TopUpParams) (solana.Instruction, error) {
 	if _, err := builder.ValidateAndBuild(); err != nil {
 		return nil, fmt.Errorf("build top_up instruction: %w", err)
 	}
-	return materialize(builder, builder.GetAccounts())
+	return materialize(builder, builder.GetAccounts(), resolveProgram(params.ProgramID))
 }
 
 // materialize borsh-encodes a validated generated instruction implementation
@@ -252,13 +290,13 @@ func BuildTopUpInstruction(params TopUpParams) (solana.Instruction, error) {
 //     so its Accounts() accessor type-asserts to a pointer-receiver interface
 //     and panics; passing the builder's own GetAccounts() avoids that path.
 //
-// The result's ProgramID() is the current package program id (the production
-// ProgramID by default, or whatever SetProgramID last set for a non-mainnet
-// cluster).
-func materialize(impl ag_binary.EncoderDecoder, accounts []*solana.AccountMeta) (solana.Instruction, error) {
+// The result's ProgramID() is the resolved per-call program id (the production
+// ProgramID by default, a SetProgramID override, or an explicit per-call
+// ProgramID for a non-mainnet cluster).
+func materialize(impl ag_binary.EncoderDecoder, accounts []*solana.AccountMeta, programID solana.PublicKey) (solana.Instruction, error) {
 	buf := new(bytes.Buffer)
 	if err := ag_binary.NewBorshEncoder(buf).Encode(impl); err != nil {
 		return nil, fmt.Errorf("encode instruction data: %w", err)
 	}
-	return solana.NewInstruction(programPubkey, accounts, buf.Bytes()), nil
+	return solana.NewInstruction(programID, accounts, buf.Bytes()), nil
 }
