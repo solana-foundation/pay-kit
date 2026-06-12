@@ -227,7 +227,8 @@ class ActiveSession:
 
         The voucher's channel MUST match this session and its cumulative MUST
         strictly exceed the current watermark; the nonce advances to the larger
-        of the current nonce + 1 and the voucher nonce. Mirrors rust
+        of the current nonce and the voucher nonce (current nonce + 1 when the
+        voucher carries none), exactly mirroring rust
         ``ActiveSession::record_voucher``.
         """
         if voucher.data.channel_id != self.channel_id_string:
@@ -241,25 +242,8 @@ class ActiveSession:
         if cumulative <= self._cumulative:
             raise ValueError(f"voucher cumulative {cumulative} must exceed current watermark {self._cumulative}")
         self._cumulative = cumulative
-        candidate = self._nonce + 1
-        if voucher.data.nonce is not None and voucher.data.nonce > candidate:
-            candidate = voucher.data.nonce
-        self._nonce = candidate
-
-    def reconcile_settled(self, settled: int) -> None:
-        """Reconcile the local watermark to a server-settled cumulative.
-
-        Used for a ``replayed`` commit receipt: advances the watermark to
-        ``settled`` when it is ahead of the current value and never regresses,
-        so retrying a delivery the server already accepted (lost-response case)
-        catches the client up without recording the freshly prepared higher
-        voucher. When it advances, the request nonce also advances by one,
-        mirroring ``record_voucher`` for the delivery the server settled, so the
-        next prepared voucher does not reuse the already-settled nonce.
-        """
-        if settled > self._cumulative:
-            self._cumulative = settled
-            self._nonce += 1
+        candidate = voucher.data.nonce if voucher.data.nonce is not None else self._nonce + 1
+        self._nonce = max(self._nonce, candidate)
 
     def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the
