@@ -113,6 +113,7 @@ class OpenChannelParams:
     grace_period: int
     recipients: list[Distribution] = field(default_factory=list)
     token_program: Pubkey = field(default_factory=lambda: Pubkey.from_string(TOKEN_PROGRAM))
+    program_id: Pubkey = field(default_factory=lambda: PROGRAM_ID)
 
 
 @dataclass
@@ -160,11 +161,13 @@ def find_channel_pda(
     mint: Pubkey,
     authorized_signer: Pubkey,
     salt: int,
+    program_id: Pubkey = PROGRAM_ID,
 ) -> tuple[Pubkey, int]:
-    """Derive the channel PDA against the production program id.
+    """Derive the channel PDA, defaulting to the production program id.
 
     Seeds: ``["channel", payer, payee, mint, authorizedSigner, salt u64 LE]``.
-    Mirrors ``find_channel_pda`` in the Rust spine.
+    Mirrors ``find_channel_pda`` in the Rust spine, which takes the program id
+    as its final parameter.
     """
     return Pubkey.find_program_address(
         [
@@ -175,18 +178,18 @@ def find_channel_pda(
             bytes(authorized_signer),
             struct.pack("<Q", salt),
         ],
-        PROGRAM_ID,
+        program_id,
     )
 
 
-def find_event_authority_pda() -> tuple[Pubkey, int]:
-    """Derive the event-authority PDA against the production program id.
+def find_event_authority_pda(program_id: Pubkey = PROGRAM_ID) -> tuple[Pubkey, int]:
+    """Derive the event-authority PDA, defaulting to the production program id.
 
     Seeds: ``["event_authority"]``. Mirrors ``find_event_authority_pda`` in the
     Rust spine. Stays hand-written because the generated helper derives against
     the IDL placeholder program id and takes no override.
     """
-    return Pubkey.find_program_address([_EVENT_AUTHORITY_SEED], PROGRAM_ID)
+    return Pubkey.find_program_address([_EVENT_AUTHORITY_SEED], program_id)
 
 
 def find_associated_token_address(
@@ -220,10 +223,11 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         params.mint,
         params.authorized_signer,
         params.salt,
+        params.program_id,
     )
     payer_token_account, _ = find_associated_token_address(params.payer, params.mint, params.token_program)
     channel_token_account, _ = find_associated_token_address(channel, params.mint, params.token_program)
-    event_authority, _ = find_event_authority_pda()
+    event_authority, _ = find_event_authority_pda(params.program_id)
 
     args = _OpenArgs(
         salt=params.salt,
@@ -246,9 +250,9 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
             "rent": Pubkey.from_string(_RENT_SYSVAR_ID),
             "associatedTokenProgram": Pubkey.from_string(ASSOCIATED_TOKEN_PROGRAM),
             "eventAuthority": event_authority,
-            "selfProgram": PROGRAM_ID,
+            "selfProgram": params.program_id,
         },
-        program_id=PROGRAM_ID,
+        program_id=params.program_id,
     )
 
 
