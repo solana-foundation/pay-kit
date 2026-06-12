@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1325,7 +1326,7 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Challenge: %v", err)
 	}
-	calls := fake.blockhashCalls
+	calls := fake.calls()
 	signer := newTestVoucherSigner(t)
 	credential, err := core.NewPaymentCredential(challenge.ToEcho(), intents.NewOpenAction(
 		intents.OpenPayloadPush(solana.NewWallet().PublicKey().String(), "1000", signer.Address(), confirmedSignature(0x88))))
@@ -1343,8 +1344,8 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("verify path status = %d", recorder.Code)
 	}
-	if fake.blockhashCalls != calls {
-		t.Fatalf("verify path fetched a blockhash: %d -> %d", calls, fake.blockhashCalls)
+	if fake.calls() != calls {
+		t.Fatalf("verify path fetched a blockhash: %d -> %d", calls, fake.calls())
 	}
 
 	// Challenge path fetches exactly once.
@@ -1353,19 +1354,24 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 	if recorder.Code != http.StatusPaymentRequired {
 		t.Fatalf("challenge path status = %d", recorder.Code)
 	}
-	if fake.blockhashCalls != calls+1 {
-		t.Fatalf("challenge path blockhash calls = %d, want %d", fake.blockhashCalls, calls+1)
+	if fake.calls() != calls+1 {
+		t.Fatalf("challenge path blockhash calls = %d, want %d", fake.calls(), calls+1)
 	}
 }
 
 // countingBlockhashRPC counts GetLatestBlockhash calls on top of FakeRPC.
+// The counter is atomic because the idle-close watchdog reads blockhashes
+// from its own goroutine.
 type countingBlockhashRPC struct {
 	*testutil.FakeRPC
-	blockhashCalls int
+	blockhashCalls atomic.Int64
 }
 
+// calls returns the GetLatestBlockhash call count.
+func (c *countingBlockhashRPC) calls() int64 { return c.blockhashCalls.Load() }
+
 func (c *countingBlockhashRPC) GetLatestBlockhash(ctx context.Context, commitment rpc.CommitmentType) (*rpc.GetLatestBlockhashResult, error) {
-	c.blockhashCalls++
+	c.blockhashCalls.Add(1)
 	return c.FakeRPC.GetLatestBlockhash(ctx, commitment)
 }
 
