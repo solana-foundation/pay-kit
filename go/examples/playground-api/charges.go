@@ -13,6 +13,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	server "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
@@ -242,7 +243,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 	// same as the TypeScript example.
 	fortuneMpp, err := server.New(server.Config{
 		Recipient:      a.recipient,
-		Currency:       usdcMint,
+		Currency:       paycore.USDCMainnetMint,
 		Decimals:       usdcDecimals,
 		Network:        a.network,
 		RPCURL:         a.rpcURL,

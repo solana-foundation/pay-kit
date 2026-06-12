@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 	server "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
@@ -49,7 +50,7 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 			Operator:  a.feePayer.PublicKey().String(),
 			Recipient: a.recipient,
 			Cap:       cap,
-			Currency:  usdcMint,
+			Currency:  paycore.USDCMainnetMint,
 			Decimals:  usdcDecimals,
 			Network:   a.network,
 			SecretKey: a.secretKey,

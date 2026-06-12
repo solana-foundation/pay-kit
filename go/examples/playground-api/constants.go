@@ -1,21 +1,14 @@
 package main
 
-// Shared constants mirroring
-// typescript/examples/playground-api/shared/constants.ts.
+// Example-specific constants. Program ids and the USDC mint come straight
+// from paycore at the call sites; only knobs without an SDK equivalent
+// live here.
 
 const (
-	// usdcMint is the mainnet USDC mint. Surfpool clones it from the
-	// datasource network, so the same mint works on the hosted localnet.
-	usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-
-	// usdcDecimals is the USDC token decimal count.
+	// usdcDecimals is the USDC token decimal count. The SDK does not
+	// export a decimals constant (paykit, paycore, and protocols/mpp all
+	// default to 6 internally), so the example pins it locally.
 	usdcDecimals = 6
-
-	// tokenProgram is the SPL Token program id.
-	tokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-
-	// systemProgram is the System program id.
-	systemProgram = "11111111111111111111111111111111"
 
 	// solFundLamports is the faucet SOL amount (100 SOL).
 	solFundLamports = 100_000_000_000

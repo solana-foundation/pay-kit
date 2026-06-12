@@ -28,6 +28,7 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
@@ -198,16 +199,16 @@ func bootstrapFunding(a *app) {
 			"lamports":   solFundLamports,
 			"data":       "",
 			"executable": false,
-			"owner":      systemProgram,
+			"owner":      paycore.SystemProgram,
 			"rentEpoch":  0,
 		},
 	})
 	if err == nil {
 		_, err = rpcCall(ctx, a.rpcURL, "surfnet_setTokenAccount", []any{
 			a.recipient,
-			usdcMint,
+			paycore.USDCMainnetMint,
 			map[string]any{"amount": usdcFundAmount, "state": "initialized"},
-			tokenProgram,
+			paycore.TokenProgram,
 		})
 	}
 	if err != nil {

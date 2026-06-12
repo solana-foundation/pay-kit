@@ -6,6 +6,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 // registerFaucet mounts the faucet status and airdrop endpoints.
@@ -14,7 +16,7 @@ func registerFaucet(mux *http.ServeMux, a *app) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"solAmount":  "100 SOL",
 			"usdcAmount": "100 USDC",
-			"usdcMint":   usdcMint,
+			"usdcMint":   paycore.USDCMainnetMint,
 		})
 	})
 
@@ -32,16 +34,16 @@ func registerFaucet(mux *http.ServeMux, a *app) {
 				"lamports":   solFundLamports,
 				"data":       "",
 				"executable": false,
-				"owner":      systemProgram,
+				"owner":      paycore.SystemProgram,
 				"rentEpoch":  0,
 			},
 		})
 		if err == nil {
 			_, err = rpcCall(r.Context(), a.rpcURL, "surfnet_setTokenAccount", []any{
 				body.Address,
-				usdcMint,
+				paycore.USDCMainnetMint,
 				map[string]any{"amount": usdcFundAmount, "state": "initialized"},
-				tokenProgram,
+				paycore.TokenProgram,
 			})
 		}
 		if err != nil {

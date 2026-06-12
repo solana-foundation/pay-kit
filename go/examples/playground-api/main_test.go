@@ -15,6 +15,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+
+	"github.com/solana-foundation/pay-kit/go/paycore"
 )
 
 // newStubRPC serves the JSON-RPC answers the playground needs at boot and
@@ -313,7 +315,7 @@ func TestPlaygroundEndpoints(t *testing.T) {
 
 	t.Run("faucet", func(t *testing.T) {
 		response, body := doRequest(t, http.MethodGet, base+"/api/v1/faucet/status", "", nil)
-		if response.StatusCode != http.StatusOK || !strings.Contains(body, usdcMint) {
+		if response.StatusCode != http.StatusOK || !strings.Contains(body, paycore.USDCMainnetMint) {
 			t.Fatalf("status: %d body = %s", response.StatusCode, body)
 		}
 		response, body = doRequest(t, http.MethodPost, base+"/api/v1/faucet/airdrop", `{}`, nil)
