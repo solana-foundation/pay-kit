@@ -194,8 +194,15 @@ type ChannelStore interface {
 // UpdateChannel calls for the same channel id run strictly sequentially while
 // calls for different ids run concurrently.
 type MemoryChannelStore struct {
-	mu    sync.Mutex
-	data  map[string]ChannelState
+	// mu guards data and locks.
+	mu sync.Mutex
+
+	// data maps channel id to stored state; values are cloned on the way in
+	// and out so callers never share memory with the store.
+	data map[string]ChannelState
+
+	// locks holds the per-channel mutex serializing UpdateChannel calls for
+	// the same channel id.
 	locks map[string]*sync.Mutex
 }
 

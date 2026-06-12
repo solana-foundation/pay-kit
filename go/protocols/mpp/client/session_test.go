@@ -15,7 +15,10 @@ import (
 
 // failingSigner satisfies VoucherSigner but always fails to sign, exercising
 // the signing-error propagation paths.
-type failingSigner struct{ pub solana.PublicKey }
+type failingSigner struct {
+	// pub is the public key the signer reports even though Sign always fails.
+	pub solana.PublicKey
+}
 
 func (f failingSigner) PublicKey() solana.PublicKey { return f.pub }
 func (f failingSigner) Sign([]byte) (solana.Signature, error) {

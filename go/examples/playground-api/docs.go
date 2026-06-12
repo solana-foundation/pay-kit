@@ -17,9 +17,15 @@ var docLangs = []string{"typescript", "rust", "go", "python", "ruby", "php", "lu
 
 // docsTreeNode is one entry of the docs file tree.
 type docsTreeNode struct {
-	Name     string         `json:"name"`
-	Path     string         `json:"path"`
-	Type     string         `json:"type"`
+	// Name is the base name of the file or directory (e.g. "README.md").
+	Name string `json:"name"`
+	// Path is the slash-separated path relative to the language docs root;
+	// the web app passes it back as the ?path= query of the file endpoint.
+	Path string `json:"path"`
+	// Type is "dir" for directories and "file" for markdown files; dirs
+	// sort before files within a level.
+	Type string `json:"type"`
+	// Children holds the directory's child nodes; omitted for files.
 	Children []docsTreeNode `json:"children,omitempty"`
 }
 

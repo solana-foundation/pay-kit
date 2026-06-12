@@ -27,7 +27,12 @@ type CommitTransport interface {
 // SessionConsumer is not safe for concurrent use; the underlying ActiveSession
 // watermark is advanced under Commit.
 type SessionConsumer struct {
-	session   *ActiveSession
+	// session is the wrapped ActiveSession; its cumulative watermark only
+	// advances after the transport reports a successful commit.
+	session *ActiveSession
+
+	// transport posts signed commit payloads to the server and returns its
+	// receipts.
 	transport CommitTransport
 }
 
@@ -129,8 +134,15 @@ func Accept[P any](c *SessionConsumer, envelope intents.MeteredEnvelope[P]) (*Me
 // MeteredDelivery is a delivered payload paired with its metering directive.
 // Call Ack (or its Commit alias) after the application has processed Payload.
 type MeteredDelivery[P any] struct {
+	// consumer is the consumer that accepted the delivery; Ack commits the
+	// directive amount through it.
 	consumer *SessionConsumer
-	payload  P
+
+	// payload is the delivered application payload.
+	payload P
+
+	// metering is the directive pricing this delivery; Ack signs a voucher
+	// for its amount.
 	metering intents.MeteringDirective
 }
 

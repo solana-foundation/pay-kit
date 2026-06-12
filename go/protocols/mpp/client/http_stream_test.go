@@ -28,7 +28,7 @@ func mustJSON(t *testing.T, value any) string {
 }
 
 type delta struct {
-	Delta string `json:"delta"`
+	Delta string `json:"delta"` // wire "delta": text fragment of a test app message
 }
 
 func decodeDelta(t *testing.T, raw json.RawMessage) delta {

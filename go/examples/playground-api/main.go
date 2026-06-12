@@ -35,13 +35,24 @@ import (
 
 // app carries the boot configuration shared by every module.
 type app struct {
-	network   string // raw NETWORK tag: localnet | devnet | mainnet
-	rpcURL    string
+	network string // raw NETWORK tag: localnet | devnet | mainnet
+	// rpcURL is the Solana JSON-RPC endpoint (RPC_URL env var; defaults to
+	// the hosted Solana Payment Sandbox).
+	rpcURL string
+	// recipient is the base58 address paid by the charge endpoints
+	// (RECIPIENT env var; defaults to the fee payer's pubkey).
 	recipient string
+	// secretKey is the MPP challenge-binding HMAC secret (MPP_SECRET_KEY env
+	// var; a random per-boot hex secret when unset).
 	secretKey string
-	feePayer  solana.PrivateKey
+	// feePayer is the operator keypair that signs and pays fees for
+	// settlement transactions (FEE_PAYER_KEY env var; random when unset).
+	feePayer solana.PrivateKey
+	// rpcClient is the shared RPC client bound to rpcURL.
 	rpcClient *rpc.Client
-	repoRoot  string
+	// repoRoot is the repository checkout root; "" outside a checkout, which
+	// disables the docs browser default root and the SPA file server.
+	repoRoot string
 }
 
 func main() {
@@ -231,22 +242,41 @@ func registerHealthAndConfig(mux *http.ServeMux, a *app) {
 
 // endpointParam describes one path or query parameter of a catalog entry.
 type endpointParam struct {
-	Name        string `json:"name"`
-	Default     string `json:"default"`
+	// Name is the parameter name as it appears in the :param path
+	// placeholder or query string.
+	Name string `json:"name"`
+	// Default is the value the playground form pre-fills; "" renders an
+	// empty input for an optional parameter.
+	Default string `json:"default"`
+	// Description is optional help text for the form field; omitted when
+	// empty.
 	Description string `json:"description,omitempty"`
 }
 
 // endpointInfo is one entry of the /api/v1/config endpoint catalog.
 type endpointInfo struct {
-	ID          string          `json:"id"`
-	Primitive   string          `json:"primitive"`
-	Method      string          `json:"method"`
-	Path        string          `json:"path"`
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Cost        string          `json:"cost"`
-	UnitPrice   string          `json:"unitPrice,omitempty"`
-	Params      []endpointParam `json:"params,omitempty"`
+	// ID is the stable slug the web app uses to key the endpoint in its nav.
+	ID string `json:"id"`
+	// Primitive is the payment primitive gating the route ("charge" or
+	// "session").
+	Primitive string `json:"primitive"`
+	// Method is the HTTP method the endpoint expects (GET, POST, ...).
+	Method string `json:"method"`
+	// Path is the route pattern with :param placeholders the web app
+	// substitutes from Params.
+	Path string `json:"path"`
+	// Title is the short label shown in the playground sidebar.
+	Title string `json:"title"`
+	// Description is the one-line summary shown under the title.
+	Description string `json:"description"`
+	// Cost is the human-readable price label (e.g. "0.01 USDC", "varies").
+	Cost string `json:"cost"`
+	// UnitPrice is the per-unit price of session endpoints in USDC base
+	// units (6 decimals) as a decimal string; omitted for charge endpoints.
+	UnitPrice string `json:"unitPrice,omitempty"`
+	// Params lists the path/query parameters the web app renders as form
+	// inputs; omitted when the endpoint takes none.
+	Params []endpointParam `json:"params,omitempty"`
 }
 
 // buildEndpointList builds the /api/v1/config endpoint catalog. The

@@ -11,9 +11,15 @@ import (
 
 // idleRecorder collects closeOnIdle invocations.
 type idleRecorder struct {
-	mu    sync.Mutex
+	// mu guards fired.
+	mu sync.Mutex
+
+	// fired accumulates the channel ids passed to the handler, in order.
 	fired []string
-	ch    chan string
+
+	// ch receives each fired channel id so tests can block until the
+	// watchdog fires.
+	ch chan string
 }
 
 func newIdleRecorder() *idleRecorder {

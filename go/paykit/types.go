@@ -123,8 +123,16 @@ const (
 // struct directly so the internal invariant (positive decimal, valid
 // currency) stays enforced.
 type Price struct {
-	amount      decimal.Decimal
-	currency    Currency
+	// amount is the exact decimal quote. Constructors enforce that it is
+	// positive; no rounding happens until conversion to mint base units
+	// at challenge-build time.
+	amount decimal.Decimal
+	// currency is the fiat denomination (USD, EUR, or GBP), fixed by the
+	// Parse constructor used.
+	currency Currency
+	// settlements is the ordered stablecoin preference for settling this
+	// price; nil means no narrowing, falling back to the kit-level
+	// [Config.Stablecoins] list.
 	settlements []Stablecoin
 }
 
@@ -160,9 +168,16 @@ func (p Price) Settlements() []Stablecoin {
 // merchant flows where the operator signer also pays Solana network fees
 // on settlement.
 type Operator struct {
+	// Recipient is the base58 Solana address where settled funds land;
+	// "" defaults to Signer.Pubkey() at [New] time.
 	Recipient Address
-	Signer    Signer
-	FeePayer  bool
+	// Signer is the operator's Ed25519 signer, used to cosign x402
+	// challenges and to fee-pay settlement transactions when FeePayer is
+	// set; nil defaults to the registered demo signer (non-mainnet only).
+	Signer Signer
+	// FeePayer, when true, makes the operator Signer also pay Solana
+	// network fees on settlement transactions instead of the client.
+	FeePayer bool
 }
 
 // X402Config groups the x402-specific knobs.
@@ -191,22 +206,45 @@ type X402Config struct {
 
 // MPPConfig groups the MPP-charge-specific knobs.
 type MPPConfig struct {
-	Realm                  string
+	// Realm is the realm string advertised in the MPP WWW-Authenticate
+	// challenge and bound into the HMAC challenge ID; "" defaults to
+	// "PayKit".
+	Realm string
+	// ChallengeBindingSecret is the HMAC-SHA256 key that binds challenge
+	// IDs to their contents (replay/tamper protection). When empty and
+	// MPP is in [Config.Accept], [New] resolves one automatically.
 	ChallengeBindingSecret []byte
-	ExpiresIn              time.Duration
+	// ExpiresIn is how long an issued challenge stays valid; sent on the
+	// wire in whole seconds. Zero defaults to 2 minutes.
+	ExpiresIn time.Duration
 }
 
 // Config is the boot-time configuration passed to [New]. Zero-value
 // [Config] is invalid because Network is required; every other field
 // has a sensible default.
 type Config struct {
-	Network     Network
-	Accept      []Protocol
+	// Network is the Solana cluster the kit settles on. Required; the
+	// only Config field with no default.
+	Network Network
+	// Accept lists the protocols served, in preference order (first
+	// entry wins when a client supports several); empty defaults to
+	// [X402, MPP].
+	Accept []Protocol
+	// Stablecoins lists the settlement assets offered, in preference
+	// order; empty defaults to USDC. Mints resolve per Network.
 	Stablecoins []Stablecoin
-	RPCURL      string
-	Operator    Operator
-	X402        X402Config
-	MPP         MPPConfig
+	// RPCURL is the Solana JSON-RPC endpoint used for verification and
+	// settlement; "" falls back to [Network.DefaultRPCURL].
+	RPCURL string
+	// Operator is the merchant identity: settlement recipient, Ed25519
+	// signer, and the fee-payer flag.
+	Operator Operator
+	// X402 holds the x402-specific knobs (facilitator URL, scheme,
+	// signer override, payment-identifier extension).
+	X402 X402Config
+	// MPP holds the MPP-charge-specific knobs (realm, challenge-binding
+	// HMAC secret, challenge expiry).
+	MPP MPPConfig
 
 	// Preflight runs the soundness checks at New() time. Defaults to
 	// true; set to false (or export PAY_KIT_DISABLE_PREFLIGHT=1) to
@@ -225,9 +263,21 @@ type Config struct {
 // the middleware accepts a credential. Handlers read it via
 // [PaymentFrom] / [IsPaid] / [IsPaidFor].
 type Payment struct {
-	Protocol          Protocol
-	Gate              string
-	Transaction       string
+	// Protocol is the payment protocol (x402 or MPP) that verified and
+	// settled the credential.
+	Protocol Protocol
+	// Gate is the [Gate.Name] of the route gate the payment satisfied;
+	// matched by [IsPaidFor].
+	Gate string
+	// Transaction is the settlement reference: the base58 Solana
+	// transaction signature for x402, the receipt reference for MPP.
+	Transaction string
+	// SettlementHeaders are the protocol response headers (settlement
+	// signature plus payment-response or Payment-Receipt) that the
+	// middleware copies onto the HTTP response.
 	SettlementHeaders map[string]string
-	Raw               string
+	// Raw is the credential exactly as the client presented it: the
+	// Authorization header value for MPP, the payment-signature header
+	// payload for x402.
+	Raw string
 }

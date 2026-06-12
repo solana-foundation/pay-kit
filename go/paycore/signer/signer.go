@@ -24,7 +24,10 @@ import (
 // InvalidKeyError is returned by the fallible factories when the input
 // cannot be parsed into a 64-byte Ed25519 secret key.
 type InvalidKeyError struct {
+	// Source names the input form that failed to parse: "bytes", "json",
+	// "hex", "base58", "file", or "env".
 	Source string
+	// Reason is the human-readable parse failure detail embedded in Error().
 	Reason string
 }
 
@@ -34,8 +37,12 @@ func (e *InvalidKeyError) Error() string {
 
 // localSigner is the concrete value behind every local factory.
 type localSigner struct {
-	priv   ed25519.PrivateKey
-	pub    paykit.Address
+	// priv is the 64-byte Ed25519 private key that produces signatures.
+	priv ed25519.PrivateKey
+	// pub is the base58 public key derived from priv, returned by Pubkey.
+	pub paykit.Address
+	// isDemo marks the package-shipped demo keypair so paykit can warn on
+	// use and reject it on mainnet.
 	isDemo bool
 }
 

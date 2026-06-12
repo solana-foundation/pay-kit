@@ -19,8 +19,8 @@ const testVoucherChannelID = "11111111111111111111111111111111"
 
 // testVoucherSigner is an in-memory Ed25519 keypair for voucher tests.
 type testVoucherSigner struct {
-	pub  ed25519.PublicKey
-	priv ed25519.PrivateKey
+	pub  ed25519.PublicKey  // verify key; its base58 form is the channel's authorized signer
+	priv ed25519.PrivateKey // signing key for the canonical 48-byte voucher preimage
 }
 
 func newTestVoucherSigner(t *testing.T) testVoucherSigner {

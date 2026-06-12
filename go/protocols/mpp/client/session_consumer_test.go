@@ -16,9 +16,9 @@ import (
 // "replayed" receipt carrying the originally committed cumulative, so the
 // client does not double-count.
 type recordingTransport struct {
-	mu      sync.Mutex
-	commits []intents.CommitPayload
-	fail    bool
+	mu      sync.Mutex              // guards commits and seen
+	commits []intents.CommitPayload // every payload accepted as a fresh commit
+	fail    bool                    // when true, every Commit errors without recording
 
 	// seen maps a deliveryId to the cumulative the server first committed for
 	// it. A repeat deliveryId is acknowledged as replayed.
@@ -254,7 +254,11 @@ func TestConsumerDuplicateDeliveryReplayedNotDoubleCounted(t *testing.T) {
 
 // replayTransport always reports the delivery as already settled at a fixed
 // cumulative, regardless of the voucher it is sent.
-type replayTransport struct{ settled string }
+type replayTransport struct {
+	// settled is the fixed cumulative (base units, decimal string) every
+	// replayed receipt reports as already settled.
+	settled string
+}
 
 func (r replayTransport) Commit(_ context.Context, directive intents.MeteringDirective, _ intents.CommitPayload) (intents.CommitReceipt, error) {
 	return intents.CommitReceipt{
@@ -322,7 +326,11 @@ func TestConsumerReplayClampedToPreparedVoucher(t *testing.T) {
 
 // statusTransport returns a fixed (possibly unknown) status, to exercise the
 // consumer's rejection of malformed receipts.
-type statusTransport struct{ status intents.CommitStatus }
+type statusTransport struct {
+	// status is the receipt status echoed for every commit, including values
+	// outside the known committed/replayed set.
+	status intents.CommitStatus
+}
 
 func (s statusTransport) Commit(_ context.Context, directive intents.MeteringDirective, payload intents.CommitPayload) (intents.CommitReceipt, error) {
 	return intents.CommitReceipt{

@@ -21,7 +21,10 @@ import (
 
 // failingUpdateStore wraps a ChannelStore and fails UpdateChannel once armed.
 type failingUpdateStore struct {
+	// ChannelStore is the wrapped store used while fail is unset.
 	ChannelStore
+
+	// fail, once armed, makes every UpdateChannel return a write error.
 	fail bool
 }
 

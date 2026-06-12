@@ -19,11 +19,22 @@ import (
 // SessionLifecycle is the idle-close watchdog. Touch resets the per-channel
 // timer, RemoveChannel cancels it, and Shutdown cancels everything.
 type SessionLifecycle struct {
-	mu          sync.Mutex
-	timers      map[string]*time.Timer
-	closeDelay  time.Duration
+	// mu guards timers and shutdown.
+	mu sync.Mutex
+
+	// timers holds the armed single-shot idle timer per channel id.
+	timers map[string]*time.Timer
+
+	// closeDelay is the idle duration before a channel is auto-closed;
+	// <= 0 disables the watchdog entirely.
+	closeDelay time.Duration
+
+	// closeOnIdle is invoked with the channel id when its idle timer fires.
 	closeOnIdle func(channelID string)
-	shutdown    bool
+
+	// shutdown, once true, turns every later Touch into a no-op and stops
+	// already-fired timers from invoking closeOnIdle.
+	shutdown bool
 }
 
 // NewSessionLifecycle creates an idle-close watchdog. closeDelay <= 0

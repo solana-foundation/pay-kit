@@ -34,17 +34,45 @@ const PendingServerSignature = "111111111111111111111111111111111111111111111111
 // PaymentChannelOpen is a fully derived payment-channel open: every channel
 // parameter resolved from the challenge plus the resulting channel PDA.
 type PaymentChannelOpen struct {
-	ChannelID        solana.PublicKey
-	Payer            solana.PublicKey
-	Payee            solana.PublicKey
-	Mint             solana.PublicKey
+	// ChannelID is the channel PDA derived from payer, payee, mint,
+	// authorized signer, and salt against ProgramID.
+	ChannelID solana.PublicKey
+
+	// Payer is the wallet that funds the escrow deposit.
+	Payer solana.PublicKey
+
+	// Payee is the channel beneficiary, parsed from the challenge recipient.
+	Payee solana.PublicKey
+
+	// Mint is the SPL token mint, resolved from the challenge currency and
+	// network.
+	Mint solana.PublicKey
+
+	// AuthorizedSigner is the ephemeral session key whose Ed25519 signatures
+	// authorize the channel's cumulative vouchers.
 	AuthorizedSigner solana.PublicKey
-	Salt             uint64
-	Deposit          uint64
-	GracePeriod      uint32
-	Recipients       []paymentchannels.Distribution
-	TokenProgram     solana.PublicKey
-	ProgramID        solana.PublicKey
+
+	// Salt is the random u64 that makes the channel PDA unique per open.
+	Salt uint64
+
+	// Deposit is the escrow deposit in token base units; it defaults to the
+	// challenge cap.
+	Deposit uint64
+
+	// GracePeriod is the close grace period in seconds (default 900).
+	GracePeriod uint32
+
+	// Recipients are the settlement distribution splits derived from the
+	// challenge splits; empty means no splits.
+	Recipients []paymentchannels.Distribution
+
+	// TokenProgram is the program owning Mint (Token, or Token-2022 for
+	// PYUSD/USDG/CASH).
+	TokenProgram solana.PublicKey
+
+	// ProgramID is the payment-channels program the open targets; defaults
+	// to the canonical program unless the challenge pins one.
+	ProgramID solana.PublicKey
 }
 
 // OpenChannelParams converts the derived open into instruction-builder params.
@@ -273,9 +301,17 @@ func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactio
 // PaymentChannelSessionOpen bundles a derived open, the live session tracking
 // it, and the open action ready to serialize into a credential.
 type PaymentChannelSessionOpen struct {
-	Open    PaymentChannelOpen
+	// Open holds the fully derived channel parameters, including the channel
+	// PDA the session settles against.
+	Open PaymentChannelOpen
+
+	// Session is the live tracker that signs cumulative vouchers for the
+	// opened channel.
 	Session *ActiveSession
-	Action  intents.SessionAction
+
+	// Action is the open session action, ready to serialize into the payment
+	// credential sent back to the server.
+	Action intents.SessionAction
 }
 
 // PaymentChannelSessionOpenOptions configures CreatePaymentChannelSessionOpener.

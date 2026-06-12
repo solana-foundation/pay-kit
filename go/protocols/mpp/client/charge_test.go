@@ -548,6 +548,8 @@ func TestBuildCredentialHeaderRejectsInvalidMethodDetails(t *testing.T) {
 
 // rpcWithBlockhashErr wraps FakeRPC and forces GetLatestBlockhash to error.
 type rpcWithBlockhashErr struct {
+	// FakeRPC supplies the rest of the stub RPC surface unchanged; only the
+	// GetLatestBlockhash method below is overridden to fail.
 	*testutil.FakeRPC
 }
 

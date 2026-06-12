@@ -26,14 +26,14 @@ import (
 // openTxFixture bundles a freshly built and signed payment-channel open
 // transaction with the payload and challenge expectations that accept it.
 type openTxFixture struct {
-	payer      solana.PrivateKey
-	payee      solana.PublicKey
-	authorized solana.PublicKey
-	mint       solana.PublicKey
-	channel    solana.PublicKey
-	signature  string
-	payload    intents.OpenPayload
-	expected   VerifyOpenTxExpected
+	payer      solana.PrivateKey    // channel payer keypair; fee payer and sole signer of the open tx
+	payee      solana.PublicKey     // channel recipient the challenge expects
+	authorized solana.PublicKey     // voucher-signing pubkey baked into the channel
+	mint       solana.PublicKey     // SPL mint the channel settles in (mainnet USDC)
+	channel    solana.PublicKey     // channel PDA derived from payer/payee/mint/authorized + salt
+	signature  string               // fee-payer signature of the open tx (base58)
+	payload    intents.OpenPayload  // open payload carrying the base64-encoded wire tx
+	expected   VerifyOpenTxExpected // challenge-side expectations that accept this fixture
 }
 
 const (

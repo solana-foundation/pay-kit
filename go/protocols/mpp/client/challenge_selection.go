@@ -46,8 +46,13 @@ type SelectSessionChallengeOptions struct {
 // SelectedSessionChallenge is a session challenge paired with its decoded
 // request.
 type SelectedSessionChallenge struct {
+	// Challenge is the matched 402 session challenge, kept whole so it can be
+	// echoed back when serializing the payment credential.
 	Challenge core.PaymentChallenge
-	Request   intents.SessionRequest
+
+	// Request is the challenge's session request decoded from its base64url
+	// JSON request value (currency, cap, recipient, modes, ...).
+	Request intents.SessionRequest
 }
 
 // SelectSessionChallenge selects the Solana session challenge the client

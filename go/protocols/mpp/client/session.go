@@ -45,11 +45,25 @@ type VoucherSigner = solanatx.Signer
 // ActiveSession is not safe for concurrent use; serialize access from one
 // goroutine or guard it with a mutex.
 type ActiveSession struct {
-	channelID  solana.PublicKey
+	// channelID is the on-chain channel PDA the vouchers settle against; its
+	// raw 32 bytes lead the 48-byte voucher preimage.
+	channelID solana.PublicKey
+
+	// cumulative is the watermark in token base units: the cumulative total
+	// covered by the last recorded voucher, not a per-request delta.
 	cumulative uint64
-	nonce      uint64
-	expiresAt  int64
-	signer     VoucherSigner
+
+	// nonce counts recorded vouchers; it is carried in the voucher JSON for
+	// server bookkeeping but is not part of the signed 48-byte preimage.
+	nonce uint64
+
+	// expiresAt is the voucher expiry as Unix epoch seconds, encoded
+	// little-endian into the final 8 bytes of each voucher preimage.
+	expiresAt int64
+
+	// signer is the ephemeral session key (the channel authorizedSigner)
+	// that Ed25519-signs voucher preimages.
+	signer VoucherSigner
 }
 
 // NewActiveSession creates a session tracker for the channel obtained after

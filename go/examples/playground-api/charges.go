@@ -21,9 +21,13 @@ import (
 
 // weatherInfo is the canned per-city weather payload.
 type weatherInfo struct {
-	Temperature int    `json:"temperature"`
-	Conditions  string `json:"conditions"`
-	Humidity    int    `json:"humidity"`
+	// Temperature is the air temperature in whole degrees Celsius.
+	Temperature int `json:"temperature"`
+	// Conditions is the human-readable sky/precipitation label
+	// (e.g. "Foggy", "Partly Cloudy").
+	Conditions string `json:"conditions"`
+	// Humidity is the relative humidity as a whole-number percentage (0-100).
+	Humidity int `json:"humidity"`
 }
 
 // weatherByCity is the canned weather demo table.
@@ -40,9 +44,15 @@ var weatherByCity = map[string]weatherInfo{
 
 // product is one marketplace catalog entry.
 type product struct {
-	Name        string
-	Price       paykit.Price
-	Seller      string
+	// Name is the display title shown in the catalog listing and receipt.
+	Name string
+	// Price is the seller's list price in USD; the platform and referral
+	// basis-point fees are charged on top of it, not carved out of it.
+	Price paykit.Price
+	// Seller is the base58 wallet address that receives the list price as
+	// the charge's primary PayTo recipient.
+	Seller string
+	// Description is the one-line marketing blurb shown in the listing.
 	Description string
 }
 

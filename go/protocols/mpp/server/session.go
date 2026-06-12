@@ -128,8 +128,12 @@ type DeliveryRequest struct {
 // channel store to support in-memory testing and production persistence
 // backends.
 type SessionServer struct {
+	// config is the immutable server configuration captured at construction.
 	config SessionConfig
-	store  ChannelStore
+
+	// store persists per-channel state; every mutation goes through its
+	// atomic UpdateChannel so voucher watermarks stay double-spend safe.
+	store ChannelStore
 }
 
 // NewSessionServer creates a SessionServer over the given store.

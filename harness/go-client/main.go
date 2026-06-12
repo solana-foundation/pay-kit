@@ -33,14 +33,25 @@ import (
 const fixtureSettlementHeader = "x-fixture-settlement"
 
 type adapterResult struct {
-	Type            string            `json:"type"`
-	Implementation  string            `json:"implementation"`
-	Role            string            `json:"role"`
-	OK              bool              `json:"ok"`
-	Status          int               `json:"status"`
+	// Type is the harness message discriminator; always "result" here.
+	Type string `json:"type"`
+	// Implementation identifies the SDK under test; always "go" here.
+	Implementation string `json:"implementation"`
+	// Role is the side this adapter exercises; always "client" here.
+	Role string `json:"role"`
+	// OK reports whether the paid request ended with a 2xx status.
+	OK bool `json:"ok"`
+	// Status is the final HTTP status code of the paid request.
+	Status int `json:"status"`
+	// ResponseHeaders holds the final response headers, names lower-cased
+	// and multi-value headers joined with ", ".
 	ResponseHeaders map[string]string `json:"responseHeaders"`
-	ResponseBody    any               `json:"responseBody"`
-	Settlement      string            `json:"settlement,omitempty"`
+	// ResponseBody is the final response body, JSON-decoded when it parses,
+	// otherwise the raw string.
+	ResponseBody any `json:"responseBody"`
+	// Settlement echoes the x-fixture-settlement header the fixture server
+	// sets with its settlement outcome; omitted when absent.
+	Settlement string `json:"settlement,omitempty"`
 }
 
 func main() {

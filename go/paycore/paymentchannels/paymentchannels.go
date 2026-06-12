@@ -63,21 +63,43 @@ func SetProgramID(id solana.PublicKey) {
 
 // Distribution is a single payout recipient and its basis-point share.
 type Distribution struct {
+	// Recipient is the wallet whose associated token account receives this
+	// share when settled channel funds are distributed.
 	Recipient solana.PublicKey
-	Bps       uint16
+	// Bps is the recipient's share of distributed funds in basis points
+	// (100 bps = 1%).
+	Bps uint16
 }
 
 // OpenChannelParams carries the inputs required to build an Open instruction.
 type OpenChannelParams struct {
-	Payer            solana.PublicKey
-	Payee            solana.PublicKey
-	Mint             solana.PublicKey
+	// Payer is the wallet funding the channel deposit; it signs the Open
+	// transaction and is a channel PDA seed.
+	Payer solana.PublicKey
+	// Payee is the counterparty the channel pays out to; a channel PDA seed.
+	Payee solana.PublicKey
+	// Mint is the SPL token mint the channel escrows (e.g. USDC); a channel
+	// PDA seed.
+	Mint solana.PublicKey
+	// AuthorizedSigner is the key allowed to sign vouchers against this
+	// channel; a channel PDA seed.
 	AuthorizedSigner solana.PublicKey
-	Salt             uint64
-	Deposit          uint64
-	GracePeriod      uint32
-	Recipients       []Distribution
+	// Salt distinguishes multiple channels sharing the same
+	// payer/payee/mint/signer; encoded little-endian as the final channel
+	// PDA seed.
+	Salt uint64
+	// Deposit is the initial escrow amount in token base units
+	// (10^-6 USDC per unit for a 6-decimal mint).
+	Deposit uint64
+	// GracePeriod is the channel close grace period in seconds; the on-chain
+	// program rejects zero.
+	GracePeriod uint32
+	// Recipients is the basis-point payout split applied when settled funds
+	// are distributed.
+	Recipients []Distribution
 
+	// TokenProgram is the program owning Mint (SPL Token or Token-2022),
+	// used to derive the payer and channel associated token accounts.
 	TokenProgram solana.PublicKey
 
 	// ProgramID is the payment-channels program targeted by this open. The
@@ -88,10 +110,18 @@ type OpenChannelParams struct {
 
 // TopUpParams carries the inputs required to build a TopUp instruction.
 type TopUpParams struct {
-	Payer        solana.PublicKey
-	Channel      solana.PublicKey
-	Mint         solana.PublicKey
-	Amount       uint64
+	// Payer is the wallet whose token account funds the top-up; it signs
+	// the TopUp transaction.
+	Payer solana.PublicKey
+	// Channel is the channel PDA whose escrow receives the deposit.
+	Channel solana.PublicKey
+	// Mint is the SPL token mint the channel escrows.
+	Mint solana.PublicKey
+	// Amount is the additional deposit in token base units
+	// (10^-6 USDC per unit for a 6-decimal mint).
+	Amount uint64
+	// TokenProgram is the program owning Mint (SPL Token or Token-2022),
+	// used to derive the payer and channel associated token accounts.
 	TokenProgram solana.PublicKey
 
 	// ProgramID is the payment-channels program targeted by this top-up. The

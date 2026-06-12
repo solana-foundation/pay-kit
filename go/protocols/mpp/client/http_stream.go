@@ -23,9 +23,20 @@ import (
 // SseEvent is a parsed Server-Sent Event frame. Event, ID, and Retry are nil
 // when the frame omitted the field.
 type SseEvent struct {
+	// Event is the event name from "event:" lines; nil means the frame used
+	// the default "message" event.
 	Event *string
-	Data  string
-	ID    *string
+
+	// Data is the frame payload: all "data:" line values joined with
+	// newlines, empty when the frame carried no data lines.
+	Data string
+
+	// ID is the event id from the "id:" line, the value a reconnecting
+	// client would echo as Last-Event-ID.
+	ID *string
+
+	// Retry is the reconnection delay in milliseconds from the "retry:"
+	// line; non-numeric values are dropped.
 	Retry *uint64
 }
 
@@ -34,7 +45,12 @@ type SseEvent struct {
 // Feed raw HTTP chunks with PushChunk. It returns all complete events decoded
 // from that chunk and retains partial data internally.
 type SseDecoder struct {
-	buffer  string
+	// buffer holds the undecoded tail of the stream: bytes pushed but not
+	// yet terminated by a newline.
+	buffer string
+
+	// current accumulates the fields of the in-progress event until a blank
+	// line dispatches it.
 	current SseEvent
 }
 
@@ -145,11 +161,22 @@ const (
 // MeteredSseEvent is a parsed metered SSE event. Exactly the field matching
 // Kind is populated.
 type MeteredSseEvent struct {
-	Kind     MeteredSseEventKind
+	// Kind discriminates which of the payload fields below is set.
+	Kind MeteredSseEventKind
+
+	// Metering is the decoded directive of an mpp.metering/metering event
+	// (the per-delivery amount reservation).
 	Metering *intents.MeteringDirective
-	Usage    *intents.MeteringUsage
-	Message  json.RawMessage
-	Other    *SseEvent
+
+	// Usage is the decoded final-amount report of an mpp.usage/usage event.
+	Usage *intents.MeteringUsage
+
+	// Message is the raw JSON payload of an application message event, left
+	// for the caller to decode.
+	Message json.RawMessage
+
+	// Other is the unrecognized event passed through verbatim.
+	Other *SseEvent
 }
 
 // ParseMeteredSseEvent classifies an SSE event by the metered-session event
@@ -193,9 +220,17 @@ func ParseMeteredSseEvent(event SseEvent) (MeteredSseEvent, error) {
 // meteredStreamState pairs the live metering directive with the optional final
 // usage amount.
 type meteredStreamState struct {
-	directive   *intents.MeteringDirective
+	// directive is the latest mpp.metering directive seen on the stream;
+	// nil until one arrives, which makes committing an error.
+	directive *intents.MeteringDirective
+
+	// finalAmount is the usage-reported final amount in token base units;
+	// nil commits the directive's reserved amount instead.
 	finalAmount *uint64
-	done        bool
+
+	// done is set once the stream signals completion via a done event, a
+	// [DONE] sentinel message, or EOF.
+	done bool
 }
 
 // applyEvent folds one SSE event into the state, returning the raw application
@@ -248,8 +283,13 @@ func (s *meteredStreamState) directiveForCommit() (intents.MeteringDirective, er
 // MeteredSseSession is a transport-neutral state machine for one metered SSE
 // stream: feed it decoded SSE events, then Ack to commit the final amount.
 type MeteredSseSession struct {
+	// consumer is the borrowed session consumer that signs and commits the
+	// stream's final amount on Ack.
 	consumer *SessionConsumer
-	state    meteredStreamState
+
+	// state folds the metering directive, final usage amount, and done flag
+	// out of the accepted events.
+	state meteredStreamState
 }
 
 // MeteredSse starts a metered SSE state machine borrowing this consumer.
@@ -345,12 +385,26 @@ func (t *HTTPCommitTransport) Commit(
 // MeteredSseStream reads a metered SSE response body, yielding raw application
 // messages and committing the final amount on Ack.
 type MeteredSseStream struct {
+	// consumer is the session consumer that signs and commits the stream's
+	// final amount on Ack; IntoConsumer hands it back for the next request.
 	consumer *SessionConsumer
-	body     io.Reader
-	decoder  SseDecoder
-	pending  []json.RawMessage
-	state    meteredStreamState
-	buf      []byte
+
+	// body is the SSE response body being drained; the caller retains
+	// ownership and closes it after the stream is done.
+	body io.Reader
+
+	// decoder incrementally parses raw body chunks into SSE events.
+	decoder SseDecoder
+
+	// pending queues decoded application messages not yet returned by Next.
+	pending []json.RawMessage
+
+	// state folds the metering directive, final usage amount, and done flag
+	// out of the decoded events.
+	state meteredStreamState
+
+	// buf is the reusable scratch buffer for body reads.
+	buf []byte
 }
 
 // NewMeteredSseStream wraps a consumer and an SSE response body, e.g.

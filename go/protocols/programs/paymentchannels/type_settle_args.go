@@ -7,5 +7,9 @@
 package payment_channels
 
 type SettleArgs struct {
+	// Voucher is the signed voucher to commit, raising the channel's
+	// settled watermark to its cumulative amount; the Ed25519 signature is
+	// carried in a preceding precompile instruction referenced via the
+	// instructions sysvar, not in these args.
 	Voucher VoucherArgs
 }

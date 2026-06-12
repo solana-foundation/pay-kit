@@ -70,6 +70,9 @@ var (
 )
 
 type Instruction struct {
+	// BaseVariant carries the decoded instruction variant: TypeID holds the
+	// single-byte instruction discriminator and Impl the concrete
+	// per-instruction struct (Open, TopUp, Settle, ...).
 	ag_binary.BaseVariant
 }
 

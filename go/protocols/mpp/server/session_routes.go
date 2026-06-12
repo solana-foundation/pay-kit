@@ -33,18 +33,37 @@ type SessionRoutes struct {
 
 // sessionDeliveryRequestBody is the JSON body of a delivery reservation.
 type sessionDeliveryRequestBody struct {
-	SessionID  string `json:"sessionId"`
-	Amount     string `json:"amount"`
+	// SessionID is the channel/session id that will pay for the delivery.
+	SessionID string `json:"sessionId"`
+
+	// Amount owed for the delivery: a decimal u64 string in token base units.
+	Amount string `json:"amount"`
+
+	// DeliveryID is an optional idempotency key; when empty the server
+	// derives "<sessionId>:<sequence>".
 	DeliveryID string `json:"deliveryId,omitempty"`
-	CommitURL  string `json:"commitUrl,omitempty"`
-	ExpiresAt  int64  `json:"expiresAt,omitempty"`
-	Proof      string `json:"proof,omitempty"`
+
+	// CommitURL is an optional commit endpoint hint echoed back to the
+	// client in the metering directive.
+	CommitURL string `json:"commitUrl,omitempty"`
+
+	// ExpiresAt is an optional delivery expiry (Unix seconds); zero defaults
+	// to intents.DefaultSessionExpiresAt.
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
+
+	// Proof is an optional opaque proof echoed back to the client in the
+	// metering directive.
+	Proof string `json:"proof,omitempty"`
 }
 
 // sessionCommitRequestBody is the JSON body of a side-channel commit.
 type sessionCommitRequestBody struct {
-	DeliveryID string                 `json:"deliveryId"`
-	Voucher    *intents.SignedVoucher `json:"voucher"`
+	// DeliveryID names the reserved delivery being committed. Required.
+	DeliveryID string `json:"deliveryId"`
+
+	// Voucher is the signed voucher whose cumulative (a lifetime total, not
+	// a per-request delta) settles the delivery. Required; nil is rejected.
+	Voucher *intents.SignedVoucher `json:"voucher"`
 }
 
 // Routes builds the metering side-channel handlers for this session.

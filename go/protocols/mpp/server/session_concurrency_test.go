@@ -20,7 +20,11 @@ import (
 // simulates a concurrent writer that slips in between a handler's preflight
 // read and its atomic read-modify-write.
 type racingChannelStore struct {
+	// ChannelStore is the wrapped real store the interleaved writes land in.
 	ChannelStore
+
+	// interleave runs once immediately before the next UpdateChannel applies
+	// its mutator, then disarms itself.
 	interleave func(ctx context.Context, store ChannelStore)
 }
 

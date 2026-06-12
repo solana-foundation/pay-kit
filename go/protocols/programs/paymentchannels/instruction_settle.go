@@ -20,7 +20,11 @@ type Settle struct {
 	// [0] = [WRITE] Channel
 	// [1] = [] InstructionsSysvar
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	SettleArgs                   SettleArgs
+	// SettleArgs holds the Borsh-encoded instruction arguments written after
+	// the settle discriminator byte (2): the voucher whose Ed25519 signature
+	// is checked via a preceding precompile instruction referenced through
+	// the instructions sysvar.
+	SettleArgs SettleArgs
 }
 
 // NewSettleInstructionBuilder creates a new `Settle` instruction builder.

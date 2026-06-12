@@ -28,7 +28,10 @@ type Distribute struct {
 	// [8] = [] EventAuthority
 	// [9] = [] SelfProgram
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	DistributeArgs               DistributeArgs
+	// DistributeArgs holds the Borsh-encoded instruction arguments written
+	// after the distribute discriminator byte (7): the recipient split list,
+	// which must hash to the channel's stored distribution hash.
+	DistributeArgs DistributeArgs
 }
 
 // NewDistributeInstructionBuilder creates a new `Distribute` instruction builder.

@@ -27,7 +27,10 @@ import (
 
 // failingGetStore wraps a ChannelStore and fails GetChannel.
 type failingGetStore struct {
+	// ChannelStore is the wrapped store handling everything but GetChannel.
 	ChannelStore
+
+	// getErr, when set, is returned by every GetChannel call.
 	getErr error
 }
 
@@ -39,7 +42,9 @@ func (f *failingGetStore) GetChannel(ctx context.Context, channelID string) (*Ch
 }
 
 // failingSigner satisfies solanatx.Signer but always fails to sign.
-type failingSigner struct{ key solana.PrivateKey }
+type failingSigner struct {
+	key solana.PrivateKey // supplies the pubkey; Sign always fails regardless
+}
 
 func (f failingSigner) PublicKey() solana.PublicKey { return f.key.PublicKey() }
 
@@ -49,8 +54,13 @@ func (f failingSigner) Sign([]byte) (solana.Signature, error) {
 
 // failingBlockhashRPC fails GetLatestBlockhash on top of FakeRPC.
 type failingBlockhashRPC struct {
+	// FakeRPC handles every RPC call other than GetLatestBlockhash.
 	*testutil.FakeRPC
-	err   error
+
+	// err, when set, is returned by GetLatestBlockhash.
+	err error
+
+	// empty makes GetLatestBlockhash return a nil result with no error.
 	empty bool
 }
 
@@ -66,6 +76,8 @@ func (f *failingBlockhashRPC) GetLatestBlockhash(ctx context.Context, commitment
 
 // failingStatusRPC fails GetSignatureStatuses on top of FakeRPC.
 type failingStatusRPC struct {
+	// FakeRPC handles every RPC call other than GetSignatureStatuses, which
+	// this wrapper always fails.
 	*testutil.FakeRPC
 }
 
@@ -670,7 +682,9 @@ func TestSessionMiddlewareErrorResponses(t *testing.T) {
 // ── stream writer failures ──
 
 // failAfterWriter fails every write after the first n bytes budget runs out.
-type failAfterWriter struct{ budget int }
+type failAfterWriter struct {
+	budget int // remaining bytes accepted before writes start failing
+}
 
 func (f *failAfterWriter) Write(p []byte) (int, error) {
 	if f.budget <= 0 {

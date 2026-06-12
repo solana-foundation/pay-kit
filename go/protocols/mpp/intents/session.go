@@ -376,22 +376,22 @@ type OpenPayload struct {
 // json.RawMessage so it can be encoded as a string and decoded from
 // string-or-number.
 type openPayloadJSON struct {
-	Mode                SessionMode     `json:"mode"`
-	ChannelID           *string         `json:"channelId,omitempty"`
-	Deposit             *string         `json:"deposit,omitempty"`
-	Payer               *string         `json:"payer,omitempty"`
-	Payee               *string         `json:"payee,omitempty"`
-	Mint                *string         `json:"mint,omitempty"`
-	Salt                json.RawMessage `json:"salt,omitempty"`
-	GracePeriod         *uint32         `json:"gracePeriod,omitempty"`
-	Transaction         *string         `json:"transaction,omitempty"`
-	TokenAccount        *string         `json:"tokenAccount,omitempty"`
-	ApprovedAmount      *string         `json:"approvedAmount,omitempty"`
-	Owner               *string         `json:"owner,omitempty"`
-	InitMultiDelegateTx *string         `json:"initMultiDelegateTx,omitempty"`
-	UpdateDelegationTx  *string         `json:"updateDelegationTx,omitempty"`
-	AuthorizedSigner    string          `json:"authorizedSigner"`
-	Signature           string          `json:"signature"`
+	Mode                SessionMode     `json:"mode"`                          // funding mode discriminant ("push" or "pull")
+	ChannelID           *string         `json:"channelId,omitempty"`           // payment-channel address (base58); push mode
+	Deposit             *string         `json:"deposit,omitempty"`             // on-chain escrow deposit (base units); push mode
+	Payer               *string         `json:"payer,omitempty"`               // funding client wallet (base58)
+	Payee               *string         `json:"payee,omitempty"`               // primary channel payee (base58)
+	Mint                *string         `json:"mint,omitempty"`                // SPL mint locked in the channel (base58)
+	Salt                json.RawMessage `json:"salt,omitempty"`                // PDA-seed salt; encoded as decimal string, decoded string-or-number
+	GracePeriod         *uint32         `json:"gracePeriod,omitempty"`         // on-chain close grace period
+	Transaction         *string         `json:"transaction,omitempty"`         // signed channel-open tx (base64) for server broadcast
+	TokenAccount        *string         `json:"tokenAccount,omitempty"`        // delegated SPL token account (base58); pull mode
+	ApprovedAmount      *string         `json:"approvedAmount,omitempty"`      // operator delegation cap (base units); pull mode
+	Owner               *string         `json:"owner,omitempty"`               // client wallet pubkey (base58); pull mode
+	InitMultiDelegateTx *string         `json:"initMultiDelegateTx,omitempty"` // pre-signed MultiDelegate init tx (base64)
+	UpdateDelegationTx  *string         `json:"updateDelegationTx,omitempty"`  // pre-signed delegation cap-update tx (base64)
+	AuthorizedSigner    string          `json:"authorizedSigner"`              // voucher-signing session pubkey (base58)
+	Signature           string          `json:"signature"`                     // on-chain proof tx signature (base58)
 }
 
 // MarshalJSON serializes Salt as a decimal string.
@@ -692,7 +692,11 @@ func (u MeteringUsage) AmountBaseUnits() (uint64, error) {
 // MeteredEnvelope is a payload paired with the metering directive required to
 // acknowledge it.
 type MeteredEnvelope[T any] struct {
-	Payload  T                 `json:"payload"`
+	// Payload is the delivered application message being charged for.
+	Payload T `json:"payload"`
+
+	// Metering is the server-issued directive the client commits (by
+	// signing a voucher covering Metering.Amount) after processing Payload.
 	Metering MeteringDirective `json:"metering"`
 }
 
@@ -790,11 +794,11 @@ type VoucherData struct {
 // voucherDataJSON is the wire shape of VoucherData with the "cumulative" decode
 // alias handled explicitly.
 type voucherDataJSON struct {
-	ChannelID        string  `json:"channelId"`
-	CumulativeAmount *string `json:"cumulativeAmount,omitempty"`
-	CumulativeAlias  *string `json:"cumulative,omitempty"`
-	ExpiresAt        int64   `json:"expiresAt"`
-	Nonce            *uint64 `json:"nonce,omitempty"`
+	ChannelID        string  `json:"channelId"`                  // channel/session ID the voucher is bound to (base58)
+	CumulativeAmount *string `json:"cumulativeAmount,omitempty"` // canonical cumulative total authorized (base units)
+	CumulativeAlias  *string `json:"cumulative,omitempty"`       // decode-only alias accepted for cumulativeAmount
+	ExpiresAt        int64   `json:"expiresAt"`                  // voucher expiry, Unix epoch seconds
+	Nonce            *uint64 `json:"nonce,omitempty"`            // optional client request counter; not signed on-chain
 }
 
 // UnmarshalJSON decodes VoucherData, accepting "cumulative" as an alias for

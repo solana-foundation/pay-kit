@@ -25,7 +25,11 @@ const doneSentinel = "[DONE]"
 // with NewMeteredStream; every write flushes so chunks reach the client as
 // they are produced.
 type MeteredStream struct {
-	writer  io.Writer
+	// writer receives the encoded SSE frames.
+	writer io.Writer
+
+	// flusher, when non-nil, is flushed after every frame so chunks reach
+	// the client incrementally; nil writers buffer as usual.
 	flusher http.Flusher
 }
 

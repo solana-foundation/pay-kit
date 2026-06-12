@@ -1,10 +1,10 @@
 package server
 
 // Method-level coverage through the real credential layer: challenge
-// issuance (canonical shape, cap clamping,
-// pull advertisement, blockhash prefetch), the five verify() actions with
-// their replay/hardening semantics, the side-channel routes, settlement
-// retry, and the store sharing between the method and its routes.
+// issuance (canonical shape, cap clamping, pull advertisement, blockhash
+// prefetch), the five verify() actions with their replay/hardening
+// semantics, the side-channel routes, settlement retry, and the store
+// sharing between the method and its routes.
 
 import (
 	"bytes"
@@ -1390,7 +1390,11 @@ func TestSessionMiddlewareSkipsBlockhashPrefetchOnVerifyPath(t *testing.T) {
 // The counter is atomic because the idle-close watchdog reads blockhashes
 // from its own goroutine.
 type countingBlockhashRPC struct {
+	// FakeRPC handles every RPC call; GetLatestBlockhash is counted first.
 	*testutil.FakeRPC
+
+	// blockhashCalls counts GetLatestBlockhash invocations; atomic because
+	// the idle-close watchdog fetches blockhashes from its own goroutine.
 	blockhashCalls atomic.Int64
 }
 

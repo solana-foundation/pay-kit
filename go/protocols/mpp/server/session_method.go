@@ -118,18 +118,49 @@ type SessionOptions struct {
 
 // Session is the server-side session method handler. Create with NewSession.
 type Session struct {
-	core            *SessionServer
-	lifecycle       *SessionLifecycle
-	secretKey       string
-	realm           string
-	cap             uint64
-	currency        string
-	recipient       string
-	network         string
+	// core is the lower-level SessionServer dispatching open / voucher /
+	// commit / topUp / close against the channel store.
+	core *SessionServer
+
+	// lifecycle is the idle-close watchdog; nil when CloseDelay is zero.
+	lifecycle *SessionLifecycle
+
+	// secretKey is the HMAC secret binding 402 challenges to this server.
+	secretKey string
+
+	// realm is the challenge realm advertised in 402 responses.
+	realm string
+
+	// cap is the maximum session cap offered in challenges (token base
+	// units); per-challenge requested caps are clamped to it.
+	cap uint64
+
+	// currency is the challenge currency (symbol such as "USDC" or an SPL
+	// mint address).
+	currency string
+
+	// recipient is the primary payment recipient pubkey (base58).
+	recipient string
+
+	// network is the Solana network ("mainnet", "devnet", "localnet").
+	network string
+
+	// openTxSubmitter selects whether the client or the server broadcasts
+	// push-mode open transactions.
 	openTxSubmitter OpenTxSubmitter
-	signer          solanatx.Signer
-	payerSigner     solanatx.Signer
-	rpc             solanatx.RPCClient
+
+	// signer is the merchant signer for the close settlement transaction;
+	// settlement only runs when both signer and rpc are configured.
+	signer solanatx.Signer
+
+	// payerSigner completes the fee-payer signature on server-broadcast
+	// opens (OpenTxSubmitterServer).
+	payerSigner solanatx.Signer
+
+	// rpc is the optional RPC client for on-chain checks, the blockhash
+	// prefetch, and settlement broadcasts; nil skips every on-chain check
+	// and trusts payload claims as provided.
+	rpc solanatx.RPCClient
 }
 
 // NewSession creates the server-side session method.

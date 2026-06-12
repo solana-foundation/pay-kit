@@ -394,6 +394,8 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 // SubmitOpenTxResult carries the verified channel facts plus the broadcast
 // signature of a server-submitted open.
 type SubmitOpenTxResult struct {
+	// VerifyOpenTxResult carries the channel facts (channel PDA, deposit,
+	// grace period, salt) extracted during pre-broadcast validation.
 	VerifyOpenTxResult
 
 	// Signature of the broadcast open transaction (base58).
