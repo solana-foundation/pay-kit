@@ -57,7 +57,7 @@ func (c *yahooClient) get(ctx context.Context, rawURL string) ([]byte, int, erro
 	if err != nil {
 		return nil, 0, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
 		return nil, response.StatusCode, err

@@ -365,7 +365,7 @@ func TestCloseAndSettleChannelFailureMatrix(t *testing.T) {
 
 func TestSessionIdleCloseLogsSettlementFailure(t *testing.T) {
 	fake := &countingBlockhashRPC{FakeRPC: testutil.NewFakeRPC()}
-	fake.FakeRPC.SendErr = errors.New("blockhash not found")
+	fake.SendErr = errors.New("blockhash not found")
 	merchant := testutil.NewPrivateKey()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.RPC = fake

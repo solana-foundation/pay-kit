@@ -49,7 +49,7 @@ func rpcCall(ctx context.Context, rpcURL, method string, params []any) (json.Raw
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var body struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
