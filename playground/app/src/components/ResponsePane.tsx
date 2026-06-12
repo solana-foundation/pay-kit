@@ -14,18 +14,15 @@ const HEADER_DENYLIST = new Set(['date', 'connection', 'keep-alive', 'transfer-e
 export function ResponsePane({ payload, running }: Props) {
   const [showHeaders, setShowHeaders] = useState(false)
 
-  if (running) {
-    return (
-      <div className="response-pane">
-        <div className="response-empty pulsing">Waiting on payment + settlement…</div>
-      </div>
-    )
-  }
-
+  // Show the placeholder only until the first payload arrives — streamed
+  // responses set a partial payload per chunk and must render live, not
+  // wait for the flow (including settlement polling) to finish.
   if (!payload) {
     return (
       <div className="response-pane">
-        <div className="response-empty">No response yet. Hit Send to fire the request.</div>
+        <div className={running ? 'response-empty pulsing' : 'response-empty'}>
+          {running ? 'Waiting on payment…' : 'No response yet. Hit Send to fire the request.'}
+        </div>
       </div>
     )
   }
