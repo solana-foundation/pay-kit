@@ -12,7 +12,6 @@ package client
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
@@ -33,10 +32,11 @@ func SessionRequestModes(request intents.SessionRequest) []intents.SessionMode {
 // SelectSessionChallengeOptions filters the session challenges a client is
 // willing to open. Zero-value fields do not filter.
 type SelectSessionChallengeOptions struct {
-	// Network is the Solana network the client wants to pay on, e.g.
-	// "mainnet", "mainnet-beta", "devnet", or "localnet". "mainnet" and
-	// "mainnet-beta" are treated as the same network.
-	Network string
+	// Network is the Solana network the client wants to pay on. Use the
+	// paycore.Network* constants; raw strings (including the legacy
+	// "mainnet-beta" alias) are folded onto the canonical slug before
+	// matching.
+	Network paycore.SolanaNetwork
 
 	// Currencies are the currency symbols or mint addresses the client wants
 	// to pay with. A challenge matches when its currency resolves to the same
@@ -121,15 +121,15 @@ func SelectSessionChallengeFromHeaders(
 
 // matchesSessionNetwork reports whether the challenge network equals the
 // requested network, treating mainnet and mainnet-beta as equivalent.
-func matchesSessionNetwork(request intents.SessionRequest, network string) bool {
+func matchesSessionNetwork(request intents.SessionRequest, network paycore.SolanaNetwork) bool {
 	if network == "" {
 		return true
 	}
-	challengeNetwork := "mainnet"
+	challengeNetwork := string(paycore.NetworkMainnet)
 	if request.Network != nil {
 		challengeNetwork = *request.Network
 	}
-	return normalizeNetwork(challengeNetwork) == normalizeNetwork(network)
+	return paycore.ParseSolanaNetwork(challengeNetwork) == paycore.ParseSolanaNetwork(string(network))
 }
 
 // matchesSessionCurrency reports whether the challenge currency resolves to
@@ -149,15 +149,4 @@ func matchesSessionCurrency(request intents.SessionRequest, currencies []string)
 		}
 	}
 	return false
-}
-
-// normalizeNetwork folds the mainnet/mainnet-beta aliases into one identifier.
-//
-// Mirrors normalizeNetwork in typescript/packages/mpp/src/constants.ts.
-func normalizeNetwork(network string) string {
-	lower := strings.ToLower(network)
-	if lower == "mainnet" || lower == "mainnet-beta" {
-		return "mainnet"
-	}
-	return network
 }

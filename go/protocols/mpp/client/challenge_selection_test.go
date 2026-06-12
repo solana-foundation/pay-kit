@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
@@ -102,7 +103,7 @@ func TestSelectSessionChallengeFiltersByNetwork(t *testing.T) {
 		t.Fatalf("selected = %+v, want the mainnet challenge for mainnet-beta", selected)
 	}
 
-	selected, err = SelectSessionChallenge(challenges, SelectSessionChallengeOptions{Network: "localnet"})
+	selected, err = SelectSessionChallenge(challenges, SelectSessionChallengeOptions{Network: paycore.NetworkLocalnet})
 	if err != nil {
 		t.Fatalf("SelectSessionChallenge: %v", err)
 	}
