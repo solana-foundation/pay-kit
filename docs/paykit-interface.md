@@ -262,8 +262,7 @@ The protocol-level builders (`parse_challenge`, `build_payment_header`,
 ## Migration deltas
 
 What each SDK changes to meet this spec. Everything not listed is already
-conformant. Tracked as a checklist in
-[paykit-interface-todo.md](./paykit-interface-todo.md).
+conformant.
 
 **Ruby**
 - `mpp.expires_in` default 300 → 120.

@@ -215,11 +215,10 @@ The packaged TypeScript surface does not ship it yet:
 A TypeScript x402 `exact` reference (client and server) lives in the
 harness at
 [`harness/src/fixtures/typescript/`](../harness/src/fixtures/typescript)
-and passes the cross-language conformance suite; packaging it as a
-pay-kit protocol adapter is tracked in
-[`docs/paykit-interface-todo.md`](../docs/paykit-interface-todo.md).
-The protocol seam is already in place — an x402 adapter plugs in
-without touching gates, pricing, or the request verbs.
+and passes the cross-language conformance suite; it is not packaged as
+a pay-kit protocol adapter yet. The protocol seam is already in
+place — an x402 adapter plugs in without touching gates, pricing, or
+the request verbs.
 
 ## Client
 

@@ -111,8 +111,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
     for (const protocol of accept) {
         if (protocol !== 'mpp') {
             throw new ProtocolNotSupportedError(
-                `Protocol "${protocol}" is not available in the TypeScript SDK yet (MPP only). ` +
-                    'Track docs/paykit-interface-todo.md.',
+                `Protocol "${protocol}" is not available in the TypeScript SDK yet (MPP only).`,
             );
         }
     }
