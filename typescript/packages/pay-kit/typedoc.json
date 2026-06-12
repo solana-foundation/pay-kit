@@ -1,0 +1,7 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src/index.ts", "src/express.ts", "src/hono.ts"],
+  "readme": "none",
+  "includeVersion": true,
+  "tsconfig": "tsconfig.json"
+}
