@@ -396,7 +396,7 @@ impl<S: ChannelStore> SessionServer<S> {
         // Push mode: verify the payment-channel open tx is confirmed before persisting.
         if payload.mode == SessionMode::Push {
             if let Some(ref rpc_url) = self.config.rpc_url {
-                verify_transaction_signature(&payload.signature, rpc_url, "open").map_err(|e| {
+                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open).map_err(|e| {
                     tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
                     e
                 })?;
@@ -599,7 +599,7 @@ impl<S: ChannelStore> SessionServer<S> {
         // On-chain verification: confirm the top-up transaction was accepted
         // (same RPC path as process_open).
         if let Some(ref rpc_url) = self.config.rpc_url {
-            verify_transaction_signature(&payload.signature, rpc_url, "top-up").map_err(|e| {
+            verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp).map_err(|e| {
                 tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
                 e
             })?;
@@ -1070,33 +1070,53 @@ fn unix_now_i64() -> i64 {
         .as_secs() as i64
 }
 
+/// Which transaction a signature check is verifying — names the tx in
+/// error messages. The spellings are mirrored by the TypeScript port's
+/// error strings; add variants rather than passing free-form labels.
+#[cfg(feature = "server")]
+#[derive(Clone, Copy, Debug)]
+enum VerifiedTx {
+    Open,
+    TopUp,
+}
+
+#[cfg(feature = "server")]
+impl std::fmt::Display for VerifiedTx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Open => "open",
+            Self::TopUp => "top-up",
+        })
+    }
+}
+
 /// Confirm that `sig_str` is a finalized, successful transaction on-chain.
 ///
-/// `label` names the transaction in error messages (e.g. "open", "top-up").
+/// `tx` names the transaction in error messages (see [`VerifiedTx`]).
 /// Uses the blocking `RpcClient` — consistent with the rest of this module.
 /// Returns an error if the signature is malformed, the tx was rejected, or
 /// the tx is not found (not yet processed or doesn't exist).
 #[cfg(feature = "server")]
-fn verify_transaction_signature(sig_str: &str, rpc_url: &str, label: &str) -> Result<()> {
+fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) -> Result<()> {
     use solana_rpc_client::rpc_client::RpcClient;
     use solana_signature::Signature;
     use std::str::FromStr;
 
     let sig = Signature::from_str(sig_str)
-        .map_err(|e| Error::Other(format!("invalid {label} tx signature '{sig_str}': {e}")))?;
+        .map_err(|e| Error::Other(format!("invalid {tx} tx signature '{sig_str}': {e}")))?;
 
     let rpc = RpcClient::new(rpc_url.to_string());
 
     match rpc
         .get_signature_status(&sig)
-        .map_err(|e| Error::Other(format!("RPC error verifying {label} tx: {e}")))?
+        .map_err(|e| Error::Other(format!("RPC error verifying {tx} tx: {e}")))?
     {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => Err(Error::Other(format!(
-            "{label} tx was rejected on-chain: {e}"
+            "{tx} tx was rejected on-chain: {e}"
         ))),
         None => Err(Error::Other(format!(
-            "{label} tx '{sig_str}' not found — not yet confirmed or does not exist"
+            "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
         ))),
     }
 }
