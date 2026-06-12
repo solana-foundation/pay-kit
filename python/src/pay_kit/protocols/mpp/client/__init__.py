@@ -2,18 +2,28 @@
 
 Exposes the charge transport plus the client-only session surface: the
 :class:`ActiveSession` voucher tracker, the :class:`SessionConsumer` metered
-ack/commit helper, the challenge-driven payment-channel openers, and the
-:func:`serialize_session_credential` / :func:`parse_session_challenge`
-credential framing free functions. The per-intent modules
-(:mod:`pay_kit.protocols.mpp.client.charge`,
+ack/commit helper, the challenge-driven payment-channel openers, the metered
+SSE streaming helpers, and the :func:`serialize_session_credential` /
+:func:`parse_session_challenge` credential framing free functions. The
+per-intent modules (:mod:`pay_kit.protocols.mpp.client.charge`,
 :mod:`pay_kit.protocols.mpp.client.session`,
 :mod:`pay_kit.protocols.mpp.client.payment_channels`,
+:mod:`pay_kit.protocols.mpp.client.http_stream`,
 :mod:`pay_kit.protocols.mpp.client.session_consumer`) remain the canonical
 import path; the session types are re-exported here for convenience.
 """
 
 from __future__ import annotations
 
+from pay_kit.protocols.mpp.client.http_stream import (
+    HttpCommitTransport,
+    MeteredSseEvent,
+    MeteredSseSession,
+    MeteredSseStream,
+    SseDecoder,
+    SseEvent,
+    parse_metered_sse_event,
+)
 from pay_kit.protocols.mpp.client.payment_channels import (
     DEFAULT_GRACE_PERIOD_SECONDS,
     PENDING_SERVER_SIGNATURE,
@@ -64,4 +74,11 @@ __all__ = [
     "derive_payment_channel_open",
     "generate_authorized_signer",
     "unique_salt",
+    "HttpCommitTransport",
+    "MeteredSseEvent",
+    "MeteredSseSession",
+    "MeteredSseStream",
+    "SseDecoder",
+    "SseEvent",
+    "parse_metered_sse_event",
 ]
