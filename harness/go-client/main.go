@@ -44,21 +44,40 @@ type adapterResult struct {
 }
 
 func main() {
-	if os.Getenv("X402_HARNESS_TARGET_URL") != "" {
+	switch resolveProtocolMode(os.Getenv) {
+	case "x402":
 		if err := runX402Adapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
-		return
-	}
-	if os.Getenv("MPP_HARNESS_TARGET_URL") != "" {
+	case "mpp":
 		if err := runProcessAdapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 			os.Exit(1)
 		}
-		return
+	default:
+		runLegacyHarness()
 	}
-	runLegacyHarness()
+}
+
+// resolveProtocolMode picks the adapter protocol. The harness matrix injects
+// BOTH MPP_HARNESS_TARGET_URL and X402_HARNESS_TARGET_URL on every client run
+// (see harness/src/process.ts runClient), so the namespace probe alone is
+// ambiguous: the explicit PAY_KIT_HARNESS_PROTOCOL hint set per scenario wins
+// first, mirroring the go-server and ruby-server adapters. The probe order is
+// only reached on manual runs that export a single TARGET_URL.
+func resolveProtocolMode(getenv func(string) string) string {
+	if mode := strings.ToLower(strings.TrimSpace(getenv("PAY_KIT_HARNESS_PROTOCOL"))); mode != "" {
+		return mode
+	}
+	switch {
+	case getenv("X402_HARNESS_TARGET_URL") != "":
+		return "x402"
+	case getenv("MPP_HARNESS_TARGET_URL") != "":
+		return "mpp"
+	default:
+		return ""
+	}
 }
 
 // runX402Adapter drives the x402 (exact) client against the target. It
