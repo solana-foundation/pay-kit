@@ -186,7 +186,7 @@ Supported in TypeScript:
 |----------------|:------:|:------:|
 | `charge/pull`  | ✅      | ✅      |
 | `charge/push`  | ✅      | ✅      |
-| `session`      | —      | —      |
+| `session`      | ✅      | ✅      |
 | `subscription` | —      | —      |
 
 For `charge/pull` the server owns the full lifecycle: it issues signed
