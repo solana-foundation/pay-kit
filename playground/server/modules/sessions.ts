@@ -55,9 +55,16 @@ export function registerSessions(app: Express, opts: RegisterOptions): void {
     closeDelayMs: 2_000, // settle ~2s after the stream ends so the UI can poll quickly
     currency: USDC_MINT,
     decimals: USDC_DECIMALS,
+    // Real on-chain opens: the browser pre-signs a payment-channel open
+    // transaction (fee payer = operator) and the server completes the
+    // signature, broadcasts, and waits for confirmation before metering.
+    modes: ['pull'],
     network,
+    openTxSubmitter: 'server',
     operator: feePayerSigner.address,
+    paymentChannelPayerSigner: feePayerSigner,
     pricing: { perDelivery: 100n }, // 0.0001 USDC per chunk
+    pullVoucherStrategy: 'clientVoucher',
     recipient,
     rpc,
     rpcUrl,
@@ -120,9 +127,13 @@ export function registerSessions(app: Express, opts: RegisterOptions): void {
     closeDelayMs: 2_000,
     currency: USDC_MINT,
     decimals: USDC_DECIMALS,
+    modes: ['pull'],
     network,
+    openTxSubmitter: 'server',
     operator: feePayerSigner.address,
+    paymentChannelPayerSigner: feePayerSigner,
     pricing: { perDelivery: 5_000n }, // 0.005 USDC per call
+    pullVoucherStrategy: 'clientVoucher',
     recipient,
     rpc,
     rpcUrl,

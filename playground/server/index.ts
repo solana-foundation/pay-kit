@@ -36,7 +36,10 @@ const NETWORK = process.env.NETWORK ?? 'localnet'
 // `RPC_URL` to point at a local surfpool when you need offline iteration.
 const RPC_URL = process.env.RPC_URL ?? 'https://402.surfnet.dev:8899'
 const SECRET_KEY = process.env.MPP_SECRET_KEY ?? crypto.randomBytes(32).toString('hex')
-const PORT = parseInt(process.env.PORT ?? '3000', 10)
+// `pnpm dev` at the playground root passes PORT through the concurrently
+// command line, where an unset PLAYGROUND_PORT expands to an empty string —
+// treat empty the same as unset.
+const PORT = parseInt(process.env.PORT || '3000', 10)
 
 // ── Fee payer + recipient ──
 
@@ -225,39 +228,9 @@ function buildEndpointList(plan: boolean) {
       cost: '0.01 USDC',
       params: [{ name: 'symbol', default: 'AAPL' }],
     },
-    {
-      id: 'stocks-search',
-      primitive: 'charge',
-      method: 'GET',
-      path: '/api/v1/stocks/search',
-      title: 'Stock search',
-      description: 'Free-text search across global tickers.',
-      cost: '0.01 USDC',
-      params: [{ name: 'q', default: 'Apple' }],
-    },
-    {
-      id: 'stocks-history',
-      primitive: 'charge',
-      method: 'GET',
-      path: '/api/v1/stocks/history/:symbol',
-      title: 'Stock history',
-      description: 'OHLC bars for a configurable range.',
-      cost: '0.05 USDC',
-      params: [
-        { name: 'symbol', default: 'AAPL' },
-        { name: 'range', default: '1mo' },
-      ],
-    },
-    {
-      id: 'weather',
-      primitive: 'charge',
-      method: 'GET',
-      path: '/api/v1/weather/:city',
-      title: 'Weather',
-      description: 'In-memory weather data for demo cities.',
-      cost: '0.01 USDC',
-      params: [{ name: 'city', default: 'san-francisco' }],
-    },
+    // The stocks-search / stocks-history / weather / fortune routes stay
+    // live server-side (the payment-links e2e drives /api/v1/fortune); they
+    // are just not advertised in the nav to keep the demo focused.
     {
       id: 'marketplace-buy',
       primitive: 'charge',
@@ -271,33 +244,8 @@ function buildEndpointList(plan: boolean) {
         { name: 'referrer', default: '' },
       ],
     },
-    {
-      id: 'fortune',
-      primitive: 'charge',
-      method: 'GET',
-      path: '/api/v1/fortune',
-      title: 'Fortune cookie (payment link)',
-      description: 'Browser-friendly HTML payment link — open in a new tab to see the challenge UI.',
-      cost: '0.01 USDC',
-    },
-    {
-      id: 'x402-joke',
-      primitive: 'x402',
-      method: 'GET',
-      path: '/x402/joke',
-      title: 'Random joke',
-      description: 'x402 with the embedded facilitator on solana-devnet.',
-      cost: '$0.001',
-    },
-    {
-      id: 'x402-fact',
-      primitive: 'x402',
-      method: 'GET',
-      path: '/x402/fact',
-      title: 'Random fact',
-      description: 'x402 — illustrates the X-PAYMENT challenge flow.',
-      cost: '$0.001',
-    },
+    // The /x402/joke and /x402/fact routes stay live server-side; they are
+    // just not advertised in the nav.
     {
       id: 'sessions-stream',
       primitive: 'session',

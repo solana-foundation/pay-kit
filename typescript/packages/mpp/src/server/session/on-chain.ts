@@ -34,6 +34,7 @@ import {
     type InstructionWithData,
     type ReadonlyUint8Array,
     type Signature,
+    type TransactionPartialSigner,
     type TransactionSigner,
 } from '@solana/kit';
 import { findAssociatedTokenPda } from '@solana-program/token';
@@ -44,6 +45,7 @@ import { getSettleAndFinalizeInstruction } from '../../generated/payment-channel
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
+import { coSignBase64Transaction } from '../../utils/transactions.js';
 
 /**
  * Concrete instruction shape returned by every builder in this module:
@@ -642,16 +644,17 @@ export async function waitForSignatureConfirmation(args: {
  * it via the supplied RPC, then waits for the signature to reach at least
  * 'confirmed' before returning — callers must not persist channel state
  * for a transaction that never landed.
- *
- * The signer is currently advisory — this helper only forwards an
- * already-signed wire transaction. A future revision may co-sign as fee
- * payer (matching `coSignBase64Transaction` in `utils/transactions.ts`).
  */
 export interface SubmitOpenTxArgs extends VerifyOpenTxArgs {
     /** Confirmation polling overrides (timeout, poll interval, abort). */
     readonly confirm?: ConfirmSignatureOptions | undefined;
-    /** Optional server signer; informational only for the moment. */
-    readonly payerSigner?: TransactionSigner | undefined;
+    /**
+     * Server-side fee-payer signer. When the client built the open
+     * transaction with the operator as fee payer (and a placeholder where
+     * the operator's signature belongs), this signer completes the
+     * signature before broadcast.
+     */
+    readonly payerSigner?: TransactionPartialSigner | undefined;
     readonly rpc: SignatureStatusRpc & {
         sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
     };
@@ -673,9 +676,14 @@ export async function submitOpenTx(args: SubmitOpenTxArgs): Promise<SubmitOpenTx
     if (!args.openPayload.transaction) {
         throw new Error('submitOpenTx: openPayload.transaction is required');
     }
-    const signature = await args.rpc
-        .sendTransaction(args.openPayload.transaction, { encoding: 'base64', skipPreflight: false })
-        .send();
+    let wire = args.openPayload.transaction;
+    if (args.payerSigner) {
+        const decoded = getTransactionDecoder().decode(getBase64Codec().encode(wire));
+        if (decoded.signatures[args.payerSigner.address] !== undefined) {
+            wire = await coSignBase64Transaction(args.payerSigner, wire);
+        }
+    }
+    const signature = await args.rpc.sendTransaction(wire, { encoding: 'base64', skipPreflight: false }).send();
     await waitForSignatureConfirmation({
         context: 'submitOpenTx',
         options: args.confirm,

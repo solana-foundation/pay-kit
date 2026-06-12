@@ -69,5 +69,8 @@ export type FlowProgress =
   | { type: 'paid'; signature: string }
   | { type: 'activated'; signature: string }
   | { type: 'voucher'; cumulative: string; delta: string }
+  // Partial body of a streamed (SSE) response — `text` is everything
+  // received so far, so the UI can render the stream as it arrives.
+  | { type: 'chunk'; text: string; status: number; headers: Record<string, string>; latencyMs: number }
   | { type: 'success'; data: unknown; status: number; headers: Record<string, string>; latencyMs: number }
   | { type: 'error'; message: string }

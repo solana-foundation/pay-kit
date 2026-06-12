@@ -1,5 +1,5 @@
 import { Mppx, solana } from '@solana/mpp/client'
-import { createEphemeralSessionOpener, createSessionFetch, type SessionFetchClient } from '@solana/mpp/client'
+import { createPaymentChannelSessionOpener, createSessionFetch, type SessionFetchClient } from '@solana/mpp/client'
 import { getSigner, RPC_URL } from './wallet'
 import type { FlowProgress } from '../types'
 
@@ -62,7 +62,14 @@ function getSessionFetch(): SessionFetchClient {
       // globalThis.fetch (installed when charge/subscription Mppx instances
       // construct) doesn't intercept and misdispatch our session 402s.
       fetch: nativeFetch,
-      opener: createEphemeralSessionOpener(),
+      // Real payment-channel opens: the wallet keypair pre-signs the open
+      // transaction (deposit comes from its airdropped USDC) and the server
+      // completes + broadcasts it. The signer only exists after onboarding,
+      // so resolve it lazily per open.
+      opener: async args => {
+        const signer = await getSigner()
+        return createPaymentChannelSessionOpener({ rpcUrl: RPC_URL, signer })(args)
+      },
       onEvent: (event) => {
         switch (event.type) {
           case 'challenge':
@@ -93,6 +100,17 @@ function getSessionFetch(): SessionFetchClient {
 
 /** Poll the playground's receipt endpoint until the channel reports a settle
  * signature, or until `timeoutMs` elapses. Returns null on timeout. */
+/** Pull the settle tx signature out of a base64url Payment-Receipt header. */
+function receiptReference(receiptB64: string | undefined): string | null {
+  if (!receiptB64) return null
+  try {
+    const json = JSON.parse(atob(receiptB64.replace(/-/g, '+').replace(/_/g, '/'))) as { reference?: string }
+    return json.reference ?? null
+  } catch {
+    return null
+  }
+}
+
 async function pollSessionReceipt(channelId: string, timeoutMs = 10_000): Promise<string | null> {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
@@ -158,6 +176,7 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
 
   const queue: FlowProgress[] = []
   let wake: (() => void) | null = null
+  let sawPaid = false
 
   progressCallback = (event) => {
     switch (event.type) {
@@ -181,6 +200,7 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
         queue.push({ type: 'confirming', signature: event.signature ?? '' })
         break
       case 'paid':
+        sawPaid = true
         queue.push({ type: 'paid', signature: event.signature ?? '' })
         break
       case 'activated':
@@ -248,6 +268,15 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
                 cumulative += cost
                 client.recordCumulative(cumulative)
               }
+              // Surface the partial body so the UI renders the stream live
+              // instead of waiting for the final success event.
+              yield {
+                type: 'chunk',
+                text: chunks.join(''),
+                status: response.status,
+                headers,
+                latencyMs: Math.round(performance.now() - started),
+              }
               while (queue.length > 0) yield queue.shift()!
             }
             data = chunks.join('')
@@ -266,6 +295,18 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
             data = await response.clone().json()
           } catch {
             data = await response.text()
+          }
+        }
+
+        // With server-side broadcast the client never emits paying/paid —
+        // the settle signature only comes back in the Payment-Receipt
+        // header. Surface it so the Broadcast / Settled steps complete.
+        if (response.ok && !sawPaid) {
+          const signature = receiptReference(headers['payment-receipt'])
+          if (signature) {
+            yield { type: 'paying' }
+            yield { type: 'paid', signature }
+            sawPaid = true
           }
         }
 

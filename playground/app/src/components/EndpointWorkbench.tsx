@@ -226,10 +226,14 @@ async function* runFlow(
   }
 }
 
-/** Build a pay.sh receipt link for a settled signature. */
+/**
+ * Build a pay.sh receipt link for a settled signature. The playground
+ * always settles against the Solana Payment Sandbox, so the receipt
+ * page needs the sandbox network hint to find the transaction.
+ */
 function receiptLink(signature: string): LogLine['link'] {
   if (!signature) return undefined
-  return { href: `https://pay.sh/receipt/${signature}`, label: 'View receipt' }
+  return { href: `https://pay.sh/receipt/${signature}?network=sandbox`, label: 'View receipt' }
 }
 
 function handleProgress(
@@ -278,6 +282,17 @@ function handleProgress(
     case 'voucher':
       pushLog(`Voucher signed (cumulative ${fmtUnits(progress.cumulative, 6, 'USDC')})`, 'info')
       advance('voucher', 'completed')
+      break
+    case 'chunk':
+      // Streamed (SSE) responses render progressively; the final success
+      // event overwrites this with the complete body and total latency.
+      setResponse({
+        kind: 'text',
+        text: progress.text,
+        status: progress.status,
+        headers: progress.headers,
+        latencyMs: progress.latencyMs,
+      })
       break
     case 'success': {
       advance('ok', 'completed')

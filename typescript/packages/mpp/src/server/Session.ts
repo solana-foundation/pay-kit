@@ -164,8 +164,11 @@ export function session(parameters: session.Parameters) {
                         store,
                         tokenProgram,
                     });
-                } catch {
-                    // No synchronous caller to report to.
+                } catch (error) {
+                    // No synchronous caller to report to — surface the
+                    // failure the same way Charge does for simulation
+                    // errors so operators can see why a settle didn't land.
+                    console.warn(`[solana-mpp] idle-close settle failed for ${channelId}:`, error);
                 }
             },
             closeDelayMs,
@@ -413,68 +416,71 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     let deposit: bigint;
     let signature: string | undefined;
 
-    if (mode === 'push') {
-        if (!payload.transaction && !payload.channelId) {
-            throw new Error('open payload missing transaction or channelId');
-        }
+    if (mode === 'push' && !payload.transaction && !payload.channelId) {
+        throw new Error('open payload missing transaction or channelId');
+    }
 
-        if (payload.transaction) {
-            const expected = {
-                authorizedSigner: payload.authorizedSigner,
-                currency: args.currency,
-                maxCap: args.cap,
-                mint: args.mint,
-                network: args.network,
-                programId: args.programId.toString(),
-                recipient: args.recipient,
-            };
+    if (payload.transaction) {
+        // Payment-channel-backed open. This covers push sessions and
+        // clientVoucher pull sessions whose deposit lives in an on-chain
+        // payment channel (the `createPaymentChannelSessionOpener` flow):
+        // both attach the pre-signed open transaction for verification —
+        // and, with `openTxSubmitter: 'server'`, server-side broadcast.
+        const expected = {
+            authorizedSigner: payload.authorizedSigner,
+            currency: args.currency,
+            maxCap: args.cap,
+            mint: args.mint,
+            network: args.network,
+            programId: args.programId.toString(),
+            recipient: args.recipient,
+        };
 
-            if (args.openTxSubmitter === 'server') {
-                if (!args.rpc) throw new Error('openTxSubmitter=server requires an rpc client');
-                // Decode (no RPC) first so an idempotent replay of an
-                // already-persisted open does not rebroadcast the tx.
-                const preVerified = await verifyOpenTx({ expected, openPayload: payload });
-                const existing = await args.store.getChannel(preVerified.channelId);
-                if (existing) {
-                    channelId = preVerified.channelId;
-                    deposit = preVerified.deposit;
-                    signature = payload.signature;
-                } else {
-                    const submitted = await submitOpenTx({
-                        expected,
-                        openPayload: payload,
-                        payerSigner: args.payerSigner,
-                        rpc: args.rpc as SubmitOpenRpc,
-                    });
-                    channelId = submitted.channelId;
-                    deposit = submitted.deposit;
-                    signature = submitted.signature as unknown as string;
-                }
+        if (args.openTxSubmitter === 'server') {
+            if (!args.rpc) throw new Error('openTxSubmitter=server requires an rpc client');
+            // Decode (no RPC) first so an idempotent replay of an
+            // already-persisted open does not rebroadcast the tx.
+            const preVerified = await verifyOpenTx({ expected, openPayload: payload });
+            const existing = await args.store.getChannel(preVerified.channelId);
+            if (existing) {
+                channelId = preVerified.channelId;
+                deposit = preVerified.deposit;
+                signature = payload.signature;
             } else {
-                const verified = await verifyOpenTx({
+                const submitted = await submitOpenTx({
                     expected,
                     openPayload: payload,
-                    rpc: args.rpc as VerifyOpenRpc | undefined,
+                    payerSigner: args.payerSigner,
+                    rpc: args.rpc as SubmitOpenRpc,
                 });
-                channelId = verified.channelId;
-                deposit = verified.deposit;
-                signature = payload.signature;
+                channelId = submitted.channelId;
+                deposit = submitted.deposit;
+                signature = submitted.signature as unknown as string;
             }
         } else {
-            // No transaction in payload: the client asserts a previously
-            // broadcast open. When an RPC client is configured the open
-            // signature is confirmed on-chain before persisting (mirrors
-            // Rust `process_open`); without one the channelId/deposit
-            // fields are trusted as-is, matching Rust with `rpc_url`
-            // unset. The generated payment-channels client has no Channel
-            // account decoder yet, so the on-chain channel fields
-            // (payee/mint/authorizedSigner/deposit) are not re-checked.
-            channelId = expectString(payload.channelId, 'channelId');
-            deposit = parseU64String(expectString(payload.deposit, 'deposit'), 'deposit');
+            const verified = await verifyOpenTx({
+                expected,
+                openPayload: payload,
+                rpc: args.rpc as VerifyOpenRpc | undefined,
+            });
+            channelId = verified.channelId;
+            deposit = verified.deposit;
             signature = payload.signature;
-            if (args.rpc) {
-                await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, expectString(signature, 'signature'), 'open');
-            }
+        }
+    } else if (mode === 'push') {
+        // No transaction in payload: the client asserts a previously
+        // broadcast open. When an RPC client is configured the open
+        // signature is confirmed on-chain before persisting (mirrors
+        // Rust `process_open`); without one the channelId/deposit
+        // fields are trusted as-is, matching Rust with `rpc_url`
+        // unset. The generated payment-channels client has no Channel
+        // account decoder yet, so the on-chain channel fields
+        // (payee/mint/authorizedSigner/deposit) are not re-checked.
+        channelId = expectString(payload.channelId, 'channelId');
+        deposit = parseU64String(expectString(payload.deposit, 'deposit'), 'deposit');
+        signature = payload.signature;
+        if (args.rpc) {
+            await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, expectString(signature, 'signature'), 'open');
         }
     } else {
         // pull mode: trust the channelId/tokenAccount + approvedAmount.
