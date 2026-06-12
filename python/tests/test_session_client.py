@@ -159,28 +159,36 @@ def test_record_voucher_honors_larger_voucher_nonce() -> None:
     assert s.nonce == 9
 
 
-def test_reconcile_settled_advances_cumulative_and_nonce_without_regressing() -> None:
+def test_record_voucher_keeps_current_nonce_for_stale_voucher_nonce() -> None:
+    # rust ``record_voucher`` sets ``nonce = max(nonce, voucher.nonce)``: a
+    # recorded voucher carrying a nonce at or below the current counter leaves
+    # the counter untouched. The TS ActiveSession matches.
     s = _session()
-    s.reconcile_settled(100)
-    assert s.cumulative == 100
-    assert s.nonce == 1  # advancing also bumps the request nonce
-    s.reconcile_settled(40)  # stale, must not regress or touch the nonce
-    assert s.cumulative == 100
-    assert s.nonce == 1
-    s.reconcile_settled(250)
-    assert s.cumulative == 250
-    assert s.nonce == 2
-
-
-def test_delivery_after_replay_does_not_reuse_settled_nonce() -> None:
-    # After a lost-response replay reconciles to the settled cumulative, the
-    # next prepared voucher must carry a fresh nonce, not the settled one.
-    s = _session()
-    replayed = s.prepare_increment(100)
-    s.reconcile_settled(100)
-    nxt = s.prepare_increment(50)
-    assert replayed.data.nonce is not None and nxt.data.nonce is not None
-    assert nxt.data.nonce > replayed.data.nonce
+    s.record_voucher(
+        SignedVoucher(
+            data=VoucherData(
+                channel_id=s.channel_id_string,
+                cumulative="42",
+                expires_at=DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce=9,
+            ),
+            signature="sig",
+        )
+    )
+    s.record_voucher(
+        SignedVoucher(
+            data=VoucherData(
+                channel_id=s.channel_id_string,
+                cumulative="50",
+                expires_at=DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce=3,
+            ),
+            signature="sig",
+        )
+    )
+    assert s.cumulative == 50
+    assert s.nonce == 9
+    assert s.prepare_increment(1).data.nonce == 10
 
 
 # ── monotonicity ──

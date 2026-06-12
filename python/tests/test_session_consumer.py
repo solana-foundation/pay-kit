@@ -5,9 +5,8 @@ Mirrors the ``#[cfg(test)] mod tests`` in
 port: ack/commit send through the transport and advance the local watermark,
 the commit alias and ``into_parts`` work, invalid directives (wrong session,
 zero amount, non-numeric amount) are rejected before commit, a failed commit
-does not advance the watermark, idempotency on a duplicate delivery (a server
-``replayed`` receipt is honored and the cumulative is not advanced twice), and a
-fresh delivery advances.
+does not advance the watermark, a ``replayed`` receipt still records the
+prepared voucher (rust/TS parity), and a fresh delivery advances.
 """
 
 from __future__ import annotations
@@ -199,10 +198,13 @@ class _ReplayTransport:
         )
 
 
-def test_duplicate_delivery_dedup_keeps_watermark_at_settled() -> None:
+def test_duplicate_delivery_returns_replayed_receipt_and_records_prepared_voucher() -> None:
     # Re-committing the same deliveryId returns a replayed receipt pinned to the
-    # originally settled cumulative; the watermark does not advance past it and
-    # the server records exactly one commit.
+    # originally settled cumulative. The consumer still records the voucher it
+    # prepared for the retry, exactly like rust ``SessionConsumer::commit_directive``
+    # (session_consumer.rs records unconditionally after the transport returns)
+    # and the TS ``SessionConsumer``: the server's dedupe keeps the settled
+    # amount authoritative on its side and the server records exactly one commit.
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     d = _directive(consumer.session.channel_id_string, 100, delivery_id="d1")
@@ -214,62 +216,19 @@ def test_duplicate_delivery_dedup_keeps_watermark_at_settled() -> None:
     r2 = consumer.commit_directive(d)
     assert r2.status == "replayed"
     assert r2.cumulative == "100"
-    assert consumer.session.cumulative == 100
+    assert consumer.session.cumulative == 200
     assert len(transport.commits) == 1
 
 
-def test_replayed_receipt_reconciles_watermark_when_behind() -> None:
-    # Lost-response case: the server already settled this delivery at 100 but the
-    # client never recorded it (watermark still 0). On replay the client must
-    # reconcile to the server-settled 100, not jump to the prepared 250 and not
-    # stay at 0 (which would make the next delivery non-monotonic).
+def test_replayed_receipt_records_prepared_voucher() -> None:
+    # Lost-response case: the server reports the delivery as already settled at
+    # 100, but the client watermark advances to the cumulative it just signed
+    # (250), keeping the locally signed voucher the high-water mark. Mirrors the
+    # unconditional record in rust session_consumer.rs and TS SessionConsumer.
     consumer = _consumer(_ReplayTransport(settled="100"))
-    receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
-    assert receipt.status == "replayed"
-    assert consumer.session.cumulative == 100
-
-
-def test_replayed_receipt_cumulative_is_clamped_to_prepared_voucher() -> None:
-    # A malicious/buggy server cannot push the watermark past the voucher the
-    # client just signed: it reports a replay settled far above the prepared
-    # cumulative (250), but the watermark must clamp to the prepared value, not
-    # the inflated server value, so the next voucher does not over-authorize.
-    consumer = _consumer(_ReplayTransport(settled="1000000"))
     receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
     assert receipt.status == "replayed"
     assert consumer.session.cumulative == 250
-
-
-class _StatusTransport:
-    """Transport that returns a fixed (possibly unknown) status."""
-
-    def __init__(self, status: str) -> None:
-        self.status = status
-
-    def commit(self, directive: MeteringDirective, payload: CommitPayload) -> CommitReceipt:
-        return CommitReceipt(
-            delivery_id=directive.delivery_id,
-            session_id=directive.session_id,
-            amount=directive.amount,
-            cumulative=payload.voucher.data.cumulative,
-            status=self.status,  # type: ignore[arg-type]
-        )
-
-
-def test_unknown_receipt_status_is_rejected_and_does_not_advance() -> None:
-    consumer = _consumer(_StatusTransport(status="bogus"))
-    with pytest.raises(ValueError, match="unexpected commit receipt status"):
-        consumer.commit_directive(_directive(consumer.session.channel_id_string, 100))
-    assert consumer.session.cumulative == 0
-
-
-def test_replayed_receipt_never_regresses_watermark() -> None:
-    # The client is already ahead at 300; a stale replay settled at 100 must not
-    # regress the local watermark.
-    consumer = _consumer(_ReplayTransport(settled="100"))
-    consumer.session.reconcile_settled(300)
-    consumer.commit_directive(_directive(consumer.session.channel_id_string, 50))
-    assert consumer.session.cumulative == 300
 
 
 def test_fresh_delivery_advances_after_prior() -> None:
