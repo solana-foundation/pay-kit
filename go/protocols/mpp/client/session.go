@@ -6,9 +6,12 @@
 // the server verifies on the HTTP credential are the bytes the on-chain settle
 // instruction consumes.
 //
-// Scope is client-only PUSH (payment-channel) plus pull/clientVoucher: the
-// client signs cumulative vouchers off-chain. Pull/operatedVoucher (the
-// multi-delegator program) and the server verification path are out of scope.
+// Scope is client-only PUSH (payment-channel) plus pull/clientVoucher, both
+// served by the challenge-driven openers in payment_channels.go: the client
+// signs cumulative vouchers off-chain over a payment channel the operator
+// settles. Pull/operatedVoucher (the multi-delegator program), the SPL
+// approve-delegation builder for non-channel pull opens, and the server
+// verification path are out of scope.
 //
 // Behavior mirrors rust/crates/mpp/src/client/session.rs so the cross-language
 // SDKs produce byte-identical voucher signatures and credentials.

@@ -64,9 +64,11 @@ func Demo() paykit.Signer {
 	return &localSigner{priv: priv, pub: pubkeyOf(priv), isDemo: true}
 }
 
-// Generate produces a fresh ephemeral keypair. Test-only; production
-// callers load from a file or env so the same identity survives
-// restarts.
+// Generate produces a fresh ephemeral keypair. Use it for identities that
+// are ephemeral by design (tests, or short-lived signing keys); session
+// clients use client.NewEphemeralSessionSigner for the per-session
+// authorizedSigner. Persistent server identities load from a file or env so
+// the same identity survives restarts.
 func Generate() paykit.Signer {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

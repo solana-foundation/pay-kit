@@ -112,7 +112,7 @@ The Solana charge intent, in both pull (client-signed) and push
 |---|:---:|:---:|
 | `mpp/charge/pull` | ✅ | ✅ |
 | `mpp/charge/push` | ✅ | ✅ |
-| `mpp/session` | — | — |
+| `mpp/session` | ✅ | — |
 | `mpp/subscription` | — | — |
 
 For `mpp/charge/pull`: the server owns the full lifecycle. It issues
@@ -129,6 +129,32 @@ For `mpp/charge/push`: the server fetches the transaction by signature
 with `getTransaction`, rejects failed or missing metadata, reuses the
 same structural transaction verifier as pull mode, consumes the
 signature through replay storage, and emits the same receipt shape.
+
+For `mpp/session`: the client side ships; the server verification path
+does not. In scope:
+
+- session challenge parsing and selection (`ParseSessionChallenge`,
+  `SelectSessionChallenge` with network/currency/mode filters; omitted
+  or empty `modes` means push-only),
+- payment-channel open builders driven by the challenge (deposit
+  defaults to the cap, grace period 900s, random salt, token program
+  resolved from the currency so Token-2022 mints work, operator as fee
+  payer with a payer partial-sign, challenge `recentBlockhash` echo,
+  `PendingServerSignature` placeholder) for push and pull/clientVoucher,
+- `ActiveSession` voucher signing with the prepare/record watermark
+  split, `SessionConsumer` for metered deliveries, and the metered SSE
+  layer (`SseDecoder`, `MeteredSseSession`, `MeteredSseStream`,
+  `HTTPCommitTransport`).
+
+Out of scope: pull/operatedVoucher (multi-delegate program builders),
+the SPL `approve` delegation transaction for non-channel pull opens
+(the on-chain delegation happens out of band), the server session
+handler, and a `SessionFetch`-style drop-in fetch wrapper. The
+TypeScript `SessionFetchClient` semantics that wrapper would own
+(per-channel commit watermark reset on re-open, failed-commit
+retryability without latching) therefore have no Go counterpart; the
+`ActiveSession` prepare/record split is the building block callers
+compose instead.
 
 ## Examples
 
