@@ -117,7 +117,7 @@ func registerX402(mux *http.ServeMux, a *app) error {
 
 	// x402-gated routes: a dedicated x402-only paykit client, self-hosted
 	// verification + settlement against the configured RPC.
-	network, err := paykitNetwork(a.network)
+	network, err := paykit.ParseNetwork(a.network)
 	if err != nil {
 		return err
 	}

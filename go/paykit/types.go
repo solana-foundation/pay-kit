@@ -1,6 +1,8 @@
 package paykit
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -36,6 +38,24 @@ const (
 	SolanaDevnet   Network = "solana_devnet"
 	SolanaLocalnet Network = "solana_localnet"
 )
+
+// ParseNetwork maps a cluster tag onto the typed [Network] enum. It
+// accepts the short tags the cross-language configure() surfaces use
+// ("localnet", "devnet", "mainnet"), the legacy "mainnet-beta" alias,
+// and the canonical wire slugs ("solana_localnet", "solana_devnet",
+// "solana_mainnet"), case-insensitively.
+func ParseNetwork(tag string) (Network, error) {
+	switch strings.ToLower(strings.TrimSpace(tag)) {
+	case "localnet", string(SolanaLocalnet):
+		return SolanaLocalnet, nil
+	case "devnet", string(SolanaDevnet):
+		return SolanaDevnet, nil
+	case "mainnet", "mainnet-beta", string(SolanaMainnet):
+		return SolanaMainnet, nil
+	default:
+		return "", fmt.Errorf("unsupported network %q (want localnet, devnet, or mainnet)", tag)
+	}
+}
 
 // DefaultRPCURL is the public RPC endpoint the kit falls back to when
 // [Config.RPCURL] is "". Localnet defaults to the hosted Surfpool

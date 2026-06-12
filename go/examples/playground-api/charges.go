@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 
 	"github.com/shopspring/decimal"
 
@@ -290,18 +291,7 @@ func requireQuery(name string, next http.Handler) http.Handler {
 
 // cityKey normalizes a city path segment onto the weather table key.
 func cityKey(city string) string {
-	out := make([]rune, 0, len(city))
-	for _, r := range city {
-		switch {
-		case r >= 'A' && r <= 'Z':
-			out = append(out, r+('a'-'A'))
-		case r == ' ':
-			out = append(out, '-')
-		default:
-			out = append(out, r)
-		}
-	}
-	return string(out)
+	return strings.ReplaceAll(strings.ToLower(city), " ", "-")
 }
 
 // requireKnownCity 404s unknown cities before payment.

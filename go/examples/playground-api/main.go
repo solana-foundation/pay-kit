@@ -149,7 +149,7 @@ func newApp(a *app) (http.Handler, func(), error) {
 // MPP-only, mirroring the TypeScript pay-kit configuration whose single
 // protocol adapter is createMppAdapter.
 func newChargesClient(a *app) (*paykit.Client, error) {
-	network, err := paykitNetwork(a.network)
+	network, err := paykit.ParseNetwork(a.network)
 	if err != nil {
 		return nil, err
 	}
@@ -171,20 +171,6 @@ func newChargesClient(a *app) (*paykit.Client, error) {
 			ChallengeBindingSecret: []byte(a.secretKey),
 		},
 	})
-}
-
-// paykitNetwork maps the playground NETWORK tag onto the paykit enum.
-func paykitNetwork(tag string) (paykit.Network, error) {
-	switch tag {
-	case "localnet":
-		return paykit.SolanaLocalnet, nil
-	case "devnet":
-		return paykit.SolanaDevnet, nil
-	case "mainnet":
-		return paykit.SolanaMainnet, nil
-	default:
-		return "", fmt.Errorf("unsupported NETWORK %q (want localnet, devnet, or mainnet)", tag)
-	}
 }
 
 // bootstrapFunding funds the fee payer and recipient on the local surfnet so

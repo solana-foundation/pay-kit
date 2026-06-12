@@ -7,13 +7,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
+
+	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 const ansiReset = "\x1b[0m"
@@ -78,21 +79,15 @@ func logTx(path, reference string) {
 // logPayment prints the receipt reference from a Payment-Receipt response
 // header, when present.
 func logPayment(path string, header http.Header) {
-	receipt := header.Get("Payment-Receipt")
-	if receipt == "" {
+	value := header.Get(core.PaymentReceiptHeader)
+	if value == "" {
 		return
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(receipt)
-	if err != nil {
+	receipt, err := core.ParseReceipt(value)
+	if err != nil || receipt.Reference == "" {
 		return
 	}
-	var body struct {
-		Reference string `json:"reference"`
-	}
-	if err := json.Unmarshal(decoded, &body); err != nil || body.Reference == "" {
-		return
-	}
-	logTx(path, body.Reference)
+	logTx(path, receipt.Reference)
 }
 
 // writeJSON writes v as a JSON response with the given status code.
