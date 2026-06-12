@@ -16,10 +16,20 @@ import type { Wallet, WalletAccount } from '@wallet-standard/base';
 const dataEl = document.getElementById('__MPPX_DATA__') ?? document.getElementById('__MPP_DATA__');
 if (!dataEl?.textContent) throw new Error('Missing embedded data element');
 
-const rawData = JSON.parse(dataEl.textContent);
+const parsedData = JSON.parse(dataEl.textContent);
 
-// Normalize: mppx provides { challenge: { request: {decoded} } }
-// Standalone provides { challenge: { request: "base64url" }, network, rpcUrl }
+// Normalize: mppx <= 0.5.5 embeds { challenge: { request: {decoded} } };
+// mppx >= 0.5.8 keys those entries by challenge id
+// ({ <challengeId>: { label, challenge, ... }, ... }) — prefer the solana
+// entry, fall back to the first. Standalone embeds
+// { challenge: { request: "base64url" }, network, rpcUrl }.
+const dataEntries = Object.values(parsedData).filter(
+  (entry: any) => entry?.challenge !== undefined,
+) as any[];
+const rawData =
+  parsedData.challenge !== undefined
+    ? parsedData
+    : (dataEntries.find(entry => entry.label === 'solana') ?? dataEntries[0] ?? parsedData);
 const isMppx = typeof rawData.challenge?.request === 'object';
 const challenge = rawData.challenge;
 const request = isMppx

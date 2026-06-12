@@ -91,7 +91,7 @@
                 "psr/http-message-implementation": "1.0"
             },
             "require-dev": {
-                "http-harness/http-factory-tests": "^0.9",
+                "http-interop/http-factory-tests": "^0.9",
                 "php-http/message-factory": "^1.0",
                 "php-http/psr7-integration-tests": "^1.0",
                 "phpunit/phpunit": "^7.5 || ^8.5 || ^9.4",
@@ -254,7 +254,7 @@
                 "PSR-11",
                 "container",
                 "container-interface",
-                "container-harness",
+                "container-interop",
                 "psr"
             ],
             "support": {
@@ -464,7 +464,7 @@
             "keywords": [
                 "handler",
                 "http",
-                "http-harness",
+                "http-interop",
                 "psr",
                 "psr-15",
                 "psr-7",
@@ -520,7 +520,7 @@
             "description": "Common interface for HTTP server-side middleware",
             "keywords": [
                 "http",
-                "http-harness",
+                "http-interop",
                 "middleware",
                 "psr",
                 "psr-15",

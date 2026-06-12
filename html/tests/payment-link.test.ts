@@ -42,8 +42,12 @@ test('full e2e: payment completes and returns fortune', async ({ page }) => {
   const content = await page.content();
   const isFortuneResponse = content.includes('"fortune"');
   const isPaymentPage = content.includes('Payment Required');
+  // mppx >= 0.5.8 answers a rejected payment with an RFC 9457 problem
+  // document instead of re-rendering the payment page; reaching it still
+  // proves the service-worker payment flow ran end-to-end.
+  const isProblemResponse = content.includes('paymentauth.org/problems/');
 
-  expect(isFortuneResponse || isPaymentPage).toBe(true);
+  expect(isFortuneResponse || isPaymentPage || isProblemResponse).toBe(true);
 
   if (isFortuneResponse) {
     console.log('Payment succeeded — got a fortune!');

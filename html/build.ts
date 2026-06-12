@@ -112,7 +112,7 @@ async function main() {
   // 4. Write generated embedding files for each language
 
   // Rust: write template + service worker for include_str!
-  const rustDir = resolve(import.meta.dirname, '..', 'rust', 'src', 'server', 'html');
+  const rustDir = resolve(import.meta.dirname, '..', 'rust', 'crates', 'mpp', 'src', 'server', 'html');
   mkdirSync(rustDir, { recursive: true });
   writeFileSync(resolve(rustDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(rustDir, 'service_worker.gen.js'), mppxServiceWorker);
