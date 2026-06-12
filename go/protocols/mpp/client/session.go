@@ -70,6 +70,17 @@ func NewActiveSessionAt(channelID solana.PublicKey, signer VoucherSigner, expire
 	}
 }
 
+// NewActiveSessionWithWatermark creates a session tracker resumed at a known
+// settled cumulative watermark, e.g. when re-attaching to a channel the server
+// already holds vouchers for. The nonce starts at zero, matching a fresh rust
+// ActiveSession whose cumulative field was assigned directly (the openers'
+// configure_session path) and the TS ActiveSession parameters constructor.
+func NewActiveSessionWithWatermark(channelID solana.PublicKey, signer VoucherSigner, cumulative uint64, expiresAt int64) *ActiveSession {
+	session := NewActiveSessionAt(channelID, signer, expiresAt)
+	session.cumulative = cumulative
+	return session
+}
+
 // SetExpiresAt updates the expiry timestamp used for subsequent vouchers.
 //
 // Mirrors rust ActiveSession::set_expires_at.
