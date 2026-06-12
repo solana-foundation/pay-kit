@@ -1112,9 +1112,7 @@ fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) ->
         .map_err(|e| Error::Other(format!("RPC error verifying {tx} tx: {e}")))?
     {
         Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(Error::Other(format!(
-            "{tx} tx was rejected on-chain: {e}"
-        ))),
+        Some(Err(e)) => Err(Error::Other(format!("{tx} tx was rejected on-chain: {e}"))),
         None => Err(Error::Other(format!(
             "{tx} tx '{sig_str}' not found — not yet confirmed or does not exist"
         ))),
