@@ -94,6 +94,17 @@ type ChannelState struct {
 	// was requested. Once set, no further vouchers are accepted.
 	CloseRequestedAt *uint64 `json:"close_requested_at"`
 
+	// SettledSignature is the signature (base58) of the broadcast
+	// settle-and-distribute transaction. A close-pending channel with no
+	// settled signature is re-drivable: a close retry may attempt settlement
+	// again.
+	//
+	// TypeScript-parity extension (server/session/store.ts settledSignature);
+	// the rust ChannelState has no equivalent because the rust SessionServer
+	// does not drive on-chain settlement. Serialized with omitempty so
+	// channel state without a settlement round-trips into the rust shape.
+	SettledSignature *string `json:"settled_signature,omitempty"`
+
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
 	// nil for push sessions.
 	Operator *string `json:"operator"`
@@ -123,6 +134,10 @@ func (s ChannelState) clone() ChannelState {
 	if s.CloseRequestedAt != nil {
 		v := *s.CloseRequestedAt
 		out.CloseRequestedAt = &v
+	}
+	if s.SettledSignature != nil {
+		v := *s.SettledSignature
+		out.SettledSignature = &v
 	}
 	if s.Operator != nil {
 		v := *s.Operator
