@@ -160,6 +160,17 @@ class SessionRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionRequest:
         decimals = data.get("decimals")
+        # rust deserializes ``modes`` as Vec<SessionMode> and
+        # ``pullVoucherStrategy`` as an enum, so unknown variants fail at
+        # decode; mirror that instead of deferring the failure downstream.
+        modes: list[SessionMode] = []
+        for mode in data.get("modes", []):
+            if mode not in ("push", "pull"):
+                raise ValueError(f"session request: unknown mode {mode!r}")
+            modes.append(mode)
+        strategy = data.get("pullVoucherStrategy")
+        if strategy is not None and strategy not in ("clientVoucher", "operatedVoucher"):
+            raise ValueError(f"session request: unknown pullVoucherStrategy {strategy!r}")
         return cls(
             cap=data.get("cap", ""),
             currency=data.get("currency", ""),
@@ -172,8 +183,8 @@ class SessionRequest:
             description=data.get("description"),
             external_id=data.get("externalId"),
             min_voucher_delta=data.get("minVoucherDelta"),
-            modes=list(data.get("modes", [])),
-            pull_voucher_strategy=data.get("pullVoucherStrategy"),
+            modes=modes,
+            pull_voucher_strategy=strategy,
             recent_blockhash=data.get("recentBlockhash"),
         )
 
@@ -454,6 +465,11 @@ class OpenPayload:
         mode = data.get("mode")
         if not mode:
             raise ValueError("open payload: missing mode")
+        # rust deserializes ``mode`` as the SessionMode enum, rejecting unknown
+        # variants at decode; mirror that rather than failing later inside
+        # session_id()/deposit_amount().
+        if mode not in ("push", "pull"):
+            raise ValueError(f"open payload: unknown mode {mode!r}")
         return cls(
             mode=mode,
             authorized_signer=data.get("authorizedSigner", ""),
@@ -897,10 +913,16 @@ class CommitReceipt:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CommitReceipt:
+        # rust deserializes ``status`` as the CommitStatus enum, so a missing
+        # or unknown status fails at decode; mirror that so a malformed receipt
+        # can never advance client state.
+        status = data.get("status")
+        if status not in ("committed", "replayed"):
+            raise ValueError(f"commit receipt: unknown status {status!r}")
         return cls(
             delivery_id=data.get("deliveryId", ""),
             session_id=data.get("sessionId", ""),
             amount=data.get("amount", ""),
             cumulative=data.get("cumulative", ""),
-            status=data.get("status", "committed"),
+            status=status,
         )
