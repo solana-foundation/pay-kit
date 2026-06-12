@@ -6,9 +6,6 @@
 // grace period 900 seconds, random u64 salt, token program resolved from the
 // challenge currency (Token-2022 for PYUSD/USDG/CASH), and the
 // PendingServerSignature placeholder while the operator broadcasts.
-//
-// Behavior mirrors rust/crates/mpp/src/client/payment_channels.rs; the
-// TypeScript counterpart is typescript/packages/mpp/src/client/PaymentChannels.ts.
 package client
 
 import (
@@ -26,25 +23,16 @@ import (
 )
 
 // DefaultGracePeriodSeconds is the default payment-channel close grace period,
-// shared with the rust and TypeScript clients.
-//
-// Mirrors DEFAULT_GRACE_PERIOD_SECONDS in
-// rust/crates/mpp/src/client/payment_channels.rs.
+// shared across the language SDK clients.
 const DefaultGracePeriodSeconds uint32 = 900
 
 // PendingServerSignature is the placeholder open signature used while the
 // operator still needs to submit the server-broadcast open transaction. It is
 // the base58 form of an all-zero 64-byte signature (64 ones).
-//
-// Mirrors PENDING_SERVER_SIGNATURE in
-// rust/crates/mpp/src/client/payment_channels.rs.
 const PendingServerSignature = "1111111111111111111111111111111111111111111111111111111111111111"
 
 // PaymentChannelOpen is a fully derived payment-channel open: every channel
 // parameter resolved from the challenge plus the resulting channel PDA.
-//
-// Mirrors rust PaymentChannelOpen in
-// rust/crates/mpp/src/client/payment_channels.rs.
 type PaymentChannelOpen struct {
 	ChannelID        solana.PublicKey
 	Payer            solana.PublicKey
@@ -60,8 +48,6 @@ type PaymentChannelOpen struct {
 }
 
 // OpenChannelParams converts the derived open into instruction-builder params.
-//
-// Mirrors rust PaymentChannelOpen::open_channel_params.
 func (o PaymentChannelOpen) OpenChannelParams() paymentchannels.OpenChannelParams {
 	return paymentchannels.OpenChannelParams{
 		Payer:            o.Payer,
@@ -79,8 +65,6 @@ func (o PaymentChannelOpen) OpenChannelParams() paymentchannels.OpenChannelParam
 
 // OpenPayload builds the open action payload carrying the derived channel
 // parameters with the given submission mode and confirmation signature.
-//
-// Mirrors rust PaymentChannelOpen::open_payload.
 func (o PaymentChannelOpen) OpenPayload(mode intents.SessionMode, signature string) intents.OpenPayload {
 	return intents.OpenPayloadPaymentChannelWithMode(
 		mode,
@@ -98,9 +82,6 @@ func (o PaymentChannelOpen) OpenPayload(mode intents.SessionMode, signature stri
 
 // PaymentChannelOpenTransaction is a partially signed open transaction ready
 // for the operator to fee-payer sign and broadcast.
-//
-// Mirrors rust PaymentChannelOpenTransaction in
-// rust/crates/mpp/src/client/payment_channels.rs.
 type PaymentChannelOpenTransaction struct {
 	// ChannelID is the derived channel PDA the transaction opens.
 	ChannelID solana.PublicKey
@@ -112,9 +93,6 @@ type PaymentChannelOpenTransaction struct {
 
 // PaymentChannelOpenOptions overrides the challenge-derived open defaults.
 // Every field is optional; the zero value applies the cross-SDK defaults.
-//
-// Mirrors rust PaymentChannelOpenOptions in
-// rust/crates/mpp/src/client/payment_channels.rs.
 type PaymentChannelOpenOptions struct {
 	// Deposit overrides the escrow deposit. Defaults to the challenge cap.
 	Deposit *uint64
@@ -143,8 +121,6 @@ type PaymentChannelOpenOptions struct {
 // challenge: mint and token program from the currency, payee from the
 // recipient, deposit from the cap, splits, program id, grace period 900s, and
 // a random salt, then derives the channel PDA.
-//
-// Mirrors rust derive_payment_channel_open.
 func DerivePaymentChannelOpen(
 	request intents.SessionRequest,
 	payer, authorizedSigner solana.PublicKey,
@@ -246,8 +222,6 @@ func DerivePaymentChannelOpen(
 
 // BuildOpenPaymentChannelTransactionParams carries the inputs for
 // BuildOpenPaymentChannelTransaction.
-//
-// Mirrors rust BuildOpenPaymentChannelTransactionParams.
 type BuildOpenPaymentChannelTransactionParams struct {
 	// Request is the parsed session challenge.
 	Request intents.SessionRequest
@@ -273,8 +247,6 @@ type BuildOpenPaymentChannelTransactionParams struct {
 // BuildOpenPaymentChannelTransaction derives the open from the challenge and
 // assembles the legacy open transaction with the operator as fee payer,
 // partially signed by the payer, base64-encoded for OpenPayload.Transaction.
-//
-// Mirrors rust build_open_payment_channel_transaction.
 func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactionParams) (PaymentChannelOpenTransaction, error) {
 	var feePayer solana.PublicKey
 	if params.FeePayer != nil {
@@ -300,8 +272,6 @@ func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactio
 
 // PaymentChannelSessionOpen bundles a derived open, the live session tracking
 // it, and the open action ready to serialize into a credential.
-//
-// Mirrors rust PaymentChannelSessionOpen.
 type PaymentChannelSessionOpen struct {
 	Open    PaymentChannelOpen
 	Session *ActiveSession
@@ -309,8 +279,6 @@ type PaymentChannelSessionOpen struct {
 }
 
 // PaymentChannelSessionOpenOptions configures CreatePaymentChannelSessionOpener.
-//
-// Mirrors rust PaymentChannelSessionOpenOptions.
 type PaymentChannelSessionOpenOptions struct {
 	// Open overrides the challenge-derived open defaults.
 	Open PaymentChannelOpenOptions
@@ -329,8 +297,6 @@ type PaymentChannelSessionOpenOptions struct {
 
 // ServerOpenedPaymentChannelSessionOpenOptions configures
 // CreateServerOpenedPaymentChannelSessionOpener.
-//
-// Mirrors rust ServerOpenedPaymentChannelSessionOpenOptions.
 type ServerOpenedPaymentChannelSessionOpenOptions struct {
 	// Open overrides the challenge-derived open defaults.
 	Open PaymentChannelOpenOptions
@@ -355,8 +321,6 @@ type ServerOpenedPaymentChannelSessionOpenOptions struct {
 // from the challenge, builds the payer-signed open transaction against the
 // challenge recentBlockhash, and returns the active session plus the open
 // action carrying the transaction for the operator to broadcast.
-//
-// Mirrors rust create_payment_channel_session_opener.
 func CreatePaymentChannelSessionOpener(
 	request intents.SessionRequest,
 	payerSigner solanatx.Signer,
@@ -399,8 +363,6 @@ func CreatePaymentChannelSessionOpener(
 // channel open the operator funds and broadcasts entirely server-side: no
 // transaction is attached and the signature defaults to
 // PendingServerSignature.
-//
-// Mirrors rust create_server_opened_payment_channel_session_opener.
 func CreateServerOpenedPaymentChannelSessionOpener(
 	request intents.SessionRequest,
 	sessionSigner VoucherSigner,
@@ -437,7 +399,7 @@ func CreateServerOpenedPaymentChannelSessionOpener(
 // NewEphemeralSessionSigner generates a fresh in-memory keypair to use as a
 // session authorizedSigner. Session voucher keys are ephemeral by design: they
 // authorize spend only within one channel's deposit, so generating one per
-// session is the production path (the TS client does this automatically).
+// session is the production path.
 func NewEphemeralSessionSigner() (VoucherSigner, error) {
 	key, err := solana.NewRandomPrivateKey()
 	if err != nil {
@@ -449,8 +411,6 @@ func NewEphemeralSessionSigner() (VoucherSigner, error) {
 // buildOpenPaymentChannelTx assembles the single-instruction legacy open
 // transaction with the given fee payer and partially signs it with the payer
 // wallet, leaving the fee-payer slot zeroed for the operator.
-//
-// Mirrors rust build_open_payment_channel_tx.
 func buildOpenPaymentChannelTx(
 	open PaymentChannelOpen,
 	payerSigner solanatx.Signer,
@@ -481,8 +441,6 @@ func buildOpenPaymentChannelTx(
 
 // ensureClientVoucherPull rejects challenges that do not advertise pull mode
 // with the clientVoucher strategy, the only combination these openers serve.
-//
-// Mirrors rust ensure_client_voucher_pull.
 func ensureClientVoucherPull(request intents.SessionRequest) error {
 	pull := false
 	for _, mode := range request.Modes {
@@ -503,8 +461,6 @@ func ensureClientVoucherPull(request intents.SessionRequest) error {
 
 // newConfiguredSession creates the opener's ActiveSession with the optional
 // resumed cumulative and voucher expiry applied.
-//
-// Mirrors rust configure_session.
 func newConfiguredSession(
 	channelID solana.PublicKey,
 	signer VoucherSigner,
@@ -541,8 +497,6 @@ func resolveChallengeBlockhash(request intents.SessionRequest, explicit string) 
 }
 
 // parseSessionSplits converts challenge splits into instruction distributions.
-//
-// Mirrors rust parse_splits.
 func parseSessionSplits(splits []intents.SessionSplit) ([]paymentchannels.Distribution, error) {
 	recipients := make([]paymentchannels.Distribution, 0, len(splits))
 	for _, split := range splits {
@@ -559,8 +513,6 @@ func parseSessionSplits(splits []intents.SessionSplit) ([]paymentchannels.Distri
 }
 
 // parseSessionPubkey parses a base58 pubkey with a labeled error.
-//
-// Mirrors rust parse_pubkey in client/payment_channels.rs.
 func parseSessionPubkey(value, label string) (solana.PublicKey, error) {
 	key, err := solana.PublicKeyFromBase58(value)
 	if err != nil {
@@ -570,8 +522,6 @@ func parseSessionPubkey(value, label string) (solana.PublicKey, error) {
 }
 
 // randomSalt draws a random u64 channel salt from the system CSPRNG.
-//
-// Mirrors rust unique_salt / TS randomU64.
 func randomSalt() (uint64, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {

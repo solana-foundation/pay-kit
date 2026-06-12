@@ -1,14 +1,12 @@
 package main
 
-// x402 module mirroring typescript/examples/playground-api/modules/x402.ts:
-// the embedded facilitator endpoints plus two x402-gated demo routes.
+// The embedded facilitator endpoints plus two x402-gated demo routes.
 //
-// Divergence: the TypeScript routes are gated by x402-express POSTing to the
-// embedded facilitator; the Go x402 adapter only implements self-hosted mode
-// (it verifies and settles in-process with the operator signer), so the
-// /x402/joke and /x402/fact gates here settle locally instead of calling
-// /facilitator. The facilitator endpoints are still served with the same
-// shapes for external x402 clients and for endpoint parity. See README.md.
+// The Go x402 adapter only implements self-hosted mode (it verifies and
+// settles in-process with the operator signer), so the /x402/joke and
+// /x402/fact gates here settle locally instead of POSTing to the embedded
+// facilitator. The facilitator endpoints are still served with the standard
+// shapes for external x402 clients. See README.md.
 
 import (
 	"encoding/json"
@@ -19,7 +17,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paykit"
 )
 
-// jokes mirrors the TypeScript JOKES table.
+// jokes is the canned joke pool.
 var jokes = []string{
 	"Why do programmers prefer dark mode? Because light attracts bugs.",
 	"There are 10 types of people: those who understand binary and those who don’t.",
@@ -27,7 +25,7 @@ var jokes = []string{
 	"A photon checks into a hotel; the bellhop asks if it has any luggage. \"No, I’m traveling light.\"",
 }
 
-// facts mirrors the TypeScript FACTS table.
+// facts is the canned fun-fact pool.
 var facts = []string{
 	"Honey never spoils. Archaeologists found 3000-year-old honey in Egyptian tombs.",
 	"Octopuses have three hearts and blue blood.",

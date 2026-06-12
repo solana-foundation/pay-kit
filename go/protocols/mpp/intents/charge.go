@@ -3,8 +3,8 @@
 // without u64 safety stay correct) and the session intent (SessionRequest plus
 // the SessionAction credential union and signed vouchers). It also exposes the
 // ParseUnits helper that converts a human-readable decimal amount into base
-// units at the SDK boundary. Wire format mirrors
-// rust/crates/mpp/src/protocol/intents/{charge,session}.rs.
+// units at the SDK boundary. The JSON wire format is identical across the
+// language SDKs; the cross-language harness pins it.
 package intents
 
 import (

@@ -3,9 +3,6 @@ package server
 // Server-side session intent: challenge issuance, voucher verification, and
 // channel lifecycle management.
 //
-// Mirrors rust/crates/mpp/src/server/session.rs (SessionServer) and the
-// off-chain core of typescript/packages/mpp/src/server/Session.ts.
-//
 // 1. The server calls SessionServer.BuildChallengeRequest to produce the
 //    SessionRequest embedded in a 402 challenge.
 // 2. The client responds with an open action; the server calls
@@ -19,9 +16,9 @@ package server
 //
 // On-chain verification is a seam in this layer: when
 // SessionConfig.VerifyOpenTx / VerifyTopUpTx are set, ProcessOpen (push mode)
-// and ProcessTopUp invoke them before persisting channel state, mirroring the
-// rust rpc_url-gated getSignatureStatuses check and the TypeScript
-// verifyOpenTx transaction binding. When nil, the transaction signature and
+// and ProcessTopUp invoke them before persisting channel state, binding the
+// payload to the attached transaction and confirming the signature on-chain.
+// When nil, the transaction signature and
 // deposit amount are trusted as provided, which is suitable only for unit
 // tests or deployments that verify transactions out of band.
 
@@ -38,7 +35,6 @@ import (
 )
 
 // Split is a payment split committed at channel open; distributed at close.
-// Mirrors rust Split in rust/crates/mpp/src/server/session.rs.
 type Split struct {
 	// Recipient of this split.
 	Recipient solana.PublicKey
@@ -51,11 +47,10 @@ type Split struct {
 // payload before channel state is persisted. Implementations typically decode
 // the attached transaction, bind the payload signature to it, and confirm the
 // signature on-chain. This is the seam the on-chain layer plugs into; nil
-// skips verification (rust rpc_url = None).
+// skips verification.
 type SessionTxVerifier[P any] func(ctx context.Context, payload *P) error
 
 // SessionConfig is the server configuration for the session intent.
-// Mirrors rust SessionConfig in rust/crates/mpp/src/server/session.rs.
 type SessionConfig struct {
 	// Operator public key (base58). Shown to clients in the challenge.
 	Operator string
@@ -106,9 +101,7 @@ type SessionConfig struct {
 }
 
 // DeliveryRequest is a request to reserve a metered delivery for client-side
-// ack/commit. Mirrors rust DeliveryRequest in
-// rust/crates/mpp/src/server/session.rs. Zero values mean "absent" for the
-// optional fields.
+// ack/commit. Zero values mean "absent" for the optional fields.
 type DeliveryRequest struct {
 	// SessionID is the channel/session ID that will pay for the delivery.
 	SessionID string
@@ -133,8 +126,7 @@ type DeliveryRequest struct {
 
 // SessionServer is the server-side session manager. Pluggable over the
 // channel store to support in-memory testing and production persistence
-// backends. Mirrors rust SessionServer in
-// rust/crates/mpp/src/server/session.rs.
+// backends.
 type SessionServer struct {
 	config SessionConfig
 	store  ChannelStore
@@ -225,7 +217,7 @@ func (s *SessionServer) supportsMode(mode intents.SessionMode) bool {
 // existing state is returned unchanged and the voucher watermark is never
 // reset. Opens for an existing channel are rejected when the channel is
 // finalized or when the payload's authorized signer differs from the stored
-// one. Mirrors rust SessionServer::process_open.
+// one.
 func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPayload) (ChannelState, error) {
 	if !s.supportsMode(payload.Mode) {
 		return ChannelState{}, fmt.Errorf("session mode %q is not supported by this challenge", payload.Mode)
@@ -291,7 +283,6 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 // The full ordered check sequence runs as a preflight outside the store lock
 // (see VerifyVoucherForChannel), then the state-dependent checks are
 // re-applied inside the atomic mutator before the watermark is persisted.
-// Mirrors rust SessionServer::verify_voucher.
 func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.VoucherPayload) (uint64, error) {
 	voucher := payload.Voucher
 	channelID := voucher.Data.ChannelID
@@ -314,8 +305,8 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 	})
 	switch result.Status {
 	case VoucherVerifyRejected:
-		// Surface the stable reject tag ahead of the detail, mirroring the
-		// TypeScript handler's "<reason>: <detail>" error shape.
+		// Surface the stable reject tag ahead of the detail
+		// ("<reason>: <detail>").
 		return 0, fmt.Errorf("%s: %s", result.Reason, result.Detail)
 	case VoucherVerifyReplayed:
 		return result.NewCumulative, nil
@@ -364,7 +355,7 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 //
 // The new deposit must exceed the current deposit and must not exceed the
 // configured max cap. Top-ups are rejected once the channel is finalized or a
-// close has been requested. Mirrors rust SessionServer::process_topup.
+// close has been requested.
 func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUpPayload) (ChannelState, error) {
 	newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
 	if err != nil {
@@ -407,7 +398,7 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 //
 // The reservation requires cumulative + pendingTotal + amount <= deposit,
 // assigns the next sequence, and defaults the delivery id to
-// "<sessionId>:<sequence>". Mirrors rust SessionServer::begin_delivery.
+// "<sessionId>:<sequence>".
 func (s *SessionServer) BeginDelivery(ctx context.Context, request DeliveryRequest) (intents.MeteringDirective, error) {
 	if request.Amount == 0 {
 		return intents.MeteringDirective{}, fmt.Errorf("delivery amount must be greater than zero")
@@ -505,7 +496,7 @@ func fitsInDeposit(cumulative, pendingTotal, amount, deposit uint64) bool {
 // voucher and advancing the settled watermark. Replaying a commit for an
 // already-committed delivery (same cumulative and same signature) returns the
 // cached receipt with status replayed after re-verifying the voucher
-// signature. Mirrors rust SessionServer::process_commit.
+// signature.
 func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.CommitPayload) (intents.CommitReceipt, error) {
 	channelID := payload.Voucher.Data.ChannelID
 	newCumulative, err := strconv.ParseUint(payload.Voucher.Data.Cumulative, 10, 64)
@@ -656,8 +647,7 @@ func findCommitted(deliveries []CommittedDelivery, deliveryID string) *Committed
 // idempotent replay of the current highest voucher) and leaves the state
 // unchanged. On-chain settlement (settle_and_finalize + distribute) is driven
 // by the host after this returns; see MarkFinalized for the post-settlement
-// transition. Mirrors rust SessionServer::process_close minus the
-// FinalizeParams derivation, which lands with the on-chain layer.
+// transition.
 func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.ClosePayload) (ChannelState, error) {
 	now := uint64(time.Now().Unix())
 	channelID := payload.ChannelID
@@ -715,7 +705,7 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 }
 
 // MarkFinalized marks a channel as finalized. Call after the on-chain
-// finalize transaction confirms. Mirrors rust SessionServer::mark_finalized.
+// finalize transaction confirms.
 func (s *SessionServer) MarkFinalized(ctx context.Context, channelID string) error {
 	_, err := s.store.MarkFinalized(ctx, channelID)
 	return err

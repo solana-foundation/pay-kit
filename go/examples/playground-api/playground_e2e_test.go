@@ -1,14 +1,13 @@
 package main
 
-// Surfpool-gated end-to-end test mirroring
-// typescript/packages/mpp/src/__tests__/playground-session-e2e.test.ts: boots
-// the real playground handler against the hosted Solana Payment Sandbox,
-// funds a wallet through the faucet cheatcodes, opens a payment channel on
-// the /sessions/stream 402 (client pre-signs, server completes the fee-payer
-// signature and broadcasts), streams the metered SSE chunks, commits a
-// voucher through the side channel, and polls /sessions/receipt until the
-// idle-close watchdog settles the channel on-chain. Skips explicitly (never
-// silently passes) when the sandbox is unreachable or under -short.
+// Surfpool-gated end-to-end test: boots the real playground handler against
+// the hosted Solana Payment Sandbox, funds a wallet through the faucet
+// cheatcodes, opens a payment channel on the /sessions/stream 402 (client
+// pre-signs, server completes the fee-payer signature and broadcasts),
+// streams the metered SSE chunks, commits a voucher through the side
+// channel, and polls /sessions/receipt until the idle-close watchdog settles
+// the channel on-chain. Skips explicitly (never silently passes) when the
+// sandbox is unreachable or under -short.
 
 import (
 	"context"

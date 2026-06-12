@@ -10,8 +10,8 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
 )
 
-// recordingTransport captures committed payloads and can be made to fail,
-// mirroring the rust RecordingTransport test double. It also models the
+// recordingTransport captures committed payloads and can be made to fail
+// on demand. It also models the
 // server-side delivery dedupe: a deliveryId already committed returns a
 // "replayed" receipt carrying the originally committed cumulative, so the
 // client does not double-count.

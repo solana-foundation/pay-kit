@@ -1,8 +1,7 @@
 package main
 
-// Shared helpers mirroring typescript/examples/playground-api/shared/utils.ts:
-// ANSI color helpers, the surfnet JSON-RPC cheatcode caller, and the
-// settlement / receipt log lines.
+// Shared helpers: ANSI color helpers, the surfnet JSON-RPC cheatcode
+// caller, and the settlement / receipt log lines.
 
 import (
 	"bytes"
@@ -97,7 +96,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeJSONError writes the {"error": message} body the TS modules emit.
+// writeJSONError writes the standard {"error": message} JSON error body.
 func writeJSONError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }

@@ -1,9 +1,6 @@
 package server
 
-// Mirrors the verifyOpenTx coverage in
-// typescript/packages/mpp/src/__tests__/session-on-chain.test.ts plus the
-// settle-and-distribute composition in
-// typescript/packages/mpp/src/__tests__/session-server-on-chain.test.ts:
+// Coverage of VerifyOpenTx and the settle-and-distribute composition:
 // legacy and v0 transaction decoding, payload-signature binding, challenge
 // validation failure modes, RPC-backed confirmation, and the settlement
 // instruction sequence derived from stored channel state.
@@ -46,7 +43,7 @@ const (
 )
 
 // buildOpenTxFixture builds a payer-signed open transaction in the requested
-// encoding (the rust client emits legacy, the TypeScript client emits v0).
+// encoding (clients across the language SDKs emit either).
 func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 	t.Helper()
 

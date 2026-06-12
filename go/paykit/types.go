@@ -29,8 +29,8 @@ const (
 	EURC  Stablecoin = "EURC"
 )
 
-// Network is the Solana cluster slug. Backing values match the Rust
-// spine's `Network::as_str()` so a wire round-trip is trivial.
+// Network is the Solana cluster slug. Backing values are the wire slugs
+// shared across the language SDKs, so a wire round-trip is trivial.
 type Network string
 
 const (
@@ -60,7 +60,7 @@ func ParseNetwork(tag string) (Network, error) {
 // DefaultRPCURL is the public RPC endpoint the kit falls back to when
 // [Config.RPCURL] is "". Localnet defaults to the hosted Surfpool
 // endpoint (mainnet-state fork) so the example apps boot without a
-// local validator. Mirrors Ruby PR #142 + Lua PR #141 caveat #2.
+// local validator.
 func (n Network) DefaultRPCURL() string {
 	switch n {
 	case SolanaMainnet:
@@ -184,8 +184,8 @@ type X402Config struct {
 	// extension with info.required=true on the 402 challenge, and rejects
 	// any submitted credential that does not echo a valid `pay_`-shaped id
 	// (coinbase x402 payment_identifier spec: HTTP 400). When false
-	// (default) the challenge carries no `extensions` object, matching the
-	// rust spine's PaymentRequiredEnvelope.extensions: None default.
+	// (default) the challenge carries no `extensions` object; extensions
+	// default to absent on the wire.
 	RequirePaymentIdentifier bool
 }
 

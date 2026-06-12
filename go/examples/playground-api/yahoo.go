@@ -1,12 +1,12 @@
 package main
 
 // Yahoo Finance client returning the same JSON shapes as the yahoo-finance2
-// npm package (v3) used by typescript/examples/playground-api: the v7 quote
-// endpoint (crumb-authenticated), the v1 search endpoint, and the v8 chart
-// endpoint with the package's "array" result layout. Epoch-second date
-// fields become ISO-8601 millisecond strings, "low - high" range strings
-// become {low, high} objects, and chart indicator columns are zipped into
-// per-day quote rows, so both playground servers serve identical bodies.
+// npm package (v3), which the playground API contract is defined against:
+// the v7 quote endpoint (crumb-authenticated), the v1 search endpoint, and
+// the v8 chart endpoint with the package's "array" result layout.
+// Epoch-second date fields become ISO-8601 millisecond strings, "low - high"
+// range strings become {low, high} objects, and chart indicator columns are
+// zipped into per-day quote rows.
 
 import (
 	"context"
@@ -69,8 +69,8 @@ func (c *yahooClient) get(ctx context.Context, rawURL string) ([]byte, int, erro
 }
 
 // getJSON fetches a Yahoo endpoint and decodes the JSON body. Numbers
-// decode to float64, the same representation JSON.parse gives the
-// TypeScript server, so re-encoding renders them identically.
+// decode to float64, the representation JSON.parse uses, so re-encoding
+// renders them identically to yahoo-finance2 output.
 func (c *yahooClient) getJSON(ctx context.Context, rawURL string, out any) error {
 	body, _, err := c.get(ctx, rawURL)
 	if err != nil {
@@ -197,9 +197,9 @@ func (c *yahooClient) quote(ctx context.Context, symbol string) (map[string]any,
 	return nil, nil
 }
 
-// search returns the search endpoint's quotes array for query, issuing the
-// same request parameters as yahoo-finance2's defaults so the result list
-// (counts included) matches the TypeScript server.
+// search returns the search endpoint's quotes array for query, issuing
+// yahoo-finance2's default request parameters so the result list (counts
+// included) matches the package's output.
 func (c *yahooClient) search(ctx context.Context, query string) ([]map[string]any, error) {
 	params := url.Values{
 		"q":                          {query},
@@ -236,8 +236,8 @@ func (c *yahooClient) search(ctx context.Context, query string) ([]map[string]an
 	return body.Quotes, nil
 }
 
-// chartRangeDays maps the playground's range parameter onto a day count,
-// like the TypeScript RANGE_TO_DAYS table (unknown ranges fall back to 30).
+// chartRangeDays maps the playground's range parameter onto a day count
+// (unknown ranges fall back to 30).
 var chartRangeDays = map[string]int{"1d": 1, "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}
 
 // chartQuote is one per-day row of the chart "array" layout. Field order

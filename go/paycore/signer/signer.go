@@ -46,8 +46,8 @@ func (s *localSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
 func (s *localSigner) IsDemo() bool { return s.isDemo }
 
 // demoSecret is the 64-byte secret of the package-shipped demo
-// keypair, identical to Ruby's PayKit::Signer::Demo and PHP's
-// PayKit\Signer\Demo. Pubkey: ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq.
+// keypair, identical across the language SDKs.
+// Pubkey: ALtYSsZuYyKrNSe6GnVCzxj1T2RPMTPzXMe51xhbmXEq.
 var demoSecret = func() []byte {
 	raw, _ := hex.DecodeString(
 		"1a3d75c009e81833598769b62f0953f40bd655aae353aa1a37813a7259a0c333" +

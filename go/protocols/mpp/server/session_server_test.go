@@ -1,10 +1,7 @@
 package server
 
-// Mirrors the off-chain handler coverage of
-// typescript/packages/mpp/src/__tests__/session-server.test.ts and the unit
-// suite in rust/crates/mpp/src/server/session.rs (process_open,
-// verify_voucher, process_topup, begin_delivery, process_commit,
-// process_close, build_challenge_request).
+// Off-chain session handler coverage: open, voucher verification, top-up,
+// delivery begin/commit, close, and challenge-request building.
 
 import (
 	"context"

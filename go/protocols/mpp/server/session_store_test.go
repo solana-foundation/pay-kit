@@ -1,8 +1,8 @@
 package server
 
-// Mirrors the store half of
-// typescript/packages/mpp/src/__tests__/session-store.test.ts and the
-// MemoryChannelStore suite in rust/crates/mpp/src/store.rs.
+// MemoryChannelStore coverage: insert-on-missing updates, mutator error
+// handling, concurrent update serialization, list filtering, delete,
+// finalization, and clone isolation.
 
 import (
 	"context"

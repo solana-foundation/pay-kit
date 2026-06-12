@@ -1,8 +1,6 @@
 package server
 
-// HTTP-facing session method: the idiomatic Go equivalent of the TypeScript
-// session(parameters) server method in
-// typescript/packages/mpp/src/server/Session.ts.
+// HTTP-facing session method.
 //
 // A Session issues HMAC-bound 402 challenges carrying a SessionRequest
 // (Challenge), verifies Authorization credentials whose payload is one of the
@@ -11,13 +9,11 @@ package server
 // (Routes), and drives on-chain settlement at close when both a merchant
 // signer and an RPC client are configured. The lower-level building blocks
 // (SessionServer, ChannelStore, the voucher verifier, and the on-chain
-// helpers) are composed here the same way Session.ts composes
-// server/session/{store,voucher,on-chain,lifecycle}.
+// helpers) are composed here.
 //
-// Wire truth is rust/crates/mpp/src/server/session.rs; the close settlement
-// path, the idle-close watchdog, the re-drivable close, and the side-channel
-// routes are TypeScript-server extensions mirrored from Session.ts and
-// documented as such where they diverge from rust.
+// The close settlement path, the idle-close watchdog, the re-drivable close,
+// and the side-channel routes are extensions beyond the draft MPP spec and
+// are documented as such where they extend it.
 
 import (
 	"context"
@@ -35,7 +31,7 @@ import (
 )
 
 // OpenTxSubmitter selects who broadcasts a push-mode payment-channel open
-// transaction. Mirrors the TypeScript openTxSubmitter parameter.
+// transaction.
 type OpenTxSubmitter string
 
 const (
@@ -49,8 +45,7 @@ const (
 	OpenTxSubmitterServer OpenTxSubmitter = "server"
 )
 
-// SessionOptions configures NewSession. Mirrors session.Parameters in
-// typescript/packages/mpp/src/server/Session.ts.
+// SessionOptions configures NewSession.
 type SessionOptions struct {
 	// Operator public key (base58), shown to clients in the challenge.
 	Operator string
@@ -96,8 +91,7 @@ type SessionOptions struct {
 	// Splits are optional basis-point splits distributed at close. Max 8.
 	Splits []Split
 
-	// CloseDelay arms the idle-close watchdog; zero disables it. Mirrors the
-	// TypeScript closeDelayMs parameter.
+	// CloseDelay arms the idle-close watchdog; zero disables it.
 	CloseDelay time.Duration
 
 	// OpenTxSubmitter selects who broadcasts push-mode open transactions.
@@ -106,8 +100,7 @@ type SessionOptions struct {
 
 	// Signer is the merchant signer for the settle_and_finalize + distribute
 	// settlement transaction. Settlement at close (and on idle close) only
-	// runs when both Signer and RPC are configured, mirroring the TypeScript
-	// behavior.
+	// runs when both Signer and RPC are configured.
 	Signer solanatx.Signer
 
 	// PaymentChannelPayerSigner completes the fee-payer signature when the
@@ -119,8 +112,7 @@ type SessionOptions struct {
 
 	// RPC is the optional RPC client used for on-chain checks, the
 	// recentBlockhash prefetch, and settlement broadcasts. Nil skips every
-	// on-chain check and trusts payload claims as provided, matching rust
-	// SessionConfig with rpc_url unset.
+	// on-chain check and trusts payload claims as provided.
 	RPC solanatx.RPCClient
 }
 
@@ -140,8 +132,7 @@ type Session struct {
 	rpc             solanatx.RPCClient
 }
 
-// NewSession creates the server-side session method. Validation mirrors the
-// TypeScript session(parameters) constructor.
+// NewSession creates the server-side session method.
 func NewSession(options SessionOptions) (*Session, error) {
 	if options.Cap == 0 {
 		return nil, core.NewError(core.ErrCodeInvalidConfig, "cap must be positive")
@@ -250,9 +241,8 @@ func (s *Session) touch(channelID string) {
 }
 
 // closeOnIdle is the idle-close watchdog handler: settle the channel
-// on-chain when both a merchant signer and an RPC client are configured,
-// mirroring the TypeScript lifecycle wiring. Errors have no synchronous
-// caller to report to and are logged instead.
+// on-chain when both a merchant signer and an RPC client are configured.
+// Errors have no synchronous caller to report to and are logged instead.
 func (s *Session) closeOnIdle(channelID string) {
 	if s.signer == nil || s.rpc == nil {
 		return
@@ -284,9 +274,8 @@ type SessionChallengeOptions struct {
 // included only when positive, modes are omitted when push-only,
 // pullVoucherStrategy is included only when pull is offered, and a recent
 // blockhash is prefetched (non-fatally) when an RPC client is configured.
-// Mirrors the TypeScript session() request handler; the blockhash source is
-// the injected RPC client rather than a raw URL fetch so unit tests stay
-// offline.
+// The blockhash source is the injected RPC client rather than a raw URL
+// fetch so unit tests stay offline.
 func (s *Session) Challenge(ctx context.Context, options SessionChallengeOptions) (core.PaymentChallenge, error) {
 	capValue := s.cap
 	if options.Cap != "" {
@@ -335,8 +324,7 @@ func (s *Session) Challenge(ctx context.Context, options SessionChallengeOptions
 
 // VerifyCredential verifies a session Authorization credential: Tier-1 HMAC
 // and expiry, the Tier-2 pinned-field backstop, then dispatch on the payload
-// action (open / voucher / commit / topUp / close). Mirrors the TypeScript
-// session() verify handler.
+// action (open / voucher / commit / topUp / close).
 func (s *Session) VerifyCredential(ctx context.Context, credential core.PaymentCredential) (core.Receipt, error) {
 	challenge := core.PaymentChallenge{
 		ID:      credential.Challenge.ID,
@@ -430,8 +418,7 @@ func (s *Session) verifyPinnedSessionFields(credential core.PaymentCredential, r
 // handleOpen processes an open action: resolve the channel facts from the
 // payload (verifying or broadcasting the attached transaction when present),
 // enforce the deposit invariants, and insert the channel state atomically and
-// idempotently. Mirrors handleOpen in
-// typescript/packages/mpp/src/server/Session.ts.
+// idempotently.
 func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) (string, error) {
 	mode := payload.Mode
 	if !s.core.supportsMode(mode) {
@@ -440,8 +427,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	if mode == intents.SessionModePull && s.core.config.PullVoucherStrategy == nil {
 		return "", fmt.Errorf("pull-mode open requires a pullVoucherStrategy on the server config")
 	}
-	// Empty strings count as missing, mirroring the falsy checks in the
-	// TypeScript handler (Session.ts) and OpenPayload::session_id in rust.
+	// Empty strings count as missing.
 	hasTransaction := payload.Transaction != nil && *payload.Transaction != ""
 	hasChannelID := payload.ChannelID != nil && *payload.ChannelID != ""
 	if mode == intents.SessionModePush && !hasTransaction && !hasChannelID {
@@ -502,9 +488,8 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	case mode == intents.SessionModePush:
 		// No transaction in the payload: the client asserts a previously
 		// broadcast open. With an RPC client the open signature is confirmed
-		// on-chain before persisting (mirrors rust process_open); without
-		// one the channelId/deposit fields are trusted as-is, matching rust
-		// with rpc_url unset.
+		// on-chain before persisting; without one the channelId/deposit
+		// fields are trusted as-is.
 		channelID = *payload.ChannelID
 		var err error
 		deposit, err = payload.DepositAmount()
@@ -518,12 +503,12 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		}
 	default:
 		// Pull mode without a channel transaction: trust the
-		// channelId/tokenAccount + approvedAmount. Keying order matches rust
-		// OpenPayload::session_id (channelId first, then tokenAccount).
+		// channelId/tokenAccount + approvedAmount. Keying order is channelId
+		// first, then tokenAccount.
 		//
-		// The operatedVoucher initMultiDelegateTx submission from the
-		// TypeScript handler is not ported: the Go SDK has no multi-delegate
-		// program builders (the client cannot produce those transactions
+		// The Go SDK has no multi-delegate program builders, so
+		// operated-voucher opens do not submit a multi-delegate init
+		// transaction here (the client cannot produce those transactions
 		// either; see go/README.md scope notes).
 		var err error
 		channelID, err = payload.SessionID()
@@ -616,8 +601,7 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
 	}
 
-	// Cheap store pre-checks before touching the network, mirroring the
-	// TypeScript handler ordering.
+	// Cheap store pre-checks before touching the network.
 	existing, err := s.core.store.GetChannel(ctx, payload.ChannelID)
 	if err != nil {
 		return "", err
@@ -648,11 +632,10 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 // client are configured. The receipt reference is the on-chain settle
 // signature when one exists, else the channel id.
 //
-// Unlike SessionServer.ProcessClose (rust parity: a second close is always
-// rejected), the close here is re-drivable: when a prior close flipped the
+// Unlike SessionServer.ProcessClose, where a second close is always
+// rejected, the close here is re-drivable: when a prior close flipped the
 // close-pending flag but settlement never recorded a signature, the retry
 // proceeds so a transient settlement failure cannot strand the channel.
-// Mirrors handleClose in typescript/packages/mpp/src/server/Session.ts.
 func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload) (string, error) {
 	channelID := payload.ChannelID
 	now := uint64(time.Now().Unix())
@@ -692,7 +675,7 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 				case VoucherVerifyRejected:
 					// A non-replay final voucher at or below the watermark is
 					// a hard error: the close must abort rather than silently
-					// settle a stale amount (rust process_close parity).
+					// settle a stale amount.
 					return ChannelState{}, fmt.Errorf("%s: %s", verdict.Reason, verdict.Detail)
 				case VoucherVerifyAccepted:
 					next.Cumulative = verdict.NewCumulative
@@ -729,8 +712,7 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 // when a voucher was accepted) + distribute for a channel that has flipped
 // to close-pending, submits them as one merchant-signed transaction, and
 // marks the channel finalized with the settled signature. Returns "" when
-// the channel does not exist. Mirrors closeAndSettleChannel in
-// typescript/packages/mpp/src/server/Session.ts.
+// the channel does not exist.
 func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (string, error) {
 	state, err := s.core.store.GetChannel(ctx, channelID)
 	if err != nil {
@@ -741,7 +723,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 	}
 	merchant := s.signer.PublicKey()
 	// The recipient backstops the distribute payer for channels that never
-	// recorded an operator (TS `state.operator ?? recipient` fallback).
+	// recorded an operator.
 	instructions, err := s.core.settlementInstructionsForState(*state, channelID, merchant, s.recipient)
 	if err != nil {
 		return "", err
@@ -780,8 +762,7 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 }
 
 // parseSessionU64 parses a non-negative decimal string into a u64, naming
-// the field in the error. Mirrors parseU64String in
-// typescript/packages/mpp/src/server/Session.ts.
+// the field in the error.
 func parseSessionU64(value, name string) (uint64, error) {
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {

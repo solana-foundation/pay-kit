@@ -2,8 +2,7 @@ package main
 
 // Offline smoke test for the playground API: boots the full route table
 // against a stub JSON-RPC server (no network, no funded accounts) and checks
-// every endpoint's unauthenticated behavior, mirroring what the CI boot
-// smoke exercises before the Playwright payment-link flow runs.
+// every endpoint's unauthenticated behavior.
 
 import (
 	"encoding/json"

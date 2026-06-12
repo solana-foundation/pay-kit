@@ -2,14 +2,9 @@ package server
 
 // On-chain verification and settlement for the session intent.
 //
-// Mirrors typescript/packages/mpp/src/server/session/on-chain.ts
-// (verifyOpenTx, buildSettleAndFinalizeInstructions + buildDistributeInstruction
-// composition) and the rpc_url-gated transaction checks plus finalize_params
-// derivation in rust/crates/mpp/src/server/session.rs.
-//
 // Trust model: when no verifier is installed on SessionConfig (the seam is
-// nil), transaction signatures and deposit amounts are trusted as provided,
-// matching rust SessionConfig.rpc_url = None. NewOpenTxVerifier always
+// nil), transaction signatures and deposit amounts are trusted as
+// provided. NewOpenTxVerifier always
 // validates an attached open transaction structurally (decode, bind the
 // payload signature, check the open instruction against the challenge,
 // re-derive the channel PDA); confirming that the transaction actually landed
@@ -34,12 +29,11 @@ import (
 
 // openInstructionDiscriminator is the payment-channel open instruction
 // discriminator (single-byte Anchor-numeric form, not the 8-byte sha256
-// convention). Mirrors OPEN_DISCRIMINATOR in the vendored Codama clients.
+// convention). Matches OPEN_DISCRIMINATOR in the vendored Codama clients.
 const openInstructionDiscriminator = 1
 
 // VerifyOpenTxExpected carries the challenge-side values a client-submitted
-// open transaction is validated against. Mirrors VerifyOpenTxExpected in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// open transaction is validated against.
 type VerifyOpenTxExpected struct {
 	// AuthorizedSigner is the voucher signing key claimed by the open payload
 	// (base58); the transaction's authorizedSigner account must match it.
@@ -68,8 +62,7 @@ type VerifyOpenTxExpected struct {
 }
 
 // VerifyOpenTxResult carries the channel facts extracted from a verified open
-// transaction. Mirrors VerifyOpenTxResult in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// transaction.
 type VerifyOpenTxResult struct {
 	// ChannelID is the channel PDA derived from the open instruction (base58).
 	ChannelID string
@@ -87,8 +80,8 @@ type VerifyOpenTxResult struct {
 // VerifyOpenTx decodes and validates a client-submitted payment-channel open
 // transaction against the session challenge.
 //
-// Both legacy and v0 transaction encodings are accepted (the rust client
-// emits legacy, the TypeScript client emits v0). The embedded open
+// Both legacy and v0 transaction encodings are accepted (clients across the
+// language SDKs emit either). The embedded open
 // instruction must target the configured payment-channels program, the payee
 // must equal the challenge recipient, the mint must match the challenge
 // currency/network, the authorizedSigner must match the payload, the deposit
@@ -100,9 +93,6 @@ type VerifyOpenTxResult struct {
 // an unrelated (but confirmed) signature with different transaction bytes.
 // If rpcClient is non-nil, that bound signature is additionally confirmed
 // on-chain; nil skips the liveness check (structural validation only).
-//
-// Mirrors verifyOpenTx in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
 func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, rpcClient solanatx.RPCClient) (VerifyOpenTxResult, error) {
 	if payload.Transaction == nil || *payload.Transaction == "" {
 		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.transaction is required for push-mode open verification")
@@ -245,8 +235,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 // it is structurally validated against the challenge via VerifyOpenTx (with
 // an on-chain liveness check when rpcClient is non-nil). When the payload
 // carries only a confirmation signature, rpcClient is required and the
-// signature is confirmed on-chain, mirroring the rust rpc_url-gated
-// getSignatureStatuses check.
+// signature is confirmed on-chain via getSignatureStatuses.
 func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) SessionTxVerifier[intents.OpenPayload] {
 	return func(ctx context.Context, payload *intents.OpenPayload) error {
 		if payload.Transaction != nil && *payload.Transaction != "" {
@@ -270,7 +259,7 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 
 // NewTopUpTxVerifier returns the on-chain top-up verifier to install on
 // SessionConfig.VerifyTopUpTx: it confirms the top-up transaction signature
-// on-chain via getSignatureStatuses, mirroring the rust rpc_url-gated check.
+// on-chain via getSignatureStatuses.
 // A nil rpcClient returns nil so the seam stays unset, and the new deposit is
 // trusted as provided; suitable only for unit tests or deployments that
 // verify transactions out of band.
@@ -291,10 +280,7 @@ func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.
 // state, then call MarkFinalized once the transaction confirms.
 //
 // The mint and token program are resolved from the configured currency and
-// network (Token-2022 for PYUSD/USDG/CASH), mirroring
-// default_token_program_for_currency in rust/crates/mpp/src/server/session.rs
-// and submitSettleAndDistribute in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// network (Token-2022 for PYUSD/USDG/CASH).
 func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID string, merchant solana.PublicKey) ([]solana.Instruction, error) {
 	state, err := s.store.GetChannel(ctx, channelID)
 	if err != nil {
@@ -308,9 +294,8 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 
 // settlementInstructionsForState derives the settlement instruction sequence
 // for an already-read channel snapshot. payerFallback, when non-empty, is
-// used as the distribute payer when the channel never recorded an operator
-// (mirrors the TypeScript closeAndSettleChannel `state.operator ?? recipient`
-// fallback); empty keeps the strict unknown-payer error.
+// used as the distribute payer when the channel never recorded an operator;
+// empty keeps the strict unknown-payer error.
 func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey, payerFallback string) ([]solana.Instruction, error) {
 	channel, err := solana.PublicKeyFromBase58(channelID)
 	if err != nil {
@@ -407,8 +392,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 }
 
 // SubmitOpenTxResult carries the verified channel facts plus the broadcast
-// signature of a server-submitted open. Mirrors SubmitOpenTxResult in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// signature of a server-submitted open.
 type SubmitOpenTxResult struct {
 	VerifyOpenTxResult
 
@@ -421,8 +405,7 @@ type SubmitOpenTxResult struct {
 // transaction, broadcasts it, and waits for at least confirmed commitment.
 // Callers must not persist channel state for a transaction that never
 // landed. Used when the session is configured with the server open-tx
-// submitter. Mirrors submitOpenTx in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// submitter.
 func SubmitOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, payerSigner solanatx.Signer, rpcClient solanatx.RPCClient) (SubmitOpenTxResult, error) {
 	if rpcClient == nil {
 		return SubmitOpenTxResult{}, fmt.Errorf("SubmitOpenTx requires an RPC client")
@@ -472,8 +455,7 @@ func signerIsRequired(tx *solana.Transaction, key solana.PublicKey) bool {
 
 // confirmTransactionSignature checks once via getSignatureStatuses that the
 // base58 signature names a known, successful transaction. label names the
-// transaction in error messages ("open", "top-up"). Mirrors
-// verify_transaction_signature in rust/crates/mpp/src/server/session.rs.
+// transaction in error messages ("open", "top-up").
 func confirmTransactionSignature(ctx context.Context, rpcClient solanatx.RPCClient, signature, label string) error {
 	parsed, err := solana.SignatureFromBase58(signature)
 	if err != nil {

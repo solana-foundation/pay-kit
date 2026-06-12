@@ -4,8 +4,8 @@ package intents
 //
 // The session intent opens a payment channel between a client and server,
 // allowing incremental payments via off-chain signed vouchers backed by the
-// on-chain payment-channels program. Wire format mirrors
-// rust/crates/mpp/src/protocol/intents/session.rs.
+// on-chain payment-channels program. The JSON wire format is identical across
+// the language SDKs; the cross-language harness pins it.
 
 import (
 	"encoding/json"
@@ -22,18 +22,12 @@ import (
 //
 // This stays below JavaScript's max safe integer so JSON intermediaries do not
 // round it before the credential is decoded.
-//
-// Mirrors rust DEFAULT_SESSION_EXPIRES_AT in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 const DefaultSessionExpiresAt int64 = 4_102_444_800
 
 // SessionMode is the on-chain funding mechanism for a session.
 //
 // Advertised by the server in SessionRequest.Modes; the client picks the mode
 // it will use when sending its open action.
-//
-// Mirrors rust SessionMode in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SessionMode string
 
 const (
@@ -48,9 +42,6 @@ const (
 
 // SessionPullVoucherStrategy is the voucher authority used when
 // SessionModePull is advertised.
-//
-// Mirrors rust SessionPullVoucherStrategy in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SessionPullVoucherStrategy string
 
 const (
@@ -64,9 +55,6 @@ const (
 )
 
 // CommitStatus is the commit receipt status.
-//
-// Mirrors rust CommitStatus in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type CommitStatus string
 
 const (
@@ -81,9 +69,6 @@ const (
 // SessionRequest is the session intent request — the payload embedded in a 402
 // challenge. Describes the channel parameters: cap, currency, splits, network,
 // etc.
-//
-// Mirrors rust SessionRequest in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SessionRequest struct {
 	// Cap is the maximum total amount the client may spend in this session
 	// (base units).
@@ -142,9 +127,6 @@ type SessionRequest struct {
 
 // SessionSplit is a payment split committed at channel open; distributed to a
 // specific recipient when the channel closes.
-//
-// Mirrors rust SessionSplit in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SessionSplit struct {
 	// Recipient address (base58).
 	Recipient string `json:"recipient"`
@@ -156,8 +138,7 @@ type SessionSplit struct {
 // ── Client actions ──
 
 // sessionActionTag is the discriminator used by SessionAction's tagged-union
-// serialization. The wire values mirror rust's serde(tag="action",
-// rename_all="camelCase"); note "topUp" is camelCase.
+// serialization. The wire values are camelCase; note "topUp", not "topup".
 type sessionActionTag string
 
 const (
@@ -175,9 +156,6 @@ const (
 // "action": "open" | "voucher" | "commit" | "topUp" | "close",
 // with the payload fields flattened alongside the discriminator. Exactly one of
 // the payload pointers is non-nil for a valid action.
-//
-// Mirrors rust SessionAction (serde tag="action", rename_all="camelCase") in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SessionAction struct {
 	// Open a new channel/delegation and start the session.
 	Open *OpenPayload
@@ -220,8 +198,7 @@ func NewCloseAction(payload ClosePayload) SessionAction {
 	return SessionAction{Close: &payload}
 }
 
-// MarshalJSON flattens the active payload alongside an "action" discriminator,
-// mirroring rust's #[serde(tag="action")] enum encoding.
+// MarshalJSON flattens the active payload alongside an "action" discriminator.
 func (a SessionAction) MarshalJSON() ([]byte, error) {
 	var tag sessionActionTag
 	var payload any
@@ -274,7 +251,7 @@ func (a SessionAction) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads the "action" discriminator and decodes the flattened
-// payload into the matching variant, mirroring rust's #[serde(tag="action")].
+// payload into the matching variant.
 func (a *SessionAction) UnmarshalJSON(data []byte) error {
 	var probe struct {
 		Action sessionActionTag `json:"action"`
@@ -331,9 +308,6 @@ func (a *SessionAction) UnmarshalJSON(data []byte) error {
 // Salt marshals as a decimal string (authorization headers are JSON
 // canonicalized, and arbitrary uint64 values are not safe JSON numbers) and
 // decodes from either a string or a JSON number.
-//
-// Mirrors rust OpenPayload in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type OpenPayload struct {
 	// Mode is the session mode discriminant. Required (no default).
 	Mode SessionMode `json:"mode"`
@@ -420,8 +394,7 @@ type openPayloadJSON struct {
 	Signature           string          `json:"signature"`
 }
 
-// MarshalJSON serializes Salt as a decimal string, mirroring rust's
-// serialize_optional_u64_as_string.
+// MarshalJSON serializes Salt as a decimal string.
 func (p OpenPayload) MarshalJSON() ([]byte, error) {
 	wire := openPayloadJSON{
 		Mode:                p.Mode,
@@ -454,8 +427,7 @@ func (p OpenPayload) MarshalJSON() ([]byte, error) {
 	return out, nil
 }
 
-// UnmarshalJSON decodes Salt from either a decimal string or a JSON number,
-// mirroring rust's deserialize_optional_u64_from_string_or_number.
+// UnmarshalJSON decodes Salt from either a decimal string or a JSON number.
 func (p *OpenPayload) UnmarshalJSON(data []byte) error {
 	var wire openPayloadJSON
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -521,8 +493,6 @@ func parseOptionalSalt(raw json.RawMessage) (*uint64, error) {
 }
 
 // OpenPayloadPush constructs a push payment-channel open payload.
-//
-// Mirrors rust OpenPayload::push.
 func OpenPayloadPush(channelID, deposit, authorizedSigner, signature string) OpenPayload {
 	return OpenPayload{
 		Mode:             SessionModePush,
@@ -534,8 +504,6 @@ func OpenPayloadPush(channelID, deposit, authorizedSigner, signature string) Ope
 }
 
 // OpenPayloadPaymentChannel constructs a payment-channel push open payload.
-//
-// Mirrors rust OpenPayload::payment_channel.
 func OpenPayloadPaymentChannel(
 	channelID, deposit, payer, payee, mint string,
 	salt uint64,
@@ -551,8 +519,6 @@ func OpenPayloadPaymentChannel(
 
 // OpenPayloadPaymentChannelWithMode constructs a payment-channel open payload
 // with an explicit submission mode.
-//
-// Mirrors rust OpenPayload::payment_channel_with_mode.
 func OpenPayloadPaymentChannelWithMode(
 	mode SessionMode,
 	channelID, deposit, payer, payee, mint string,
@@ -575,8 +541,6 @@ func OpenPayloadPaymentChannelWithMode(
 }
 
 // OpenPayloadPull constructs a pull (SPL delegation) open payload.
-//
-// Mirrors rust OpenPayload::pull.
 func OpenPayloadPull(tokenAccount, approvedAmount, owner, authorizedSigner, signature string) OpenPayload {
 	return OpenPayload{
 		Mode:             SessionModePull,
@@ -590,8 +554,6 @@ func OpenPayloadPull(tokenAccount, approvedAmount, owner, authorizedSigner, sign
 
 // WithTransaction attaches a signed open transaction for operator/server
 // broadcast.
-//
-// Mirrors rust OpenPayload::with_transaction.
 func (p OpenPayload) WithTransaction(txBase64 string) OpenPayload {
 	p.Transaction = &txBase64
 	return p
@@ -599,8 +561,6 @@ func (p OpenPayload) WithTransaction(txBase64 string) OpenPayload {
 
 // WithInitTx attaches a pre-signed InitMultiDelegate + CreateFixedDelegation
 // transaction.
-//
-// Mirrors rust OpenPayload::with_init_tx.
 func (p OpenPayload) WithInitTx(txBase64 string) OpenPayload {
 	p.InitMultiDelegateTx = &txBase64
 	return p
@@ -608,8 +568,6 @@ func (p OpenPayload) WithInitTx(txBase64 string) OpenPayload {
 
 // WithUpdateTx attaches a pre-signed CreateFixedDelegation (cap update)
 // transaction.
-//
-// Mirrors rust OpenPayload::with_update_tx.
 func (p OpenPayload) WithUpdateTx(txBase64 string) OpenPayload {
 	p.UpdateDelegationTx = &txBase64
 	return p
@@ -619,8 +577,6 @@ func (p OpenPayload) WithUpdateTx(txBase64 string) OpenPayload {
 //
 //   - Payment channel: ChannelID
 //   - Operated-voucher pull: TokenAccount
-//
-// Mirrors rust OpenPayload::session_id.
 func (p OpenPayload) SessionID() (string, error) {
 	if p.ChannelID != nil {
 		return *p.ChannelID, nil
@@ -640,8 +596,6 @@ func (p OpenPayload) SessionID() (string, error) {
 
 // DepositAmount returns the deposit / approved amount for this open (base
 // units).
-//
-// Mirrors rust OpenPayload::deposit_amount.
 func (p OpenPayload) DepositAmount() (uint64, error) {
 	var raw string
 	switch {
@@ -666,9 +620,6 @@ func (p OpenPayload) DepositAmount() (uint64, error) {
 
 // VoucherPayload is the payload for the voucher action (per-request
 // micropayment).
-//
-// Mirrors rust VoucherPayload in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type VoucherPayload struct {
 	// Voucher is the signed voucher authorizing cumulative spend.
 	Voucher SignedVoucher `json:"voucher"`
@@ -680,9 +631,6 @@ type VoucherPayload struct {
 // Clients treat this like an offset in a message log: once the message has been
 // processed successfully, ack/commit signs a voucher for Amount and sends a
 // CommitPayload back to the server.
-//
-// Mirrors rust MeteringDirective in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type MeteringDirective struct {
 	// DeliveryID is the server-generated idempotency key for this delivery.
 	DeliveryID string `json:"deliveryId"`
@@ -712,8 +660,6 @@ type MeteringDirective struct {
 }
 
 // AmountBaseUnits parses Amount as base units.
-//
-// Mirrors rust MeteringDirective::amount_base_units.
 func (d MeteringDirective) AmountBaseUnits() (uint64, error) {
 	value, err := strconv.ParseUint(d.Amount, 10, 64)
 	if err != nil {
@@ -726,9 +672,6 @@ func (d MeteringDirective) AmountBaseUnits() (uint64, error) {
 //
 // The amount MUST be less than or equal to the amount reserved by the original
 // MeteringDirective.
-//
-// Mirrors rust MeteringUsage in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type MeteringUsage struct {
 	// DeliveryID is the delivery id from the original MeteringDirective.
 	DeliveryID string `json:"deliveryId"`
@@ -738,8 +681,6 @@ type MeteringUsage struct {
 }
 
 // AmountBaseUnits parses Amount as base units.
-//
-// Mirrors rust MeteringUsage::amount_base_units.
 func (u MeteringUsage) AmountBaseUnits() (uint64, error) {
 	value, err := strconv.ParseUint(u.Amount, 10, 64)
 	if err != nil {
@@ -750,18 +691,12 @@ func (u MeteringUsage) AmountBaseUnits() (uint64, error) {
 
 // MeteredEnvelope is a payload paired with the metering directive required to
 // acknowledge it.
-//
-// Mirrors rust MeteredEnvelope<T> in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type MeteredEnvelope[T any] struct {
 	Payload  T                 `json:"payload"`
 	Metering MeteringDirective `json:"metering"`
 }
 
 // CommitPayload is the payload for the commit action.
-//
-// Mirrors rust CommitPayload in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type CommitPayload struct {
 	// DeliveryID from the original MeteringDirective.
 	DeliveryID string `json:"deliveryId"`
@@ -771,9 +706,6 @@ type CommitPayload struct {
 }
 
 // CommitReceipt is the result returned after a delivery commit is accepted.
-//
-// Mirrors rust CommitReceipt in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type CommitReceipt struct {
 	// DeliveryID from the original MeteringDirective.
 	DeliveryID string `json:"deliveryId"`
@@ -792,9 +724,6 @@ type CommitReceipt struct {
 }
 
 // TopUpPayload is the payload for the topUp action.
-//
-// Mirrors rust TopUpPayload in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type TopUpPayload struct {
 	// ChannelID is the on-chain channel address (base58).
 	ChannelID string `json:"channelId"`
@@ -808,9 +737,6 @@ type TopUpPayload struct {
 }
 
 // ClosePayload is the payload for the close action.
-//
-// Mirrors rust ClosePayload in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type ClosePayload struct {
 	// ChannelID is the on-chain channel address (base58).
 	ChannelID string `json:"channelId"`
@@ -827,9 +753,6 @@ type ClosePayload struct {
 // Vouchers are cumulative: the server always uses the latest valid voucher it
 // has received. The client MUST increment the cumulative amount with each
 // request.
-//
-// Mirrors rust SignedVoucher in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type SignedVoucher struct {
 	// Data is the voucher content.
 	Data VoucherData `json:"data"`
@@ -844,9 +767,6 @@ type SignedVoucher struct {
 //
 // Serialized as the on-chain VoucherArgs layout before signing:
 // channelId || cumulativeAmount(LE u64) || expiresAt(LE i64).
-//
-// Mirrors rust VoucherData in
-// rust/crates/mpp/src/protocol/intents/session.rs.
 type VoucherData struct {
 	// ChannelID is the channel/session ID this voucher is bound to (base58).
 	//
@@ -878,7 +798,7 @@ type voucherDataJSON struct {
 }
 
 // UnmarshalJSON decodes VoucherData, accepting "cumulative" as an alias for
-// "cumulativeAmount", mirroring rust's serde(alias="cumulative").
+// "cumulativeAmount".
 func (v *VoucherData) UnmarshalJSON(data []byte) error {
 	var wire voucherDataJSON
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -895,10 +815,10 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 	case wire.CumulativeAlias != nil:
 		v.Cumulative = *wire.CumulativeAlias
 	default:
-		// rust models cumulative as a required (non-Option) String, so a voucher
-		// without "cumulativeAmount"/"cumulative" is malformed; reject it here
-		// rather than leave Cumulative empty and fail with a cryptic parse error
-		// later when the voucher is signed or recorded.
+		// The cumulative amount is required on the wire, so a voucher without
+		// "cumulativeAmount"/"cumulative" is malformed; reject it here rather
+		// than leave Cumulative empty and fail with a cryptic parse error later
+		// when the voucher is signed or recorded.
 		return fmt.Errorf("voucher data missing cumulativeAmount")
 	}
 	return nil
@@ -907,9 +827,6 @@ func (v *VoucherData) UnmarshalJSON(data []byte) error {
 // MessageBytes serializes the voucher to the payment-channels VoucherArgs bytes
 // signed by Ed25519: channelId(32) || cumulativeAmount(LE u64) ||
 // expiresAt(LE i64), for a total of exactly 48 bytes.
-//
-// Mirrors rust VoucherData::message_bytes (which delegates to
-// payment_channels::voucher_message_bytes).
 func (v VoucherData) MessageBytes() ([]byte, error) {
 	channelID, err := solana.PublicKeyFromBase58(v.ChannelID)
 	if err != nil {
@@ -920,6 +837,6 @@ func (v VoucherData) MessageBytes() ([]byte, error) {
 		return nil, fmt.Errorf("invalid voucher cumulative")
 	}
 	// Delegate to the canonical packer so the 48-byte layout has a single
-	// source of truth, mirroring rust VoucherData::message_bytes.
+	// source of truth.
 	return paymentchannels.VoucherMessageBytes(channelID, cumulative, v.ExpiresAt)
 }

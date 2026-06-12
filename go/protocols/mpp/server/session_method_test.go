@@ -1,8 +1,7 @@
 package server
 
-// Mirrors the method-level coverage of
-// typescript/packages/mpp/src/__tests__/session-server.test.ts through the
-// real credential layer: challenge issuance (canonical shape, cap clamping,
+// Method-level coverage through the real credential layer: challenge
+// issuance (canonical shape, cap clamping,
 // pull advertisement, blockhash prefetch), the five verify() actions with
 // their replay/hardening semantics, the side-channel routes, settlement
 // retry, and the store sharing between the method and its routes.
@@ -440,8 +439,7 @@ func TestSessionOpenRejectsBadDeposits(t *testing.T) {
 // TestSessionOpenRejectsEmptyStringFields pins that empty strings count as
 // missing on the push open path: transaction="" with no channelId (and the
 // all-empty variant) must reject gracefully instead of dereferencing a nil
-// ChannelID. Mirrors the falsy guard in
-// typescript/packages/mpp/src/server/Session.ts handleOpen.
+// ChannelID.
 func TestSessionOpenRejectsEmptyStringFields(t *testing.T) {
 	session := newTestSession(t, nil)
 	signer := newTestVoucherSigner(t)

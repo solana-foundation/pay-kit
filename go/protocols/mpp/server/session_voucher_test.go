@@ -1,9 +1,7 @@
 package server
 
-// Mirrors the verifier half of
-// typescript/packages/mpp/src/__tests__/session-store.test.ts plus
-// adversarial ordering checks: the check sequence (order and operators) is
-// part of the wire contract.
+// Voucher verifier coverage plus adversarial ordering checks: the check
+// sequence (order and operators) is part of the wire contract.
 
 import (
 	"crypto/ed25519"

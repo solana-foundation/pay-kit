@@ -1,8 +1,7 @@
 // Command conformance is the Go cross-SDK conformance-vector runner.
 //
-// It honors the same stdin/stdout contract as the TypeScript reference
-// runner (harness/src/conformance/ts-runner.ts): read one conformance
-// vector as JSON on stdin, drive the real Go pay_kit SDK
+// It honors the harness conformance runner stdin/stdout contract: read one
+// conformance vector as JSON on stdin, drive the real Go pay_kit SDK
 // (paycore + protocols/mpp client build, server pre-broadcast verify, and
 // the wire canonical-JSON / base64url encoders) for the requested mode, and
 // emit one RunnerResult line as JSON on stdout.
@@ -51,7 +50,7 @@ const (
 	defaultSPLDecimals   = 6
 )
 
-// Vector mirrors harness/src/conformance/schema.ts ConformanceVector.
+// Vector is the top-level conformance-vector shape consumed from stdin.
 type Vector struct {
 	ID          string          `json:"id"`
 	Intent      string          `json:"intent"`
@@ -61,7 +60,7 @@ type Vector struct {
 	Expect      json.RawMessage `json:"expect"`
 }
 
-// VectorInput mirrors schema.ts VectorInput.
+// VectorInput carries the per-mode inputs of a conformance vector.
 type VectorInput struct {
 	Request         *ChargeRequest   `json:"request"`
 	Transaction     string           `json:"transaction"`
@@ -72,7 +71,7 @@ type VectorInput struct {
 	ChallengeID     *ChallengeID     `json:"challengeId"`
 	VoucherPreimage *VoucherPreimage `json:"voucherPreimage"`
 
-	// x402-exact inputs (mirror schema.ts VectorInput x402 fields).
+	// x402-exact inputs.
 	X402Offer             *X402Offer `json:"x402Offer"`
 	X402Version           int        `json:"x402Version"`
 	X402PinnedTransaction string     `json:"x402PinnedTransaction"`
@@ -82,13 +81,13 @@ type VectorInput struct {
 	X402ServerAmount      string     `json:"x402ServerAmount"`
 	X402PaymentHeader     string     `json:"x402PaymentHeader"`
 
-	// x402-exact v2 extensions inputs (mirror schema.ts VectorInput).
+	// x402-exact extensions inputs.
 	X402AdvertisedExtensions            json.RawMessage `json:"x402AdvertisedExtensions"`
 	X402PaymentIdentifierID             string          `json:"x402PaymentIdentifierId"`
 	X402ServerRequiresPaymentIdentifier bool            `json:"x402ServerRequiresPaymentIdentifier"`
 }
 
-// ChargeRequest mirrors schema.ts VectorChargeRequest.
+// ChargeRequest is the charge-intent request carried in a vector input.
 type ChargeRequest struct {
 	Amount           string         `json:"amount"`
 	Currency         string         `json:"currency"`
@@ -101,7 +100,7 @@ type ChargeRequest struct {
 	ComputeUnitPrice *string        `json:"computeUnitPrice"`
 }
 
-// MethodDetails mirrors schema.ts VectorChargeRequest.methodDetails.
+// MethodDetails is the methodDetails block of a vector charge request.
 type MethodDetails struct {
 	Network         string          `json:"network"`
 	Decimals        *uint8          `json:"decimals"`
@@ -112,20 +111,21 @@ type MethodDetails struct {
 	Splits          []paycore.Split `json:"splits"`
 }
 
-// RPCFixtures mirrors schema.ts VectorRpcFixtures.
+// RPCFixtures pins the RPC-derived values a vector needs so the run stays
+// RPC-free.
 type RPCFixtures struct {
 	RecentBlockhash string            `json:"recentBlockhash"`
 	MintOwners      map[string]string `json:"mintOwners"`
 }
 
-// EncodeBase64URL mirrors schema.ts encodeBase64Url.
+// EncodeBase64URL holds the raw bytes (hex or UTF-8) to base64url-encode.
 type EncodeBase64URL struct {
 	HexBytes string `json:"hexBytes"`
 	UTF8     string `json:"utf8"`
 }
 
-// ChallengeID mirrors schema.ts VectorInput.challengeId: the inputs to the
-// MPP charge challenge-id HMAC derivation.
+// ChallengeID holds the inputs to the MPP charge challenge-id HMAC
+// derivation.
 type ChallengeID struct {
 	SecretKey string `json:"secretKey"`
 	Realm     string `json:"realm"`
@@ -137,15 +137,15 @@ type ChallengeID struct {
 	Opaque    string `json:"opaque"`
 }
 
-// VoucherPreimage mirrors schema.ts VectorInput.voucherPreimage: the inputs to
-// the 48-byte session voucher message bytes.
+// VoucherPreimage holds the inputs to the 48-byte session voucher message
+// bytes.
 type VoucherPreimage struct {
 	ChannelID        string `json:"channelId"`
 	CumulativeAmount string `json:"cumulativeAmount"`
 	ExpiresAt        int64  `json:"expiresAt"`
 }
 
-// Transfer mirrors schema.ts TransactionShape.transfers element.
+// Transfer is one decoded transfer in a transaction shape.
 type Transfer struct {
 	Kind             string `json:"kind"`
 	Destination      string `json:"destination,omitempty"`
@@ -156,7 +156,7 @@ type Transfer struct {
 	TokenProgram     string `json:"tokenProgram,omitempty"`
 }
 
-// TransactionShape mirrors schema.ts TransactionShape.
+// TransactionShape is the decoded semantic shape of a built transaction.
 type TransactionShape struct {
 	FeePayer            string     `json:"feePayer,omitempty"`
 	Transfers           []Transfer `json:"transfers,omitempty"`
@@ -166,14 +166,14 @@ type TransactionShape struct {
 	Memo                []string   `json:"memo,omitempty"`
 }
 
-// ExactBytes mirrors schema.ts RunnerResult.exactBytes.
+// ExactBytes carries the exact encoder outputs for canonical-bytes vectors.
 type ExactBytes struct {
 	CanonicalJSON string `json:"canonicalJson,omitempty"`
 	Base64URL     string `json:"base64Url,omitempty"`
 	Bytes         []int  `json:"bytes,omitempty"`
 }
 
-// RunnerResult mirrors schema.ts RunnerResult.
+// RunnerResult is the single JSON result line emitted on stdout.
 type RunnerResult struct {
 	ID                string             `json:"id"`
 	Outcome           string             `json:"outcome"`
@@ -191,13 +191,12 @@ type rejectPattern struct {
 	code string
 }
 
-// rejectPatterns mirrors harness/src/conformance/reject.ts: it maps the Go
-// pay_kit SDK's native reject error strings onto the shared cross-SDK
-// RejectCode vocabulary. The Go messages are tuned here against the real
-// strings the SDK emits (e.g. "no matching token transfer for ..."), so the
-// alternation includes "token". As in the reference, a transferChecked
-// decimals mismatch is enforced through the transfer match key and so
-// honestly surfaces as the generic no-matching-transfer category, not a
+// rejectPatterns maps the Go pay_kit SDK's native reject error strings onto
+// the shared cross-SDK RejectCode vocabulary. The Go messages are tuned here
+// against the real strings the SDK emits (e.g. "no matching token transfer
+// for ..."), so the alternation includes "token". A transferChecked decimals
+// mismatch is enforced through the transfer match key and so honestly
+// surfaces as the generic no-matching-transfer category, not a
 // decimals-specific code.
 var rejectPatterns = []rejectPattern{
 	{regexp.MustCompile(`(?i)compute unit price .* exceeds (maximum|cap)`), "compute-price-over-cap"},
@@ -212,11 +211,10 @@ var rejectPatterns = []rejectPattern{
 	// x402-exact reject categories. `unsupported x402 version` must be
 	// checked before the generic invalid/payload fallback (the message is
 	// "invalid payload: unsupported x402 version: N"). `network mismatch`
-	// likewise precedes the fallback. Mirrors harness/src/conformance/reject.ts.
+	// likewise precedes the fallback.
 	{regexp.MustCompile(`(?i)unsupported x402 version`), "unsupported-version"},
 	{regexp.MustCompile(`(?i)network mismatch`), "wrong-network"},
-	// payment-identifier gate: required-but-missing/invalid id. Mirrors
-	// harness/src/conformance/reject.ts payment-identifier-required.
+	// payment-identifier gate: required-but-missing/invalid id.
 	{regexp.MustCompile(`(?i)payment.identifier .*(required|missing|invalid)`), "payment-identifier-required"},
 }
 
@@ -339,8 +337,8 @@ func rejected(id string, err error) RunnerResult {
 	return RunnerResult{ID: id, Outcome: "reject", Error: msg, RejectCode: classifyReject(msg)}
 }
 
-// flattenRequest applies the same precedence rules as the TS reference
-// runner: top-level asset / payTo win over currency / recipient, and the
+// flattenRequest applies the conformance contract's precedence rules:
+// top-level asset / payTo win over currency / recipient, and the
 // token program resolves explicit -> rpc-fixture mint owner ->
 // default-by-currency so the build path stays RPC-free. It returns the
 // charge fields plus the resolved paycore.MethodDetails the Go SDK consumes.
@@ -517,8 +515,7 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 	if c := in.ChallengeID; c != nil {
 		// base64url(HMAC-SHA256(secret, realm|method|intent|request|expires|
 		// digest|opaque)); absent optionals join as empty strings. Drives the
-		// production SDK derivation (wire.ComputeChallengeID), which mirrors
-		// rust compute_challenge_id (protocol/core/challenge.rs).
+		// production SDK derivation (wire.ComputeChallengeID).
 		eb.Base64URL = wire.ComputeChallengeID(
 			c.SecretKey, c.Realm, c.Method, c.Intent, c.Request, c.Expires, c.Digest, c.Opaque,
 		)
@@ -550,8 +547,7 @@ func runCanonicalBytes(vector Vector) (*ExactBytes, error) {
 }
 
 // shapeFromTransaction decodes a base64 wire transaction into the semantic
-// shape the conformance driver asserts against. It mirrors the TS reference
-// decoder (harness/src/conformance/decode.ts): fee payer is account[0], SPL
+// shape the conformance driver asserts against: fee payer is account[0], SPL
 // transfers come from transferChecked (discriminator 12), SOL transfers from
 // the System Program transfer (discriminator 2), memos from the Memo Program,
 // and compute caps from the ComputeBudget program.

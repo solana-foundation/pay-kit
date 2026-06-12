@@ -3,9 +3,7 @@ package server
 // Adversarial branch coverage for the session method layer: store and RPC
 // failure surfacing, malformed payload fields, settlement error paths, the
 // SubmitOpenTx failure matrix, malformed open instructions, and the
-// side-channel/middleware error responses. These mirror the failure-path
-// assertions scattered across the TypeScript session-server and
-// session-server-on-chain suites.
+// side-channel/middleware error responses.
 
 import (
 	"context"

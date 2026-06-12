@@ -4,9 +4,6 @@
 // HTTP. This file keeps the parser transport-neutral (SseDecoder works on raw
 // chunks from any reader), then layers a net/http-friendly stream and commit
 // transport on top for applications that want batteries included.
-//
-// Behavior mirrors rust/crates/mpp/src/client/http_stream.rs; the TypeScript
-// counterpart is typescript/packages/mpp/src/client/HttpStream.ts.
 package client
 
 import (
@@ -25,8 +22,6 @@ import (
 
 // SseEvent is a parsed Server-Sent Event frame. Event, ID, and Retry are nil
 // when the frame omitted the field.
-//
-// Mirrors rust SseEvent in rust/crates/mpp/src/client/http_stream.rs.
 type SseEvent struct {
 	Event *string
 	Data  string
@@ -38,8 +33,6 @@ type SseEvent struct {
 //
 // Feed raw HTTP chunks with PushChunk. It returns all complete events decoded
 // from that chunk and retains partial data internally.
-//
-// Mirrors rust SseDecoder in rust/crates/mpp/src/client/http_stream.rs.
 type SseDecoder struct {
 	buffer  string
 	current SseEvent
@@ -131,7 +124,7 @@ func (d *SseDecoder) dispatchCurrent() (SseEvent, bool) {
 // MeteredSseEventKind discriminates ParseMeteredSseEvent results.
 type MeteredSseEventKind int
 
-// MeteredSseEvent kinds, mirroring the rust MeteredSseEvent enum variants.
+// MeteredSseEvent kinds.
 const (
 	// MeteredSseEventMetering is an mpp.metering / metering directive event.
 	MeteredSseEventMetering MeteredSseEventKind = iota
@@ -151,8 +144,6 @@ const (
 
 // MeteredSseEvent is a parsed metered SSE event. Exactly the field matching
 // Kind is populated.
-//
-// Mirrors rust MeteredSseEvent in rust/crates/mpp/src/client/http_stream.rs.
 type MeteredSseEvent struct {
 	Kind     MeteredSseEventKind
 	Metering *intents.MeteringDirective
@@ -165,8 +156,6 @@ type MeteredSseEvent struct {
 // names: "mpp.metering"/"metering", "mpp.usage"/"usage", "done", and the
 // "[DONE]" sentinel on the default message event. Application messages keep
 // their raw JSON payload for the caller to decode.
-//
-// Mirrors rust parse_metered_sse_event.
 func ParseMeteredSseEvent(event SseEvent) (MeteredSseEvent, error) {
 	eventName := "message"
 	if event.Event != nil {
@@ -203,8 +192,6 @@ func ParseMeteredSseEvent(event SseEvent) (MeteredSseEvent, error) {
 
 // meteredStreamState pairs the live metering directive with the optional final
 // usage amount.
-//
-// Mirrors rust MeteredStreamState.
 type meteredStreamState struct {
 	directive   *intents.MeteringDirective
 	finalAmount *uint64
@@ -260,38 +247,27 @@ func (s *meteredStreamState) directiveForCommit() (intents.MeteringDirective, er
 
 // MeteredSseSession is a transport-neutral state machine for one metered SSE
 // stream: feed it decoded SSE events, then Ack to commit the final amount.
-//
-// Mirrors rust MeteredSseSession in
-// rust/crates/mpp/src/client/http_stream.rs.
 type MeteredSseSession struct {
 	consumer *SessionConsumer
 	state    meteredStreamState
 }
 
 // MeteredSse starts a metered SSE state machine borrowing this consumer.
-//
-// Mirrors rust SessionConsumer::metered_sse.
 func (c *SessionConsumer) MeteredSse() *MeteredSseSession {
 	return &MeteredSseSession{consumer: c}
 }
 
 // AcceptEvent folds one decoded SSE event into the stream state and returns
 // the raw application message when the event carries one.
-//
-// Mirrors rust MeteredSseSession::accept_event.
 func (s *MeteredSseSession) AcceptEvent(event SseEvent) (json.RawMessage, error) {
 	return s.state.applyEvent(event)
 }
 
 // IsDone reports whether the stream signaled completion.
-//
-// Mirrors rust MeteredSseSession::is_done.
 func (s *MeteredSseSession) IsDone() bool { return s.state.done }
 
 // Ack commits the stream's final amount (the usage amount when reported,
 // otherwise the directive's reserved amount) through the consumer.
-//
-// Mirrors rust MeteredSseSession::ack.
 func (s *MeteredSseSession) Ack(ctx context.Context) (intents.CommitReceipt, error) {
 	directive, err := s.state.directiveForCommit()
 	if err != nil {
@@ -302,9 +278,6 @@ func (s *MeteredSseSession) Ack(ctx context.Context) (intents.CommitReceipt, err
 
 // HTTPCommitTransport is a minimal net/http transport for commit endpoints.
 // The zero value posts to each directive's CommitURL with the default client.
-//
-// Mirrors rust HttpCommitTransport in
-// rust/crates/mpp/src/client/http_stream.rs.
 type HTTPCommitTransport struct {
 	// Client is the HTTP client. nil uses http.DefaultClient.
 	Client *http.Client
@@ -320,8 +293,6 @@ type HTTPCommitTransport struct {
 
 // Commit posts the payload as JSON to the directive's commit endpoint and
 // decodes the receipt.
-//
-// Mirrors rust HttpCommitTransport::commit.
 func (t *HTTPCommitTransport) Commit(
 	ctx context.Context,
 	directive intents.MeteringDirective,
@@ -373,9 +344,6 @@ func (t *HTTPCommitTransport) Commit(
 
 // MeteredSseStream reads a metered SSE response body, yielding raw application
 // messages and committing the final amount on Ack.
-//
-// Mirrors rust ReqwestMeteredSseStream in
-// rust/crates/mpp/src/client/http_stream.rs.
 type MeteredSseStream struct {
 	consumer *SessionConsumer
 	body     io.Reader
@@ -388,8 +356,6 @@ type MeteredSseStream struct {
 // NewMeteredSseStream wraps a consumer and an SSE response body, e.g.
 // http.Response.Body. The caller retains ownership of the body and closes it
 // after the stream is drained.
-//
-// Mirrors rust ReqwestMeteredSseStream::new.
 func NewMeteredSseStream(consumer *SessionConsumer, body io.Reader) *MeteredSseStream {
 	return &MeteredSseStream{
 		consumer: consumer,
@@ -399,8 +365,6 @@ func NewMeteredSseStream(consumer *SessionConsumer, body io.Reader) *MeteredSseS
 }
 
 // Next returns the next application message, or nil once the stream is done.
-//
-// Mirrors rust ReqwestMeteredSseStream::next.
 func (s *MeteredSseStream) Next() (json.RawMessage, error) {
 	for {
 		if len(s.pending) > 0 {
@@ -452,8 +416,6 @@ func (s *MeteredSseStream) applyEvents(events []SseEvent) error {
 }
 
 // Ack drains any remaining events and commits the stream's final amount.
-//
-// Mirrors rust ReqwestMeteredSseStream::ack.
 func (s *MeteredSseStream) Ack(ctx context.Context) (intents.CommitReceipt, error) {
 	if !s.state.done {
 		for {
@@ -474,8 +436,6 @@ func (s *MeteredSseStream) Ack(ctx context.Context) (intents.CommitReceipt, erro
 }
 
 // IntoConsumer returns the wrapped consumer for reuse on the next request.
-//
-// Mirrors rust ReqwestMeteredSseStream::into_consumer.
 func (s *MeteredSseStream) IntoConsumer() *SessionConsumer {
 	return s.consumer
 }

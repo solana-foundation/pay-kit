@@ -1,7 +1,7 @@
 package server
 
-// Mirrors the idle-close watchdog behavior of
-// typescript/packages/mpp/src/server/session/lifecycle.ts.
+// Unit coverage of the SessionLifecycle idle-close watchdog: zero-delay
+// disablement, idle firing, touch resets, channel removal, and shutdown.
 
 import (
 	"sync"

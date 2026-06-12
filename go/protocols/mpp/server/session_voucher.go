@@ -7,10 +7,8 @@ package server
 // or treat as an idempotent replay. The caller persists any accepted delta
 // through ChannelStore.UpdateChannel, re-checking inside the atomic mutator.
 //
-// Mirrors the ordered verifier in
-// rust/crates/mpp/src/server/session.rs (SessionServer::verify_voucher) and
-// typescript/packages/mpp/src/server/session/voucher.ts. The check sequence
-// (order and operators) is harness-tested:
+// The check sequence (order and operators) is pinned across the language
+// SDKs and harness-tested:
 // parse u64 -> finalized -> close pending -> idempotent replay (same
 // cumulative AND same signature, signature re-verified) -> cumulative >
 // watermark strictly -> cumulative <= deposit -> delta >= minVoucherDelta ->
@@ -45,7 +43,7 @@ const (
 
 // VoucherRejectReason is a stable string tag for voucher rejections so the
 // caller can map to HTTP statuses / log levels without parsing free text.
-// The tags mirror the TypeScript VoucherRejectReason union.
+// The tag values are stable across the language SDKs.
 type VoucherRejectReason string
 
 const (
@@ -129,9 +127,6 @@ type VerifyVoucherArgs struct {
 // Returns a verdict; the caller is responsible for persisting any accepted
 // delta via ChannelStore.UpdateChannel. The verifier is pure: no store,
 // network, or clock side effects (the clock is injectable).
-//
-// Mirrors SessionServer::verify_voucher in rust and verifyVoucherForChannel
-// in typescript/packages/mpp/src/server/session/voucher.ts.
 func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 	state := args.State
 	signed := args.Signed
@@ -222,8 +217,7 @@ func voucherNow(override *int64) int64 {
 
 // verifyVoucherSignatureBytes checks the voucher's Ed25519 signature over the
 // canonical 48-byte voucher payload against the authorized signer (both
-// base58). Mirrors verify_signature in rust/crates/mpp/src/server/session.rs
-// minus the expiry check, which callers order explicitly.
+// base58). The expiry check is not included; callers order it explicitly.
 func verifyVoucherSignatureBytes(signed intents.SignedVoucher, authorizedSigner string) error {
 	message, err := signed.Data.MessageBytes()
 	if err != nil {
@@ -243,9 +237,9 @@ func verifyVoucherSignatureBytes(signed intents.SignedVoucher, authorizedSigner 
 	return nil
 }
 
-// verifySessionVoucher mirrors rust verify_signature exactly: expiry first
-// (against the wall clock), then the Ed25519 signature. Used by the commit
-// and close paths; the voucher handler orders the two checks itself.
+// verifySessionVoucher checks expiry first (against the wall clock), then
+// the Ed25519 signature. Used by the commit and close paths; the voucher
+// handler orders the two checks itself.
 func verifySessionVoucher(signed intents.SignedVoucher, authorizedSigner string) error {
 	if signed.Data.ExpiresAt <= time.Now().Unix() {
 		return fmt.Errorf("voucher has expired")

@@ -258,7 +258,7 @@ func TestMeteredSseReportsMissingMeteringAndUsageMismatch(t *testing.T) {
 
 func TestMeteredSseUsageBeforeDirectiveAccepted(t *testing.T) {
 	// A usage event may arrive before the directive; it is accepted and the
-	// amount applies to whichever directive follows (rust state-machine parity).
+	// amount applies to whichever directive follows.
 	consumer, _ := newConsumer(t, false)
 	stream := consumer.MeteredSse()
 	if _, err := stream.AcceptEvent(sseEvt("mpp.usage", `{"deliveryId":"stream-1","amount":"7"}`)); err != nil {

@@ -4,8 +4,6 @@
 // messages and call Ack/Commit instead of manually signing and posting
 // vouchers. A failed commit never advances the local watermark, so the same
 // directive can be retried safely.
-//
-// Behavior mirrors rust/crates/mpp/src/client/session_consumer.rs.
 package client
 
 import (
@@ -20,9 +18,6 @@ import (
 // HTTP clients, queues, and in-process tests all implement this. The directive
 // is passed alongside the payload so transports can use CommitURL, Proof, or
 // other routing hints without repeating them in the signed commit body.
-//
-// Mirrors rust CommitTransport in
-// rust/crates/mpp/src/client/session_consumer.rs.
 type CommitTransport interface {
 	Commit(ctx context.Context, directive intents.MeteringDirective, payload intents.CommitPayload) (intents.CommitReceipt, error)
 }
@@ -31,32 +26,23 @@ type CommitTransport interface {
 //
 // SessionConsumer is not safe for concurrent use; the underlying ActiveSession
 // watermark is advanced under Commit.
-//
-// Mirrors rust SessionConsumer in
-// rust/crates/mpp/src/client/session_consumer.rs.
 type SessionConsumer struct {
 	session   *ActiveSession
 	transport CommitTransport
 }
 
 // NewSessionConsumer wraps a session and a commit transport.
-//
-// Mirrors rust SessionConsumer::new.
 func NewSessionConsumer(session *ActiveSession, transport CommitTransport) *SessionConsumer {
 	return &SessionConsumer{session: session, transport: transport}
 }
 
 // Session returns the wrapped session.
-//
-// Mirrors rust SessionConsumer::session.
 func (c *SessionConsumer) Session() *ActiveSession { return c.session }
 
 // CommitDirective signs a voucher for the directive amount, sends it through
 // the transport, and advances the local watermark only on success. It rejects
 // directives whose session does not match, whose amount is not a valid base-unit
 // integer, or whose amount is zero.
-//
-// Mirrors rust SessionConsumer::commit_directive.
 func (c *SessionConsumer) CommitDirective(ctx context.Context, directive intents.MeteringDirective) (intents.CommitReceipt, error) {
 	if err := c.validateDirective(directive); err != nil {
 		return intents.CommitReceipt{}, err
@@ -129,8 +115,6 @@ func (c *SessionConsumer) validateDirective(directive intents.MeteringDirective)
 // Accept validates an envelope and returns a delivery handle exposing Ack and
 // Commit. The directive is validated up front so a mismatched session is
 // rejected before the application processes the payload.
-//
-// Mirrors rust SessionConsumer::accept.
 func Accept[P any](c *SessionConsumer, envelope intents.MeteredEnvelope[P]) (*MeteredDelivery[P], error) {
 	if err := c.validateDirective(envelope.Metering); err != nil {
 		return nil, err
@@ -144,9 +128,6 @@ func Accept[P any](c *SessionConsumer, envelope intents.MeteredEnvelope[P]) (*Me
 
 // MeteredDelivery is a delivered payload paired with its metering directive.
 // Call Ack (or its Commit alias) after the application has processed Payload.
-//
-// Mirrors rust MeteredDelivery in
-// rust/crates/mpp/src/client/session_consumer.rs.
 type MeteredDelivery[P any] struct {
 	consumer *SessionConsumer
 	payload  P
@@ -160,22 +141,16 @@ func (d *MeteredDelivery[P]) Payload() P { return d.payload }
 func (d *MeteredDelivery[P]) Metering() intents.MeteringDirective { return d.metering }
 
 // Ack signs and commits a voucher for the directive amount.
-//
-// Mirrors rust MeteredDelivery::ack.
 func (d *MeteredDelivery[P]) Ack(ctx context.Context) (intents.CommitReceipt, error) {
 	return d.consumer.CommitDirective(ctx, d.metering)
 }
 
 // Commit is an alias for Ack.
-//
-// Mirrors rust MeteredDelivery::commit.
 func (d *MeteredDelivery[P]) Commit(ctx context.Context) (intents.CommitReceipt, error) {
 	return d.Ack(ctx)
 }
 
 // IntoParts returns the payload and metering directive without committing.
-//
-// Mirrors rust MeteredDelivery::into_parts.
 func (d *MeteredDelivery[P]) IntoParts() (P, intents.MeteringDirective) {
 	return d.payload, d.metering
 }

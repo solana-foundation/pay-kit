@@ -26,7 +26,7 @@ type weatherInfo struct {
 	Humidity    int    `json:"humidity"`
 }
 
-// weatherByCity mirrors the TypeScript WEATHER table.
+// weatherByCity is the canned weather demo table.
 var weatherByCity = map[string]weatherInfo{
 	"san-francisco": {Temperature: 15, Conditions: "Foggy", Humidity: 85},
 	"new-york":      {Temperature: 22, Conditions: "Partly Cloudy", Humidity: 60},
@@ -46,7 +46,7 @@ type product struct {
 	Description string
 }
 
-// products mirrors the TypeScript PRODUCTS table.
+// products is the canned marketplace catalog.
 var products = map[string]product{
 	"sol-hoodie": {
 		Name:        "Solana Hoodie",
@@ -73,7 +73,7 @@ const (
 	referralFeeBps = 200 // 2%
 )
 
-// fortunes mirrors the TypeScript FORTUNES table.
+// fortunes is the canned fortune-cookie pool.
 var fortunes = []string{
 	"A beautiful, smart, and loving person will be coming into your life.",
 	"A faithful friend is a strong defense.",
@@ -169,8 +169,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 			writeJSON(w, http.StatusOK, history)
 		})))
 
-	// Weather: unknown cities 404 before the payment gate, mirroring the
-	// TypeScript middleware order.
+	// Weather: unknown cities 404 before the payment gate.
 	mux.Handle("GET /api/v1/weather/{city}", requireKnownCity(
 		client.RequireFunc(staticGate("0.01", "weather", func(r *http.Request) string {
 			return "Weather for " + r.PathValue("city")
@@ -240,8 +239,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 	// Fortune: a charge payment link with the interactive HTML challenge
 	// page. Stays on the protocol layer directly (server.Mpp with HTML
 	// enabled) because the paykit dispatcher renders the cross-SDK JSON
-	// challenge body; dropping down a layer is the intended escape hatch,
-	// same as the TypeScript example.
+	// challenge body; dropping down a layer is the intended escape hatch.
 	fortuneMpp, err := server.New(server.Config{
 		Recipient:      a.recipient,
 		Currency:       paycore.USDCMainnetMint,
@@ -266,8 +264,7 @@ func registerCharges(mux *http.ServeMux, a *app, client *paykit.Client) error {
 	mux.HandleFunc("GET /api/v1/fortune", func(w http.ResponseWriter, r *http.Request) {
 		// The interactive payment page registers its service worker at
 		// scope "/" from a script served under /api/v1/fortune, which
-		// browsers only allow with this header (mirrors the TypeScript
-		// example stamping it on javascript challenge responses).
+		// browsers only allow with this header.
 		if server.IsServiceWorkerRequest(r) {
 			w.Header().Set("Service-Worker-Allowed", "/")
 		}

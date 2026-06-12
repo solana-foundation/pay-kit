@@ -4,10 +4,9 @@ package server
 //
 // Emits the Server-Sent Event frames the metered session clients decode:
 // "mpp.metering" directives, "mpp.usage" final-usage events, plain data
-// payload messages, and the terminal "[DONE]" sentinel (the shape the
-// TypeScript playground-api session stream emits; the canonical event names
-// are the ones parsed by rust/crates/mpp/src/client/http_stream.rs and the
-// Go client SseDecoder/ParseMeteredSseEvent).
+// payload messages, and the terminal "[DONE]" sentinel. The event names are
+// canonical: they are the ones the SDK session clients parse (the Go
+// client's SseDecoder/ParseMeteredSseEvent among them).
 
 import (
 	"encoding/json"

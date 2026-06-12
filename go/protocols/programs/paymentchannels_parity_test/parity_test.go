@@ -5,14 +5,11 @@
 // codegen (`pnpm run payment-channels:go`) renders with
 // deleteFolderBeforeRendering, which wipes everything under
 // protocols/programs/paymentchannels/. Keeping the guard out-of-tree means
-// regeneration never clobbers it, mirroring how the Rust crate keeps a
-// hand-written lib.rs alongside a pure-passthrough src/generated/.
+// regeneration never clobbers it.
 //
 // The frozen hex vectors are produced by `borsh::to_vec` over the identical
-// struct layouts in
-// rust/crates/programs/payment-channels/src/generated/types/{open_args,
-// distribution_entry,voucher_args}.rs and the u8=1 open discriminator in
-// rust/crates/programs/payment-channels/src/generated/instructions/open.rs
+// OpenArgs, DistributionEntry, and VoucherArgs struct layouts, plus the u8=1
+// open discriminator the on-chain program declares
 // (OPEN_DISCRIMINATOR: u8 = 1). If the upstream IDL changes the layout, both
 // the regenerated client and these vectors must move together, and this test
 // makes that break loud.
@@ -51,9 +48,9 @@ func mustHex(t *testing.T, s string) []byte {
 
 // TestOpenDiscriminator pins the single-byte Anchor-numeric discriminator. This
 // program does NOT use the 8-byte sha256("global:open")[:8] convention; the
-// Rust spine declares OPEN_DISCRIMINATOR: u8 = 1, the IDL encodes it as a
-// fieldDiscriminatorNode u8 at offset 0, and the TS reference uses
-// OPEN_DISCRIMINATOR = 1. Guard against a silent switch to the wide form.
+// on-chain program declares OPEN_DISCRIMINATOR: u8 = 1 and the IDL encodes it
+// as a fieldDiscriminatorNode u8 at offset 0. Guard against a silent switch
+// to the wide form.
 func TestOpenDiscriminator(t *testing.T) {
 	if pc.OpenDiscriminator != 1 {
 		t.Fatalf("OpenDiscriminator = %d, want 1 (rust OPEN_DISCRIMINATOR: u8 = 1)", pc.OpenDiscriminator)

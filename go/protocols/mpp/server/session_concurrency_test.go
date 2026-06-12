@@ -4,8 +4,7 @@ package server
 // preflight runs outside the store lock, so every state-dependent check must
 // hold again inside the atomic mutator. These tests interleave a competing
 // write between the preflight read and the mutator using a racing store
-// wrapper, mirroring the concurrency contract in
-// rust/crates/mpp/src/server/session.rs.
+// wrapper.
 
 import (
 	"context"

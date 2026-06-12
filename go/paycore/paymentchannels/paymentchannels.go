@@ -4,10 +4,11 @@
 // token derivation, voucher preimage bytes, and convenience instruction
 // builders for the push-mode session flow (open + top_up).
 //
-// Everything here mirrors rust/crates/mpp/src/program/payment_channels.rs so
-// the wire-format and on-chain paths stay byte-identical across language SDKs.
-// In particular the production program id pinned here (GuoKrza...) overrides
-// the IDL placeholder baked into the generated package, which is not deployed.
+// The instruction bytes and PDA derivations built here must stay
+// byte-identical across the language SDKs so the on-chain program accepts
+// them. In particular the production program id pinned here (GuoKrza...)
+// overrides the IDL placeholder baked into the generated package, which is
+// not deployed.
 package paymentchannels
 
 import (
@@ -25,16 +26,13 @@ import (
 // network. The codama-generated package defaults its ProgramID var to the IDL
 // placeholder "CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg", which is NOT the
 // production deployment; every PDA derivation and instruction built here uses
-// this value instead. Mirrors PAYMENT_CHANNELS_PROGRAM_ID in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// this value instead.
 const ProgramID = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
 
-// channelSeed is the channel PDA seed prefix. Mirrors CHANNEL_SEED in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// channelSeed is the channel PDA seed prefix.
 const channelSeed = "channel"
 
-// eventAuthoritySeed is the event-authority PDA seed prefix. Mirrors
-// EVENT_AUTHORITY_SEED in rust/crates/mpp/src/program/payment_channels.rs.
+// eventAuthoritySeed is the event-authority PDA seed prefix.
 const eventAuthoritySeed = "event_authority"
 
 // programPubkey is the parsed production program id used for derivation and
@@ -48,8 +46,7 @@ func init() {
 	generated.SetProgramID(programPubkey)
 }
 
-// ProgramPubkey returns the parsed production program id. Mirrors
-// default_program_id() in rust/crates/mpp/src/program/payment_channels.rs.
+// ProgramPubkey returns the parsed production program id.
 func ProgramPubkey() solana.PublicKey {
 	return programPubkey
 }
@@ -65,16 +62,12 @@ func SetProgramID(id solana.PublicKey) {
 }
 
 // Distribution is a single payout recipient and its basis-point share.
-// Mirrors the Distribution struct in
-// rust/crates/mpp/src/program/payment_channels.rs.
 type Distribution struct {
 	Recipient solana.PublicKey
 	Bps       uint16
 }
 
 // OpenChannelParams carries the inputs required to build an Open instruction.
-// Mirrors OpenChannelParams in
-// rust/crates/mpp/src/program/payment_channels.rs.
 type OpenChannelParams struct {
 	Payer            solana.PublicKey
 	Payee            solana.PublicKey
@@ -89,14 +82,11 @@ type OpenChannelParams struct {
 
 	// ProgramID is the payment-channels program targeted by this open. The
 	// zero value resolves to the package program id (ProgramPubkey, or the
-	// last SetProgramID override). Mirrors OpenChannelParams.program_id in
-	// rust/crates/mpp/src/program/payment_channels.rs.
+	// last SetProgramID override).
 	ProgramID solana.PublicKey
 }
 
 // TopUpParams carries the inputs required to build a TopUp instruction.
-// Mirrors the build_top_up_instruction arguments in
-// rust/crates/mpp/src/program/payment_channels.rs.
 type TopUpParams struct {
 	Payer        solana.PublicKey
 	Channel      solana.PublicKey
@@ -106,9 +96,7 @@ type TopUpParams struct {
 
 	// ProgramID is the payment-channels program targeted by this top-up. The
 	// zero value resolves to the package program id (ProgramPubkey, or the
-	// last SetProgramID override). Mirrors the program_id argument of
-	// build_top_up_instruction in
-	// rust/crates/mpp/src/program/payment_channels.rs.
+	// last SetProgramID override).
 	ProgramID solana.PublicKey
 }
 
@@ -124,8 +112,7 @@ func resolveProgram(programID solana.PublicKey) solana.PublicKey {
 // VoucherMessageBytes returns the 48-byte voucher preimage signed by the
 // authorized signer: channelId (32) || cumulativeAmount as little-endian u64
 // (offset 32) || expiresAt as little-endian i64 (offset 40). This is the exact
-// Borsh layout of VoucherArgs. Mirrors voucher_message_bytes in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// Borsh layout of VoucherArgs.
 func VoucherMessageBytes(channelID solana.PublicKey, cumulative uint64, expiresAt int64) ([]byte, error) {
 	id := channelID.Bytes()
 	if len(id) != 32 {
@@ -140,16 +127,13 @@ func VoucherMessageBytes(channelID solana.PublicKey, cumulative uint64, expiresA
 
 // FindChannelPDA derives the channel PDA from
 // ["channel", payer, payee, mint, authorizedSigner, salt as little-endian u64]
-// against the production program id. Mirrors find_channel_pda in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// against the production program id.
 func FindChannelPDA(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64) (solana.PublicKey, uint8, error) {
 	return FindChannelPDAForProgram(payer, payee, mint, authorizedSigner, salt, programPubkey)
 }
 
 // FindChannelPDAForProgram derives the channel PDA against an explicit program
-// id, for callers honoring a per-challenge programId. Mirrors find_channel_pda
-// in rust/crates/mpp/src/program/payment_channels.rs, which takes program_id
-// as a parameter.
+// id, for callers honoring a per-challenge programId.
 func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.PublicKey, salt uint64, programID solana.PublicKey) (solana.PublicKey, uint8, error) {
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, salt)
@@ -171,9 +155,7 @@ func FindChannelPDAForProgram(payer, payee, mint, authorizedSigner solana.Public
 }
 
 // FindEventAuthorityPDA derives the event-authority PDA from
-// ["event_authority"] against the production program id. Mirrors
-// find_event_authority_pda in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// ["event_authority"] against the production program id.
 func FindEventAuthorityPDA() (solana.PublicKey, uint8, error) {
 	return FindEventAuthorityPDAForProgram(programPubkey)
 }
@@ -193,8 +175,8 @@ func FindEventAuthorityPDAForProgram(programID solana.PublicKey) (solana.PublicK
 
 // BuildOpenInstruction derives the channel PDA, payer/channel ATAs, and
 // event-authority PDA, then builds the Open instruction with every account set
-// in the exact rust order using the production program id. Mirrors
-// build_open_instruction in rust/crates/mpp/src/program/payment_channels.rs.
+// in the exact order the on-chain program expects, using the production
+// program id.
 func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
 	channel, _, err := FindChannelPDAForProgram(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, programID)
@@ -250,9 +232,8 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 }
 
 // BuildTopUpInstruction derives the payer/channel ATAs and builds the TopUp
-// instruction with every account set in the exact rust order using the
-// production program id. Mirrors build_top_up_instruction in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// instruction with every account set in the exact order the on-chain program
+// expects, using the production program id.
 func BuildTopUpInstruction(params TopUpParams) (solana.Instruction, error) {
 	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
 	if err != nil {

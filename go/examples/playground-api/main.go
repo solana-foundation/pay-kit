@@ -1,16 +1,14 @@
-// The HTTP API behind the pay-kit playground, ported from
-// typescript/examples/playground-api. Serves the same endpoints with the
-// same payment gating semantics (MPP charges through paykit, x402 through
-// the Go x402 adapter, sessions through the Go session method), so the
-// playground web app works against it by only setting
+// The HTTP API behind the pay-kit playground. Serves the playground
+// endpoints with their payment gating (MPP charges through paykit, x402
+// through the Go x402 adapter, sessions through the Go session method), so
+// the playground web app works against it by only setting
 // PAYKIT_PLAYGROUND_API_URL.
 //
 //	cd go
 //	go run ./examples/playground-api
 //
 // Environment: PORT, NETWORK, RPC_URL, RECIPIENT, FEE_PAYER_KEY,
-// MPP_SECRET_KEY. See README.md for the full table and the differences
-// from the TypeScript example.
+// MPP_SECRET_KEY. See README.md for the full table.
 package main
 
 import (
@@ -146,8 +144,7 @@ func newApp(a *app) (http.Handler, func(), error) {
 }
 
 // newChargesClient builds the paykit client gating the charge endpoints.
-// MPP-only, mirroring the TypeScript pay-kit configuration whose single
-// protocol adapter is createMppAdapter.
+// MPP is the only accepted protocol.
 func newChargesClient(a *app) (*paykit.Client, error) {
 	network, err := paykit.ParseNetwork(a.network)
 	if err != nil {
@@ -175,7 +172,7 @@ func newChargesClient(a *app) (*paykit.Client, error) {
 
 // bootstrapFunding funds the fee payer and recipient on the local surfnet so
 // the demo works zero-config. Best-effort: a warning is logged when the
-// sandbox is unreachable, mirroring the TypeScript bootstrap.
+// sandbox is unreachable.
 func bootstrapFunding(a *app) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -252,11 +249,11 @@ type endpointInfo struct {
 	Params      []endpointParam `json:"params,omitempty"`
 }
 
-// buildEndpointList mirrors the TypeScript buildEndpointList. The
+// buildEndpointList builds the /api/v1/config endpoint catalog. The
 // subscription entry is omitted because the Go SDK has no subscription
 // server method (see README.md); the stocks-search / stocks-history /
 // weather / fortune / x402 routes stay live server-side but are not
-// advertised in the nav, matching the TypeScript catalog.
+// advertised in the nav.
 func buildEndpointList() []endpointInfo {
 	return []endpointInfo{
 		{
@@ -305,8 +302,8 @@ func buildEndpointList() []endpointInfo {
 	}
 }
 
-// corsMiddleware mirrors the TypeScript cors() wiring: permissive origins
-// plus the payment headers the web app reads exposed to browsers.
+// corsMiddleware sets permissive origins and exposes to browsers the
+// payment headers the web app reads.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
@@ -326,8 +323,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // registerSPA serves the built playground web app (playground/app/dist at
-// the repo root) with an index.html catch-all, mirroring the production
-// static hosting of the TypeScript example.
+// the repo root) with an index.html catch-all.
 func registerSPA(mux *http.ServeMux, repoRoot string) {
 	dist := ""
 	if repoRoot != "" {
@@ -384,7 +380,7 @@ func envOr(name, fallback string) string {
 }
 
 // randomHexSecret generates the per-boot challenge HMAC secret used when
-// MPP_SECRET_KEY is unset, mirroring the TypeScript bootstrap.
+// MPP_SECRET_KEY is unset.
 func randomHexSecret() string {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {

@@ -2,13 +2,9 @@ package paymentchannels
 
 // Settlement builder byte-equivalence tests.
 //
-// Mirrors the Ed25519 precompile, settle_and_finalize, top_up, and distribute
-// coverage in
-// typescript/packages/mpp/src/__tests__/session-on-chain.test.ts and the
-// open-instruction golden in
-// typescript/packages/mpp/src/__tests__/payment-channels-open-ix.test.ts so
-// any drift from the Rust spine (program/payment_channels.rs) is caught at
-// unit-test time.
+// These pin the Ed25519 precompile layout and the settle_and_finalize,
+// top_up, distribute, and open instruction bytes so any drift from the
+// on-chain program encoding is caught at unit-test time.
 
 import (
 	"bytes"
@@ -343,13 +339,13 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 	}
 }
 
-// ── open instruction golden (ported from payment-channels-open-ix.test.ts) ──
+// ── open instruction golden ──
 
 // TestBuildOpenInstructionMatchesTypescriptGolden pins the open instruction
-// data for the exact fixed inputs of the TypeScript golden test (salt=42,
-// deposit=1_000_000, gracePeriod=900, one HQyfh.../250bps recipient), so the
-// Go wrapper, the vendored Codama TS client, and the pre-Codama hand encoder
-// all agree byte for byte.
+// data for fixed inputs (salt=42, deposit=1_000_000, gracePeriod=900, one
+// HQyfh.../250bps recipient) to the golden bytes shared with the vendored
+// Codama TS client and the pre-Codama hand encoder, so all three agree byte
+// for byte.
 func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 	const goldenDataHex = "012a0000000000000040420f00000000008403000001000000f3df6c4f444efb2d860ce6dae0b568b6dadee3c402fc33edab10836490385896fa00"
 

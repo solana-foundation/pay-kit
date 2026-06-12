@@ -2,13 +2,11 @@ package server
 
 // Metering side channel and HTTP middleware for the session method.
 //
-// The reserve/commit side channel is a TypeScript-server extension (it is
-// not in the draft spec or the rust crate): SessionFetch-style clients POST
-// to /__402/session/deliveries to reserve capacity for a metered delivery
-// and to /__402/session/commit to commit it with a signed voucher. Mirrors
-// session.routes(parameters) in
-// typescript/packages/mpp/src/server/Session.ts; hosts mount the two
-// handlers on those paths themselves.
+// The reserve/commit side channel is an extension beyond the draft MPP
+// spec: SessionFetch-style clients POST to /__402/session/deliveries to
+// reserve capacity for a metered delivery and to /__402/session/commit to
+// commit it with a signed voucher. Hosts mount the two handlers on those
+// paths themselves.
 
 import (
 	"context"
@@ -34,8 +32,6 @@ type SessionRoutes struct {
 }
 
 // sessionDeliveryRequestBody is the JSON body of a delivery reservation.
-// Mirrors DeliveryRequestBody in
-// typescript/packages/mpp/src/server/Session.ts.
 type sessionDeliveryRequestBody struct {
 	SessionID  string `json:"sessionId"`
 	Amount     string `json:"amount"`
@@ -46,15 +42,12 @@ type sessionDeliveryRequestBody struct {
 }
 
 // sessionCommitRequestBody is the JSON body of a side-channel commit.
-// Mirrors CommitRequestBody in
-// typescript/packages/mpp/src/server/Session.ts.
 type sessionCommitRequestBody struct {
 	DeliveryID string                 `json:"deliveryId"`
 	Voucher    *intents.SignedVoucher `json:"voucher"`
 }
 
 // Routes builds the metering side-channel handlers for this session.
-// Mirrors session.routes in typescript/packages/mpp/src/server/Session.ts.
 func (s *Session) Routes() SessionRoutes {
 	return SessionRoutes{
 		Deliveries: func(w http.ResponseWriter, r *http.Request) {
@@ -134,8 +127,8 @@ func writeSessionRouteJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// writeSessionRouteError writes the {"error": message} body the TypeScript
-// side-channel handlers emit on failure.
+// writeSessionRouteError writes the {"error": message} failure body the
+// side-channel clients expect.
 func writeSessionRouteError(w http.ResponseWriter, status int, message string) {
 	writeSessionRouteJSON(w, status, map[string]string{"error": message})
 }
@@ -152,8 +145,7 @@ type SessionChallengeFunc func(r *http.Request) (SessionChallengeOptions, error)
 // applied (open / voucher / commit / topUp / close), the receipt exposed in
 // Payment-Receipt and the request context, and are passed through. The
 // challenge (and its recentBlockhash prefetch) is only built when a 402 is
-// actually issued, mirroring the TypeScript request() handler skipping the
-// blockhash fetch on the verify path.
+// actually issued, so the verify path never fetches a blockhash.
 func SessionMiddleware(s *Session, challengeFn SessionChallengeFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

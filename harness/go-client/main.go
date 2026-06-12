@@ -61,11 +61,10 @@ func main() {
 }
 
 // resolveProtocolMode picks the adapter protocol. The harness matrix injects
-// BOTH MPP_HARNESS_TARGET_URL and X402_HARNESS_TARGET_URL on every client run
-// (see harness/src/process.ts runClient), so the namespace probe alone is
-// ambiguous: the explicit PAY_KIT_HARNESS_PROTOCOL hint set per scenario wins
-// first, mirroring the go-server and ruby-server adapters. The probe order is
-// only reached on manual runs that export a single TARGET_URL.
+// BOTH MPP_HARNESS_TARGET_URL and X402_HARNESS_TARGET_URL on every client
+// run, so the namespace probe alone is ambiguous: the explicit
+// PAY_KIT_HARNESS_PROTOCOL hint set per scenario wins first. The probe order
+// is only reached on manual runs that export a single TARGET_URL.
 func resolveProtocolMode(getenv func(string) string) string {
 	if mode := strings.ToLower(strings.TrimSpace(getenv("PAY_KIT_HARNESS_PROTOCOL"))); mode != "" {
 		return mode
@@ -81,7 +80,7 @@ func resolveProtocolMode(getenv func(string) string) string {
 }
 
 // runX402Adapter drives the x402 (exact) client against the target. It
-// mirrors the Rust x402 harness_client contract: read the offer from the
+// follows the x402 harness client contract: read the offer from the
 // 402 challenge, select by preferred network + currency order, build and
 // submit the Payment-Signature credential, then report the JSON result.
 func runX402Adapter(stdout io.Writer) error {

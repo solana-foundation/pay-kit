@@ -60,7 +60,7 @@ func TestSessionOpenPullRequiresStrategyAtHandler(t *testing.T) {
 		o.PullVoucherStrategy = &strategy
 	})
 	// Simulate a misconfigured lower-level core (the constructor enforces the
-	// invariant, but the handler re-checks it defensively like the TS one).
+	// invariant, but the handler re-checks it defensively).
 	session.core.config.PullVoucherStrategy = nil
 	signer := newTestVoucherSigner(t)
 	payload := intents.OpenPayloadPull(

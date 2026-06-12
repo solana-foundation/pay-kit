@@ -2,13 +2,11 @@ package server
 
 // Surfpool-gated end-to-end session lifecycle test.
 //
-// Mirrors typescript/packages/mpp/src/__tests__/playground-session-e2e.test.ts
-// (real payment-channel open completed and broadcast by the server, metered
-// vouchers, side-channel reserve/commit, on-chain settle at close) against
-// the hosted Solana Payment Sandbox. The TypeScript suite keeps this file out
-// of the default config; the Go equivalent gates at runtime: it skips
-// explicitly (never silently passes) when the sandbox is unreachable or the
-// suite runs with -short.
+// Exercises a real payment-channel open completed and broadcast by the
+// server, metered vouchers, side-channel reserve/commit, and on-chain settle
+// at close against the hosted Solana Payment Sandbox. The suite gates at
+// runtime: it skips explicitly (never silently passes) when the sandbox is
+// unreachable or the suite runs with -short.
 
 import (
 	"bytes"
@@ -120,7 +118,7 @@ func TestSessionServerE2ESurfpool(t *testing.T) {
 	defer cancel()
 
 	// The operator funds fees, completes the open signature server-side, and
-	// receives the proceeds, mirroring the playground-api configuration.
+	// receives the proceeds.
 	operator := testutil.NewPrivateKey()
 	payer := testutil.NewPrivateKey()
 	mint := paycore.ResolveMint("USDC", "localnet")

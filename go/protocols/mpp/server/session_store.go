@@ -2,13 +2,10 @@ package server
 
 // Per-channel state store for the MPP session server.
 //
-// Mirrors the rust ChannelStore trait + MemoryChannelStore in
-// rust/crates/mpp/src/store.rs and the TypeScript SessionStore in
-// typescript/packages/mpp/src/server/session/store.ts. The in-memory
-// implementation serializes UpdateChannel calls per channel id with a
-// per-channel mutex, so the read-modify-write sequence inside the mutator
-// is atomic from the perspective of any other caller targeting the same
-// channel while updates to different channels run concurrently.
+// The in-memory implementation serializes UpdateChannel calls per channel id
+// with a per-channel mutex, so the read-modify-write sequence inside the
+// mutator is atomic from the perspective of any other caller targeting the
+// same channel while updates to different channels run concurrently.
 //
 // The voucher verifier (see session_voucher.go) is intentionally
 // side-effect-free: it computes a verdict, and the caller persists any
@@ -21,8 +18,7 @@ import (
 )
 
 // PendingDelivery is one delivery the server has reserved against a channel
-// but not yet received a signed voucher for. Mirrors rust PendingDelivery in
-// rust/crates/mpp/src/store.rs.
+// but not yet received a signed voucher for.
 type PendingDelivery struct {
 	// DeliveryID is the idempotency key for this delivery.
 	DeliveryID string `json:"deliveryId"`
@@ -39,8 +35,7 @@ type PendingDelivery struct {
 }
 
 // CommittedDelivery is a delivery that has been committed by a signed
-// voucher. Kept for idempotent commit replay. Mirrors rust CommittedDelivery
-// in rust/crates/mpp/src/store.rs.
+// voucher. Kept for idempotent commit replay.
 type CommittedDelivery struct {
 	// DeliveryID is the idempotency key for this delivery.
 	DeliveryID string `json:"deliveryId"`
@@ -56,9 +51,8 @@ type CommittedDelivery struct {
 }
 
 // ChannelState is the persisted state of a single payment channel from the
-// server's point of view. Field-for-field mirror of rust ChannelState in
-// rust/crates/mpp/src/store.rs (JSON tags match the rust serde wire names so
-// durable stores can interoperate).
+// server's point of view. The JSON tags are the shared snake_case wire
+// names, so durable stores can interoperate across the language SDKs.
 type ChannelState struct {
 	// ChannelID is the on-chain channel address (base58).
 	//
@@ -99,10 +93,9 @@ type ChannelState struct {
 	// settled signature is re-drivable: a close retry may attempt settlement
 	// again.
 	//
-	// TypeScript-parity extension (server/session/store.ts settledSignature);
-	// the rust ChannelState has no equivalent because the rust SessionServer
-	// does not drive on-chain settlement. Serialized with omitempty so
-	// channel state without a settlement round-trips into the rust shape.
+	// An extension beyond the core channel-state shape, recorded only when
+	// this server drives on-chain settlement. Serialized with omitempty so a
+	// channel state without a settlement round-trips cleanly.
 	SettledSignature *string `json:"settled_signature,omitempty"`
 
 	// Operator is the client wallet pubkey (base58) for pull-mode sessions;
@@ -193,14 +186,13 @@ type ChannelStore interface {
 	ListChannels(ctx context.Context, filter *ListChannelsFilter) ([]ChannelState, error)
 
 	// MarkFinalized flips Finalized to true. Errors when the channel is not
-	// found, matching the rust behavior.
+	// found.
 	MarkFinalized(ctx context.Context, channelID string) (ChannelState, error)
 }
 
 // MemoryChannelStore is an in-memory ChannelStore with per-channel locking:
 // UpdateChannel calls for the same channel id run strictly sequentially while
-// calls for different ids run concurrently. Mirrors rust MemoryChannelStore
-// and the TypeScript createMemorySessionStore.
+// calls for different ids run concurrently.
 type MemoryChannelStore struct {
 	mu    sync.Mutex
 	data  map[string]ChannelState

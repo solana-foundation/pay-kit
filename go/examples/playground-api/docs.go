@@ -1,8 +1,7 @@
 package main
 
-// Docs module mirroring typescript/examples/playground-api/modules/docs.ts:
-// serves the generated API reference markdown from <repo-root>/docs/api with
-// the same path-escape guard. Override the root with the DOCS_ROOT env var
+// Serves the generated API reference markdown from <repo-root>/docs/api,
+// with a path-escape guard. Override the root with the DOCS_ROOT env var
 // when running the binary outside the repository checkout.
 
 import (

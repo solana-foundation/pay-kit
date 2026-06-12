@@ -11,8 +11,7 @@ import (
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
-// pk returns a deterministic 32-byte public key filled with the given byte,
-// mirroring the pk helper in the rust payment_channels tests.
+// pk returns a deterministic 32-byte public key filled with the given byte.
 func pk(b byte) solana.PublicKey {
 	var out solana.PublicKey
 	for i := range out {

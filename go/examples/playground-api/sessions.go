@@ -1,7 +1,6 @@
 package main
 
-// Sessions module mirroring typescript/examples/playground-api/modules/sessions.ts:
-// two session-gated demo endpoints driven by the in-process session method,
+// Two session-gated demo endpoints driven by the in-process session method,
 // the reserve/commit metering side channel, and the settle-status receipt
 // poll. Both methods share one channel store so the receipt endpoint can
 // read the settled signature whichever endpoint opened the channel.
@@ -17,7 +16,7 @@ import (
 	server "github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
 
-// tokenChunks mirrors the TypeScript TOKEN_CHUNKS stream payload.
+// tokenChunks is the canned token stream payload.
 var tokenChunks = []string{
 	"A payment channel ",
 	"lets a client and server ",
@@ -174,8 +173,8 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 	return shutdown, nil
 }
 
-// commitAck mirrors the minimal CommitReceipt-shaped JSON ack the
-// TypeScript stream commit handler returns.
+// commitAck is the minimal CommitReceipt-shaped JSON ack the stream commit
+// handler returns.
 func commitAck(r *http.Request) map[string]string {
 	var body struct {
 		Amount     string `json:"amount"`

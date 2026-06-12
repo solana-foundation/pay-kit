@@ -1,6 +1,5 @@
 package main
 
-// Faucet module mirroring typescript/examples/playground-api/modules/faucet.ts:
 // SOL + USDC airdrops via the surfnet cheatcodes.
 
 import (

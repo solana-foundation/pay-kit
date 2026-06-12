@@ -5,11 +5,8 @@ package paymentchannels
 // settle_and_finalize instruction that must immediately follow it, and the
 // distribute instruction bundled into the same transaction.
 //
-// Everything here mirrors rust/crates/mpp/src/program/payment_channels.rs
-// (build_ed25519_verify_instruction, build_settle_and_finalize_instructions,
-// build_distribute_instruction) and the builders in
-// typescript/packages/mpp/src/server/session/on-chain.ts so the instruction
-// bytes stay identical across language SDKs.
+// The instruction bytes built here must stay identical across the language
+// SDKs; the cross-language harness pins them.
 
 import (
 	"encoding/binary"
@@ -21,9 +18,8 @@ import (
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
-// Ed25519ProgramID is the Ed25519 signature-verification precompile program
-// id. Mirrors ED25519_PROGRAM_ID in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// Ed25519ProgramID is the Ed25519 signature-verification native precompile
+// program id.
 const Ed25519ProgramID = "Ed25519SigVerify111111111111111111111111111"
 
 // ed25519ProgramPubkey is the parsed precompile program id.
@@ -36,7 +32,6 @@ func Ed25519ProgramPubkey() solana.PublicKey {
 
 // TreasuryOwner returns the treasury owner used by the current
 // payment-channels program deployment: 32 bytes of repeated 0xBE 0xEF.
-// Mirrors TREASURY_OWNER in rust/crates/mpp/src/program/payment_channels.rs.
 func TreasuryOwner() solana.PublicKey {
 	var key solana.PublicKey
 	for i := 0; i < len(key); i += 2 {
@@ -51,9 +46,7 @@ func TreasuryOwner() solana.PublicKey {
 // signature material embedded in the instruction itself (every
 // instruction-index field is 0xFFFF, "current instruction"). The data layout
 // is the precompile's fixed header (public key at offset 16, signature at 48,
-// message at 112) followed by the message bytes. Mirrors
-// build_ed25519_verify_instruction in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// message at 112) followed by the message bytes.
 func BuildEd25519VerifyInstruction(authorizedSigner solana.PublicKey, signature [64]byte, message []byte) (solana.Instruction, error) {
 	const publicKeyOffset = 16
 	const signatureOffset = publicKeyOffset + 32   // 48
@@ -82,9 +75,7 @@ func BuildEd25519VerifyInstruction(authorizedSigner solana.PublicKey, signature 
 }
 
 // SettleAndFinalizeParams carries the inputs required to build the
-// settle_and_finalize instruction sequence. Mirrors the
-// build_settle_and_finalize_instructions arguments in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// settle_and_finalize instruction sequence.
 type SettleAndFinalizeParams struct {
 	// Merchant is the signer authorized to settle the channel.
 	Merchant solana.PublicKey
@@ -116,10 +107,6 @@ type SettleAndFinalizeParams struct {
 // Ed25519 precompile instruction over the canonical 48-byte voucher message
 // is placed immediately before the settle_and_finalize instruction, which
 // references it through the instructions sysvar, and hasVoucher is set to 1.
-// Mirrors build_settle_and_finalize_instructions in
-// rust/crates/mpp/src/program/payment_channels.rs and
-// buildSettleAndFinalizeInstructions in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
 func BuildSettleAndFinalizeInstructions(params SettleAndFinalizeParams) ([]solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
 	instructions := make([]solana.Instruction, 0, 2)
@@ -161,8 +148,7 @@ func BuildSettleAndFinalizeInstructions(params SettleAndFinalizeParams) ([]solan
 }
 
 // DistributeParams carries the inputs required to build a Distribute
-// instruction. Mirrors the build_distribute_instruction arguments in
-// rust/crates/mpp/src/program/payment_channels.rs.
+// instruction.
 type DistributeParams struct {
 	// Channel is the settled payment-channel address.
 	Channel solana.PublicKey
@@ -193,11 +179,8 @@ type DistributeParams struct {
 
 // BuildDistributeInstruction derives the channel/payer/payee/treasury ATAs
 // plus one ATA per split recipient and builds the Distribute instruction:
-// the 10 fixed accounts in the exact rust order followed by one writable
-// recipient token account per split. Mirrors build_distribute_instruction in
-// rust/crates/mpp/src/program/payment_channels.rs and
-// buildDistributeInstruction in
-// typescript/packages/mpp/src/server/session/on-chain.ts.
+// the 10 fixed accounts in the exact order the on-chain program expects,
+// followed by one writable recipient token account per split.
 func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
 	treasury := params.Treasury

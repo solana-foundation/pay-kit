@@ -1,13 +1,10 @@
 package main
 
-// Subscriptions module. The TypeScript example gates /api/v1/premium/feed
-// behind solana.subscription against a plan bootstrapped on boot; the Go SDK
-// does not implement the subscription server method yet, so this port keeps
-// the route (nothing is silently dropped) and answers 501 with an explicit
-// pointer at the gap. The endpoint catalog omits the subscription entry,
-// which is exactly how the TypeScript server behaves when its plan bootstrap
-// fails, so the playground UI renders its graceful empty state. See
-// README.md ("Differences from the TypeScript example").
+// Subscriptions module. The Go SDK does not implement the subscription
+// server method yet, so this module keeps the /api/v1/premium/feed route
+// (nothing is silently dropped) and answers 501 with an explicit pointer at
+// the gap. The endpoint catalog omits the subscription entry, so the
+// playground UI renders its graceful empty state. See README.md.
 
 import "net/http"
 

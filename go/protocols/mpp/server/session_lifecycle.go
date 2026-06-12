@@ -8,10 +8,8 @@ package server
 // server can run its close-and-settle path without waiting for a client close
 // action.
 //
-// The idle-close watchdog mirrors the TypeScript-only extension in
-// typescript/packages/mpp/src/server/session/lifecycle.ts; the rust
-// SessionServer has no equivalent and host integrations there drive close
-// explicitly.
+// The idle-close watchdog is an extension beyond the draft MPP spec;
+// without it, hosts drive close explicitly.
 
 import (
 	"sync"

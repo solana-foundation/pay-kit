@@ -4,10 +4,6 @@
 // supported currency or intent). These helpers pick the Solana session
 // challenge a client should open, filtering by network, currency, and funding
 // mode while preserving server order otherwise.
-//
-// Mirrors typescript/packages/mpp/src/client/ChallengeSelection.ts
-// (selectSolanaSessionChallenge); the rust client operates on a single
-// pre-selected challenge, so the selection rules here follow the TS reference.
 package client
 
 import (
@@ -20,8 +16,6 @@ import (
 
 // SessionRequestModes returns the funding modes a session challenge offers.
 // An omitted or empty modes list means push-only.
-//
-// Mirrors sessionRequestModes in typescript/packages/mpp/src/client/Session.ts.
 func SessionRequestModes(request intents.SessionRequest) []intents.SessionMode {
 	if len(request.Modes) > 0 {
 		return request.Modes
@@ -58,10 +52,7 @@ type SelectedSessionChallenge struct {
 
 // SelectSessionChallenge selects the Solana session challenge the client
 // should open, or nil when none matches. A challenge with the session intent
-// but an undecodable request is an error, mirroring the TS selector.
-//
-// Mirrors selectSolanaSessionChallenge in
-// typescript/packages/mpp/src/client/ChallengeSelection.ts.
+// but an undecodable request is an error.
 func SelectSessionChallenge(
 	challenges []core.PaymentChallenge,
 	options SelectSessionChallengeOptions,
@@ -109,9 +100,6 @@ func SelectSessionChallenge(
 // SelectSessionChallengeFromHeaders parses WWW-Authenticate header values and
 // selects the Solana session challenge the client should open. Pass
 // response.Header.Values(core.WWWAuthenticateHeader).
-//
-// Mirrors selectSolanaSessionChallengeFromResponse in
-// typescript/packages/mpp/src/client/ChallengeSelection.ts.
 func SelectSessionChallengeFromHeaders(
 	headers []string,
 	options SelectSessionChallengeOptions,
