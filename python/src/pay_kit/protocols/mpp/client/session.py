@@ -7,9 +7,12 @@ bytes the server verifies on the HTTP credential are the bytes the on-chain
 settle instruction consumes.
 
 Scope is client-only PUSH (payment channel) plus pull/clientVoucher: the client
-signs cumulative vouchers off-chain. Pull/operatedVoucher (the multi-delegator
-program) and the server verification path are out of scope, but the wire fields
-stay present so the action union round-trips.
+signs cumulative vouchers off-chain. The challenge-driven open layer (deriving
+the channel from a challenge and assembling the partially signed open
+transaction) lives in :mod:`pay_kit.protocols.mpp.client.payment_channels`.
+Pull/operatedVoucher (the multi-delegator program) and the server verification
+path are out of scope, but the wire fields stay present so the action union
+round-trips.
 
 Behavior mirrors the Rust spine in ``rust/crates/mpp/src/client/session.rs`` and
 the parity-verified Go port in
@@ -51,6 +54,7 @@ __all__ = [
     "ActiveSession",
     "serialize_session_credential",
     "parse_session_challenge",
+    "session_request_modes",
 ]
 
 #: Default voucher expiry: 2100-01-01T00:00:00Z. Stays below JavaScript's max
@@ -127,6 +131,8 @@ class ActiveSession:
         channel_id: Any,
         signer: VoucherSigner | Any,
         expires_at: int = DEFAULT_VOUCHER_EXPIRES_AT,
+        *,
+        cumulative: int = 0,
     ) -> None:
         """Create a session tracker for ``channel_id`` signing with ``signer``.
 
@@ -134,13 +140,16 @@ class ActiveSession:
         obtained after opening); ``signer`` satisfies the :class:`VoucherSigner`
         contract (or is a solders ``Keypair``, accepted via its ``sign_message``
         method); ``expires_at`` is the Unix timestamp applied to newly signed
-        vouchers, defaulting to :data:`DEFAULT_VOUCHER_EXPIRES_AT`. Mirrors rust
-        ``ActiveSession::new`` / ``new_with_expiry``.
+        vouchers, defaulting to :data:`DEFAULT_VOUCHER_EXPIRES_AT`;
+        ``cumulative`` seeds the watermark when resuming a known channel
+        position (the payment-channel openers use it, mirroring the rust
+        ``configure_session`` helper writing the public ``cumulative`` field).
+        Mirrors rust ``ActiveSession::new`` / ``new_with_expiry``.
         """
         self._channel_id = channel_id
         self._signer = signer
         self._expires_at = expires_at
-        self._cumulative = 0
+        self._cumulative = cumulative
         self._nonce = 0
 
     @classmethod
@@ -444,3 +453,14 @@ def parse_session_challenge(header: str) -> tuple[PaymentChallenge, SessionReque
         raise ValueError(f"challenge intent {challenge.intent!r} is not a session")
     request = SessionRequest.from_dict(decode_json(challenge.request))
     return challenge, request
+
+
+def session_request_modes(request: SessionRequest) -> list[SessionMode]:
+    """Return the funding modes advertised by a session challenge.
+
+    ``modes`` omitted or empty means push-only; an explicit ``[]`` therefore
+    decodes the same as a missing field. Mirrors the TypeScript
+    ``sessionRequestModes`` helper; the rust client checks ``modes`` membership
+    directly with the same default semantics.
+    """
+    return list(request.modes) if request.modes else ["push"]

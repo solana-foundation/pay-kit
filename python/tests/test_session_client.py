@@ -22,11 +22,17 @@ from pay_kit.protocols.mpp.client.session import (
     ActiveSession,
     parse_session_challenge,
     serialize_session_credential,
+    session_request_modes,
 )
 from pay_kit.protocols.mpp.core.base64url import encode_json
 from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
 from pay_kit.protocols.mpp.core.types import PaymentChallenge
-from pay_kit.protocols.mpp.intents.session import SessionAction, SignedVoucher, VoucherData
+from pay_kit.protocols.mpp.intents.session import (
+    SessionAction,
+    SessionRequest,
+    SignedVoucher,
+    VoucherData,
+)
 
 
 class _BytesSigner:
@@ -447,3 +453,29 @@ def test_parse_session_challenge_rejects_non_session_intent() -> None:
     header = format_www_authenticate(charge)
     with pytest.raises(ValueError, match="is not a session"):
         parse_session_challenge(header)
+
+
+# ── session_request_modes ──
+
+
+def test_session_request_modes_defaults_to_push_only() -> None:
+    # ``modes`` omitted or explicitly empty both mean push-only; serde collapses
+    # the two on the wire and the selector encodes the interpretation. Mirrors
+    # the TS ``sessionRequestModes`` helper.
+    base = {"cap": "1", "currency": "USDC", "operator": "op", "recipient": "rec"}
+    omitted = SessionRequest.from_dict(base)
+    assert session_request_modes(omitted) == ["push"]
+    explicit_empty = SessionRequest.from_dict({**base, "modes": []})
+    assert session_request_modes(explicit_empty) == ["push"]
+
+
+def test_session_request_modes_preserves_advertised_modes() -> None:
+    request = SessionRequest(
+        cap="1",
+        currency="USDC",
+        operator="op",
+        recipient="rec",
+        modes=["pull", "push"],
+        pull_voucher_strategy="clientVoucher",
+    )
+    assert session_request_modes(request) == ["pull", "push"]
