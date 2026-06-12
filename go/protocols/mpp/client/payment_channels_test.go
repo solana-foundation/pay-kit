@@ -496,3 +496,58 @@ func TestNewEphemeralSessionSignerGeneratesDistinctKeys(t *testing.T) {
 		t.Fatal("ephemeral signer produced a zero signature")
 	}
 }
+
+func TestSessionOpenerErrorPaths(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey()
+	operator := testutil.NewPrivateKey().PublicKey()
+	blockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
+
+	badOperator := testSessionRequest(operator, recipient)
+	badOperator.Operator = "not-a-pubkey"
+	if _, err := CreatePaymentChannelSessionOpener(
+		badOperator, testutil.NewPrivateKey(), testutil.NewPrivateKey(), blockhash.String(),
+		PaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "operator") {
+		t.Fatalf("error = %v, want invalid operator", err)
+	}
+	if _, err := CreateServerOpenedPaymentChannelSessionOpener(
+		badOperator, testutil.NewPrivateKey(),
+		ServerOpenedPaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "operator") {
+		t.Fatalf("error = %v, want invalid operator", err)
+	}
+
+	solCurrency := testSessionRequest(operator, recipient)
+	solCurrency.Currency = "SOL"
+	if _, err := CreatePaymentChannelSessionOpener(
+		solCurrency, testutil.NewPrivateKey(), testutil.NewPrivateKey(), blockhash.String(),
+		PaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "SPL token") {
+		t.Fatalf("error = %v, want SPL token requirement", err)
+	}
+	if _, err := CreateServerOpenedPaymentChannelSessionOpener(
+		solCurrency, testutil.NewPrivateKey(),
+		ServerOpenedPaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "SPL token") {
+		t.Fatalf("error = %v, want SPL token requirement", err)
+	}
+
+	noBlockhash := testSessionRequest(operator, recipient)
+	if _, err := CreatePaymentChannelSessionOpener(
+		noBlockhash, testutil.NewPrivateKey(), testutil.NewPrivateKey(), "",
+		PaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "recent blockhash") {
+		t.Fatalf("error = %v, want blockhash requirement", err)
+	}
+	if _, err := CreatePaymentChannelSessionOpener(
+		noBlockhash, testutil.NewPrivateKey(), testutil.NewPrivateKey(), "!!bad-base58!!",
+		PaymentChannelSessionOpenOptions{}); err == nil || !strings.Contains(err.Error(), "invalid recent blockhash") {
+		t.Fatalf("error = %v, want invalid blockhash", err)
+	}
+
+	badOperatorTx := testSessionRequest(operator, recipient)
+	badOperatorTx.Operator = "not-a-pubkey"
+	if _, err := BuildOpenPaymentChannelTransaction(BuildOpenPaymentChannelTransactionParams{
+		Request:          badOperatorTx,
+		Signer:           testutil.NewPrivateKey(),
+		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
+		RecentBlockhash:  blockhash.String(),
+	}); err == nil || !strings.Contains(err.Error(), "operator") {
+		t.Fatalf("error = %v, want invalid operator", err)
+	}
+}

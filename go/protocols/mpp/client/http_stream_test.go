@@ -424,3 +424,26 @@ func TestMeteredSseStreamCanReturnConsumer(t *testing.T) {
 		t.Fatalf("cumulative = %d, want 0", returned.Session().Cumulative())
 	}
 }
+
+func TestMeteredSseStreamSurfacesEventErrors(t *testing.T) {
+	session, _ := newSession(t)
+	consumer := NewSessionConsumer(session, &recordingTransport{})
+
+	invalidUTF8 := NewMeteredSseStream(consumer, strings.NewReader("event: message\ndata: \xff\n\n"))
+	if _, err := invalidUTF8.Next(); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("error = %v, want UTF-8 rejection", err)
+	}
+
+	badJSON := NewMeteredSseStream(consumer, strings.NewReader("event: metering\ndata: {\n\n"))
+	if _, err := badJSON.Next(); err == nil || !strings.Contains(err.Error(), "invalid mpp.metering") {
+		t.Fatalf("error = %v, want metering rejection", err)
+	}
+
+	// Ack without a metering directive surfaces the missing-directive error
+	// after draining.
+	empty := NewMeteredSseStream(consumer, strings.NewReader("data: [DONE]\n\n"))
+	if _, err := empty.Ack(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "mpp.metering") {
+		t.Fatalf("error = %v, want missing metering", err)
+	}
+}
