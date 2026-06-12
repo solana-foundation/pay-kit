@@ -194,7 +194,7 @@ func DerivePaymentChannelOpen(
 		}
 	}
 
-	tokenProgram := solana.PublicKey{}
+	var tokenProgram solana.PublicKey
 	if options.TokenProgram != nil {
 		tokenProgram = *options.TokenProgram
 	} else {
@@ -276,7 +276,7 @@ type BuildOpenPaymentChannelTransactionParams struct {
 //
 // Mirrors rust build_open_payment_channel_transaction.
 func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactionParams) (PaymentChannelOpenTransaction, error) {
-	feePayer := solana.PublicKey{}
+	var feePayer solana.PublicKey
 	if params.FeePayer != nil {
 		feePayer = *params.FeePayer
 	} else {
@@ -409,7 +409,7 @@ func CreateServerOpenedPaymentChannelSessionOpener(
 	if err := ensureClientVoucherPull(request); err != nil {
 		return PaymentChannelSessionOpen{}, err
 	}
-	payer := solana.PublicKey{}
+	var payer solana.PublicKey
 	if options.Payer != nil {
 		payer = *options.Payer
 	} else {

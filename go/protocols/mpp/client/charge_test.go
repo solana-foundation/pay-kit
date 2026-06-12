@@ -701,9 +701,6 @@ func TestBuildChargeTransactionTokenWithExternalIDMemoTooLong(t *testing.T) {
 	}
 }
 
-// rpcSendErr forces SendTransaction to error to cover the broadcast error branch.
-type rpcSendErr struct{ *testutil.FakeRPC }
-
 func TestBuildChargeTransactionBroadcastSendError(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()
 	rpcClient.SendErr = errors.New("send rpc down")
