@@ -60,3 +60,6 @@ check: build lint audit test-cover
 serve-example port="4567":
     go run ./examples/simple-server
 
+# Boot the playground API example (same endpoints as typescript/examples/playground-api)
+serve-playground port="3000":
+    PORT={{port}} go run ./examples/playground-api

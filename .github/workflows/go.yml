@@ -148,3 +148,68 @@ jobs:
           # x402 server is the go paykit server under test).
           X402_HARNESS_SERVERS: go
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
+  playground-go:
+    name: "Payment links E2E: Playground (Go)"
+    needs: test-go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Install Surfnet helper dependencies
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Start Surfnet
+        working-directory: .
+        run: |
+          node harness/start-surfnet-proxy.mjs &
+          ready=0
+          for i in $(seq 1 50); do
+            if curl -sf -X POST http://localhost:8899 \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
+              | grep -q '"result":"ok"'; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" -eq 1
+      - name: Build Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: go build ./examples/playground-api
+      - name: Start Go playground API
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+          PORT: "3002"
+          NETWORK: localnet
+          RPC_URL: http://localhost:8899
+          MPP_SECRET_KEY: playground-ci-secret
+        run: go run ./examples/playground-api &
+      - name: Wait for playground server
+        working-directory: .
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3002/api/v1/health && break
+            sleep 1
+          done
+      - name: Install HTML dependencies & Playwright
+        working-directory: html
+        run: npm install && npx playwright install chromium
+      - name: Run Playwright tests (Go playground)
+        working-directory: html
+        run: FORTUNE_PATH=/api/v1/fortune npm run test:e2e:go
