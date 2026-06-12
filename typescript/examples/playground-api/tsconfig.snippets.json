@@ -1,7 +1,7 @@
 {
   // Typechecks the canonical playground snippet sources in
   // typescript/docs/snippets/ (see docs/snippets-convention.md) against the
-  // dependencies installed for the playground server. Run via
+  // dependencies installed for the playground API. Run via
   // `pnpm -C playground check-snippets`.
   //
   // The snippets live outside this package, so `paths` pins each bare import
@@ -28,5 +28,5 @@
       "x402/types": ["./node_modules/x402/dist/esm/types/index.d.mts"]
     }
   },
-  "include": ["../../typescript/docs/snippets/**/*.ts"]
+  "include": ["../../docs/snippets/**/*.ts"]
 }

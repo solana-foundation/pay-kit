@@ -1,5 +1,5 @@
 {
-  "name": "paykit-playground-server",
+  "name": "playground-api",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,8 @@
   "dependencies": {
     "@solana-program/token": "^0.11.0",
     "@solana/kit": "^6.5.0",
-    "@solana/mpp": "file:../../typescript/packages/mpp",
-    "@solana/pay-kit": "file:../../typescript/packages/pay-kit",
+    "@solana/mpp": "file:../../packages/mpp",
+    "@solana/pay-kit": "file:../../packages/pay-kit",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "mppx": "^0.5.8",

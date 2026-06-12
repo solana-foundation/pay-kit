@@ -63,19 +63,26 @@ playground/
 │       │                         # snippets (renders snippets.gen.json + inline fallbacks),
 │       │                         # format, docs.gen
 │       └── hooks/                # useTheme, useConfig, useKeyboard
-└── server/                       # Express + tsx
-    ├── index.ts                  # bootstrap, fee payer, surfpool funding,
-    │                             # /api/v1/config endpoint
-    ├── modules/
-    │   ├── charges.ts            # stocks/weather/marketplace/fortune + faucet
-    │   ├── subscriptions.ts      # solana.subscription gating /api/v1/premium/feed
-    │   ├── sessions.ts           # in-process session() method + side-channel routes
-    │   ├── x402.ts               # x402-express + embedded facilitator
-    │   └── faucet.ts             # SOL + USDC airdrop via surfpool cheatcodes
-    └── shared/
-        ├── constants.ts          # USDC mint, programs
-        ├── utils.ts              # toWebRequest, rpcCall, ANSI helpers
-        └── plan-bootstrap.ts     # initialize_plan OR surfnet_setAccount fallback
+```
+
+The API the playground talks to lives in the TypeScript workspace at
+[`typescript/examples/playground-api/`](../typescript/examples/playground-api)
+(Express + tsx):
+
+```
+typescript/examples/playground-api/
+├── index.ts                  # bootstrap, fee payer, surfpool funding,
+│                             # /api/v1/config endpoint
+├── modules/
+│   ├── charges.ts            # stocks/weather/marketplace/fortune + faucet
+│   ├── subscriptions.ts      # solana.subscription gating /api/v1/premium/feed
+│   ├── sessions.ts           # in-process session() method + side-channel routes
+│   ├── x402.ts               # x402-express + embedded facilitator
+│   └── faucet.ts             # SOL + USDC airdrop via surfpool cheatcodes
+└── shared/
+    ├── constants.ts          # USDC mint, programs
+    ├── utils.ts              # toWebRequest, rpcCall, ANSI helpers
+    └── plan-bootstrap.ts     # initialize_plan OR surfnet_setAccount fallback
 ```
 
 The visual system is a port of the [payment debugger (pdb)](https://github.com/solana-foundation/pay/tree/main/pdb)
@@ -86,6 +93,7 @@ request-builder layout.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `PAYKIT_PLAYGROUND_API_URL` | (unset) | Use an already-running playground API at this URL; `pnpm dev` then launches only the web app and proxies to it |
 | `PORT` | `3000` | Express listen port |
 | `NETWORK` | `localnet` | Solana network tag for MPP / x402 challenges |
 | `RPC_URL` | `https://402.surfnet.dev:8899` | Surfpool RPC endpoint (hosted sandbox by default) |

@@ -317,14 +317,14 @@ jobs:
       - name: Build TypeScript SDK
         working-directory: typescript
         run: pnpm build
-      - name: Install playground server dependencies
-        working-directory: playground/server
+      - name: Install playground API dependencies
+        working-directory: typescript/examples/playground-api
         run: pnpm install --frozen-lockfile
       - name: Install HTML dependencies & Playwright
         working-directory: html
         run: npm install && npx playwright install chromium
-      - name: Start playground server
-        working-directory: playground/server
+      - name: Start playground API
+        working-directory: typescript/examples/playground-api
         run: npx tsx index.ts &
         env:
           NETWORK: localnet

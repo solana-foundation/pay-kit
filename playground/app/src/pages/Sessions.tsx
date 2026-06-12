@@ -14,8 +14,8 @@ export function Sessions({ onBalanceChange }: { onBalanceChange?: () => void }) 
         </div>
         <div className="banner">
           The server is responsible for advertising session-billed endpoints. If you're seeing this, the
-          playground server didn't register any — check that <code>@solana/mpp</code> is up-to-date in
-          <code>playground/server</code>.
+          playground API didn't register any — check that <code>@solana/mpp</code> is up-to-date in
+          <code>typescript/examples/playground-api</code>.
         </div>
       </>
     )

@@ -20,7 +20,7 @@ import { createPaymentChannelSessionOpener, createSessionFetch } from '../client
 const SURFNET_RPC = process.env.PLAYGROUND_SURFNET_RPC ?? 'https://402.surfnet.dev:8899';
 const PLAYGROUND_PORT = Number(process.env.PLAYGROUND_E2E_PORT ?? '13456');
 const PLAYGROUND_URL = `http://127.0.0.1:${PLAYGROUND_PORT}`;
-const PLAYGROUND_SERVER_DIR = new URL('../../../../../playground/server', import.meta.url).pathname;
+const PLAYGROUND_SERVER_DIR = new URL('../../../../examples/playground-api', import.meta.url).pathname;
 
 async function probeSurfnet(): Promise<boolean> {
     try {

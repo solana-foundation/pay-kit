@@ -175,7 +175,8 @@ registerDocs(app)
 // ── Static SPA in production ──
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const appDist = path.join(__dirname, '..', 'app', 'dist')
+// The web app lives in the playground workspace at the repo root.
+const appDist = path.join(__dirname, '..', '..', '..', 'playground', 'app', 'dist')
 app.use(express.static(appDist))
 app.get('*', (_req: Request, res: Response) => {
   res.sendFile(path.join(appDist, 'index.html'))

@@ -38,7 +38,7 @@ Runs automatically via `predev` and `prebuild`. Output:
 ## Typechecking
 
 These files are typechecked against the playground server's installed
-dependencies (`playground/server/tsconfig.snippets.json`):
+dependencies (`typescript/examples/playground-api/tsconfig.snippets.json`):
 
 ```sh
 pnpm -C playground check-snippets
