@@ -344,6 +344,21 @@ def test_open_payload_missing_mode_raises():
         OpenPayload.from_dict(d)
 
 
+def test_open_payload_unknown_mode_raises():
+    # rust serde rejects unknown SessionMode variants at decode.
+    d = {"mode": "stream", "channelId": "chan1", "authorizedSigner": "s", "signature": "sig"}
+    with pytest.raises(ValueError, match="unknown mode"):
+        OpenPayload.from_dict(d)
+
+
+def test_session_request_unknown_mode_and_strategy_raise():
+    base = {"cap": "1", "currency": "USDC", "operator": "op", "recipient": "rec"}
+    with pytest.raises(ValueError, match="unknown mode"):
+        SessionRequest.from_dict({**base, "modes": ["push", "stream"]})
+    with pytest.raises(ValueError, match="unknown pullVoucherStrategy"):
+        SessionRequest.from_dict({**base, "pullVoucherStrategy": "serverVoucher"})
+
+
 # ── SessionAction round-trips for all five actions ──
 
 
@@ -623,6 +638,14 @@ def test_commit_receipt_roundtrip_and_parsers():
 
     replayed = CommitReceipt.from_dict({**d, "status": "replayed"})
     assert replayed.status == "replayed"
+
+    # rust deserializes status as the CommitStatus enum: missing or unknown
+    # statuses fail at decode and can never advance client state.
+    with pytest.raises(ValueError, match="unknown status"):
+        CommitReceipt.from_dict({**d, "status": "settled"})
+    missing = {k: v for k, v in d.items() if k != "status"}
+    with pytest.raises(ValueError, match="unknown status"):
+        CommitReceipt.from_dict(missing)
 
     with pytest.raises(ValueError, match="invalid commit receipt amount"):
         CommitReceipt("d", "s", "bad", "1", "committed").amount_base_units()
