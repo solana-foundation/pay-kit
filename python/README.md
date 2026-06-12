@@ -263,7 +263,15 @@ Use MPP when:
 |---------------|--------|
 | `charge/pull` | ✅      |
 | `charge/push` | ✅      |
-| `session`     | —      |
+| `session`     | Client-only |
+
+`session` ships the client side: `ActiveSession` voucher signing, the
+challenge-driven pull/clientVoucher payment-channel openers (fee payer =
+challenge operator, pending-server-signature placeholder), the metered
+`SessionConsumer`, and the SSE streaming helpers (`MeteredSseSession`,
+`MeteredSseStream`, `HttpCommitTransport`). Server-side session verification,
+pull/operatedVoucher (multi-delegate) opens, and a session-aware request
+transport are follow-ups.
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`
