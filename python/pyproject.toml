@@ -24,6 +24,8 @@ dependencies = [
 fastapi = ["fastapi>=0.110"]
 flask = ["flask>=3"]
 django = ["django>=4.2"]
+# The playground-api example: a FastAPI app served with uvicorn.
+playground = ["fastapi>=0.110", "uvicorn>=0.30"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
