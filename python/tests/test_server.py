@@ -2279,8 +2279,10 @@ class TestFeePayerPubkeySourceOfTruth:
 class TestAuditServerConfigGuards:
     """Boot-time config guards: #24 secret length, #15 realm, #37 network."""
 
-    def _base(self, **overrides):
-        kwargs = dict(
+    def _base(self, **overrides: Any) -> Config:
+        # Annotated so pyright doesn't widen the heterogeneous literals to a
+        # union and then reject every Config(**kwargs) parameter.
+        kwargs: dict[str, Any] = dict(
             recipient=TEST_RECIPIENT,
             currency="USDC",
             decimals=6,
