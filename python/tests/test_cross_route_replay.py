@@ -86,7 +86,10 @@ async def test_tier2_rejects_tampered_realm():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "realm" in str(exc.value).lower()
 
 
@@ -99,7 +102,10 @@ async def test_tier2_rejects_tampered_method():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "method" in str(exc.value).lower()
 
 
@@ -112,7 +118,10 @@ async def test_tier2_rejects_non_charge_intent():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "intent" in str(exc.value).lower()
 
 
@@ -129,7 +138,10 @@ async def test_tier2_rejects_tampered_currency():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "currency" in str(exc.value).lower()
 
 
@@ -146,7 +158,10 @@ async def test_tier2_rejects_tampered_recipient():
     _resign_echo(echo)
 
     with pytest.raises(PaymentError) as exc:
-        await mpp.verify_credential(_bogus_signature_credential(echo))
+        await mpp.verify_credential_with_expected(
+            _bogus_signature_credential(echo),
+            ChargeRequest.from_dict(challenge.decode_request()),
+        )
     assert "recipient" in str(exc.value).lower()
 
 

@@ -26,12 +26,16 @@ from pay_kit._paycore.errors import (
 )
 from pay_kit._paycore.network_check import check_network_blockhash
 from pay_kit._paycore.solana import (
+    MIN_SECRET_KEY_BYTES,
     CredentialPayload,
     MethodDetails,
+    Split,
     default_rpc_url,
-    default_token_program_for_currency,
+    derive_default_realm,
     is_native_sol,
-    stablecoin_symbol,
+    resolve_server_token_program,
+    validate_network,
+    validate_splits,
 )
 from pay_kit._paycore.store import Store
 from pay_kit.protocols.mpp.core.base64url import encode_json
@@ -41,6 +45,7 @@ from pay_kit.protocols.mpp.server._tx_decode import (
     _SYSTEM_PROGRAM,
     MAX_COMPUTE_UNIT_LIMIT,
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED,
     MAX_SPLITS,
     _build_expected_transfers,
     _decode_legacy_payment_instructions,
@@ -65,7 +70,6 @@ from pay_kit.protocols.mpp.server._verify import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_REALM = "MPP Payment"
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _CONSUMED_PREFIX = "solana-charge:consumed:"
 
@@ -77,6 +81,7 @@ __all__ = [
     "Mpp",
     "MAX_COMPUTE_UNIT_LIMIT",
     "MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS",
+    "MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED",
     "MAX_SPLITS",
     "_assert_signature_slot",
     "_build_expected_transfers",
@@ -120,8 +125,16 @@ class Config:
     network: str = "mainnet"
     rpc_url: str = ""
     secret_key: str = ""
-    realm: str = ""
+    # ``None`` (the default) means "derive a per-recipient default realm"
+    # (Audit #15). An explicit empty string is a misconfiguration and is
+    # rejected at construction; a non-empty string is used verbatim.
+    realm: str | None = None
     html: bool = False
+    # Audit #5: push-mode (``type="signature"``) credentials are accepted only
+    # when this is opted in. Default OFF reduces attack surface; the pull-mode
+    # (``type="transaction"``) path is unaffected. Spec §13.5 permits push as a
+    # shape-matching mode, but it is off by default to match the Rust posture.
+    accept_push_mode: bool = False
     fee_payer_signer: Any = None
     store: Store | None = None
     # The RPC client MUST expose at least the methods on
@@ -152,17 +165,56 @@ class Mpp:
         secret_key = config.secret_key or os.environ.get(_SECRET_KEY_ENV_VAR, "")
         if not secret_key:
             raise PaymentError("missing secret key", code="invalid-config")
+        # Audit #24: enforce a >=32-byte HMAC-SHA256 secret on BOTH the config
+        # and env-var paths (the value is already resolved from either above).
+        # The key length is measured in bytes (UTF-8) so multi-byte secrets are
+        # not over-counted by character length.
+        if len(secret_key.encode("utf-8")) < MIN_SECRET_KEY_BYTES:
+            raise PaymentError(
+                f"secret key must be at least {MIN_SECRET_KEY_BYTES} bytes; "
+                "use cryptographically-random key material (e.g. `openssl rand -base64 32`)",
+                code="invalid-config",
+            )
 
         self._secret_key = secret_key
-        self._realm = config.realm or _DEFAULT_REALM
         self._recipient = config.recipient
+        # Audit #15: derive a per-recipient default realm instead of sharing the
+        # static "MPP Payment" namespace across every server on the same secret.
+        # An explicitly supplied empty realm is a misconfig and is rejected so an
+        # operator cannot accidentally re-introduce the shared namespace.
+        if config.realm == "":
+            raise PaymentError(
+                "realm must not be empty; omit it to derive a per-recipient default",
+                code="invalid-config",
+            )
+        self._realm = config.realm if config.realm else derive_default_realm(self._recipient)
         self._currency = config.currency or "USDC"
         self._decimals = config.decimals or 6
         from pay_kit._paycore.solana import _canonical_network as _canonical_net
 
+        # Audit #37: reject any network outside {mainnet, devnet, localnet} at
+        # boot, before any RPC client is built, instead of silently resolving
+        # unknown slugs to the mainnet RPC host.
+        try:
+            validate_network(config.network or "mainnet")
+        except ValueError as exc:
+            raise PaymentError(str(exc), code="invalid-config") from exc
         self._network = _canonical_net(config.network or "mainnet")
         self._rpc_url = config.rpc_url or default_rpc_url(self._network)
+        # Audit #28: resolve the token program ONCE at boot. Known stablecoins
+        # resolve from the static table (Token vs Token-2022 correctly); an
+        # arbitrary mint address has its on-chain owner fetched and validated;
+        # a currency that is neither a known symbol nor a valid pubkey is
+        # rejected. The result is emitted on every SPL challenge instead of a
+        # silent legacy-Token fallback for arbitrary mints.
+        try:
+            self._token_program: str | None = resolve_server_token_program(
+                self._currency, self._network, self._rpc_url
+            )
+        except ValueError as exc:
+            raise PaymentError(str(exc), code="invalid-config") from exc
         self._html = config.html
+        self._accept_push_mode = config.accept_push_mode
         self._fee_payer_signer = config.fee_payer_signer
         if config.store is None:
             # L4 lock: a missing replay store is a server misconfiguration.
@@ -241,12 +293,36 @@ class Mpp:
         """Create a charge challenge with optional fields."""
         base_units = parse_units(amount, self._decimals)
 
+        # Audit #21 / #38: validate splits at ISSUANCE (count/parse/positive/
+        # dedup) and reject the fee-sponsored drain shape — a split paying the
+        # primary recipient with ataCreationRequired=true — before the splits
+        # are embedded into a signed challenge. Previously invalid splits were
+        # only caught at verify / on-chain time.
+        split_objs = [Split.from_dict(s) for s in options.splits]
+        try:
+            validate_splits(split_objs)
+        except ValueError as exc:
+            raise PaymentError(str(exc), code="invalid-config") from exc
+        is_fee_sponsored = options.fee_payer or self._fee_payer_signer is not None
+        if is_fee_sponsored:
+            for split in split_objs:
+                if split.recipient == self._recipient and split.ata_creation_required:
+                    raise PaymentError(
+                        "fee-sponsored challenge must not create the primary recipient's ATA "
+                        "via a split (drain risk); remove ataCreationRequired on the primary "
+                        "recipient's split",
+                        code="invalid-config",
+                    )
+
         details: dict[str, Any] = {"network": self._network}
         if not is_native_sol(self._currency):
             details["decimals"] = self._decimals
-            if stablecoin_symbol(self._currency):
-                details["tokenProgram"] = default_token_program_for_currency(self._currency, self._network)
-        if options.fee_payer or self._fee_payer_signer is not None:
+            # Audit #28: emit the boot-resolved token program for every SPL
+            # challenge (including arbitrary mints resolved on-chain), not just
+            # known stablecoin symbols.
+            if self._token_program is not None:
+                details["tokenProgram"] = self._token_program
+        if is_fee_sponsored:
             details["feePayer"] = True
             if self._fee_payer_signer is not None:
                 details["feePayerKey"] = str(self._fee_payer_signer.pubkey())
@@ -279,24 +355,6 @@ class Mpp:
             expires=options.expires or default_expires,
             description=options.description,
         )
-
-    async def verify_credential(self, credential: PaymentCredential) -> Receipt:
-        """Verify either a transaction or signature credential payload.
-
-        This is the simple API and is appropriate for servers that only gate a
-        single route. Servers that gate multiple routes at different prices on
-        the same secret key MUST use ``verify_credential_with_expected`` so the
-        route's expected amount is compared to the credential's claimed amount;
-        otherwise a credential issued for a cheaper route can be replayed at
-        an expensive one.
-
-        Even on the simple API, a Tier-2 pinned-field check enforces that the
-        credential's method/intent/realm/currency/recipient match this Mpp's
-        configuration, so cross-route replay across instances with different
-        recipients/currencies is blocked.
-        """
-        request, details, payload = self._verify_challenge_and_decode(credential)
-        return await self._verify_payload(credential, request, details, payload)
 
     async def verify_credential_with_expected(
         self,
@@ -423,6 +481,14 @@ class Mpp:
         if payload.type == "transaction":
             return await self._verify_transaction(credential, request, details, payload)
         elif payload.type == "signature":
+            # Audit #5: push mode is opt-in (spec §13.5). Reject unless the
+            # server explicitly enabled it via Config.accept_push_mode.
+            if not self._accept_push_mode:
+                raise PaymentError(
+                    'type="signature" (push mode) credentials are not accepted; '
+                    "set Config.accept_push_mode=True to opt in (spec §13.5)",
+                    code="invalid-payload-type",
+                )
             if details.fee_payer:
                 raise PaymentError(
                     'type="signature" credentials cannot be used with fee sponsorship',

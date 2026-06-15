@@ -26,11 +26,37 @@ class TestParseUnits:
     def test_zero_point_zero(self):
         assert parse_units("0.0", 6) == "0"
 
-    def test_leading_decimal(self):
-        assert parse_units(".5", 6) == "500000"
-
     def test_exact_decimals(self):
         assert parse_units("1.000001", 6) == "1000001"
+
+    # Audit #44/#45: malformed shapes must be rejected, not silently parsed.
+    def test_leading_decimal_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units(".5", 6)
+
+    def test_trailing_decimal_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units("5.", 6)
+
+    def test_bare_dot_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units(".", 6)
+
+    def test_leading_plus_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units("+5", 6)
+
+    def test_underscore_grouping_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units("1_000", 6)
+
+    def test_unicode_digits_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units("١٢٣", 6)  # noqa: RUF001 — Arabic-Indic digits
+
+    def test_unicode_digits_in_fraction_rejected(self):
+        with pytest.raises(ValueError, match="invalid amount"):
+            parse_units("1.٥", 6)  # noqa: RUF001
 
     def test_empty_raises(self):
         with pytest.raises(ValueError, match="amount is required"):

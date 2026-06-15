@@ -431,7 +431,12 @@ def _validate_instruction_allowlist(
         accounts = list(instruction.accounts)
 
         if program_id == _COMPUTE_BUDGET_PROGRAM:
-            _validate_compute_budget_instruction(data, len(accounts))
+            # Audit #25: apply the tight fee-sponsored price cap when the server
+            # is the fee payer (it co-signs and pays the priority fee before
+            # broadcast). Client-paid charges keep the general cap.
+            _validate_compute_budget_instruction(
+                data, len(accounts), fee_sponsored=details.fee_payer
+            )
             continue
 
         if program_id == MEMO_PROGRAM:

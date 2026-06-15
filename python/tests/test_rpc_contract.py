@@ -16,7 +16,9 @@ class _LegacyClientLackingAwaitConfirmation:
 def test_config_rpc_missing_method_rejected_at_init():
     cfg = Config(
         recipient="11111111111111111111111111111112",
-        secret_key="s",
+        # Audit #24: secret must be >=32 bytes; use a valid one so the RPC
+        # contract check is what fires, not the secret-length gate.
+        secret_key="test-secret-key-that-is-long-enough-for-hmac-sha256",
         rpc=_LegacyClientLackingAwaitConfirmation(),
         store=MemoryStore(),
     )

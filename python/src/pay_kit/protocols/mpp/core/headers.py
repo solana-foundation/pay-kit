@@ -63,6 +63,13 @@ def parse_www_authenticate(header: str) -> PaymentChallenge:
     intent = _require_param(params, "intent")
     request_b64 = _require_param(params, "request")
 
+    # Audit #9: cap the ``request`` parameter before base64url-decode + JSON
+    # parse, matching ``parse_authorization`` / ``parse_receipt`` which cap the
+    # token they decode. ``request`` is the only challenge field that drives
+    # O(n) decode+parse cost; every other param is a short pass-through string.
+    if len(request_b64) > MAX_TOKEN_LEN:
+        raise ParseError(f"request parameter exceeds maximum length of {MAX_TOKEN_LEN} bytes")
+
     # Validate that request is valid base64url JSON
     try:
         request_bytes = decode(request_b64)

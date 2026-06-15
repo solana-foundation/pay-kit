@@ -312,6 +312,8 @@ async def test_build_charge_transaction_resolves_token_program_via_rpc_owner():
         currency=unknown_mint,
         recipient=recipient,
         method_details=MethodDetails(network="mainnet", decimals=6, recent_blockhash=BLOCKHASH),
+        # Audit #26: an unknown Token-2022 mint requires explicit opt-in.
+        allow_unknown_token_2022=True,
     )
     tx, ixs = _instructions(payload.transaction)
     keys = tx.message.account_keys
@@ -455,3 +457,140 @@ async def test_build_credential_header_without_method_details():
     )
     assert "Payment " in header
     assert rpc.calls == 1
+
+
+# ── Audit fixes: client-side guards ──────────────────────────────────────────
+
+
+def _sol_challenge(amount="100", expires="", network="mainnet"):
+    recipient = str(Keypair().pubkey())
+    request = encode_json(
+        {
+            "amount": amount,
+            "currency": "sol",
+            "recipient": recipient,
+            "methodDetails": {"network": network, "recentBlockhash": BLOCKHASH},
+        }
+    )
+    return PaymentChallenge(
+        id="c1", realm="api", method="solana", intent="charge", request=request, expires=expires
+    )
+
+
+async def test_client_refuses_expired_challenge():
+    # Audit #10: an expired challenge is NEVER signed, regardless of opt-ins.
+    challenge = _sol_challenge(expires="2020-01-01T00:00:00Z")
+    with pytest.raises(ValueError, match="expired"):
+        await build_credential_header(signer=Keypair(), rpc_client=None, challenge=challenge)
+
+
+async def test_client_max_amount_guard():
+    # Audit #10: opt-in max-amount cap.
+    challenge = _sol_challenge(amount="1000")
+    with pytest.raises(ValueError, match="exceeds max"):
+        await build_credential_header(
+            signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=999
+        )
+
+
+async def test_client_max_amount_at_cap_allowed():
+    challenge = _sol_challenge(amount="1000")
+    header = await build_credential_header(
+        signer=Keypair(), rpc_client=None, challenge=challenge, max_amount_base_units=1000
+    )
+    assert header.startswith("Payment ")
+
+
+async def test_client_expected_network_guard():
+    # Audit #10: opt-in network pin.
+    challenge = _sol_challenge(network="mainnet")
+    with pytest.raises(ValueError, match="does not match"):
+        await build_credential_header(
+            signer=Keypair(), rpc_client=None, challenge=challenge, expected_network="devnet"
+        )
+
+
+async def test_client_refuses_unknown_token_2022_without_opt_in():
+    # Audit #26: unknown Token-2022 mint requires opt-in.
+    from pay_kit._paycore.solana import TOKEN_2022_PROGRAM
+
+    signer = Keypair()
+    unknown_mint = str(Keypair().pubkey())
+    with pytest.raises(ValueError, match="unknown Token-2022 mint"):
+        await build_charge_transaction(
+            signer=signer,
+            rpc_client=None,
+            amount="1000",
+            currency=unknown_mint,
+            recipient=str(Keypair().pubkey()),
+            method_details=MethodDetails(
+                network="mainnet",
+                decimals=6,
+                token_program=TOKEN_2022_PROGRAM,
+                recent_blockhash=BLOCKHASH,
+            ),
+        )
+
+
+async def test_client_allows_unknown_vanilla_token_mint():
+    # Audit #26: vanilla Token program has no hooks -> first-class, no opt-in.
+    from pay_kit._paycore.solana import TOKEN_PROGRAM
+
+    signer = Keypair()
+    unknown_mint = str(Keypair().pubkey())
+    payload = await build_charge_transaction(
+        signer=signer,
+        rpc_client=None,
+        amount="1000",
+        currency=unknown_mint,
+        recipient=str(Keypair().pubkey()),
+        method_details=MethodDetails(
+            network="mainnet",
+            decimals=6,
+            token_program=TOKEN_PROGRAM,
+            recent_blockhash=BLOCKHASH,
+        ),
+    )
+    assert payload.type == "transaction"
+
+
+async def test_client_requires_decimals_for_spl():
+    # Audit #42: SPL charge must carry decimals (no silent default to 6).
+    from pay_kit._paycore.solana import TOKEN_PROGRAM
+
+    signer = Keypair()
+    with pytest.raises(ValueError, match="decimals is required"):
+        await build_charge_transaction(
+            signer=signer,
+            rpc_client=None,
+            amount="1000",
+            currency="USDC",
+            recipient=str(Keypair().pubkey()),
+            method_details=MethodDetails(
+                network="mainnet", token_program=TOKEN_PROGRAM, recent_blockhash=BLOCKHASH
+            ),
+        )
+
+
+async def test_client_blockhash_fetched_with_confirmed_commitment():
+    # Audit #36: blockhash fetched at confirmed commitment.
+    captured = {}
+
+    class _CommitmentRpc:
+        async def get_latest_blockhash(self, commitment=None):
+            captured["commitment"] = commitment
+            return _Resp(_BlockhashValue(Hash.default()))
+
+    rpc = _CommitmentRpc()
+    await build_charge_transaction(
+        signer=Keypair(),
+        rpc_client=rpc,
+        amount="100",
+        currency="sol",
+        recipient=str(Keypair().pubkey()),
+        method_details=MethodDetails(),
+    )
+    # Either a solders Confirmed object or the "confirmed" string is accepted.
+    assert str(captured["commitment"]).lower().find("confirmed") != -1 or captured[
+        "commitment"
+    ] == "confirmed"

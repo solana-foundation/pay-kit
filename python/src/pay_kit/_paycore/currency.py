@@ -39,8 +39,30 @@ def parse_units(amount: str, decimals: int) -> str:
     if len(parts) > 2:
         raise ValueError(f"invalid amount: {amount}")
 
-    whole = parts[0] or "0"
-    fractional = parts[1] if len(parts) == 2 else ""
+    has_fraction = len(parts) == 2
+    whole = parts[0]
+    fractional = parts[1] if has_fraction else ""
+
+    # Audit #44/#45: reject malformed shapes that ``int()`` would otherwise
+    # silently accept. Mirrors the Rust ``parse_units`` guards
+    # (rust/crates/mpp/src/protocol/intents/mod.rs): no empty integer/fraction
+    # halves (".5", "5.", "."), and every digit must be an ASCII 0-9 — Python's
+    # ``int()`` accepts a leading "+", underscore grouping ("1_000"), and
+    # non-ASCII Unicode digits ("١٢٣"), all of which would silently corrupt the
+    # base-unit amount. ``str.isdigit()`` is too loose (it accepts superscripts
+    # and other numeric Unicode), so screen each char with ``isascii``+``isdigit``.
+    if has_fraction and (not whole or not fractional):
+        raise ValueError(f"invalid amount: {amount}")
+    if not whole:
+        raise ValueError(f"invalid amount: {amount}")
+
+    def _all_ascii_digits(s: str) -> bool:
+        return s != "" and all(c.isascii() and c.isdigit() for c in s)
+
+    if not _all_ascii_digits(whole):
+        raise ValueError(f"invalid amount: {amount}")
+    if fractional and not _all_ascii_digits(fractional):
+        raise ValueError(f"invalid amount: {amount}")
 
     if len(fractional) > decimals:
         raise ValueError(f"amount {amount} has too many decimal places for {decimals} decimals")
@@ -51,7 +73,7 @@ def parse_units(amount: str, decimals: int) -> str:
     # Strip leading zeros
     value_str = value_str.lstrip("0") or "0"
 
-    # Validate it's a valid integer
+    # Validate it's a valid integer (guards above already screened the digits)
     try:
         val = int(value_str)
     except ValueError as exc:

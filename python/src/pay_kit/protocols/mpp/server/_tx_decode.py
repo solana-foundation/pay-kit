@@ -45,6 +45,14 @@ _COMPUTE_BUDGET_SET_LIMIT_DISCRIMINATOR = 2
 _COMPUTE_BUDGET_SET_PRICE_DISCRIMINATOR = 3
 MAX_COMPUTE_UNIT_LIMIT = 200_000
 MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
+# Audit #25: in fee-sponsored pull mode the server co-signs (and pays the
+# priority fee) before broadcast, so a client could set the price up to the
+# general cap and drain the merchant. Apply a tight cap when the server is the
+# fee payer. Worst-case priority fee = ceil(10_000 * 200_000 / 1_000_000) =
+# 2_000 lamports (~20% of the per-signature base fee) — enough room for honest
+# clients to bump priority during congestion. Mirrors Rust
+# ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED``.
+MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000
 
 # ``MAX_SPLITS`` (the split-recipient cap) is imported from
 # :mod:`pay_kit._paycore.solana` and re-exported here so the server verifier and
@@ -333,7 +341,9 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
-def _validate_compute_budget_instruction(data: bytes, account_count: int) -> None:
+def _validate_compute_budget_instruction(
+    data: bytes, account_count: int, fee_sponsored: bool = False
+) -> None:
     """Validate a single ComputeBudget program instruction.
 
     Mirrors ``validate_compute_budget_instruction`` in
@@ -343,6 +353,12 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int) -> Non
     shapes, both must carry zero account references, and each value is
     capped at the per-instruction maximum. Anything else is rejected as
     an invalid payload to keep the on-wire allowlist tight.
+
+    Audit #25: when ``fee_sponsored`` is True (the server is the fee payer and
+    co-signs before broadcast), the compute-unit price is held to the tight
+    ``MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED`` cap so a client
+    cannot inflate the priority fee the merchant pays. Client-paid mode keeps
+    the general cap.
     """
     if account_count != 0:
         raise PaymentError(
@@ -365,9 +381,14 @@ def _validate_compute_budget_instruction(data: bytes, account_count: int) -> Non
         return
     if discriminator == _COMPUTE_BUDGET_SET_PRICE_DISCRIMINATOR and len(data) == 9:
         price = int.from_bytes(data[1:9], "little")
-        if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS:
+        price_cap = (
+            MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+            if fee_sponsored
+            else MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+        )
+        if price > price_cap:
             raise PaymentError(
-                f"compute unit price {price} exceeds cap {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}",
+                f"compute unit price {price} exceeds cap {price_cap}",
                 code="compute-budget-cap-exceeded",
             )
         return

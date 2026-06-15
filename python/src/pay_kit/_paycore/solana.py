@@ -53,6 +53,165 @@ def _canonical_network(network: str) -> str:
     return "mainnet" if network == "mainnet-beta" else network
 
 
+# Audit #37: canonical Solana network allowlist. The server rejects anything
+# outside this set at boot rather than silently treating unknown slugs (typos,
+# "testnet", or the RPC-hostname spelling "mainnet-beta") as mainnet. Mirrors
+# Rust ``validate_network`` (rust/crates/mpp/src/protocol/solana.rs).
+NETWORK_MAINNET = "mainnet"
+NETWORK_DEVNET = "devnet"
+NETWORK_LOCALNET = "localnet"
+DEFAULT_NETWORK = NETWORK_MAINNET
+_ALLOWED_NETWORKS = frozenset({NETWORK_MAINNET, NETWORK_DEVNET, NETWORK_LOCALNET})
+
+# Audit #24: HMAC-SHA256 secret key minimum size. NIST SP 800-107 recommends a
+# key at least as long as the hash output (32 bytes for SHA-256). Mirrors Rust
+# ``MIN_SECRET_KEY_BYTES``.
+MIN_SECRET_KEY_BYTES = 32
+
+
+def validate_network(network: str) -> None:
+    """Reject any network slug outside the canonical allowlist (Audit #37).
+
+    ``mainnet-beta`` is canonicalized to ``mainnet`` first (backward-compat
+    alias). Empty input gets a distinct message for clearer boot diagnostics.
+    """
+    if not network:
+        raise ValueError("network is required (one of: mainnet, devnet, localnet)")
+    canonical = _canonical_network(network)
+    if canonical not in _ALLOWED_NETWORKS:
+        raise ValueError(
+            f"unknown network '{network}'; must be one of: mainnet, devnet, localnet "
+            "('mainnet-beta' is accepted as an alias for 'mainnet')"
+        )
+
+
+def derive_default_realm(recipient: str) -> str:
+    """Derive a per-recipient default realm (Audit #15).
+
+    A shared static default realm puts every server that reuses a secret key in
+    one HMAC credential namespace, enabling cross-service replay. The recipient
+    pubkey is unique per merchant and already mandatory, so deriving the default
+    realm from it gives two services with the same secret but different
+    recipients different realms (different HMAC ids). Mirrors Rust
+    ``derive_default_realm``: SHA-256 of the recipient, first 4 bytes mod 1e8.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(recipient.encode("utf-8")).digest()
+    suffix = int.from_bytes(digest[:4], "big") % 100_000_000
+    return f"App Id - #{suffix}"
+
+
+def is_known_stablecoin_mint(currency: str) -> bool:
+    """Return True if ``currency`` is a known stablecoin symbol or mint address."""
+    return stablecoin_symbol(currency) is not None
+
+
+def _is_valid_pubkey(value: str) -> bool:
+    try:
+        from solders.pubkey import Pubkey
+
+        Pubkey.from_string(value)
+        return True
+    except Exception:
+        return False
+
+
+def resolve_server_token_program(currency: str, network: str, rpc_url: str | None) -> str | None:
+    """Resolve the token program a server should advertise for ``currency`` (Audit #28).
+
+    Mirrors Rust ``resolve_server_token_program``:
+
+    - native SOL → ``None`` (no token program).
+    - a known stablecoin symbol/mint → the program from the static table
+      (correctly Token-2022 for PYUSD/USDG/CASH, classic Token for USDC/USDT).
+    - an arbitrary mint address → fetch the mint account owner on-chain and
+      return it, rejecting any owner that is not the SPL Token or Token-2022
+      program. The server fails fast at boot if the mint is unreachable.
+    - anything that is neither a known symbol nor a valid pubkey → reject.
+
+    Unlike a silent fallback to the classic Token program, an arbitrary
+    Token-2022 mint is resolved to its real owner so the emitted
+    ``tokenProgram`` (and the derived ATAs) are correct.
+    """
+    if is_native_sol(currency):
+        return None
+    if is_known_stablecoin_mint(currency):
+        return default_token_program_for_currency(currency, network)
+    # Arbitrary currency: must be a real mint pubkey.
+    if not _is_valid_pubkey(currency):
+        raise ValueError(
+            f"currency '{currency}' is neither a known stablecoin symbol nor a valid mint address"
+        )
+    owner = _fetch_mint_owner_sync(currency, rpc_url)
+    if owner not in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+        raise ValueError(
+            f"mint '{currency}' is owned by an unexpected program '{owner}'; "
+            "only the SPL Token and Token-2022 programs are supported"
+        )
+    return owner
+
+
+def _fetch_mint_owner_sync(mint: str, rpc_url: str | None) -> str:
+    """Fetch the owner program of ``mint`` via a synchronous getAccountInfo call.
+
+    Runs once at server boot (``Mpp.__init__`` is synchronous). Raises if the
+    RPC is unreachable or the mint account does not exist, so a misconfigured
+    arbitrary mint fails fast rather than shipping a wrong ``tokenProgram``.
+    """
+    if not rpc_url:
+        raise ValueError(
+            f"cannot resolve token program for arbitrary mint '{mint}': no rpc_url configured"
+        )
+    import httpx
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getAccountInfo",
+        "params": [mint, {"encoding": "base64"}],
+    }
+    try:
+        resp = httpx.post(rpc_url, json=payload, timeout=30.0)
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:  # noqa: BLE001 — surface any RPC failure at boot
+        raise ValueError(f"failed to fetch mint '{mint}' owner from {rpc_url}: {exc}") from exc
+    value = (body.get("result") or {}).get("value")
+    if not value:
+        raise ValueError(f"mint account '{mint}' not found on chain")
+    owner = value.get("owner")
+    if not owner:
+        raise ValueError(f"mint account '{mint}' has no owner field in RPC response")
+    return str(owner)
+
+
+def validate_splits(splits: list[Split]) -> None:
+    """Validate a split set at challenge issuance (Audit #21).
+
+    Enforces, before the splits are embedded into a signed challenge:
+    count <= ``MAX_SPLITS``; each recipient parses as a pubkey; each amount
+    parses as a non-negative integer and is strictly positive; the aggregate
+    does not overflow (Python ints are unbounded, but a parse failure is still
+    rejected); and no duplicate recipients. Mirrors Rust ``validate_splits``.
+    """
+    if len(splits) > MAX_SPLITS:
+        raise ValueError(f"too many splits: maximum is {MAX_SPLITS}")
+    seen: set[str] = set()
+    for split in splits:
+        if not _is_valid_pubkey(split.recipient):
+            raise ValueError(f"split recipient '{split.recipient}' is not a valid pubkey")
+        try:
+            amount = int(split.amount)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"split amount '{split.amount}' is not a valid integer") from exc
+        if amount <= 0:
+            raise ValueError("split amount must be positive")
+        if split.recipient in seen:
+            raise ValueError(f"duplicate split recipient '{split.recipient}'")
+        seen.add(split.recipient)
+
+
 STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
     "USDC": TOKEN_PROGRAM,
     "USDT": TOKEN_PROGRAM,

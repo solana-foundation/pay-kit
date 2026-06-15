@@ -67,9 +67,12 @@ class TestPayDecorator:
 
     @pytest.mark.asyncio
     async def test_splits_option_is_included_in_challenge(self, mpp_handler):
+        # Audit #21: split recipients are validated as real pubkeys at issuance.
+        from solders.pubkey import Pubkey
+
         splits = [
             {
-                "recipient": "VendorPayoutsWaLLetxxxxxxxxxxxxxxxxxxxxxx1111",
+                "recipient": str(Pubkey.new_unique()),
                 "amount": "1000",
                 "memo": "vendor payout",
             }
