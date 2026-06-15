@@ -419,7 +419,31 @@ class HarnessHandler(BaseHTTPRequestHandler):
         message: str = "Payment required",
         code: str = "payment_invalid",
     ) -> None:
-        challenge = adapter.handler.charge_with_options(amount, options)
+        try:
+            challenge = adapter.handler.charge_with_options(amount, options)
+        except PaymentError as exc:
+            # Audit #21 promoted too-many-splits to a refuse-to-issue. The
+            # conformance harness expects the 402-class outcome (no challenge to
+            # advertise), not a 500. Re-raise anything else.
+            if "too many splits" not in str(exc):
+                raise
+            invalid = canonical_code("payment_invalid")
+            self._send_json(
+                402,
+                {
+                    "type": f"https://paymentauth.org/problems/{invalid}",
+                    "title": "Payment Required",
+                    "status": 402,
+                    "code": invalid,
+                    "error": invalid,
+                    "message": str(exc),
+                },
+                extra_headers={
+                    "content-type": "application/problem+json",
+                    "cache-control": "no-store",
+                },
+            )
+            return
         canonical = canonical_code(code) if code else "payment_invalid"
         body = {
             "type": f"https://paymentauth.org/problems/{canonical}",
