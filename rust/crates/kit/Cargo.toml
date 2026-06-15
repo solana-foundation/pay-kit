@@ -12,9 +12,21 @@ mpp = ["dep:solana-mpp"]
 x402 = ["dep:solana-x402"]
 server = ["solana-mpp?/server", "solana-x402?/server"]
 client = ["solana-mpp?/client", "solana-x402?/client"]
-axum = ["solana-mpp?/axum"]
+# The unified axum gate dispatches both protocols, so it needs both servers.
+axum = ["mpp", "x402", "server", "solana-mpp?/axum", "dep:axum"]
 gcp_kms = ["solana-mpp?/gcp_kms"]
 
 [dependencies]
 solana-mpp = { path = "../mpp", optional = true }
 solana-x402 = { path = "../x402", optional = true }
+axum = { version = "0.8", optional = true, default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+serde_json = "1"
+
+[[example]]
+name = "axum_quickstart"
+required-features = ["axum"]
