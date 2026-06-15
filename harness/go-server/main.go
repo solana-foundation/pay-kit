@@ -197,7 +197,11 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		if auth == "" {
 			challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				if isIssuanceConfigError(err) {
+					writeMPP402ConfigError(w, err)
+				} else {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
 				return
 			}
 			writeMPP402(w, challenge, nil)
@@ -205,7 +209,11 @@ func mountMPP(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		}
 		challenge, err := srv.ChargeWithOptions(r.Context(), amt, opts)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			if isIssuanceConfigError(err) {
+				writeMPP402ConfigError(w, err)
+			} else {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		credential, err := core.ParseAuthorization(auth)
@@ -300,6 +308,25 @@ func pow10(n int) int {
 		out *= 10
 	}
 	return out
+}
+
+// isIssuanceConfigError reports whether a ChargeWithOptions failure is a
+// challenge-issuance config rejection that the conformance harness expects to
+// surface as a 402-class outcome rather than a 500. Audit #21 promoted
+// too-many-splits from a verify-time reject to a refuse-to-issue, so the
+// harness now expects 402 here (see canonical-codes.ts `/too many splits/i`).
+func isIssuanceConfigError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "too many splits")
+}
+
+// writeMPP402ConfigError surfaces an issuance config rejection (no challenge to
+// advertise) as the 402 the harness expects.
+func writeMPP402ConfigError(w http.ResponseWriter, issueErr error) {
+	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("content-type", "application/problem+json")
+	w.WriteHeader(http.StatusPaymentRequired)
+	_ = json.NewEncoder(w).Encode(errorcodes.NewPaymentRequiredBody(
+		errorcodes.CanonicalFromError(issueErr), issueErr.Error()))
 }
 
 // writeMPP402 emits the canonical L6 problem+json body shared across
