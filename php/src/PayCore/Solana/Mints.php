@@ -113,6 +113,13 @@ final class Mints
      * `TokenProgram::TOKEN_2022_PROGRAM_ID` for stablecoins that live on
      * Token-2022 (PYUSD, USDG, CASH); `TokenProgram::PROGRAM_ID` for everything
      * else (including unknown / direct-mint inputs).
+     *
+     * WARNING (audit #28): for an *arbitrary, unknown* mint address this
+     * returns the legacy Token program, which is wrong for any Token-2022 mint
+     * not in the static table. Callers that may receive arbitrary mints (e.g.
+     * the MPP charge verifier) MUST NOT rely on this default — see
+     * {@see isKnownMint()} to detect the case and {@see resolveTokenProgramOnChain()}
+     * to resolve the owner on-chain.
      */
     public static function tokenProgramFor(string $currency, string $network = 'mainnet'): string
     {
@@ -120,6 +127,56 @@ final class Mints
         return $symbol !== null && in_array($symbol, self::TOKEN_2022_SYMBOLS, true)
             ? TokenProgram::TOKEN_2022_PROGRAM_ID
             : TokenProgram::PROGRAM_ID;
+    }
+
+    /**
+     * True when `$currency` resolves to a mint we know from the static table
+     * (by symbol or by mint address). Unknown arbitrary mint addresses return
+     * false — for those the token program cannot be inferred without an
+     * on-chain owner lookup (audit #28).
+     */
+    public static function isKnownMint(string $currency, string $network = 'mainnet'): bool
+    {
+        return self::symbolFor($currency, $network) !== null;
+    }
+
+    /**
+     * True when `$currency` is a bare base58 mint address (32+ chars) rather
+     * than a short symbol like "USDC". Used to tell "unknown symbol" (safe to
+     * leave as legacy) from "unknown arbitrary mint" (must resolve on-chain).
+     */
+    public static function looksLikeMintAddress(string $currency): bool
+    {
+        return strtoupper($currency) !== 'SOL'
+            && strlen($currency) >= 32
+            && PublicKey::isBase58AlphabetString($currency);
+    }
+
+    /**
+     * Resolve the owning token program for an arbitrary mint by fetching the
+     * mint account's owner on-chain (spec §7.2), instead of guessing legacy
+     * Token (audit #28). Mirrors Rust `resolve_server_token_program`.
+     *
+     * `$accountOwnerFetcher` is given the mint address and must return the
+     * account owner's base58 pubkey, or null if the account does not exist.
+     * Rejects any owner that is neither the Token Program nor the Token-2022
+     * Program.
+     *
+     * @param callable(string):?string $accountOwnerFetcher
+     */
+    public static function resolveTokenProgramOnChain(string $mint, callable $accountOwnerFetcher): string
+    {
+        $owner = $accountOwnerFetcher($mint);
+        if ($owner === null || $owner === '') {
+            throw new \InvalidArgumentException('mint account not found on-chain: ' . $mint);
+        }
+        if ($owner !== TokenProgram::PROGRAM_ID && $owner !== TokenProgram::TOKEN_2022_PROGRAM_ID) {
+            throw new \InvalidArgumentException(
+                'mint ' . $mint . ' is not owned by the Token or Token-2022 program (owner: ' . $owner . ')',
+            );
+        }
+
+        return $owner;
     }
 
     /**

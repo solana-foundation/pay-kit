@@ -58,7 +58,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
     public function testRejectsMissingTransactionPayload(): void
     {
         $fixture = $this->fixture();
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $server = new ChargeServer(secretKey: self::SECRET, realm: 'api');
         $challenge = $server->createChallenge($this->request($fixture));
         $credential = new Credential(challenge: $challenge->toEcho(), payload: []);
 
@@ -84,7 +84,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         // happens later in the handler via fetchSettledTransaction +
         // verifyTransactionPayload.
         $fixture = $this->fixture();
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $server = new ChargeServer(secretKey: self::SECRET, realm: 'api');
         $challenge = $server->createChallenge($this->request($fixture));
         $signature = Base58::encode(str_repeat("\x01", 64));
         $credential = new Credential(
@@ -92,16 +92,61 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
             payload: ['type' => 'signature', 'signature' => $signature],
         );
 
-        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+        // Push mode is opt-in (audit #5); construct the verifier with it enabled.
+        $result = (new SolanaChargeTransactionVerifier(acceptPushMode: true))->verify($credential, $challenge);
 
         self::assertTrue($result->ok, $result->reason);
         self::assertSame($signature, $result->reference);
     }
 
+    public function testRejectsUnknownMintWithoutEmbeddedTokenProgram(): void
+    {
+        // audit #28: for an arbitrary, unknown mint the token program cannot be
+        // inferred (the legacy default is wrong for unknown Token-2022 mints),
+        // so an absent methodDetails.tokenProgram must be rejected rather than
+        // silently defaulting to legacy Token.
+        $fixture = $this->fixture();
+        $unknownMint = 'So11111111111111111111111111111111111111112';
+        $request = new ChargeRequest(
+            amount: '1000',
+            currency: $unknownMint,
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 6,
+                // tokenProgram intentionally omitted.
+            ],
+        );
+        $transaction = $this->transactionPayload($fixture, includeSplitAta: true);
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertStringContainsString('methodDetails.tokenProgram is required', $result->reason);
+    }
+
+    public function testRejectsPushSignaturePayloadWhenPushModeNotOptedIn(): void
+    {
+        // audit #5: push mode is off by default. A signature credential must be
+        // rejected before any shape check unless the server opts in.
+        $fixture = $this->fixture();
+        $server = new ChargeServer(secretKey: self::SECRET, realm: 'api');
+        $challenge = $server->createChallenge($this->request($fixture));
+        $credential = new Credential(
+            challenge: $challenge->toEcho(),
+            payload: ['type' => 'signature', 'signature' => Base58::encode(str_repeat("\x01", 64))],
+        );
+
+        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+
+        self::assertFalse($result->ok);
+        self::assertSame('push-mode credentials are not accepted by this server', $result->reason);
+    }
+
     public function testRejectsPushSignaturePayloadWithWrongLength(): void
     {
         $fixture = $this->fixture();
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
+        $server = new ChargeServer(secretKey: self::SECRET, realm: 'api');
         $challenge = $server->createChallenge($this->request($fixture));
         // 32-byte decoded value, not the required 64.
         $credential = new Credential(
@@ -109,7 +154,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
             payload: ['type' => 'signature', 'signature' => Base58::encode(str_repeat("\x01", 32))],
         );
 
-        $result = (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
+        $result = (new SolanaChargeTransactionVerifier(acceptPushMode: true))->verify($credential, $challenge);
 
         self::assertFalse($result->ok);
         self::assertSame('invalid signature length', $result->reason);
@@ -354,8 +399,10 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertSame('u64 value exceeds PHP integer range', $result->reason);
     }
 
-    public function testAcceptsComputeBudgetWithinVerifierLimits(): void
+    public function testAcceptsComputeBudgetWithinFeeSponsoredTightCap(): void
     {
+        // audit #25: the default request() is fee-sponsored (feePayer=true), so
+        // the tight 10_000 µlamport cap applies. A price at the cap is accepted.
         $fixture = $this->fixture();
         $request = $this->request($fixture);
         $transaction = $this->transactionPayload(
@@ -363,6 +410,45 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
             includeSplitAta: true,
             extraInstructions: [
                 ComputeBudgetProgram::setComputeUnitLimit(200_000),
+                ComputeBudgetProgram::setComputeUnitPrice(10_000),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertTrue($result->ok, $result->reason);
+    }
+
+    public function testRejectsComputeBudgetPriceAboveFeeSponsoredTightCap(): void
+    {
+        // audit #25: in fee-sponsored mode the server pays the priority fee, so
+        // a price above the tight cap (but below the general 5M ceiling) is
+        // rejected to prevent draining the merchant fee-payer.
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [
+                ComputeBudgetProgram::setComputeUnitPrice(10_001),
+            ],
+        );
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('compute unit price exceeds maximum', $result->reason);
+    }
+
+    public function testAcceptsComputeBudgetPriceUpToGeneralCapWhenClientPaysFees(): void
+    {
+        // audit #25 regression: when the client pays its own fees (no server
+        // fee payer), the tight cap MUST NOT apply — the general 5M ceiling
+        // holds, since there is no merchant fee-payer at risk.
+        $fixture = $this->fixture();
+        $request = $this->clientPaysRequest($fixture);
+        $transaction = $this->clientPaysTransactionPayload(
+            $fixture,
+            ataPayer: $fixture['payer'],
+            extraInstructions: [
                 ComputeBudgetProgram::setComputeUnitPrice(5_000_000),
             ],
         );
@@ -530,8 +616,9 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
      * is $fixture['payer'] but whose ATA-creation payer is configurable.
      *
      * @param array<string, PublicKey> $fixture
+     * @param array<int, TransactionInstruction> $extraInstructions
      */
-    private function clientPaysTransactionPayload(array $fixture, PublicKey $ataPayer): string
+    private function clientPaysTransactionPayload(array $fixture, PublicKey $ataPayer, array $extraInstructions = []): string
     {
         $tokenProgram = TokenProgram::programId();
         $recipientAta = AssociatedTokenProgram::findAssociatedTokenAddress(
@@ -574,6 +661,7 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
             MemoProgram::create('order-123'),
             MemoProgram::create('split memo'),
         ];
+        array_push($instructions, ...$extraInstructions);
 
         $transaction = Transaction::new(
             $instructions,
@@ -743,8 +831,17 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
     private function verify(ChargeRequest $request, string $transaction): \PayKit\Protocols\Mpp\Server\VerificationResult
     {
-        $server = new ChargeServer(secretKey: 'secret', realm: 'api');
-        $challenge = $server->createChallenge($request);
+        // Build the signed challenge directly (not via ChargeServer::createChallenge)
+        // so these tests exercise verify-time behavior in isolation. Issuance-time
+        // request validation (audit #19/#21/#38) is covered by ChargeServerTest;
+        // here we want to feed the verifier requests that issuance would reject.
+        $challenge = \PayKit\Protocols\Mpp\Core\Challenge::withSecret(
+            secretKey: self::SECRET,
+            realm: 'api',
+            method: 'solana',
+            intent: 'charge',
+            request: $request->toArray(),
+        );
         $credential = new Credential(
             challenge: $challenge->toEcho(),
             payload: ['type' => 'transaction', 'transaction' => $transaction],
@@ -752,6 +849,8 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
 
         return (new SolanaChargeTransactionVerifier())->verify($credential, $challenge);
     }
+
+    private const SECRET = 'test-secret-0123456789abcdef-0123456789';
 
     /**
      * @return array<string, PublicKey>

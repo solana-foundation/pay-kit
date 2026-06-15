@@ -111,7 +111,8 @@ if ($x402Active) {
     $payTo        = require_env('MPP_HARNESS_PAY_TO');
     $mint         = require_env('MPP_HARNESS_MINT');
     $amountUnits  = require_env('MPP_HARNESS_AMOUNT');
-    $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret');
+    // Must be >= 32 bytes (audit #24); the default is a fixed harness value.
+    $mppSecret    = optional_env('MPP_HARNESS_SECRET_KEY', 'pay-kit-harness-secret-0123456789abcdef');
     $networkRaw   = optional_env('MPP_HARNESS_NETWORK', 'localnet');
     $resourcePath = optional_env('MPP_HARNESS_RESOURCE_PATH', '/paid');
     $settlementHeader = optional_env('MPP_HARNESS_SETTLEMENT_HEADER', 'x-payment-settlement-signature');

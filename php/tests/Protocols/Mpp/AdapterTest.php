@@ -13,6 +13,7 @@ use PayKit\Operator;
 use PayKit\Price;
 use PayKit\Protocol;
 use PayKit\Protocols\Mpp\Adapter;
+use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\MppConfig;
 use PayKit\Signer;
 use PayKit\PayCore\Stablecoin;
@@ -30,7 +31,7 @@ final class AdapterTest extends TestCase
                 feePayer:  true,
             ),
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test'),
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
         );
     }
 
@@ -132,6 +133,90 @@ final class AdapterTest extends TestCase
         $adapter->verifyAndSettle($gate, $req);
     }
 
+    /**
+     * audit #19 (parity): the in-SDK Adapter path must pin the route's
+     * currency/recipient/network/decimals into the ChargeServer so the
+     * field-match checks in validateChargeRequest fire unconditionally at
+     * issuance — matching Rust `validate_charge_request`. Previously serverFor
+     * built the ChargeServer without pins, leaving those checks dormant on the
+     * real route. These tests reach the route's ChargeServer via serverFor and
+     * prove an off-route request is now rejected at issuance.
+     */
+    private function serverFor(Adapter $adapter, Gate $gate): \PayKit\Protocols\Mpp\Server\ChargeServer
+    {
+        $method = new \ReflectionMethod($adapter, 'serverFor');
+        [$charges, $_handler] = $method->invoke($adapter, $gate);
+        return $charges;
+    }
+
+    public function testAdapterPathIssuesValidChallengeForOnRouteRequest(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+
+        // The on-route request built by the adapter must pass the (now-active)
+        // pinned validation and produce a verifiable challenge.
+        $charges = $this->serverFor($adapter, $gate);
+        $chargeRequestMethod = new \ReflectionMethod($adapter, 'chargeRequestFor');
+        $chargeRequest = $chargeRequestMethod->invoke($adapter, $gate);
+
+        $challenge = $charges->createChallenge($chargeRequest);
+        $this->assertTrue($challenge->verify($cfg->mpp->challengeBindingSecret ?? ''));
+    }
+
+    public function testAdapterPathRejectsMismatchedCurrencyAtIssuance(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $charges = $this->serverFor($adapter, $gate);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('currency does not match server configuration');
+        $charges->createChallenge(new ChargeRequest(
+            amount: '100000',
+            currency: 'USDT',
+            recipient: $cfg->effectiveRecipient(),
+            methodDetails: ['network' => $cfg->network->mintsLabel()],
+        ));
+    }
+
+    public function testAdapterPathRejectsMismatchedRecipientAtIssuance(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $charges = $this->serverFor($adapter, $gate);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('recipient does not match server configuration');
+        $charges->createChallenge(new ChargeRequest(
+            amount: '100000',
+            currency: 'USDC',
+            recipient: Signer::generate()->pubkey(),
+            methodDetails: ['network' => $cfg->network->mintsLabel()],
+        ));
+    }
+
+    public function testAdapterPathRejectsMismatchedNetworkAtIssuance(): void
+    {
+        $cfg = $this->makeConfig();
+        $adapter = new Adapter($cfg);
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $charges = $this->serverFor($adapter, $gate);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('network does not match server configuration');
+        $charges->createChallenge(new ChargeRequest(
+            amount: '100000',
+            currency: 'USDC',
+            recipient: $cfg->effectiveRecipient(),
+            // config is SolanaDevnet -> "devnet"; advertise a different network.
+            methodDetails: ['network' => 'mainnet'],
+        ));
+    }
+
     private function makeConfigWithExpiresIn(int $expiresIn): Config
     {
         return new Config(
@@ -142,7 +227,7 @@ final class AdapterTest extends TestCase
                 feePayer:  true,
             ),
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test', expiresIn: $expiresIn),
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01', expiresIn: $expiresIn),
         );
     }
 

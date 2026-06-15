@@ -18,6 +18,14 @@ final class Headers
     public const PAYMENT_RECEIPT = 'payment-receipt';
 
     /**
+     * Max length of a base64url field that is decoded + JSON-parsed. Matches
+     * the credential ({@see Credential}) and receipt ({@see parseReceipt})
+     * parsers so the challenge `request` param can't drive disproportionately
+     * larger decode/parse work than the other two parsers allow (audit #9).
+     */
+    private const MAX_TOKEN_LENGTH = 16 * 1024;
+
+    /**
      * Format a Payment challenge as a WWW-Authenticate header.
      */
     public static function formatWwwAuthenticate(Challenge $challenge): string
@@ -213,6 +221,9 @@ final class Headers
             }
         }
 
+        if (strlen($params['request']) > self::MAX_TOKEN_LENGTH) {
+            throw new InvalidArgumentException('Challenge request parameter exceeds maximum length of 16384 bytes');
+        }
         Base64Url::decodeJson($params['request']); // validate the encoded charge request
 
         return new Challenge(
@@ -241,7 +252,7 @@ final class Headers
      */
     public static function parseReceipt(string $header): Receipt
     {
-        if (strlen($header) > 16 * 1024) {
+        if (strlen($header) > self::MAX_TOKEN_LENGTH) {
             throw new InvalidArgumentException('Receipt exceeds maximum length of 16384 bytes');
         }
 

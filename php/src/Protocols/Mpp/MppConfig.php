@@ -21,13 +21,22 @@ use PayKit\Exception\ConfigurationException;
  * 120s matches the Python/Rust reference TTLs. Setting `expiresIn = 0` is
  * an explicit, documented development opt-out: challenges are issued with
  * no `expires`, so they never expire. Do not ship `0` to production.
+ *
+ * `realm` is part of the HMAC id input, so two services sharing one
+ * `challengeBindingSecret` and keeping the same realm would share a single
+ * credential namespace — a credential paid against service A would pass HMAC
+ * verification on service B (audit #15). The default is therefore `null`,
+ * which {@see resolveRealm()} turns into a value derived from the server's
+ * recipient pubkey (unique per merchant). An explicit empty-string realm is
+ * rejected so an operator cannot re-introduce the shared namespace by typo.
  */
 final readonly class MppConfig
 {
     public function __construct(
-        public string $realm = 'App',
+        public ?string $realm = null,
         public ?string $challengeBindingSecret = null,
         public int $expiresIn = 120,
+        public bool $acceptPushMode = false,
     ) {
         if ($expiresIn < 0) {
             throw new ConfigurationException(
@@ -35,11 +44,50 @@ final readonly class MppConfig
                 . '(0 is the explicit dev-only never-expires opt-out)',
             );
         }
+        if ($realm !== null && trim($realm) === '') {
+            throw new ConfigurationException(
+                'pay_kit: mpp.realm must be a non-empty string or null (null derives a '
+                . 'per-recipient default; an empty realm would share a credential namespace '
+                . 'across servers — audit #15)',
+            );
+        }
     }
 
     public function withChallengeBindingSecret(string $secret): self
     {
-        return new self($this->realm, $secret, $this->expiresIn);
+        return new self($this->realm, $secret, $this->expiresIn, $this->acceptPushMode);
+    }
+
+    /**
+     * Resolve the effective realm for a server serving `$recipient`.
+     *
+     * Returns the explicitly-configured realm when one is set, otherwise
+     * derives a deterministic per-recipient default of the shape
+     * `"App Id - #<digits>"` (mirrors Rust `derive_default_realm`,
+     * rust/crates/mpp/src/server/charge.rs). Deriving from the recipient
+     * pubkey — unique per merchant and already mandatory upstream — means two
+     * services sharing a secret but paying different recipients get distinct
+     * realms, distinct HMAC ids, and cannot replay credentials across each
+     * other (audit #15).
+     */
+    public function resolveRealm(string $recipient): string
+    {
+        if ($this->realm !== null) {
+            return $this->realm;
+        }
+        if ($recipient === '') {
+            throw new ConfigurationException(
+                'pay_kit: cannot derive a default mpp.realm without a recipient; '
+                . 'set mpp.realm explicitly or configure a recipient',
+            );
+        }
+
+        $digest = hash('sha256', $recipient, true);
+        $first4 = substr($digest, 0, 4);
+        $unpacked = unpack('Nvalue', $first4);
+        $value = is_array($unpacked) && is_int($unpacked['value']) ? $unpacked['value'] : 0;
+
+        return sprintf('App Id - #%d', $value % 100_000_000);
     }
 
     /**

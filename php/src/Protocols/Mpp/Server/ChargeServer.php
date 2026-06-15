@@ -8,6 +8,7 @@ use Closure;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use Throwable;
+use PayKit\PayCore\Solana\Mints;
 use PayKit\PayCore\Wire\Base64Url;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\Credential;
@@ -15,12 +16,27 @@ use PayKit\Protocols\Mpp\Core\Headers;
 use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Core\Receipt;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
+use SolanaPhpSdk\Keypair\PublicKey;
 
 /**
  * Issues charge challenges and verifies Payment credentials for a PHP server.
  */
 final class ChargeServer
 {
+    /**
+     * Minimum HMAC challenge-binding secret length in bytes. 32 bytes matches
+     * the SHA-256 output length (NIST SP 800-107 guidance for HMAC-SHA256) and
+     * the Rust reference (`MIN_SECRET_KEY_BYTES`); a shorter secret weakens the
+     * binding that prevents challenge forgery (audit #24).
+     */
+    public const MIN_SECRET_KEY_BYTES = 32;
+
+    /**
+     * Maximum number of splits a challenge may carry. Mirrors Rust
+     * `MAX_SPLITS` and the verifier's pre-broadcast count cap.
+     */
+    public const MAX_SPLITS = 8;
+
     /**
      * Create a charge server for one realm and payment method.
      *
@@ -30,6 +46,18 @@ final class ChargeServer
      * an extra RPC round-trip. Throwing or returning an empty string is
      * treated as best-effort failure — the challenge is still issued without
      * a pre-fetched blockhash, and the client falls back to fetching its own.
+     *
+     * `$secretKey` MUST be at least {@see MIN_SECRET_KEY_BYTES} bytes. This is
+     * the single chokepoint every secret flows through — env, dotenv, or an
+     * Adapter-supplied value — so the floor is enforced here once (audit #24).
+     *
+     * When `$pinnedCurrency` / `$pinnedRecipient` / `$pinnedNetwork` /
+     * `$pinnedDecimals` are set they are also used to validate issued requests
+     * against the server's configured route at issuance time (audit #19). The
+     * in-SDK {@see \PayKit\Protocols\Mpp\Adapter} always supplies these from
+     * route config so the match checks fire unconditionally on the real route,
+     * matching Rust `validate_charge_request`. Callers constructing this server
+     * directly may leave them null to keep the structural-only behavior.
      */
     public function __construct(
         private readonly string $secretKey,
@@ -38,14 +66,46 @@ final class ChargeServer
         private readonly ?Closure $blockhashProvider = null,
         private readonly ?string $pinnedCurrency = null,
         private readonly ?string $pinnedRecipient = null,
+        private readonly ?string $pinnedNetwork = null,
+        private readonly ?int $pinnedDecimals = null,
     ) {
+        self::assertStrongSecretKey($secretKey);
+        if ($realm === '') {
+            throw new InvalidArgumentException('realm is required');
+        }
+    }
+
+    /**
+     * Reject HMAC secrets below the {@see MIN_SECRET_KEY_BYTES} floor.
+     *
+     * Shared by every secret-entry path (env / dotenv / Adapter) so a weak
+     * value cannot slip in regardless of where it originated (audit #24).
+     */
+    public static function assertStrongSecretKey(string $secretKey): void
+    {
+        if (strlen($secretKey) < self::MIN_SECRET_KEY_BYTES) {
+            throw new InvalidArgumentException(sprintf(
+                'mpp challenge-binding secret must be at least %d bytes of '
+                . 'cryptographically-random data (e.g. `openssl rand -base64 32`); '
+                . 'got %d bytes (audit #24)',
+                self::MIN_SECRET_KEY_BYTES,
+                strlen($secretKey),
+            ));
+        }
     }
 
     /**
      * Create a signed MPP charge challenge.
+     *
+     * Validates the request before signing (audit #19/#21/#38): `createChallenge`
+     * is a public HMAC-signing oracle, so an un-vetted request would let a buggy
+     * or hostile caller mint a cryptographically-valid challenge with off-route
+     * or malformed contents. The validation mirrors Rust `validate_charge_request`.
      */
     public function createChallenge(ChargeRequest $request, string $expires = '', string $digest = '', ?string $opaque = null): Challenge
     {
+        $this->validateChargeRequest($request);
+
         return Challenge::withSecret(
             secretKey: $this->secretKey,
             realm: $this->realm,
@@ -56,6 +116,141 @@ final class ChargeServer
             digest: $digest,
             opaque: $opaque,
         );
+    }
+
+    /**
+     * Validate a charge request before it is HMAC-signed at issuance.
+     *
+     * Mirrors Rust `validate_charge_request` (rust/crates/mpp/src/server/charge.rs):
+     *
+     *  - recipient is present and parses as a Solana pubkey;
+     *  - when the server is pinned to a currency/recipient, the request matches
+     *    it (audit #19 — the issuance-side counterpart of the verify-time pin);
+     *  - methodDetails.network matches the pinned network when one is configured;
+     *  - methodDetails.decimals matches the pinned decimals when both are present
+     *    (Rust pins decimals too — charge.rs `validate_charge_request`);
+     *  - splits are well-formed (audit #21): count <= MAX_SPLITS, each recipient
+     *    parses as a pubkey, each amount is a positive base-unit integer, no
+     *    duplicate recipients, and the split sum does not exceed the total;
+     *  - no split both equals the primary recipient AND requires fee-sponsored
+     *    ATA creation (audit #38 — the ATA-recreate slow-drain shape).
+     *
+     * `ChargeRequest::__construct` already guarantees a positive base-unit
+     * `amount` and a non-empty `currency`, so those are not re-checked here.
+     */
+    private function validateChargeRequest(ChargeRequest $request): void
+    {
+        if ($request->recipient === '') {
+            throw new InvalidArgumentException('recipient is required');
+        }
+        self::assertPubkey($request->recipient, 'recipient');
+
+        if ($this->pinnedCurrency !== null && strcasecmp($request->currency, $this->pinnedCurrency) !== 0) {
+            throw new InvalidArgumentException('charge request currency does not match server configuration');
+        }
+        if ($this->pinnedRecipient !== null && $request->recipient !== $this->pinnedRecipient) {
+            throw new InvalidArgumentException('charge request recipient does not match server configuration');
+        }
+
+        $methodDetails = is_array($request->methodDetails) ? $request->methodDetails : [];
+        if ($this->pinnedNetwork !== null) {
+            $network = $methodDetails['network'] ?? null;
+            if (is_string($network) && $network !== '' && $network !== $this->pinnedNetwork) {
+                throw new InvalidArgumentException('charge request network does not match server configuration');
+            }
+        }
+        if ($this->pinnedDecimals !== null) {
+            $decimals = $methodDetails['decimals'] ?? null;
+            if (is_int($decimals) && $decimals !== $this->pinnedDecimals) {
+                throw new InvalidArgumentException('charge request decimals does not match server configuration');
+            }
+        }
+
+        $this->validateSplits($methodDetails, $request);
+    }
+
+    /**
+     * Validate the `methodDetails.splits` list at issuance (audit #21/#38).
+     *
+     * @param array<string, mixed> $methodDetails
+     */
+    private function validateSplits(array $methodDetails, ChargeRequest $request): void
+    {
+        $splits = $methodDetails['splits'] ?? null;
+        if ($splits === null) {
+            return;
+        }
+        if (!is_array($splits) || !array_is_list($splits)) {
+            throw new InvalidArgumentException('splits must be an array');
+        }
+        if (count($splits) > self::MAX_SPLITS) {
+            throw new InvalidArgumentException(sprintf('too many splits (max %d)', self::MAX_SPLITS));
+        }
+
+        $totalAmount = self::parseAmount($request->amount, 'amount');
+        $splitTotal = 0;
+        $seenRecipients = [];
+        foreach ($splits as $split) {
+            if (!is_array($split) || !isset($split['recipient'], $split['amount'])) {
+                throw new InvalidArgumentException('split recipient and amount are required');
+            }
+            $recipient = $split['recipient'];
+            $amount = $split['amount'];
+            if (!is_string($recipient) || !is_string($amount)) {
+                throw new InvalidArgumentException('split recipient and amount must be strings');
+            }
+            self::assertPubkey($recipient, 'split recipient');
+
+            $value = self::parseAmount($amount, 'split amount');
+            if ($value <= 0) {
+                throw new InvalidArgumentException('split amount must be a positive base-unit integer');
+            }
+            if (isset($seenRecipients[$recipient])) {
+                throw new InvalidArgumentException('duplicate split recipient: ' . $recipient);
+            }
+            $seenRecipients[$recipient] = true;
+            $splitTotal += $value;
+
+            // audit #38: a fee-sponsored ATA-create for the primary recipient
+            // is a slow-drain shape (close + recreate the merchant's own ATA on
+            // the server's dime). Reject the combination at issuance; a primary
+            // recipient appearing as a plain split (no ATA create) stays allowed.
+            if ($recipient === $request->recipient && ($split['ataCreationRequired'] ?? false) === true) {
+                throw new InvalidArgumentException(
+                    'primary recipient cannot appear in splits with ataCreationRequired=true (audit #38)',
+                );
+            }
+        }
+
+        if ($splitTotal > $totalAmount) {
+            throw new InvalidArgumentException('split amounts exceed total amount');
+        }
+    }
+
+    private static function assertPubkey(string $value, string $label): void
+    {
+        try {
+            new PublicKey($value);
+        } catch (Throwable) {
+            throw new InvalidArgumentException(sprintf('%s must be a valid Solana pubkey', $label));
+        }
+    }
+
+    private static function parseAmount(string $amount, string $field): int
+    {
+        if ($amount === '' || !ctype_digit($amount)) {
+            throw new InvalidArgumentException($field . ' must be a base-unit integer');
+        }
+        // Compare digit strings to stay clear of PHP_INT_MAX before the cast.
+        $normalized = ltrim($amount, '0');
+        $max = (string) PHP_INT_MAX;
+        $overflow = strlen($normalized) > strlen($max)
+            || (strlen($normalized) === strlen($max) && strcmp($normalized, $max) > 0);
+        if ($overflow) {
+            throw new InvalidArgumentException($field . ' exceeds PHP integer range');
+        }
+
+        return (int) $amount;
     }
 
     /**

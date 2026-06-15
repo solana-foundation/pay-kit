@@ -34,7 +34,7 @@ final class RequirePaymentTest extends TestCase
             network: Network::SolanaDevnet,
             operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
             preflight: false,
-            mpp: new MppConfig(challengeBindingSecret: 'unit-test'),
+            mpp: new MppConfig(challengeBindingSecret: 'unit-test-secret-0123456789abcdef-01'),
         ));
         $this->factory = new Psr17Factory();
     }

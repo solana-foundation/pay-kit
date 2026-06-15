@@ -15,7 +15,9 @@ return [
     'x402_facilitator_url'         => env('PAY_KIT_X402_FACILITATOR_URL'),
     'mpp_challenge_binding_secret' => env('PAY_KIT_MPP_CHALLENGE_BINDING_SECRET'),
     'mpp' => [
-        'realm'      => env('PAY_KIT_MPP_REALM', 'Laravel'),
+        // Leave unset to derive a per-recipient realm (audit #15). Set
+        // PAY_KIT_MPP_REALM only when you want an explicit, app-specific realm.
+        'realm'      => env('PAY_KIT_MPP_REALM'),
         'expires_in' => 120,
     ],
     'preflight' => env('PAY_KIT_PREFLIGHT', true),

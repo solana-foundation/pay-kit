@@ -24,7 +24,7 @@ final class SolanaChargeHandlerInternalsTest extends TestCase
     {
         return new SolanaChargeHandler(
             challenges: new ChargeServer(
-                secretKey: 'test-secret',
+                secretKey: 'test-secret-0123456789abcdef-0123456789',
                 realm: 'test',
             ),
             rpc: $rpc,

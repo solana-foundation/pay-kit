@@ -41,6 +41,26 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     private const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
     private const MAX_COMPUTE_UNIT_LIMIT = 200_000;
     private const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000;
+    // Tight cap for fee-sponsored pull mode, where the server signs before
+    // broadcast and pays the priority fee. Worst-case priority fee at this cap
+    // is ceil(10_000 * 200_000 / 1_000_000) = 2_000 lamports (~20% of the
+    // per-signature base fee) — enough headroom for honest clients to bump
+    // priority during congestion without exposing the merchant fee-payer to a
+    // drain. Client-paid mode keeps the general 5M ceiling (audit #25).
+    private const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000;
+
+    /**
+     * @param bool $acceptPushMode Opt-in for push-mode (`type=signature`)
+     *        credentials. Default `false` (off), matching the Rust reference.
+     *        Push mode accepts the first presented on-chain signature (spec
+     *        §13.5), a trade-off operators must consciously take on; routes
+     *        that never opt in reject signature credentials outright instead of
+     *        exposing the surface by default (audit #5).
+     */
+    public function __construct(
+        private readonly bool $acceptPushMode = false,
+    ) {
+    }
 
     /**
      * Verify a pull- or push-mode credential against its challenge.
@@ -73,6 +93,11 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
 
         $signature = $credential->payload['signature'] ?? null;
         if (is_string($signature) && $signature !== '') {
+            if (!$this->acceptPushMode) {
+                // §13.5 push mode is off by default; reject before any shape
+                // check so a non-opting route never accepts a push credential.
+                return VerificationResult::failure('push-mode credentials are not accepted by this server');
+            }
             try {
                 $this->validateSignature($signature);
             } catch (Throwable $error) {
@@ -187,6 +212,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 requiredAtaOwners: [],
                 createdAtaOwners: $createdAtaOwners,
                 onChain: $onChain,
+                feeSponsored: $feePayer !== null,
             );
             return;
         }
@@ -194,8 +220,22 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         $network = Json::optionalString($methodDetails['network'] ?? null, 'methodDetails.network', 'mainnet');
         $resolvedMint = Mints::resolve($request->currency, $network) ?? $request->currency;
         $mint = new PublicKey($resolvedMint);
-        $defaultTokenProgram = Mints::tokenProgramFor($request->currency, $network);
-        $tokenProgram = new PublicKey(Json::optionalString($methodDetails['tokenProgram'] ?? null, 'methodDetails.tokenProgram', $defaultTokenProgram));
+        // audit #28: for a known stablecoin the static table is authoritative;
+        // for an arbitrary, unknown mint address we cannot infer the owning
+        // token program (the legacy default is wrong for any unknown Token-2022
+        // mint), so the embedded methodDetails.tokenProgram is REQUIRED. There
+        // is no RPC on this verifier path to resolve the owner on-chain.
+        $embeddedTokenProgram = Json::optionalString($methodDetails['tokenProgram'] ?? null, 'methodDetails.tokenProgram', '');
+        if ($embeddedTokenProgram !== '') {
+            $tokenProgram = new PublicKey($embeddedTokenProgram);
+        } elseif (Mints::isKnownMint($request->currency, $network)) {
+            $tokenProgram = new PublicKey(Mints::tokenProgramFor($request->currency, $network));
+        } else {
+            throw new InvalidArgumentException(
+                'methodDetails.tokenProgram is required for an unknown mint address; '
+                . 'the token program cannot be inferred for arbitrary mints (audit #28)',
+            );
+        }
         $decimals = Json::optionalInt($methodDetails['decimals'] ?? null, 'methodDetails.decimals');
         $allowedAtaOwners = $this->allowedAtaOwners($splits, $feePayer);
         if ($requiredAtaOwners !== [] && $resolvedMint !== $mint->toBase58()) {
@@ -241,6 +281,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             requiredAtaOwners: $requiredAtaOwners,
             createdAtaOwners: $createdAtaOwners,
             onChain: $onChain,
+            feeSponsored: $feePayer !== null,
         );
     }
 
@@ -480,6 +521,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         array $requiredAtaOwners,
         array &$createdAtaOwners,
         bool $onChain = false,
+        bool $feeSponsored = false,
     ): void {
         $allowedPrograms = [
             self::COMPUTE_BUDGET_PROGRAM,
@@ -501,7 +543,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 // `continue` here (charge.rs:1873-1876); only the pull-mode
                 // pre-broadcast path enforces the caps.
                 if (!$onChain) {
-                    $this->validateComputeBudgetInstruction($instruction);
+                    $this->validateComputeBudgetInstruction($instruction, $feeSponsored);
                 }
                 continue;
             }
@@ -533,7 +575,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
     /**
      * @param array{programIdIndex: int, accounts: array<int, int>, data: string} $instruction
      */
-    private function validateComputeBudgetInstruction(array $instruction): void
+    private function validateComputeBudgetInstruction(array $instruction, bool $feeSponsored = false): void
     {
         if ($instruction['accounts'] !== []) {
             throw new InvalidArgumentException('compute budget instruction must not have accounts');
@@ -553,7 +595,14 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         }
         if ($kind === 3 && strlen($data) === 9) {
             $price = $this->readU64Le(substr($data, 1, 8));
-            if ($price > self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+            // In fee-sponsored pull mode the server pays the priority fee, so
+            // an attacker can otherwise pick a price up to the general 5M cap
+            // and drain the merchant fee-payer (audit #25). Apply the tight cap
+            // when the server is the fee payer; keep the 5M ceiling otherwise.
+            $cap = $feeSponsored
+                ? self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+                : self::MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS;
+            if ($price > $cap) {
                 throw new InvalidArgumentException('compute unit price exceeds maximum');
             }
             return;

@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace PayKit\Protocols\Mpp;
 
+use InvalidArgumentException;
+use PayKit\Protocols\Mpp\Server\ChargeServer;
+
 /**
  * Auto-resolves the MPP HMAC challenge-binding secret when the
  * application doesn't set one explicitly. Mirrors Ruby PR #142's
@@ -46,11 +49,13 @@ final class SecretResolver
 
         $fromEnv = getenv($envVar);
         if (is_string($fromEnv) && $fromEnv !== '') {
+            self::assertStrong($fromEnv, $envVar, 'environment variable');
             return ['secret' => $fromEnv, 'source' => 'env', 'persisted' => true];
         }
 
         $fromDotenv = self::readDotenv($dotenvPath, $envVar);
         if ($fromDotenv !== null) {
+            self::assertStrong($fromDotenv, $envVar, $dotenvPath);
             return ['secret' => $fromDotenv, 'source' => 'dotenv', 'persisted' => true];
         }
 
@@ -61,6 +66,26 @@ final class SecretResolver
             'source'    => $persisted ? 'generated+persisted' : 'generated',
             'persisted' => $persisted,
         ];
+    }
+
+    /**
+     * Reject an operator-supplied secret below the {@see ChargeServer}
+     * minimum-length floor with a source-specific message (audit #24). The
+     * auto-generated fallback is 32 random bytes (64 hex chars) and always
+     * clears the floor, so only the env/dotenv paths gate here.
+     */
+    private static function assertStrong(string $secret, string $key, string $source): void
+    {
+        if (strlen($secret) < ChargeServer::MIN_SECRET_KEY_BYTES) {
+            throw new InvalidArgumentException(sprintf(
+                'pay_kit: %s "%s" is only %d bytes; the mpp challenge-binding secret '
+                . 'must be at least %d bytes (e.g. `openssl rand -base64 32`) — audit #24',
+                $source,
+                $key,
+                strlen($secret),
+                ChargeServer::MIN_SECRET_KEY_BYTES,
+            ));
+        }
     }
 
     private static function readDotenv(string $path, string $key): ?string
