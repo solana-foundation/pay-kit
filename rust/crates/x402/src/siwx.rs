@@ -132,22 +132,57 @@ impl SiwxExtension {
     }
 
     /// Return this extension as a payment-required `extensions` JSON object.
+    ///
+    /// The on-the-wire shape nests the challenge fields under `info` with a
+    /// sibling `supportedChains` array, per the x402 `sign-in-with-x` spec
+    /// (`specs/extensions/sign-in-with-x.md`). The in-memory `SiwxExtension`
+    /// stays flat for ergonomic field access; conversion happens here.
     pub fn as_extensions_value(&self) -> Result<serde_json::Value, Error> {
+        let wire = SiwxExtensionWire {
+            info: SiwxExtensionInfo {
+                domain: self.domain.clone(),
+                uri: self.uri.clone(),
+                statement: self.statement.clone(),
+                version: self.version.clone(),
+                nonce: self.nonce.clone(),
+                issued_at: self.issued_at.clone(),
+                expiration_time: self.expiration_time.clone(),
+                not_before: self.not_before.clone(),
+                request_id: self.request_id.clone(),
+                resources: self.resources.clone(),
+            },
+            supported_chains: self.supported_chains.clone(),
+        };
         Ok(serde_json::json!({
-            SIGN_IN_WITH_X: serde_json::to_value(self)
+            SIGN_IN_WITH_X: serde_json::to_value(&wire)
                 .map_err(|error| Error::Other(format!("Failed to encode SIWX extension: {error}")))?,
         }))
     }
 
     /// Parse an SIWX extension from a payment-required `extensions` JSON object.
+    ///
+    /// Expects the spec shape `{ "info": { … }, "supportedChains": [ … ] }`
+    /// under the `sign-in-with-x` key. Unknown sibling fields are ignored for
+    /// forward-compatibility.
     pub fn from_extensions_value(extensions: &serde_json::Value) -> Result<Option<Self>, Error> {
         let Some(value) = extensions.get(SIGN_IN_WITH_X) else {
             return Ok(None);
         };
-        serde_json::from_value(value.clone())
-            .map(Some)
-            .map_err(|error| Error::Other(format!("Invalid SIWX extension: {error}")))
+        let wire: SiwxExtensionWire = serde_json::from_value(value.clone())
+            .map_err(|error| Error::Other(format!("Invalid SIWX extension: {error}")))?;
+        Ok(Some(SiwxExtension::new(wire.info, wire.supported_chains)))
     }
+}
+
+/// On-the-wire representation of the `sign-in-with-x` extension: the challenge
+/// fields nested under `info`, with `supportedChains` as a sibling array. Kept
+/// private — callers use the flat [`SiwxExtension`] and the conversion helpers
+/// [`SiwxExtension::as_extensions_value`] / [`SiwxExtension::from_extensions_value`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SiwxExtensionWire {
+    info: SiwxExtensionInfo,
+    supported_chains: Vec<SupportedChain>,
 }
 
 /// Full SIWX message fields before the signature is attached.
@@ -909,16 +944,72 @@ Issued At: 2026-04-27T00:00:00Z"
             .unwrap()
             .is_none());
 
+        // Spec-shaped (nested under `info`) but missing the required `nonce`.
         let invalid = serde_json::json!({
             SIGN_IN_WITH_X: {
-                "domain": "example.com",
-                "uri": "https://example.com",
-                "version": "1",
-                "issuedAt": "2026-04-27T00:00:00Z",
+                "info": {
+                    "domain": "example.com",
+                    "uri": "https://example.com",
+                    "version": "1",
+                    "issuedAt": "2026-04-27T00:00:00Z"
+                },
                 "supportedChains": []
             }
         });
         let error = SiwxExtension::from_extensions_value(&invalid).unwrap_err();
         assert!(error.to_string().contains("Invalid SIWX extension"));
+
+        // The pre-fix flat shape (challenge fields at the top level, no `info`)
+        // is no longer accepted — it must be rejected, not silently parsed.
+        let legacy_flat = serde_json::json!({
+            SIGN_IN_WITH_X: {
+                "domain": "example.com",
+                "uri": "https://example.com",
+                "version": "1",
+                "nonce": "n",
+                "issuedAt": "2026-04-27T00:00:00Z",
+                "supportedChains": []
+            }
+        });
+        assert!(SiwxExtension::from_extensions_value(&legacy_flat).is_err());
+    }
+
+    #[test]
+    fn parses_spec_nested_info_challenge() {
+        // The real shape Venice and the x402 `sign-in-with-x` spec emit:
+        // challenge fields nested under `info`, with `supportedChains` as a
+        // sibling array. Regression guard for the flat-vs-nested parse bug.
+        let extensions = serde_json::json!({
+            SIGN_IN_WITH_X: {
+                "info": {
+                    "domain": "api.venice.ai",
+                    "uri": "https://api.venice.ai/api/v1/x402/balance/96WoyH3J",
+                    "version": "1",
+                    "nonce": "kC-a1gRa4kUdg9DeAHsPS",
+                    "issuedAt": "2026-06-15T16:06:26.551Z",
+                    "expirationTime": "2026-06-15T16:11:26.551Z",
+                    "statement": "Sign in to Venice AI"
+                },
+                "supportedChains": [
+                    { "chainId": "eip155:8453", "type": "eip191" },
+                    { "chainId": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", "type": "ed25519" }
+                ]
+            }
+        });
+
+        let parsed = SiwxExtension::from_extensions_value(&extensions)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.domain, "api.venice.ai");
+        assert_eq!(parsed.nonce, "kC-a1gRa4kUdg9DeAHsPS");
+        assert_eq!(parsed.version, "1");
+        assert_eq!(
+            parsed.expiration_time.as_deref(),
+            Some("2026-06-15T16:11:26.551Z")
+        );
+        assert_eq!(parsed.supported_chains.len(), 2);
+
+        // Round-trips back to the same nested wire shape.
+        assert_eq!(parsed.as_extensions_value().unwrap(), extensions);
     }
 }
