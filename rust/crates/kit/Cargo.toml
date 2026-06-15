@@ -5,6 +5,9 @@ edition = "2021"
 description = "Solana payment SDK: MPP + x402 unified behind feature flags"
 license = "MIT"
 repository = "https://github.com/solana-foundation/pay-kit"
+# The SDK guide lives at the workspace README (rust/README.md); reuse it as the
+# published crate README so crates.io renders the same guide.
+readme = "../../README.md"
 
 [features]
 default = ["mpp", "x402"]
