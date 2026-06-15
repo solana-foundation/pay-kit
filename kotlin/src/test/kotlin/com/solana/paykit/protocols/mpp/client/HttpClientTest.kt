@@ -193,7 +193,7 @@ class HttpClientTest {
             (
                 """{"amount":"1000","currency":"$arbitraryMint",""" +
                     """"recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",""" +
-                    """"methodDetails":{"network":"localnet",""" +
+                    """"methodDetails":{"network":"localnet","decimals":6,""" +
                     """"recentBlockhash":"11111111111111111111111111111111"}}"""
                 ).encodeToByteArray(),
         )
@@ -239,7 +239,7 @@ class HttpClientTest {
             (
                 """{"amount":"1000","currency":"$arbitraryMint",""" +
                     """"recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",""" +
-                    """"methodDetails":{"network":"localnet",""" +
+                    """"methodDetails":{"network":"localnet","decimals":6,""" +
                     """"recentBlockhash":"11111111111111111111111111111111"}}"""
                 ).encodeToByteArray(),
         )

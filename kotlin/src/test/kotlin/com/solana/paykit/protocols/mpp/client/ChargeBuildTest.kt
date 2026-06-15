@@ -264,6 +264,7 @@ class ChargeBuildTest {
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(
                 network = "mainnet",
+                decimals = 6,
                 splits = listOf(
                     SolanaChargeSplit(
                         recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
@@ -285,6 +286,7 @@ class ChargeBuildTest {
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(
                 network = "devnet",
+                decimals = 6,
                 feePayer = true,
                 feePayerKey = feePayer,
             ),
@@ -429,9 +431,11 @@ class ChargeBuildTest {
     }
 
     @Test
-    fun acceptsExplicitToken2022Program() {
-        // A valid explicit Token-2022 program is accepted even when the mint
-        // is unknown (the explicit value short-circuits owner resolution).
+    fun acceptsExplicitToken2022ProgramWithOptIn() {
+        // A valid explicit Token-2022 program is accepted for an unknown mint
+        // only with the allowUnknownToken2022 opt-in (audit #26): the explicit
+        // value short-circuits owner resolution but still trips the unknown
+        // Token-2022 transfer-hook gate without the opt-in.
         val request = ChargeRequest(
             amount = "1000",
             currency = "So11111111111111111111111111111111111111112",
@@ -442,7 +446,12 @@ class ChargeBuildTest {
                 tokenProgram = Programs.TOKEN_2022_PROGRAM,
             ),
         )
-        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            policy = ChargePolicy(allowUnknownToken2022 = true),
+        )
     }
 
     @Test
@@ -479,11 +488,14 @@ class ChargeBuildTest {
             recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
         )
+        // Opt in: this test exercises owner-resolution, not the #26 gate. An
+        // unknown mint resolving to Token-2022 is refused without the opt-in.
         Charge.buildChargeTransaction(
             signer(),
             request,
             fixedBlockhash,
             mintOwnerResolver = resolver,
+            policy = ChargePolicy(allowUnknownToken2022 = true),
         )
         assertEquals(arbitraryMint, queried)
     }
@@ -676,5 +688,293 @@ class ChargeBuildTest {
         assertFailsWith<MppException.InvalidTransaction> {
             Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
         }
+    }
+
+    // ── #42: SPL decimals required ──────────────────────────────────────────
+
+    @Test
+    fun rejectsMissingDecimalsOnSplCharge() {
+        // Audit #42: a missing `decimals` on the SPL path must error rather
+        // than silently defaulting to 6 (a wrong transferChecked byte / divisor
+        // for any non-6-decimal mint). USDC resolves its token program from the
+        // static table so no resolver is needed; the failure is the missing
+        // decimals, proving the path reached buildSplInstructions.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "USDC",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "devnet"),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun solChargeDoesNotRequireDecimals() {
+        // The decimals requirement is SPL-only; a native SOL charge with no
+        // decimals must still build (the SOL path has no transferChecked byte).
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "SOL",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "localnet"),
+        )
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    // ── #20: split ATA creation is flag-only ────────────────────────────────
+
+    @Test
+    fun clientPaidModeDoesNotAutoCreateSplitAtaWithoutFlag() {
+        // Audit #20: in client-paid mode (no fee payer) a split WITHOUT
+        // ataCreationRequired must NOT emit a create-ATA instruction. The prior
+        // `feePayer == null || ...` auto-created one per split. We witness this
+        // by comparing instruction counts: a flagged split (which binds the
+        // base58 mint and pays rent) emits one extra create-ATA instruction
+        // versus an unflagged split, all else equal.
+        val mint = Mints.USDC_MAINNET
+        fun build(ataRequired: Boolean?): Int {
+            val request = ChargeRequest(
+                amount = "1000",
+                currency = mint,
+                recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                methodDetails = SolanaChargeMethodDetails(
+                    network = "mainnet",
+                    decimals = 6,
+                    splits = listOf(
+                        SolanaChargeSplit(
+                            recipient = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+                            amount = "100",
+                            ataCreationRequired = ataRequired,
+                        ),
+                    ),
+                ),
+            )
+            val raw = JBase64.getDecoder().decode(
+                Charge.buildChargeTransaction(signer(), request, fixedBlockhash),
+            )
+            return raw.size
+        }
+        // The flagged build carries an extra create-ATA instruction, so its
+        // wire bytes are strictly larger than the unflagged build.
+        assertTrue(
+            build(ataRequired = true) > build(ataRequired = null),
+            "flagged split must add a create-ATA instruction the unflagged split omits",
+        )
+    }
+
+    // ── #26: unknown Token-2022 mints refused without opt-in ────────────────
+
+    @Test
+    fun refusesUnknownToken2022MintWithoutOptIn() {
+        // Audit #26: an arbitrary (non-stablecoin) mint resolving to Token-2022
+        // must be refused unless the caller opts in, because Token-2022 mints
+        // can carry transfer hooks.
+        val resolver = MintOwnerResolver { Programs.TOKEN_2022_PROGRAM }
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(
+                signer(),
+                request,
+                fixedBlockhash,
+                mintOwnerResolver = resolver,
+            )
+        }
+    }
+
+    @Test
+    fun refusesUnknownToken2022MintViaExplicitProgramWithoutOptIn() {
+        // The gate also fires when the program is pinned via
+        // methodDetails.tokenProgram (the explicit-program branch), not only the
+        // owner-resolution branch.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(
+                network = "mainnet",
+                decimals = 6,
+                tokenProgram = Programs.TOKEN_2022_PROGRAM,
+            ),
+        )
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun allowsUnknownToken2022MintWithOptIn() {
+        // With the opt-in, the same unknown Token-2022 mint signs.
+        val resolver = MintOwnerResolver { Programs.TOKEN_2022_PROGRAM }
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = resolver,
+            policy = ChargePolicy(allowUnknownToken2022 = true),
+        )
+    }
+
+    @Test
+    fun doesNotGateKnownToken2022Stablecoin() {
+        // A KNOWN Token-2022 stablecoin (PYUSD) is never gated — no opt-in and
+        // no resolver needed.
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "PYUSD",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        Charge.buildChargeTransaction(signer(), request, fixedBlockhash)
+    }
+
+    @Test
+    fun doesNotGateUnknownVanillaTokenMint() {
+        // An unknown VANILLA Token-program mint stays first-class (no hooks on
+        // the legacy Token program) — no opt-in required.
+        val resolver = MintOwnerResolver { Programs.TOKEN_PROGRAM }
+        val request = ChargeRequest(
+            amount = "1000",
+            currency = "So11111111111111111111111111111111111111112",
+            recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            methodDetails = SolanaChargeMethodDetails(network = "mainnet", decimals = 6),
+        )
+        Charge.buildChargeTransaction(
+            signer(),
+            request,
+            fixedBlockhash,
+            mintOwnerResolver = resolver,
+        )
+    }
+
+    // ── #10: expiry / max-amount / expected-network gates ───────────────────
+
+    private fun chargeChallenge(
+        expires: String? = null,
+        currency: String = "SOL",
+        amount: String = "1000",
+        network: String = "localnet",
+    ): PaymentChallenge {
+        val mdNetwork = """"network":"$network""""
+        val requestJson =
+            """{"amount":"$amount","currency":"$currency","recipient":"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY","methodDetails":{$mdNetwork,"recentBlockhash":"11111111111111111111111111111111"}}"""
+        return PaymentChallenge(
+            id = "abc",
+            realm = "MPP Payment",
+            method = "solana",
+            intent = "charge",
+            request = Base64Url.encode(requestJson.encodeToByteArray()),
+            expires = expires,
+        )
+    }
+
+    @Test
+    fun refusesExpiredChallenge() {
+        // Audit #10: always-on expiry refusal. A challenge whose `expires` is at
+        // or before `now` must be refused regardless of policy.
+        val challenge = chargeChallenge(expires = "2020-01-01T00:00:00Z")
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildCredentialHeader(
+                signer(),
+                challenge,
+                fixedBlockhash,
+                now = java.time.Instant.parse("2026-06-15T00:00:00Z"),
+            )
+        }
+    }
+
+    @Test
+    fun acceptsFutureExpiryChallenge() {
+        val challenge = chargeChallenge(expires = "2099-01-01T00:00:00Z")
+        val header = Charge.buildCredentialHeader(
+            signer(),
+            challenge,
+            fixedBlockhash,
+            now = java.time.Instant.parse("2026-06-15T00:00:00Z"),
+        )
+        assertTrue(header.startsWith("Payment "))
+    }
+
+    @Test
+    fun acceptsChallengeWithoutExpiry() {
+        // No `expires` means never expired (the spec allows omitting it).
+        val challenge = chargeChallenge(expires = null)
+        val header = Charge.buildCredentialHeader(signer(), challenge, fixedBlockhash)
+        assertTrue(header.startsWith("Payment "))
+    }
+
+    @Test
+    fun refusesMalformedExpiryFailClosed() {
+        // A present-but-unparseable expires is treated as expired (fail-closed).
+        val challenge = chargeChallenge(expires = "not-a-timestamp")
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildCredentialHeader(signer(), challenge, fixedBlockhash)
+        }
+    }
+
+    @Test
+    fun refusesAmountAboveMaxPolicy() {
+        // Audit #10: opt-in max-amount cap. amount=1000 > cap=999 → refuse.
+        val challenge = chargeChallenge(amount = "1000")
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildCredentialHeader(
+                signer(),
+                challenge,
+                fixedBlockhash,
+                policy = ChargePolicy(maxAmountBaseUnits = java.math.BigInteger.valueOf(999)),
+            )
+        }
+    }
+
+    @Test
+    fun acceptsAmountAtMaxPolicy() {
+        // Equal-to-cap is allowed.
+        val challenge = chargeChallenge(amount = "1000")
+        val header = Charge.buildCredentialHeader(
+            signer(),
+            challenge,
+            fixedBlockhash,
+            policy = ChargePolicy(maxAmountBaseUnits = java.math.BigInteger.valueOf(1000)),
+        )
+        assertTrue(header.startsWith("Payment "))
+    }
+
+    @Test
+    fun refusesUnexpectedNetworkPolicy() {
+        // Audit #10: opt-in expected-network pin. challenge network=localnet,
+        // expected=mainnet → refuse.
+        val challenge = chargeChallenge(network = "localnet")
+        assertFailsWith<MppException.InvalidTransaction> {
+            Charge.buildCredentialHeader(
+                signer(),
+                challenge,
+                fixedBlockhash,
+                policy = ChargePolicy(expectedNetwork = "mainnet"),
+            )
+        }
+    }
+
+    @Test
+    fun acceptsMatchingNetworkPolicy() {
+        val challenge = chargeChallenge(network = "localnet")
+        val header = Charge.buildCredentialHeader(
+            signer(),
+            challenge,
+            fixedBlockhash,
+            policy = ChargePolicy(expectedNetwork = "localnet"),
+        )
+        assertTrue(header.startsWith("Payment "))
     }
 }

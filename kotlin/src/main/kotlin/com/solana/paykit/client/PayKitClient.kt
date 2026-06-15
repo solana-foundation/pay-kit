@@ -2,6 +2,7 @@ package com.solana.paykit.client
 
 import com.solana.paykit.paycore.SolanaSigner
 import com.solana.paykit.protocols.mpp.client.BlockhashProvider
+import com.solana.paykit.protocols.mpp.client.ChargePolicy
 import com.solana.paykit.protocols.mpp.client.MintOwnerResolver
 import com.solana.paykit.protocols.x402.client.exact.ChallengeSelection
 import com.solana.paykit.protocols.x402.client.exact.X402RpcClient
@@ -143,12 +144,17 @@ class PayKitClient internal constructor(
          * @param mintOwnerResolver resolves the token program for arbitrary
          *   mints; defaults to [blockhashProvider] when it also implements
          *   [MintOwnerResolver].
+         * @param policy auto-pay signing policy (audit #10, #26). The
+         *   expired-challenge refusal always applies; [policy] adds the opt-in
+         *   max-amount, expected-network, and unknown-Token-2022 gates. Defaults
+         *   to no extra constraints.
          */
         fun charge(
             blockhashProvider: BlockhashProvider,
             computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
             computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
             mintOwnerResolver: MintOwnerResolver? = null,
+            policy: ChargePolicy = ChargePolicy.NONE,
         ): Builder = apply {
             interceptors.add(
                 ChargeInterceptor(
@@ -157,6 +163,7 @@ class PayKitClient internal constructor(
                     computeUnitLimit = computeUnitLimit,
                     computeUnitPrice = computeUnitPrice,
                     mintOwnerResolver = mintOwnerResolver,
+                    policy = policy,
                 ),
             )
         }

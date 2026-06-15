@@ -10,6 +10,17 @@ object MppHeaders {
     /** HTTP authentication scheme used by MPP. */
     const val PAYMENT_SCHEME = "Payment"
 
+    /**
+     * Maximum byte length of the base64url `request` parameter before it is
+     * decoded and JSON-parsed. Mirrors the rust parser's `MAX_TOKEN_LEN = 16 *
+     * 1024` (audit #9): the `request` param is the only `WWW-Authenticate`
+     * field that drives O(n) base64-decode + JSON-parse cost, so an uncapped
+     * value lets a hostile server force proportionally large decode/parse work.
+     * Every other auth-param (id/realm/method/intent/expires/digest/opaque) is
+     * a short pass-through string.
+     */
+    const val MAX_TOKEN_LEN = 16 * 1024
+
     private val json = Json {
         encodeDefaults = false
         explicitNulls = false
@@ -114,6 +125,13 @@ object MppHeaders {
         val rest = paymentSchemePayload(header)
         val params = parseAuthParams(rest)
         val request = params["request"] ?: throw MppException.MissingField("request")
+        // Cap the request param before base64-decoding + JSON-parsing it
+        // (audit #9). Checked here (the parse entry point) and again in
+        // decodeChargeRequest so the cap holds regardless of how a challenge
+        // reaches the decode path.
+        if (request.length > MAX_TOKEN_LEN) {
+            throw MppException.InvalidHeader
+        }
 
         return PaymentChallenge(
             id = params["id"] ?: throw MppException.MissingField("id"),
@@ -147,14 +165,22 @@ object MppHeaders {
         return "$PAYMENT_SCHEME $encoded"
     }
 
-    internal fun decodeChargeRequest(request: String): ChargeRequest =
-        try {
+    internal fun decodeChargeRequest(request: String): ChargeRequest {
+        // Cap the base64url payload before decode + JSON parse (audit #9).
+        // A PaymentChallenge can be constructed directly (e.g. in tests or by
+        // a caller that bypasses parseWWWAuthenticate), so the cap is enforced
+        // here too rather than relying solely on the parse-time check.
+        if (request.length > MAX_TOKEN_LEN) {
+            throw MppException.InvalidHeader
+        }
+        return try {
             json.decodeFromString<ChargeRequest>(Base64Url.decode(request).decodeToString())
         } catch (error: IllegalArgumentException) {
             throw MppException.InvalidJson(error)
         } catch (error: kotlinx.serialization.SerializationException) {
             throw MppException.InvalidJson(error)
         }
+    }
 
     private fun paymentSchemePayload(header: String): String {
         val trimmed = header.trim()

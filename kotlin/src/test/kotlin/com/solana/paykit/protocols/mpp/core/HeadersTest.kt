@@ -67,6 +67,55 @@ class HeadersTest {
     }
 
     @Test
+    fun rejectsOversizedRequestParam() {
+        // Audit #9: the base64url `request` param is capped at MAX_TOKEN_LEN
+        // before it is decoded + JSON-parsed, so a hostile server cannot force
+        // proportionally large decode/parse work. One byte over the cap is
+        // rejected at parse time.
+        val oversized = "A".repeat(MppHeaders.MAX_TOKEN_LEN + 1)
+        val header = "Payment id=\"abc\", realm=\"api\", method=\"solana\", " +
+            "intent=\"charge\", request=\"$oversized\""
+        assertFailsWith<MppException.InvalidHeader> {
+            MppHeaders.parseWWWAuthenticate(header)
+        }
+    }
+
+    @Test
+    fun acceptsRequestParamAtMaxSize() {
+        // Regression: a request param exactly at the cap must NOT trip the size
+        // gate. We pad a valid charge-request JSON's base64url up to the cap
+        // with trailing base64url chars; the size check runs before decode, so
+        // reaching parseWWWAuthenticate without an InvalidHeader proves the
+        // at-cap value passes the gate. (Decode/JSON validity is a separate
+        // concern exercised elsewhere.)
+        val base = validRequestB64()
+        val padded = base + "A".repeat(MppHeaders.MAX_TOKEN_LEN - base.length)
+        assertEquals(MppHeaders.MAX_TOKEN_LEN, padded.length)
+        val header = "Payment id=\"abc\", realm=\"api\", method=\"solana\", " +
+            "intent=\"charge\", request=\"$padded\""
+        // The size gate must not fire. The padded base64 may or may not decode
+        // to valid JSON, but it will NOT throw InvalidHeader from the size cap.
+        try {
+            MppHeaders.parseWWWAuthenticate(header)
+        } catch (e: MppException.InvalidHeader) {
+            throw AssertionError("at-cap request param must not trip the size gate", e)
+        } catch (_: MppException) {
+            // Any other MppException (e.g. base64/JSON) is acceptable here —
+            // we are only asserting the size gate did not fire.
+        }
+    }
+
+    @Test
+    fun decodeChargeRequestRejectsOversizedRequest() {
+        // The cap is also enforced in decodeChargeRequest for callers that
+        // bypass parseWWWAuthenticate (e.g. a directly-constructed challenge).
+        val oversized = "A".repeat(MppHeaders.MAX_TOKEN_LEN + 1)
+        assertFailsWith<MppException.InvalidHeader> {
+            MppHeaders.decodeChargeRequest(oversized)
+        }
+    }
+
+    @Test
     fun splitsTabSeparatedChallenges() {
         val req = validRequestB64()
         // Two challenges joined by comma; second uses HTAB (\t) after

@@ -4,6 +4,7 @@ import com.solana.paykit.protocols.mpp.core.*
 import com.solana.paykit.paycore.*
 
 import java.math.BigInteger
+import java.time.Instant
 import java.util.Base64
 
 /** Builds a signed Solana transaction for a decoded MPP charge request. */
@@ -60,6 +61,34 @@ fun interface BlockhashProvider {
     fun fetchRecentBlockhash(): ByteArray
 }
 
+/**
+ * Client-side policy gates for what the builder is willing to sign (audit #10,
+ * #26). All fields default to "no constraint" so a UI caller that reviews the
+ * challenge before signing is unaffected; auto-pay callers (e.g.
+ * [com.solana.paykit.client.ChargeInterceptor]) bind what may be signed against
+ * the user's wallet without a human in the loop.
+ *
+ * Mirrors the rust `BuildChargeTransactionOptions` policy fields:
+ * - [maxAmountBaseUnits] — refuse when the charge amount (base units) exceeds
+ *   this cap. Equal-to-cap is allowed.
+ * - [expectedNetwork] — refuse when `methodDetails.network` does not match.
+ * - [allowUnknownToken2022] — opt in to signing arbitrary (non-stablecoin)
+ *   Token-2022 mints, which can carry transfer hooks (default: refuse).
+ *
+ * Note: the always-on expired-challenge refusal is NOT an option here — it is
+ * enforced unconditionally in [buildCredentialHeader] (there is no opt-out).
+ */
+data class ChargePolicy(
+    val maxAmountBaseUnits: BigInteger? = null,
+    val expectedNetwork: String? = null,
+    val allowUnknownToken2022: Boolean = false,
+) {
+    companion object {
+        /** A policy with no constraints — the builder signs whatever it gets. */
+        val NONE = ChargePolicy()
+    }
+}
+
 /** Full charge transaction build pipeline. Mirrors the Rust spine. */
 object Charge {
     private const val MAX_SPLITS = 8
@@ -93,6 +122,7 @@ object Charge {
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
         mintOwnerResolver: MintOwnerResolver? = null,
+        policy: ChargePolicy = ChargePolicy.NONE,
     ): String {
         val built = buildUnsignedChargeMessage(
             walletPublicKey = PublicKey(signer.publicKeyBytes),
@@ -101,6 +131,7 @@ object Charge {
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
             mintOwnerResolver = mintOwnerResolver,
+            policy = policy,
         )
         val signature = signer.sign(built.messageBytes)
         val signerIndex = built.message.accountKeys.indexOfFirst {
@@ -136,6 +167,7 @@ object Charge {
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
         mintOwnerResolver: MintOwnerResolver? = null,
+        policy: ChargePolicy = ChargePolicy.NONE,
     ): ByteArray {
         val built = buildUnsignedChargeMessage(
             walletPublicKey = walletPublicKey,
@@ -144,6 +176,7 @@ object Charge {
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
             mintOwnerResolver = mintOwnerResolver,
+            policy = policy,
         )
         val signatures = MutableList<ByteArray?>(built.message.header.numRequiredSignatures) { null }
         return Transaction.serializeLegacyTransaction(built.message, signatures)
@@ -168,6 +201,7 @@ object Charge {
         computeUnitLimit: Int,
         computeUnitPrice: Long,
         mintOwnerResolver: MintOwnerResolver?,
+        policy: ChargePolicy,
     ): UnsignedChargeMessage {
         // Base-unit amounts are u64 on the wire (Solana lamports / SPL token
         // amounts). A signed Long tops out at 2^63-1, so a legitimate amount
@@ -183,10 +217,31 @@ object Charge {
         if (totalAmount.signum() <= 0) {
             throw MppException.InvalidTransaction("Amount must be positive: ${request.amount}")
         }
+        // Audit #10: opt-in max-amount cap. Auto-pay callers bind the largest
+        // charge they will sign without human review; UI callers leave it null.
+        // Equal-to-cap is allowed (mirrors the rust `request.amount > cap`).
+        policy.maxAmountBaseUnits?.let { cap ->
+            if (totalAmount > cap) {
+                throw MppException.InvalidTransaction(
+                    "Charge amount $totalAmount exceeds max allowed $cap",
+                )
+            }
+        }
         // Default a missing methodDetails to an empty block, matching the rust
         // client (`charge.rs` `unwrap_or_default`): an absent methodDetails is
         // a valid charge, not an error.
         val md = request.methodDetails ?: SolanaChargeMethodDetails()
+        // Audit #10: opt-in expected-network pin. Refuse when the challenge's
+        // declared network does not match what the auto-pay caller expects.
+        // A null `md.network` cannot satisfy a concrete expectation, so it is
+        // rejected too (the caller asked us to bind a specific network).
+        policy.expectedNetwork?.let { expected ->
+            if (md.network != expected) {
+                throw MppException.InvalidTransaction(
+                    "Challenge network ${md.network ?: "<none>"} does not match expected $expected",
+                )
+            }
+        }
         val splits = md.splits ?: emptyList()
         if (splits.size > MAX_SPLITS) {
             throw MppException.InvalidTransaction("Too many splits (got ${splits.size}, max $MAX_SPLITS)")
@@ -266,6 +321,7 @@ object Charge {
                 splits = splits,
                 feePayer = feePayerKey,
                 mintOwnerResolver = mintOwnerResolver,
+                allowUnknownToken2022 = policy.allowUnknownToken2022,
             )
         } else {
             buildSolInstructions(
@@ -323,8 +379,21 @@ object Charge {
         computeUnitLimit: Int = DEFAULT_COMPUTE_UNIT_LIMIT,
         computeUnitPrice: Long = DEFAULT_COMPUTE_UNIT_PRICE,
         mintOwnerResolver: MintOwnerResolver? = null,
+        policy: ChargePolicy = ChargePolicy.NONE,
+        now: Instant = Instant.now(),
     ): String {
         challenge.requireSolanaCharge()
+        // Audit #10: ALWAYS-on expired-challenge refusal — there is no opt-out.
+        // The protocol's working trust model assumes a human reviews a challenge
+        // before signing; auto-pay agents break that, so we refuse to sign a
+        // challenge that has already expired. A challenge with no `expires` is
+        // still accepted (the spec allows omitting it; we have no anchor to
+        // check against). `now` is injectable for deterministic tests.
+        if (challenge.isExpired(now)) {
+            throw MppException.InvalidTransaction(
+                "refusing to sign expired challenge (expires=${challenge.expires})",
+            )
+        }
         val request = challenge.chargeRequest()
         val transaction = buildChargeTransaction(
             signer = signer,
@@ -333,6 +402,7 @@ object Charge {
             computeUnitLimit = computeUnitLimit,
             computeUnitPrice = computeUnitPrice,
             mintOwnerResolver = mintOwnerResolver,
+            policy = policy,
         )
         return MppHeaders.formatAuthorization(
             PaymentCredential(
@@ -384,17 +454,27 @@ object Charge {
      *    {Token, Token-2022}. Fail closed when no resolver is available rather
      *    than guessing the legacy Token program (which would mis-derive ATAs
      *    for a Token-2022 mint and bind the wrong program on the wire).
+     *
+     * Audit #26: whenever the resolved program is Token-2022 AND [mint] is not
+     * a known stablecoin mint, REFUSE to sign unless [allowUnknownToken2022] is
+     * set. Token-2022 mints can carry transfer hooks that execute arbitrary
+     * code on every transfer, and a client signing an arbitrary Token-2022 mint
+     * has no way to know what those hooks do. The vanilla Token program has no
+     * hooks, so arbitrary Token-program mints stay first-class. The gate is on
+     * the Token-2022 axis, matching the rust client.
      */
     private fun resolveTokenProgram(
         mint: String,
         methodDetails: SolanaChargeMethodDetails,
         mintOwnerResolver: MintOwnerResolver?,
+        allowUnknownToken2022: Boolean,
     ): String {
         val explicit = methodDetails.tokenProgram
         if (explicit != null) {
             if (explicit != Programs.TOKEN_PROGRAM && explicit != Programs.TOKEN_2022_PROGRAM) {
                 throw MppException.InvalidTransaction("Unsupported token program: $explicit")
             }
+            gateUnknownToken2022(mint, explicit, allowUnknownToken2022)
             return explicit
         }
         // Known stablecoin mints carry a deterministic owner; answer from the
@@ -417,7 +497,29 @@ object Charge {
                 "mint $mint is owned by unsupported program $owner",
             )
         }
+        gateUnknownToken2022(mint, owner, allowUnknownToken2022)
         return owner
+    }
+
+    /**
+     * Refuses an unknown (non-stablecoin) Token-2022 mint unless the caller
+     * opted in (audit #26). A no-op for the legacy Token program and for known
+     * stablecoin mints (which we already trust). Known stablecoins are
+     * recognised via [stablecoinSymbol]; their token program is well-known and
+     * they carry no hostile transfer hooks.
+     */
+    private fun gateUnknownToken2022(
+        mint: String,
+        tokenProgram: String,
+        allowUnknownToken2022: Boolean,
+    ) {
+        if (tokenProgram != Programs.TOKEN_2022_PROGRAM) return
+        if (stablecoinSymbol(mint) != null) return
+        if (allowUnknownToken2022) return
+        throw MppException.InvalidTransaction(
+            "refusing to sign unknown Token-2022 mint $mint (transfer-hook risk); " +
+                "set allowUnknownToken2022 = true to opt in",
+        )
     }
 
     /**
@@ -498,12 +600,22 @@ object Charge {
         splits: List<SolanaChargeSplit>,
         feePayer: PublicKey?,
         mintOwnerResolver: MintOwnerResolver?,
+        allowUnknownToken2022: Boolean,
     ) {
         val mintKey = PublicKey.fromBase58(mint)
         val tokenProgram = PublicKey.fromBase58(
-            resolveTokenProgram(mint, methodDetails, mintOwnerResolver),
+            resolveTokenProgram(mint, methodDetails, mintOwnerResolver, allowUnknownToken2022),
         )
-        val decimals = methodDetails.decimals ?: 6
+        // Audit #42: spec §7.2 marks `decimals` as conditionally required —
+        // MUST be present for SPL (this branch). Defaulting a missing value to
+        // 6 silently signs a wrong `transferChecked` decimals byte / wrong
+        // divisor for any non-6-decimal mint, the worst failure mode for a
+        // signed transaction. Error instead of guessing (mirrors the rust
+        // client `ok_or(... "decimals is required for SPL")`).
+        val decimals = methodDetails.decimals
+            ?: throw MppException.InvalidTransaction(
+                "methodDetails.decimals is required for SPL charges (spec §7.2)",
+            )
         val sourceAta = Pda.associatedTokenAddress(signerKey, mintKey, tokenProgram)
         val payer = feePayer ?: signerKey
 
@@ -539,7 +651,14 @@ object Charge {
             val splitDest = PublicKey.fromBase58(split.recipient)
             val splitAmount = parseU64(split.amount)
                 ?: throw MppException.InvalidTransaction("Invalid split amount: ${split.amount}")
-            val createAta = feePayer == null || split.ataCreationRequired == true
+            // Audit #20: create a split ATA only when the challenge explicitly
+            // flags it, in BOTH client-paid and fee-sponsored modes. The prior
+            // `feePayer == null || ...` auto-created an ATA for every split in
+            // client-paid mode regardless of the flag, letting a hostile server
+            // attach N dust splits to drain ~N×0.002 SOL of rent from the
+            // client. Mirrors the rust fix (`split.ata_creation_required ==
+            // Some(true)`, flag-only).
+            val createAta = split.ataCreationRequired == true
             addSplTransfer(splitDest, splitAmount, createAta)
             addMemo(instructions, split.memo)
         }
