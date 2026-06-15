@@ -1,1 +1,4 @@
 .build/
+
+# Per-user Xcode state — never share these.
+xcuserdata/

@@ -135,6 +135,10 @@ The `Examples/` directory hosts sample clients:
   SDK into an end-to-end UX: Keychain-backed signer, Surfpool topup, a
   carousel of demo gateway endpoints, and an append-only result log.
 
+<div align="center">
+  <img alt="PayKitDemo iOS app" width="320" src="https://github.com/solana-foundation/pay-kit/raw/main/swift/Examples/PayKitDemo/docs/paykit-demo-screenshot.png">
+</div>
+
 The CLI is source-only so the default `swift build` stays library-only;
 add an executable target to `Package.swift` locally to run it. For
 harness coverage, run the harness adapter at
