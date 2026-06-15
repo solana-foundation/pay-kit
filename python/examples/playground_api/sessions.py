@@ -1,30 +1,20 @@
 # examples/playground_api/sessions.py
-"""The two session-gated demo endpoints (FastAPI).
+"""The session-gated demo endpoints (FastAPI).
 
-Both endpoints are driven by the in-process MPP session method
+Driven by the in-process MPP session method
 (:func:`pay_kit.protocols.mpp.server.new_session`), the reserve/commit metering
 side channel (:func:`pay_kit.protocols.mpp.server.session_routes`), and the
 settle-status receipt poll. Both methods share one
 :class:`~pay_kit.protocols.mpp.server.MemoryChannelStore` so the receipt
-endpoint can read the channel state whichever endpoint opened the channel.
+endpoint reads channel state whichever endpoint opened the channel.
 
-Ports ``go/examples/playground-api/sessions.go``. The route shapes, handler
-bodies, canned token stream, and JSON acks mirror the Go example.
-
-Differences from the Go example, where the Python SDK port lacks a capability
-the closest faithful behavior is served (nothing is silently dropped):
-
-* The Go example opens channels with ``OpenTxSubmitterServer`` (the server
-  completes the fee-payer signature and broadcasts the client-built open) and
-  arms ``CloseDelay`` with ``Signer`` + ``RPC`` so the idle-close watchdog
-  drives on-chain settle-and-distribute. The Python session method
-  (:mod:`pay_kit.protocols.mpp.server.session_method`) does not yet port the
-  server-broadcast open path or the on-chain settlement at close, so this app
-  uses the default client-broadcast submitter and ``rpc=None`` (the offline
-  core, which trusts the open signature / deposit as provided). The
-  ``/sessions/receipt`` poll still resolves from the shared store: it reports
-  the channel watermark/deposit and a ``settledSignature`` of ``null`` until
-  the Python settlement path lands.
+Faithful port of ``typescript/examples/playground-api/modules/sessions.ts``.
+The Python SDK does not ship the TS ``Mppx.session()`` request handler, so the
+402 gate is built inline from :meth:`Session.challenge` and
+:meth:`Session.verify_credential`. The server-broadcast open path
+(``openTxSubmitter=server``) and the on-chain settle-at-close are not ported, so
+this uses the default client-broadcast submitter and ``rpc=None``;
+``settledSignature`` stays ``null`` until that lands.
 """
 
 from __future__ import annotations
@@ -61,7 +51,7 @@ from .utils import json_error, log_payment
 if TYPE_CHECKING:
     from .app import AppState
 
-# token_chunks is the canned token stream payload. Mirrors Go ``tokenChunks``.
+# The canned token-stream payload. Mirrors TS ``TOKEN_CHUNKS``.
 TOKEN_CHUNKS = [
     "A payment channel ",
     "lets a client and server ",
@@ -73,77 +63,63 @@ TOKEN_CHUNKS = [
 ]
 
 
-def _session_gate(session: Session, challenge_options: SessionChallengeOptions):
-    """Build the session-payment gate for a route, mirroring the Go
-    ``SessionMiddleware`` behavior inline for FastAPI.
+def _session_gate(session: Session, options: SessionChallengeOptions):
+    """Build the 402 gate for a route (the Python SDK has no ``SessionMiddleware``).
 
-    Returns an async callable taking the request and returning a
-    ``(credential, receipt)`` pair when payment verifies, or a 402
-    :class:`JSONResponse` (with the session challenge in WWW-Authenticate) when
-    it does not. The challenge is only built when a 402 is actually issued, so
-    the verify path never prefetches a blockhash. Mirrors Go ``SessionMiddleware``.
+    Returns an async callable that yields the verified-receipt response headers
+    when an Authorization credential verifies, or a 402 :class:`JSONResponse`
+    (challenge in WWW-Authenticate) otherwise. The challenge is built only when a
+    402 is issued, so the verify path never prefetches a blockhash.
     """
 
-    async def gate(request: Request) -> tuple[Any, Any] | JSONResponse:
-        verification_error: PaymentError | None = None
+    async def gate(request: Request) -> dict[str, str] | JSONResponse:
+        error: PaymentError | None = None
         auth_header = request.headers.get(AUTHORIZATION_HEADER)
         if auth_header:
             try:
-                credential = parse_authorization(auth_header)
-                receipt = await session.verify_credential(credential)
-                return credential, receipt
+                receipt = await session.verify_credential(parse_authorization(auth_header))
+                try:
+                    return {PAYMENT_RECEIPT_HEADER: format_receipt(receipt)}
+                except Exception:
+                    return {}
             except PaymentError as err:
-                verification_error = err
-            except Exception as err:  # noqa: BLE001 (framework/parse errors)
-                verification_error = PaymentError(str(err), code="invalid-payload")
+                error = err
+            except Exception as err:  # noqa: BLE001 (framework/parse errors map to a 402)
+                error = PaymentError(str(err), code="invalid-payload")
 
-        challenge = await session.challenge(challenge_options)
-        www_auth = format_www_authenticate(challenge)
-        if verification_error is None:
-            problem = payment_required_response(
-                "Payment required",
-                code="payment_invalid",
-                challenge_header=www_auth,
-            )
-        else:
-            problem = payment_required_response(
-                str(verification_error) or "Payment required",
-                code=verification_error.code or "payment_invalid",
-                challenge_header=www_auth,
-            )
-        return JSONResponse(
-            problem["body"],
-            status_code=problem["status_code"],
-            headers=problem["headers"],
+        challenge = await session.challenge(options)
+        problem = payment_required_response(
+            str(error) if error else "Payment required",
+            code=(error.code if error and error.code else "payment_invalid"),
+            challenge_header=format_www_authenticate(challenge),
         )
+        return JSONResponse(problem["body"], status_code=problem["status_code"], headers=problem["headers"])
 
     return gate
 
 
-def _receipt_header(receipt: Any) -> dict[str, str]:
-    """Expose the verified receipt in the Payment-Receipt response header, as
-    the Go middleware does after a successful verify. Best-effort: a formatting
-    failure simply omits the header."""
+async def _body(request: Request) -> dict[str, Any]:
+    """Best-effort JSON object request body."""
     try:
-        return {PAYMENT_RECEIPT_HEADER: format_receipt(receipt)}
+        body = await request.json()
     except Exception:
         return {}
+    return body if isinstance(body, dict) else {}
 
 
 def _commit_ack(body: dict[str, Any]) -> dict[str, str]:
-    """Build the minimal CommitReceipt-shaped JSON ack the stream commit handler
-    returns. Mirrors Go ``commitAck``."""
-    amount = body.get("amount") or "0"
+    """The minimal CommitReceipt-shaped ack a voucher commit returns. Mirrors TS
+    ``commitAck``."""
     return {
-        "amount": str(amount),
+        "amount": str(body.get("amount") or "0"),
         "deliveryId": str(body.get("deliveryId", "")),
         "status": "committed",
     }
 
 
 async def _route_response(handler: Any, request: Request) -> JSONResponse:
-    """Adapt a framework-agnostic side-channel :class:`RouteResponse` handler
-    (method + raw body -> RouteResponse) to a FastAPI ``JSONResponse``."""
+    """Adapt a framework-agnostic side-channel :class:`RouteResponse` handler to a
+    FastAPI ``JSONResponse``."""
     raw = await request.body()
     result: RouteResponse = await handler(request.method, raw if raw else b"{}")
     return JSONResponse(result.body, status_code=result.status)
@@ -152,18 +128,18 @@ async def _route_response(handler: Any, request: Request) -> JSONResponse:
 def register_sessions(app: FastAPI, state: AppState) -> Any:
     """Mount the session endpoints and return the watchdog shutdown hook.
 
-    Routes (mirroring Go ``registerSessions``):
+    Routes (mirroring TS ``registerSessions``):
 
     * ``GET  /sessions/stream``: pay-per-chunk SSE, cap 1.00 USDC, 0.0001 USDC/chunk
     * ``POST /sessions/stream``: voucher commits for the stream endpoint
     * ``POST /sessions/compute``: pay-per-call compute, cap 0.50 USDC, 0.005 USDC/call
       (also accepts voucher commits)
-    * ``POST /__402/session/deliveries``: SessionFetch-style delivery reservation
+    * ``POST /__402/session/deliveries``: SessionFetch delivery reservation
     * ``POST /__402/session/commit``: body-voucher commit variant of the above
     * ``GET  /sessions/receipt/{channel_id}``: settle-status poll for the UI
     """
-    # Shared store across both session methods so /sessions/receipt can read
-    # channel state regardless of which endpoint opened the channel.
+    # Shared store so /sessions/receipt reads channel state regardless of which
+    # endpoint opened the channel.
     shared_store = MemoryChannelStore()
 
     def new_method(cap: int) -> Session:
@@ -176,10 +152,6 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
                 decimals=constants.USDC_DECIMALS,
                 network=state.network,
                 secret_key=state.secret_key,
-                # The Python port does not yet support the server-broadcast open
-                # path (openTxSubmitter=server) or the on-chain settlement at
-                # close, so this uses the default client-broadcast submitter and
-                # no RPC client (offline core); see the module docstring.
                 modes=["pull"],
                 pull_voucher_strategy="clientVoucher",
                 store=shared_store,
@@ -208,7 +180,6 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
         gated = await stream_gate(request)
         if isinstance(gated, JSONResponse):
             return gated
-        _credential, receipt = gated
 
         async def body() -> Any:
             for chunk in TOKEN_CHUNKS:
@@ -219,52 +190,33 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
         return StreamingResponse(
             body(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                **_receipt_header(receipt),
-            },
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", **gated},
         )
 
     # POST /sessions/stream: voucher commits arrive on the URL the session was
-    # opened against, with the signed voucher in the Authorization credential.
-    # The gate's verify path applies it; the body is an ack. Mirrors Go.
+    # opened against; the gate's verify path applies the voucher, the body is an ack.
     @app.post("/sessions/stream")
     async def sessions_stream_post(request: Request) -> JSONResponse:
         gated = await stream_gate(request)
         if isinstance(gated, JSONResponse):
             return gated
-        _credential, receipt = gated
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        return JSONResponse(_commit_ack(body), headers=_receipt_header(receipt))
+        return JSONResponse(_commit_ack(await _body(request)), headers=gated)
 
-    # POST /sessions/compute: pay-per-call compute; the same handler also accepts
-    # voucher commits (a deliveryId in the body discriminates). Mirrors Go.
+    # POST /sessions/compute: pay-per-call compute; the same handler accepts
+    # voucher commits (a deliveryId in the body discriminates).
     @app.post("/sessions/compute")
     async def sessions_compute_post(request: Request) -> JSONResponse:
         gated = await compute_gate(request)
         if isinstance(gated, JSONResponse):
             return gated
-        _credential, receipt = gated
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+        body = await _body(request)
         delivery_id = str(body.get("deliveryId", ""))
-        receipt_headers = _receipt_header(receipt)
         if delivery_id != "":
             return JSONResponse(
                 {"amount": "0", "deliveryId": delivery_id, "status": "committed"},
-                headers=receipt_headers,
+                headers=gated,
             )
-        log_payment(request.url.path, receipt_headers)
+        log_payment(request.url.path, gated)
         prompt = str(body.get("prompt", ""))
         return JSONResponse(
             {
@@ -272,12 +224,11 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
                 "output": "Echo: " + prompt + " (computed for 0.005 USDC)",
                 "computedAt": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
-            headers=receipt_headers,
+            headers=gated,
         )
 
-    # Side-channel metering routes: SessionFetch-style clients reserve capacity
-    # for each metered delivery before signing + committing the voucher. Both
-    # handlers share the methods' channel store. Mirrors Go.
+    # Side-channel metering routes: clients reserve capacity for each metered
+    # delivery before signing + committing the voucher. Both share the store.
     routes = session_routes(stream_session.core(), touch=None)
 
     @app.post("/__402/session/deliveries")
@@ -288,10 +239,9 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
     async def session_commit(request: Request) -> JSONResponse:
         return await _route_response(routes.commit, request)
 
-    # Receipt poll endpoint: the UI hits this after the stream ends to learn the
-    # on-chain settle signature. With no ported settlement path the settled
-    # signature stays null; the watermark/deposit are reported from the shared
-    # store. Mirrors Go's settle-status poll shape.
+    # Receipt poll: the UI hits this after the stream ends to learn the settle
+    # signature. With no ported settlement path it stays null; the
+    # watermark/deposit come from the shared store.
     @app.get("/sessions/receipt/{channel_id}")
     async def sessions_receipt(channel_id: str) -> JSONResponse:
         if not channel_id:

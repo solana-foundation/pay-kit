@@ -1,10 +1,5 @@
 # examples/playground_api/faucet.py
-"""SOL + USDC airdrops via the surfnet cheatcodes.
-
-Mirrors the Go example's ``faucet.go``: a free status endpoint advertising the
-airdrop amounts and an airdrop endpoint that seeds the requested address with
-SOL (``surfnet_setAccount``) and USDC (``surfnet_setTokenAccount``).
-"""
+"""SOL + USDC airdrops via the surfnet cheatcodes."""
 
 from __future__ import annotations
 
@@ -21,8 +16,6 @@ if TYPE_CHECKING:
 
 
 def register_faucet(app: FastAPI, state: AppState) -> None:
-    """Mount the faucet status and airdrop endpoints."""
-
     @app.get("/api/v1/faucet/status")
     async def faucet_status() -> JSONResponse:
         return JSONResponse(
@@ -35,11 +28,8 @@ def register_faucet(app: FastAPI, state: AppState) -> None:
 
     @app.post("/api/v1/faucet/airdrop")
     async def faucet_airdrop(request: Request) -> JSONResponse:
-        try:
-            body = await request.json()
-        except Exception:
-            body = None
-        address = body.get("address") if isinstance(body, dict) else None
+        body = await request.json()
+        address = body.get("address")
         if not address:
             return JSONResponse(json_error("Missing `address` in request body"), status_code=400)
         try:

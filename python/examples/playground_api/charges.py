@@ -3,19 +3,23 @@
 multi-recipient splits (all gated through the ``pay_kit`` umbrella surface),
 and the fortune payment link served straight from the protocol-layer MPP
 server with the HTML challenge page enabled. The 402 challenge fires before
-any upstream fetch.
+any handler body runs.
 
-Mirrors the Go example's ``charges.go``. The umbrella :func:`RequirePayment`
-dependency stands in for Go's ``client.RequireFunc``: a per-request gate
-builder reads the path/query and returns a fully-validated :class:`Gate`.
-Guard dependencies (404 unknown city/product, 400 missing query) are declared
-ahead of the payment dependency so they fire before the 402, matching the Go
-middleware ordering.
+Mirrors the TypeScript example's ``modules/charges.ts``. The umbrella
+:func:`RequirePayment` dependency stands in for Express's ``requirePayment``
+middleware: a per-request gate builder reads the path/query and returns a
+fully-validated :class:`Gate`. Guard dependencies (404 unknown city/product,
+400 missing query) are declared ahead of the payment dependency so they fire
+before the 402, matching the Express middleware ordering.
 
-The fortune route drops to the protocol layer (``protocols.mpp.server.Mpp``
-with HTML enabled) the same way the Go example does, because the umbrella
-dispatcher renders the cross-SDK JSON challenge body and dropping down a layer
-is the intended escape hatch for the interactive payment page.
+The stock routes serve canned demo data rather than a live market feed: the
+example exists to exercise the payment gate, and the Python playground stays
+network-free like its weather / marketplace / x402 routes.
+
+The fortune route drops to the protocol layer (:class:`Mpp` with HTML enabled)
+because the umbrella dispatcher renders the cross-SDK JSON challenge body;
+dropping down a layer to serve the interactive payment page is the intended
+escape hatch.
 """
 
 from __future__ import annotations
@@ -50,30 +54,19 @@ from pay_kit.protocols.mpp.server import (
 
 from . import constants
 from .utils import json_error, log_tx
-from .yahoo import YahooClient, YahooError
 
 # --- canned demo data -------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class _WeatherInfo:
-    """The canned per-city weather payload (whole-degree C, label, % humidity)."""
-
-    temperature: int
-    conditions: str
-    humidity: int
-
-
-# The canned weather demo table.
-_WEATHER_BY_CITY: dict[str, _WeatherInfo] = {
-    "san-francisco": _WeatherInfo(15, "Foggy", 85),
-    "new-york": _WeatherInfo(22, "Partly Cloudy", 60),
-    "london": _WeatherInfo(12, "Rainy", 90),
-    "tokyo": _WeatherInfo(26, "Sunny", 55),
-    "paris": _WeatherInfo(18, "Overcast", 70),
-    "sydney": _WeatherInfo(24, "Clear", 45),
-    "berlin": _WeatherInfo(10, "Cloudy", 75),
-    "dubai": _WeatherInfo(38, "Sunny", 30),
+# The canned per-city weather payload: whole-degree C, sky label, % humidity.
+_WEATHER_BY_CITY: dict[str, dict[str, Any]] = {
+    "san-francisco": {"temperature": 15, "conditions": "Foggy", "humidity": 85},
+    "new-york": {"temperature": 22, "conditions": "Partly Cloudy", "humidity": 60},
+    "london": {"temperature": 12, "conditions": "Rainy", "humidity": 90},
+    "tokyo": {"temperature": 26, "conditions": "Sunny", "humidity": 55},
+    "paris": {"temperature": 18, "conditions": "Overcast", "humidity": 70},
+    "sydney": {"temperature": 24, "conditions": "Clear", "humidity": 45},
+    "berlin": {"temperature": 10, "conditions": "Cloudy", "humidity": 75},
+    "dubai": {"temperature": 38, "conditions": "Sunny", "humidity": 30},
 }
 
 
@@ -82,9 +75,8 @@ class _Product:
     """One marketplace catalog entry.
 
     ``price`` is the seller's list price in USD; the platform and referral
-    basis-point fees are charged on top of it, not carved out of it. ``seller``
-    is the base58 wallet that receives the list price as the charge's primary
-    pay-to recipient.
+    basis-point fees are charged on top of it, not carved out. ``seller`` is the
+    base58 wallet that receives the list price as the charge's primary pay-to.
     """
 
     name: str
@@ -160,9 +152,6 @@ def register_charges(app: FastAPI, state: Any) -> None:
     platform = state.recipient
     accept_default = pay_kit.config().accept
 
-    yahoo = YahooClient()
-    app.state.playground_yahoo = yahoo  # the sessions/app shutdown hook closes it
-
     def _log_settlement(request: Request) -> None:
         """Surface the settlement signature once a gated handler runs."""
         proof = payment(request)
@@ -182,17 +171,14 @@ def register_charges(app: FastAPI, state: Any) -> None:
         if _city_key(city) not in _WEATHER_BY_CITY:
             raise HTTPException(
                 status_code=404,
-                detail=json_error(
-                    "City not found. Available: san-francisco, new-york, london, "
-                    "tokyo, paris, sydney, berlin, dubai"
-                ),
+                detail=json_error(f"City not found. Available: {', '.join(_WEATHER_BY_CITY)}"),
             )
 
-    def _require_known_product(productId: str) -> None:  # noqa: N803 (mirrors Go path value)
+    def _require_known_product(productId: str) -> None:  # noqa: N803 (mirrors the route path param)
         if productId not in _PRODUCTS:
             raise HTTPException(status_code=404, detail=json_error("Product not found"))
 
-    # -- gate builders (Go's RequireFunc closures) ---------------------------
+    # -- gate builders -------------------------------------------------------
 
     def _static_gate(name: str, amount: str, describe):  # noqa: ANN001, ANN202
         def builder(request: Request) -> Gate:
@@ -222,7 +208,7 @@ def register_charges(app: FastAPI, state: Any) -> None:
             accept_default=accept_default,
         )
 
-    # -- stocks (Yahoo Finance) ----------------------------------------------
+    # -- stocks (canned demo quotes) -----------------------------------------
 
     gate_stock_quote = RequirePayment(
         _static_gate("stockQuote", "0.01", lambda r: f"Stock quote: {r.path_params['symbol']}")
@@ -236,38 +222,23 @@ def register_charges(app: FastAPI, state: Any) -> None:
     gate_weather = RequirePayment(_static_gate("weather", "0.01", lambda r: f"Weather for {r.path_params['city']}"))
 
     @app.get("/api/v1/stocks/quote/{symbol}", dependencies=[Depends(gate_stock_quote)])
-    async def stock_quote(request: Request, symbol: str) -> Response:
+    async def stock_quote(request: Request, symbol: str) -> JSONResponse:
         _log_settlement(request)
-        try:
-            quote = await yahoo.quote(symbol)
-        except YahooError:
-            return JSONResponse(json_error("Failed to fetch quote"), status_code=500)
-        if quote is None:
-            # Unknown or delisted symbol: an empty 200 body, the way Express
-            # serializes res.json(undefined).
-            return Response(status_code=200, media_type="application/json")
-        return JSONResponse(quote)
+        return JSONResponse({"symbol": symbol.upper(), "regularMarketPrice": 150.0, "currency": "USD"})
 
     @app.get(
         "/api/v1/stocks/search",
         dependencies=[Depends(_require_query("q")), Depends(gate_stock_search)],
     )
-    async def stock_search(request: Request) -> Response:
+    async def stock_search(request: Request) -> JSONResponse:
         _log_settlement(request)
-        try:
-            quotes = await yahoo.search(request.query_params.get("q", ""))
-        except YahooError:
-            return JSONResponse(json_error("Failed to search"), status_code=500)
-        return JSONResponse(quotes)
+        q = request.query_params.get("q", "")
+        return JSONResponse([{"symbol": q.upper(), "shortname": q.upper(), "exchange": "NMS"}])
 
     @app.get("/api/v1/stocks/history/{symbol}", dependencies=[Depends(gate_stock_history)])
-    async def stock_history(request: Request, symbol: str) -> Response:
+    async def stock_history(request: Request, symbol: str) -> JSONResponse:
         _log_settlement(request)
-        try:
-            history = await yahoo.history(symbol, request.query_params.get("range", ""))
-        except YahooError:
-            return JSONResponse(json_error("Failed to fetch history"), status_code=500)
-        return JSONResponse(history)
+        return JSONResponse({"symbol": symbol.upper(), "quotes": [{"close": 150.0}]})
 
     # -- weather: unknown cities 404 before the payment gate -----------------
 
@@ -275,72 +246,51 @@ def register_charges(app: FastAPI, state: Any) -> None:
         "/api/v1/weather/{city}",
         dependencies=[Depends(_require_known_city), Depends(gate_weather)],
     )
-    async def weather(request: Request, city: str) -> Response:
-        info = _WEATHER_BY_CITY[_city_key(city)]
+    async def weather(request: Request, city: str) -> JSONResponse:
         _log_settlement(request)
-        return JSONResponse(
-            {
-                "city": city,
-                "temperature": info.temperature,
-                "conditions": info.conditions,
-                "humidity": info.humidity,
-            }
-        )
+        return JSONResponse({"city": city, **_WEATHER_BY_CITY[_city_key(city)]})
 
     # -- marketplace: free catalog plus the split purchase -------------------
 
     @app.get("/api/v1/marketplace/products")
     async def marketplace_products() -> JSONResponse:
-        listing: list[dict[str, str]] = []
-        for product_id in ("sol-hoodie", "validator-mug", "nft-sticker-pack"):
-            product = _PRODUCTS[product_id]
-            price_raw = (product.price.amount * (Decimal(10) ** constants.USDC_DECIMALS)).to_integral_value()
-            listing.append(
-                {
-                    "id": product_id,
-                    "name": product.name,
-                    "description": product.description,
-                    "price": _display_usd(product.price),
-                    "priceRaw": str(int(price_raw)),
-                }
-            )
+        listing = [
+            {
+                "id": product_id,
+                "name": product.name,
+                "description": product.description,
+                "price": _display_usd(product.price),
+                "priceRaw": str(int(product.price.amount * (Decimal(10) ** constants.USDC_DECIMALS))),
+            }
+            for product_id, product in _PRODUCTS.items()
+        ]
         return JSONResponse(listing)
 
     @app.get(
         "/api/v1/marketplace/buy/{productId}",
-        dependencies=[
-            Depends(_require_known_product),
-            Depends(RequirePayment(_buy_gate)),
-        ],
+        dependencies=[Depends(_require_known_product), Depends(RequirePayment(_buy_gate))],
     )
-    async def marketplace_buy(request: Request, productId: str) -> Response:  # noqa: N803 (mirrors Go path value)
+    async def marketplace_buy(request: Request, productId: str) -> JSONResponse:  # noqa: N803 (route path param)
         product = _PRODUCTS[productId]
         platform_fee = _bps(product.price, _PLATFORM_FEE_BPS)
         total = product.price.amount + platform_fee.amount
-        breakdown: dict[str, str] = {
+        breakdown = {
             "seller": _display_usd(product.price),
             "platformFee": _display_usd(platform_fee),
         }
-        referrer = request.query_params.get("referrer", "")
-        if referrer:
+        if request.query_params.get("referrer"):
             referral_fee = _bps(product.price, _REFERRAL_FEE_BPS)
             breakdown["referralFee"] = _display_usd(referral_fee)
             total += referral_fee.amount
         breakdown["total"] = f"{total:.2f} USDC"
         _log_settlement(request)
-        return JSONResponse(
-            {
-                "product": product.name,
-                "breakdown": breakdown,
-                "status": "purchased",
-            }
-        )
+        return JSONResponse({"product": product.name, "breakdown": breakdown, "status": "purchased"})
 
     # -- fortune: a charge payment link with the interactive HTML challenge ---
     #
     # Stays on the protocol layer directly (Mpp with HTML enabled) because the
     # umbrella dispatcher renders the cross-SDK JSON challenge body; dropping
-    # down a layer is the intended escape hatch.
+    # down a layer is the intended escape hatch for the interactive page.
     fortune_mpp = Mpp(
         MppConfig(
             recipient=state.recipient,
@@ -360,9 +310,7 @@ def register_charges(app: FastAPI, state: Any) -> None:
         # The interactive payment page registers its service worker at scope
         # "/" from a script served under /api/v1/fortune, which browsers only
         # allow with this header.
-        is_sw = is_service_worker_request(str(request.url))
-        sw_header = {"Service-Worker-Allowed": "/"} if is_sw else {}
-
+        sw_header = {"Service-Worker-Allowed": "/"} if is_service_worker_request(str(request.url)) else {}
         challenge = fortune_mpp.charge_with_options("0.01", ChargeOptions(description="Open a fortune cookie"))
 
         auth_header = request.headers.get("authorization")
@@ -388,12 +336,11 @@ def register_charges(app: FastAPI, state: Any) -> None:
                     PaymentError(str(err), code="payment_invalid"),
                 )
 
-            fortune_text = random.choice(_FORTUNES)
             headers = dict(sw_header)
             if receipt.reference:
                 headers["payment-receipt"] = receipt.reference
                 log_tx(request.url.path, receipt.reference)
-            return JSONResponse({"fortune": fortune_text}, headers=headers)
+            return JSONResponse({"fortune": random.choice(_FORTUNES)}, headers=headers)
 
         return _fortune_challenge(request, challenge, state.network, fortune_mpp.rpc_url, sw_header, None)
 
@@ -412,29 +359,19 @@ def _fortune_challenge(
     """Render the fortune 402: the service-worker script on the SW request, the
     interactive HTML payment page when the client accepts HTML, otherwise the
     canonical JSON challenge body.
-
-    Mirrors the protocol-layer ``PaymentMiddleware`` HTML branch the Go example
-    enables on this route.
     """
-    www_auth = format_www_authenticate(challenge)
     headers = dict(extra_headers)
-    headers["www-authenticate"] = www_auth
+    headers["www-authenticate"] = format_www_authenticate(challenge)
     headers["cache-control"] = "no-store"
 
     if is_service_worker_request(str(request.url)):
-        # The interactive page fetches its own service worker from this URL.
-        return PlainTextResponse(
-            service_worker_js(),
-            media_type="application/javascript",
-            headers=headers,
-        )
+        return PlainTextResponse(service_worker_js(), media_type="application/javascript", headers=headers)
 
     if accepts_html(request.headers.get("accept")):
-        body = challenge_to_html(challenge, rpc_url, network)
-        return HTMLResponse(body, status_code=402, headers=headers)
+        return HTMLResponse(challenge_to_html(challenge, rpc_url, network), status_code=402, headers=headers)
 
-    code = (error.code if error and error.code else "payment_invalid") or "payment_invalid"
-    detail = (str(error) if error else "Payment required") or "Payment required"
+    code = (error.code if error and error.code else None) or "payment_invalid"
+    detail = (str(error) if error else None) or "Payment required"
     return JSONResponse(
         {
             "type": "about:blank",
