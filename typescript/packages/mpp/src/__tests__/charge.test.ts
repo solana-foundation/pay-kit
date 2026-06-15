@@ -3120,9 +3120,9 @@ test('#21 charge() rejects an unparseable split recipient at issuance', () => {
 });
 
 test('#21 charge() rejects a zero/negative split amount at issuance', () => {
-    expect(() => charge({ recipient: RECIPIENT, network: 'devnet', splits: [{ recipient: PLATFORM, amount: '0' }] })).toThrow(
-        /must be positive/,
-    );
+    expect(() =>
+        charge({ recipient: RECIPIENT, network: 'devnet', splits: [{ recipient: PLATFORM, amount: '0' }] }),
+    ).toThrow(/must be positive/);
 });
 
 test('#21 charge() accepts a valid split set at issuance', () => {

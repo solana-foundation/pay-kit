@@ -93,7 +93,10 @@ export function charge(parameters: charge.Parameters) {
                     `Challenge amount ${challenge.request.amount} exceeds the configured maxAmount ${maxAmount}`,
                 );
             }
-            if (expectedNetwork !== undefined && normalizeNetwork(network ?? 'mainnet') !== normalizeNetwork(expectedNetwork)) {
+            if (
+                expectedNetwork !== undefined &&
+                normalizeNetwork(network ?? 'mainnet') !== normalizeNetwork(expectedNetwork)
+            ) {
                 throw new Error(
                     `Challenge network "${network ?? 'mainnet'}" does not match the expected network "${expectedNetwork}"`,
                 );

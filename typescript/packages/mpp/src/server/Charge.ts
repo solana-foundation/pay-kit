@@ -1322,12 +1322,11 @@ async function broadcastTransaction(rpcUrl: string, base64Tx: string): Promise<s
  *  - the recovery RPC itself failed → `{ kind: 'timeout', detail }` (timeout, with RPC detail for triage)
  */
 export type PostTimeoutStatus =
-    { detail: string; kind: 'failed' } | { detail?: string; kind: 'timeout' } | { kind: 'confirmed' };
+    | { detail: string; kind: 'failed' }
+    | { detail?: string; kind: 'timeout' }
+    | { kind: 'confirmed' };
 
-export function interpretPostTimeoutStatus(
-    status: { err: unknown } | null,
-    rpcError?: string,
-): PostTimeoutStatus {
+export function interpretPostTimeoutStatus(status: { err: unknown } | null, rpcError?: string): PostTimeoutStatus {
     if (rpcError !== undefined) {
         return { detail: rpcError, kind: 'timeout' };
     }
@@ -1450,7 +1449,7 @@ export declare namespace charge {
          * 'mainnet'. The legacy 'mainnet-beta' spelling is accepted as an alias.
          * Any other value is rejected at construction.
          */
-        network?: 'devnet' | 'localnet' | 'mainnet-beta' | 'mainnet' | string & {};
+        network?: 'devnet' | 'localnet' | 'mainnet-beta' | 'mainnet' | (string & {});
         /** Base58-encoded recipient public key that receives payments. */
         recipient: string;
         /** Custom RPC URL. Defaults to public RPC for the selected network. */
