@@ -287,16 +287,58 @@ impl PriceCtx<'_> {
         self.uri.query()
     }
 
-    /// Look up a single query parameter by name (no percent-decoding).
+    /// Look up a single query parameter by name, percent-decoded.
+    ///
+    /// The value is `application/x-www-form-urlencoded`-decoded (`%XX` escapes
+    /// and `+` as space) so a tier like `?tier=premi%75m` matches a literal
+    /// `"premium"` comparison instead of silently falling through to a cheaper
+    /// default price.
     pub fn query_param(&self, name: &str) -> Option<String> {
         self.uri.query()?.split('&').find_map(|pair| {
             let mut kv = pair.splitn(2, '=');
             match kv.next() {
-                Some(key) if key == name => Some(kv.next().unwrap_or("").to_string()),
+                Some(key) if key == name => Some(percent_decode(kv.next().unwrap_or(""))),
                 _ => None,
             }
         })
     }
+}
+
+/// Decode an `application/x-www-form-urlencoded` query value: `%XX` escapes and
+/// `+` as space. Pricing closures compare decoded values, so a percent-encoded
+/// tier (e.g. `premi%75m`) can't bypass the match and land on a cheaper price.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                match (
+                    (bytes[i + 1] as char).to_digit(16),
+                    (bytes[i + 2] as char).to_digit(16),
+                ) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[derive(Clone)]
@@ -310,26 +352,40 @@ fn challenge_response(pay: &PayKit, amount: &str) -> Response {
     let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
     let headers = resp.headers_mut();
 
-    // MPP: WWW-Authenticate.
-    if let Ok(challenge) = pay.mpp.charge(amount) {
-        if let Ok(www_auth) = format_www_authenticate(&challenge) {
-            if let Ok(v) = HeaderValue::from_str(&www_auth) {
-                headers.insert(header::WWW_AUTHENTICATE, v);
+    // MPP: WWW-Authenticate. A failure here drops the MPP challenge from the
+    // 402 (x402 clients are unaffected), so log it for operators.
+    match pay.mpp.charge(amount) {
+        Ok(challenge) => match format_www_authenticate(&challenge) {
+            Ok(www_auth) => match HeaderValue::from_str(&www_auth) {
+                Ok(v) => {
+                    headers.insert(header::WWW_AUTHENTICATE, v);
+                }
+                Err(e) => {
+                    tracing::warn!(amount = %amount, error = %e, "invalid MPP challenge header value")
+                }
+            },
+            Err(e) => {
+                tracing::warn!(amount = %amount, error = %e, "failed to format MPP challenge")
             }
-        }
+        },
+        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build MPP challenge"),
     }
 
     // x402: PAYMENT-REQUIRED.
-    if let Ok((name, value)) = pay
+    match pay
         .x402
         .payment_required_header(amount, ExactOptions::default())
     {
-        if let (Ok(n), Ok(v)) = (
+        Ok((name, value)) => match (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_str(&value),
         ) {
-            headers.insert(n, v);
-        }
+            (Ok(n), Ok(v)) => {
+                headers.insert(n, v);
+            }
+            _ => tracing::warn!(amount = %amount, "invalid x402 PAYMENT-REQUIRED header"),
+        },
+        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build x402 challenge"),
     }
 
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -348,15 +404,19 @@ fn attach_mpp_receipt(resp: &mut Response, receipt: &Receipt) {
     }
 }
 
-fn x402_reference(verified: &VerifiedExactPayment) -> String {
-    match verified {
+/// Extract a settlement reference from a verified x402 payment. Returns `None`
+/// when the transaction carries no signature (an unsigned tx), so the gate can
+/// reject rather than hand the handler an empty reference.
+fn x402_reference(verified: &VerifiedExactPayment) -> Option<String> {
+    let reference = match verified {
         VerifiedExactPayment::Signature(sig) => sig.clone(),
         VerifiedExactPayment::Transaction(tx) => tx
             .signatures
             .first()
             .map(|s| s.to_string())
             .unwrap_or_default(),
-    }
+    };
+    (!reference.is_empty()).then_some(reference)
 }
 
 fn attach_x402_response(resp: &mut Response, reference: &str) {
@@ -425,17 +485,25 @@ async fn gate_middleware(State(state): State<GateState>, mut req: Request, next:
             .process_payment(&header_value, &amount, ExactOptions::default())
             .await
         {
-            Ok(verified) => {
-                let reference = x402_reference(&verified);
-                req.extensions_mut().insert(Payment {
-                    amount,
-                    protocol: Protocol::X402,
-                    reference: reference.clone(),
-                });
-                let mut resp = next.run(req).await;
-                attach_x402_response(&mut resp, &reference);
-                resp
-            }
+            Ok(verified) => match x402_reference(&verified) {
+                Some(reference) => {
+                    req.extensions_mut().insert(Payment {
+                        amount,
+                        protocol: Protocol::X402,
+                        reference: reference.clone(),
+                    });
+                    let mut resp = next.run(req).await;
+                    attach_x402_response(&mut resp, &reference);
+                    resp
+                }
+                None => {
+                    tracing::warn!(
+                        amount = %amount,
+                        "x402 payment verified but carried no settlement reference"
+                    );
+                    challenge_response(&state.pay, &amount)
+                }
+            },
             Err(_) => challenge_response(&state.pay, &amount),
         };
     }
@@ -584,6 +652,39 @@ mod tests {
                 Request::builder()
                     .uri("/r")
                     .header(header::AUTHORIZATION, auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+    }
+
+    #[test]
+    fn query_param_percent_decodes() {
+        // A percent-encoded tier must decode so it can't dodge the premium
+        // price by landing on the cheaper default.
+        let price = Price::dynamic(|c| match c.query_param("tier").as_deref() {
+            Some("premium") => "5.00".to_string(),
+            _ => "0.10".to_string(),
+        });
+        let method = Method::GET;
+        let headers = HeaderMap::new();
+        let encoded: Uri = "/q?tier=premi%75m".parse().unwrap();
+        assert_eq!(price.resolve(&ctx(&method, &encoded, &headers)), "5.00");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn x402_invalid_signature_returns_402() {
+        // A PAYMENT-SIGNATURE header that doesn't verify takes the x402 path
+        // and is rejected with a fresh 402 (it must not fall through to MPP).
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/r", paid_get(report, "0.10", &pay));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/r")
+                    .header("PAYMENT-SIGNATURE", "not-a-valid-x402-envelope")
                     .body(Body::empty())
                     .unwrap(),
             )
