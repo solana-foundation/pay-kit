@@ -83,7 +83,7 @@ export const charge = Method.from({
                 feePayer: z.optional(z.boolean()),
                 /** Server's base58-encoded public key for fee payment. Present when feePayer is true. */
                 feePayerKey: z.optional(z.string()),
-                /** Solana network: mainnet-beta, devnet, or localnet. */
+                /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
                 /** Server-provided base58-encoded recent blockhash. Saves the client an RPC round-trip. */
                 recentBlockhash: z.optional(z.string()),
@@ -157,7 +157,7 @@ export const subscription = Method.from({
                 feePayerKey: z.optional(z.string()),
                 /** Base58 of the SPL token mint. Must equal the on-chain plan.mint. */
                 mint: z.string(),
-                /** Solana network: mainnet-beta, devnet, testnet, or localnet. */
+                /** Solana network: mainnet, devnet, or localnet. */
                 network: z.optional(z.string()),
                 /** Base58 of the on-chain Plan PDA. */
                 planId: z.string(),
@@ -282,7 +282,7 @@ export const session = Method.from({
             minVoucherDelta: z.optional(z.string()),
             /** Supported funding modes. Omitted means push mode only. */
             modes: z.optional(z.array(sessionMode)),
-            /** Solana network: mainnet-beta, devnet, or localnet. */
+            /** Solana network: mainnet, devnet, or localnet. */
             network: z.optional(z.string()),
             /** Operator/server public key. */
             operator: z.string(),

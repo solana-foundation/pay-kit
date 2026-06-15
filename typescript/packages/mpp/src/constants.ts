@@ -85,6 +85,31 @@ export function normalizeNetwork(network: string): string {
     return network;
 }
 
+/**
+ * Canonical network slug is `mainnet`. The legacy `mainnet-beta` spelling is
+ * accepted as a backward-compatible alias (normalized to `mainnet`).
+ *
+ * Per the spec, the network MUST be one of mainnet / devnet / localnet.
+ * Anything else (`testnet`, typos, empty string) is rejected at boot rather
+ * than silently treated as mainnet.
+ */
+export const CANONICAL_NETWORKS = ['mainnet', 'devnet', 'localnet'] as const;
+
+/**
+ * Validates a network slug against the allowlist, throwing on anything outside
+ * {mainnet, devnet, localnet} (or the `mainnet-beta` alias). Use at server boot
+ * so misconfigured networks fail fast instead of silently defaulting to mainnet.
+ */
+export function validateNetwork(network: string): void {
+    if (network.length === 0) {
+        throw new Error('network must not be empty (expected one of: mainnet, devnet, localnet)');
+    }
+    const normalized = normalizeNetwork(network);
+    if (!(CANONICAL_NETWORKS as readonly string[]).includes(normalized)) {
+        throw new Error(`Unsupported network "${network}" (expected one of: mainnet, devnet, localnet)`);
+    }
+}
+
 export function resolveStablecoinMint(currency: string, network = 'mainnet'): string | undefined {
     const key = normalizeNetwork(network);
     switch (currency.toUpperCase()) {
