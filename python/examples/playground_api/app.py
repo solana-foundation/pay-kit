@@ -13,9 +13,9 @@ Environment: PORT, NETWORK, RPC_URL, RECIPIENT, FEE_PAYER_KEY, MPP_SECRET_KEY.
 See README.md for the full table.
 
 This module owns the boot wiring (:class:`AppState`, :func:`create_app`) and
-the free endpoints (health, config catalog, faucet, docs, SPA, the
-subscription 501 stub). The charge / session / x402 feature endpoints plug into
-the ``register_*`` seam in :func:`create_app` and are filled in separately.
+the free hub endpoints (health, config catalog). The charge / session / x402 /
+faucet / docs / subscription feature endpoints plug into the ``register_*`` seam
+in :func:`create_app` and are filled in separately.
 """
 
 from __future__ import annotations
@@ -28,11 +28,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from solders.keypair import Keypair
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import pay_kit
 from pay_kit._paycore.network import Network
+from pay_kit.fastapi import install_exception_handler
 from pay_kit.signer import LocalSigner
 
 from .docs import build_docs_router, find_repo_root
@@ -44,17 +47,17 @@ from .x402 import register_x402
 logger = logging.getLogger("playground-api")
 
 # Payment headers the browser playground reads off cross-origin responses.
-_EXPOSE_HEADERS = "www-authenticate, payment-receipt, x-payment-required, x-payment-response"
+_EXPOSE_HEADERS = ["www-authenticate", "payment-receipt", "x-payment-required", "x-payment-response"]
 
 
 @dataclass
 class AppState:
     """Boot configuration shared by every module.
 
-    Mirrors the Go example's ``app`` struct: the raw network tag, RPC endpoint,
-    settlement recipient, MPP challenge-binding secret, the operator fee-payer
-    keypair, and the repository root (``None`` outside a checkout, which
-    disables the docs default root and the SPA file server).
+    Mirrors the TS example's module-level env constants: the raw network tag,
+    RPC endpoint, settlement recipient, MPP challenge-binding secret, the
+    operator fee-payer keypair, and the repository root (``None`` outside a
+    checkout, which disables the docs default root and the SPA file server).
     """
 
     network: str
@@ -77,53 +80,34 @@ class AppState:
         Surfpool localnet clones mainnet state, so the bare ``localnet`` /
         ``devnet`` / ``mainnet`` tags map onto the ``solana_*`` enum members.
         """
-        return _parse_network(self.network)
-
-
-def _parse_network(tag: str) -> Network:
-    """Map a raw NETWORK tag (localnet | devnet | mainnet) onto the enum."""
-    normalized = tag.strip().lower()
-    if normalized in ("localnet", "solana_localnet"):
-        return Network.SOLANA_LOCALNET
-    if normalized in ("devnet", "solana_devnet"):
-        return Network.SOLANA_DEVNET
-    if normalized in ("mainnet", "mainnet-beta", "solana_mainnet"):
-        return Network.SOLANA_MAINNET
-    raise ValueError(f"unknown NETWORK tag: {tag!r}")
-
-
-def _random_hex_secret() -> str:
-    """Generate the per-boot challenge HMAC secret used when MPP_SECRET_KEY is
-    unset.
-    """
-    return secrets.token_hex(32)
+        normalized = self.network.strip().lower()
+        if normalized in ("localnet", "solana_localnet"):
+            return Network.SOLANA_LOCALNET
+        if normalized in ("devnet", "solana_devnet"):
+            return Network.SOLANA_DEVNET
+        if normalized in ("mainnet", "mainnet-beta", "solana_mainnet"):
+            return Network.SOLANA_MAINNET
+        raise ValueError(f"unknown NETWORK tag: {self.network!r}")
 
 
 def state_from_env() -> AppState:
-    """Build :class:`AppState` from the environment, matching the Go example's
-    ``main`` defaults.
+    """Build :class:`AppState` from the environment, matching the TS example's
+    module-level defaults.
     """
-    network = env_or("NETWORK", "localnet")
-    # Default to the hosted Solana Payment Sandbox so the playground works
-    # zero-config: it has the payment-channels program preloaded and supports
-    # the surfnet cheatcodes the faucet uses. Override RPC_URL to point at a
-    # local surfpool when you need offline iteration.
-    rpc_url = env_or("RPC_URL", "https://402.surfnet.dev:8899")
-    secret_key = os.getenv("MPP_SECRET_KEY") or _random_hex_secret()
-    port = int(env_or("PORT", "3000"))
-
     raw_fee_payer = os.getenv("FEE_PAYER_KEY")
     fee_payer = LocalSigner.from_base58(raw_fee_payer) if raw_fee_payer else LocalSigner.from_keypair(Keypair())
-    recipient = env_or("RECIPIENT", fee_payer.pubkey())
-
     return AppState(
-        network=network,
-        rpc_url=rpc_url,
-        recipient=recipient,
-        secret_key=secret_key,
+        network=env_or("NETWORK", "localnet"),
+        # Default to the hosted Solana Payment Sandbox so the playground works
+        # zero-config: it has the payment-channels program preloaded and
+        # supports the surfnet cheatcodes the faucet uses. Override RPC_URL to
+        # point at a local surfpool when you need offline iteration.
+        rpc_url=env_or("RPC_URL", "https://402.surfnet.dev:8899"),
+        recipient=env_or("RECIPIENT", fee_payer.pubkey()),
+        secret_key=os.getenv("MPP_SECRET_KEY") or secrets.token_hex(32),
         fee_payer=fee_payer,
         repo_root=find_repo_root(),
-        port=port,
+        port=int(env_or("PORT", "3000")),
     )
 
 
@@ -133,10 +117,10 @@ def state_from_env() -> AppState:
 def build_endpoint_list() -> list[dict[str, Any]]:
     """Build the ``/api/v1/config`` endpoint catalog.
 
-    The subscription entry is omitted because the Python SDK has no subscription
-    server method yet (see README.md); the stocks-search / stocks-history /
-    weather / fortune / x402 routes stay live server-side but are not advertised
-    in the nav.
+    Declared inline, mirroring the TS ``buildEndpointList``. The subscription
+    entry is omitted because the Python SDK has no subscription server method
+    yet (see README.md); the stocks-search / stocks-history / weather / fortune
+    / x402 routes stay live server-side but are not advertised in the nav.
     """
     return [
         {
@@ -185,12 +169,15 @@ def build_endpoint_list() -> list[dict[str, Any]]:
     ]
 
 
-# --- free modules: health / config, faucet, subscriptions stub --------------
+# --- hub endpoints: health / config -----------------------------------------
 
 
-def register_health_and_config(app: FastAPI, state: AppState) -> None:
-    """Mount the health check and the endpoint catalog that drives the
-    playground web app's sidebar.
+def register_hub(app: FastAPI, state: AppState) -> None:
+    """Mount the health check and the endpoint catalog driving the web app's
+    sidebar.
+
+    The RPC url is intentionally omitted from both responses: it is operator
+    infrastructure that should not be exposed to the browser.
     """
 
     @app.get("/api/v1/health")
@@ -200,7 +187,6 @@ def register_health_and_config(app: FastAPI, state: AppState) -> None:
             "feePayer": state.fee_payer_pubkey,
             "recipient": state.recipient,
             "network": state.network,
-            "rpcUrl": state.rpc_url,
         }
         try:
             result = await rpc_call(state.rpc_url, "getBalance", [state.fee_payer_pubkey])
@@ -218,33 +204,18 @@ def register_health_and_config(app: FastAPI, state: AppState) -> None:
             {
                 "recipient": state.recipient,
                 "network": state.network,
-                "rpcUrl": state.rpc_url,
                 "feePayer": state.fee_payer_pubkey,
                 "endpoints": build_endpoint_list(),
             }
         )
 
 
-def register_subscriptions(app: FastAPI) -> None:
-    """Mount the documented subscription stub.
-
-    The Python SDK does not implement the ``solana.subscription`` server method
-    yet, so this keeps the ``/api/v1/premium/feed`` route (nothing is silently
-    dropped) and answers 501 with an explicit pointer at the gap. The endpoint
-    catalog omits the subscription entry, so the playground UI renders its
-    graceful empty state. See README.md. Implemented in :mod:`subscriptions`.
-    """
-    from .subscriptions import register_subscriptions as _register
-
-    _register(app)
-
-
 # --- feature-module registration seam ---------------------------------------
 #
-# The charge / session / x402 endpoints plug in here. Each registrar takes the
-# app and shared state, mounts its routes, and (for sessions) returns a shutdown
-# hook. They are intentionally thin stubs in the skeleton and are implemented
-# separately.
+# The charge / session / subscription endpoints plug in here. faucet, docs, and
+# x402 register from their own modules directly in create_app. Each registrar
+# takes the app and shared state and mounts its routes; sessions returns a
+# shutdown hook.
 
 
 def register_charges(app: FastAPI, state: AppState) -> None:
@@ -256,7 +227,21 @@ def register_charges(app: FastAPI, state: AppState) -> None:
     _register(app, state)
 
 
-# --- SPA + CORS -------------------------------------------------------------
+def register_subscriptions(app: FastAPI) -> None:
+    """Mount the documented subscription stub.
+
+    The Python SDK has no ``solana.subscription`` server method yet, so the
+    ``/api/v1/premium/feed`` route answers 501 with a pointer at the gap and the
+    catalog omits the subscription entry (the UI renders its empty state). TS
+    gates the real route behind ``if (plan)``. Implemented in
+    :mod:`subscriptions`.
+    """
+    from .subscriptions import register_subscriptions as _register
+
+    _register(app)
+
+
+# --- SPA static serving ------------------------------------------------------
 
 
 def register_spa(app: FastAPI, repo_root: str | None) -> None:
@@ -266,76 +251,21 @@ def register_spa(app: FastAPI, repo_root: str | None) -> None:
     Registered last so the API routes win; the catch-all only sees paths no
     earlier route matched.
     """
-    dist = str(Path(repo_root) / "playground" / "app" / "dist") if repo_root else ""
+    dist = Path(repo_root) / "playground" / "app" / "dist" if repo_root else None
 
     @app.get("/{full_path:path}")
     async def spa(full_path: str) -> Response:
         if dist:
-            candidate = Path(dist) / full_path
+            candidate = dist / full_path
             if candidate.is_file():
                 return FileResponse(str(candidate))
-            index = Path(dist) / "index.html"
+            index = dist / "index.html"
             if index.is_file():
                 return FileResponse(str(index))
         return JSONResponse(
             json_error("not found (build playground/app to serve the web app from this server)"),
             status_code=404,
         )
-
-
-def _install_cors(app: FastAPI) -> None:
-    """Set permissive origins and expose the payment headers the web app reads.
-
-    Hand-rolled rather than ``CORSMiddleware`` so the exposed-headers list and
-    the reflected preflight request headers match the Go example byte for byte.
-    """
-
-    @app.middleware("http")
-    async def cors(request: Request, call_next: Any) -> Response:
-        if request.method == "OPTIONS":
-            response: Response = Response(status_code=204)
-            response.headers["Access-Control-Allow-Methods"] = "GET,HEAD,PUT,PATCH,POST,DELETE"
-            requested = request.headers.get("Access-Control-Request-Headers")
-            if requested:
-                response.headers["Access-Control-Allow-Headers"] = requested
-        else:
-            response = await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Expose-Headers"] = _EXPOSE_HEADERS
-        return response
-
-
-# --- payment handlers -------------------------------------------------------
-
-
-def _install_payment_handlers(app: FastAPI) -> None:
-    """Echo MPP settlement headers onto gated success responses and render
-    guard ``HTTPException`` bodies as the bare ``{"error": ...}`` shape.
-
-    The umbrella ``RequirePayment`` dependency stashes the verified payment's
-    settlement headers on ``request.state`` (caveat: it raises a 402
-    ``HTTPException`` with the challenge headers/body itself, which FastAPI
-    serves directly, so only the success-path receipt echo needs wiring here).
-    Guard dependencies raise ``HTTPException`` with a ``json_error`` dict detail;
-    Starlette would wrap that as ``{"detail": {...}}``, so unwrap it to match
-    the Go example's body byte for byte.
-    """
-    from starlette.exceptions import HTTPException as StarletteHTTPException
-
-    @app.middleware("http")
-    async def _settlement_headers(request: Request, call_next: Any) -> Response:
-        response: Response = await call_next(request)
-        settlement = getattr(request.state, "paykit_settlement_headers", None)
-        if isinstance(settlement, dict):
-            for name, value in settlement.items():
-                response.headers[name] = value
-        return response
-
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(_request: Request, exc: StarletteHTTPException) -> Response:
-        detail = exc.detail
-        body = detail if isinstance(detail, dict) else {"error": detail}
-        return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
 
 # --- app factory ------------------------------------------------------------
@@ -359,24 +289,33 @@ def create_app(state: AppState | None = None) -> FastAPI:
         rpc_url=state.rpc_url,
         accept=pay_kit.Protocol.MPP,
         preflight=False,
-        operator=pay_kit.Operator(
-            recipient=state.recipient,
-            signer=state.fee_payer,
-        ),
-        mpp=pay_kit.MppConfig(
-            realm="PayKit Playground",
-            challenge_binding_secret=state.secret_key,
-        ),
+        operator=pay_kit.Operator(recipient=state.recipient, signer=state.fee_payer),
+        mpp=pay_kit.MppConfig(realm="PayKit Playground", challenge_binding_secret=state.secret_key),
     )
 
     app = FastAPI(title="PayKit Playground (Python)")
-    _install_cors(app)
-    _install_payment_handlers(app)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=_EXPOSE_HEADERS,
+    )
+    # SDK shim: maps PayKitError (incl. the 402 challenge) to its HTTP response
+    # and echoes settlement headers onto gated success responses.
+    install_exception_handler(app)
 
-    register_health_and_config(app, state)
+    # Guard handlers raise HTTPException(detail=json_error(...)); Starlette would
+    # wrap the dict as {"detail": {...}}, so unwrap it to the bare {"error": ...}
+    # shape the TS/Go examples return.
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(_request: Request, exc: StarletteHTTPException) -> Response:
+        body = exc.detail if isinstance(exc.detail, dict) else {"error": exc.detail}
+        return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
+    register_hub(app, state)
     register_faucet(app, state)
     app.include_router(build_docs_router(state))
-
     register_charges(app, state)
     register_subscriptions(app)
     sessions_shutdown = register_sessions(app, state)
@@ -388,9 +327,6 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.on_event("shutdown")
     async def _shutdown() -> None:
         sessions_shutdown()
-        yahoo = getattr(app.state, "playground_yahoo", None)
-        if yahoo is not None:
-            await yahoo.aclose()
 
     return app
 

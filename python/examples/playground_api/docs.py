@@ -2,8 +2,6 @@
 """Serves the generated API reference markdown from ``<repo-root>/docs/api``,
 with a path-escape guard. Override the root with the ``DOCS_ROOT`` env var when
 running the app outside the repository checkout.
-
-Mirrors the Go example's ``docs.go``.
 """
 
 from __future__ import annotations
@@ -20,27 +18,15 @@ from .utils import json_error
 if TYPE_CHECKING:
     from .app import AppState
 
-# doc_langs are the languages the playground docs browser knows about.
+# Languages the playground docs browser knows about.
 DOC_LANGS = ["typescript", "rust", "go", "python", "ruby", "php", "lua", "kotlin", "swift"]
 
 # Maps a docs language to its justfile recipe suffix.
-_DOCS_RECIPE_SLUG = {
-    "typescript": "ts",
-    "rust": "rs",
-    "python": "py",
-    "ruby": "rb",
-    "kotlin": "kt",
-}
+_RECIPE_SLUG = {"typescript": "ts", "rust": "rs", "python": "py", "ruby": "rb", "kotlin": "kt"}
 
 
 def docs_recipe_slug(lang: str) -> str:
-    """Return the justfile recipe suffix for a docs language."""
-    return _DOCS_RECIPE_SLUG.get(lang, lang)
-
-
-def is_doc_lang(lang: str) -> bool:
-    """Report whether ``lang`` is a known docs language."""
-    return lang in DOC_LANGS
+    return _RECIPE_SLUG.get(lang, lang)
 
 
 def docs_root(repo_root: str | None) -> str:
@@ -48,31 +34,24 @@ def docs_root(repo_root: str | None) -> str:
     override = os.getenv("DOCS_ROOT")
     if override:
         return override
-    if not repo_root:
-        return ""
-    return str(Path(repo_root) / "docs" / "api")
+    return str(Path(repo_root) / "docs" / "api") if repo_root else ""
 
 
 def find_repo_root() -> str | None:
-    """Walk up from the working directory to the repository root (the directory
-    containing ``.git`` or the top-level ``justfile``). Returns ``None`` when no
-    marker is found.
+    """Walk up from the working directory to the checkout root (the directory
+    holding ``.git`` or the top-level ``justfile``); ``None`` when not found.
     """
-    try:
-        directory = Path.cwd()
-    except OSError:
-        return None
+    directory = Path.cwd()
     while True:
         if (directory / ".git").exists() or (directory / "justfile").exists():
             return str(directory)
-        parent = directory.parent
-        if parent == directory:
+        if directory.parent == directory:
             return None
-        directory = parent
+        directory = directory.parent
 
 
 def _safe_join(root: str, rel: str) -> str | None:
-    """Join ``rel`` onto ``root`` and reject any path escaping the root."""
+    """Join ``rel`` onto ``root``, rejecting any path that escapes the root."""
     root_path = Path(root).resolve()
     joined = (root_path / rel).resolve()
     try:
@@ -82,7 +61,7 @@ def _safe_join(root: str, rel: str) -> str | None:
     return str(joined)
 
 
-def _build_docs_tree(abs_dir: str, rel_dir: str) -> list[dict[str, Any]]:
+def _build_tree(abs_dir: str, rel_dir: str) -> list[dict[str, Any]]:
     """Walk the language docs directory: folders first, then markdown files,
     both alphabetical, skipping dotfiles and ``node_modules``.
     """
@@ -93,7 +72,7 @@ def _build_docs_tree(abs_dir: str, rel_dir: str) -> list[dict[str, Any]]:
             continue
         rel_path = f"{rel_dir}/{name}" if rel_dir else name
         if entry.is_dir():
-            children = _build_docs_tree(entry.path, rel_path)
+            children = _build_tree(entry.path, rel_path)
             nodes.append({"name": name, "path": rel_path, "type": "dir", "children": children})
         elif name.endswith(".md"):
             nodes.append({"name": name, "path": rel_path, "type": "file"})
@@ -102,24 +81,18 @@ def _build_docs_tree(abs_dir: str, rel_dir: str) -> list[dict[str, Any]]:
 
 
 def build_docs_router(state: AppState) -> APIRouter:
-    """Build the generated-docs browsing endpoints.
-
-    Routes (all free):
-      - GET /api/v1/docs: per-language availability map
-      - GET /api/v1/docs/{lang}/tree: the docs file tree
-      - GET /api/v1/docs/{lang}/file?path=: one markdown file
-    """
+    """Mount the generated-docs browsing endpoints (all free)."""
     router = APIRouter()
     root = docs_root(state.repo_root)
 
     @router.get("/api/v1/docs")
     async def docs_index() -> JSONResponse:
-        available = {lang: (Path(root) / lang / "README.md").exists() if root else False for lang in DOC_LANGS}
+        available = {lang: bool(root) and (Path(root) / lang / "README.md").exists() for lang in DOC_LANGS}
         return JSONResponse({"root": root, "available": available})
 
     @router.get("/api/v1/docs/{lang}/tree")
     async def docs_tree(lang: str) -> JSONResponse:
-        if not is_doc_lang(lang):
+        if lang not in DOC_LANGS:
             return JSONResponse(json_error("unknown_lang"), status_code=404)
         lang_root = Path(root) / lang
         if not lang_root.exists():
@@ -128,18 +101,17 @@ def build_docs_router(state: AppState) -> APIRouter:
                 status_code=404,
             )
         try:
-            tree = _build_docs_tree(str(lang_root), "")
+            tree = _build_tree(str(lang_root), "")
         except OSError as exc:
             return JSONResponse({"error": "tree_failed", "detail": str(exc)}, status_code=500)
         return JSONResponse({"lang": lang, "tree": tree})
 
     @router.get("/api/v1/docs/{lang}/file")
     async def docs_file(lang: str, request: Request) -> Response:
-        if not is_doc_lang(lang):
+        if lang not in DOC_LANGS:
             return JSONResponse(json_error("unknown_lang"), status_code=404)
         rel = request.query_params.get("path") or "README.md"
-        lang_root = str(Path(root) / lang)
-        abs_path = _safe_join(lang_root, rel)
+        abs_path = _safe_join(str(Path(root) / lang), rel)
         if abs_path is None:
             return JSONResponse(json_error("unsafe_path"), status_code=400)
         if not abs_path.endswith(".md"):
