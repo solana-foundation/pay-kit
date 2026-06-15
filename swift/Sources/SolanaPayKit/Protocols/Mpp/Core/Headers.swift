@@ -3,12 +3,23 @@ import Foundation
 public enum MppHeaders {
     public static let paymentScheme = "Payment"
 
+    /// Upper bound on the base64url-encoded `request` parameter before it is
+    /// decoded and JSON-parsed. Mirrors the rust `MAX_TOKEN_LEN = 16 * 1024`
+    /// cap that the credential/receipt parsers already enforce (audit #9):
+    /// an oversized `WWW-Authenticate` value must not drive unbounded
+    /// base64url-decode + JSON-parse work.
+    public static let maxTokenLength = 16 * 1024
+
     public static func parseWWWAuthenticate(_ header: String) throws -> PaymentChallenge {
         let rest = try paymentSchemePayload(header)
         let params = try parseAuthParams(rest)
 
         guard let request = params["request"], !request.isEmpty else {
             throw MppError.missingField("request")
+        }
+        // Cap the encoded `request` before any decode/JSON-parse work runs.
+        guard request.utf8.count <= maxTokenLength else {
+            throw MppError.invalidHeader
         }
         guard let id = params["id"], !id.isEmpty else {
             throw MppError.missingField("id")

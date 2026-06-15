@@ -17,12 +17,17 @@ public struct RpcClient: Sendable {
         self.urlSession = urlSession
     }
 
-    /// Returns the most recent blockhash from the RPC's processed
+    /// Returns the most recent blockhash from the RPC's `confirmed`
     /// commitment level as a 32-byte value plus its base58 form.
+    ///
+    /// `confirmed` (not `processed`) is passed explicitly per audit #36:
+    /// a `processed` blockhash can disappear under a reorg, leaving the
+    /// client holding a signed transaction that fails with
+    /// `BlockhashNotFound` after broadcast.
     public func getLatestBlockhash() async throws -> (bytes: Data, base58: String) {
         let response = try await rpcCall(
             method: "getLatestBlockhash",
-            params: [["commitment": "processed"]]
+            params: [["commitment": "confirmed"]]
         )
         guard
             let outer = response as? [String: Any],

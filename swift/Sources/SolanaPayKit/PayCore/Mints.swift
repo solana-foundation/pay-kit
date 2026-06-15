@@ -123,6 +123,28 @@ public enum Mints {
         }
     }
 
+    /// Whether `mint` is one of the well-known stablecoin mint addresses
+    /// whose token program is hardcoded. Returning `false` for an arbitrary
+    /// mint means callers must do an on-chain mint-owner lookup to find the
+    /// program — and, for the charge client, that an unknown Token-2022 mint
+    /// (which can carry transfer hooks) is gated behind an explicit opt-in.
+    /// Mirrors rust `protocol::solana::is_known_stablecoin_mint`.
+    ///
+    /// Matches on the raw mint address only (the audit #26 gate reasons about
+    /// the resolved mint, not the symbol form).
+    public static func isKnownStablecoinMint(_ mint: String) -> Bool {
+        switch mint {
+        case usdcMainnet, usdcDevnet,
+             usdtMainnet,
+             usdgMainnet, usdgDevnet,
+             pyusdMainnet, pyusdDevnet,
+             cashMainnet:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// True if a stablecoin (by symbol or mint) uses SPL Token-2022.
     /// Mirrors rust `stablecoin_uses_token_2022`.
     public static func usesToken2022(_ currencyOrMint: String) -> Bool {

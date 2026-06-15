@@ -30,6 +30,13 @@ public struct ChargeCredentialBuilder: Sendable {
 
     public func authorizationHeader(for challenge: PaymentChallenge) async throws -> String {
         try challenge.requireSolanaCharge()
+        // Audit #10: refuse expired challenges before invoking the
+        // transaction provider (which may sign). Always-on, fail-closed.
+        guard !challenge.isExpired() else {
+            throw MppError.invalidTransaction(
+                "refusing to sign expired charge challenge (expires=\(challenge.expires ?? "(nil)"))"
+            )
+        }
 
         let transaction = try await transactionProvider.buildTransaction(for: challenge.chargeRequest)
         let credential = PaymentCredential(
@@ -53,9 +60,43 @@ public enum Charge {
         public var computeUnitLimit: UInt32
         public var computeUnitPrice: UInt64
 
-        public init(computeUnitLimit: UInt32 = 200_000, computeUnitPrice: UInt64 = 1) {
+        /// Opt-in auto-pay policy gates (audit #10). All default to "no
+        /// constraint" so interactive UI callers, where a human reviews the
+        /// challenge before signing, plumb nothing. Auto-pay integrations —
+        /// where the server effectively controls what gets signed against
+        /// the user's wallet — should set these to bind the build path.
+
+        /// Maximum charge amount, in base units, the client will sign.
+        /// When set, `buildChargeTransaction` refuses any request whose
+        /// `amount` exceeds the cap (equal-to-cap is allowed). Mirrors rust
+        /// `BuildChargeTransactionOptions::max_amount_base_units`.
+        public var maxAmountBaseUnits: UInt64?
+
+        /// Expected `methodDetails.network`. When set, the client refuses to
+        /// sign a challenge whose network does not match. Mirrors rust
+        /// `BuildChargeTransactionOptions::expected_network`.
+        public var expectedNetwork: String?
+
+        /// Opt-in to sign charges for unknown Token-2022 mints (audit #26).
+        /// Unknown Token-2022 mints can carry transfer hooks that execute
+        /// arbitrary code on every transfer; by default the client refuses
+        /// to sign them. Vanilla Token mints and known stablecoins are never
+        /// gated. Mirrors rust
+        /// `BuildChargeTransactionOptions::allow_unknown_token_2022`.
+        public var allowUnknownToken2022: Bool
+
+        public init(
+            computeUnitLimit: UInt32 = 200_000,
+            computeUnitPrice: UInt64 = 1,
+            maxAmountBaseUnits: UInt64? = nil,
+            expectedNetwork: String? = nil,
+            allowUnknownToken2022: Bool = false
+        ) {
             self.computeUnitLimit = computeUnitLimit
             self.computeUnitPrice = computeUnitPrice
+            self.maxAmountBaseUnits = maxAmountBaseUnits
+            self.expectedNetwork = expectedNetwork
+            self.allowUnknownToken2022 = allowUnknownToken2022
         }
     }
 
@@ -111,6 +152,21 @@ public enum Charge {
         let recipientPubkey = try Pubkey(base58: request.recipient)
 
         let amount = try parseU64(request.amount, field: "amount")
+
+        // Audit #10 auto-pay policy gates. Run before any signing or
+        // instruction building so a hostile/untrusted challenge is rejected
+        // up front. Both default to "no constraint" (see `Options`).
+        if let cap = options.maxAmountBaseUnits, amount > cap {
+            throw MppError.invalidTransaction(
+                "charge amount \(amount) exceeds max_amount_base_units cap \(cap)"
+            )
+        }
+        if let expectedNetwork = options.expectedNetwork,
+           methodDetails.network != expectedNetwork {
+            throw MppError.invalidTransaction(
+                "charge network \"\(methodDetails.network ?? "(nil)")\" does not match expected network \"\(expectedNetwork)\""
+            )
+        }
         let splits = methodDetails.splits ?? []
         // Spine cap: Rust (`rust/src/client/charge.rs`) and TypeScript
         // (`typescript/packages/mpp/src/server/Charge.ts`) both reject
@@ -178,7 +234,30 @@ public enum Charge {
                 mintBase58: mintStr,
                 rpc: rpc
             )
-            let rawDecimals = methodDetails.decimals ?? 6
+            // Audit #26: an unknown Token-2022 mint can carry transfer hooks
+            // that execute arbitrary code on every transfer, and the server's
+            // pre-broadcast checks do not simulate inner instructions in pull
+            // mode. Refuse to sign unless the caller explicitly opts in.
+            // Vanilla Token mints (no hooks) and known stablecoins stay
+            // first-class. Mirrors rust `build_spl_instructions`.
+            if tokenProgram == .token2022Program,
+               !Mints.isKnownStablecoinMint(mintStr),
+               !options.allowUnknownToken2022 {
+                throw MppError.invalidTransaction(
+                    "refusing to sign unknown Token-2022 mint \(mintStr) (transfer-hook risk); "
+                        + "set Charge.Options.allowUnknownToken2022 = true to override"
+                )
+            }
+            // Audit #42: SPL transferChecked needs the correct decimals to
+            // form the right divisor. The spec (§7.2) requires the server to
+            // supply `methodDetails.decimals` for SPL charges; silently
+            // defaulting to 6 signs a wrong amount for non-6-decimal mints.
+            // Require it instead of defaulting.
+            guard let rawDecimals = methodDetails.decimals else {
+                throw MppError.invalidTransaction(
+                    "methodDetails.decimals is required for SPL charges (spec §7.2)"
+                )
+            }
             guard rawDecimals >= 0, rawDecimals <= 255 else {
                 // SPL TokenChecked encodes decimals as u8; an out-of-range
                 // server value must not crash the client (would `UInt8(_:)`
@@ -214,10 +293,14 @@ public enum Charge {
             for split in splits {
                 let destinationOwner = try Pubkey(base58: split.recipient)
                 let splitAmount = try parseU64(split.amount, field: "split amount")
-                // Spine semantics: when no server fee payer, every split
-                // owner gets an idempotent ATA-create; when server pays
-                // fees, only splits with ataCreationRequired == true do.
-                let createAta = !serverPaysFees || split.ataCreationRequired == true
+                // Audit #20: create a split's ATA only when the challenge
+                // explicitly requests it (`ataCreationRequired == true`), in
+                // BOTH fee modes. The previous `!serverPaysFees || ...` form
+                // auto-created an idempotent ATA for every split in
+                // client-paid mode, letting a hostile server attach N dust
+                // splits and drain ~0.002 SOL of client-funded rent each.
+                // Mirrors rust's narrowed `create_ata = ata_creation_required`.
+                let createAta = split.ataCreationRequired == true
                 try appendSplTransfer(
                     into: &instructions,
                     payer: actualFeePayer,
@@ -312,6 +395,16 @@ public enum Charge {
         options: Options = Options()
     ) async throws -> String {
         try challenge.requireSolanaCharge()
+        // Audit #10: always-on expiry refusal. A challenge that carries an
+        // `expires` in the past (or an unparseable one — fail-closed) must
+        // never be signed, even when the caller sets no other policy. The
+        // check lives here, not in `buildChargeTransaction`, because
+        // `expires` is a challenge field, not part of the decoded request.
+        guard !challenge.isExpired() else {
+            throw MppError.invalidTransaction(
+                "refusing to sign expired charge challenge (expires=\(challenge.expires ?? "(nil)"))"
+            )
+        }
         let request = try challenge.chargeRequest
         let encodedTx = try await buildChargeTransaction(
             request: request,
