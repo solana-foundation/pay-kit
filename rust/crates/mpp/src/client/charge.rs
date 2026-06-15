@@ -482,7 +482,6 @@ fn build_sol_instructions(
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
