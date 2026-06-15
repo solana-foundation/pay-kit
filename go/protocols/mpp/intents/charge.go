@@ -1,9 +1,10 @@
-// Package intents carries the MPP intent request bodies. Today this is
-// the charge intent (ChargeRequest, with string-encoded base-unit
-// amounts so JSON consumers without u64 safety stay correct), plus the
-// ParseUnits helper that converts a human-readable decimal amount into
-// base units at the SDK boundary. Wire format mirrors
-// rust/src/protocol/intents/charge.rs.
+// Package intents carries the MPP intent request bodies: the charge intent
+// (ChargeRequest, with string-encoded base-unit amounts so JSON consumers
+// without u64 safety stay correct) and the session intent (SessionRequest plus
+// the SessionAction credential union and signed vouchers). It also exposes the
+// ParseUnits helper that converts a human-readable decimal amount into base
+// units at the SDK boundary. The JSON wire format is identical across the
+// language SDKs; the cross-language harness pins it.
 package intents
 
 import (
@@ -14,13 +15,26 @@ import (
 
 // ChargeRequest is the method-agnostic charge intent body.
 type ChargeRequest struct {
-	Amount        string `json:"amount"`
-	Currency      string `json:"currency"`
-	Recipient     string `json:"recipient,omitempty"`
-	Description   string `json:"description,omitempty"`
-	ExternalID    string `json:"externalId,omitempty"`
-	MethodDetails any    `json:"methodDetails,omitempty"`
+	// Amount is the charge amount in token base units, as an unsigned
+	// decimal string so JSON consumers without u64 safety stay exact
+	// (e.g. "100000" = 0.10 USDC at 6 decimals).
+	Amount string `json:"amount"`
+	// Currency is the asset identifier (e.g. "USDC" or a mint address).
+	Currency string `json:"currency"`
+	// Recipient is the payee address (base58 for the Solana method);
+	// omitted when the payment method's details carry the destination.
+	Recipient string `json:"recipient,omitempty"`
+	// Description is an optional human-readable label for the charge.
+	Description string `json:"description,omitempty"`
+	// ExternalID is an optional merchant reference, echoed back in the
+	// payment receipt.
+	ExternalID string `json:"externalId,omitempty"`
+	// MethodDetails is the method-specific payload, opaque at the intent
+	// layer; omitted when nil.
+	MethodDetails any `json:"methodDetails,omitempty"`
 
+	// Decimals, when non-nil, marks Amount as a human-readable decimal
+	// that WithBaseUnits converts to base units. Never serialized.
 	Decimals *uint8 `json:"-"`
 }
 

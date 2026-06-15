@@ -19,7 +19,7 @@ use PayKit\PayCore\Stablecoin;
  *
  *   1. Fixed amounts only (BigDecimal under the hood; no floats).
  *   2. One main recipient via `payTo` (defaults to operator.recipient).
- *   3. All fee prices share the gate amount's denom.
+ *   3. All fee prices share the gate amount's currency.
  *   4. sum(feeWithin values) <= amount.
  *   5. x402 auto-disabled when fees are present; explicit
  *      `accept: [Protocol::X402]` on a fee-bearing gate throws.
@@ -134,7 +134,7 @@ final readonly class Gate
         }
         if ($price->currency !== $amount->currency) {
             throw new MixedCurrenciesException(sprintf(
-                'pay_kit: fee for %s is %s; gate amount is %s. All prices on a gate must share denom.',
+                'pay_kit: fee for %s is %s; gate amount is %s. All prices on a gate must share the same currency.',
                 $recipient,
                 $price->currency->value,
                 $amount->currency->value,

@@ -4,21 +4,21 @@ require "bigdecimal"
 
 require_relative "../errors"
 require_relative "../challenge"
-require_relative "../../mpp"
+require_relative "mpp/runtime"
 
 module PayKit
   module Protocols
-    # MPP adapter. Wraps `::Mpp::Server::Charge` for charge intent.
+    # MPP adapter. Wraps `::PayKit::Protocols::Mpp::Server::Charge` for charge intent.
     # The class-level `.charge` callable returns a frozen `ProtocolRef`
-    # so gates can opt in explicitly: `accept: PayKit::Protocols::MPP.charge`.
-    class MPP
+    # so gates can opt in explicitly: `accept: PayKit::Protocols::MppAdapter.charge`.
+    class MppAdapter
       CHARGE_REF = ProtocolRef.new(protocol: :mpp, scheme: :charge).freeze
       def self.charge = CHARGE_REF
 
-      # `server_for` is a `->(gate) { Mpp::Server::Charge }` callback
+      # `server_for` is a `->(gate) { PayKit::Protocols::Mpp::Server::Charge }` callback
       # supplied by the dispatcher. The dispatcher owns a per-recipient
       # MPP method cache so different gates (different `gate.pay_to`)
-      # route to different servers without rebuilding `Mpp.create` per
+      # route to different servers without rebuilding `PayKit::Protocols::Mpp.create` per
       # request. The legacy fixed-server form (`server: ...`) is kept
       # for tests that fake the server.
       def initialize(server_for: nil, server: nil)
@@ -51,7 +51,7 @@ module PayKit
 
       def challenge_headers(gate, request)
         result = perform(gate, request, authorization: nil)
-        return {} unless result.is_a?(::Mpp::Challenge)
+        return {} unless result.is_a?(::PayKit::Protocols::Mpp::Challenge)
 
         result.headers
       end
@@ -61,7 +61,7 @@ module PayKit
         result = perform(gate, request, authorization: authorization)
 
         case result
-        when ::Mpp::Settlement
+        when ::PayKit::Protocols::Mpp::Settlement
           Payment.new(
             protocol: :mpp,
             scheme: :charge,
@@ -69,7 +69,7 @@ module PayKit
             settlement_headers: result.headers || {},
             raw: authorization
           )
-        when ::Mpp::Challenge
+        when ::PayKit::Protocols::Mpp::Challenge
           spec_code = result.body.is_a?(Hash) ? result.body["code"] : nil
           raise InvalidProof.new(:payment_required, result.reason || "payment required", spec_code: spec_code)
         else
@@ -88,7 +88,7 @@ module PayKit
           external_id: gate.external_id,
           splits: splits_for(gate, amount_units)
         )
-      rescue ::Mpp::Error => e
+      rescue ::PayKit::Protocols::Mpp::Error => e
         raise InvalidProof.new(:payment_invalid, e.message)
       end
 
@@ -116,7 +116,7 @@ module PayKit
       # Convert a Price (decimal string like "0.10") into the SPL
       # smallest-units integer assuming 6-decimal USDC/USDT/EURC.
       # MPP currently uses fixed 6 decimals for stablecoin charges
-      # (mirrors `Mpp::Protocol::Solana` defaults).
+      # (mirrors `PayKit::Protocols::Mpp::Protocol::Solana` defaults).
       def to_smallest_units(price)
         whole, _, fraction = price.amount.partition(".")
         fraction = fraction.ljust(6, "0")[0, 6]

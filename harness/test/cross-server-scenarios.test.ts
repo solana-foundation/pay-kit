@@ -10,12 +10,12 @@
 //   same payment-signature header to server A. A must reject with
 //   `signature_consumed`.
 //
-// Gated behind `X402_INTEROP_CROSS_SERVER=1` because the matrix needs
+// Gated behind `X402_HARNESS_CROSS_SERVER=1` because the matrix needs
 // two long-lived servers and live RPC credentials, neither of which the
 // default `pnpm test` run wires up.
 
 import { afterAll, describe, expect, it } from "vitest";
-import { interopScenarios } from "../src/contracts";
+import { harnessScenarios } from "../src/contracts";
 import { classifyMessageToCanonicalCode } from "../src/canonical-codes";
 import {
   clientImplementations,
@@ -23,14 +23,14 @@ import {
 } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
 
-const CROSS_SERVER_ENABLED = process.env.X402_INTEROP_CROSS_SERVER === "1";
+const CROSS_SERVER_ENABLED = process.env.X402_HARNESS_CROSS_SERVER === "1";
 
 const requiredEnvs = [
-  "X402_INTEROP_RPC_URL",
-  "X402_INTEROP_MINT",
-  "X402_INTEROP_PAY_TO",
-  "X402_INTEROP_CLIENT_SECRET_KEY",
-  "X402_INTEROP_FACILITATOR_SECRET_KEY",
+  "X402_HARNESS_RPC_URL",
+  "X402_HARNESS_MINT",
+  "X402_HARNESS_PAY_TO",
+  "X402_HARNESS_CLIENT_SECRET_KEY",
+  "X402_HARNESS_FACILITATOR_SECRET_KEY",
 ];
 
 function missingEnvs(): string[] {
@@ -39,10 +39,10 @@ function missingEnvs(): string[] {
   );
 }
 
-const portabilityScenario = interopScenarios.find(
+const portabilityScenario = harnessScenarios.find(
   scenario => scenario.id === "x402-exact-cross-server-portability",
 );
-const resubmitScenario = interopScenarios.find(
+const resubmitScenario = harnessScenarios.find(
   scenario => scenario.id === "x402-exact-idempotent-resubmit",
 );
 
@@ -76,7 +76,7 @@ function extractCanonicalCode(body: unknown): string | undefined {
 
 describe("x402 exact — cross-server portability + idempotent resubmit", () => {
   if (!CROSS_SERVER_ENABLED) {
-    it.skip("cross-server suite is gated behind X402_INTEROP_CROSS_SERVER=1", () => {});
+    it.skip("cross-server suite is gated behind X402_HARNESS_CROSS_SERVER=1", () => {});
     return;
   }
 
@@ -107,10 +107,10 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
 
       it(`portability: pay ${serverAId} then resubmit credential to ${serverBId}`, async () => {
         const env = {
-          X402_INTEROP_NETWORK: portabilityScenario.network,
-          X402_INTEROP_PRICE: portabilityScenario.price,
-          X402_INTEROP_RESOURCE_PATH: portabilityScenario.resourcePath,
-          X402_INTEROP_SETTLEMENT_HEADER: portabilityScenario.settlementHeader,
+          X402_HARNESS_NETWORK: portabilityScenario.network,
+          X402_HARNESS_PRICE: portabilityScenario.price,
+          X402_HARNESS_RESOURCE_PATH: portabilityScenario.resourcePath,
+          X402_HARNESS_SETTLEMENT_HEADER: portabilityScenario.settlementHeader,
         };
 
         const runningA = await startServer(serverA, env);
@@ -121,7 +121,7 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
         try {
           const urlA = `http://127.0.0.1:${runningA.ready.port}${portabilityScenario.resourcePath}`;
           const payA = await runClient(client, urlA, {
-            X402_INTEROP_TARGET_URL: urlA,
+            X402_HARNESS_TARGET_URL: urlA,
             ...env,
           });
           expect(payA.status).toBe(200);
@@ -169,10 +169,10 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
 
       it(`idempotent resubmit against ${sid}`, async () => {
         const env = {
-          X402_INTEROP_NETWORK: resubmitScenario.network,
-          X402_INTEROP_PRICE: resubmitScenario.price,
-          X402_INTEROP_RESOURCE_PATH: resubmitScenario.resourcePath,
-          X402_INTEROP_SETTLEMENT_HEADER: resubmitScenario.settlementHeader,
+          X402_HARNESS_NETWORK: resubmitScenario.network,
+          X402_HARNESS_PRICE: resubmitScenario.price,
+          X402_HARNESS_RESOURCE_PATH: resubmitScenario.resourcePath,
+          X402_HARNESS_SETTLEMENT_HEADER: resubmitScenario.settlementHeader,
         };
 
         const running = await startServer(server, env);
@@ -181,7 +181,7 @@ describe("x402 exact — cross-server portability + idempotent resubmit", () => 
         try {
           const url = `http://127.0.0.1:${running.ready.port}${resubmitScenario.resourcePath}`;
           const first = await runClient(client, url, {
-            X402_INTEROP_TARGET_URL: url,
+            X402_HARNESS_TARGET_URL: url,
             ...env,
           });
           expect(first.status).toBe(200);

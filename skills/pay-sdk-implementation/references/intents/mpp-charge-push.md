@@ -7,8 +7,8 @@ This is the default in browser flows (payment links) where the client
 wallet does the broadcasting.
 
 Spec: <https://paymentauth.org>, charge intent.
-Rust reference: `rust/src/server/charge.rs::verify_push`,
-`rust/src/protocol/solana.rs::CredentialPayload`.
+Rust reference: `rust/crates/mpp/src/server/charge.rs::verify_push`,
+`rust/crates/mpp/src/protocol/solana.rs::CredentialPayload`.
 
 ## Wire format
 
@@ -26,14 +26,14 @@ itself.
 ```
 
 The credential payload is a `CredentialPayload::Signature { signature }`
-(see `rust/src/protocol/solana.rs::CredentialPayload`), tagged via serde
+(see `rust/crates/mpp/src/protocol/solana.rs::CredentialPayload`), tagged via serde
 internally tag/untag rules.
 
 ## Server obligations
 
-Mirror `verify_push` (search `rust/src/server/charge.rs` for the function;
+Mirror `verify_push` (search `rust/crates/mpp/src/server/charge.rs` for the function;
 the entry is `match payload { CredentialPayload::Signature { ref
-signature } => self.verify_push(...) }` at `rust/src/server/charge.rs:541`):
+signature } => self.verify_push(...) }` at `rust/crates/mpp/src/server/charge.rs:541`):
 
 1. **HMAC tier-1** + **expiry** + **pinned-field tier-2** + **cross-route
    tier-2** — same as pull (see `mpp-charge-pull.md`).
@@ -83,7 +83,7 @@ signs and broadcasts:
 For payment-link / browser flows, the wallet adapter does steps 3-4 and
 hands the signature back. The MPP SDK's role is steps 1-2 and 5-7;
 see the service worker pattern in
-`rust/src/server/html/service_worker.gen.js` and the example at
+`rust/crates/mpp/src/server/html/service_worker.gen.js` and the example at
 `rust/examples/payment_link_server.rs`.
 
 ## Things to pay attention to
@@ -125,7 +125,7 @@ Unit tests (mirror Rust's `verify_push`-adjacent tests):
 - Replay across modes — a signature consumed by pull cannot be reused
   by push and vice versa (same store key).
 
-Interop scenarios: scaffold a `charge-basic-push` variant. The current
+Harness scenarios: scaffold a `charge-basic-push` variant. The current
 default scenario (`charge-basic`) exercises pull because the TS server
 is fee-payer; once the new SDK enables push for the client adapter,
 add an explicit push-mode variant to `harness/src/contracts.ts`.

@@ -96,6 +96,14 @@ function M.parse_rfc3339(value)
   return ((days * 24 + hour) * 60 + min) * 60 + sec + offset_secs
 end
 
+-- Format a UTC epoch second as a strict RFC 3339 / ISO 8601 timestamp
+-- (`YYYY-MM-DDTHH:MM:SSZ`), the wire form the `expires` challenge field
+-- and `parse_rfc3339` round-trip on. Used by the MPP adapter to turn a
+-- config `expires_in` (seconds-from-now) into an absolute expiry.
+function M.format_rfc3339(epoch)
+  return os.date('!%Y-%m-%dT%H:%M:%SZ', epoch)
+end
+
 function M.is_expired(value, now_epoch)
   if value == nil or value == '' then
     return false

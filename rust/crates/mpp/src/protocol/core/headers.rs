@@ -2,7 +2,9 @@
 //!
 //! No regex — minimal dependencies.
 
-use super::challenge::{PaymentChallenge, PaymentCredential, Receipt};
+#[cfg(test)]
+use super::challenge::Receipt;
+use super::challenge::{PaymentChallenge, PaymentCredential, ReceiptKind};
 use super::types::{base64url_decode, base64url_encode, Base64UrlJson, IntentName, MethodName};
 use crate::error::Error;
 use std::collections::HashMap;
@@ -174,14 +176,21 @@ pub fn format_www_authenticate(challenge: &PaymentChallenge) -> Result<String, E
         ),
     ];
 
-    if let Some(ref expires) = challenge.expires {
-        parts.push(format!("expires=\"{}\"", escape_quoted_value(expires)?));
+    // `description` is a first-class, round-trippable WWW-Authenticate
+    // parameter on the canonical wire (it must survive format -> parse), so
+    // emit it as a top-level header param. Ordering follows the canonical
+    // golden: request, description, digest, expires.
+    if let Some(ref description) = challenge.description {
+        parts.push(format!(
+            "description=\"{}\"",
+            escape_quoted_value(description)?
+        ));
     }
-    // description is already encoded inside the `request` payload —
-    // don't duplicate it as a top-level header param (non-ASCII descriptions
-    // like em-dashes would make the header value invalid).
     if let Some(ref digest) = challenge.digest {
         parts.push(format!("digest=\"{}\"", escape_quoted_value(digest)?));
+    }
+    if let Some(ref expires) = challenge.expires {
+        parts.push(format!("expires=\"{}\"", escape_quoted_value(expires)?));
     }
     if let Some(ref opaque) = challenge.opaque {
         parts.push(format!("opaque=\"{}\"", escape_quoted_value(opaque.raw())?));
@@ -226,8 +235,12 @@ pub fn format_authorization(credential: &PaymentCredential) -> Result<String, Er
     Ok(format!("Payment {encoded}"))
 }
 
-/// Parse a Payment-Receipt header into a Receipt.
-pub fn parse_receipt(header: &str) -> Result<Receipt, Error> {
+/// Parse a Payment-Receipt header into a [`ReceiptKind`].
+///
+/// The wire shape is base64url-encoded JSON. The untagged enum is parsed
+/// with the more-specific `Subscription` variant tried first; falls back
+/// to `Charge` for receipts without subscription extension fields.
+pub fn parse_receipt(header: &str) -> Result<ReceiptKind, Error> {
     let token = header.trim();
     if token.len() > MAX_TOKEN_LEN {
         return Err(Error::Other(format!(
@@ -236,16 +249,30 @@ pub fn parse_receipt(header: &str) -> Result<Receipt, Error> {
     }
 
     let decoded = base64url_decode(token)?;
-    let receipt: Receipt = serde_json::from_slice(&decoded)
+    let receipt: ReceiptKind = serde_json::from_slice(&decoded)
         .map_err(|e| Error::Other(format!("Invalid receipt JSON: {e}")))?;
+
+    // The canonical wire requires `timestamp` to be an ISO-8601 / RFC 3339
+    // instant; reject anything that does not parse (e.g. "Jan 29 2026 12:00").
+    let timestamp = &receipt.base().timestamp;
+    if time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+        .is_err()
+    {
+        return Err(Error::Other(format!(
+            "Receipt timestamp is not ISO-8601: {timestamp}"
+        )));
+    }
+
     Ok(receipt)
 }
 
-/// Format a Receipt as a Payment-Receipt header value.
+/// Format a [`ReceiptKind`] as a Payment-Receipt header value.
 ///
 /// Uses JCS (RFC 8785) canonicalization before base64url encoding
-/// as required by the spec.
-pub fn format_receipt(receipt: &Receipt) -> Result<String, Error> {
+/// as required by the spec. Both variants serialise as a flat JSON
+/// object — subscription receipts carry the union of base + extension
+/// fields side-by-side.
+pub fn format_receipt(receipt: &ReceiptKind) -> Result<String, Error> {
     let json = serde_json_canonicalizer::to_string(receipt)
         .map_err(|e| Error::Other(format!("JCS serialization failed: {e}")))?;
     Ok(base64url_encode(json.as_bytes()))
@@ -400,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_roundtrip() {
+    fn receipt_roundtrip_charge() {
         let receipt = Receipt {
             status: ReceiptStatus::Success,
             method: "solana".into(),
@@ -408,9 +435,107 @@ mod tests {
             reference: "5UfDuX...".to_string(),
             challenge_id: "ch-test".to_string(),
         };
-        let header = format_receipt(&receipt).unwrap();
+        let header = format_receipt(&ReceiptKind::Charge(receipt)).unwrap();
         let parsed = parse_receipt(&header).unwrap();
-        assert_eq!(parsed.reference, "5UfDuX...");
+        match parsed {
+            ReceiptKind::Charge(r) => assert_eq!(r.reference, "5UfDuX..."),
+            ReceiptKind::Subscription { .. } => panic!("expected Charge variant"),
+        }
+    }
+
+    #[test]
+    fn receipt_roundtrip_subscription_carries_extensions() {
+        use crate::protocol::intents::SubscriptionReceiptExtensions;
+
+        let base = Receipt {
+            status: ReceiptStatus::Success,
+            method: "solana".into(),
+            timestamp: "2026-01-15T12:03:10Z".to_string(),
+            reference: "5J8signature".to_string(),
+            challenge_id: "ch-sub".to_string(),
+        };
+        let extensions = SubscriptionReceiptExtensions {
+            subscription_id: "BXQGmO5VwTrl5RfFr6Y8XQZ4nPj9QqMOiKkRn3pZ4ZE".into(),
+            plan_id: "8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT".into(),
+            period_index: "0".into(),
+            period_start_ts: "2026-01-15T12:03:10Z".into(),
+            period_end_ts: "2026-02-14T12:03:10Z".into(),
+            expires_at: Some("2026-07-14T12:00:00Z".into()),
+            activation_signature: None,
+        };
+        let header = format_receipt(&ReceiptKind::Subscription {
+            base: base.clone(),
+            extensions: extensions.clone(),
+        })
+        .unwrap();
+
+        let parsed = parse_receipt(&header).unwrap();
+        match parsed {
+            ReceiptKind::Subscription {
+                base: parsed_base,
+                extensions: parsed_ext,
+            } => {
+                assert_eq!(parsed_base.reference, base.reference);
+                assert_eq!(parsed_ext.subscription_id, extensions.subscription_id);
+                assert_eq!(parsed_ext.period_index, "0");
+                assert_eq!(
+                    parsed_ext.expires_at.as_deref(),
+                    Some("2026-07-14T12:00:00Z")
+                );
+            }
+            ReceiptKind::Charge(_) => {
+                panic!("untagged enum must prefer Subscription when extension fields are present")
+            }
+        }
+    }
+
+    #[test]
+    fn receipt_parse_charge_without_extension_fields_does_not_pick_subscription() {
+        // A charge receipt JSON has none of the subscription-only keys.
+        // The untagged Subscription variant requires all extension fields,
+        // so deserialisation must fall back to Charge.
+        let raw = r#"{
+            "status": "success",
+            "method": "solana",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "reference": "abc",
+            "challengeId": "ch-1"
+        }"#;
+        use crate::protocol::core::base64url_encode;
+        let header = base64url_encode(raw.as_bytes());
+        let parsed = parse_receipt(&header).unwrap();
+        assert!(matches!(parsed, ReceiptKind::Charge(_)));
+    }
+
+    #[test]
+    fn receipt_kind_helpers_expose_base_and_extensions() {
+        let charge_receipt = Receipt {
+            status: ReceiptStatus::Success,
+            method: "solana".into(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            reference: "abc".to_string(),
+            challenge_id: "c".to_string(),
+        };
+        let charge = ReceiptKind::Charge(charge_receipt.clone());
+        assert_eq!(charge.base().reference, "abc");
+        assert!(charge.subscription_extensions().is_none());
+
+        use crate::protocol::intents::SubscriptionReceiptExtensions;
+        let sub = ReceiptKind::Subscription {
+            base: charge_receipt,
+            extensions: SubscriptionReceiptExtensions {
+                subscription_id: "S".into(),
+                plan_id: "P".into(),
+                period_index: "0".into(),
+                period_start_ts: "t0".into(),
+                period_end_ts: "t1".into(),
+                expires_at: None,
+                activation_signature: None,
+            },
+        };
+        assert_eq!(sub.base().reference, "abc");
+        let ext = sub.subscription_extensions().expect("subscription ext");
+        assert_eq!(ext.subscription_id, "S");
     }
 
     #[test]
@@ -631,8 +756,8 @@ mod tests {
         };
         let header = format_www_authenticate(&challenge).unwrap();
         assert!(header.contains("expires="));
-        // description is no longer emitted (it's inside the request payload)
-        assert!(!header.contains("description="));
+        // description is a first-class, round-trippable WWW-Authenticate param.
+        assert!(header.contains("description=\"Test\""));
         assert!(header.contains("digest="));
         assert!(header.contains("opaque="));
     }

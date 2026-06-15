@@ -8,7 +8,7 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Network;
 use PayKit\Operator;
@@ -22,13 +22,13 @@ use PayKit\PayCore\Stablecoin;
 /**
  * Laravel service provider. Registers:
  *
- *   - `Client` as a singleton built from `config('paykit')`.
+ *   - `PayKit` as a singleton built from `config('paykit')`.
  *   - A route-middleware alias `paykit` pointing at
  *     {@see RequirePaymentMiddleware}.
  *
  * Apps publish the `config/paykit.php` shape DESIGN.md (#139) shows;
  * the provider dehydrates it into a {@see Config} instance and hands
- * it to the Client constructor.
+ * it to the PayKit constructor.
  */
 final class PayKitServiceProvider extends ServiceProvider
 {
@@ -36,10 +36,10 @@ final class PayKitServiceProvider extends ServiceProvider
     {
         $this->mergeConfigFrom(__DIR__ . '/config/paykit.php', 'paykit');
 
-        $this->app->singleton(Client::class, function (Application $app): Client {
+        $this->app->singleton(PayKit::class, function (Application $app): PayKit {
             /** @var array<string,mixed> $cfg */
             $cfg = $app['config']->get('paykit', []);
-            return new Client(self::buildConfig($cfg));
+            return new PayKit(self::buildConfig($cfg));
         });
     }
 
@@ -78,7 +78,7 @@ final class PayKitServiceProvider extends ServiceProvider
                 && $cfg['mpp_challenge_binding_secret'] !== ''
                     ? (string) $cfg['mpp_challenge_binding_secret']
                     : null,
-            expiresIn: (int) ($cfg['mpp']['expires_in'] ?? 120),
+            expiresIn: MppConfig::resolveExpiresIn($cfg['mpp']['expires_in'] ?? null),
         );
         $x402 = new X402Config(
             facilitatorUrl: isset($cfg['x402_facilitator_url']) && $cfg['x402_facilitator_url'] !== ''

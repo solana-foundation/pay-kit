@@ -476,6 +476,114 @@ impl PaymentRequiredEnvelope {
     }
 }
 
+/// Client/server-side fields of the `payment-identifier` extension.
+/// See <https://github.com/coinbase/x402/blob/main/specs/extensions/payment_identifier.md>.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentIdentifierInfo {
+    /// Server-side: whether clients MUST populate `id`. When `true` and
+    /// `id` is missing, the server returns 400.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Client-side idempotency key. Must match `^[A-Za-z0-9_-]{16,128}$`.
+    /// Canonical Solana implementations use a `pay_` prefix, e.g.
+    /// `pay_7d5d747be160e280504c099d984bcfe0`. Generate with
+    /// [`generate_payment_identifier_id`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// The `payment-identifier` extension. Echoed by the client into the
+/// outbound `PAYMENT-SIGNATURE` with `info.id` populated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentIdentifierExtension {
+    #[serde(default)]
+    pub info: PaymentIdentifierInfo,
+    /// JSON Schema published by the server describing the required
+    /// client-side fields. Echoed verbatim per x402 v2 §5.1.2.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+}
+
+/// Typed view over the x402 v2 `extensions` object on
+/// [`PaymentSignatureEnvelope`]. Known extensions are fielded out
+/// directly; unknown ones flow through `other` so the echo-and-append
+/// rule (§5.1.2) doesn't drop forward-compatible payloads.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PaymentExtensions {
+    /// The `payment-identifier` idempotency extension. Some providers
+    /// (e.g. Birdeye) mark this `info.required = true` and reject
+    /// requests that don't echo a `pay_…` id back.
+    #[serde(
+        rename = "payment-identifier",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub payment_identifier: Option<PaymentIdentifierExtension>,
+    /// Forward-compatible storage for extensions this crate does not
+    /// type natively. Captured during echo, re-emitted verbatim.
+    #[serde(flatten)]
+    pub other: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl PaymentExtensions {
+    /// True when no fields are populated. Useful so callers can avoid
+    /// emitting an empty `extensions: {}` object on outbound envelopes.
+    pub fn is_empty(&self) -> bool {
+        self.payment_identifier.is_none() && self.other.is_empty()
+    }
+
+    /// `payment-identifier.info.required == Some(true)`.
+    pub fn requires_payment_identifier(&self) -> bool {
+        self.payment_identifier
+            .as_ref()
+            .and_then(|p| p.info.required)
+            .unwrap_or(false)
+    }
+
+    /// Set (or overwrite) the client-side `payment-identifier.info.id`.
+    /// Creates the extension entry if the server didn't advertise one
+    /// — uncommon but spec-allowed.
+    pub fn with_payment_identifier_id(mut self, id: impl Into<String>) -> Self {
+        let entry = self.payment_identifier.get_or_insert_with(Default::default);
+        entry.info.id = Some(id.into());
+        self
+    }
+
+    /// Echo a server's inbound extensions blob (e.g. the
+    /// `extensions: serde_json::Value` carried on
+    /// [`PaymentRequiredEnvelope`]) into a typed
+    /// [`PaymentExtensions`]. Returns `Ok(None)` when the inbound is
+    /// `None`. Errors only if the inbound is not a JSON object.
+    pub fn echoing(inbound: Option<&serde_json::Value>) -> Result<Option<Self>, serde_json::Error> {
+        match inbound {
+            Some(value) => serde_json::from_value(value.clone()).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Generate a fresh `pay_`-prefixed idempotency id (32 hex chars after
+/// the prefix; 36 total). Satisfies the `payment-identifier` spec
+/// pattern `^[A-Za-z0-9_-]{16,128}$` and the canonical Solana
+/// `^pay_[a-zA-Z0-9_-]{10,120}$` shape.
+///
+/// Per the spec, callers must reuse the same id across retries of the
+/// same logical request so the server can return a cached 200 instead
+/// of charging twice.
+pub fn generate_payment_identifier_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("getrandom CSPRNG failure");
+    let mut id = String::with_capacity(4 + 32);
+    id.push_str("pay_");
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(id, "{b:02x}");
+    }
+    id
+}
+
 /// Wire envelope carried in `PAYMENT-SIGNATURE`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,6 +598,13 @@ pub struct PaymentSignatureEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource: Option<ResourceInfo>,
     pub payload: PaymentProof,
+    /// Echoed extensions from the inbound `PAYMENT-REQUIRED` envelope,
+    /// with any required client-supplied fields filled in
+    /// (e.g. `payment-identifier.info.id`). Per x402 v2 §5.1.2, the
+    /// client "must include at least the info received; it may append
+    /// additional info but cannot delete or overwrite existing info".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<PaymentExtensions>,
 }
 
 /// Server-side payment configuration for x402-protected resources.
@@ -867,6 +982,7 @@ mod tests {
             accepted: Some(required.accepts[0].to_accepted_value()),
             resource: required.resource.clone(),
             payload: proof.clone(),
+            extensions: None,
         };
         let payload = PaymentPayload {
             network: SOLANA_MAINNET.to_string(),
@@ -884,5 +1000,110 @@ mod tests {
         assert!(required_json.contains("\"asset\":\"SOL\""));
         assert!(signature_json.contains("\"accepted\""));
         assert!(payload_json.contains("\"transaction\":\"abc\""));
+    }
+
+    #[test]
+    fn generate_payment_identifier_id_matches_spec_pattern() {
+        // Spec: ^pay_[a-zA-Z0-9_-]{10,120}$ — see
+        // specs/extensions/payment_identifier.md.
+        let re_chars = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+        for _ in 0..32 {
+            let id = generate_payment_identifier_id();
+            assert!(id.starts_with("pay_"), "missing prefix: {id}");
+            let suffix = &id["pay_".len()..];
+            assert_eq!(suffix.len(), 32, "unexpected suffix length in {id}");
+            assert!(suffix.chars().all(re_chars), "bad chars in {id}");
+            assert!(id.len() >= 16 && id.len() <= 128);
+        }
+    }
+
+    #[test]
+    fn generate_payment_identifier_id_is_unique() {
+        // Birthday collision on 128-bit randomness is statistically zero;
+        // this guards against a future refactor accidentally returning a
+        // constant.
+        let a = generate_payment_identifier_id();
+        let b = generate_payment_identifier_id();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn payment_extensions_echoes_unknown_keys_verbatim() {
+        // Forward-compatibility: an extension we don't type natively
+        // must round-trip through `other` and be re-emitted unchanged
+        // (x402 v2 §5.1.2 echo rule).
+        let inbound = serde_json::json!({
+            "future-extension": { "info": { "foo": "bar" } },
+            "bazaar": { "info": {} }
+        });
+        let ext = PaymentExtensions::echoing(Some(&inbound)).unwrap().unwrap();
+        assert!(ext.payment_identifier.is_none());
+        assert_eq!(ext.other.len(), 2);
+        let serialized = serde_json::to_value(&ext).unwrap();
+        assert_eq!(serialized, inbound);
+    }
+
+    #[test]
+    fn payment_extensions_typed_payment_identifier_round_trip() {
+        let inbound = serde_json::json!({
+            "payment-identifier": {
+                "info": { "required": true },
+                "schema": { "type": "object" }
+            }
+        });
+        let ext = PaymentExtensions::echoing(Some(&inbound)).unwrap().unwrap();
+        assert!(ext.requires_payment_identifier());
+        let pid = ext.payment_identifier.as_ref().unwrap();
+        assert_eq!(pid.info.required, Some(true));
+        assert!(pid.info.id.is_none());
+        assert!(pid.schema.is_some());
+    }
+
+    #[test]
+    fn with_payment_identifier_id_appends_without_overwriting_server_fields() {
+        let inbound = serde_json::json!({
+            "payment-identifier": {
+                "info": { "required": true },
+                "schema": { "type": "object", "required": ["id"] }
+            }
+        });
+        let ext = PaymentExtensions::echoing(Some(&inbound))
+            .unwrap()
+            .unwrap()
+            .with_payment_identifier_id("pay_abcdef1234567890abcdef1234567890");
+        let pid = ext.payment_identifier.as_ref().unwrap();
+        // Server-side info preserved per §5.1.2.
+        assert_eq!(pid.info.required, Some(true));
+        // Schema echoed verbatim.
+        assert!(pid.schema.is_some());
+        // Client-side id appended.
+        assert_eq!(
+            pid.info.id.as_deref(),
+            Some("pay_abcdef1234567890abcdef1234567890")
+        );
+    }
+
+    #[test]
+    fn with_payment_identifier_id_creates_entry_when_server_didnt_advertise() {
+        // Uncommon but spec-allowed: client may set the id even if the
+        // server didn't list `payment-identifier` in extensions.
+        let ext = PaymentExtensions::default().with_payment_identifier_id("pay_0000000000000000");
+        assert_eq!(
+            ext.payment_identifier.as_ref().unwrap().info.id.as_deref(),
+            Some("pay_0000000000000000")
+        );
+    }
+
+    #[test]
+    fn payment_extensions_echoing_returns_none_when_inbound_absent() {
+        assert!(PaymentExtensions::echoing(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn payment_extensions_serializes_with_correct_key_casing() {
+        // Spec uses `payment-identifier` (kebab-case) as the JSON key.
+        let ext = PaymentExtensions::default().with_payment_identifier_id("pay_aaaaaaaaaaaaaaaa");
+        let s = serde_json::to_string(&ext).unwrap();
+        assert!(s.contains("\"payment-identifier\""), "got {s}");
     }
 }

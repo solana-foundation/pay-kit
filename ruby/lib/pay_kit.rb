@@ -28,8 +28,6 @@
 # zero (no auto-detect, no spooky load-order failures).
 
 require_relative "pay_core"
-require_relative "mpp"
-require_relative "x402"
 
 require_relative "pay_kit/errors"
 require_relative "pay_kit/signer"
@@ -47,19 +45,13 @@ require_relative "pay_kit/rack/payment_required"
 
 module PayKit
   Core = ::PayCore
-  Mpp = ::Mpp
-  X402 = ::X402
 
   # Logger used by demo-signer warnings and any other library-level
-  # diagnostic output. Defaults to a `$stderr`-backed `::Logger` the
-  # first time it is referenced. Apps that integrate Rails/Sinatra can
-  # assign their own logger to keep PayKit messages alongside the rest
-  # of the application log.
+  # diagnostic output. Unset by default (`nil`); callers fall back to a
+  # `$stderr`-backed `::Logger` when this is `nil`. Apps that integrate
+  # Rails/Sinatra can assign their own logger to keep PayKit messages
+  # alongside the rest of the application log.
   class << self
-    attr_writer :logger
-
-    def logger
-      @logger ||= nil
-    end
+    attr_accessor :logger
   end
 end

@@ -1,0 +1,30 @@
+{
+  "name": "playground-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false index.ts",
+    "start": "tsx index.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@solana-program/token": "^0.11.0",
+    "@solana/kit": "^6.5.0",
+    "@solana/mpp": "file:../../packages/mpp",
+    "@solana/pay-kit": "file:../../packages/pay-kit",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "mppx": "^0.5.8",
+    "x402": "^1.1.0",
+    "x402-express": "^1.1.0",
+    "yahoo-finance2": "^3.13.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "x402-fetch": "^1.2.0"
+  }
+}

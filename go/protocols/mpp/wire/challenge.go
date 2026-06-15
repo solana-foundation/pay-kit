@@ -5,7 +5,7 @@
 // WWW-Authenticate / Authorization / Payment-Receipt header
 // parser/formatter pair. The wire format mirrors
 // rust/src/protocol/core/{challenge,headers,types}.rs so the
-// cross-language interop harness exercises byte-identical output.
+// cross-language harness exercises byte-identical output.
 package wire
 
 import (
@@ -55,7 +55,7 @@ type Receipt struct {
 	Method      MethodName    `json:"method"`
 	Timestamp   string        `json:"timestamp"`
 	Reference   string        `json:"reference"`
-	ChallengeID string        `json:"challengeId"`
+	ChallengeID string        `json:"challengeId,omitempty"`
 	ExternalID  string        `json:"externalId,omitempty"`
 }
 

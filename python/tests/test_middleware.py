@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp._headers import format_authorization
-from solana_mpp._types import PaymentCredential
-from solana_mpp.server.middleware import pay
-from solana_mpp.server.mpp import Config, Mpp
-from solana_mpp.store import MemoryStore
+from pay_kit._paycore.store import MemoryStore
+from pay_kit.protocols.mpp.core.headers import format_authorization
+from pay_kit.protocols.mpp.core.types import PaymentCredential
+from pay_kit.protocols.mpp.server.charge import Config, Mpp
+from pay_kit.protocols.mpp.server.middleware import pay
 from tests.test_server import (
     TEST_RECIPIENT,
     TEST_SECRET,
@@ -162,9 +162,7 @@ class TestPayDecorator:
         # Build a valid credential that matches the route's expected charge
         # ("1.00" USDC, recipient = TEST_RECIPIENT, devnet).
         challenge = handler_mpp.charge("1.00")
-        transaction = _build_spl_transfer_checked_transaction(
-            TEST_RECIPIENT, USDC_DEVNET, 1_000_000
-        )
+        transaction = _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1_000_000)
         credential = PaymentCredential(
             challenge=challenge.to_echo(),
             payload={"type": "transaction", "transaction": transaction},

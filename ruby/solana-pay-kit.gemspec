@@ -30,4 +30,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rake", "~> 13.2"
   spec.add_development_dependency "simplecov", "~> 0.22"
   spec.add_development_dependency "standard", "~> 1.43"
+  spec.add_development_dependency "yard", "~> 0.9"
 end

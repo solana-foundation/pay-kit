@@ -1,0 +1,45 @@
+[
+  {
+    "id": "x402-exact-v2-verify-accept",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "Server accepts a v2 PAYMENT-SIGNATURE whose accepted offer matches the configured devnet route (network/amount/recipient/asset all agree). The pinned header is the exact base64 the v2 build emits, so build and verify are mutually consistent.",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZGVjaW1hbHMiOjZ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifX0=",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000"
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedAmount": "1000",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+      }
+    }
+  },
+  {
+    "id": "x402-exact-unknown-version-reject",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "Server rejects an envelope carrying x402Version=3 (neither legacy v1 nor canonical v2). The reject category is unsupported-version: a server that silently accepted an unknown version would settle a payment whose wire contract it does not understand.",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MywiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZGVjaW1hbHMiOjZ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifX0=",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000"
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "x402Version 3 is neither v1 nor v2"
+    }
+  }
+]

@@ -6,19 +6,19 @@ import {
   solana,
 } from "@solana/mpp/client";
 import { Credential } from "mppx";
-import { readInteropEnvironment } from "./shared";
+import { readHarnessEnvironment } from "./shared";
 
 async function main() {
-  const targetUrl = process.env.MPP_INTEROP_TARGET_URL;
+  const targetUrl = process.env.MPP_HARNESS_TARGET_URL;
   if (!targetUrl) {
-    throw new Error("MPP_INTEROP_TARGET_URL is required");
+    throw new Error("MPP_HARNESS_TARGET_URL is required");
   }
 
-  const environment = readInteropEnvironment();
+  const environment = readHarnessEnvironment();
   const signer = await createKeyPairSignerFromBytes(
     environment.clientSecretKey,
   );
-  const resubmitUrl = process.env.MPP_INTEROP_RESUBMIT_URL;
+  const resubmitUrl = process.env.MPP_HARNESS_RESUBMIT_URL;
   if (resubmitUrl) {
     await runResubmitFlow(targetUrl, resubmitUrl, environment, signer);
     return;
@@ -92,7 +92,7 @@ function reportClientSideRejection(error: unknown): void {
 
 async function payTarget(
   targetUrl: string,
-  environment: ReturnType<typeof readInteropEnvironment>,
+  environment: ReturnType<typeof readHarnessEnvironment>,
   signer: Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>,
 ): Promise<Response> {
   const client = Mppx.create({
@@ -102,7 +102,7 @@ async function payTarget(
         // confirms locally, then sends a type=signature credential.
         // Pull-mode (default): the SDK signs and lets the server
         // broadcast a type=transaction credential. The harness drives
-        // the choice via MPP_INTEROP_PAYMENT_MODE so a single client
+        // the choice via MPP_HARNESS_PAYMENT_MODE so a single client
         // adapter covers both wire modes.
         broadcast: environment.paymentMode === "push",
         signer,
@@ -130,7 +130,7 @@ async function payTarget(
 async function runResubmitFlow(
   targetUrl: string,
   resubmitUrl: string,
-  environment: ReturnType<typeof readInteropEnvironment>,
+  environment: ReturnType<typeof readHarnessEnvironment>,
   signer: Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>,
 ): Promise<void> {
   const challengeResponse = await fetch(targetUrl);
@@ -225,11 +225,11 @@ function emitResubmitResult(params: {
 
 async function runCrossRouteReplay(
   targetUrl: string,
-  environment: ReturnType<typeof readInteropEnvironment>,
+  environment: ReturnType<typeof readHarnessEnvironment>,
   signer: Awaited<ReturnType<typeof createKeyPairSignerFromBytes>>,
 ): Promise<Response> {
   if (!environment.replaySource) {
-    throw new Error("MPP_INTEROP_REPLAY_SOURCE_PATH is required");
+    throw new Error("MPP_HARNESS_REPLAY_SOURCE_PATH is required");
   }
 
   const sourceUrl = new URL(environment.replaySource.resourcePath, targetUrl);

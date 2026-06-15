@@ -1,0 +1,55 @@
+[
+  {
+    "id": "charge-split-ata-memo-envelope-accept",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Full charge envelope accept: primary transfer plus a split with idempotent ATA creation and a memo. Exercises the complete decoded envelope shape (transfers, ATA-create allowlist, memo) the verifier must accept.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            {
+              "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+              "amount": "250",
+              "ataCreationRequired": true,
+              "memo": "conformance split"
+            }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "memo": ["conformance split"],
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "750",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          },
+          {
+            "kind": "spl",
+            "destinationOwner": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "250",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    }
+  }
+]

@@ -1,0 +1,32 @@
+# pydoc-markdown config — emit one .md per module under ../docs/api/python/.
+# Invoke with `just docs-py`.
+
+loaders:
+  - type: python
+    search_path: [src]
+    packages: [pay_kit]
+
+processors:
+  - type: filter
+    skip_empty_modules: true
+    expression: not name.startswith("_")
+  - type: smart
+  - type: crossref
+
+renderer:
+  type: markdown
+  descriptive_class_title: false
+  render_module_header: true
+  use_fixed_header_levels: true
+  add_method_class_prefix: false
+  add_member_class_prefix: false
+  insert_header_anchors: false
+  code_headers: true
+  signature_with_def: true
+  signature_in_header: false
+  toc_maxdepth: 3
+  classdef_code_block: true
+
+# Multi-file output: one .md per module, mirroring the source tree.
+multiple_files: true
+output_path: ../docs/api/python

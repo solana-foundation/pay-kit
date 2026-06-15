@@ -48,8 +48,8 @@ impl PaymentChallenge {
     /// Create a new payment challenge with an HMAC-bound ID.
     ///
     /// Enables stateless verification without storing challenge state.
-    pub fn with_secret_key(
-        secret_key: &str,
+    pub fn with_challenge_binding_secret(
+        challenge_binding_secret: &str,
         realm: impl Into<String>,
         method: impl Into<MethodName>,
         intent: impl Into<IntentName>,
@@ -59,7 +59,7 @@ impl PaymentChallenge {
         let method = method.into();
         let intent = intent.into();
         let id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &realm,
             method.as_str(),
             intent.as_str(),
@@ -83,8 +83,8 @@ impl PaymentChallenge {
 
     /// Create with HMAC-bound ID including all optional fields.
     #[allow(clippy::too_many_arguments)]
-    pub fn with_secret_key_full(
-        secret_key: &str,
+    pub fn with_challenge_binding_secret_full(
+        challenge_binding_secret: &str,
         realm: impl Into<String>,
         method: impl Into<MethodName>,
         intent: impl Into<IntentName>,
@@ -98,7 +98,7 @@ impl PaymentChallenge {
         let method = method.into();
         let intent = intent.into();
         let id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &realm,
             method.as_str(),
             intent.as_str(),
@@ -155,9 +155,9 @@ impl PaymentChallenge {
     }
 
     /// Verify that this challenge's ID matches the expected HMAC.
-    pub fn verify(&self, secret_key: &str) -> bool {
+    pub fn verify(&self, challenge_binding_secret: &str) -> bool {
         let expected_id = compute_challenge_id(
-            secret_key,
+            challenge_binding_secret,
             &self.realm,
             self.method.as_str(),
             self.intent.as_str(),
@@ -190,7 +190,7 @@ impl PaymentChallenge {
 /// computes HMAC-SHA256 with the secret key, then base64url-encodes.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_challenge_id(
-    secret_key: &str,
+    challenge_binding_secret: &str,
     realm: &str,
     method: &str,
     intent: &str,
@@ -215,8 +215,8 @@ pub fn compute_challenge_id(
     ]
     .join("|");
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret_key.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(challenge_binding_secret.as_bytes())
+        .expect("HMAC can take key of any size");
     mac.update(hmac_input.as_bytes());
     let result = mac.finalize();
 
@@ -307,13 +307,22 @@ impl PaymentCredential {
 }
 
 /// Payment receipt from server (parsed from Payment-Receipt header).
+///
+/// `challenge_id` is required on the Rust struct but *optional on the wire*
+/// — the TypeScript SDK only emits it when the challenge's `id` was set,
+/// so we accept JSON without that key by defaulting to an empty string.
+/// Servers that don't pin a challenge id leave this empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub status: ReceiptStatus,
     pub method: MethodName,
     pub timestamp: String,
     pub reference: String,
-    #[serde(rename = "challengeId")]
+    #[serde(
+        rename = "challengeId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     pub challenge_id: String,
 }
 
@@ -337,7 +346,69 @@ impl Receipt {
         self.status == ReceiptStatus::Success
     }
 
-    /// Format as Payment-Receipt header value.
+    /// Format as Payment-Receipt header value. Wraps in
+    /// [`ReceiptKind::Charge`] for the on-the-wire shape.
+    pub fn to_header(&self) -> Result<String, crate::error::Error> {
+        super::format_receipt(&ReceiptKind::Charge(self.clone()))
+    }
+}
+
+/// Tagged receipt covering the intents pay-kit ships verification for.
+///
+/// On the wire the variant is untagged — the JSON shape is the union of
+/// [`Receipt`]'s base fields plus any intent-specific extension fields.
+/// Deserialisation tries `Subscription` first (it carries the strict
+/// superset of fields) and falls back to `Charge` when extension fields
+/// are absent.
+///
+/// This enum is the breaking change from v0.6: every caller of
+/// [`super::parse_receipt`] / [`super::format_receipt`] now handles the
+/// variant explicitly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReceiptKind {
+    /// Subscription activation receipt — base receipt plus the
+    /// subscription-specific fields defined in
+    /// `draft-solana-subscription-00`. Listed first so untagged
+    /// deserialisation prefers the strictly-richer shape when the
+    /// `subscriptionId`/`planId`/`periodIndex`/`periodStartTs`/`periodEndTs`
+    /// keys are present.
+    Subscription {
+        #[serde(flatten)]
+        base: Receipt,
+        #[serde(flatten)]
+        extensions: crate::protocol::intents::SubscriptionReceiptExtensions,
+    },
+    /// One-shot charge receipt — the original `Receipt` shape.
+    Charge(Receipt),
+}
+
+impl ReceiptKind {
+    /// Borrow the underlying [`Receipt`] regardless of variant.
+    pub fn base(&self) -> &Receipt {
+        match self {
+            ReceiptKind::Charge(r) => r,
+            ReceiptKind::Subscription { base, .. } => base,
+        }
+    }
+
+    /// Convenience: returns the subscription extensions when the variant is
+    /// `Subscription`, `None` otherwise. Caller-friendly accessor for
+    /// pay-side persistence after a `verify_credential` call.
+    pub fn subscription_extensions(
+        &self,
+    ) -> Option<&crate::protocol::intents::SubscriptionReceiptExtensions> {
+        match self {
+            ReceiptKind::Subscription { extensions, .. } => Some(extensions),
+            ReceiptKind::Charge(_) => None,
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.base().is_success()
+    }
+
+    /// Format the receipt as a `Payment-Receipt` header value.
     pub fn to_header(&self) -> Result<String, crate::error::Error> {
         super::format_receipt(self)
     }
@@ -355,7 +426,7 @@ mod tests {
 
     #[test]
     fn challenge_hmac_verify() {
-        let challenge = PaymentChallenge::with_secret_key(
+        let challenge = PaymentChallenge::with_challenge_binding_secret(
             "test-secret",
             "api.example.com",
             "solana",
@@ -388,13 +459,13 @@ mod tests {
         assert_eq!(receipt.challenge_id, "challenge-1");
     }
 
-    // ── with_secret_key_full coverage ──
+    // ── with_challenge_binding_secret_full coverage ──
 
     #[test]
-    fn challenge_with_secret_key_full_verify() {
+    fn challenge_with_challenge_binding_secret_full_verify() {
         let request = Base64UrlJson::from_value(&serde_json::json!({"amount": "5000"})).unwrap();
         let opaque = Base64UrlJson::from_value(&serde_json::json!({"context": "xyz"})).unwrap();
-        let challenge = PaymentChallenge::with_secret_key_full(
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
             "my-secret",
             "realm.example.com",
             "solana",
@@ -414,9 +485,9 @@ mod tests {
     }
 
     #[test]
-    fn challenge_with_secret_key_full_no_optionals() {
+    fn challenge_with_challenge_binding_secret_full_no_optionals() {
         let request = Base64UrlJson::from_value(&serde_json::json!({"amount": "100"})).unwrap();
-        let challenge = PaymentChallenge::with_secret_key_full(
+        let challenge = PaymentChallenge::with_challenge_binding_secret_full(
             "secret", "realm", "solana", "charge", request, None, None, None, None,
         );
         assert!(challenge.verify("secret"));
@@ -732,7 +803,9 @@ mod tests {
         let receipt = Receipt::success("solana", "tx-sig-abc", "ch-roundtrip");
         let header = receipt.to_header().unwrap();
         let parsed = super::super::parse_receipt(&header).unwrap();
-        assert_eq!(parsed.reference, "tx-sig-abc");
+        assert_eq!(parsed.base().reference, "tx-sig-abc");
         assert!(parsed.is_success());
+        // A bare Receipt round-trips through ReceiptKind::Charge.
+        assert!(matches!(parsed, ReceiptKind::Charge(_)));
     }
 }

@@ -57,9 +57,9 @@ Single protocol:
 solana-pay-kit = { version = "0.1", default-features = false, features = ["mpp"] }
 ```
 
-## Interop
+## Harness
 
-The TypeScript interop harness can run the Rust server and client adapters from
+The TypeScript harness can run the Rust server and client adapters from
 `../harness`.
 
 ```bash

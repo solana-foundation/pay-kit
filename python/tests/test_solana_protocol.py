@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from solana_mpp.protocol.solana import (
+from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
     MEMO_PROGRAM,
     SYSTEM_PROGRAM,
@@ -82,7 +82,7 @@ class TestResolveMint:
         # L1 lock invariant: ``mainnet-beta`` must not appear as a direct key
         # inside KNOWN_MINTS. Drift here would make a Ruby-mainnet credential
         # resolve to a different mint than its Python-mainnet-beta echo.
-        from solana_mpp.protocol.solana import KNOWN_MINTS
+        from pay_kit._paycore.solana import KNOWN_MINTS
 
         for symbol, networks in KNOWN_MINTS.items():
             assert "mainnet-beta" not in networks, (

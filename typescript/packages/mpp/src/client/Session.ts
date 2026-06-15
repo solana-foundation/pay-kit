@@ -1,19 +1,11 @@
-import {
-    createSignableMessage,
-    getBase58Decoder,
-    getBase58Encoder,
-    getI64Encoder,
-    getU64Encoder,
-    type MessagePartialSigner,
-} from '@solana/kit';
+import { createSignableMessage, getBase58Decoder, type MessagePartialSigner } from '@solana/kit';
 import type { Challenge as MppxChallenge } from 'mppx';
 import { Credential, Method, z } from 'mppx';
 
 import * as Methods from '../Methods.js';
+import { encodeVoucherMessageLoose } from '../shared/voucher.js';
 
 const U64_MAX = (1n << 64n) - 1n;
-const I64_MIN = -(1n << 63n);
-const I64_MAX = (1n << 63n) - 1n;
 
 /**
  * Default voucher expiry timestamp, matching the Rust SDK and program tests.
@@ -47,7 +39,9 @@ export type SessionSigner = MessagePartialSigner;
  * Basis-point split distributed when a session settles.
  */
 export interface SessionSplit {
+    /** Share of the settled amount, in basis points (100 = 1%). */
     readonly bps: number;
+    /** Base58 address receiving this share. */
     readonly recipient: string;
 }
 
@@ -55,19 +49,33 @@ export interface SessionSplit {
  * Request embedded in a Solana `session` challenge.
  */
 export interface SessionRequest extends Record<string, unknown> {
+    /** Maximum the session may spend, in base units. */
     readonly cap: string;
+    /** Currency identifier: a symbol like `'USDC'` or an SPL mint address. */
     readonly currency: string;
+    /** Token decimals (6 for the supported stablecoins). */
     readonly decimals?: number | undefined;
+    /** Human-readable description of what the session pays for. */
     readonly description?: string | undefined;
+    /** Merchant correlation id echoed in receipts. */
     readonly externalId?: string | undefined;
+    /** Smallest voucher increment the server accepts, in base units. */
     readonly minVoucherDelta?: string | undefined;
+    /** Funding modes the server supports. Omitted or empty means push only. */
     readonly modes?: SessionMode[] | undefined;
+    /** Solana network slug (`mainnet`, `devnet`, `localnet`). */
     readonly network?: string | undefined;
+    /** Operator public key vouchers are addressed to (base58). */
     readonly operator: string;
+    /** Payment-channels program id override (base58). */
     readonly programId?: string | undefined;
+    /** Voucher authority for pull-mode sessions. */
     readonly pullVoucherStrategy?: SessionPullVoucherStrategy | undefined;
+    /** Server-provided recent blockhash, saving the client an RPC round-trip. */
     readonly recentBlockhash?: string | undefined;
+    /** Primary recipient of the settled amount (base58). */
     readonly recipient: string;
+    /** Basis-point splits distributed at close. */
     readonly splits?: SessionSplit[] | undefined;
 }
 
@@ -80,9 +88,13 @@ export type SessionChallenge = MppxChallenge.Challenge<SessionRequest, 'session'
  * Voucher content signed by the client session key.
  */
 export interface VoucherData {
+    /** Channel / session id the voucher is bound to (base58). */
     readonly channelId: string;
+    /** Cumulative amount authorized so far, in base units. */
     readonly cumulativeAmount: string;
+    /** Unix timestamp (seconds) at which the voucher expires. */
     readonly expiresAt: number;
+    /** Optional client-side voucher counter. Not part of the signed bytes. */
     readonly nonce?: number | undefined;
 }
 
@@ -90,10 +102,15 @@ export interface VoucherData {
  * Voucher-like input accepted by low-level serialization helpers.
  */
 export interface VoucherDataInput {
+    /** Channel / session id the voucher is bound to (base58). */
     readonly channelId: string;
+    /** Legacy wire alias for `cumulativeAmount`. */
     readonly cumulative?: AmountLike | undefined;
+    /** Cumulative amount authorized so far, in base units. */
     readonly cumulativeAmount?: AmountLike | undefined;
+    /** Unix timestamp (seconds) at which the voucher expires. */
     readonly expiresAt: AmountLike;
+    /** Optional client-side voucher counter. Not part of the signed bytes. */
     readonly nonce?: number | undefined;
 }
 
@@ -101,7 +118,9 @@ export interface VoucherDataInput {
  * Signed cumulative voucher.
  */
 export interface SignedVoucher {
+    /** The signed voucher fields. */
     readonly data: VoucherData;
+    /** Base58 Ed25519 signature over the canonical voucher bytes. */
     readonly signature: string;
 }
 
@@ -109,21 +128,37 @@ export interface SignedVoucher {
  * Open action payload for payment channels or delegated-token pull sessions.
  */
 export interface OpenPayload {
+    /** Pull mode: delegated amount approved by the wallet, in base units. */
     readonly approvedAmount?: string | undefined;
+    /** Public key authorized to sign vouchers for this session (base58). */
     readonly authorizedSigner: string;
+    /** Channel address (push) or delegated token account (pull), base58. */
     readonly channelId?: string | undefined;
+    /** Push mode: deposit locked in the payment channel, in base units. */
     readonly deposit?: string | undefined;
+    /** Push mode: close grace period in seconds. */
     readonly gracePeriod?: number | undefined;
+    /** Pull mode: pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
     readonly initMultiDelegateTx?: string | undefined;
+    /** SPL mint of the funding asset (base58). */
     readonly mint?: string | undefined;
+    /** Funding mode this open uses. */
     readonly mode: SessionMode;
+    /** Pull mode: wallet that owns the delegated token account (base58). */
     readonly owner?: string | undefined;
+    /** Push mode: channel payee (base58). */
     readonly payee?: string | undefined;
+    /** Push mode: channel payer (base58). */
     readonly payer?: string | undefined;
+    /** Push mode: channel-derivation salt (decimal string). */
     readonly salt?: string | undefined;
+    /** Open transaction signature, or {@link PENDING_SERVER_SIGNATURE} when the server broadcasts. */
     readonly signature: string;
+    /** Pull mode: delegated token account vouchers draw from (base58). */
     readonly tokenAccount?: string | undefined;
+    /** Push mode: base64 signed open transaction for server-side submission. */
     readonly transaction?: string | undefined;
+    /** Pull mode: pre-signed delegation update transaction (base64). */
     readonly updateDelegationTx?: string | undefined;
 }
 
@@ -141,7 +176,9 @@ export type SessionAction =
  * Payload body posted to a commit endpoint by the consumer helpers.
  */
 export interface CommitPayload {
+    /** Delivery being committed. */
     readonly deliveryId: string;
+    /** Signed cumulative voucher covering the delivery. */
     readonly voucher: SignedVoucher;
 }
 
@@ -149,13 +186,21 @@ export interface CommitPayload {
  * Server-issued metering directive attached to a delivered message.
  */
 export interface MeteringDirective {
+    /** Price of this delivery, in base units. */
     readonly amount: string;
+    /** Endpoint the commit should be POSTed to. Falls back to the transport default. */
     readonly commitUrl?: string | undefined;
+    /** Currency identifier the amount is denominated in. */
     readonly currency: string;
+    /** Unique id of the reserved delivery. */
     readonly deliveryId: string;
+    /** Unix timestamp (seconds) after which the reservation lapses. */
     readonly expiresAt: number;
+    /** Opaque server token echoed back on commit. Clients must not modify it. */
     readonly proof?: string | undefined;
+    /** Server-side delivery sequence number, monotonic per session. */
     readonly sequence: number;
+    /** Session / channel the delivery is billed against. */
     readonly sessionId: string;
 }
 
@@ -163,7 +208,9 @@ export interface MeteringDirective {
  * Final usage for a metered stream.
  */
 export interface MeteringUsage {
+    /** Total metered amount, in base units. */
     readonly amount: string;
+    /** Delivery the usage belongs to. */
     readonly deliveryId: string;
 }
 
@@ -171,7 +218,9 @@ export interface MeteringUsage {
  * Payload paired with the directive needed to acknowledge it.
  */
 export interface MeteredEnvelope<Payload> {
+    /** Directive to commit once the payload is processed. */
     readonly metering: MeteringDirective;
+    /** The delivered application payload. */
     readonly payload: Payload;
 }
 
@@ -184,10 +233,15 @@ export type CommitStatus = 'committed' | 'replayed';
  * Receipt returned after a commit is accepted.
  */
 export interface CommitReceipt {
+    /** Amount this commit added, in base units. */
     readonly amount: string;
+    /** Session cumulative after the commit, in base units. */
     readonly cumulative: string;
+    /** Delivery the commit settled. */
     readonly deliveryId: string;
+    /** Session / channel the commit was applied to. */
     readonly sessionId: string;
+    /** `committed` on first acceptance, `replayed` on idempotent retries. */
     readonly status: CommitStatus;
 }
 
@@ -195,29 +249,53 @@ export interface CommitReceipt {
  * Context accepted by the `session()` MPP client method.
  */
 export interface SessionContext {
+    /** Session action to perform. Defaults to `open` until a session is active, then `voucher`. */
     readonly action?: 'close' | 'commit' | 'open' | 'topUp' | 'voucher' | undefined;
+    /** Incremental amount for `voucher` / `commit`, in base units. */
     readonly amount?: AmountLike | undefined;
+    /** Pull opens: delegated amount approved by the wallet, in base units. */
     readonly approvedAmount?: AmountLike | undefined;
+    /** Absolute cumulative amount for `voucher`, in base units. */
     readonly cumulativeAmount?: AmountLike | undefined;
+    /** Delivery to commit. Defaults to `directive.deliveryId`. */
     readonly deliveryId?: string | undefined;
+    /** Push opens: channel deposit, in base units. Defaults to the challenge cap. */
     readonly deposit?: AmountLike | undefined;
+    /** Metering directive being committed. */
     readonly directive?: MeteringDirective | undefined;
+    /** Close: last unsettled increment to sign into the closing voucher, in base units. */
     readonly finalIncrement?: AmountLike | undefined;
+    /** Push opens: channel close grace period in seconds. */
     readonly gracePeriod?: number | undefined;
+    /** Pull opens: pre-signed multi-delegate init transaction (base64). */
     readonly initMultiDelegateTx?: string | undefined;
+    /** Push opens: SPL mint of the deposit (base58). */
     readonly mint?: string | undefined;
+    /** Funding mode for `open`. Defaults to the first server-advertised mode. */
     readonly mode?: SessionMode | undefined;
+    /** TopUp: new total deposit, in base units. */
     readonly newDeposit?: AmountLike | undefined;
+    /** Pull opens: wallet that owns the delegated token account (base58). */
     readonly owner?: string | undefined;
+    /** Push opens: channel payee (base58). */
     readonly payee?: string | undefined;
+    /** Push opens: channel payer (base58). */
     readonly payer?: string | undefined;
+    /** Push opens: channel-derivation salt. */
     readonly salt?: AmountLike | undefined;
+    /** Active session to act on, overriding the method-level session. */
     readonly session?: ActiveSession | undefined;
+    /** Open / topUp transaction signature (base58). */
     readonly signature?: string | undefined;
+    /** Optional client identifier serialized into the credential. */
     readonly source?: string | undefined;
+    /** Pull opens: delegated token account vouchers draw from (base58). */
     readonly tokenAccount?: string | undefined;
+    /** Push opens: base64 signed open transaction for server-side submission. */
     readonly transaction?: string | undefined;
+    /** Pull opens: pre-signed delegation update transaction (base64). */
     readonly updateDelegationTx?: string | undefined;
+    /** Pre-signed voucher for `voucher` / `close`, bypassing local signing. */
     readonly voucher?: SignedVoucher | undefined;
 }
 
@@ -227,23 +305,22 @@ export interface SessionContext {
 export const sessionContextSchema = z.custom<SessionContext>();
 
 /**
+ * Returns the funding modes advertised by a session request; an omitted or
+ * empty `modes` list means the server only supports push.
+ */
+export function sessionRequestModes(request: Pick<SessionRequest, 'modes'>): readonly SessionMode[] {
+    return request.modes && request.modes.length > 0 ? request.modes : ['push'];
+}
+
+/**
  * Builds canonical payment-channel voucher bytes:
  * `channel_id || cumulative_amount_le_u64 || expires_at_le_i64`.
+ *
+ * Delegates to the shared encoder so client and server agree on the bytes
+ * they sign / verify.
  */
 export function voucherMessageBytes(data: VoucherDataInput): Uint8Array {
-    const channelIdBytes = getBase58Encoder().encode(data.channelId);
-    if (channelIdBytes.byteLength !== 32) {
-        throw new Error(`channelId must decode to 32 bytes; got ${channelIdBytes.byteLength}`);
-    }
-
-    const cumulative = parseAmount(requiredCumulative(data), 'cumulativeAmount');
-    const expiresAt = parseI64(data.expiresAt, 'expiresAt');
-
-    const bytes = new Uint8Array(48);
-    bytes.set(channelIdBytes, 0);
-    bytes.set(getU64Encoder().encode(cumulative), 32);
-    bytes.set(getI64Encoder().encode(expiresAt), 40);
-    return bytes;
+    return encodeVoucherMessageLoose(data);
 }
 
 /**
@@ -259,8 +336,11 @@ export function serializeSessionCredential(parameters: serializeSessionCredentia
 
 export declare namespace serializeSessionCredential {
     interface Parameters {
+        /** Challenge the credential answers (echoed for stateless verification). */
         readonly challenge: SessionChallenge;
+        /** Session action to authorize. */
         readonly payload: SessionAction;
+        /** Optional client identifier serialized into the credential. */
         readonly source?: string | undefined;
     }
 }
@@ -295,7 +375,7 @@ export class ActiveSession {
         this.#signer = parameters.signer;
         this.#cumulative = parseAmount(parameters.cumulative ?? 0n, 'cumulative');
         this.#expiresAt = parseSafeInteger(parameters.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT, 'expiresAt');
-        this.#nonce = Number(parseAmount(parameters.nonce ?? 0n, 'nonce'));
+        this.#nonce = parseSafeInteger(parameters.nonce ?? 0n, 'nonce');
     }
 
     /** Channel/session identifier used by all vouchers. */
@@ -522,37 +602,57 @@ export class ActiveSession {
 
 export declare namespace ActiveSession {
     interface Options {
+        /** Cumulative already authorized when resuming a session, in base units. Defaults to 0. */
         readonly cumulative?: AmountLike | undefined;
+        /** Voucher expiry as a unix timestamp (seconds). Defaults to {@link DEFAULT_SESSION_EXPIRES_AT}. */
         readonly expiresAt?: AmountLike | undefined;
+        /** Starting voucher counter when resuming a session. */
         readonly nonce?: AmountLike | undefined;
     }
 
     interface Parameters extends Options {
+        /** Channel address (push) or delegated token account (pull), base58. */
         readonly channelId: string;
+        /** Key that signs vouchers for this session. */
         readonly signer: SessionSigner;
     }
 
     interface OpenOptions {
+        /** Funding mode. Defaults to `push`. */
         readonly mode?: SessionMode | undefined;
+        /** Base64 signed open transaction for server-side submission. */
         readonly transaction?: string | undefined;
     }
 
     interface PaymentChannelOpenParameters extends OpenOptions {
+        /** Deposit locked in the channel, in base units. */
         readonly deposit: AmountLike;
+        /** Close grace period in seconds. */
         readonly gracePeriod: number;
+        /** SPL mint of the deposit (base58). */
         readonly mint: string;
+        /** Channel payee (base58). */
         readonly payee: string;
+        /** Channel payer (base58). */
         readonly payer: string;
+        /** Channel-derivation salt. */
         readonly salt: AmountLike;
+        /** Open transaction signature (base58). */
         readonly signature: string;
     }
 
     interface PullOpenParameters {
+        /** Delegated amount approved by the wallet, in base units. */
         readonly approvedAmount: AmountLike;
+        /** Pre-signed multi-delegate init transaction (base64), when the PDA may not exist yet. */
         readonly initMultiDelegateTx?: string | undefined;
+        /** Wallet that owns the delegated token account (base58). */
         readonly owner: string;
+        /** Delegation transaction signature, or {@link PENDING_SERVER_SIGNATURE}. */
         readonly signature: string;
+        /** Delegated token account vouchers draw from (base58). Defaults to the derived account. */
         readonly tokenAccount?: string | undefined;
+        /** Pre-signed delegation update transaction (base64). */
         readonly updateDelegationTx?: string | undefined;
     }
 }
@@ -623,19 +723,28 @@ export function session(parameters: session.Parameters = {}) {
 
 export declare namespace session {
     interface CreateActionParameters {
+        /** Challenge being answered. */
         readonly challenge: SessionChallenge;
+        /** Per-request context passed to the method handler. */
         readonly context?: SessionContext | undefined;
+        /** Active session, when one has already been opened. */
         readonly session?: ActiveSession | undefined;
     }
 
     interface Parameters {
+        /** Channel id to resume. Requires `signer`; ignored when `session` is given. */
         readonly channelId?: string | undefined;
+        /** Override that builds the session action for each challenge (custom wallet flows). */
         readonly createAction?:
             | ((parameters: CreateActionParameters) => Promise<SessionAction> | SessionAction)
             | undefined;
+        /** Voucher expiry for a resumed session, unix seconds. */
         readonly expiresAt?: AmountLike | undefined;
+        /** Existing session to drive instead of creating one. */
         readonly session?: ActiveSession | undefined;
+        /** Voucher signer for a resumed session. */
         readonly signer?: SessionSigner | undefined;
+        /** Optional client identifier serialized into credentials. */
         readonly source?: string | undefined;
     }
 }
@@ -646,7 +755,7 @@ function createOpenAction(
     context: SessionContext,
 ): SessionAction {
     const signature = requireString(context.signature, 'signature');
-    const mode = context.mode ?? challenge.request.modes?.[0] ?? 'push';
+    const mode = context.mode ?? sessionRequestModes(challenge.request)[0] ?? 'push';
 
     if (mode === 'pull' && shouldUseDelegatedPull(context, challenge)) {
         return session_.openPullAction({
@@ -686,7 +795,7 @@ function createOpenAction(
 }
 
 function shouldUseDelegatedPull(context: SessionContext, challenge: SessionChallenge): boolean {
-    if (context.mode !== 'pull' && challenge.request.modes?.[0] !== 'pull') return false;
+    if (context.mode !== 'pull' && sessionRequestModes(challenge.request)[0] !== 'pull') return false;
     return (
         challenge.request.pullVoucherStrategy === 'operatedVoucher' ||
         context.approvedAmount !== undefined ||
@@ -711,12 +820,6 @@ async function createCommitAction(session_: ActiveSession, context: SessionConte
     return await session_.commitAction(deliveryId, context.amount ?? context.directive?.amount);
 }
 
-function requiredCumulative(data: VoucherDataInput): AmountLike {
-    if (data.cumulativeAmount !== undefined) return data.cumulativeAmount;
-    if (data.cumulative !== undefined) return data.cumulative;
-    throw new Error('cumulativeAmount required');
-}
-
 function formatAmount(value: AmountLike, name: string): string {
     return parseAmount(value, name).toString();
 }
@@ -725,12 +828,6 @@ function parseAmount(value: AmountLike, name: string): bigint {
     const parsed = parseInteger(value, name);
     if (parsed < 0n) throw new Error(`${name} must be non-negative`);
     if (parsed > U64_MAX) throw new Error(`${name} exceeds u64 max`);
-    return parsed;
-}
-
-function parseI64(value: AmountLike, name: string): bigint {
-    const parsed = parseInteger(value, name);
-    if (parsed < I64_MIN || parsed > I64_MAX) throw new Error(`${name} is outside i64 range`);
     return parsed;
 }
 

@@ -33,7 +33,7 @@ describe("process.startServer error enrichment", () => {
       command: [
         "sh",
         "-c",
-        "printf 'client boom: env=%s\\n' \"$MPP_INTEROP_TARGET_URL\" 1>&2; exit 3",
+        "printf 'client boom: env=%s\\n' \"$MPP_HARNESS_TARGET_URL\" 1>&2; exit 3",
       ],
       enabled: true,
     };

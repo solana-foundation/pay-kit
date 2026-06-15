@@ -420,6 +420,170 @@ final class SolanaChargeTransactionVerifierTest extends TestCase
         self::assertSame('Only idempotent ATA creation is allowed', $result->reason);
     }
 
+    public function testPushPathSkipsComputeBudgetPriceCap(): void
+    {
+        // Rust validate_parsed_instruction_allowlist (charge.rs:1873-1876)
+        // skips the compute-budget caps on the settled (push) path: a confirmed
+        // transaction with an above-cap unit price is accepted. The pull-mode
+        // pre-broadcast path still rejects it (asserted below), so this is the
+        // exact pull-vs-push divergence the fix introduces.
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [ComputeBudgetProgram::setComputeUnitPrice(5_000_001)],
+        );
+
+        $pull = $this->verify($request, $transaction);
+        self::assertFalse($pull->ok);
+        self::assertSame('compute unit price exceeds maximum', $pull->reason);
+
+        $push = (new SolanaChargeTransactionVerifier())
+            ->verifyTransactionPayload($transaction, $request);
+        self::assertTrue($push->ok, $push->reason);
+    }
+
+    public function testPushPathSkipsComputeBudgetLimitCap(): void
+    {
+        $fixture = $this->fixture();
+        $request = $this->request($fixture);
+        $transaction = $this->transactionPayload(
+            $fixture,
+            includeSplitAta: true,
+            extraInstructions: [ComputeBudgetProgram::setComputeUnitLimit(200_001)],
+        );
+
+        $pull = $this->verify($request, $transaction);
+        self::assertFalse($pull->ok);
+        self::assertSame('compute unit limit exceeds maximum', $pull->reason);
+
+        $push = (new SolanaChargeTransactionVerifier())
+            ->verifyTransactionPayload($transaction, $request);
+        self::assertTrue($push->ok, $push->reason);
+    }
+
+    public function testClientPaysAtaCreationPayerMustMatchTransactionFeePayer(): void
+    {
+        // Client-pays-fees mode (methodDetails.feePayer absent). Rust defaults
+        // expected_ata_payer to the transaction fee payer
+        // (charge.rs:1299-1305), so an ATA-create funded by any other account
+        // is rejected. Before the fix PHP passed a null expected payer and
+        // skipped this binding entirely.
+        $fixture = $this->fixture();
+        $request = $this->clientPaysRequest($fixture);
+
+        $strangerPayer = PublicKey::fromBytes(str_repeat("\x0a", 32));
+        $transaction = $this->clientPaysTransactionPayload($fixture, ataPayer: $strangerPayer);
+
+        $result = $this->verify($request, $transaction);
+
+        self::assertFalse($result->ok);
+        self::assertSame('ATA payer must match the transaction fee payer', $result->reason);
+    }
+
+    public function testClientPaysAtaCreationByTransactionFeePayerAccepted(): void
+    {
+        // Happy-path guard for the fix: when the ATA-create payer is the
+        // transaction fee payer (the client paying its own fees), the charge
+        // still verifies.
+        $fixture = $this->fixture();
+        $request = $this->clientPaysRequest($fixture);
+        $transaction = $this->clientPaysTransactionPayload($fixture, ataPayer: $fixture['payer']);
+
+        $result = $this->verify($request, $transaction);
+
+        self::assertTrue($result->ok, $result->reason);
+    }
+
+    /**
+     * Client-pays-fees charge request: no server-side feePayer, so the client
+     * is both the transaction fee payer and the ATA-creation payer.
+     *
+     * @param array<string, PublicKey> $fixture
+     */
+    private function clientPaysRequest(array $fixture): ChargeRequest
+    {
+        return new ChargeRequest(
+            amount: '1000',
+            currency: $fixture['mint']->toBase58(),
+            recipient: $fixture['recipient']->toBase58(),
+            externalId: 'order-123',
+            methodDetails: [
+                'network' => 'localnet',
+                'decimals' => 6,
+                'tokenProgram' => TokenProgram::PROGRAM_ID,
+                'splits' => [
+                    [
+                        'recipient' => $fixture['splitRecipient']->toBase58(),
+                        'amount' => '250',
+                        'ataCreationRequired' => true,
+                        'memo' => 'split memo',
+                    ],
+                ],
+            ],
+        );
+    }
+
+    /**
+     * Build a client-pays transaction whose fee payer (and transfer authority)
+     * is $fixture['payer'] but whose ATA-creation payer is configurable.
+     *
+     * @param array<string, PublicKey> $fixture
+     */
+    private function clientPaysTransactionPayload(array $fixture, PublicKey $ataPayer): string
+    {
+        $tokenProgram = TokenProgram::programId();
+        $recipientAta = AssociatedTokenProgram::findAssociatedTokenAddress(
+            $fixture['recipient'],
+            $fixture['mint'],
+            $tokenProgram,
+        )[0];
+        $splitAta = AssociatedTokenProgram::findAssociatedTokenAddress(
+            $fixture['splitRecipient'],
+            $fixture['mint'],
+            $tokenProgram,
+        )[0];
+
+        $instructions = [
+            TokenProgram::transferChecked(
+                $fixture['sourceTokenAccount'],
+                $fixture['mint'],
+                $recipientAta,
+                $fixture['payer'],
+                750,
+                6,
+                $tokenProgram,
+            ),
+            AssociatedTokenProgram::createIdempotent(
+                $ataPayer,
+                $splitAta,
+                $fixture['splitRecipient'],
+                $fixture['mint'],
+                $tokenProgram,
+            ),
+            TokenProgram::transferChecked(
+                $fixture['sourceTokenAccount'],
+                $fixture['mint'],
+                $splitAta,
+                $fixture['payer'],
+                250,
+                6,
+                $tokenProgram,
+            ),
+            MemoProgram::create('order-123'),
+            MemoProgram::create('split memo'),
+        ];
+
+        $transaction = Transaction::new(
+            $instructions,
+            $fixture['payer'],
+            str_repeat("\x09", 32),
+        );
+
+        return base64_encode($transaction->serialize(verifySignatures: false));
+    }
+
     /**
      * @param array<string, PublicKey> $fixture
      * @param array<int, array<string, mixed>>|null $splits

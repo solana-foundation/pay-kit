@@ -93,8 +93,8 @@ jobs:
           path: lua/target/surfpool-reports/
           if-no-files-found: ignore
 
-  interop-lua:
-    name: Lua interop focused matrix
+  harness-lua:
+    name: Lua harness focused matrix
     needs: test-lua
     runs-on: ubuntu-latest
     steps:
@@ -144,44 +144,44 @@ jobs:
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
 
-      - name: Build Rust interop client
+      - name: Build Rust harness client
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client
+        run: cargo build -p solana-mpp --bin harness_client
 
-      - name: Install interop harness deps
+      - name: Install harness deps
         working-directory: harness
         run: pnpm install --frozen-lockfile
 
       - name: TS-to-Lua focused matrix
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: lua
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: lua
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays lua server"
 
       - name: Rust-to-Lua focused matrix
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: lua
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: lua
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays lua server"
 
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same Lua adapter binary. Mirrors the ruby workflow's
-      # interop-ruby step. The dual-protocol Lua adapter at
-      # harness/lua-server/server.lua reads either MPP_INTEROP_* or
-      # X402_INTEROP_* env (or the PAY_KIT_INTEROP_PROTOCOL hint that
+      # harness-ruby step. The dual-protocol Lua adapter at
+      # harness/lua-server/server.lua reads either MPP_HARNESS_* or
+      # X402_HARNESS_* env (or the PAY_KIT_HARNESS_PROTOCOL hint that
       # the matrix stamps when both namespaces are populated against
       # the same surfpool fixtures) and routes through resty.pay_kit.
-      - name: Run PayKit interop smoke (mpp charge + x402 exact)
+      - name: Run PayKit harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: lua,typescript
-          MPP_INTEROP_INTENTS: charge,x402-exact
-          X402_INTEROP_CLIENTS: rust-x402
-          X402_INTEROP_SERVERS: ""
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: lua,typescript
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          X402_HARNESS_CLIENTS: rust-x402
+          X402_HARNESS_SERVERS: ""
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000

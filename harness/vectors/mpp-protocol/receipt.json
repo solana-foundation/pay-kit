@@ -1,0 +1,112 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "draft-ietf-httpauth-payment §5.3",
+  "description": "Payment-Receipt header parsing and formatting",
+  "commands": {
+    "parse": "parse-receipt",
+    "format": "format-receipt"
+  },
+  "scenarios": [
+    {
+      "name": "success_receipt",
+      "description": "Successful payment receipt",
+      "tags": ["happy-path"],
+      "object": {
+        "method": "tempo",
+        "reference": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
+        "status": "success",
+        "timestamp": "2026-01-29T12:00:30Z"
+      },
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "error_invalid_base64url",
+      "description": "Rejects receipt with invalid base64url encoding",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "not-valid-base64!!!",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_invalid_json",
+      "description": "Rejects receipt with valid base64url that decodes to non-JSON",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "bm90IGpzb24",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_status",
+      "description": "Rejects receipt missing required status field",
+      "tags": ["error", "missing-field"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwidGltZXN0YW1wIjoiMjAyNi0wMS0yOVQxMjowMDozMFoifQ",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_method",
+      "description": "Rejects receipt missing required method field",
+      "tags": ["error", "missing-field"],
+      "wire": "eyJyZWZlcmVuY2UiOiIweGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiJ9",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_reference",
+      "description": "Rejects receipt missing required reference field",
+      "tags": ["error", "missing-field"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiJ9",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_timestamp",
+      "description": "Rejects receipt missing required timestamp field",
+      "tags": ["error", "missing-field"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyJ9",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_non_iso8601_timestamp",
+      "description": "Rejects receipt with non-ISO8601 timestamp format",
+      "tags": ["error", "invalid-value"],
+      "wire": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IkphbiAyOSAyMDI2IDEyOjAwIn0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "paykit-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/gen-snippets.mjs",
+    "prebuild": "node scripts/gen-snippets.mjs",
+    "dev": "if [ -n \"$PAYKIT_PLAYGROUND_API_URL\" ]; then echo \"Using external playground API at $PAYKIT_PLAYGROUND_API_URL\"; pnpm -C app dev; else PLAYGROUND_PORT=${PLAYGROUND_PORT:-3000} concurrently -n api,app -c cyan,magenta \"PORT=$PLAYGROUND_PORT pnpm -C ../typescript/examples/playground-api dev\" \"PLAYGROUND_PORT=$PLAYGROUND_PORT pnpm -C app dev\"; fi",
+    "dev:api": "pnpm -C ../typescript/examples/playground-api dev",
+    "dev:app": "pnpm -C app dev",
+    "build": "pnpm -C app build && pnpm -C ../typescript/examples/playground-api build && pnpm check-snippets",
+    "start": "pnpm -C ../typescript/examples/playground-api start",
+    "docs:gen": "tsx scripts/gen-docs.ts",
+    "gen-snippets": "node scripts/gen-snippets.mjs",
+    "check-snippets": "pnpm -C ../typescript/examples/playground-api exec tsc -p tsconfig.snippets.json"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayKit\Frameworks\Symfony\EventListener;
 
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Middleware\RequirePayment as PsrRequirePayment;
 use PayKit\Pricing;
 use PayKit\Frameworks\Symfony\Attribute\RequirePayment;
@@ -22,7 +22,7 @@ use Symfony\Component\HttpKernel\Event\ControllerArgumentsEvent;
 final class RequirePaymentListener
 {
     public function __construct(
-        private readonly Client $client,
+        private readonly PayKit $client,
         private readonly ?Pricing $pricing,
         private readonly PsrHttpFactory $psrFactory,
         private readonly HttpFoundationFactory $httpFactory,

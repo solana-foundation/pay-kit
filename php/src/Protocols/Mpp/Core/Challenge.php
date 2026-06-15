@@ -6,6 +6,8 @@ namespace PayKit\Protocols\Mpp\Core;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use PayKit\PayCore\Rfc3339Parser;
+use PayKit\PayCore\Wire\Base64Url;
 
 /**
  * Represents a signed MPP challenge from a WWW-Authenticate header.
@@ -24,6 +26,7 @@ final class Challenge
         public readonly string $expires = '',
         public readonly string $digest = '',
         public readonly ?string $opaque = null,
+        public readonly ?string $description = null,
     ) {
         if ($this->id === '' || $this->realm === '' || $this->method === '' || $this->intent === '' || $this->request === '') {
             throw new InvalidArgumentException('Challenge is missing required fields');

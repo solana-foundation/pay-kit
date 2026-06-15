@@ -1,6 +1,7 @@
 package x402
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -10,10 +11,11 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
@@ -106,6 +108,69 @@ func TestVerifyAcceptsTrailingMemo(t *testing.T) {
 	if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
 		t.Fatalf("expected memo-trailing tx to pass, got %v", err)
 	}
+}
+
+// TestVerifyAcceptsTrailingLighthouse proves a wallet-injected Lighthouse
+// guard instruction in an optional slot is allowed (Phantom injects 1,
+// Solflare 2), per the x402 SVM spec.
+func TestVerifyAcceptsTrailingLighthouse(t *testing.T) {
+	f := newFixture(t)
+	lhIdx := uint16(len(f.keys))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(lighthouseProgram))
+	lh := solana.CompiledInstruction{ProgramIDIndex: lhIdx, Data: []byte{0x01}}
+	// Two Lighthouse instructions (Solflare-style) must also pass.
+	if err := verifyExactTransaction(f.tx(lh, lh), f.req); err != nil {
+		t.Fatalf("expected trailing Lighthouse instructions to pass, got %v", err)
+	}
+}
+
+// TestVerifyRejectsTrailingATACreate proves a Create-ATA (Associated Token
+// Program) instruction in an optional slot is rejected: the x402 SVM spec
+// requires the destination ATA to pre-exist.
+func TestVerifyRejectsTrailingATACreate(t *testing.T) {
+	f := newFixture(t)
+	ataIdx := uint16(len(f.keys))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.AssociatedTokenProgram))
+	ata := solana.CompiledInstruction{ProgramIDIndex: ataIdx, Data: []byte{1}}
+	if err := verifyExactTransaction(f.tx(ata), f.req); err == nil {
+		t.Error("expected rejection for trailing ATA-create instruction")
+	}
+}
+
+// TestVerifyEnforcesExpectedMemoMatch proves that when the offer pins
+// extra.memo the verifier requires exactly one Memo whose data equals it.
+func TestVerifyEnforcesExpectedMemoMatch(t *testing.T) {
+	mkMemo := func(t *testing.T, f *fixture, data string) solana.CompiledInstruction {
+		idx := uint16(len(f.keys))
+		f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
+		return solana.CompiledInstruction{ProgramIDIndex: idx, Data: []byte(data)}
+	}
+
+	t.Run("matching memo passes", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		memo := mkMemo(t, &f, "pi_invoice_42")
+		if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
+			t.Fatalf("expected matching memo to pass, got %v", err)
+		}
+	})
+
+	t.Run("wrong memo rejected", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		memo := mkMemo(t, &f, "different")
+		if err := verifyExactTransaction(f.tx(memo), f.req); err == nil {
+			t.Error("expected rejection for memo not matching extra.memo")
+		}
+	})
+
+	t.Run("missing memo rejected", func(t *testing.T) {
+		f := newFixture(t)
+		f.req.expectedMemo = "pi_invoice_42"
+		if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+			t.Error("expected rejection when extra.memo set but no memo present")
+		}
+	})
 }
 
 func TestVerifyRejectsTooFewInstructions(t *testing.T) {
@@ -307,7 +372,7 @@ func TestVerifyAndSettleHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected settle to succeed, got %v", err)
 	}
-	if pmt.Scheme != paykit.X402 || pmt.Transaction != sampleSig {
+	if pmt.Protocol != paykit.X402 || pmt.Transaction != sampleSig {
 		t.Errorf("payment: %+v", pmt)
 	}
 	if pmt.SettlementHeaders[settlementHeader] != sampleSig {
@@ -389,8 +454,8 @@ func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
 	var perr *paykit.PaymentError
-	if !errorsAs(err, &perr) || perr.Code != "charge_request_mismatch" {
-		t.Errorf("expected charge_request_mismatch, got %v", err)
+	if !errorsAs(err, &perr) || perr.Code != "invalid_exact_svm_payload_recipient_mismatch" {
+		t.Errorf("expected invalid_exact_svm_payload_recipient_mismatch, got %v", err)
 	}
 }
 
@@ -509,5 +574,50 @@ func TestVerifyRejectsComputeLimitWrongProgram(t *testing.T) {
 	f.keys[5] = solana.MustPublicKeyFromBase58(paycore.SystemProgram) // compute ixs now point at System
 	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[0] program is not ComputeBudget")
+	}
+}
+
+func TestCosignPassthroughWhenOperatorAbsent(t *testing.T) {
+	a, _, _ := settleFixture(t, &fakeRPC{})
+	// A transaction whose fee payer is a random key the operator does not
+	// hold: the operator has no empty signature slot, so cosign ships the
+	// original wire bytes unchanged.
+	payer := testutil.NewPrivateKey().PublicKey()
+	memo, err := solanatx.BuildMemoInstruction("hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh := solana.MustHashFromBase58(testutil.NewPrivateKey().PublicKey().String())
+	tx, err := solana.NewTransaction([]solana.Instruction{memo}, bh, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := a.cosign(context.Background(), tx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Error("cosign should pass the wire through untouched when the operator is not a missing signer")
+	}
+}
+
+func TestTransferRequirementsRejectsUnresolvableMint(t *testing.T) {
+	a, _, _ := settleFixture(t, &fakeRPC{})
+	bad := &paykit.Gate{Amount: paykit.MustParseUSD("0.10", paykit.Stablecoin("@@notamint"))}
+	if _, err := a.transferRequirements(bad); err == nil {
+		t.Error("expected an error resolving a bogus settlement currency to a mint")
+	}
+}
+
+func TestAwaitConfirmationHonorsContextCancellation(t *testing.T) {
+	a, _, _ := settleFixture(t, &fakeRPC{}) // no confirmation status -> would loop
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.awaitConfirmation(ctx, solana.Signature{}); err == nil {
+		t.Error("expected awaitConfirmation to return once the context is cancelled")
 	}
 }

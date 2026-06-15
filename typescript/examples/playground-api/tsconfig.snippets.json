@@ -1,0 +1,32 @@
+{
+  // Typechecks the canonical playground snippet sources in
+  // typescript/docs/snippets/ (see docs/snippets-convention.md) against the
+  // dependencies installed for the playground API. Run via
+  // `pnpm -C playground check-snippets`.
+  //
+  // The snippets live outside this package, so `paths` pins each bare import
+  // to this package's node_modules; transitive imports resolve from the
+  // mapped declaration files as usual.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false,
+    // The snippets are illustrative modules, not part of this Node16
+    // package — check them with bundler resolution so the missing
+    // `"type": "module"` in typescript/package.json doesn't flag every
+    // ESM-only dependency import as a CJS require.
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "express": ["./node_modules/@types/express"],
+      "@solana/kit": ["./node_modules/@solana/kit"],
+      "@solana/mpp/server": ["./node_modules/@solana/mpp/dist/server/index.d.ts"],
+      "@solana/mpp/client": ["./node_modules/@solana/mpp/dist/client/index.d.ts"],
+      "x402-fetch": ["./node_modules/x402-fetch/dist/esm/index.d.mts"],
+      "x402/types": ["./node_modules/x402/dist/esm/types/index.d.mts"]
+    }
+  },
+  "include": ["../../docs/snippets/**/*.ts"]
+}

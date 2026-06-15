@@ -41,6 +41,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports, so the
+      # type-aware lint rules need the package built first.
+      - run: pnpm --filter @solana/mpp build
       - run: pnpm lint
       - run: pnpm format:check
 
@@ -63,6 +66,8 @@ jobs:
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
+      # @solana/pay-kit resolves @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
       - run: pnpm typecheck
 
   test-ts:
@@ -84,6 +89,9 @@ jobs:
         with:
           name: html-assets
       - run: pnpm install --frozen-lockfile
+
+      # @solana/pay-kit's tests import @solana/mpp through its dist exports.
+      - run: pnpm --filter @solana/mpp build
 
       # Run ALL tests (unit + surfpool integration) with coverage
       - name: Run tests with coverage
@@ -123,9 +131,9 @@ jobs:
       - name: Verify committed gen files are up to date
         working-directory: .
         run: |
-          if ! git diff --quiet -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/; then
+          if ! git diff --quiet -- rust/crates/mpp/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/; then
             echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
-            git diff --stat -- rust/src/server/html/ go/protocols/mpp/server/html/ lua/mpp/server/html_assets/ python/src/solana_mpp/server/html/
+            git diff --stat -- rust/crates/mpp/src/server/html/ go/protocols/mpp/server/html/ lua/pay_kit/protocols/mpp/server/html_assets/ python/src/pay_kit/protocols/mpp/server/html/
             exit 1
           fi
       - name: Upload HTML build artifacts
@@ -134,10 +142,10 @@ jobs:
           name: html-assets
           path: |
             html/dist/
-            rust/src/server/html/
+            rust/crates/mpp/src/server/html/
             go/protocols/mpp/server/html/
-            lua/mpp/server/html_assets/
-            python/src/solana_mpp/server/html/
+            lua/pay_kit/protocols/mpp/server/html_assets/
+            python/src/pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
   test-rust:
@@ -169,11 +177,22 @@ jobs:
           SURFPOOL_REPORT: "1"
         # Lock to library scope: solana-mpp only (x402 has its own
         # coverage budget tracked separately), exclude bin entrypoints
-        # (interop harness), on-chain program crates under src/program/,
+        # (harness), on-chain program crates under src/program/,
         # and the multi_delegate client which only drives the on-chain
         # program. Reported coverage reflects the SDK surface downstream
         # users link against.
         run: cargo llvm-cov -p solana-mpp --ignore-filename-regex 'src/bin/|src/program/|client/multi_delegate' --json --output-path coverage.json
+
+      # Library tests for solana-x402. Separate from the llvm-cov step
+      # above because x402 doesn't share solana-mpp's 90% coverage floor
+      # yet, but its tests still gate PRs — in particular the loose-402
+      # challenge regression suite (`to_accepted_value_patches_loose_*`)
+      # that catches resource servers emitting non-canonical Solana x402
+      # `accepted` blocks (missing `scheme`, bare network slug, missing
+      # `maxTimeoutSeconds`).
+      - name: Run solana-x402 library tests
+        working-directory: rust
+        run: cargo test -p solana-x402 --lib
 
       - name: Enforce Rust coverage floor (>=90 cross-SDK baseline)
         working-directory: rust
@@ -211,7 +230,7 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
-  # Go tests, lint, coverage, and interop live in the dedicated go.yml
+  # Go tests, lint, coverage, and harness live in the dedicated go.yml
   # workflow (triggered on pull_request and workflow_call). Kept out of
   # ci.yml so there is a single "Go tests" check rather than two.
 
@@ -256,7 +275,7 @@ jobs:
       - run: pnpm test:integration
 
   test-payment-links-demo:
-    name: "Payment links E2E: Demo (TypeScript)"
+    name: "Payment links E2E: Playground (TypeScript)"
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -298,25 +317,26 @@ jobs:
       - name: Build TypeScript SDK
         working-directory: typescript
         run: pnpm build
-      - name: Install demo server dependencies
-        working-directory: demo/server
+      - name: Install playground API dependencies
+        working-directory: typescript/examples/playground-api
         run: pnpm install --frozen-lockfile
       - name: Install HTML dependencies & Playwright
         working-directory: html
         run: npm install && npx playwright install chromium
-      - name: Start demo server
-        working-directory: demo/server
+      - name: Start playground API
+        working-directory: typescript/examples/playground-api
         run: npx tsx index.ts &
         env:
           NETWORK: localnet
-      - name: Wait for demo server
+          PLAYGROUND_DISABLE_SIDECAR: "1"
+      - name: Wait for playground server
         working-directory: .
         run: |
           for i in $(seq 1 15); do
             curl -sf http://localhost:3000/api/v1/health && break
             sleep 1
           done
-      - name: Run Playwright tests (Demo)
+      - name: Run Playwright tests (Playground)
         working-directory: html
         run: npm run test:e2e:demo
 
@@ -386,8 +406,8 @@ jobs:
         working-directory: html
         run: npm run test:e2e:rust
 
-  interop:
-    name: "Interop: TypeScript harness"
+  harness:
+    name: "Harness: TypeScript harness"
     needs: build-html
     runs-on: ubuntu-latest
     steps:
@@ -399,8 +419,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-interop-
+          key: ${{ runner.os }}-cargo-harness-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-harness-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -419,10 +439,10 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust interop adapters
+      - name: Build Rust harness adapters
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client --bin interop_server
-      - name: Install interop harness
+        run: cargo build -p solana-mpp --bin harness_client --bin harness_server
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
       - uses: ruby/setup-ruby@v1
@@ -430,36 +450,36 @@ jobs:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
-      - name: Run Rust client interop smoke
+      - name: Run Rust client harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: typescript
-      - name: Run Rust server interop smoke
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: typescript
+      - name: Run Rust server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: rust
-      - name: Run Rust end-to-end interop smoke
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: rust
+      - name: Run Rust end-to-end harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: rust
-      - name: Run Ruby server interop smoke
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: rust
+      - name: Run Ruby server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays ruby server"
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: ruby
-      - name: Run Rust client to Ruby server interop smoke
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: ruby
+      - name: Run Rust client to Ruby server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays ruby server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: ruby
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: ruby

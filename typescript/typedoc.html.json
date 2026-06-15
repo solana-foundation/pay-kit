@@ -1,0 +1,11 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPointStrategy": "packages",
+  "entryPoints": ["packages/pay-kit", "packages/mpp"],
+  "out": "../docs/api/typescript-html",
+  "name": "@solana/pay-kit",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "hideGenerator": true
+}

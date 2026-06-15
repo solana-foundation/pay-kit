@@ -2,8 +2,8 @@
 
 module PayCore
   # Generic HTTP auth-scheme + auth-param parser per RFC 7235 sec 2.1
-  # and 4.1, shared by solana-mpp and solana-x402. Protocol-specific
-  # bindings (e.g. constructing `Mpp::Protocol::Core::Challenge` from a parsed
+  # and 4.1, shared by the MPP and x402 protocol layers. Protocol-specific
+  # bindings (e.g. constructing a protocol challenge from a parsed
   # `Payment` challenge) live in their respective layers; this module
   # only owns the tokenisation, quote-aware splitting, escaping, and
   # auth-param key/value parsing.
@@ -132,7 +132,17 @@ module PayCore
         index += 1 while index < input.length && input[index] != "=" && input[index] != "," && input[index] != " " && input[index] != "\t"
         key = input[key_start...index]
         index += 1 while index < input.length && [" ", "\t"].include?(input[index])
-        raise ArgumentError, "invalid auth parameter" if key.empty? || index >= input.length || input[index] != "="
+
+        raise ArgumentError, "invalid auth parameter" if key.empty?
+
+        # A non-empty token with no `=value` (e.g. trailing text after an
+        # unescaped closing quote inside a description value) is skipped, not
+        # rejected. Matches the canonical mpp-tools / Rust permissive parser:
+        # parsers truncate at the quote boundary and ignore the remainder.
+        if index >= input.length || input[index] != "="
+          index += 1 while index < input.length && input[index] != ","
+          next
+        end
 
         index += 1
         index += 1 while index < input.length && [" ", "\t"].include?(input[index])

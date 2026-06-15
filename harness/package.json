@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "mpp-sdk-interop",
+  "name": "mpp-sdk-harness",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
   "scripts": {
@@ -20,7 +20,9 @@
     "surfpool-sdk": "^1.2.0"
   },
   "devDependencies": {
+    "@solana-program/token": "^0.11.0",
     "@types/node": "^25.0.0",
+    "ajv": "^8.17.1",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"

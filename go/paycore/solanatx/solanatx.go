@@ -1,11 +1,11 @@
-// Package utils holds internal Solana-toolchain glue used by the
-// MPP charge handlers and client builders: a minimal Signer interface,
-// an RPCClient interface mirroring the subset of gagliardetto's
-// solana-go RPC client the SDK depends on, plus helpers to build SOL /
-// SPL transfer / associated-token-account / compute-budget / memo
-// instructions, decode transactions, split amounts, and run the
-// simulate-broadcast-confirm sequence. Internal-only; the public SDK
-// surface lives in the top-level mpp/server/client packages.
+// Package solanatx holds the protocol-agnostic Solana-toolchain glue
+// shared by every protocol: a minimal Signer interface, an RPCClient
+// interface mirroring the subset of gagliardetto's solana-go RPC client
+// the SDK depends on, plus helpers to build SOL / SPL transfer /
+// associated-token-account / compute-budget / memo instructions, decode
+// transactions, split amounts, and run the simulate-broadcast-confirm
+// sequence. It is a PayCore primitive and imports no protocol package;
+// the public SDK surface lives in the protocols/* and pay-kit packages.
 package solanatx
 
 import (
@@ -25,7 +25,6 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
-	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Signer is the minimal signer surface shared by the client and server packages.
@@ -275,7 +274,7 @@ func FetchTransaction(ctx context.Context, rpcClient RPCClient, signature solana
 // SplitAmounts computes the primary transfer amount and validates the split set.
 func SplitAmounts(total uint64, splits []paycore.Split) (uint64, error) {
 	if len(splits) > 8 {
-		return 0, core.NewError(core.ErrCodeTooManySplits, "splits exceed maximum of 8 entries")
+		return 0, paycore.NewError(paycore.ErrCodeTooManySplits, "splits exceed maximum of 8 entries")
 	}
 	var splitTotal uint64
 	for _, split := range splits {
@@ -285,12 +284,12 @@ func SplitAmounts(total uint64, splits []paycore.Split) (uint64, error) {
 		}
 		sum, carry := bits.Add64(splitTotal, amount, 0)
 		if carry != 0 {
-			return 0, core.NewError(core.ErrCodeSplitsExceed, "splits consume the entire amount")
+			return 0, paycore.NewError(paycore.ErrCodeSplitsExceed, "splits consume the entire amount")
 		}
 		splitTotal = sum
 	}
 	if splitTotal >= total {
-		return 0, core.NewError(core.ErrCodeSplitsExceed, "splits consume the entire amount")
+		return 0, paycore.NewError(paycore.ErrCodeSplitsExceed, "splits consume the entire amount")
 	}
 	return total - splitTotal, nil
 }

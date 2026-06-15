@@ -31,8 +31,6 @@ func CheckNetworkBlockhash(network, blockhashB58 string) error {
 	if network == LocalnetNetwork {
 		return nil
 	}
-	_ = blockhashB58 // intentionally unused: blockhash detail is debug-grade,
-	// not actionable for end users — keep the message terse.
 	return core.NewError(core.ErrCodeWrongNetwork, fmt.Sprintf(
 		"Signed against localnet but the server expects %s. "+
 			"Switch your client RPC to %s and re-sign.",

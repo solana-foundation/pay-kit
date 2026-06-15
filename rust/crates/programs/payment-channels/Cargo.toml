@@ -1,0 +1,33 @@
+[package]
+name = "payment-channels-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Codama-generated Rust client for the Solana payment-channels program (vendored from Moonsong-Labs/solana-payment-channels)"
+repository = "https://github.com/solana-foundation/pay-kit"
+
+# Thin re-export shell: `src/lib.rs` exposes `pub mod generated;` and
+# `src/generated/` is rewritten in place by `just payment-channels-generate-rs`.
+# Do not hand-edit `src/generated/`. Upstream IDL pin: see
+# `idl/payment-channels.json` + `payment-channels-pull-idl` in the root justfile.
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_with"]
+fetch = ["dep:solana-account", "dep:solana-rpc-client"]
+
+[dependencies]
+borsh = { version = "1", features = ["derive"] }
+thiserror = "2"
+num-derive = "0.4"
+num-traits = "0.2"
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
+solana-account-info = "^3"
+solana-instruction = "^3"
+solana-program-error = "^3"
+solana-cpi = "^3"
+solana-account = { version = "^3", optional = true }
+solana-rpc-client = { version = "^3", optional = true }
+solana-client = "^3"
+serde = { version = "1", optional = true }
+serde_with = { version = "3", optional = true }

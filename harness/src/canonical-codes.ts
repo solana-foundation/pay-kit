@@ -1,6 +1,6 @@
 // Canonical L6 / P1 structured error codes shared by every server adapter.
-// Source of truth: python/src/solana_mpp/_errors.py CANONICAL_CODES,
-// ruby/lib/mpp/error_codes.rb CANONICAL_CODES.
+// Source of truth: python/src/pay_kit/protocols/mpp/core/errors.py CANONICAL_CODES,
+// ruby/lib/pay_core/error_codes.rb CANONICAL_CODES.
 //
 // The G39 fault matrix asserts that every server SDK emits the same code
 // for the same failure class. Adapter fixtures that wrap a SDK that has
@@ -78,7 +78,7 @@ const MESSAGE_PATTERNS: readonly { pattern: RegExp; code: CanonicalErrorCode }[]
   { pattern: /too many splits/i, code: "charge_request_mismatch" },
   { pattern: /push-mode credentials are not allowed/i, code: "charge_request_mismatch" },
   // Classify allowlist violations as `charge_request_mismatch` to match the
-  // current Rust spine (`rust/crates/mpp/src/bin/interop_server.rs::classify_canonical_code`
+  // current Rust spine (`rust/crates/mpp/src/bin/harness_server.rs::classify_canonical_code`
   // returns `charge_request_mismatch` for this substring). An earlier
   // commit (330dd5a) flipped this to `payment_invalid` based on a stale
   // Greptile note that misread the Rust reference; reverting so the

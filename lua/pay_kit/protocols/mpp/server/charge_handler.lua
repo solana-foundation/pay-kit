@@ -41,7 +41,7 @@ expected request.
 ]]
 
 local json = require('pay_kit.util.json')
-local network_check = require('pay_kit.protocols.mpp.server.network_check')
+local network_check = require('pay_kit.solana.network_check')
 local error_codes = require('pay_kit.protocol.core.error_codes')
 
 local M = {}

@@ -11,11 +11,12 @@ from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
-from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
-from solana_mpp._types import ChallengeEcho, PaymentCredential
-from solana_mpp.protocol.intents import ChargeRequest
-from solana_mpp.protocol.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
-from solana_mpp.server.mpp import (
+from pay_kit._paycore.errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
+from pay_kit._paycore.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
+from pay_kit._paycore.store import MemoryStore
+from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from pay_kit.protocols.mpp.server.charge import (
     ChargeOptions,
     Config,
     Mpp,
@@ -23,7 +24,6 @@ from solana_mpp.server.mpp import (
     _verify_parsed_sol_transfers,
     _verify_parsed_spl_transfers,
 )
-from solana_mpp.store import MemoryStore
 
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
@@ -135,7 +135,7 @@ class FakeRPC:
         status = (self.statuses or [{}])[0]
         err = status.get("err") if isinstance(status, dict) else None
         if err is not None:
-            from solana_mpp._errors import PaymentError
+            from pay_kit._paycore.errors import PaymentError
 
             raise PaymentError(
                 f"transaction failed on-chain: {err}",
@@ -863,7 +863,7 @@ class TestMemoV1Rejected:
         return base64.b64encode(bytes(transaction)).decode("ascii")
 
     def test_decode_rejects_memo_v1(self):
-        from solana_mpp.server.mpp import _decode_legacy_payment_instructions
+        from pay_kit.protocols.mpp.server.charge import _decode_legacy_payment_instructions
 
         tx_b64 = self._build_tx_with_memo_v1()
         with pytest.raises(PaymentError, match="memo v1"):
@@ -937,7 +937,7 @@ class TestL8SettlementOrdering:
             status = (self._confirm_value or [{}])[0]
             err = status.get("err") if isinstance(status, dict) else None
             if err is not None:
-                from solana_mpp._errors import PaymentError
+                from pay_kit._paycore.errors import PaymentError
 
                 raise PaymentError(
                     f"transaction failed on-chain: {err}",
@@ -984,7 +984,7 @@ class TestL8SettlementOrdering:
         ordering: list[str] = []
         rpc = self._OrderingRPC(ordering, [{"err": None}])
         store = self._RecordingStore(ordering)
-        from solana_mpp.store import Store  # noqa: F401  ensure protocol import
+        from pay_kit._paycore.store import Store  # noqa: F401  ensure protocol import
 
         handler = Mpp(
             Config(
@@ -1077,7 +1077,7 @@ class TestL8SettlementOrdering:
                 ordering.append("await_confirmation")
 
         rpc = _NoRPC()
-        from solana_mpp.store import MemoryStore
+        from pay_kit._paycore.store import MemoryStore
 
         handler = Mpp(
             Config(
@@ -1156,7 +1156,7 @@ class TestCoSignSplitBounds:
         from solders.system_program import TransferParams, transfer
         from solders.transaction import Transaction
 
-        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+        from pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
         # Build a transaction whose only signer is ``real_signer``. Then
         # reference ``rogue_fee_payer.pubkey()`` in a readonly-unsigned
@@ -1208,7 +1208,7 @@ class TestCoSignSplitBounds:
         from solders.system_program import TransferParams, transfer
         from solders.transaction import Transaction
 
-        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+        from pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
         fee_payer = Keypair()
         recipient = Pubkey.from_string(TEST_RECIPIENT)
@@ -1252,7 +1252,7 @@ class TestCoSignSplitBounds:
         from solders.system_program import TransferParams, transfer
         from solders.transaction import Transaction
 
-        from solana_mpp.server.mpp import _co_sign_with_fee_payer
+        from pay_kit.protocols.mpp.server.charge import _co_sign_with_fee_payer
 
         # Put a different real signer at slot 0 (the actual fee payer),
         # and reference the server's would-be fee-payer pubkey as the
@@ -1317,7 +1317,7 @@ class TestComputeBudgetGuard:
         return base64.b64encode(bytes(transaction)).decode("ascii")
 
     def test_set_compute_unit_limit_at_cap_is_accepted(self):
-        from solana_mpp.server.mpp import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+        from pay_kit.protocols.mpp.server.charge import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
 
         data = bytes([2]) + MAX_COMPUTE_UNIT_LIMIT.to_bytes(4, "little")
         tx_b64 = self._build_tx_with_compute_budget_data(data)
@@ -1328,7 +1328,7 @@ class TestComputeBudgetGuard:
         assert not any(item.get("programId") == self._COMPUTE_BUDGET for item in out)
 
     def test_set_compute_unit_limit_over_cap_is_rejected(self):
-        from solana_mpp.server.mpp import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+        from pay_kit.protocols.mpp.server.charge import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
 
         over = MAX_COMPUTE_UNIT_LIMIT + 1
         data = bytes([2]) + over.to_bytes(4, "little")
@@ -1340,7 +1340,7 @@ class TestComputeBudgetGuard:
         assert str(over) in str(exc.value)
 
     def test_set_compute_unit_price_over_cap_is_rejected(self):
-        from solana_mpp.server.mpp import (
+        from pay_kit.protocols.mpp.server.charge import (
             MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
             _decode_legacy_payment_instructions,
         )
@@ -1355,7 +1355,7 @@ class TestComputeBudgetGuard:
         assert str(over) in str(exc.value)
 
     def test_unknown_compute_budget_discriminator_is_rejected(self):
-        from solana_mpp.server.mpp import _decode_legacy_payment_instructions
+        from pay_kit.protocols.mpp.server.charge import _decode_legacy_payment_instructions
 
         # Discriminator 0 (RequestUnits) is no longer a permitted shape
         # in the MPP allowlist; reject as invalid payload.
@@ -1366,7 +1366,7 @@ class TestComputeBudgetGuard:
         assert exc.value.code == "compute-budget-invalid"
 
     def test_canonical_code_maps_to_payment_invalid(self):
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
 
         assert canonical_code("compute-budget-cap-exceeded") == CODE_PAYMENT_INVALID
         assert canonical_code("compute-budget-invalid") == CODE_PAYMENT_INVALID
@@ -1390,7 +1390,7 @@ class TestSplitsCountGuard:
         return request, details
 
     def test_splits_at_cap_is_accepted(self):
-        from solana_mpp.server.mpp import MAX_SPLITS, _build_expected_transfers
+        from pay_kit.protocols.mpp.server.charge import MAX_SPLITS, _build_expected_transfers
 
         request, details = self._make_request_with_n_splits(MAX_SPLITS)
         out = _build_expected_transfers(request, details)
@@ -1398,7 +1398,7 @@ class TestSplitsCountGuard:
         assert len(out) == MAX_SPLITS + 1
 
     def test_splits_over_cap_is_rejected(self):
-        from solana_mpp.server.mpp import MAX_SPLITS, _build_expected_transfers
+        from pay_kit.protocols.mpp.server.charge import MAX_SPLITS, _build_expected_transfers
 
         observed = MAX_SPLITS + 1
         request, details = self._make_request_with_n_splits(observed)
@@ -1409,7 +1409,7 @@ class TestSplitsCountGuard:
         assert str(MAX_SPLITS) in str(exc.value)
 
     def test_canonical_code_maps_to_payment_invalid(self):
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
 
         assert canonical_code("too-many-splits") == CODE_PAYMENT_INVALID
 
@@ -1454,7 +1454,7 @@ class TestInstructionAllowlist:
         """Positive control: a charge transaction with a permitted
         ComputeBudget SetComputeUnitLimit alongside the required transfer
         must pass the allowlist."""
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request, details = self._request_and_details()
@@ -1480,8 +1480,8 @@ class TestInstructionAllowlist:
         attacker address. Without the allowlist this would be co-signed
         and broadcast, draining the fee payer. MUST be rejected with
         the canonical ``payment_invalid`` code before co-sign."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request, details = self._request_and_details()
@@ -1510,8 +1510,8 @@ class TestInstructionAllowlist:
         SPL Token transfer instruction. The native-SOL allowlist must
         reject any Token Program instruction since a native-SOL charge
         never legitimately carries one."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request, details = self._request_and_details()
@@ -1543,8 +1543,8 @@ class TestInstructionAllowlist:
     def test_valid_payment_with_unknown_program_is_rejected(self):
         """SECURITY: an arbitrary BPF program invocation alongside the
         valid payment is not on the allowlist and must be rejected."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request, details = self._request_and_details()
@@ -1565,7 +1565,7 @@ class TestInstructionAllowlist:
     def test_valid_payment_with_memo_v1_is_rejected(self):
         """L2 lock parity: memo v1 is rejected even when the v2 verifier
         would otherwise let extra memos slip past as unmatched."""
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request, details = self._request_and_details()
@@ -1592,11 +1592,11 @@ class TestInstructionAllowlist:
         ``allowed_ata_owners`` is the set of required-split owners; the
         primary recipient is never in that set.
         """
-        from solana_mpp.protocol.solana import (
+        from pay_kit._paycore.solana import (
             ASSOCIATED_TOKEN_PROGRAM,
             Split,
         )
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         split_recipient = "8wXtPeU6557ETkp9WHFY1n1EcU6NxDvbAggHGsMYiHsB"
@@ -1662,6 +1662,58 @@ class TestInstructionAllowlist:
         # Must not raise.
         _verify_local_transaction_intent(tx_b64, request, details)
 
+    def test_missing_required_ata_create_is_rejected(self):
+        """SECURITY: a split flagged ``ataCreationRequired=true`` whose
+        create-ATA-idempotent instruction is omitted must be rejected.
+
+        Mirrors rust ``validate_instruction_allowlist`` tail
+        (server/charge.rs:1362-1368): the required-ATA-owner set must be fully
+        covered by create-ATA instructions. Without the enforcement a sponsored
+        credential that drops the demanded create is cosigned and broadcast,
+        under-creating the recipient ATA. Same transaction as the positive
+        control above MINUS the ata_create instruction.
+        """
+        from pay_kit._paycore.solana import Split
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
+
+        fee_payer = Keypair()
+        split_recipient = "8wXtPeU6557ETkp9WHFY1n1EcU6NxDvbAggHGsMYiHsB"
+        request = ChargeRequest(amount="1000000", currency="USDC", recipient=TEST_RECIPIENT)
+        details = MethodDetails(
+            network="devnet",
+            token_program=TOKEN_PROGRAM,
+            decimals=6,
+            splits=[Split(recipient=split_recipient, amount="100000", ata_creation_required=True)],
+        )
+        mint = USDC_DEVNET
+        recipient_ata = _derive_ata(TEST_RECIPIENT, mint, TOKEN_PROGRAM)
+        split_ata = _derive_ata(split_recipient, mint, TOKEN_PROGRAM)
+        source = Pubkey.new_unique()
+        primary_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            bytes([12]) + (900_000).to_bytes(8, "little") + bytes([6]),
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(recipient_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        split_transfer = Instruction(
+            Pubkey.from_string(TOKEN_PROGRAM),
+            bytes([12]) + (100_000).to_bytes(8, "little") + bytes([6]),
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(Pubkey.from_string(mint), False, False),
+                AccountMeta(Pubkey.from_string(split_ata), False, True),
+                AccountMeta(fee_payer.pubkey(), True, False),
+            ],
+        )
+        # NOTE: the demanded create-ATA for the required split is intentionally absent.
+        tx_b64 = self._build_tx([primary_transfer, split_transfer], fee_payer)
+        with pytest.raises(PaymentError, match="missing required ATA creation"):
+            _verify_local_transaction_intent(tx_b64, request, details)
+
     def test_ata_create_for_primary_recipient_is_rejected(self):
         """SECURITY: even the top-level recipient is NOT a valid ATA-create
         owner under fee-payer sponsorship. Only splits with
@@ -1669,8 +1721,8 @@ class TestInstructionAllowlist:
         Without this, a malicious client could get the fee payer to spend
         SOL on rent for a primary-recipient ATA the route did not authorize.
         """
-        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request = ChargeRequest(
@@ -1714,9 +1766,9 @@ class TestInstructionAllowlist:
         """SECURITY: an ATA create for an owner that is NOT a charge
         recipient must be rejected so the attacker cannot get the fee
         payer to fund an arbitrary ATA rent."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.protocol.solana import ASSOCIATED_TOKEN_PROGRAM
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request = ChargeRequest(
@@ -1813,8 +1865,8 @@ class TestFeePayerSourceDrainProtection:
         recipient matches destination + amount, but the source IS the
         fee-payer; the server would otherwise co-sign and drain fee-payer
         SOL beyond the network fee. MUST be rejected with payment_invalid."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request = ChargeRequest(
@@ -1846,8 +1898,8 @@ class TestFeePayerSourceDrainProtection:
         check the allowlist accepts the transfer (correct mint, amount,
         destination), the server co-signs, and the fee-payer's token
         balance is drained. MUST be rejected with payment_invalid."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request = ChargeRequest(
@@ -1884,8 +1936,8 @@ class TestFeePayerSourceDrainProtection:
         """SECURITY: same drain shape on the Token-2022 program id (PYUSD
         devnet mint, derived under TOKEN_2022_PROGRAM). The fee-payer
         source check must hold for both token program ids."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         request = ChargeRequest(
@@ -1924,7 +1976,7 @@ class TestFeePayerSourceDrainProtection:
         ATA owned by a separate sender keypair MUST be accepted. The
         fee-payer source check must not over-block legitimate co-sign
         transfers."""
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         fee_payer = Keypair()
         sender = Keypair()
@@ -2017,8 +2069,8 @@ class TestFeePayerPubkeySourceOfTruth:
         fix the allowlist compares the source against ATTACKER, finds no
         match, and lets the transfer through; the server then co-signs
         and drains itself. MUST be rejected with payment_invalid."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
         attacker = Keypair()
@@ -2055,8 +2107,8 @@ class TestFeePayerPubkeySourceOfTruth:
         """SPL variant: client echoes a bogus fee-payer key, the drain
         transfer is sourced from the real server fee-payer's ATA. MUST
         be rejected with payment_invalid."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
         attacker = Keypair()
@@ -2101,8 +2153,8 @@ class TestFeePayerPubkeySourceOfTruth:
         canonical ``payment_invalid`` code so a tampered echoed key cannot
         slip through even if the rest of the transaction happens to be
         well-formed."""
-        from solana_mpp._errors import CODE_PAYMENT_INVALID, canonical_code
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit._paycore.errors import CODE_PAYMENT_INVALID, canonical_code
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
         attacker = Keypair()
@@ -2146,7 +2198,7 @@ class TestFeePayerPubkeySourceOfTruth:
         """Positive control: client echoes the correct server fee-payer
         pubkey, transaction is well-formed with a third-party sender.
         Must not raise."""
-        from solana_mpp.server.mpp import _verify_local_transaction_intent
+        from pay_kit.protocols.mpp.server.charge import _verify_local_transaction_intent
 
         server_fee_payer = Keypair()
         sender = Keypair()

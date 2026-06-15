@@ -18,7 +18,7 @@ settles for the chosen amount, verifying it does not exceed the cap.
 
 - The MPP charge intent has a single fixed `amount`. The MPP
   `ChargeRequest.validate_max_amount` helper exists for ad-hoc max
-  checks (`rust/src/protocol/intents/charge.rs:61`) — that pattern
+  checks (`rust/crates/mpp/src/protocol/intents/charge.rs:61`) — that pattern
   is the closest in-tree analog, but it is not on the wire format
   the way x402/upto is.
 - Solana settlement reuses the same instruction whitelist + replay
@@ -26,7 +26,7 @@ settles for the chosen amount, verifying it does not exceed the cap.
 
 ## When to implement
 
-After `x402/exact` is shipped and interop-green. The "upto" semantics
+After `x402/exact` is shipped and harness-green. The "upto" semantics
 add a single check (amount-from-credential ≤ amount-from-challenge)
 on top of the exact flow. Don't ship `upto` before `exact`.
 
@@ -48,7 +48,7 @@ This file should be expanded after the x402-kit reference is available:
      amount is bounded by the route's cap, not pinned exactly.
    - Same canonical-JSON / base64 / base58 rules as MPP.
 5. **Test plan** — unit (cap enforcement at boundary, below, above),
-   integration (Surfpool), interop.
+   integration (Surfpool), harness.
 
 ## README matrix row
 

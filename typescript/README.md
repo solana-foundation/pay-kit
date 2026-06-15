@@ -6,140 +6,406 @@
   </picture>
 </div>
 
-# @solana/pay-kit
+Charge stablecoins (USDC, USDT, PYUSD, …) for any HTTP endpoint, in
+TypeScript. One surface (`@solana/pay-kit`) over the
+[Machine Payments Protocol](https://paymentauth.org), built on the same
+protocol adapter seam as the Ruby, Python, and PHP SDKs — with
+[x402](https://x402.org) to follow behind it. Everything runs on
+web-standard `Request`/`Response`, so Express, Hono, and plain
+`node:http` all sit on the same dispatcher.
 
-Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in
-TypeScript. Implements the Solana payment method for the
-[Machine Payments Protocol](https://mpp.dev) and ships both the
-reference server and client used by every other SDK's interop harness.
-
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library: pick a
-currency, give it your wallet address, and gate a route in two lines.
+You do not need to know anything about Solana to use this library: pick
+a currency, give it your wallet address, and gate a route.
 
 [![TypeScript](https://img.shields.io/badge/typescript-5%2B-blue)]()
 [![Node](https://img.shields.io/badge/node-20%2B-brightgreen)]()
 
+---
+
 ## Quick start
 
-Gate an Express route by passing the MPP middleware (the same wiring
-the [`demo/server/`](../demo/server) reference uses):
+Three progressively-realistic snippets. Express is the framework here;
+the same surface works anywhere you can hand the dispatcher a
+web-standard `Request`.
+
+### 1. Smallest possible app
+
+Gate one route with an inline price. Save as `server.ts` and boot with
+`npx tsx server.ts`. Zero-config beyond the RPC: the package uses a
+published demo keypair as the recipient and the hosted Surfpool sandbox
+at `https://402.surfnet.dev:8899`.
 
 ```ts
+// server.ts
 import express from 'express'
-import { createMpp } from '@solana/mpp/server'
+import { configure, createPayKit, usd } from '@solana/pay-kit'
+import { requirePayment } from '@solana/pay-kit/express'
 
-const mpp = createMpp({
-  recipient: 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY',
-  currency: 'USDC',
-  network: 'localnet',
-  rpcUrl: 'https://402.surfnet.dev:8899',
-  secretKey: 'local-dev-secret',
-  realm: 'TypeScript MPP Example',
-})
+const paykit = createPayKit(await configure({ rpcUrl: 'https://402.surfnet.dev:8899' }))
 
 const app = express()
-app.use(express.json())
-
-app.get('/paid', mpp.charge({ amount: '0.001', description: 'Paid endpoint' }),
-  (_req, res) => res.json({ ok: true, paid: true }),
-)
-
+app.get('/report', requirePayment(paykit, usd('0.10')), (_req, res) => {
+  res.send('premium content')
+})
 app.listen(4567)
 ```
 
-`currency` accepts a symbol like `"USDC"`, `"USDT"`, `"USDG"`, `"PYUSD"`,
-or `"CASH"`. The SDK looks up the mint address, token program, and
-decimals from a built-in table. You can also pass a raw mint pubkey for
-tokens not in the table.
+The middleware halts the request with a 402 challenge if no valid
+payment was sent; when one was, it verifies and settles it, sets the
+settlement headers on the response, and hands control to your handler.
 
-### Client
+Hit `/report` with [`pay curl`](#run-the-example) and the customer
+walks through Touch ID and a USDC payment.
+
+### 2. Multiple gates via a catalogue
+
+When more than one route is paid, lift the prices into a single
+`Pricing` catalogue. Routes reference gates by name.
 
 ```ts
-import { createMppClient } from '@solana/mpp/client'
+import { configure, createPayKit, createPricing, usd } from '@solana/pay-kit'
+import { payment, requirePayment } from '@solana/pay-kit/express'
 
-const client = createMppClient({ signer, rpcUrl })
-const res = await client.fetch('https://api.example/paid')
+const config = await configure({ rpcUrl: 'https://402.surfnet.dev:8899' })
+
+const pricing = createPricing(config, {
+  report: { amount: usd('0.10'), description: 'Premium report' },
+  apiCall: { amount: usd('0.001') },
+})
+
+const paykit = createPayKit(config, { pricing })
+
+app.get('/report', requirePayment(paykit, 'report'), (req, res) => {
+  res.json({ content: 'premium', tx: payment(req)?.transaction })
+})
+app.get('/api/data', requirePayment(paykit, 'apiCall'), (_req, res) => {
+  res.json({ data: [] })
+})
 ```
 
-`createMppClient` returns a fetch-shaped helper whose transport replays
-402 responses with the appropriate `Authorization: Payment` credential.
+Gates are validated at construction — wrong currency, fee math that
+doesn't add up, a fee routed back to the recipient — so configuration
+errors surface at boot, before any traffic.
 
-## Protocol compatibility matrix
+### 3. Production-shape config
 
-### MPP
+Snippet 2's demo recipient and public sandbox are fine for poking
+around. Production wants explicit keys, a dedicated RPC, a stable
+challenge secret, and a persistent replay store. The route handlers
+are unchanged — only `configure` grows.
 
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `mpp/charge/pull` | pass | pass |
-| `mpp/charge/push` | pass | pass |
-| `mpp/session` | --- | --- |
-| `mpp/subscription` | --- | --- |
+```ts
+import { configure, createPayKit, createPricing, Signer, Store, usd } from '@solana/pay-kit'
 
-### x402
+const PLATFORM = 'CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY'
 
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `x402/exact` | pass | pass |
-| `x402/upto` | --- | --- |
-| `x402/batch-settlement` | --- | --- |
+const config = await configure({
+  network: 'solana_mainnet',
+  stablecoins: ['USDC', 'PYUSD'],
+  operator: { signer: await Signer.file('config/operator.json') },
+  rpcUrl: 'https://mainnet.helius-rpc.com/?api-key=YOUR_HELIUS_KEY',
+  mpp: { challengeBindingSecret: process.env.PAY_KIT_MPP_SECRET! },
+  replayStore: Store.redis(redisClient), // any ioredis / node-redis / Valkey client
+})
 
-For `mpp/charge/pull`: the server owns the full lifecycle. It issues
-signed challenges with a fresh `recentBlockhash`, parses and validates
-the `Authorization: Payment` credential, pins the echoed charge request,
-decodes the client-signed transaction and checks recipient, amount,
-mint, splits, ATA, memos, and compute budget, optionally fee-payer
-co-signs, broadcasts via `sendTransaction`, polls `getSignatureStatuses`
-to `confirmed` / `finalized`, and emits `payment-receipt` with the
-on-chain signature.
+const pricing = createPricing(config, {
+  report: { amount: usd('0.10'), description: 'Premium report' },
 
-For `mpp/charge/push`: the server fetches the transaction by signature
-with `getTransaction`, rejects failed or missing metadata, reuses the
-same structural transaction verifier as pull mode, consumes the
-signature through replay storage, and emits the same receipt shape.
+  // Platform-fee pattern:
+  // Customer pays $10.00,
+  // Operator nets $9.70, PLATFORM nets $0.30.
+  marketplaceSale: { amount: usd('10.00'), feeWithin: { [PLATFORM]: usd('0.30') } },
+})
 
-## Examples
+const paykit = createPayKit(config, { pricing })
+```
 
-The TypeScript demo at [`demo/`](../demo) wires the server-side SDK
-into an Express app exposing several stablecoin-gated endpoints
-(`/api/v1/stocks/quote/:symbol`, `/api/v1/weather/:city`, ...).
+Two safety rails fire at boot:
 
-### Run the demo server
+- `solana_mainnet` plus the published demo signer throws
+  (`DemoSignerOnMainnetError`) — no real funds get routed to a publicly
+  known address by accident.
+- Outside localnet, a missing `mpp.challengeBindingSecret` throws.
+  Provide it in `configure` or via `PAY_KIT_MPP_SECRET` so the HMAC
+  stays stable across restarts. On localnet an ephemeral secret is
+  generated with a warning.
+
+---
+
+## Run the example
+
+The playground at [`playground/`](../playground) wires the server-side
+SDK into an Express app exposing every primitive the kit ships
+(`/api/v1/stocks/quote/:symbol`, `/api/v1/weather/:city`, x402,
+subscriptions, sessions, …).
+
+**Boot the server:**
 
 ```bash
-cd demo/server
+cd playground
 pnpm install
-pnpm dev          # listens on http://localhost:3000
+pnpm dev          # Vite on :5173, Express on :3000
 ```
 
-### Drive it from a client
+**Consume with `pay curl`:**
 
 ```bash
+# Install the pay CLI:
 brew install pay
-curl  http://127.0.0.1:3000/api/v1/weather/paris       # 402 payment required
-pay curl http://127.0.0.1:3000/api/v1/weather/paris    # pays and succeeds
+# or npm install -g @solana/pay
+
+# Fail with 402 - payment required
+curl -i http://127.0.0.1:3000/api/v1/weather/paris
+
+# Succeed with 200 - payment provided
+pay curl -i http://127.0.0.1:3000/api/v1/weather/paris
 ```
 
 Set `RECIPIENT`, `NETWORK`, `RPC_URL`, `MPP_SECRET_KEY`, or
 `FEE_PAYER_KEY` to point at a different localnet fixture or wallet.
 
+---
+
+## MPP
+
+The [Machine Payments Protocol](https://paymentauth.org) is the broader
+HTTP Payment Authentication scheme — a `402 Payment Required`
+handshake whose challenge carries a rich intent shape supporting
+multi-recipient splits, server-side fee accounting, and a separate
+fee-payer signer.
+
+Use MPP when:
+- Your gate has a platform or gateway fee (Stripe-Connect "application
+  fee" pattern).
+- You want the server to subsidize the customer's network fee.
+- You want one challenge per gate instead of per-mint-quoted offers.
+
+Supported in TypeScript:
+
+| Intent         | Client | Server |
+|----------------|:------:|:------:|
+| `charge/pull`  | ✅      | ✅      |
+| `charge/push`  | ✅      | ✅      |
+| `session`      | ✅      | ✅      |
+| `subscription` | —      | —      |
+
+For `charge/pull` the server owns the full lifecycle: it issues signed
+challenges with a fresh `recentBlockhash`, validates the
+`Authorization: Payment` credential, decodes the client-signed
+transaction and checks recipient, amount, mint, splits, ATA, memos,
+and compute budget, optionally co-signs as fee payer, broadcasts, polls
+to `confirmed`/`finalized`, and emits `payment-receipt` with the
+settlement signature. For `charge/push` the server fetches the
+transaction by signature, runs the same structural verifier, and
+consumes the signature through the replay store.
+
+## x402
+
+[x402](https://x402.org) revives HTTP `402 Payment Required` as a
+client-server payment handshake with a single-recipient `exact` scheme.
+The packaged TypeScript surface does not ship it yet:
+`configure({ accept: ['x402'] })` throws `ProtocolNotSupportedError`.
+
+| Intent             | Status |
+|--------------------|--------|
+| `exact`            | harness reference only |
+| `upto`             | —      |
+| `batch-settlement` | —      |
+
+A TypeScript x402 `exact` reference (client and server) lives in the
+harness at
+[`harness/src/fixtures/typescript/`](../harness/src/fixtures/typescript)
+and passes the cross-language conformance suite; it is not packaged as
+a pay-kit protocol adapter yet. The protocol seam is already in
+place — an x402 adapter plugs in without touching gates, pricing, or
+the request verbs.
+
+## Client
+
+Unlike the Ruby, Python, and PHP SDKs (server-only), TypeScript also
+ships the paying side, via the protocol-layer package:
+
+```ts
+import { Mppx, solana } from '@solana/mpp/client'
+
+const mppx = Mppx.create({ methods: [solana.charge({ signer, rpcUrl })] })
+const res = await mppx.fetch('https://api.example/paid')
+```
+
+`mppx.fetch` is a `fetch`-shaped helper whose transport replays 402
+responses with the appropriate `Authorization: Payment` credential.
+
+---
+
+## Vocabulary
+
+| Term         | Meaning |
+|--------------|---------|
+| **gate**     | A protected unit. Has an amount, optional fees, accepted protocols. |
+| **amount**   | The base amount a gate charges, before any `feeOnTop`. |
+| **total**    | What the customer pays: `amount + sum(feeOnTop)`. Derived. |
+| **price**    | Value object returned by `usd(…)`: number + currency + settlement. |
+| **feeWithin** | Fee taken out of the amount. `payTo` nets less. |
+| **feeOnTop** | Fee added to the amount. Customer pays more; `payTo` nets full. |
+| **payment**  | Proof submitted by the client to pass a gate. |
+| **protocol** | `'x402'` or `'mpp'` (top-level dispatch). |
+| **scheme**   | x402 sub-form: `exact`. MPP sub-form: `charge`. |
+| **accept**   | Ordered preference list (protocols and stablecoins both). |
+| **currency** | Fiat unit a price is quoted in (`USD`, `EUR`, `GBP`). |
+| **settlement** | The stablecoin that actually transfers (`USDC`, `USDT`, …). |
+
+## Three primitives
+
+The same trio as the Ruby, Python, and PHP SDKs. TypeScript returns a
+result object instead of halting, matching the surrounding ecosystem:
+
+| Method | Purpose |
+|--------|---------|
+| `paykit.requirePayment(request, gate)` | Verify-or-deny; returns `{ status: 402, response }` or `{ status: 200, payment, withSettlement }` |
+| `paykit.paid(request, gateName?)`      | Predicate, never settles |
+| `paykit.payment(request)`              | The verified `Payment`, `undefined` until paid |
+
+`gate` accepts a catalogue name, a `Gate`, a bare `Price` (inline
+gate), or a per-request resolver function.
+
+## Inline pricing
+
+For one-off endpoints that don't warrant a catalogue entry, pass a
+price directly:
+
+```ts
+const result = await paykit.requirePayment(request, usd('0.25'))
+```
+
+## Gate catalogue
+
+Each gate is a frozen value object with an amount, an ordered list of
+accepted protocols, and zero or more named fees.
+
+```ts
+const SELLER = 'Ay…'
+const PLATFORM = 'CX…'
+
+const pricing = createPricing(config, {
+  // Simple. Customer pays $0.10, payTo nets $0.10.
+  report: { amount: usd('0.10'), description: 'Premium report' },
+
+  // Stripe-Connect "application fee". Customer pays $10.00,
+  // SELLER nets $9.70, PLATFORM nets $0.30.
+  marketplaceSale: {
+    amount: usd('10.00'),
+    payTo: SELLER,
+    feeWithin: { [PLATFORM]: usd('0.30') },
+  },
+
+  // Surcharge. Customer pays $10.50, SELLER nets $10.00, PLATFORM $0.50.
+  ticket: {
+    amount: usd('10.00'),
+    payTo: SELLER,
+    feeOnTop: { [PLATFORM]: usd('0.50') },
+  },
+
+  // Dynamic per-request pricing.
+  tiered: request =>
+    usd(new URL(request.url).searchParams.get('tier') === 'premium' ? '5.00' : '0.10'),
+})
+```
+
+Boot-time validations (all throw `ConfigurationError` or a subtype):
+
+- `payTo` resolves from the gate or `operator.recipient`.
+- A fee recipient must differ from `payTo`. Fold the fee into the amount instead.
+- All fee prices share one currency with the amount.
+- `sum(feeWithin)` must be less than the amount.
+- `accept: ['x402']` on a fee-bearing gate throws (`ProtocolIncompatibleError`).
+
+## Signers
+
+Key handling is built on [Solana Keychain](https://www.npmjs.com/package/@solana/keychain).
+Local constructors ride on `@solana/keychain-memory`; remote backends
+plug in through `Signer.from`:
+
+```ts
+import { Signer } from '@solana/pay-kit'
+
+// Local key material:
+const fromFile = await Signer.file('config/operator.json')   // Solana CLI JSON
+const fromEnv = await Signer.env('OPERATOR_KEY')             // JSON / hex / base58, auto-detected
+const ephemeral = await Signer.generate()                    // tests
+
+// Remote signing (AWS KMS, GCP KMS, Vault, Privy, Turnkey, …):
+import { createKeychainSigner } from '@solana/keychain'
+const remote = Signer.from(
+  await createKeychainSigner({ backend: 'vault', /* … */ }),
+  { feePayer: false },
+)
+```
+
+The demo signer (`Signer.demo()`) is byte-for-byte identical across
+the Ruby, Python, PHP, and Lua SDKs so processes running different
+SDKs can exchange traffic during local development. It is public by
+design and refused on mainnet at boot.
+
+## Middleware
+
+The framework shims sit on the dispatcher, the same way Ruby's Rack
+middleware, Python's FastAPI/Flask/Django shims, and PHP's PSR-15
+middleware sit on theirs.
+
+**Express / Connect** (`@solana/pay-kit/express`) — typed against
+`node:http`, so it adds no framework dependency and also fits Polka and
+plain `node:http` servers:
+
+```ts
+import { paid, payment, requirePayment } from '@solana/pay-kit/express'
+
+app.get('/report', requirePayment(paykit, 'report'), (req, res) => {
+  res.json({ ok: true, tx: payment(req)?.transaction })
+})
+```
+
+**Hono** (`@solana/pay-kit/hono`) — works with any framework whose
+context exposes the web request as `c.req.raw`:
+
+```ts
+import { requirePayment } from '@solana/pay-kit/hono'
+
+app.use('/report', requirePayment(paykit, 'report'))
+app.get('/report', c => c.json({ ok: true, tx: paykit.payment(c.req.raw)?.transaction }))
+```
+
+**Fetch handlers** (Cloudflare Workers, Bun, Deno, Next.js) — wrap the
+handler instead of chaining middleware:
+
+```ts
+import { usd, withPayment } from '@solana/pay-kit'
+
+export default {
+  fetch: withPayment(paykit, usd('0.10'), (request, payment) =>
+    Response.json({ ok: true, tx: payment.transaction }),
+  ),
+}
+```
+
+## Web-standard core
+
+The dispatcher is framework-free: it takes a web-standard `Request`
+and produces a web-standard `Response`. Protocol work happens behind
+one adapter contract (`detect` / `acceptsEntry` / `challengeHeaders` /
+`verifyAndSettle`); the MPP adapter wraps `@solana/mpp`'s charge
+method and caches one handler per (recipient, splits) shape. Verified
+payments are tracked per `Request`, so `paid()` and `payment()` answer
+for the same request object the route handler holds — which is why the
+Hono shim needs no context plumbing at all.
+
+---
+
 ## Install
 
 ```bash
-pnpm add @solana/mpp
-# or
-npm install @solana/mpp
+pnpm add @solana/pay-kit     # gate routes (this README)
+pnpm add @solana/mpp         # protocol layer + paying client
 ```
-
-## Coding convention
-
-This SDK follows `eslint + prettier` and the per-language style notes
-at `skills/pay-sdk-implementation/references/coding-conventions.md`.
-
-The repo-level `pay-sdk-implementation` skill remains the protocol
-source of truth: Rust / spec wire format first, TypeScript idioms
-second.
 
 ## Test
 
@@ -151,12 +417,12 @@ pnpm test
 pnpm test:integration
 ```
 
-## Interop
+## Harness
 
-The cross-language interop harness lives in
-[`../harness`](../harness). The TypeScript SDK ships both the
-reference client (`harness/ts-client`) and the in-process reference
-server used by every other SDK's adapter.
+The cross-language harness lives in [`../harness`](../harness).
+The TypeScript SDK ships both the reference client
+(`harness/ts-client`) and the in-process reference server used by every
+other SDK's adapter.
 
 ```bash
 cd harness
@@ -166,17 +432,39 @@ pnpm test
 
 ## Spec
 
-This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+This SDK implements the
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
+The cross-language surface is specified in
+[`docs/paykit-interface.md`](../docs/paykit-interface.md).
+
+---
 
 ## Repo layout
 
 ```text
 typescript/
-├── packages/mpp/        SDK package (client + server + protocol)
-├── vitest.config*.ts    test configurations
-└── package.json         workspace scripts
+├── packages/pay-kit/    # @solana/pay-kit: gates, pricing, signers, dispatcher
+│   └── src/
+│       ├── config.ts, gate.ts, price.ts, pricing.ts, signer.ts, errors.ts, …
+│       ├── adapter.ts            # The protocol adapter contract
+│       ├── adapters/mpp.ts       # MPP charge adapter over @solana/mpp
+│       ├── paykit.ts             # Dispatcher: requirePayment / paid / payment
+│       ├── express.ts, hono.ts   # Framework middleware (subpath exports)
+│       └── handler.ts            # withPayment() for fetch-style runtimes
+├── packages/mpp/        # @solana/mpp: protocol layer (client + server + sessions)
+├── vitest.config*.ts    # test configurations
+└── package.json         # workspace scripts
 ```
+
+## Coding convention
+
+This SDK follows `eslint + prettier` and the per-language style notes
+at `skills/pay-sdk-implementation/references/coding-conventions.md`.
+
+The repo-level `pay-sdk-implementation` skill remains the protocol
+source of truth: Rust / spec wire format first, TypeScript idioms
+second.
 
 ## License
 

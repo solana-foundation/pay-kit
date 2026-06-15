@@ -1,4 +1,4 @@
-"""Unit coverage for the private helpers in :mod:`solana_mpp.server.mpp`.
+"""Unit coverage for the private helpers in :mod:`pay_kit.protocols.mpp.server.charge`.
 
 These tests exercise the small pure helpers (no RPC, no I/O) so the
 ``server/mpp.py`` line coverage clears the 90 percent gate. Each test
@@ -18,14 +18,14 @@ from solders.keypair import Keypair
 from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
-from solana_mpp._errors import PaymentError
-from solana_mpp.protocol.solana import (
+from pay_kit._paycore.errors import PaymentError
+from pay_kit._paycore.solana import (
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
     MethodDetails,
     Split,
 )
-from solana_mpp.server import mpp as M
+from pay_kit.protocols.mpp.server import charge as M
 
 # ---------------------------------------------------------------------------
 # _rpc_value / _json_like / _transaction_dict / _status_ok

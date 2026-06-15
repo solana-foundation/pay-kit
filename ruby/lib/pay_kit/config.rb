@@ -8,14 +8,13 @@ require_relative "signer"
 
 module PayKit
   # Boot-time configuration. Mutable inside the `PayKit.configure`
-  # block; frozen when the block returns. The new surface centres
-  # everything that used to be scattered ("`c.pay_to`",
-  # "`c.x402.facilitator_secret_key`", "manual SOL fee management") on
-  # the single `c.operator` value. The old knobs still work for one
-  # release through deprecation shims that emit a `Logger.warn`.
+  # block; frozen when the block returns. The surface centres
+  # everything on the single `c.operator` value (recipient + signer +
+  # fee-payer role), with `c.rpc_url` for the Solana endpoint and
+  # `c.mpp.challenge_binding_secret` for the stateless challenge HMAC.
   class Config
     VALID_NETWORKS = %i[solana_mainnet solana_devnet solana_localnet].freeze
-    VALID_SCHEMES = %i[x402 mpp].freeze
+    VALID_PROTOCOLS = %i[x402 mpp].freeze
     DEFAULT_NETWORK = :solana_localnet
 
     PUBLIC_RPC_URLS = {
@@ -89,10 +88,10 @@ module PayKit
 
     # --- core knobs (unchanged) ---------------------------------------
 
-    def accept=(schemes)
-      list = Array(schemes).map(&:to_sym)
-      unknown = list - VALID_SCHEMES
-      raise ConfigurationError, "unknown scheme(s) in accept: #{unknown.inspect}" unless unknown.empty?
+    def accept=(protocols)
+      list = Array(protocols).map(&:to_sym)
+      unknown = list - VALID_PROTOCOLS
+      raise ConfigurationError, "unknown protocol(s) in accept: #{unknown.inspect}" unless unknown.empty?
       raise ConfigurationError, "accept must not be empty" if list.empty?
 
       @accept = list.uniq.freeze
@@ -112,20 +111,6 @@ module PayKit
       end
 
       @network = sym
-    end
-
-    # --- deprecated shims (cascade to operator + rpc_url) -------------
-
-    # Deprecated. Was the merchant recipient at the top of config.
-    # New surface: `c.operator do |op| op.recipient = ... end`.
-    def pay_to
-      deprecation_warning(:pay_to, "use c.operator.recipient (or c.operator do |op| op.recipient = ... end)")
-      @operator.effective_recipient
-    end
-
-    def pay_to=(value)
-      deprecation_warning(:pay_to=, "use c.operator do |op| op.recipient = #{value.inspect} end")
-      @operator.recipient = value
     end
 
     # --- freeze + safety checks ---------------------------------------
@@ -197,72 +182,6 @@ module PayKit
         @scheme = sym
       end
 
-      # --- deprecated shims ------------------------------------------
-
-      # The old `c.x402.facilitator` field was historically misused to
-      # carry a Solana RPC URL (the demo even pointed at
-      # `https://402.surfnet.dev:8899`, a validator). The semantically
-      # correct routing is now `c.rpc_url`. The deprecation shim sends
-      # the value there and emits a warning that explains the historical
-      # mistake so the new `c.x402.facilitator_url` (delegation only)
-      # never gets confused with the old field.
-      def facilitator=(value)
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"x402.facilitator=",
-          "this field historically held the Solana RPC URL; use c.rpc_url instead. " \
-          "The new c.x402.facilitator_url is for delegated facilitator delegation only."
-        )
-        @parent_config.rpc_url = value
-      end
-
-      def facilitator
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"x402.facilitator",
-          "use c.rpc_url (this field is the Solana RPC URL, not an x402 facilitator)"
-        )
-        @parent_config.effective_rpc_url
-      end
-
-      # The old explicit secret-key field is replaced by
-      # `c.operator.signer`. The shim converts the JSON-array literal
-      # to a `PayKit::Signer::Local` and slots it onto the operator,
-      # emitting a deprecation warning.
-      def facilitator_secret_key=(value)
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"x402.facilitator_secret_key=",
-          "use c.operator do |op| op.signer = PayKit::Signer.json(...) end"
-        )
-        return if value.nil?
-        # The legacy field accepted "[]" as a "boot without a real
-        # signer" sentinel (mpp-only demos used to set it that way).
-        # The new operator default is Signer.demo, so an empty JSON
-        # array routes to a no-op — the operator keeps its default
-        # signer rather than failing at parse time.
-        if value.is_a?(String)
-          stripped = value.strip
-          return if stripped.empty? || stripped == "[]"
-        end
-
-        @parent_config.operator.signer = ::PayKit::Signer.json(value)
-      end
-
-      def facilitator_secret_key
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"x402.facilitator_secret_key",
-          "use c.operator.signer"
-        )
-        signer = @parent_config.operator.signer
-        signer.respond_to?(:to_json_array) ? signer.to_json_array : nil
-      end
-
       def freeze!
         freeze
       end
@@ -284,31 +203,6 @@ module PayKit
       # PayKit field name names the function instead of the storage to
       # disambiguate from `c.operator.signer`.
       attr_writer :challenge_binding_secret
-
-      # --- deprecated shim -------------------------------------------
-
-      # The old `c.mpp.secret` field is renamed to
-      # `c.mpp.challenge_binding_secret` (tracks the spec heading). The
-      # shim delegates with a one-line warning.
-      def secret=(value)
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"mpp.secret=",
-          "use c.mpp.challenge_binding_secret (matches draft-httpauth-payment-00 spec vocabulary)"
-        )
-        @challenge_binding_secret = value
-      end
-
-      def secret
-        ::PayKit::Config.send(
-          :deprecation_warning_for,
-          self,
-          :"mpp.secret",
-          "use c.mpp.challenge_binding_secret"
-        )
-        @challenge_binding_secret
-      end
 
       def freeze!
         freeze
@@ -343,42 +237,19 @@ module PayKit
       )
     end
 
-    def deprecation_warning(field, suggestion)
-      self.class.send(:deprecation_warning_for, self, field, suggestion)
-    end
-
     class << self
-      # Shared formatter for deprecation warnings emitted by any of the
-      # config shims. Each key is warned at most once per process to
-      # avoid spamming the log when the deprecated setter is used in a
-      # loop or in a configure block that gets evaluated repeatedly.
-      def deprecation_warning_for(_object, key, suggestion)
-        @warned_deprecations ||= {}
-        return if @warned_deprecations.key?(key)
-
-        @warned_deprecations[key] = true
-        logger = ::PayKit.logger || default_deprecation_logger
-        logger.warn("PayKit deprecation: c.#{key} is deprecated; #{suggestion}")
-      end
-
-      # Reset memo of warned deprecations. Test-only — production code
-      # should never need this. Public because the gem's own test suite
-      # exercises the warn-once contract per field.
-      def reset_deprecation_memo!
-        @warned_deprecations = {}
-      end
-
-      private
-
-      def default_deprecation_logger
-        @default_deprecation_logger ||= ::Logger.new($stderr).tap do |logger|
+      # Fallback `$stderr` logger used for boot-time warnings (e.g. the
+      # public-mainnet-RPC notice) when the host app has not set
+      # `PayKit.logger`.
+      def default_logger
+        @default_logger ||= ::Logger.new($stderr).tap do |logger|
           logger.formatter = proc { |_severity, _datetime, _progname, msg| "[PayKit] WARN: #{msg}\n" }
         end
       end
     end
 
     def logger_warn(message)
-      logger = ::PayKit.logger || self.class.send(:default_deprecation_logger)
+      logger = ::PayKit.logger || self.class.default_logger
       logger.warn(message)
     end
   end
@@ -407,7 +278,6 @@ module PayKit
     def reset!
       @config = nil
       @pricing = nil
-      Config.reset_deprecation_memo!
     end
   end
 end

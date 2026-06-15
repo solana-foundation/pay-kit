@@ -2,7 +2,10 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
     test: {
-        include: ['packages/*/src/__tests__/client-charge-integration.test.ts'],
+        include: [
+            'packages/*/src/__tests__/client-charge-integration.test.ts',
+            'packages/*/src/__tests__/playground-session-e2e.test.ts',
+        ],
         testTimeout: 60_000,
         fileParallelism: false,
         maxWorkers: 1,

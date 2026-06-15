@@ -41,7 +41,7 @@ module PayKit
       fees = (within_fees + on_top_fees).freeze
 
       validate_fee_recipients!(name, resolved_pay_to, fees)
-      validate_denominations!(name, amount, fees)
+      validate_currencies!(name, amount, fees)
       validate_within_sum!(name, amount, within_fees)
 
       resolved_accept = resolve_accept(name, accept, accept_default, fees)
@@ -121,12 +121,12 @@ module PayKit
       end
     end
 
-    def self.validate_denominations!(name, amount, fees)
-      all_denoms = ([amount.denom] + fees.map { |f| f.price.denom }).uniq
-      return if all_denoms.length <= 1
+    def self.validate_currencies!(name, amount, fees)
+      all_currencies = ([amount.currency] + fees.map { |f| f.price.currency }).uniq
+      return if all_currencies.length <= 1
 
       raise ConfigurationError,
-        "gate #{name.inspect}: all amounts must share one denomination, got #{all_denoms.inspect}"
+        "gate #{name.inspect}: all amounts must share one currency, got #{all_currencies.inspect}"
     end
 
     def self.validate_within_sum!(name, amount, within_fees)

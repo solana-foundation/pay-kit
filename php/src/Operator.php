@@ -10,7 +10,7 @@ use PayKit\Signer\LocalSigner;
  * Merchant identity: recipient + signer + fee-payer flag.
  *
  * Null fields cascade through {@see Operator::withDefaults()} when
- * Client is constructed: recipient defaults to signer->pubkey(),
+ * PayKit is constructed: recipient defaults to signer->pubkey(),
  * signer defaults to {@see Signer::demo()}.
  */
 final readonly class Operator
@@ -23,7 +23,7 @@ final readonly class Operator
     }
 
     /**
-     * Resolve nulls into the package-shipped defaults. The Client
+     * Resolve nulls into the package-shipped defaults. The PayKit
      * constructor calls this exactly once at boot.
      */
     public function withDefaults(): self

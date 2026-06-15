@@ -56,7 +56,8 @@ pub use error::{Error, Result};
 // Core protocol types
 pub use protocol::core::{
     base64url_decode, base64url_encode, compute_challenge_id, Base64UrlJson, ChallengeEcho,
-    IntentName, MethodName, PaymentChallenge, PaymentCredential, Receipt, ReceiptStatus,
+    IntentName, MethodName, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
+    ReceiptStatus,
 };
 
 // Header parsing/formatting
@@ -69,10 +70,14 @@ pub use protocol::core::{
 
 // Intent types
 pub use protocol::intents::{
-    parse_units, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt, CommitStatus,
+    parse_units, ActivatePayload, AuthenticateMethodDetails, AuthenticatePayload,
+    AuthenticateRequest, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt, CommitStatus,
     MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload, SessionAction, SessionMode,
-    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher, TopUpPayload,
-    VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
+    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher, SubscriptionAction,
+    SubscriptionPeriodUnit, SubscriptionReceiptExtensions, SubscriptionRequest, TopUpPayload,
+    VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT, RESOURCE_SCHEME_HTTP,
+    RESOURCE_SCHEME_SOLANA_SESSION, RESOURCE_SCHEME_SOLANA_SUBSCRIPTION, SIGNATURE_SCHEME_SIWMPP,
+    SIGNATURE_TYPE_ED25519, SIWMPP_VERSION,
 };
 
 pub use protocol::solana::{

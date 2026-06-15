@@ -1,0 +1,193 @@
+[
+  {
+    "id": "x402-ext-echo-payment-identifier",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "(a) Client echoes a server-advertised payment-identifier (info.required=true) and populates a fresh client-side id. The outbound v2 PAYMENT-SIGNATURE carries extensions['payment-identifier'].info with required=true preserved and a generated pay_-shaped id matching ^[A-Za-z0-9_-]{16,128}$ (rust PaymentExtensions::echoing + with_payment_identifier_id; coinbase x402 v2 §5.1.2 echo-and-append). The schema field the server published is echoed verbatim.",
+    "input": {
+      "x402Version": 2,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA==",
+      "x402AdvertisedExtensions": {
+        "payment-identifier": {
+          "info": { "required": true },
+          "schema": { "type": "object", "required": ["id"] }
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "acceptedScheme": "exact",
+        "acceptedNetwork": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "acceptedAsset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "acceptedPayTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "acceptedAmount": "1000",
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "paymentIdentifierRequired": true,
+        "extensionKeys": ["payment-identifier"]
+      }
+    }
+  },
+  {
+    "id": "x402-ext-echo-payment-identifier-pinned-id",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "Deterministic variant of (a): the vector pins the client id so the echoed payment-identifier.info.id is byte-asserted. Confirms the client appends its id WITHOUT overwriting the server's info.required (rust with_payment_identifier_id_appends_without_overwriting_server_fields).",
+    "input": {
+      "x402Version": 2,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA==",
+      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+      "x402AdvertisedExtensions": {
+        "payment-identifier": { "info": { "required": true } }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "paymentIdentifierRequired": true,
+        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+        "extensionKeys": ["payment-identifier"]
+      }
+    }
+  },
+  {
+    "id": "x402-ext-preserve-unknown-verbatim",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "(b) Forward-compat echo-and-append: the server advertises an extension this SDK does not type natively alongside payment-identifier. The client MUST re-emit the unknown extension verbatim (rust PaymentExtensions.other flatten; payment_extensions_echoes_unknown_keys_verbatim). extensionKeys pins that BOTH keys survive, sorted.",
+    "input": {
+      "x402Version": 2,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA==",
+      "x402PaymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+      "x402AdvertisedExtensions": {
+        "payment-identifier": { "info": { "required": true } },
+        "future-extension": { "info": { "foo": "bar" } }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "paymentIdentifierRequired": true,
+        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+        "extensionKeys": ["future-extension", "payment-identifier"]
+      }
+    }
+  },
+  {
+    "id": "x402-ext-omit-when-none-advertised",
+    "intent": "x402-exact",
+    "mode": "build-transaction",
+    "description": "(c) Echo-and-omit: the server advertised NO extensions, so the outbound v2 PAYMENT-SIGNATURE MUST NOT carry an `extensions` key at all (no empty {}). Mirrors rust skip_serializing_if = Option::is_none + PaymentExtensions::is_empty; payment_extensions_echoing_returns_none_when_inbound_absent.",
+    "input": {
+      "x402Version": 2,
+      "x402Offer": {
+        "scheme": "exact",
+        "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+        "amount": "1000",
+        "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "payTo": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+        "maxTimeoutSeconds": 300,
+        "extra": { "decimals": 6 }
+      },
+      "x402PinnedTransaction": "AA=="
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "hasExtensions": false,
+        "hasPaymentIdentifier": false,
+        "extensionKeys": []
+      }
+    }
+  },
+  {
+    "id": "x402-ext-server-accepts-valid-id",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "(e) Server ACCEPTS a credential when payment-identifier.info.required=true on the route and the credential echoed a valid pay_-shaped id. The pinned header is exactly what build (a)/(b) emits, so build and verify are mutually consistent.",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZGVjaW1hbHMiOjZ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJyZXF1aXJlZCI6dHJ1ZSwiaWQiOiJwYXlfYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTAifX19fQ==",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000",
+      "x402ServerRequiresPaymentIdentifier": true
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 2,
+        "hasAccepted": true,
+        "payloadHasTransaction": true,
+        "hasExtensions": true,
+        "hasPaymentIdentifier": true,
+        "paymentIdentifierRequired": true,
+        "paymentIdentifierId": "pay_abcdef1234567890abcdef1234567890",
+        "extensionKeys": ["payment-identifier"]
+      }
+    }
+  },
+  {
+    "id": "x402-ext-server-rejects-required-missing-id",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "(d) Server REJECTS a credential when payment-identifier.info.required=true on the route but the credential echoed no valid id (the echoed extension carries info.required but no info.id). Reject category payment-identifier-required (coinbase spec: HTTP 400). All other route fields (network/amount/recipient/asset) match, so this isolates the missing-id gate.",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MiwiYWNjZXB0ZWQiOnsic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hOkV0V1RSQUJaYVlxNmlNZmVZS291UnUxNjZWVTJ4cWExIiwiYW1vdW50IjoiMTAwMCIsImFzc2V0IjoiNHpNTUM5c3J0NVJpNVgxNEdBZ1hoYUhpaTNHblBBRUVSWVBKZ1pKRG5jRFUiLCJwYXlUbyI6IkNYaHJGWkpMS3Fqem1QM3NqWUxjRjRkVGVYV0tDeTllMlNYWFoyWW82TVBZIiwibWF4VGltZW91dFNlY29uZHMiOjMwMCwiZXh0cmEiOnsiZGVjaW1hbHMiOjZ9fSwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifSwiZXh0ZW5zaW9ucyI6eyJwYXltZW50LWlkZW50aWZpZXIiOnsiaW5mbyI6eyJyZXF1aXJlZCI6dHJ1ZX19fX0=",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000",
+      "x402ServerRequiresPaymentIdentifier": true
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "payment-identifier-required",
+      "rejectReason": "payment-identifier required but credential echoed no id"
+    }
+  }
+]

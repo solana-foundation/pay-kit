@@ -14,36 +14,36 @@ module PayKit
     end
   end
 
-  # Denomination + ordered settlement preference list.
+  # Pricing currency + ordered settlement preference list.
   #
-  #   Price.new(denom: :USD, amount: "0.10", settlements: [Settlement(coin: :USDC, amount: "0.10")])
+  #   Price.new(currency: :USD, amount: "0.10", settlements: [Settlement(coin: :USDC, amount: "0.10")])
   #
   # Build via the `usd("0.10", :USDC, :USDT)` shorthand (see
   # PayKit::Helpers::Pricing). `settlements` is always non-empty; the
   # first entry is the preference.
   class Price
-    attr_reader :denom, :amount, :settlements
+    attr_reader :currency, :amount, :settlements
 
-    def initialize(denom:, amount:, settlements:)
-      raise ConfigurationError, "denom must be a symbol like :USD" unless denom.is_a?(Symbol)
+    def initialize(currency:, amount:, settlements:)
+      raise ConfigurationError, "currency must be a symbol like :USD" unless currency.is_a?(Symbol)
       raise ConfigurationError, "amount must be a non-empty string" unless amount.is_a?(String) && !amount.empty?
       raise ConfigurationError, "settlements must be a non-empty array" if !settlements.is_a?(Array) || settlements.empty?
       unless settlements.all? { |s| s.is_a?(Settlement) }
         raise ConfigurationError, "settlements must be Settlement objects"
       end
 
-      @denom = denom
+      @currency = currency
       @amount = amount
       @settlements = settlements.freeze
       freeze
     end
 
-    # Build a Price denominated in `denom` from the variadic
+    # Build a Price denominated in `currency` from the variadic
     # `coins` list. Empty list means "use config defaults" and
     # is filled in later by the Pricing DSL.
-    def self.build(denom:, amount:, coins: [])
+    def self.build(currency:, amount:, coins: [])
       settlements = coins.flatten.compact.map { |coin| Settlement.new(coin: coin.to_sym, amount: amount) }
-      new(denom: denom, amount: amount, settlements: settlements)
+      new(currency: currency, amount: amount, settlements: settlements)
     end
 
     # The primary settlement coin (first preference). Used by
@@ -54,7 +54,7 @@ module PayKit
     end
 
     def to_s
-      "#{denom} #{amount} (#{settlements.map(&:coin).join(", ")})"
+      "#{currency} #{amount} (#{settlements.map(&:coin).join(", ")})"
     end
 
     # Numeric amount for fee math. BigDecimal-precise. Recomputed
@@ -65,11 +65,11 @@ module PayKit
       BigDecimal(amount)
     end
 
-    # Build a new Price with the same denom and a different amount.
+    # Build a new Price with the same currency and a different amount.
     # Settlements list reuses the existing coin order.
     def with_amount(new_amount)
       Price.new(
-        denom: denom,
+        currency: currency,
         amount: new_amount.to_s,
         settlements: settlements.map { |s| Settlement.new(coin: s.coin, amount: new_amount.to_s) }
       )
@@ -93,7 +93,7 @@ module PayKit
         ::PayKit::Helpers::Pricing.build_price(:GBP, amount, coins)
       end
 
-      def self.build_price(denom, amount, coins)
+      def self.build_price(currency, amount, coins)
         resolved = coins.flatten.compact
         if resolved.empty?
           resolved = ::PayKit.config.stablecoins
@@ -102,7 +102,7 @@ module PayKit
               "no stablecoins specified and PayKit.config.stablecoins is empty"
           end
         end
-        ::PayKit::Price.build(denom: denom, amount: amount.to_s, coins: resolved)
+        ::PayKit::Price.build(currency: currency, amount: amount.to_s, coins: resolved)
       end
     end
   end

@@ -1,14 +1,25 @@
 //! Intent-specific request types.
 
+pub mod authenticate;
 mod charge;
 pub mod session;
+pub mod subscription;
 
+pub use authenticate::{
+    format_canonical_message, AuthenticateMethodDetails, AuthenticatePayload, AuthenticateRequest,
+    RESOURCE_SCHEME_HTTP, RESOURCE_SCHEME_SOLANA_SESSION, RESOURCE_SCHEME_SOLANA_SUBSCRIPTION,
+    SIGNATURE_SCHEME_SIWMPP, SIGNATURE_TYPE_ED25519, SIWMPP_VERSION,
+};
 pub use charge::ChargeRequest;
 pub use session::{
     ClosePayload, CommitPayload, CommitReceipt, CommitStatus, MeteredEnvelope, MeteringDirective,
     MeteringUsage, OpenPayload, SessionAction, SessionMode, SessionPullVoucherStrategy,
     SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
     DEFAULT_SESSION_EXPIRES_AT,
+};
+pub use subscription::{
+    ActivatePayload, SubscriptionAction, SubscriptionMethodDetails, SubscriptionPeriodUnit,
+    SubscriptionReceiptExtensions, SubscriptionRequest,
 };
 
 /// Audit #39: upper bound on the `decimals` argument to `parse_units`.

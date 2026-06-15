@@ -1,0 +1,5 @@
+{
+  "language": "lua",
+  "command": ["luajit", "cmd/conformance/main.lua"],
+  "cwd": "lua"
+}

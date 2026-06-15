@@ -1,0 +1,47 @@
+{
+    "name": "@solana/pay-kit",
+    "version": "0.1.0",
+    "description": "Protocol-agnostic payment gating for HTTP services on Solana",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/solana-foundation/pay-kit",
+        "directory": "typescript/packages/pay-kit"
+    },
+    "type": "module",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./express": {
+            "types": "./dist/express.d.ts",
+            "default": "./dist/express.js"
+        },
+        "./hono": {
+            "types": "./dist/hono.d.ts",
+            "default": "./dist/hono.js"
+        }
+    },
+    "files": [
+        "dist",
+        "src/[!_]*"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@solana/keychain-memory": "^1.3.0"
+    },
+    "peerDependencies": {
+        "@solana/kit": ">=6.5.0",
+        "@solana/mpp": ">=0.6.0",
+        "mppx": ">=0.5.5"
+    },
+    "devDependencies": {
+        "@solana/kit": "^6.5.0",
+        "@solana/mpp": "workspace:^",
+        "@types/node": "^25.5.0",
+        "mppx": "^0.5.5"
+    }
+}

@@ -128,3 +128,179 @@ t.test('with_expected accepts matching route', function()
   t.assert_equal(receipt.status, 'success')
   t.assert_equal(receipt.challengeId, challenge.id)
 end)
+
+-- ── LUA-6 route binding: methodDetails + externalId must be bound ──────────
+
+-- Issue a challenge with a given splits/fee-payer shape, then attempt to
+-- settle it against a route whose expected request carries a DIFFERENT
+-- shape. Pre-fix this passed (only amount/currency/recipient were
+-- compared); post-fix it must raise charge_request_mismatch.
+
+t.test('with_expected rejects mismatched splits in methodDetails', function()
+  local server = new_server()
+  -- Credential issued for a route that splits 100 base-units to a fee
+  -- recipient.
+  local challenge = server:charge_with_options('1', {
+    splits = {{recipient = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ', amount = '100'}},
+  })
+  local credential = bogus_signature_credential(challenge:to_echo())
+
+  -- Route expects the SAME price/recipient but a different split amount.
+  local expected = challenge.request:decode()
+  expected.methodDetails.splits = {
+    {recipient = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ', amount = '500'},
+  }
+
+  t.assert_error(function()
+    server:verify_credential_with_expected(credential, expected, 1770000000)
+  end, 'method details')
+end)
+
+-- Pull-mode (transaction-payload) credential so the push-mode + fee-payer
+-- guard does not fire first; this isolates the methodDetails-binding
+-- rejection on feePayerKey.
+local function bogus_transaction_credential(echo)
+  return mpp.NewPaymentCredential(echo, {
+    type = 'transaction',
+    transaction = 'ZmFrZS10eC1iYXNlNjQ=',
+  })
+end
+
+t.test('with_expected rejects mismatched feePayerKey in methodDetails', function()
+  local server = new_server()
+  local challenge = server:charge_with_options('1', {
+    fee_payer = true,
+    fee_payer_key = 'FeePayerAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+  })
+  local credential = bogus_transaction_credential(challenge:to_echo())
+
+  local expected = challenge.request:decode()
+  expected.methodDetails.feePayerKey = 'AttackerBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+
+  t.assert_error(function()
+    server:verify_credential_with_expected(credential, expected, 1770000000)
+  end, 'method details')
+end)
+
+t.test('with_expected rejects mismatched externalId', function()
+  local server = new_server()
+  local challenge = server:charge_with_options('1', {external_id = 'order-123'})
+  local credential = bogus_signature_credential(challenge:to_echo())
+
+  local expected = challenge.request:decode()
+  expected.externalId = 'order-999'
+
+  t.assert_error(function()
+    server:verify_credential_with_expected(credential, expected, 1770000000)
+  end, 'externalId')
+end)
+
+t.test('with_expected ignores recentBlockhash drift in methodDetails', function()
+  -- recentBlockhash is a per-request freshness field, not a route binding;
+  -- a credential carrying a blockhash must still settle against a route
+  -- whose expected request omits / differs on it.
+  local server = new_server()
+  local challenge = server:charge_with_options('1', {
+    recent_blockhash = 'BlockhashAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+  })
+  local credential = bogus_signature_credential(challenge:to_echo())
+
+  local expected = challenge.request:decode()
+  expected.methodDetails.recentBlockhash = 'BlockhashZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ'
+
+  local receipt = server:verify_credential_with_expected(credential, expected, 1770000000)
+  t.assert_equal(receipt.status, 'success')
+end)
+
+t.test('with_expected settles from the route expected, not the credential', function()
+  -- A credential whose externalId/methodDetails MATCH the route (so binding
+  -- passes) still settles using the route's `expected` values. Capture the
+  -- request handed to verify_payment and assert it carries the route
+  -- externalId, proving settlement reads `expected`, not the credential.
+  local captured
+  local server = mpp.server.new({
+    recipient = TEST_RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = TEST_SECRET,
+    store = mpp.store.memory(),
+    verify_payment = function(context)
+      captured = context.request
+      return { reference = context.payload.signature or context.payload.transaction }
+    end,
+  })
+  local challenge = server:charge_with_options('1', {external_id = 'order-77'})
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local expected = challenge.request:decode()
+
+  server:verify_credential_with_expected(credential, expected, 1770000000)
+  t.assert_true(captured ~= nil, 'verify_payment must be called')
+  t.assert_equal(captured.externalId, 'order-77')
+  t.assert_equal(captured.amount, expected.amount)
+end)
+
+-- ── Regression: minimal expected form must not be rejected ─────────────────
+
+-- The documented minimal expected request {amount, currency, recipient}
+-- (methodDetails / externalId omitted) is what the nginx / simple-server /
+-- Kong examples pass. A prior round-1 change made the methodDetails compare
+-- UNCONDITIONAL, so the minimal form (expected.methodDetails == nil)
+-- canonicalized to `{}` and never matched a credential carrying any
+-- methodDetails, rejecting every example call with "method details
+-- mismatch". This test fails pre-fix and passes post-fix.
+t.test('with_expected accepts the minimal {amount,currency,recipient} form', function()
+  local server = new_server()
+  -- Credential carries a real methodDetails shape (splits + decimals), just
+  -- like a wire challenge would.
+  local challenge = server:charge_with_options('0.25', {
+    splits = {{recipient = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ', amount = '50'}},
+  })
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local request = challenge.request:decode()
+
+  local receipt = server:verify_credential_with_expected(credential, {
+    amount = request.amount,
+    currency = request.currency,
+    recipient = request.recipient,
+  }, 1770000000)
+  t.assert_equal(receipt.status, 'success')
+  t.assert_equal(receipt.challengeId, challenge.id)
+end)
+
+-- With the minimal form the credential's own methodDetails / externalId
+-- become the settlement defaults, so the verifier still receives the full
+-- on-chain shape (it is not silently dropped to `{}`).
+t.test('with_expected minimal form carries credential methodDetails into settlement', function()
+  local captured
+  local server = mpp.server.new({
+    recipient = TEST_RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = TEST_SECRET,
+    store = mpp.store.memory(),
+    verify_payment = function(context)
+      captured = context.request
+      return { reference = context.payload.signature or context.payload.transaction }
+    end,
+  })
+  local challenge = server:charge_with_options('1', {
+    external_id = 'order-minimal',
+    splits = {{recipient = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ', amount = '100'}},
+  })
+  local credential = bogus_signature_credential(challenge:to_echo())
+  local request = challenge.request:decode()
+
+  server:verify_credential_with_expected(credential, {
+    amount = request.amount,
+    currency = request.currency,
+    recipient = request.recipient,
+  }, 1770000000)
+  t.assert_true(captured ~= nil, 'verify_payment must be called')
+  -- externalId falls back to the credential's value when expected omits it.
+  t.assert_equal(captured.externalId, 'order-minimal')
+  -- methodDetails.splits flowed through from the credential, not dropped.
+  t.assert_true(type(captured.methodDetails) == 'table', 'methodDetails carried')
+  t.assert_true(captured.methodDetails.splits ~= nil, 'splits carried into settlement')
+end)

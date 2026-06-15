@@ -9,13 +9,12 @@
 # github.com/solana-foundation/pay-kit/go
 
 Charge stablecoins (USDC, USDT, PYUSD, ...) for any HTTP endpoint, in Go.
-Implements the Solana payment method for the
-[Machine Payments Protocol](https://mpp.dev) and ships a `net/http`
-middleware for `402 Payment Required` flows.
+One `paykit` umbrella, one surface, two protocols underneath:
+[x402](https://x402.org) and the
+[Machine Payments Protocol](https://paymentauth.org). The kit ships a
+`net/http` middleware for `402 Payment Required` flows.
 
-**MPP** is [an open protocol proposal](https://paymentauth.org) that lets
-any HTTP API accept payments using the `402 Payment Required` flow. You
-do not need to know anything about Solana to use this library: pick a
+You do not need to know anything about Solana to use this library: pick a
 currency, give it your wallet address, and gate a route in two lines.
 
 [![Go](https://img.shields.io/badge/go-1.26%2B-blue)]()
@@ -37,13 +36,13 @@ import (
     "github.com/solana-foundation/pay-kit/go/paykit"
     _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
     _ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-    _ "github.com/solana-foundation/pay-kit/go/signer"
+    _ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 )
 
 func main() {
     client, err := paykit.New(paykit.Config{
         Network: paykit.SolanaLocalnet,
-        Accept:  []paykit.Scheme{paykit.X402, paykit.MPP},
+        Accept:  []paykit.Protocol{paykit.X402, paykit.MPP},
         MPP: paykit.MPPConfig{
             Realm:                  "MyApp",
             ChallengeBindingSecret: []byte("local-dev-secret"),
@@ -58,7 +57,7 @@ func main() {
     mux := http.NewServeMux()
     mux.Handle("/report", client.Require(report)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         pmt, _ := paykit.PaymentFrom(r.Context())
-        fmt.Fprintf(w, `{"ok":true,"paid_via":%q}`, pmt.Scheme)
+        fmt.Fprintf(w, `{"ok":true,"paid_via":%q}`, pmt.Protocol)
     })))
     http.ListenAndServe(":4567", mux)
 }
@@ -93,24 +92,28 @@ The sibling `protocols/mpp/client` does the same for MPP
 (`Authorization: Payment`). Both wrap an `http.RoundTripper`, so any
 `*http.Client` call settles transparently.
 
-## Protocol compatibility matrix
+## x402
 
-### MPP
-
-| Intent | Client | Server |
-|---|:---:|:---:|
-| `mpp/charge/pull` | pass | pass |
-| `mpp/charge/push` | pass | pass |
-| `mpp/session` | --- | --- |
-| `mpp/subscription` | --- | --- |
-
-### x402
+The exact-amount scheme, settled locally against the operator signer or
+delegated to a facilitator. Both client and server ship.
 
 | Intent | Client | Server |
 |---|:---:|:---:|
-| `x402/exact` | pass | pass |
-| `x402/upto` | --- | --- |
-| `x402/batch-settlement` | --- | --- |
+| `x402/exact` | ✅ | ✅ |
+| `x402/upto` | — | — |
+| `x402/batch-settlement` | — | — |
+
+## MPP
+
+The Solana charge intent, in both pull (client-signed) and push
+(client-broadcast) modes. Both client and server ship.
+
+| Intent | Client | Server |
+|---|:---:|:---:|
+| `mpp/charge/pull` | ✅ | ✅ |
+| `mpp/charge/push` | ✅ | ✅ |
+| `mpp/session` | ✅ | ✅ |
+| `mpp/subscription` | — | — |
 
 For `mpp/charge/pull`: the server owns the full lifecycle. It issues
 signed challenges with a fresh `recentBlockhash`, parses and validates
@@ -126,6 +129,64 @@ For `mpp/charge/push`: the server fetches the transaction by signature
 with `getTransaction`, rejects failed or missing metadata, reuses the
 same structural transaction verifier as pull mode, consumes the
 signature through replay storage, and emits the same receipt shape.
+
+For `mpp/session`: both sides ship.
+
+Client side:
+
+- session challenge parsing and selection (`ParseSessionChallenge`,
+  `SelectSessionChallenge` with network/currency/mode filters; omitted
+  or empty `modes` means push-only),
+- payment-channel open builders driven by the challenge (deposit
+  defaults to the cap, grace period 900s, random salt, token program
+  resolved from the currency so Token-2022 mints work, operator as fee
+  payer with a payer partial-sign, challenge `recentBlockhash` echo,
+  `PendingServerSignature` placeholder) for push and pull/clientVoucher,
+- `ActiveSession` voucher signing with the prepare/record watermark
+  split, `SessionConsumer` for metered deliveries, and the metered SSE
+  layer (`SseDecoder`, `MeteredSseSession`, `MeteredSseStream`,
+  `HTTPCommitTransport`).
+
+Server side (`NewSession`, mirroring the TypeScript `session()` method
+over the rust `SessionServer` core):
+
+- HMAC-bound 402 session challenges (`Session.Challenge`): cap clamped
+  to the server max, `minVoucherDelta` only when positive, `modes`
+  omitted when push-only, `pullVoucherStrategy` only when pull is
+  offered, optional `recentBlockhash` prefetch via the configured RPC
+  client,
+- credential verification (`Session.VerifyCredential`) dispatching the
+  open / voucher / commit / topUp / close actions over an atomic
+  per-channel `ChannelStore` with the harness-tested voucher check
+  order, idempotent open replays that never reset the watermark, and a
+  re-drivable close until a settlement signature is recorded,
+- on-chain open handling: structural `VerifyOpenTx` for client-broadcast
+  opens (legacy and v0 encodings, payload signature binding, channel
+  PDA re-derivation) and `SubmitOpenTx` server broadcast that completes
+  the fee-payer signature and waits for confirmation,
+- the reserve/commit metering side channel (`Session.Routes`) hosts
+  mount at `POST /__402/session/deliveries` and
+  `POST /__402/session/commit` (a TypeScript-server extension, not in
+  the rust crate), plus `SessionMiddleware` for `net/http` routes,
+- a server-side metered SSE writer (`MeteredStream`) emitting the
+  `mpp.metering` / `mpp.usage` / `[DONE]` frames the client decoder
+  consumes,
+- an idle-close watchdog (`CloseDelay`) and close settlement
+  (settle_and_finalize + Ed25519 precompile + distribute in one
+  merchant-signed transaction), both of which settle on-chain only when
+  a merchant `Signer` and an `RPC` client are configured; without them
+  payload claims are trusted as provided, matching rust with `rpc_url`
+  unset.
+
+Out of scope: pull/operatedVoucher (multi-delegate program builders) on
+both sides, including the `initMultiDelegateTx` submission seam in the
+TypeScript open handler, the SPL `approve` delegation transaction for
+non-channel pull opens (the on-chain delegation happens out of band),
+and a `SessionFetch`-style drop-in fetch wrapper. The TypeScript
+`SessionFetchClient` semantics that wrapper would own (per-channel
+commit watermark reset on re-open, failed-commit retryability without
+latching) therefore have no Go counterpart; the `ActiveSession`
+prepare/record split is the building block callers compose instead.
 
 ## Examples
 
@@ -194,7 +255,7 @@ go test ./...
 The CI Go job runs the SDK packages with `-coverprofile` and enforces a
 91 percent line coverage gate via `scripts/check_coverage.sh`.
 
-## Interop
+## Harness
 
 The Go SDK plugs into the cross-SDK harness as a server
 (`harness/go-server`, both protocols) and as clients
@@ -204,26 +265,44 @@ as `go-x402` — drives the x402-exact client). Focused harness commands:
 ```bash
 cd harness
 # MPP charge
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go   pnpm test
-MPP_INTEROP_CLIENTS=go         MPP_INTEROP_SERVERS=rust pnpm test
+MPP_HARNESS_CLIENTS=typescript MPP_HARNESS_SERVERS=go   pnpm test
+MPP_HARNESS_CLIENTS=go         MPP_HARNESS_SERVERS=rust pnpm test
 # x402 exact: go client -> go server
-MPP_INTEROP_SERVERS=go MPP_INTEROP_INTENTS=x402-exact \
-  MPP_INTEROP_SCENARIOS=x402-exact-basic \
-  X402_INTEROP_CLIENTS=go-x402 X402_INTEROP_SERVERS=go pnpm test
+MPP_HARNESS_SERVERS=go MPP_HARNESS_INTENTS=x402-exact \
+  MPP_HARNESS_SCENARIOS=x402-exact-basic \
+  X402_HARNESS_CLIENTS=go-x402 X402_HARNESS_SERVERS=go pnpm test
 ```
 
 ## Spec
 
-This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188)
+This SDK implements the
+[Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| gate | a guarded route; `client.Require(gate)` wraps the handler |
+| amount | the face price a gate charges, e.g. `MustParseUSD("0.10")` |
+| total | amount plus any `fee_on_top`; what the payer actually settles |
+| price | the typed amount value (`paykit.Price`) carried by a gate |
+| fee_within | a split taken out of the amount, paid to a fee recipient |
+| fee_on_top | a surcharge added on top of the amount, paid by the payer |
+| payment | the verified `paykit.Payment` attached to the request context |
+| protocol | the wire protocol that settled: `x402` or `mpp` |
+| scheme | a protocol sub-form: x402 `exact`, mpp `charge` |
+| currency | the fiat unit a price is quoted in: `USD`, `EUR`, `GBP` |
+| settlement | the on-chain stablecoin the payer pays in (`USDC`, `USDT`, ...) |
 
 ## Repo layout
 
 ```text
 go/
 ├── paykit/                       umbrella API: x402 + MPP behind one Config and middleware
-├── paycore/                      shared Solana protocol layer (mints, token programs, ResolveMint)
-│   └── solanatx/                 shared tx builders, ATA derivation, RPC helpers (used by mpp + x402)
+├── paycore/                      PayCore: protocol-agnostic primitives
+│   ├── solanatx/                 shared tx builders, ATA derivation, RPC helpers (used by mpp + x402)
+│   └── signer/                   Ed25519 signer factories behind a KMS-ready interface
 ├── protocols/
 │   ├── mpp/                      MPP adapter that registers the Solana charge method
 │   │   ├── core/                 MPP type facade, replay store, expiry helpers, errors
@@ -233,7 +312,6 @@ go/
 │   │   ├── client/               HTTP client transport and credential builder
 │   │   └── errorcodes/           canonical L6 fault codes
 │   └── x402/                     x402 "exact" adapter and structural transaction verifier
-├── signer/                       Ed25519 signer factories behind a KMS-ready interface
 ├── internal/testutil/            Fake RPC and signer helpers for tests
 └── go.mod
 ```

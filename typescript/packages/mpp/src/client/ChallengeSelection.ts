@@ -3,7 +3,7 @@ import { Challenge } from 'mppx';
 
 import { normalizeNetwork, resolveStablecoinMint } from '../constants.js';
 import { charge as chargeMethod, session as sessionMethod } from '../Methods.js';
-import type { SessionMode } from './Session.js';
+import { type SessionMode, sessionRequestModes } from './Session.js';
 
 /** A typed Solana charge challenge accepted by the MPP client. */
 export type SolanaChargeChallenge = Challenge.Challenge<
@@ -141,7 +141,8 @@ export function selectSolanaSessionChallenge(
 
     const acceptedModes = typeof options.mode === 'string' ? [options.mode] : options.mode;
     return candidates.find(challenge => {
-        const challengeModes = challenge.request.modes ?? ['push'];
+        // An omitted or empty `modes` list means push-only.
+        const challengeModes = sessionRequestModes(challenge.request);
         return acceptedModes.some(mode => challengeModes.includes(mode));
     });
 }

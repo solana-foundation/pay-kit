@@ -137,4 +137,59 @@ class PayKitPricingTest < Minitest::Test
       assert_raises(PayKit::ConfigurationError) { duplicate_pricing.new }
     end
   end
+
+  def test_coerce_raises_when_symbol_passed_without_registry
+    PayKit.reset!
+    PayKit.configure do |c|
+      c.operator { |op| op.recipient = "AyNAa2VPe2t5pgg8M61iE6kqMudkV98zsT4rkAZuU6tj" }
+      c.mpp.challenge_binding_secret = "x"
+    end
+    assert_raises(PayKit::NoRegistryConfigured) do
+      PayKit::Pricing.coerce(:something, registry: nil)
+    end
+  ensure
+    PayKit.reset!
+  end
+
+  def test_pricing_each_iterates_gates
+    klass = Class.new(PayKit::Pricing) do
+      def build_gates
+        gate :a, amount: usd("0.10")
+        gate :b, amount: usd("0.20")
+      end
+    end
+    PayKitTestHelpers.with_config do
+      pricing = klass.new
+      assert_equal [:a, :b], pricing.to_a.map(&:name)
+      assert pricing.include?(:a)
+      refute pricing.include?(:nope)
+      yielded = []
+      pricing.each { |g| yielded << g.name }
+      assert_equal [:a, :b], yielded
+    end
+  end
+
+  def test_pricing_setter_freezes_non_frozen_registry
+    PayKitTestHelpers.with_config do
+      registry = Object.new
+      refute registry.frozen?
+      PayKit.pricing = registry
+      assert registry.frozen?
+    end
+  end
+
+  def test_pricing_setter_idempotent_on_already_frozen_registry
+    klass = Class.new(PayKit::Pricing) do
+      def build_gates
+        gate :a, amount: usd("0.10")
+      end
+    end
+
+    PayKitTestHelpers.with_config do
+      pricing = klass.new
+      assert pricing.frozen?
+      PayKit.pricing = pricing
+      PayKit.pricing = pricing
+    end
+  end
 end

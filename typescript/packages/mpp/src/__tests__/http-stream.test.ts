@@ -128,19 +128,19 @@ describe('MeteredSseSession', () => {
         expect(metered.directive).toMatchObject({ amount: '100', deliveryId: 'reserved' });
         expect(
             metered.acceptEvent({
-                data: JSON.stringify({ amount: '64', deliveryId: 'actual' }),
+                data: JSON.stringify({ amount: '64', deliveryId: 'reserved' }),
                 event: 'mpp.usage',
             }),
         ).toMatchObject({ type: 'usage' });
-        expect(metered.usage).toEqual({ amount: '64', deliveryId: 'actual' });
+        expect(metered.usage).toEqual({ amount: '64', deliveryId: 'reserved' });
         expect(metered.acceptEvent({ data: '[DONE]' })).toEqual({ type: 'done' });
 
         const receipt = await metered.ack();
 
         expect(metered.isDone).toBe(true);
-        expect(receipt).toMatchObject({ amount: '64', cumulative: '64', deliveryId: 'actual' });
+        expect(receipt).toMatchObject({ amount: '64', cumulative: '64', deliveryId: 'reserved' });
         expect(transport.commits[0]).toMatchObject({
-            deliveryId: 'actual',
+            deliveryId: 'reserved',
             voucher: { data: { cumulativeAmount: '64' } },
         });
     });

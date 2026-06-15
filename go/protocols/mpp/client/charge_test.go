@@ -153,9 +153,9 @@ func TestBuildChargeTransactionTokenPull(t *testing.T) {
 }
 
 // TestBuildChargeTransactionTokenCreateRecipientATAFlag table-tests the
-// opt-in CreateRecipientATA flag. The default (false) matches the
-// canonical Rust/TS clients which leave primary-recipient ATA creation
-// to the server, while setting the flag prepends an idempotent
+// opt-in CreateRecipientATA flag. The default (false) leaves
+// primary-recipient ATA creation to the server, as the other SDK clients
+// do, while setting the flag prepends an idempotent
 // createAssociatedTokenAccount instruction for first-run wallets that
 // do not yet hold a token account for the selected mint.
 func TestBuildChargeTransactionTokenCreateRecipientATAFlag(t *testing.T) {
@@ -548,6 +548,8 @@ func TestBuildCredentialHeaderRejectsInvalidMethodDetails(t *testing.T) {
 
 // rpcWithBlockhashErr wraps FakeRPC and forces GetLatestBlockhash to error.
 type rpcWithBlockhashErr struct {
+	// FakeRPC supplies the rest of the stub RPC surface unchanged; only the
+	// GetLatestBlockhash method below is overridden to fail.
 	*testutil.FakeRPC
 }
 
@@ -700,9 +702,6 @@ func TestBuildChargeTransactionTokenWithExternalIDMemoTooLong(t *testing.T) {
 		t.Fatal("expected long externalId memo error in token path")
 	}
 }
-
-// rpcSendErr forces SendTransaction to error to cover the broadcast error branch.
-type rpcSendErr struct{ *testutil.FakeRPC }
 
 func TestBuildChargeTransactionBroadcastSendError(t *testing.T) {
 	rpcClient := testutil.NewFakeRPC()

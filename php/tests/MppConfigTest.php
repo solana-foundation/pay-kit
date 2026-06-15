@@ -18,10 +18,13 @@ final class MppConfigTest extends TestCase
         $this->assertNull($c->challengeBindingSecret);
     }
 
-    public function testExpiresInZeroRejected(): void
+    public function testExpiresInZeroIsDevOnlyOptOut(): void
     {
-        $this->expectException(ConfigurationException::class);
-        new MppConfig(expiresIn: 0);
+        // expiresIn = 0 is the explicit, documented dev-only never-expires
+        // opt-out. It must be accepted (not rejected); the Adapter turns it
+        // into an empty `expires` so the challenge never expires.
+        $c = new MppConfig(expiresIn: 0);
+        $this->assertSame(0, $c->expiresIn);
     }
 
     public function testExpiresInNegativeRejected(): void
@@ -37,5 +40,58 @@ final class MppConfigTest extends TestCase
         $this->assertSame('Test', $b->realm);
         $this->assertSame('abc', $b->challengeBindingSecret);
         $this->assertNull($a->challengeBindingSecret);
+    }
+
+    public function testResolveExpiresInAbsentUsesDefault(): void
+    {
+        // Mirrors the Laravel provider's `$cfg['mpp']['expires_in'] ?? null`:
+        // an absent key must fall back to the safe 120s default.
+        $this->assertSame(120, MppConfig::resolveExpiresIn(null));
+        $this->assertSame(90, MppConfig::resolveExpiresIn(null, 90));
+    }
+
+    public function testResolveExpiresInEmptyStringRejectedNotNeverExpires(): void
+    {
+        // Regression: a mis-typed/empty `MPP_EXPIRES_IN` env arrives as "".
+        // PHP's (int)"" is 0, which MppConfig accepts as never-expires. The
+        // resolver must reject it instead of silently disabling expiry.
+        $this->expectException(ConfigurationException::class);
+        MppConfig::resolveExpiresIn('');
+    }
+
+    public function testResolveExpiresInNonNumericRejected(): void
+    {
+        // A non-numeric value (e.g. "abc", "120s") would (int)-cast to 0.
+        $this->expectException(ConfigurationException::class);
+        MppConfig::resolveExpiresIn('120s');
+    }
+
+    public function testResolveExpiresInBooleanRejected(): void
+    {
+        // (bool) true -> (int) 1, (bool) false -> (int) 0; both are wrong.
+        $this->expectException(ConfigurationException::class);
+        MppConfig::resolveExpiresIn(true);
+    }
+
+    public function testResolveExpiresInExplicitZeroIsOptOut(): void
+    {
+        // Only an explicit integer/numeric 0 yields the never-expires opt-out.
+        $this->assertSame(0, MppConfig::resolveExpiresIn(0));
+        $this->assertSame(0, MppConfig::resolveExpiresIn('0'));
+        $this->assertSame(0, MppConfig::resolveExpiresIn(0.0));
+    }
+
+    public function testResolveExpiresInValidIntegerPreserved(): void
+    {
+        $this->assertSame(300, MppConfig::resolveExpiresIn(300));
+        $this->assertSame(300, MppConfig::resolveExpiresIn('300'));
+        $this->assertSame(300, MppConfig::resolveExpiresIn(' 300 '));
+        $this->assertSame(300, MppConfig::resolveExpiresIn(300.0));
+    }
+
+    public function testResolveExpiresInFractionalRejected(): void
+    {
+        $this->expectException(ConfigurationException::class);
+        MppConfig::resolveExpiresIn(1.5);
     }
 }

@@ -1,0 +1,147 @@
+[
+  {
+    "id": "charge-compute-price-over-cap-reject",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Divergence class: compute-unit-price cap. A transaction whose compute unit price exceeds 5_000_000 micro-lamports must be rejected by the verifier. The pinned transaction is the byte-identical build-then-verify wire so server-only SDKs (which cannot build) verify it directly.",
+    "input": {
+      "transaction": "Ac224MpTUS6GtQ3adEcnNs6WkgoUd3kCzb2WN3RRaayy0EsdiNp4PujsPrDx51UiUYN/hM/JNiP4Ggc2ycbe4AKAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6DtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwQACQNBS0wAAAAAAAQABQJADQMABQQBAwIACgzoAwAAAAAAAAYA",
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "computeUnitPrice": "5000001",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "compute-price-over-cap",
+      "rejectReason": "compute unit price exceeds the 5_000_000 micro-lamport cap"
+    }
+  },
+  {
+    "id": "charge-feepayer-as-authority-reject",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Divergence class: fee-payer-as-authority. When the fee payer signs as the transfer authority, the verifier must reject so a server fee payer cannot also be drained as the funding source. The pinned transaction is the byte-identical build-then-verify wire so server-only SDKs (which cannot build) verify it directly.",
+    "input": {
+      "transaction": "ATc9q87uHkYA6k/yH8bvcOD7z/gN21vL/8M2Rlfzb1f8KGMyMXv5TVSAG50yl4YrFn9lqdWt7bG5dqvfWwY0RwiAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6DtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwQACQMBAAAAAAAAAAQABQJADQMABQQBAwIACgzoAwAAAAAAAAYA",
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "feePayer": true,
+          "feePayerKey": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "fee-payer-not-authority",
+      "rejectReason": "fee payer cannot authorize the SPL payment transfer (fee-payer == authority == source)"
+    }
+  },
+  {
+    "id": "charge-transferchecked-decimals-mismatch-reject",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Divergence class: transferChecked decimals mismatch. The transaction encodes decimals=9 in transferChecked but the challenge pins decimals=6; the verifier must reject.",
+    "input": {
+      "transaction": "AVisFTaj/j43KxmgXR0eiyESXlvreGEWfrjDF0t3b098UoZl9t4PmGRF5RpBfoTkQhaVwwWs9AH/p8ndNJRQLQ6AAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6DtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwQACQMBAAAAAAAAAAQABQJADQMABQQBAwIACgzoAwAAAAAAAAkA",
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "no-matching-transfer",
+      "rejectReason": "decimals=9 transfer fails the decimals=6 match key, surfacing as a no-matching-transfer reject; isolating the decimals field itself is the job of a positive-control vector pair, not this reason check"
+    }
+  },
+  {
+    "id": "charge-transferchecked-decimals-match-accept",
+    "intent": "charge",
+    "mode": "verify-transaction",
+    "description": "Positive control for charge-transferchecked-decimals-mismatch-reject. Identical request and challenge (decimals=6) but the pinned transaction encodes the CORRECT decimals=6 in transferChecked, so the verifier must accept. Paired with the mismatch vector this isolates the decimals field in the transfer match key: a regression that drops decimals from the match key flips the mismatch vector reject->accept (failing it) while this control stays accept.",
+    "input": {
+      "transaction": "ATc9q87uHkYA6k/yH8bvcOD7z/gN21vL/8M2Rlfzb1f8KGMyMXv5TVSAG50yl4YrFn9lqdWt7bG5dqvfWwY0RwiAAQADBupKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIsa4T+VAWZkKbqIwjcZYhVrZWKZR4UVyYj9/rTk9uwE+wJwa1WOvT05wo9H+keYP/wmkenNjT3crGO32T+uRfu6DtELLORIVfxOpM9ATQoLQMrX/7NAaLb8bd5BgjfAC6nAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwQACQMBAAAAAAAAAAQABQJADQMABQQBAwIACgzoAwAAAAAAAAYA",
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "expect": {
+      "outcome": "accept",
+      "transactionShape": {
+        "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+        "transfers": [
+          {
+            "kind": "spl",
+            "destinationOwner": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+            "mint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            "amount": "1000",
+            "decimals": 6,
+            "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "charge-splits-consume-amount-reject",
+    "intent": "charge",
+    "mode": "build-transaction",
+    "description": "Divergence class: splits consume the entire amount. A single split equal to the total amount leaves the primary recipient zero; the build path must reject because the primary amount must be strictly positive.",
+    "input": {
+      "signerSecretKey": [7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,234,74,108,99,226,156,82,10,190,245,80,123,19,46,197,249,149,71,118,174,190,190,123,146,66,30,234,105,20,70,210,44],
+      "request": {
+        "amount": "1000",
+        "currency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "recipient": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf",
+        "methodDetails": {
+          "network": "localnet",
+          "decimals": 6,
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "recentBlockhash": "11111111111111111111111111111111",
+          "splits": [
+            { "recipient": "AoVsGaj8MSJ6xwKxfFxo9iZWH3enC8RRTXKH2fx2F8os", "amount": "1000" }
+          ]
+        }
+      }
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "splits-exceed-amount",
+      "rejectReason": "splits consume the entire amount; primary recipient must receive a positive amount"
+    }
+  }
+]

@@ -112,7 +112,7 @@ async function main() {
   // 4. Write generated embedding files for each language
 
   // Rust: write template + service worker for include_str!
-  const rustDir = resolve(import.meta.dirname, '..', 'rust', 'src', 'server', 'html');
+  const rustDir = resolve(import.meta.dirname, '..', 'rust', 'crates', 'mpp', 'src', 'server', 'html');
   mkdirSync(rustDir, { recursive: true });
   writeFileSync(resolve(rustDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(rustDir, 'service_worker.gen.js'), mppxServiceWorker);
@@ -127,7 +127,7 @@ async function main() {
   writeFileSync(resolve(goDir, 'payment-ui.gen.js'), paymentUIRaw);
 
   // Lua: write template + service worker as Lua strings
-  const luaDir = resolve(import.meta.dirname, '..', 'lua', 'mpp', 'server', 'html_assets');
+  const luaDir = resolve(import.meta.dirname, '..', 'lua', 'pay_kit', 'protocols', 'mpp', 'server', 'html_assets');
   mkdirSync(luaDir, { recursive: true });
   const luaTemplate = htmlTemplate.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const luaSW = mppxServiceWorker.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
@@ -137,7 +137,7 @@ async function main() {
   );
 
   // Python: write template + service worker as raw files for importlib.resources
-  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'solana_mpp', 'server', 'html');
+  const pyDir = resolve(import.meta.dirname, '..', 'python', 'src', 'pay_kit', 'protocols', 'mpp', 'server', 'html');
   mkdirSync(pyDir, { recursive: true });
   writeFileSync(resolve(pyDir, 'template.gen.html'), htmlTemplate);
   writeFileSync(resolve(pyDir, 'service_worker.gen.js'), mppxServiceWorker);

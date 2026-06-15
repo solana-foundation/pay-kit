@@ -9,7 +9,7 @@ use Throwable;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\PayCore\Solana\Mints;
 use PayKit\Protocols\Mpp\Core\Credential;
-use PayKit\Protocols\Mpp\Core\Json;
+use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Programs\AssociatedTokenProgram;
@@ -60,7 +60,8 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         if (is_string($transaction) && $transaction !== '') {
             try {
                 $request = ChargeRequest::fromArray($challenge->decodeRequest());
-                return $this->verifyTransactionPayload($transaction, $request);
+                // Pull-mode pre-broadcast: enforce the compute-budget caps.
+                return $this->runVerification($transaction, $request, onChain: false);
             } catch (Throwable $error) {
                 // Surface the message from any failure (the SDK's own
                 // InvalidArgumentException, an upstream solana-php SolanaException
@@ -93,8 +94,18 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
      */
     public function verifyTransactionPayload(string $transactionBase64, ChargeRequest $request): VerificationResult
     {
+        // Push-mode on-chain re-verification. The transaction has already
+        // landed and confirmed, so the compute-budget caps no longer gate
+        // anything; mirror Rust validate_parsed_instruction_allowlist
+        // (rust/crates/mpp/src/server/charge.rs:1873-1876), which skips the
+        // unit-limit/price caps on the parsed (settled) path.
+        return $this->runVerification($transactionBase64, $request, onChain: true);
+    }
+
+    private function runVerification(string $transactionBase64, ChargeRequest $request, bool $onChain): VerificationResult
+    {
         try {
-            $this->verifyTransaction($transactionBase64, $request);
+            $this->verifyTransaction($transactionBase64, $request, $onChain);
         } catch (Throwable $error) {
             return VerificationResult::failure($error->getMessage());
         }
@@ -119,7 +130,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         }
     }
 
-    private function verifyTransaction(string $transactionBase64, ChargeRequest $request): void
+    private function verifyTransaction(string $transactionBase64, ChargeRequest $request, bool $onChain = false): void
     {
         $wire = base64_decode($transactionBase64, true);
         if ($wire === false || $wire === '') {
@@ -175,6 +186,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 expectedAtaPayer: $feePayer,
                 requiredAtaOwners: [],
                 createdAtaOwners: $createdAtaOwners,
+                onChain: $onChain,
             );
             return;
         }
@@ -213,15 +225,22 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
             );
         }
         $this->verifyMemos($decoded, $request, $splits, $matched);
+        // The expected ATA payer defaults to the transaction fee payer when no
+        // route fee payer is configured (client-pays-fees mode). Mirrors Rust
+        // expected_ata_payer = fee_payer.unwrap_or(tx_fee_payer)
+        // (rust/crates/mpp/src/server/charge.rs:1299-1305); otherwise a
+        // client-pays charge would skip the ATA-payer binding entirely.
+        $expectedAtaPayer = $feePayer ?? ($decoded['accountKeys'][0] ?? null);
         $this->validateInstructionAllowlist(
             $decoded,
             $matched,
             expectedMint: $mint,
             allowedAtaOwners: $allowedAtaOwners,
             expectedTokenProgram: $tokenProgram,
-            expectedAtaPayer: $feePayer,
+            expectedAtaPayer: $expectedAtaPayer,
             requiredAtaOwners: $requiredAtaOwners,
             createdAtaOwners: $createdAtaOwners,
+            onChain: $onChain,
         );
     }
 
@@ -460,6 +479,7 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
         ?PublicKey $expectedAtaPayer,
         array $requiredAtaOwners,
         array &$createdAtaOwners,
+        bool $onChain = false,
     ): void {
         $allowedPrograms = [
             self::COMPUTE_BUDGET_PROGRAM,
@@ -475,7 +495,14 @@ final class SolanaChargeTransactionVerifier implements PaymentVerifier, Transact
                 throw new InvalidArgumentException('Unexpected program instruction in payment transaction: ' . $programId);
             }
             if ($programId === self::COMPUTE_BUDGET_PROGRAM) {
-                $this->validateComputeBudgetInstruction($instruction);
+                // On the push/on-chain path the transaction has already
+                // landed, so the unit-limit/price caps are no longer a gate.
+                // Rust validate_parsed_instruction_allowlist does a bare
+                // `continue` here (charge.rs:1873-1876); only the pull-mode
+                // pre-broadcast path enforces the caps.
+                if (!$onChain) {
+                    $this->validateComputeBudgetInstruction($instruction);
+                }
                 continue;
             }
             if (isset($matched[$index])) {

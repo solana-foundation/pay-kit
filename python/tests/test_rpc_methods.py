@@ -1,6 +1,6 @@
 """Exhaustive coverage for SolanaRpc methods.
 
-Hits every branch in :mod:`solana_mpp._rpc` so the JSON-RPC wrapper meets
+Hits every branch in :mod:`pay_kit._paycore.rpc` so the JSON-RPC wrapper meets
 the 90 percent line coverage gate: the error branch in ``_call``, both
 ``get_signature_statuses`` return shapes, ``get_transaction``,
 ``confirm_transaction`` legacy shim (success and timeout), and
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp._errors import PaymentError
-from solana_mpp._rpc import SolanaRpc, _RpcError, _RpcResponse
+from pay_kit._paycore.errors import PaymentError
+from pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
 
 
 class _FakeResponse:
@@ -120,7 +120,7 @@ async def test_confirm_transaction_timeout():
     # Always returns "processed" status so confirm_transaction loops 40x and returns timeout.
     rpc._client = _ScriptedClient([{"result": {"value": [{"confirmationStatus": "processed"}]}, "id": 1}])  # type: ignore[assignment]
     # Speed up: monkeypatch asyncio.sleep on the module
-    import solana_mpp._rpc as rpc_mod
+    import pay_kit._paycore.rpc as rpc_mod
 
     async def _noop_sleep(_s):
         return None
@@ -190,3 +190,27 @@ async def test_aclose_calls_underlying_client():
     rpc = _rpc({"result": None, "id": 1})
     await rpc.aclose()
     # Survives without error.
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_returns_value_blockhash():
+    # Regression: the x402 client's blockhash fallback calls
+    # rpc.get_latest_blockhash() and reads resp.value.blockhash. Manual DX
+    # caught that SolanaRpc lacked this method entirely.
+    payload = {
+        "result": {
+            "context": {"slot": 1},
+            "value": {"blockhash": "Bh11111111111111111111111111111111111111111", "lastValidBlockHeight": 200},
+        },
+        "id": 1,
+    }
+    rpc = _rpc(payload)
+    resp = await rpc.get_latest_blockhash()
+    assert resp.value.blockhash == "Bh11111111111111111111111111111111111111111"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_blockhash_rejects_missing_blockhash():
+    rpc = _rpc({"result": {"value": {}}, "id": 1})
+    with pytest.raises(_RpcError):
+        await rpc.get_latest_blockhash()

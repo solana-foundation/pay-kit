@@ -1,8 +1,8 @@
-# MPP interop tests
+# MPP harness tests
 
 This directory contains the cross-language MPP interoperability tests.
 
-The active interop layer is the TypeScript/Vitest process harness in `src/`
+The active harness layer is the TypeScript/Vitest process harness in `src/`
 and `test/e2e.test.ts`. This is the adapter contract new language
 implementations should target.
 
@@ -28,9 +28,9 @@ Required fields:
 - `port`: local TCP port where the protected resource is served
 
 The server must expose the shared scenario resource path from
-`interopScenario.resourcePath` and protect it with the MPP `charge` flow. It
+`harnessScenario.resourcePath` and protect it with the MPP `charge` flow. It
 should return a successful JSON response after payment and include the
-settlement header named by `interopScenario.settlementHeader`.
+settlement header named by `harnessScenario.settlementHeader`.
 
 Server adapters should stay thin: read the harness environment, spin up the
 expected endpoint, route requests through the language SDK server, and return
@@ -40,7 +40,7 @@ recipient/split balance deltas, and the settled transaction shape in Surfpool.
 
 ### Client adapters
 
-A client adapter receives the target URL in `MPP_INTEROP_TARGET_URL`, pays it, and prints one `result` message:
+A client adapter receives the target URL in `MPP_HARNESS_TARGET_URL`, pays it, and prints one `result` message:
 
 ```json
 {
@@ -71,18 +71,18 @@ The `settlement` field is optional, but clients should populate it when the impl
 
 The Vitest harness prepares Surfpool state and passes these variables to each adapter:
 
-- `MPP_INTEROP_RPC_URL`: local Surfpool RPC URL
-- `MPP_INTEROP_NETWORK`: network name, currently `localnet`
-- `MPP_INTEROP_MINT`: SPL mint used by the scenario
-- `MPP_INTEROP_PRICE`: display price
-- `MPP_INTEROP_SECRET_KEY`: deterministic server secret
-- `MPP_INTEROP_CLIENT_SECRET_KEY`: JSON array for the client keypair
-- `MPP_INTEROP_FEE_PAYER_SECRET_KEY`: JSON array for the server fee payer keypair
-- `MPP_INTEROP_PAY_TO`: expected recipient public key
-- `MPP_INTEROP_TARGET_URL`: client-only target URL
-- `MPP_INTEROP_REPLAY_SOURCE_PATH`: optional cheaper source route for cross-route replay tests
-- `MPP_INTEROP_REPLAY_SOURCE_PRICE`: optional source route display price
-- `MPP_INTEROP_REPLAY_SOURCE_AMOUNT`: optional source route integer amount
+- `MPP_HARNESS_RPC_URL`: local Surfpool RPC URL
+- `MPP_HARNESS_NETWORK`: network name, currently `localnet`
+- `MPP_HARNESS_MINT`: SPL mint used by the scenario
+- `MPP_HARNESS_PRICE`: display price
+- `MPP_HARNESS_SECRET_KEY`: deterministic server secret
+- `MPP_HARNESS_CLIENT_SECRET_KEY`: JSON array for the client keypair
+- `MPP_HARNESS_FEE_PAYER_SECRET_KEY`: JSON array for the server fee payer keypair
+- `MPP_HARNESS_PAY_TO`: expected recipient public key
+- `MPP_HARNESS_TARGET_URL`: client-only target URL
+- `MPP_HARNESS_REPLAY_SOURCE_PATH`: optional cheaper source route for cross-route replay tests
+- `MPP_HARNESS_REPLAY_SOURCE_PRICE`: optional source route display price
+- `MPP_HARNESS_REPLAY_SOURCE_AMOUNT`: optional source route integer amount
 
 The canonical scenario values, including integer amounts, split recipients, and
 expected success/failure status, live in `src/contracts.ts`.
@@ -96,8 +96,8 @@ expected success/failure status, live in `src/contracts.ts`.
 5. Run a focused matrix before enabling it by default:
 
 ```bash
-MPP_INTEROP_CLIENTS=<id> MPP_INTEROP_SERVERS=rust pnpm test
-MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=<id> pnpm test
+MPP_HARNESS_CLIENTS=<id> MPP_HARNESS_SERVERS=rust pnpm test
+MPP_HARNESS_CLIENTS=rust MPP_HARNESS_SERVERS=<id> pnpm test
 ```
 
 Enable the implementation by default only after the focused matrix is stable.
@@ -118,18 +118,18 @@ coverage.
 
 Use these environment variables to filter the active matrix:
 
-- `MPP_INTEROP_CLIENTS=typescript,rust`
-- `MPP_INTEROP_SERVERS=typescript,rust`
-- `MPP_INTEROP_INTENTS=charge`
-- `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay`
+- `MPP_HARNESS_CLIENTS=typescript,rust`
+- `MPP_HARNESS_SERVERS=typescript,rust`
+- `MPP_HARNESS_INTENTS=charge`
+- `MPP_HARNESS_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay`
 
 ### x402 exact intent
 
 A second intent, `x402-exact`, exercises the canonical x402 `exact` scheme
-against the Rust spine in `rust/crates/x402/src/bin/interop_{client,server}.rs`.
+against the Rust spine in `rust/crates/x402/src/bin/harness_{client,server}.rs`.
 The TypeScript reference adapters live at
 `src/fixtures/typescript/exact-{client,server}.ts` and share the same
-harness contract as the Rust spine: identical `X402_INTEROP_*` env vars,
+harness contract as the Rust spine: identical `X402_HARNESS_*` env vars,
 identical `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` headers, identical
 ready / result JSON shapes. The TS reference fixture carries a stub
 credential payload (challenge id + resource) and is paired against the
@@ -140,28 +140,28 @@ PaymentProof land, they expand the matrix by registering under
 
 Env vars consumed by both roles:
 
-- `X402_INTEROP_RPC_URL`, `X402_INTEROP_NETWORK`, `X402_INTEROP_MINT`
-- `X402_INTEROP_PAY_TO`, `X402_INTEROP_PRICE`
-- `X402_INTEROP_FACILITATOR_SECRET_KEY`
+- `X402_HARNESS_RPC_URL`, `X402_HARNESS_NETWORK`, `X402_HARNESS_MINT`
+- `X402_HARNESS_PAY_TO`, `X402_HARNESS_PRICE`
+- `X402_HARNESS_FACILITATOR_SECRET_KEY`
 
 Server-only:
 
-- `X402_INTEROP_EXTRA_OFFERED_MINTS` (CSV of additional mint addresses)
+- `X402_HARNESS_EXTRA_OFFERED_MINTS` (CSV of additional mint addresses)
 
 Client-only:
 
-- `X402_INTEROP_TARGET_URL`
-- `X402_INTEROP_CLIENT_SECRET_KEY`
-- `X402_INTEROP_PREFER_CURRENCIES` (CSV of preferred currencies)
+- `X402_HARNESS_TARGET_URL`
+- `X402_HARNESS_CLIENT_SECRET_KEY`
+- `X402_HARNESS_PREFER_CURRENCIES` (CSV of preferred currencies)
 
 Run the x402 matrix slice:
 
 ```bash
-X402_INTEROP_MATRIX=1 \
-X402_INTEROP_RPC_URL=http://127.0.0.1:8899 \
-X402_INTEROP_MINT=... X402_INTEROP_PAY_TO=... \
-X402_INTEROP_CLIENT_SECRET_KEY='[...]' \
-X402_INTEROP_FACILITATOR_SECRET_KEY='[...]' \
+X402_HARNESS_MATRIX=1 \
+X402_HARNESS_RPC_URL=http://127.0.0.1:8899 \
+X402_HARNESS_MINT=... X402_HARNESS_PAY_TO=... \
+X402_HARNESS_CLIENT_SECRET_KEY='[...]' \
+X402_HARNESS_FACILITATOR_SECRET_KEY='[...]' \
 pnpm test x402-exact.e2e.test.ts
 ```
 
@@ -169,7 +169,7 @@ Cross-server portability and idempotent-resubmit scenarios are gated
 separately:
 
 ```bash
-X402_INTEROP_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
+X402_HARNESS_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
 ```
 
 The current scenario set covers only the `charge` intent. It includes a basic
@@ -198,7 +198,7 @@ pnpm test
 ```
 
 If the TypeScript adapter cannot resolve `@solana/mpp/client` or
-`@solana/mpp/server`, rebuild the local package and refresh the interop package
+`@solana/mpp/server`, rebuild the local package and refresh the harness package
 install:
 
 ```bash

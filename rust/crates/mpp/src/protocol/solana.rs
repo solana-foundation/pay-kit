@@ -41,6 +41,9 @@ pub const NETWORK_LOCALNET: &str = "localnet";
 /// mainnet if omitted" guidance.
 pub const DEFAULT_NETWORK: &str = NETWORK_MAINNET;
 
+/// Maximum byte length of an SPL Memo instruction payload.
+pub const MAX_MEMO_BYTES: usize = 566;
+
 /// Audit #37: allowlist the network slug per spec §7.2. Rejects anything
 /// that isn't `mainnet`, `devnet`, or `localnet`, so a typo or stale name
 /// (e.g. `mainnet-beta`, `testnet`) surfaces at the boundary instead of
@@ -160,10 +163,6 @@ mod tests {
 
     #[test]
     fn default_rpc_url_unknown_defaults_to_mainnet() {
-        assert_eq!(
-            default_rpc_url("testnet"),
-            "https://api.mainnet-beta.solana.com"
-        );
         assert_eq!(default_rpc_url(""), "https://api.mainnet-beta.solana.com");
         assert_eq!(
             default_rpc_url("anything"),

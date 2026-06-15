@@ -1,7 +1,72 @@
 set shell := ["bash", "-uc"]
 
+# Pinned upstream commits. Bump each `_ref` alongside an IDL refresh so
+# reproducibility doesn't depend on whatever `main` happens to be when
+# the `*-pull-idl` recipes were last run.
+subscriptions_repo     := "solana-foundation/subscriptions"
+subscriptions_ref      := "30a6f7cbd1c53862cc598d93cb771c2c86a10cbf"
+payment_channels_repo  := "Moonsong-Labs/solana-payment-channels"
+payment_channels_ref   := "f1b5e91482553fd1dce33aab4ff2a71cb6e734f8"
+
 default:
     @just --list
+
+# ── Codama codegen ──
+#
+# Single source of truth for Solana program clients consumed by the SDKs.
+# Today: pulls the subscriptions IDL from a pinned upstream commit and
+# renders a Rust client into `rust/crates/programs/subscriptions/`.
+# Extending to TS/Go/Python is a matter of dropping the matching
+# `@codama/renderers-*` into `skills/pay-sdk-implementation/codegen/`
+# and adding a recipe below.
+
+codegen_dir := "skills/pay-sdk-implementation/codegen"
+
+# Install codegen Node deps (run once after clone; idempotent).
+codegen-install:
+    cd {{codegen_dir}} && pnpm install
+
+# Fetch the subscriptions IDL from the pinned upstream commit into
+# `idl/subscriptions.json`. Vendor the file alongside the generated
+# client so codegen is reproducible from a clean checkout without a
+# round-trip to GitHub.
+subscriptions-pull-idl:
+    @mkdir -p idl
+    @echo "Fetching idl/subscriptions.json @ {{subscriptions_ref}}"
+    curl -fsSL \
+        "https://raw.githubusercontent.com/{{subscriptions_repo}}/{{subscriptions_ref}}/idl/subscriptions.json" \
+        -o idl/subscriptions.json
+    @echo "Wrote idl/subscriptions.json"
+
+# Render the Rust client from the vendored IDL. Wipes
+# `rust/crates/programs/subscriptions/src/generated/` and rewrites it
+# in place — see {{codegen_dir}}/generate-subscriptions-client.ts.
+subscriptions-generate-rs: codegen-install
+    cd {{codegen_dir}} && pnpm run subscriptions:rust
+    cd rust && cargo fmt -p subscriptions-client
+
+# Full refresh: pull IDL + regenerate Rust client.
+subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs
+
+# Fetch the payment-channels IDL from the pinned upstream commit into
+# `idl/payment-channels.json`.
+payment-channels-pull-idl:
+    @mkdir -p idl
+    @echo "Fetching idl/payment-channels.json @ {{payment_channels_ref}}"
+    curl -fsSL \
+        "https://raw.githubusercontent.com/{{payment_channels_repo}}/{{payment_channels_ref}}/program/payment_channels/idl/payment_channels.json" \
+        -o idl/payment-channels.json
+    @echo "Wrote idl/payment-channels.json"
+
+# Render the Rust client from the vendored IDL. Wipes
+# `rust/crates/programs/payment-channels/src/generated/` and rewrites
+# it in place — see {{codegen_dir}}/generate-payment-channels-client.ts.
+payment-channels-generate-rs: codegen-install
+    cd {{codegen_dir}} && pnpm run payment-channels:rust
+    cd rust && cargo fmt -p payment-channels-client
+
+# Full refresh: pull IDL + regenerate Rust client.
+payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs
 
 # ── TypeScript ──
 
@@ -72,7 +137,7 @@ go-fmt:
 go-lint:
     cd go && just lint
 
-# Run Go coverage with the 70% gate (delegates to go/Justfile)
+# Run Go coverage with the 90% gate (delegates to go/Justfile)
 go-test-cover:
     cd go && just test-cover
 
@@ -99,30 +164,33 @@ lua-test-cover:
     cd lua && just test-cover
 
 # ── Python ──
+# Recipes live in python/Justfile. The wrappers below delegate so the
+# orchestration targets keep working without root-level knowledge of the
+# Python commands, and the 90% gate stays defined in one place.
 
-# Install Python SDK dependencies
+# Install Python SDK dependencies (delegates to python/Justfile)
 py-install:
-    cd python && pip install -e '.[dev]'
+    cd python && just install
 
-# Run Python SDK tests
+# Run Python SDK tests (delegates to python/Justfile)
 py-test:
-    cd python && pytest
+    cd python && just test
 
-# Run Python coverage with a minimum threshold of 85%
+# Run Python coverage with the 90% gate (delegates to python/Justfile)
 py-test-cover:
-    cd python && pytest --cov --cov-report=term --cov-fail-under=85
+    cd python && just test-cover
 
-# Lint Python
+# Lint Python (delegates to python/Justfile)
 py-lint:
-    cd python && ruff check src/ tests/
+    cd python && just lint
 
-# Format Python
+# Format Python (delegates to python/Justfile)
 py-fmt:
-    cd python && ruff format src/ tests/
+    cd python && just fmt
 
-# Typecheck Python
+# Typecheck Python (delegates to python/Justfile)
 py-typecheck:
-    cd python && pyright
+    cd python && just typecheck
 
 # ── PHP ──
 # Recipes live in php/Justfile. The wrappers below delegate so the
@@ -186,30 +254,32 @@ rb-test-cover:
     cd ruby && just test-cover
 
 # ── Kotlin ──
+# Recipes live in kotlin/Justfile. The wrappers below keep root orchestration
+# aligned with the language-local gate.
 
-# Install Kotlin deps (resolved on first Gradle invocation; no-op recipe).
+# Install Kotlin SDK dependencies
 kt-install:
-    cd kotlin && gradle --version
+    cd kotlin && just install
 
 # Build the Kotlin SDK
 kt-build:
-    cd kotlin && gradle build -x test
+    cd kotlin && just build
 
 # Run Kotlin unit tests
 kt-test:
-    cd kotlin && gradle test
+    cd kotlin && just test
 
-# Format Kotlin sources (Kotlin Coding Conventions; ktlint when present)
+# Format Kotlin sources
 kt-fmt:
-    cd kotlin && (command -v ktlint >/dev/null && ktlint -F src/**/*.kt) || echo "ktlint not installed; relying on Kotlin Coding Conventions"
+    cd kotlin && just fmt
 
-# Lint Kotlin (detekt when present)
+# Lint Kotlin SDK
 kt-lint:
-    cd kotlin && (command -v detekt >/dev/null && detekt) || gradle compileKotlin
+    cd kotlin && just lint
 
-# Coverage with ≥90% line gate (enforced by jacocoTestCoverageVerification)
+# Run Kotlin coverage with the >=90% line gate
 kt-test-cover:
-    cd kotlin && gradle test jacocoTestCoverageVerification
+    cd kotlin && just test-cover
 
 # ── HTML Payment Links ──
 
@@ -225,9 +295,107 @@ html-build:
 html-build-test:
     cd html && npm run build:test
 
-# Run payment link E2E tests (requires Surfpool on :8899 and demo server on :3000)
+# Run payment link E2E tests (requires Surfpool on :8899 and playground server on :3000)
 html-test-e2e:
     cd html && npm run test:e2e
+
+# ── API docs ──
+#
+# Every language emits markdown into a single tree at `docs/api/<lang>/`.
+# Run `just docs` for the full sweep, `just docs-<lang>` for one, or
+# `just docs-index` to refresh the top-level `docs/api/README.md` aggregator.
+#
+# Tools used:
+#   ts     typedoc + typedoc-plugin-markdown   (devDep)
+#   rs     cargo +nightly rustdoc --output-format json + scripts/rustdoc-to-md.mjs
+#   go     gomarkdoc                            (`go install` on demand)
+#   py     pydoc-markdown                       (devDep)
+#   rb     YARD::Registry walk via scripts/yard_to_md.rb
+#   php    PHP tokenizer + Reflection via scripts/php-doc-to-md.php
+#   lua    Comment + signature extraction via scripts/lua-doc-to-md.lua
+#   kt     Dokka GFM                            (plugin in build.gradle.kts)
+#   swift  sourcedocs                           (`brew install sourcedocs`)
+
+docs_out := justfile_directory() + "/docs/api"
+
+# TypeScript — typedoc-plugin-markdown
+docs-ts: ts-install
+    cd typescript && pnpm docs
+
+# Rust — nightly rustdoc JSON + JS converter
+docs-rs:
+    @if ! rustup toolchain list 2>/dev/null | grep -q nightly; then \
+        echo "Rust nightly required: rustup toolchain install nightly"; \
+        exit 1; \
+    fi
+    @mkdir -p {{docs_out}}/rust
+    @rm -rf rust/target/doc-json
+    cd rust && for crate in $(cargo metadata --no-deps --format-version 1 \
+        | python3 -c "import sys,json; print(' '.join(p['name'] for p in json.load(sys.stdin)['packages']))"); do \
+        echo "rustdoc → $crate"; \
+        RUSTC_BOOTSTRAP=1 cargo +nightly rustdoc -p "$crate" \
+            --target-dir target/doc-json \
+            -- -Z unstable-options --output-format json 2>/dev/null || true; \
+    done
+    node scripts/rustdoc-to-md.mjs {{docs_out}}/rust $(find rust/target/doc-json/doc -maxdepth 1 -name '*.json' 2>/dev/null)
+
+# Go — gomarkdoc (one .md per package)
+docs-go:
+    @mkdir -p {{docs_out}}/go
+    @if ! command -v gomarkdoc >/dev/null 2>&1; then \
+        echo "Installing gomarkdoc…"; \
+        go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest; \
+    fi
+    cd go && gomarkdoc \
+        --output '{{docs_out}}/go/{{{{.Dir}}}}.md' \
+        ./...
+
+# Python — pydoc-markdown (config: python/pydoc-markdown.yml)
+docs-py:
+    @mkdir -p {{docs_out}}/python
+    cd python && uv run --extra dev pydoc-markdown
+
+# Ruby — YARD::Registry walker
+docs-rb:
+    @mkdir -p {{docs_out}}/ruby
+    cd ruby && bundle exec ruby scripts/yard_to_md.rb
+
+# PHP — tokenizer + reflection walker
+docs-php:
+    @mkdir -p {{docs_out}}/php
+    cd php && php ../scripts/php-doc-to-md.php {{docs_out}}/php src
+
+# Lua — comment extraction
+docs-lua:
+    @mkdir -p {{docs_out}}/lua
+    cd lua && lua ../scripts/lua-doc-to-md.lua {{docs_out}}/lua pay_kit mpp plugins
+
+# Kotlin — Dokka GFM
+docs-kt:
+    cd kotlin && ./gradlew dokkaGfm
+
+# Swift — sourcedocs
+docs-swift:
+    @if ! command -v sourcedocs >/dev/null 2>&1; then \
+        echo "Install: brew install sourcedocs"; exit 1; \
+    fi
+    @mkdir -p {{docs_out}}/swift
+    cd swift && sourcedocs generate --output-folder {{docs_out}}/swift \
+        --module-name SolanaPayKit \
+        --clean
+
+# Build every language's markdown API docs + the aggregator.
+docs: docs-ts docs-rs docs-go docs-py docs-rb docs-lua docs-kt docs-swift docs-php docs-index
+
+# Emit docs/api/README.md aggregator linking to each language. Safe to re-run.
+docs-index:
+    @mkdir -p {{docs_out}}
+    @bash scripts/render-docs-index.sh > {{docs_out}}/README.md
+    @echo "Wrote {{docs_out}}/README.md"
+
+# Wipe every generated docs/api directory.
+docs-clean:
+    rm -rf docs/api rust/target/doc-json
 
 # ── Orchestration ──
 

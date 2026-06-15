@@ -1,0 +1,84 @@
+[
+  {
+    "id": "x402-exact-v1-verify-accept-devnet",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "Server accepts a legacy v1 X-PAYMENT envelope (x402Version=1, top-level scheme=\"exact\" + plain network \"solana-devnet\", payload.transaction) against a devnet route. v1 has no accepted object: the server binds only scheme + network (normalized via caip2_network_for_cluster), then settles. Mirrors rust parse_payment_signature v1 arm (server/exact.rs:316-327). The decoded shape carries scheme/network and hasAccepted=false.",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBQT09In19",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000"
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 1,
+        "scheme": "exact",
+        "network": "solana-devnet",
+        "hasAccepted": false,
+        "payloadHasTransaction": true
+      }
+    }
+  },
+  {
+    "id": "x402-exact-v1-verify-accept-mainnet",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "v1 SVM network-name mapping on the server side: a v1 credential with plain network \"solana\" verifies against a mainnet-beta route. The server normalizes \"solana\" -> mainnet CAIP-2 before the network gate, so the plain legacy slug is accepted. Mirrors caip2_network_for_cluster(\"solana\") (types.rs:33) in the v1 arm (server/exact.rs:321-326).",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifX0=",
+      "x402ServerNetwork": "mainnet-beta",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "x402ServerAmount": "10000"
+    },
+    "expect": {
+      "outcome": "accept",
+      "x402EnvelopeShape": {
+        "x402Version": 1,
+        "scheme": "exact",
+        "network": "solana",
+        "hasAccepted": false,
+        "payloadHasTransaction": true
+      }
+    }
+  },
+  {
+    "id": "x402-exact-v1-verify-reject-unknown-version",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "Server still REJECTS a genuinely-unknown version even on the v1 dual-accept path: an envelope shaped like v1 (top-level scheme/network) but carrying x402Version=9 is neither v1 nor v2. Adding v1 support must not widen the version gate. Mirrors the catch-all arm in rust parse_payment_signature (server/exact.rs:342-346).",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6OSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hLWRldm5ldCIsInBheWxvYWQiOnsidHJhbnNhY3Rpb24iOiJBQT09In19",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000"
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "unsupported-version",
+      "rejectReason": "x402Version 9 is neither v1 nor v2"
+    }
+  },
+  {
+    "id": "x402-exact-v1-verify-reject-wrong-network",
+    "intent": "x402-exact",
+    "mode": "verify-transaction",
+    "description": "Server rejects a v1 credential signed for the wrong network: a v1 envelope with plain network \"solana\" (mainnet) presented to a devnet route fails the v1 network gate (caip2_network_for_cluster(\"solana\") != devnet CAIP-2). Mirrors the network-mismatch branch of the v1 arm (server/exact.rs:322-326).",
+    "input": {
+      "x402PaymentHeader": "eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoic29sYW5hIiwicGF5bG9hZCI6eyJ0cmFuc2FjdGlvbiI6IkFBPT0ifX0=",
+      "x402ServerNetwork": "devnet",
+      "x402ServerRecipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+      "x402ServerCurrency": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+      "x402ServerAmount": "1000"
+    },
+    "expect": {
+      "outcome": "reject",
+      "rejectCode": "wrong-network",
+      "rejectReason": "v1 network solana normalizes to mainnet, route is devnet"
+    }
+  }
+]

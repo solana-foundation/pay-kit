@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests\Protocols\Mpp\Server;
 
 use InvalidArgumentException;
+use PayKit\Tests\PayCore\Rpc\FakeRpcGateway;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\SolanaChargeHandler;
 use PayKit\Protocols\Mpp\Server\SolanaChargeTransactionVerifier;

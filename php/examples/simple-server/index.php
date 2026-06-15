@@ -24,7 +24,7 @@ ini_set('display_errors', 'stderr');
 
 require_once __DIR__ . '/../../vendor/autoload.php';
 
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\Gate;
 use PayKit\Middleware\RequirePayment;
@@ -36,7 +36,7 @@ use PayKit\Protocols\Mpp\MppConfig;
 // Boot the umbrella. Zero-config localnet defaults: Surfpool hosted
 // RPC, demo recipient, demo signer. `preflight: false` keeps the
 // example bootable offline; production callers leave preflight on.
-$client = new Client(new Config(
+$client = new PayKit(new Config(
     network: Network::SolanaLocalnet,
     preflight: false,
     mpp: new MppConfig(realm: 'PHP example', challengeBindingSecret: 'local-dev-secret'),

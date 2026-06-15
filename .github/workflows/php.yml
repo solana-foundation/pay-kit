@@ -40,8 +40,8 @@ jobs:
           name: php-coverage
           path: php/build/coverage/clover.xml
 
-  interop-php:
-    name: PHP interop
+  harness-php:
+    name: PHP harness
     needs: test-php
     runs-on: ubuntu-latest
     steps:
@@ -53,8 +53,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             rust/target
-          key: ${{ runner.os }}-cargo-php-interop-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-php-interop-
+          key: ${{ runner.os }}-cargo-php-harness-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-php-harness-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -72,46 +72,46 @@ jobs:
       - name: Build TypeScript package
         working-directory: typescript
         run: pnpm --filter @solana/mpp build
-      - name: Build Rust interop client
+      - name: Build Rust harness client
         working-directory: rust
-        run: cargo build -p solana-mpp --bin interop_client
-      - name: Build Rust x402 interop client
+        run: cargo build -p solana-mpp --bin harness_client
+      - name: Build Rust x402 harness client
         working-directory: rust
-        run: cargo build -p solana-x402 --bin interop_client
-      - name: Install interop harness
+        run: cargo build -p solana-x402 --bin harness_client
+      - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
-      - name: Install PHP interop dependencies
+      - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
-      - name: Typecheck interop harness
+      - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
-      - name: Run PHP server interop smoke
+      - name: Run PHP server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: php
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
-      - name: Run Rust client PHP server interop smoke
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: php
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
+      - name: Run Rust client PHP server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
         env:
-          MPP_INTEROP_CLIENTS: rust
-          MPP_INTEROP_SERVERS: php
-          MPP_INTEROP_SCENARIOS: charge-basic,charge-split-ata
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: php
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
 
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
-      # the same PHP adapter binary. Mirrors the lua + ruby interop
+      # the same PHP adapter binary. Mirrors the lua + ruby harness
       # steps.
-      - name: Run PayKit interop smoke (mpp charge + x402 exact)
+      - name: Run PayKit harness smoke (mpp charge + x402 exact)
         working-directory: harness
         env:
-          MPP_INTEROP_CLIENTS: typescript
-          MPP_INTEROP_SERVERS: php,typescript
-          MPP_INTEROP_INTENTS: charge,x402-exact
-          X402_INTEROP_CLIENTS: rust-x402
-          X402_INTEROP_SERVERS: ""
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: php,typescript
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          X402_HARNESS_CLIENTS: rust-x402
+          X402_HARNESS_SERVERS: ""
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000

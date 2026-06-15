@@ -3,11 +3,11 @@ local helper = require('tests.test_helper')
 -- The transport module depends on socket.http / ssl.https / ltn12 at
 -- require-time. The tests stub those out so the suite stays
 -- transport-free; the integration coverage runs through the manual DX
--- gate and the focused interop matrix.
+-- gate and the focused harness matrix.
 
 -- Use the real ltn12 from luasocket; stub only socket.http and ssl.https
 -- so the test stays transport-free. Production coverage runs through the
--- manual DX gate and the focused interop matrix.
+-- manual DX gate and the focused harness matrix.
 local real_http = package.loaded['socket.http']
 local real_https = package.loaded['ssl.https']
 

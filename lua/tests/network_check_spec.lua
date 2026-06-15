@@ -1,5 +1,5 @@
 local t = require('tests.test_helper')
-local nc = require('pay_kit.protocols.mpp.server.network_check')
+local nc = require('pay_kit.solana.network_check')
 
 -- Pure-function tests for the Surfpool-prefix-vs-non-localnet check.
 -- The check is asymmetric: a Surfpool-prefixed blockhash is only valid
@@ -77,4 +77,21 @@ t.test('network_check: non-surfpool hash passes anywhere', function()
   for _, network in ipairs({ 'mainnet', 'devnet', 'localnet' }) do
     t.assert_equal(nc.check_network_blockhash(network, '11111111111111111111111111111111'), nil)
   end
+end)
+
+-- assert_network_blockhash: the raising convenience wrapper around
+-- check_network_blockhash (merged from library_coverage_spec).
+
+t.test('network_check.assert_network_blockhash passes for clean blockhash', function()
+  nc.assert_network_blockhash('mainnet', 'NormalBlockhash1234567890')
+end)
+
+t.test('network_check.assert_network_blockhash passes for surfpool on localnet', function()
+  nc.assert_network_blockhash('localnet', nc.SURFPOOL_BLOCKHASH_PREFIX .. 'tail')
+end)
+
+t.test('network_check.assert_network_blockhash raises on surfpool against mainnet', function()
+  t.assert_error(function()
+    nc.assert_network_blockhash('mainnet', nc.SURFPOOL_BLOCKHASH_PREFIX .. 'tail')
+  end, 'mainnet')
 end)

@@ -10,9 +10,9 @@ A new-language SDK needs **all** of the following jobs in `ci.yml`:
 
 1. **`test-<lang>`** — unit tests + coverage upload + format/lint check.
 2. **`integration`** (existing) — already runs against Surfnet; once the
-   interop adapter is registered, the harness picks it up.
-3. **`interop`** (existing) — add `<lang>` to the focused matrix lines
-   the way `Run Rust client interop smoke` is set up (one line for
+   harness adapter is registered, the harness picks it up.
+3. **`harness`** (existing) — add `<lang>` to the focused matrix lines
+   the way `Run Rust client harness smoke` is set up (one line for
    `<lang> client × ts server`, one for `ts client × <lang> server`,
    one self-pair).
 
@@ -115,7 +115,7 @@ must fail the job:
 
 Every public type/function carries a **one-line summary** so the
 language's hover/LSP shows it. Reference: every `pub` item in
-`rust/src/lib.rs` has a `///` line. Examples to mirror:
+`rust/crates/mpp/src/lib.rs` has a `///` line. Examples to mirror:
 
 ```rust
 /// Payment method identifier (newtype over String).
@@ -154,7 +154,7 @@ the new language:
   in CI if you see drift between local and CI numbers.
 - **`html-assets` is an artifact, not a checked-in directory.** The
   `build-html` job uploads it; downstream jobs `actions/download-artifact`
-  it. Generated HTML files (e.g. `rust/src/server/html/*.gen.*`) are
+  it. Generated HTML files (e.g. `rust/crates/mpp/src/server/html/*.gen.*`) are
   committed for offline builds but CI verifies the committed copy is
   up-to-date — see the `Verify committed gen files are up to date`
   step in `ci.yml`. New language servers go in that diff list.

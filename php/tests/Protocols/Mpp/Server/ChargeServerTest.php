@@ -10,7 +10,7 @@ use RuntimeException;
 use PayKit\Protocols\Mpp\Core\Challenge;
 use PayKit\Protocols\Mpp\Core\Credential;
 use PayKit\Protocols\Mpp\Core\Headers;
-use PayKit\Protocols\Mpp\Core\Json;
+use PayKit\PayCore\Wire\Json;
 use PayKit\Protocols\Mpp\Intent\ChargeRequest;
 use PayKit\Protocols\Mpp\Server\ChargeServer;
 use PayKit\Protocols\Mpp\Server\PaymentVerifier;
@@ -494,6 +494,72 @@ final class ChargeServerTest extends TestCase
         $details = $challenge->decodeRequest()['methodDetails'] ?? [];
         self::assertIsArray($details);
         return Json::object($details, 'methodDetails');
+    }
+
+    public function testPinnedCurrencyRejectsCredentialWithDifferentCurrency(): void
+    {
+        // Tier-2 pinned-field backstop. A server pinned to USDC must reject a
+        // credential claiming a different currency even when the caller does
+        // not pass an expectedRequest, mirroring Rust verify_pinned_fields
+        // (rust/crates/mpp/src/server/charge.rs:457-468), which runs
+        // unconditionally on every credential.
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api', pinnedCurrency: 'USDC');
+        $challenge = $server->createChallenge(new ChargeRequest(amount: '1000', currency: 'USDT'));
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('charge request mismatch', $result->reason);
+    }
+
+    public function testPinnedRecipientRejectsCredentialWithDifferentRecipient(): void
+    {
+        $server = new ChargeServer(secretKey: 'secret', realm: 'api', pinnedRecipient: 'expected-recipient');
+        $challenge = $server->createChallenge(
+            new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'attacker-recipient'),
+        );
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            $this->unusedVerifier(),
+        );
+
+        self::assertFalse($result->ok);
+        self::assertSame('charge request mismatch', $result->reason);
+    }
+
+    public function testPinnedFieldsAcceptMatchingCredential(): void
+    {
+        // Happy-path guard: a credential whose currency and recipient match the
+        // pinned configuration passes the backstop and reaches the verifier.
+        $server = new ChargeServer(
+            secretKey: 'secret',
+            realm: 'api',
+            pinnedCurrency: 'USDC',
+            pinnedRecipient: 'pinned-recipient',
+        );
+        $challenge = $server->createChallenge(
+            new ChargeRequest(amount: '1000', currency: 'USDC', recipient: 'pinned-recipient'),
+        );
+        $credential = new Credential(challenge: $challenge->toEcho(), payload: ['type' => 'signature']);
+
+        $result = $server->verifyAuthorizationHeader(
+            $credential->toAuthorizationHeader(),
+            new class () implements PaymentVerifier {
+                public function verify(Credential $credential, Challenge $challenge): VerificationResult
+                {
+                    return VerificationResult::success(reference: 'tx-signature');
+                }
+            },
+        );
+
+        self::assertTrue($result->ok, $result->reason);
+        self::assertSame('tx-signature', $result->reference);
     }
 
     private function unusedVerifier(): PaymentVerifier

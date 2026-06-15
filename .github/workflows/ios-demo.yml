@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'swift/Examples/iOSDemo/**'
+      - 'swift/Examples/PayKitDemo/**'
       - 'swift/Sources/**'
       - '.github/workflows/ios-demo.yml'
   pull_request:
     paths:
-      - 'swift/Examples/iOSDemo/**'
+      - 'swift/Examples/PayKitDemo/**'
       - 'swift/Sources/**'
       - '.github/workflows/ios-demo.yml'
   workflow_call:
@@ -20,12 +20,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
-      - name: Build iOSDemo for iOS Simulator
-        working-directory: swift/Examples/iOSDemo
+      - name: Build PayKitDemo for iOS Simulator
+        working-directory: swift/Examples/PayKitDemo
         run: |
           xcodebuild \
-            -scheme iOSDemo \
-            -project iOSDemo.xcodeproj \
+            -scheme PayKitDemo \
+            -project PayKitDemo.xcodeproj \
             -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \

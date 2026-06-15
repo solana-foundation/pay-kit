@@ -1,2 +1,8 @@
 packages:
   - 'packages/*'
+
+# Force transitive `ws` past GHSA-58qx-3vcg-4xpx (uninitialized memory
+# disclosure, patched in 8.20.1). Reaches us via
+# @solana/kit > @solana/rpc-subscriptions > @solana/rpc-subscriptions-channel-websocket.
+overrides:
+  ws: '^8.20.1'

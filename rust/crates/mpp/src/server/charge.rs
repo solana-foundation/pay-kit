@@ -41,7 +41,9 @@ use crate::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt,
 };
 use crate::protocol::intents::ChargeRequest;
-use crate::protocol::solana::{programs, CredentialPayload, MethodDetails, Split};
+use crate::protocol::solana::{
+    default_rpc_url, programs, CredentialPayload, MethodDetails, Split, MAX_MEMO_BYTES,
+};
 use crate::store::{MemoryStore, Store};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
@@ -91,25 +93,25 @@ fn derive_default_realm(recipient: &str) -> String {
 /// weakest link, not the hash.
 const MIN_SECRET_KEY_BYTES: usize = 32;
 
-fn detect_secret_key() -> Result<String, Error> {
+fn detect_challenge_binding_secret() -> Result<String, Error> {
     std::env::var(SECRET_KEY_ENV_VAR).map_err(|_| {
         Error::InvalidConfig(format!(
-            "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass secret_key explicitly."
+            "Missing {SECRET_KEY_ENV_VAR} env var. Set it or pass challenge_binding_secret explicitly."
         ))
     })
 }
 
-/// Reject empty / short secret keys before they are used as the HMAC key
-/// for challenge IDs. Audit #24: a weak key lets an attacker forge
-/// challenges. We require at least `MIN_SECRET_KEY_BYTES` bytes of input;
-/// callers SHOULD pass ≥32 bytes of cryptographically-random data
+/// Reject empty / short challenge-binding secrets before they are used as
+/// the HMAC key for challenge IDs. Audit #24: a weak key lets an attacker
+/// forge challenges. We require at least `MIN_SECRET_KEY_BYTES` bytes of
+/// input; callers SHOULD pass ≥32 bytes of cryptographically-random data
 /// (e.g. `openssl rand -base64 32`).
-fn validate_secret_key(secret_key: &str) -> Result<(), Error> {
-    if secret_key.len() < MIN_SECRET_KEY_BYTES {
+fn validate_challenge_binding_secret(secret: &str) -> Result<(), Error> {
+    if secret.len() < MIN_SECRET_KEY_BYTES {
         return Err(Error::InvalidConfig(format!(
             "Secret key is too short ({} bytes): require at least {MIN_SECRET_KEY_BYTES} bytes \
              of cryptographically-random data (e.g. `openssl rand -base64 32`)",
-            secret_key.len()
+            secret.len()
         )));
     }
     Ok(())
@@ -178,13 +180,13 @@ pub struct Config {
     pub network: String,
     /// RPC URL (overrides default for the network).
     pub rpc_url: Option<String>,
-    /// Server secret key for HMAC-SHA256 challenge IDs.
+    /// Server challenge-binding secret for HMAC-SHA256 challenge IDs.
     ///
     /// MUST be at least 32 bytes of cryptographically-random data. Generate
     /// with e.g. `openssl rand -base64 32`. Short or low-entropy keys are
     /// rejected at `Mpp::new` time. If `None`, the value is read from the
     /// `MPP_SECRET_KEY` environment variable.
-    pub secret_key: Option<String>,
+    pub challenge_binding_secret: Option<String>,
     /// Server realm.
     pub realm: Option<String>,
     /// Whether server pays transaction fees.
@@ -219,7 +221,7 @@ impl Default for Config {
             decimals: 6,
             network: "mainnet".to_string(),
             rpc_url: None,
-            secret_key: None,
+            challenge_binding_secret: None,
             realm: None,
             fee_payer: false,
             fee_payer_signer: None,
@@ -252,7 +254,7 @@ pub struct Mpp {
     rpc: Arc<RpcClient>,
     rpc_url: String,
     realm: String,
-    secret_key: String,
+    challenge_binding_secret: String,
     currency: String,
     /// Token program governing `currency`. `None` for native SOL. Resolved
     /// once at `Mpp::new` time — either from the hardcoded stablecoin table
@@ -295,11 +297,13 @@ impl Mpp {
         // defaults to mainnet" behaviour that used to live in default_rpc_url.
         crate::protocol::solana::validate_network(&config.network)?;
 
-        let rpc_url = config.rpc_url.unwrap_or_else(|| {
-            crate::protocol::solana::default_rpc_url(&config.network).to_string()
-        });
-        let secret_key = config.secret_key.map_or_else(detect_secret_key, Ok)?;
-        validate_secret_key(&secret_key)?;
+        let rpc_url = config
+            .rpc_url
+            .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
+        let challenge_binding_secret = config
+            .challenge_binding_secret
+            .map_or_else(detect_challenge_binding_secret, Ok)?;
+        validate_challenge_binding_secret(&challenge_binding_secret)?;
         let realm = match config.realm {
             Some(r) if r.is_empty() => {
                 return Err(Error::InvalidConfig(
@@ -319,7 +323,7 @@ impl Mpp {
             rpc,
             rpc_url,
             realm,
-            secret_key,
+            challenge_binding_secret,
             currency: config.currency,
             token_program,
             recipient: config.recipient,
@@ -436,8 +440,8 @@ impl Mpp {
         let default_expires = crate::expires::minutes(5);
         let expires = options.expires.unwrap_or(&default_expires);
 
-        Ok(PaymentChallenge::with_secret_key_full(
-            &self.secret_key,
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
             &self.realm,
             METHOD_NAME,
             "charge",
@@ -548,8 +552,8 @@ impl Mpp {
         let default_expires = crate::expires::minutes(5);
         let expires = expires.unwrap_or(&default_expires);
 
-        Ok(PaymentChallenge::with_secret_key_full(
-            &self.secret_key,
+        Ok(PaymentChallenge::with_challenge_binding_secret_full(
+            &self.challenge_binding_secret,
             &self.realm,
             METHOD_NAME,
             "charge",
@@ -726,7 +730,7 @@ impl Mpp {
     ) -> Result<Receipt, VerificationError> {
         // Tier 1: Verify HMAC.
         let expected_id = compute_challenge_id(
-            &self.secret_key,
+            &self.challenge_binding_secret,
             &self.realm,
             credential.challenge.method.as_str(),
             credential.challenge.intent.as_str(),
@@ -2003,10 +2007,10 @@ fn verify_memo_instructions(
     let memo_program = Pubkey::from_str(programs::MEMO_PROGRAM).unwrap();
     for (label, memo) in expected_memos(external_id, splits) {
         let expected_data = memo.as_bytes();
-        if expected_data.len() > 566 {
-            return Err(VerificationError::invalid_payload(
-                "memo cannot exceed 566 bytes",
-            ));
+        if expected_data.len() > MAX_MEMO_BYTES {
+            return Err(VerificationError::invalid_payload(format!(
+                "memo cannot exceed {MAX_MEMO_BYTES} bytes"
+            )));
         }
 
         let mut found = false;
@@ -2456,10 +2460,10 @@ fn verify_parsed_memo_instructions(
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     for (label, memo) in expected_memos(external_id, splits) {
-        if memo.as_bytes().len() > 566 {
-            return Err(VerificationError::invalid_payload(
-                "memo cannot exceed 566 bytes",
-            ));
+        if memo.len() > MAX_MEMO_BYTES {
+            return Err(VerificationError::invalid_payload(format!(
+                "memo cannot exceed {MAX_MEMO_BYTES} bytes"
+            )));
         }
 
         let mut found = false;
@@ -4023,7 +4027,7 @@ mod tests {
     fn test_mpp() -> Mpp {
         Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "devnet".to_string(),
             ..Default::default()
         })
@@ -4033,7 +4037,7 @@ mod tests {
     fn test_mpp_sol() -> Mpp {
         Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
             network: "devnet".to_string(),
@@ -4059,7 +4063,7 @@ mod tests {
     fn new_missing_recipient_errors() {
         let err = Mpp::new(Config {
             recipient: String::new(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             ..Default::default()
         })
         .err()
@@ -4074,7 +4078,7 @@ mod tests {
     fn new_invalid_recipient_pubkey_errors() {
         let err = Mpp::new(Config {
             recipient: "not-a-valid-pubkey!!!".to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             ..Default::default()
         })
         .err()
@@ -4086,7 +4090,7 @@ mod tests {
     }
 
     #[test]
-    fn new_missing_secret_key_without_env_errors() {
+    fn new_missing_challenge_binding_secret_without_env_errors() {
         let _guard = ENV_LOCK.lock().unwrap();
         // Temporarily ensure the env var is not set.
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
@@ -4094,7 +4098,7 @@ mod tests {
 
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: None,
+            challenge_binding_secret: None,
             ..Default::default()
         })
         .err()
@@ -4108,7 +4112,7 @@ mod tests {
     }
 
     #[test]
-    fn new_secret_key_from_env() {
+    fn new_challenge_binding_secret_from_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let prev = std::env::var(SECRET_KEY_ENV_VAR).ok();
         unsafe {
@@ -4120,7 +4124,7 @@ mod tests {
 
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: None,
+            challenge_binding_secret: None,
             ..Default::default()
         });
 
@@ -4139,7 +4143,7 @@ mod tests {
         // Audit #24: short keys weaken the HMAC binding.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(String::new()),
+            challenge_binding_secret: Some(String::new()),
             ..Default::default()
         })
         .err()
@@ -4156,7 +4160,7 @@ mod tests {
         let short = "a".repeat(MIN_SECRET_KEY_BYTES - 1);
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(short),
+            challenge_binding_secret: Some(short),
             ..Default::default()
         })
         .err()
@@ -4172,7 +4176,7 @@ mod tests {
         let exact = "a".repeat(MIN_SECRET_KEY_BYTES);
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(exact),
+            challenge_binding_secret: Some(exact),
             ..Default::default()
         });
         assert!(result.is_ok());
@@ -4187,7 +4191,7 @@ mod tests {
 
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: None,
+            challenge_binding_secret: None,
             ..Default::default()
         });
 
@@ -4218,7 +4222,7 @@ mod tests {
     fn new_custom_realm() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             realm: Some("Custom Realm".to_string()),
             ..Default::default()
         })
@@ -4270,7 +4274,7 @@ mod tests {
         // typo.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             realm: Some(String::new()),
             ..Default::default()
         })
@@ -4289,7 +4293,7 @@ mod tests {
         for net in ["mainnet", "devnet", "localnet"] {
             Mpp::new(Config {
                 recipient: TEST_RECIPIENT.to_string(),
-                secret_key: Some(TEST_SECRET.to_string()),
+                challenge_binding_secret: Some(TEST_SECRET.to_string()),
                 network: net.to_string(),
                 ..Default::default()
             })
@@ -4301,7 +4305,7 @@ mod tests {
     fn new_rejects_unknown_network() {
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "testnet".to_string(),
             ..Default::default()
         })
@@ -4314,7 +4318,7 @@ mod tests {
     fn new_rejects_empty_network() {
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: String::new(),
             ..Default::default()
         })
@@ -4332,7 +4336,7 @@ mod tests {
         // is an RPC hostname, not a wire-format slug.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             network: "mainnet-beta".to_string(),
             ..Default::default()
         })
@@ -4346,7 +4350,7 @@ mod tests {
         // Should not fail — just verifying it accepts a custom RPC URL.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             rpc_url: Some("http://custom:8899".to_string()),
             ..Default::default()
         });
@@ -4358,7 +4362,7 @@ mod tests {
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         let result = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store),
             ..Default::default()
         });
@@ -4371,7 +4375,7 @@ mod tests {
     fn new_resolves_token_program_for_sol_currency() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "SOL".to_string(),
             decimals: 9,
             ..Default::default()
@@ -4393,7 +4397,7 @@ mod tests {
         // (the old bug), the regression is back.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "PYUSD".to_string(),
             network: "mainnet".to_string(),
             ..Default::default()
@@ -4408,7 +4412,7 @@ mod tests {
         // up front, never silently fall back to the legacy Token Program.
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "not-a-symbol-or-mint!!".to_string(),
             ..Default::default()
         })
@@ -4426,7 +4430,7 @@ mod tests {
     fn new_rejects_fee_payer_true_without_signer() {
         let err = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: true,
             fee_payer_signer: None,
             network: "devnet".to_string(),
@@ -4441,12 +4445,27 @@ mod tests {
     }
 
     #[test]
+    fn default_rpc_url_mainnet() {
+        // Canonical slug.
+        assert_eq!(
+            default_rpc_url("mainnet"),
+            "https://api.mainnet-beta.solana.com"
+        );
+        // Legacy alias still resolves so clients that send the older
+        // slug don't break.
+        assert_eq!(
+            default_rpc_url("mainnet-beta"),
+            "https://api.mainnet-beta.solana.com"
+        );
+    }
+
+    #[test]
     fn new_accepts_fee_payer_false_without_signer() {
         // Regression: the default config has no signer and fee_payer=false;
         // it must keep working.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
@@ -4462,7 +4481,7 @@ mod tests {
         // ChargeOptions.fee_payer = true override must be rejected.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
             fee_payer_signer: None,
             network: "devnet".to_string(),
@@ -4490,7 +4509,7 @@ mod tests {
         // Happy path: server has a signer, per-call override works.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: false,
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
@@ -5750,7 +5769,7 @@ mod tests {
         // just not the "Push-mode credentials are disabled" one.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             network: "devnet".to_string(),
             accept_push_mode: true,
@@ -5793,7 +5812,7 @@ mod tests {
         // here so the audit #5 gate passes and B34 fires.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -5832,7 +5851,7 @@ mod tests {
         // not fire: any error must come from broadcast, not from B34.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -5867,7 +5886,7 @@ mod tests {
         let store = Arc::new(MemoryStore::new());
         let _mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),
             network: "devnet".to_string(),
             ..Default::default()
@@ -7295,7 +7314,7 @@ mod tests {
     fn charge_with_fee_payer_includes_method_details() {
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer: true,
             // Audit #16: signer is now required alongside fee_payer = true.
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -7317,7 +7336,7 @@ mod tests {
         // to have a signer configured.
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             fee_payer_signer: Some(test_fee_payer_signer()),
             network: "devnet".to_string(),
             ..Default::default()
@@ -7343,7 +7362,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -7386,7 +7405,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),
@@ -7418,7 +7437,7 @@ mod tests {
         let split_recipient = Pubkey::new_unique();
         let mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
-            secret_key: Some(TEST_SECRET.to_string()),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
             currency: "USDC".to_string(),
             fee_payer: true,
             fee_payer_signer: Some(test_fee_payer_signer()),

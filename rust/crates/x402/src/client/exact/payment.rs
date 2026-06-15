@@ -14,9 +14,9 @@ use crate::{
     error::Error,
     protocol::schemes::exact::{
         caip2_network_for_cluster, cluster_for_caip2_network, default_token_program_for_currency,
-        programs, resolve_stablecoin_mint, PaymentPayload, PaymentProof, PaymentRequiredEnvelope,
-        PaymentRequirements, PaymentSignatureEnvelope, EXACT_SCHEME, MAX_MEMO_BYTES,
-        SOLANA_MAINNET,
+        programs, resolve_stablecoin_mint, PaymentExtensions, PaymentPayload, PaymentProof,
+        PaymentRequiredEnvelope, PaymentRequirements, PaymentSignatureEnvelope, EXACT_SCHEME,
+        MAX_MEMO_BYTES, SOLANA_MAINNET,
     },
     PAYMENT_REQUIRED_HEADER, SOLANA_NETWORK, X402_V1_PAYMENT_REQUIRED_HEADER, X402_VERSION_V1,
     X402_VERSION_V2,
@@ -121,11 +121,19 @@ pub async fn build_payment(
 /// ready to use directly with the x402 protocol.
 ///
 /// This encodes the canonical v2 wire format expected by x402 facilitators:
-/// `base64({ x402Version: X402_VERSION_V2, accepted, payload, resource? })`
+/// `base64({ x402Version: X402_VERSION_V2, accepted, payload, resource?, extensions? })`
+///
+/// Pass `extensions` to echo the inbound `PAYMENT-REQUIRED` envelope's
+/// `extensions` object back to the server with any required client info
+/// appended (e.g. `payment-identifier.info.id`). See
+/// [`PaymentExtensions::echoing`] and
+/// [`PaymentExtensions::with_payment_identifier_id`]. Pass `None` when
+/// the server didn't advertise any extensions.
 pub async fn build_payment_header(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
+    extensions: Option<PaymentExtensions>,
 ) -> Result<String, Error> {
     let payload = build_payment(signer, rpc, requirements).await?;
     let envelope = PaymentSignatureEnvelope {
@@ -135,6 +143,7 @@ pub async fn build_payment_header(
         accepted: Some(requirements.to_accepted_value()),
         resource: requirements.resource_info(),
         payload: payload.proof,
+        extensions,
     };
 
     encode_payment_envelope(&envelope)
@@ -154,6 +163,7 @@ pub async fn build_payment_header_v1(
         accepted: None,
         resource: None,
         payload: payload.proof,
+        extensions: None,
     };
 
     encode_payment_envelope(&envelope)
@@ -1058,7 +1068,7 @@ mod tests {
         let rpc = RpcClient::new("http://localhost:8899".to_string());
         let requirements = test_requirements("SOL");
 
-        let header = build_payment_header(&signer, &rpc, &requirements)
+        let header = build_payment_header(&signer, &rpc, &requirements, None)
             .await
             .unwrap();
         let decoded =
@@ -1068,6 +1078,7 @@ mod tests {
         assert!(envelope.network.is_none());
         assert_eq!(envelope.x402_version, X402_VERSION_V2);
         assert!(envelope.accepted.is_some());
+        assert!(envelope.extensions.is_none());
     }
 
     #[tokio::test]

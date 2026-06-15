@@ -2,7 +2,7 @@ import http from "node:http";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { Mppx, solana } from "@solana/mpp/server";
 import { injectCanonicalCode } from "../../canonical-codes";
-import { readInteropEnvironment } from "./shared";
+import { readHarnessEnvironment } from "./shared";
 
 function toWebRequest(request: http.IncomingMessage, body: string): Request {
   const headers = new Headers();
@@ -36,7 +36,7 @@ function decodeReceiptReference(
 }
 
 async function main() {
-  const environment = readInteropEnvironment();
+  const environment = readHarnessEnvironment();
   const feePayerSigner = await createKeyPairSignerFromBytes(
     environment.feePayerSecretKey,
   );
@@ -232,7 +232,7 @@ async function main() {
   server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     if (!address || typeof address === "string") {
-      throw new Error("Failed to bind TypeScript interop server");
+      throw new Error("Failed to bind TypeScript harness server");
     }
 
     console.log(
@@ -276,7 +276,7 @@ function isVerificationClassError(message: string): boolean {
 
 function isProtectedPath(
   path: string,
-  environment: ReturnType<typeof readInteropEnvironment>,
+  environment: ReturnType<typeof readHarnessEnvironment>,
 ): boolean {
   return (
     path === environment.resourcePath ||
@@ -286,7 +286,7 @@ function isProtectedPath(
 
 function amountForPath(
   path: string,
-  environment: ReturnType<typeof readInteropEnvironment>,
+  environment: ReturnType<typeof readHarnessEnvironment>,
 ): string {
   if (path === environment.replaySource?.resourcePath) {
     return environment.replaySource.amount;

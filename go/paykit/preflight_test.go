@@ -7,8 +7,8 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/signer"
 )
 
 // fakeRPC is the paykit.PreflightRPCInterface test double. Mirrors

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	_ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
-	_ "github.com/solana-foundation/pay-kit/go/signer"
 )
 
 func TestClientCloseIsNoop(t *testing.T) {
@@ -27,7 +27,7 @@ func TestX402OnlyDoesNotRequireMPPSecretWithPreflightOff(t *testing.T) {
 	// Preflight disabled must not be forced to supply an MPP secret.
 	c, err := paykit.New(paykit.Config{
 		Network:   paykit.SolanaLocalnet,
-		Accept:    []paykit.Scheme{paykit.X402},
+		Accept:    []paykit.Protocol{paykit.X402},
 		Preflight: disabled(),
 	})
 	if err != nil {
@@ -135,7 +135,7 @@ func TestNewWarnsOnDeprecatedEnv(t *testing.T) {
 	t.Setenv("PAY_KIT_PAY_TO", "SomeRecipient")
 	_, err := paykit.New(paykit.Config{
 		Network:   paykit.SolanaLocalnet,
-		Accept:    []paykit.Scheme{paykit.X402},
+		Accept:    []paykit.Protocol{paykit.X402},
 		Preflight: disabled(),
 	})
 	if err != nil {

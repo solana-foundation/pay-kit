@@ -1,8 +1,8 @@
 import pytest
 
-from solana_mpp._errors import PaymentError
-from solana_mpp.server.mpp import Config, Mpp
-from solana_mpp.store import MemoryStore
+from pay_kit._paycore.errors import PaymentError
+from pay_kit._paycore.store import MemoryStore
+from pay_kit.protocols.mpp.server.charge import Config, Mpp
 
 
 class _LegacyClientLackingAwaitConfirmation:

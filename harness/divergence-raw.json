@@ -1,0 +1,2787 @@
+{
+  "langs": [
+    "go",
+    "lua",
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    "typescript"
+  ],
+  "caseMeta": [
+    {
+      "key": "challenge.parse::basic_challenge",
+      "op": "challenge.parse",
+      "scenario": "basic_challenge",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.format::basic_challenge",
+      "op": "challenge.format",
+      "scenario": "basic_challenge",
+      "group": "www-authenticate",
+      "kind": "format"
+    },
+    {
+      "key": "challenge.parse::full_challenge",
+      "op": "challenge.parse",
+      "scenario": "full_challenge",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.format::full_challenge",
+      "op": "challenge.format",
+      "scenario": "full_challenge",
+      "group": "www-authenticate",
+      "kind": "format"
+    },
+    {
+      "key": "challenge.parse::empty_request",
+      "op": "challenge.parse",
+      "scenario": "empty_request",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.format::empty_request",
+      "op": "challenge.format",
+      "scenario": "empty_request",
+      "group": "www-authenticate",
+      "kind": "format"
+    },
+    {
+      "key": "challenge.parse::nested_request",
+      "op": "challenge.parse",
+      "scenario": "nested_request",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.format::nested_request",
+      "op": "challenge.format",
+      "scenario": "nested_request",
+      "group": "www-authenticate",
+      "kind": "format"
+    },
+    {
+      "key": "challenge.parse::unescaped_quotes_in_description",
+      "op": "challenge.parse",
+      "scenario": "unescaped_quotes_in_description",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::escaped_quotes_in_description",
+      "op": "challenge.parse",
+      "scenario": "escaped_quotes_in_description",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::error_missing_payment_prefix",
+      "op": "challenge.parse",
+      "scenario": "error_missing_payment_prefix",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_missing_id",
+      "op": "challenge.parse",
+      "scenario": "error_missing_id",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_missing_realm",
+      "op": "challenge.parse",
+      "scenario": "error_missing_realm",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_missing_method",
+      "op": "challenge.parse",
+      "scenario": "error_missing_method",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_missing_intent",
+      "op": "challenge.parse",
+      "scenario": "error_missing_intent",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_missing_request",
+      "op": "challenge.parse",
+      "scenario": "error_missing_request",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_invalid_base64url",
+      "op": "challenge.parse",
+      "scenario": "error_invalid_base64url",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_invalid_json",
+      "op": "challenge.parse",
+      "scenario": "error_invalid_json",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::whitespace_tolerance",
+      "op": "challenge.parse",
+      "scenario": "whitespace_tolerance",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::parameter_order_independence",
+      "op": "challenge.parse",
+      "scenario": "parameter_order_independence",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::unknown_extension_parameter",
+      "op": "challenge.parse",
+      "scenario": "unknown_extension_parameter",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::case_insensitive_scheme",
+      "op": "challenge.parse",
+      "scenario": "case_insensitive_scheme",
+      "group": "www-authenticate",
+      "kind": "parse"
+    },
+    {
+      "key": "challenge.parse::error_empty_id",
+      "op": "challenge.parse",
+      "scenario": "error_empty_id",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_duplicate_parameters",
+      "op": "challenge.parse",
+      "scenario": "error_duplicate_parameters",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_empty_header",
+      "op": "challenge.parse",
+      "scenario": "error_empty_header",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "challenge.parse::error_scheme_only",
+      "op": "challenge.parse",
+      "scenario": "error_scheme_only",
+      "group": "www-authenticate",
+      "kind": "error"
+    },
+    {
+      "key": "credential.parse::basic_credential",
+      "op": "credential.parse",
+      "scenario": "basic_credential",
+      "group": "authorization",
+      "kind": "parse"
+    },
+    {
+      "key": "credential.format::basic_credential",
+      "op": "credential.format",
+      "scenario": "basic_credential",
+      "group": "authorization",
+      "kind": "format"
+    },
+    {
+      "key": "credential.parse::credential_with_source",
+      "op": "credential.parse",
+      "scenario": "credential_with_source",
+      "group": "authorization",
+      "kind": "parse"
+    },
+    {
+      "key": "credential.format::credential_with_source",
+      "op": "credential.format",
+      "scenario": "credential_with_source",
+      "group": "authorization",
+      "kind": "format"
+    },
+    {
+      "key": "credential.parse::credential_with_expires",
+      "op": "credential.parse",
+      "scenario": "credential_with_expires",
+      "group": "authorization",
+      "kind": "parse"
+    },
+    {
+      "key": "credential.parse::error_missing_payment_prefix",
+      "op": "credential.parse",
+      "scenario": "error_missing_payment_prefix",
+      "group": "authorization",
+      "kind": "error"
+    },
+    {
+      "key": "credential.parse::error_invalid_base64url",
+      "op": "credential.parse",
+      "scenario": "error_invalid_base64url",
+      "group": "authorization",
+      "kind": "error"
+    },
+    {
+      "key": "credential.parse::error_missing_challenge",
+      "op": "credential.parse",
+      "scenario": "error_missing_challenge",
+      "group": "authorization",
+      "kind": "error"
+    },
+    {
+      "key": "credential.parse::error_missing_challenge_id",
+      "op": "credential.parse",
+      "scenario": "error_missing_challenge_id",
+      "group": "authorization",
+      "kind": "error"
+    },
+    {
+      "key": "credential.parse::error_invalid_json_structure",
+      "op": "credential.parse",
+      "scenario": "error_invalid_json_structure",
+      "group": "authorization",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::success_receipt",
+      "op": "receipt.parse",
+      "scenario": "success_receipt",
+      "group": "receipt",
+      "kind": "parse"
+    },
+    {
+      "key": "receipt.format::success_receipt",
+      "op": "receipt.format",
+      "scenario": "success_receipt",
+      "group": "receipt",
+      "kind": "format"
+    },
+    {
+      "key": "receipt.parse::error_invalid_base64url",
+      "op": "receipt.parse",
+      "scenario": "error_invalid_base64url",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_invalid_json",
+      "op": "receipt.parse",
+      "scenario": "error_invalid_json",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_missing_status",
+      "op": "receipt.parse",
+      "scenario": "error_missing_status",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_missing_method",
+      "op": "receipt.parse",
+      "scenario": "error_missing_method",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_missing_reference",
+      "op": "receipt.parse",
+      "scenario": "error_missing_reference",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_missing_timestamp",
+      "op": "receipt.parse",
+      "scenario": "error_missing_timestamp",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "receipt.parse::error_non_iso8601_timestamp",
+      "op": "receipt.parse",
+      "scenario": "error_non_iso8601_timestamp",
+      "group": "receipt",
+      "kind": "error"
+    },
+    {
+      "key": "base64url.encode::empty_string",
+      "op": "base64url.encode",
+      "scenario": "empty_string",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::empty_string",
+      "op": "base64url.decode",
+      "scenario": "empty_string",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::hello_world",
+      "op": "base64url.encode",
+      "scenario": "hello_world",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::hello_world",
+      "op": "base64url.decode",
+      "scenario": "hello_world",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::json_object",
+      "op": "base64url.encode",
+      "scenario": "json_object",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::json_object",
+      "op": "base64url.decode",
+      "scenario": "json_object",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::url_chars",
+      "op": "base64url.encode",
+      "scenario": "url_chars",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::url_chars",
+      "op": "base64url.decode",
+      "scenario": "url_chars",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::padding_1_byte",
+      "op": "base64url.encode",
+      "scenario": "padding_1_byte",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::padding_1_byte",
+      "op": "base64url.decode",
+      "scenario": "padding_1_byte",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::padding_2_bytes",
+      "op": "base64url.encode",
+      "scenario": "padding_2_bytes",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::padding_2_bytes",
+      "op": "base64url.decode",
+      "scenario": "padding_2_bytes",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::no_padding",
+      "op": "base64url.encode",
+      "scenario": "no_padding",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::no_padding",
+      "op": "base64url.decode",
+      "scenario": "no_padding",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::url_safe_chars",
+      "op": "base64url.encode",
+      "scenario": "url_safe_chars",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::url_safe_chars",
+      "op": "base64url.decode",
+      "scenario": "url_safe_chars",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::special_ascii",
+      "op": "base64url.encode",
+      "scenario": "special_ascii",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::special_ascii",
+      "op": "base64url.decode",
+      "scenario": "special_ascii",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.encode::whitespace",
+      "op": "base64url.encode",
+      "scenario": "whitespace",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "base64url.decode::whitespace",
+      "op": "base64url.decode",
+      "scenario": "whitespace",
+      "group": "base64url",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::required_fields_only",
+      "op": "challenge.id",
+      "scenario": "required_fields_only",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_expires",
+      "op": "challenge.id",
+      "scenario": "with_expires",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_digest",
+      "op": "challenge.id",
+      "scenario": "with_digest",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_expires_and_digest",
+      "op": "challenge.id",
+      "scenario": "with_expires_and_digest",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_opaque",
+      "op": "challenge.id",
+      "scenario": "with_opaque",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::opaque_route_scope_binding",
+      "op": "challenge.id",
+      "scenario": "opaque_route_scope_binding",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::description_not_in_hmac",
+      "op": "challenge.id",
+      "scenario": "description_not_in_hmac",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::multi_field_request",
+      "op": "challenge.id",
+      "scenario": "multi_field_request",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::nested_method_details",
+      "op": "challenge.id",
+      "scenario": "nested_method_details",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::html_sensitive_request_canonicalization",
+      "op": "challenge.id",
+      "scenario": "html_sensitive_request_canonicalization",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::resource_path_query_binding",
+      "op": "challenge.id",
+      "scenario": "resource_path_query_binding",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::external_id_request_binding",
+      "op": "challenge.id",
+      "scenario": "external_id_request_binding",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::fee_payer_policy_binding",
+      "op": "challenge.id",
+      "scenario": "fee_payer_policy_binding",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::empty_request",
+      "op": "challenge.id",
+      "scenario": "empty_request",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::different_realm",
+      "op": "challenge.id",
+      "scenario": "different_realm",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::different_method",
+      "op": "challenge.id",
+      "scenario": "different_method",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::different_intent",
+      "op": "challenge.id",
+      "scenario": "different_intent",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::basic_charge",
+      "op": "challenge.id",
+      "scenario": "basic_charge",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_expires_alt_secret",
+      "op": "challenge.id",
+      "scenario": "with_expires_alt_secret",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::with_digest_alt_secret",
+      "op": "challenge.id",
+      "scenario": "with_digest_alt_secret",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::full_challenge_alt_secret",
+      "op": "challenge.id",
+      "scenario": "full_challenge_alt_secret",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::different_secret_different_id",
+      "op": "challenge.id",
+      "scenario": "different_secret_different_id",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::empty_request_alt_secret",
+      "op": "challenge.id",
+      "scenario": "empty_request_alt_secret",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::unicode_in_description",
+      "op": "challenge.id",
+      "scenario": "unicode_in_description",
+      "group": "challenge-id",
+      "kind": "exact"
+    },
+    {
+      "key": "challenge.id::nested_method_details_alt_secret",
+      "op": "challenge.id",
+      "scenario": "nested_method_details_alt_secret",
+      "group": "challenge-id",
+      "kind": "exact"
+    }
+  ],
+  "matrix": {
+    "challenge.parse::basic_challenge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.format::basic_challenge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::full_challenge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.format::full_challenge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
+        "benign": true
+      },
+      "php": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
+        "benign": true
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", expires=\"2026-01-29T12:05:00Z\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\"",
+        "canonical": "Payment id=\"ch_full123\", realm=\"api.example.com\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiI1MDAwMDAwIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDIiLCJkZXNjcmlwdGlvbiI6IlByZW1pdW0gQVBJIGFjY2VzcyIsImV4cGlyZXMiOiIyMDI2LTAxLTI5VDEzOjAwOjAwWiIsImV4dGVybmFsSWQiOiJvcmRlcl8xMjM0NSIsInJlY2lwaWVudCI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiJ9\", description=\"API access payment required\", digest=\"sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=\", expires=\"2026-01-29T12:05:00Z\"",
+        "benign": true
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::empty_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.format::empty_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::nested_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.format::nested_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::unescaped_quotes_in_description": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::escaped_quotes_in_description": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_payment_prefix": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_id": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_realm": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_method": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_intent": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_missing_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_invalid_base64url": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_invalid_json": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::whitespace_tolerance": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::parameter_order_independence": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::unknown_extension_parameter": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::case_insensitive_scheme": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_empty_id": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_duplicate_parameters": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_empty_header": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.parse::error_scheme_only": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::basic_credential": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.format::basic_credential": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInR5cGUiOiJ0cmFuc2FjdGlvbiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      },
+      "php": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInR5cGUiOiJ0cmFuc2FjdGlvbiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      },
+      "python": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInR5cGUiOiJ0cmFuc2FjdGlvbiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      },
+      "ruby": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInR5cGUiOiJ0cmFuc2FjdGlvbiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      },
+      "rust": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInR5cGUiOiJ0cmFuc2FjdGlvbiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      },
+      "typescript": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+        "benign": true
+      }
+    },
+    "credential.parse::credential_with_source": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.format::credential_with_source": {
+      "go": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCIsInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn19",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "lua": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsiaGFzaCI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiIsInR5cGUiOiJoYXNoIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "php": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsiaGFzaCI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiIsInR5cGUiOiJoYXNoIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "python": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsiaGFzaCI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiIsInR5cGUiOiJoYXNoIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "ruby": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsiaGFzaCI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiIsInR5cGUiOiJoYXNoIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "rust": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsiaGFzaCI6IjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMiIsInR5cGUiOiJoYXNoIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      },
+      "typescript": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJpbnRlbnQiOiJjaGFyZ2UiLCJtZXRob2QiOiJ0ZW1wbyIsInJlYWxtIjoiYXBpLmV4YW1wbGUuY29tIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "canonical": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+        "benign": true
+      }
+    },
+    "credential.parse::credential_with_expires": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::error_missing_payment_prefix": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::error_invalid_base64url": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::error_missing_challenge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::error_missing_challenge_id": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "credential.parse::error_invalid_json_structure": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::success_receipt": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.format::success_receipt": {
+      "go": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "eyJzdGF0dXMiOiJzdWNjZXNzIiwibWV0aG9kIjoidGVtcG8iLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIn0",
+        "canonical": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0",
+        "benign": true
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS",
+        "note": "byte-diff but semantically equal",
+        "ours": "eyJjaGFsbGVuZ2VJZCI6IiIsIm1ldGhvZCI6InRlbXBvIiwicmVmZXJlbmNlIjoiMHhhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWIiLCJzdGF0dXMiOiJzdWNjZXNzIiwidGltZXN0YW1wIjoiMjAyNi0wMS0yOVQxMjowMDozMFoifQ",
+        "canonical": "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0",
+        "benign": true
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_invalid_base64url": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_invalid_json": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_missing_status": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_missing_method": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_missing_reference": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_missing_timestamp": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "receipt.parse::error_non_iso8601_timestamp": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::empty_string": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::empty_string": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::hello_world": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::hello_world": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::json_object": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::json_object": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::url_chars": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::url_chars": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::padding_1_byte": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::padding_1_byte": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::padding_2_bytes": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::padding_2_bytes": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::no_padding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::no_padding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::url_safe_chars": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::url_safe_chars": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::special_ascii": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::special_ascii": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.encode::whitespace": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "base64url.decode::whitespace": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::required_fields_only": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_expires": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_digest": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_expires_and_digest": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_opaque": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::opaque_route_scope_binding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::description_not_in_hmac": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::multi_field_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::nested_method_details": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::html_sensitive_request_canonicalization": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::resource_path_query_binding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::external_id_request_binding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::fee_payer_policy_binding": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::empty_request": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::different_realm": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::different_method": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::different_intent": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::basic_charge": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_expires_alt_secret": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::with_digest_alt_secret": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::full_challenge_alt_secret": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::different_secret_different_id": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::empty_request_alt_secret": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::unicode_in_description": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    },
+    "challenge.id::nested_method_details_alt_secret": {
+      "go": {
+        "verdict": "PASS"
+      },
+      "lua": {
+        "verdict": "PASS"
+      },
+      "php": {
+        "verdict": "PASS"
+      },
+      "python": {
+        "verdict": "PASS"
+      },
+      "ruby": {
+        "verdict": "PASS"
+      },
+      "rust": {
+        "verdict": "PASS"
+      },
+      "typescript": {
+        "verdict": "PASS"
+      }
+    }
+  }
+}

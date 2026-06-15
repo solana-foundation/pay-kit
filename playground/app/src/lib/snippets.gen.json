@@ -1,0 +1,19 @@
+{
+  "typescript": {
+    "charge": {
+      "client": "const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))\nconst method = solana.charge({ signer, rpcUrl: 'http://localhost:8899' })\nconst mppx = Mppx.create({ methods: [method] })\n\nconst res = await mppx.fetch('${URL}')\nconsole.log(await res.json())",
+      "server": "const app = express()\nconst method = solana.charge({\n  signer, // KeyPairSigner — verifies the on-chain charge\n  recipient: RECIPIENT,\n  network: 'mainnet',\n  currency: 'USDC',\n  rpcUrl,\n})\nconst mppx = Mppx.create({ methods: [method] })\n\napp.get('${PATH}', async (req, res) => {\n  const result = await mppx.charge({ amount: '10000', currency: 'USDC' })(toWebRequest(req))\n  if (result.status === 402) return forward(result.challenge as globalThis.Response, res)\n  return result.withReceipt(globalThis.Response.json({ ok: true }))\n})"
+    },
+    "session": {
+      "client": "const client = createSessionFetch({\n  opener: createPaymentChannelSessionOpener({ signer, rpcUrl }),\n})\n\nconst res = await client.fetch('${URL}')\nfor await (const chunk of res.body!) {\n  process.stdout.write(chunk)\n}",
+      "server": "const app = express()\nconst method = session({\n  // On-chain settlement at close needs BOTH the merchant signer and an rpc client.\n  signer,\n  rpc: createSolanaRpc(rpcUrl),\n  operator: signer.address,\n  recipient: RECIPIENT,\n  network: 'mainnet',\n  currency: 'USDC',\n  decimals: 6,\n  cap: 1_000_000n, // 1 USDC max per session\n  pricing: { perDelivery: 100n },\n})\nconst mppx = Mppx.create({ methods: [method] })\n\napp.get('${PATH}', async (req, res) => {\n  const result = await mppx.session({ cap: '1000000', currency: 'USDC' })(toWebRequest(req))\n  if (result.status === 402) return forward(result.challenge as globalThis.Response, res)\n  for (const chunk of chunks()) res.write(`data: ${chunk}\\n\\n`)\n  res.end()\n})"
+    },
+    "subscription": {
+      "client": "const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))\nconst method = solana.subscription({ signer, rpcUrl: 'http://localhost:8899' })\nconst mppx = Mppx.create({ methods: [method] })\n\n// First call activates the subscription on-chain;\n// subsequent calls within the period re-use it for free.\nconst res = await mppx.fetch('${URL}')\nconsole.log(await res.json())",
+      "server": "const app = express()\nconst method = solana.subscription({\n  signer, // optional fee payer — co-signs the activation transaction\n  planId: PLAN_ID, // on-chain Plan PDA, created ahead of time\n  mint: USDC_MINT,\n  decimals: 6,\n  tokenProgram: TOKEN_PROGRAM,\n  puller: signer.address, // entity allowed to pull renewals\n  recipient: RECIPIENT,\n  periodUnit: 'day',\n  periodCount: 1,\n  rpcUrl,\n})\nconst mppx = Mppx.create({ methods: [method] })\n\napp.get('${PATH}', async (req, res) => {\n  const result = await mppx.subscription({ amount: '100000' /* 0.10 USDC / period */ })(\n    toWebRequest(req),\n  )\n  if (result.status === 402) return forward(result.challenge as globalThis.Response, res)\n  return result.withReceipt(globalThis.Response.json({ items: [/* … */] }))\n})"
+    },
+    "x402": {
+      "client": "const signer = await createSigner('solana-devnet', SECRET_KEY)\nconst fetch = wrapFetchWithPayment(globalThis.fetch, signer)\n\nconst res = await fetch('${URL}')\nconsole.log(await res.json())"
+    }
+  }
+}

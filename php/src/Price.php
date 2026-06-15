@@ -56,7 +56,7 @@ final readonly class Price
     }
 
     /**
-     * Return a copy with a new amount, same denom + settlements.
+     * Return a copy with a new amount, same currency + settlements.
      */
     public function withAmount(string|int|BigDecimal $amount): self
     {
@@ -64,7 +64,7 @@ final readonly class Price
     }
 
     /**
-     * Sum two same-denom prices. Throws on denom mismatch.
+     * Sum two prices in the same currency. Throws on currency mismatch.
      */
     public function plus(self $other): self
     {

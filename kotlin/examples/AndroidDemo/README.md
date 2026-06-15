@@ -62,7 +62,7 @@ yes | avdmanager create avd -n mpp-demo -k 'system-images;android-34;google_apis
 "$ANDROID_HOME/emulator/emulator" -avd mpp-demo -no-snapshot &
 adb wait-for-device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.solana.mpp.demo/.MainActivity
+adb shell am start -n com.solana.paykit.demo/.MainActivity
 ```
 
 ## Configure RPC + merchant URL
@@ -72,7 +72,7 @@ The single screen exposes two text fields:
 - Merchant URL. Defaults to `https://402.surfnet.dev/protected`.
 - Solana RPC URL. Defaults to `https://402.surfnet.dev/rpc`.
 
-For a local surfpool + interop server on the host machine, point
+For a local surfpool + harness server on the host machine, point
 both at `http://10.0.2.2:<port>` from inside the emulator (Android's
 loopback alias for the host). The app permits cleartext HTTP only
 for `10.0.2.2`, `127.0.0.1`, and `localhost` via
@@ -126,8 +126,8 @@ convenience:
 ## SDK integration notes
 
 The demo uses two SDK entry points instead of the high-level
-`MppHttpClient`, because Mobile Wallet Adapter signs whole
-transactions while `MppHttpClient` expects a `SolanaSigner` that
+`PayKitClient`, because Mobile Wallet Adapter signs whole
+transactions while `PayKitClient` expects a `SolanaSigner` that
 signs message bytes:
 
 - `Charge.buildUnsignedChargeTransaction(walletPublicKey, request, blockhashProvider)`

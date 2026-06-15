@@ -1,9 +1,12 @@
-import { generateKeyPairSigner, getBase58Decoder } from '@solana/kit';
+import { generateKeyPairSigner, getBase58Decoder, type TransactionSigner } from '@solana/kit';
 
+import { defaultTokenProgramForCurrency, resolveStablecoinMint } from '../constants.js';
 import {
     selectSolanaSessionChallengeFromResponse,
     type SelectSolanaSessionChallengeOptions,
 } from './ChallengeSelection.js';
+import { buildInitMultiDelegateTx, buildUpdateDelegationTx, deriveDelegatedTokenAccount } from './MultiDelegate.js';
+import { PENDING_SERVER_SIGNATURE } from './PaymentChannels.js';
 import {
     ActiveSession,
     type AmountLike,
@@ -14,6 +17,7 @@ import {
     serializeSessionCredential,
     type SessionChallenge,
     type SessionMode,
+    sessionRequestModes,
     type SignedVoucher,
 } from './Session.js';
 
@@ -27,7 +31,9 @@ const U64_MAX = (1n << 64n) - 1n;
  * Request tuple returned by request preparation hooks.
  */
 export interface PreparedFetchRequest {
+    /** Fetch init to use for the attempt. */
     readonly init?: FetchInit;
+    /** Fetch input (URL or `Request`) to use for the attempt. */
     readonly input: FetchInput;
 }
 
@@ -35,8 +41,11 @@ export interface PreparedFetchRequest {
  * Session details returned by an opener after local/on-chain setup succeeds.
  */
 export interface SessionOpenResult {
+    /** Open action that authorizes the paid retry. */
     readonly payload: OpenPayload & { readonly action: 'open' };
+    /** Local session that signs vouchers from here on. */
     readonly session: ActiveSession;
+    /** Optional client identifier serialized into the credential. */
     readonly source?: string | undefined;
 }
 
@@ -44,9 +53,13 @@ export interface SessionOpenResult {
  * Parameters passed to a session opener.
  */
 export interface SessionOpenParameters {
+    /** Parsed Solana session challenge from the 402. */
     readonly challenge: SessionChallenge;
+    /** Fetch init of the original attempt. */
     readonly init?: FetchInit;
+    /** Fetch input of the original attempt. */
     readonly input: FetchInput;
+    /** The raw 402 response. */
     readonly response: Response;
 }
 
@@ -64,8 +77,11 @@ export type PrepareSessionRequest = (request: PreparedFetchRequest) => PreparedF
  * State created after a 402 session challenge has been paid.
  */
 export interface SessionFetchOpenState extends SessionOpenResult {
+    /** Serialized `Authorization` header value used on retries and commits. */
     readonly authorization: string;
+    /** Challenge the session was opened against. */
     readonly challenge: SessionChallenge;
+    /** URL voucher commits are POSTed back to (the opened resource by default). */
     readonly commitUrl: string;
 }
 
@@ -73,9 +89,13 @@ export interface SessionFetchOpenState extends SessionOpenResult {
  * Parameters used to reserve a metered delivery.
  */
 export interface ReserveSessionDeliveryParameters {
+    /** Delivery price, in base units. */
     readonly amount: string;
+    /** Endpoint the eventual commit should be POSTed to. */
     readonly commitUrl: string;
+    /** Unique id for the delivery being reserved. */
     readonly deliveryId: string;
+    /** Session the delivery is billed against. */
     readonly session: ActiveSession;
 }
 
@@ -83,10 +103,15 @@ export interface ReserveSessionDeliveryParameters {
  * Parameters used to commit a metered delivery.
  */
 export interface CommitSessionDeliveryParameters {
+    /** Committed amount, in base units. */
     readonly amount: string;
+    /** Serialized `Authorization` header value for the commit request. */
     readonly authorization: string;
+    /** Directive issued when the delivery was reserved. */
     readonly directive: MeteringDirective;
+    /** Session signing the commit voucher. */
     readonly session: ActiveSession;
+    /** Signed cumulative voucher covering the delivery. */
     readonly voucher: SignedVoucher;
 }
 
@@ -129,7 +154,9 @@ export class SessionFetchClient {
     #trailingCommitTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(parameters: SessionFetchClient.Parameters) {
-        this.#fetch = parameters.fetch ?? globalThis.fetch;
+        // Bind so Window.fetch's `this` check doesn't reject when the function
+        // is invoked as a private-field method on this instance.
+        this.#fetch = parameters.fetch ?? globalThis.fetch.bind(globalThis);
         this.#liveCommitIntervalMs = parameters.liveCommitIntervalMs ?? DEFAULT_LIVE_COMMIT_INTERVAL_MS;
         this.#onEvent = parameters.onEvent;
         this.#opener = parameters.opener;
@@ -199,7 +226,7 @@ export class SessionFetchClient {
             challenge,
             commitUrl: requestUrl(input),
         };
-        this.#open = open;
+        await this.replaceOpenState(open);
         this.emit({ open, type: 'open' });
 
         const retry = this.prepare({
@@ -208,9 +235,6 @@ export class SessionFetchClient {
         });
         const retryResponse = await this.#fetch(retry.input, retry.init);
         this.emit({ response: retryResponse, type: 'retry' });
-        if (retryResponse.ok) {
-            this.#lastQueuedCumulative = opened.session.cumulative;
-        }
         return retryResponse;
     }
 
@@ -275,15 +299,64 @@ export class SessionFetchClient {
         return this.#prepareRequest ? this.#prepareRequest(request) : request;
     }
 
+    /**
+     * Installs a freshly opened session. When the channel changes, any pending
+     * watermark is flushed against the previous channel first (best effort;
+     * a failure latches as a recoverable commit failure) and the commit
+     * watermark state is re-keyed to the new channel so no voucher can sign a
+     * cumulative the new channel did not meter.
+     */
+    private async replaceOpenState(open: SessionFetchOpenState): Promise<void> {
+        const previous = this.#open;
+        if (previous?.session.channelId === open.session.channelId) {
+            this.#open = open;
+            return;
+        }
+
+        if (previous) {
+            this.clearTrailingCommit();
+            const target = this.#targetCumulative;
+            if (target !== undefined && target > previous.session.cumulative) {
+                this.queueCommitFor(previous, target);
+            }
+            await this.#commitQueue;
+        }
+
+        this.#open = open;
+        this.clearTrailingCommit();
+        this.#targetCumulative = undefined;
+        this.#lastQueuedCumulative = open.session.cumulative;
+        this.#lastCommitQueuedAt = 0;
+    }
+
     private queueCommit(target: bigint): void {
+        this.queueCommitFor(this.requireOpen(), target);
+    }
+
+    private queueCommitFor(open: SessionFetchOpenState, target: bigint): void {
         if (target <= this.#lastQueuedCumulative) {
             return;
         }
         this.#lastQueuedCumulative = target;
         this.#commitQueue = this.#commitQueue
-            .then(async () => await this.commitTarget(target))
+            .then(async () => {
+                const receipt = await this.commitTarget(open, target);
+                // Re-advance in case an earlier failure rolled the queued
+                // watermark back while this entry was already in flight.
+                if (target > this.#lastQueuedCumulative) {
+                    this.#lastQueuedCumulative = target;
+                }
+                return receipt;
+            })
             .catch(error => {
                 this.#commitFailure = toError(error);
+                // Roll the queued watermark back to what the session actually
+                // committed so a retry re-signs the same cumulative instead of
+                // silently dropping the delta.
+                const committed = open.session.cumulative;
+                if (this.#lastQueuedCumulative > committed) {
+                    this.#lastQueuedCumulative = committed;
+                }
                 return null;
             });
     }
@@ -314,8 +387,7 @@ export class SessionFetchClient {
         this.#trailingCommitTimer = undefined;
     }
 
-    private async commitTarget(target: bigint): Promise<CommitReceipt | null> {
-        const open = this.requireOpen();
+    private async commitTarget(open: SessionFetchOpenState, target: bigint): Promise<CommitReceipt | null> {
         const current = open.session.cumulative;
         if (target <= current) {
             return null;
@@ -338,13 +410,16 @@ export class SessionFetchClient {
             },
             source: open.source,
         });
-        const receipt = await this.commitDelivery({
-            amount,
-            authorization,
-            directive,
-            session: open.session,
-            voucher,
-        });
+        const receipt = await this.commitDelivery(
+            {
+                amount,
+                authorization,
+                directive,
+                session: open.session,
+                voucher,
+            },
+            open.commitUrl,
+        );
 
         open.session.recordVoucher(voucher);
         this.emit({ receipt, type: 'commit' });
@@ -374,8 +449,11 @@ export class SessionFetchClient {
         return (await response.json()) as MeteringDirective;
     }
 
-    private async commitDelivery(parameters: CommitSessionDeliveryParameters): Promise<CommitReceipt> {
-        const response = await this.#fetch(parameters.directive.commitUrl ?? this.requireOpen().commitUrl, {
+    private async commitDelivery(
+        parameters: CommitSessionDeliveryParameters,
+        fallbackCommitUrl: string,
+    ): Promise<CommitReceipt> {
+        const response = await this.#fetch(parameters.directive.commitUrl ?? fallbackCommitUrl, {
             body: JSON.stringify({
                 amount: parameters.amount,
                 deliveryId: parameters.directive.deliveryId,
@@ -403,9 +481,15 @@ export class SessionFetchClient {
     }
 
     private throwCommitFailure(): void {
-        if (this.#commitFailure) {
-            throw this.#commitFailure;
+        const failure = this.#commitFailure;
+        if (!failure) {
+            return;
         }
+        // Surface the failure once, then let the caller retry: the queued
+        // watermark was not advanced, so the next record/flush re-commits the
+        // same cumulative instead of leaving the client permanently poisoned.
+        this.#commitFailure = undefined;
+        throw failure;
     }
 
     private emit(event: SessionFetchEvent): void {
@@ -415,16 +499,24 @@ export class SessionFetchClient {
 
 export declare namespace SessionFetchClient {
     interface Parameters {
+        /** Underlying fetch. Defaults to `globalThis.fetch`. */
         readonly fetch?: typeof globalThis.fetch | undefined;
+        /** Minimum interval between live voucher commits, in ms. Defaults to 1000. */
         readonly liveCommitIntervalMs?: number | undefined;
+        /** Observer for challenge / open / watermark / commit / retry events. */
         readonly onEvent?: ((event: SessionFetchEvent) => void) | undefined;
+        /** Opens the session when a 402 challenge arrives (wallet approval, channel open). */
         readonly opener: SessionOpener;
+        /** Hook applied to the first attempt and the paid retry (e.g. header stripping). */
         readonly prepareRequest?: PrepareSessionRequest | undefined;
+        /** Currency / network filter for picking among multiple advertised challenges. */
         readonly selectChallenge?: SelectSolanaSessionChallengeOptions | undefined;
     }
 
     interface RecordOptions {
+        /** Delta reported in the watermark event. Defaults to target − current. */
         readonly deltaAmount?: AmountLike | undefined;
+        /** Commit immediately instead of waiting for the live-commit interval. */
         readonly force?: boolean | undefined;
     }
 }
@@ -441,20 +533,19 @@ export function createSessionFetch(parameters: SessionFetchClient.Parameters): S
  *
  * This is useful for local gateways and demos. Production clients should pass an
  * opener that performs the real wallet approval or channel open transaction.
+ * Delegated pull opens build real pre-signed multi-delegate transactions when a
+ * `signer` and a recent blockhash are available; without them the opener
+ * refuses to fabricate the delegation payloads.
  */
 export function createEphemeralSessionOpener(options: createEphemeralSessionOpener.Options = {}): SessionOpener {
     return async ({ challenge }) => {
         const signer = await generateKeyPairSigner();
         const channel = await generateKeyPairSigner();
-        const requestedMode = options.mode ?? challenge.request.modes?.[0] ?? 'push';
-        const mode = requestedMode === 'pull' && challenge.request.modes?.includes('pull') ? 'pull' : requestedMode;
-        const session = new ActiveSession({
-            channelId: channel.address,
-            cumulative: options.cumulative ?? 0n,
-            expiresAt: options.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT,
-            signer,
-        });
-        const signature = options.signature ?? randomBase58(64);
+        const modes = sessionRequestModes(challenge.request);
+        const requestedMode = options.mode ?? modes[0] ?? 'push';
+        // Downgrade an unsupported pull request to push instead of opening a
+        // mode the server never advertised.
+        const mode = requestedMode === 'pull' && !modes.includes('pull') ? 'push' : requestedMode;
         const useDelegatedPull =
             mode === 'pull' &&
             (challenge.request.pullVoucherStrategy === 'operatedVoucher' ||
@@ -462,17 +553,29 @@ export function createEphemeralSessionOpener(options: createEphemeralSessionOpen
                 options.initMultiDelegateTx !== undefined ||
                 options.owner !== undefined ||
                 options.tokenAccount !== undefined ||
-                options.updateDelegationTx !== undefined);
-        const payload = useDelegatedPull
+                options.updateDelegationTx !== undefined ||
+                options.signer !== undefined);
+
+        const expiresAt = options.expiresAt ?? DEFAULT_SESSION_EXPIRES_AT;
+        const delegated = useDelegatedPull ? await prepareDelegatedPull(challenge, options, expiresAt) : undefined;
+        const session = new ActiveSession({
+            // Pull vouchers bind to the delegated token account, mirroring the
+            // Rust client which uses the token account pubkey as the channel id.
+            channelId: delegated?.tokenAccount ?? channel.address,
+            cumulative: options.cumulative ?? 0n,
+            expiresAt,
+            signer,
+        });
+        const payload = delegated
             ? session.openPullAction({
-                  approvedAmount: options.approvedAmount ?? challenge.request.cap,
-                  initMultiDelegateTx: options.initMultiDelegateTx ?? randomBase64(64),
-                  owner: options.owner ?? randomBase58(32),
-                  signature,
-                  tokenAccount: options.tokenAccount ?? session.channelId,
-                  updateDelegationTx: options.updateDelegationTx,
+                  approvedAmount: delegated.approvedAmount,
+                  initMultiDelegateTx: delegated.initMultiDelegateTx,
+                  owner: delegated.owner,
+                  signature: options.signature ?? PENDING_SERVER_SIGNATURE,
+                  tokenAccount: delegated.tokenAccount,
+                  updateDelegationTx: delegated.updateDelegationTx,
               })
-            : session.openAction(options.deposit ?? challenge.request.cap, signature, {
+            : session.openAction(options.deposit ?? challenge.request.cap, options.signature ?? randomBase58(64), {
                   mode,
                   transaction: options.transaction,
               });
@@ -485,19 +588,102 @@ export function createEphemeralSessionOpener(options: createEphemeralSessionOpen
     };
 }
 
+interface DelegatedPullArtifacts {
+    readonly approvedAmount: AmountLike;
+    readonly initMultiDelegateTx: string;
+    readonly owner: string;
+    readonly tokenAccount: string;
+    readonly updateDelegationTx: string | undefined;
+}
+
+async function prepareDelegatedPull(
+    challenge: SessionChallenge,
+    options: createEphemeralSessionOpener.Options,
+    expiresAt: AmountLike,
+): Promise<DelegatedPullArtifacts> {
+    const approvedAmount = options.approvedAmount ?? challenge.request.cap;
+    if (options.initMultiDelegateTx !== undefined) {
+        if (!options.owner || !options.tokenAccount) {
+            throw new Error(
+                'pull-mode session open with a caller-built initMultiDelegateTx requires owner and tokenAccount',
+            );
+        }
+        return {
+            approvedAmount,
+            initMultiDelegateTx: options.initMultiDelegateTx,
+            owner: options.owner,
+            tokenAccount: options.tokenAccount,
+            updateDelegationTx: options.updateDelegationTx,
+        };
+    }
+
+    const walletSigner = options.signer;
+    const recentBlockhash = options.recentBlockhash ?? challenge.request.recentBlockhash;
+    if (!walletSigner || !recentBlockhash) {
+        throw new Error(
+            'pull-mode session open requires a wallet signer and a recent blockhash to pre-sign the multi-delegate transactions (or an explicit initMultiDelegateTx)',
+        );
+    }
+
+    const network = challenge.request.network ?? 'mainnet';
+    const mint = resolveStablecoinMint(challenge.request.currency, network);
+    if (!mint) {
+        throw new Error('pull-mode session open requires an SPL token currency');
+    }
+    const tokenProgram = defaultTokenProgramForCurrency(challenge.request.currency, network);
+    const tokenAccount =
+        options.tokenAccount ??
+        (await deriveDelegatedTokenAccount({ mint, owner: walletSigner.address, tokenProgram }));
+    const txParameters = {
+        amount: approvedAmount,
+        expiryTs: expiresAt,
+        mint,
+        nonce: options.delegationNonce ?? 0n,
+        operator: challenge.request.operator,
+        recentBlockhash,
+        signer: walletSigner,
+        tokenProgram,
+    };
+    return {
+        approvedAmount,
+        initMultiDelegateTx: await buildInitMultiDelegateTx({ ...txParameters, userAta: tokenAccount }),
+        owner: options.owner ?? walletSigner.address,
+        tokenAccount,
+        updateDelegationTx: options.updateDelegationTx ?? (await buildUpdateDelegationTx(txParameters)),
+    };
+}
+
 export declare namespace createEphemeralSessionOpener {
     interface Options {
+        /** Pull: delegated amount to approve, in base units. Defaults to the challenge cap. */
         readonly approvedAmount?: AmountLike | undefined;
+        /** Cumulative already authorized when resuming, in base units. Defaults to 0. */
         readonly cumulative?: AmountLike | undefined;
+        /** Pull: nonce for the delegation PDA derivation. Defaults to 0. */
+        readonly delegationNonce?: AmountLike | undefined;
+        /** Push: channel deposit, in base units. Defaults to the challenge cap. */
         readonly deposit?: AmountLike | undefined;
+        /** Voucher expiry as a unix timestamp (seconds). */
         readonly expiresAt?: AmountLike | undefined;
+        /** Pull: pre-built multi-delegate init transaction (base64), overriding the built one. */
         readonly initMultiDelegateTx?: string | undefined;
+        /** Funding mode. Defaults to the first server-advertised mode. */
         readonly mode?: SessionMode | undefined;
+        /** Pull: wallet that owns the delegated token account (base58). Defaults to the signer. */
         readonly owner?: string | undefined;
+        /** Recent blockhash used to pre-sign delegation transactions. */
+        readonly recentBlockhash?: string | undefined;
+        /** Open transaction signature. Defaults to a fabricated one (push) or a pending marker (pull). */
         readonly signature?: string | undefined;
+        /** User wallet used to pre-sign the multi-delegate transactions for delegated pull opens. */
+        readonly signer?: TransactionSigner | undefined;
+        /** Optional client identifier serialized into credentials. */
         readonly source?: string | undefined;
+        /** Pull: delegated token account override (base58). */
         readonly tokenAccount?: string | undefined;
+        /** Push: base64 signed open transaction for server-side submission. */
         readonly transaction?: string | undefined;
+        /** Pull: pre-built delegation update transaction (base64), overriding the built one. */
         readonly updateDelegationTx?: string | undefined;
     }
 }
@@ -577,10 +763,6 @@ function randomBase58(length: number): string {
     return getBase58Decoder().decode(randomBytes(length));
 }
 
-function randomBase64(length: number): string {
-    return bytesToBase64(randomBytes(length));
-}
-
 function randomBytes(length: number): Uint8Array {
     const crypto = globalThis.crypto;
     if (!crypto?.getRandomValues) {
@@ -589,23 +771,6 @@ function randomBytes(length: number): Uint8Array {
     const bytes = new Uint8Array(length);
     crypto.getRandomValues(bytes);
     return bytes;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-    let binary = '';
-    for (const byte of bytes) {
-        binary += String.fromCharCode(byte);
-    }
-    if (typeof globalThis.btoa === 'function') {
-        return globalThis.btoa(binary);
-    }
-
-    const buffer = (globalThis as { Buffer?: { from(bytes: Uint8Array): { toString(encoding: string): string } } })
-        .Buffer;
-    if (!buffer) {
-        throw new Error('No base64 encoder is available');
-    }
-    return buffer.from(bytes).toString('base64');
 }
 
 function formatAmount(value: AmountLike, name: string): string {

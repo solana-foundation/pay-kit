@@ -11,7 +11,7 @@ transport. This spec verifies that the resty transport:
   * raises a typed transport-error on 5xx upstream
 
 The test fakes `ngx` and the `resty.http` module so the suite stays
-nginx-free; production coverage runs through the focused interop
+nginx-free; production coverage runs through the focused harness
 matrix once a Kong container is available.
 ]]
 

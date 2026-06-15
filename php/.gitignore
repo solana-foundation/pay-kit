@@ -2,4 +2,5 @@ vendor/
 .phpunit.result.cache
 /build/
 /.phpunit.cache/
+.php-cs-fixer.cache
 .env

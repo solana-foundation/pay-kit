@@ -22,7 +22,7 @@ first.
 Wait for the user to confirm:
 
 1. They have a stable x402-kit reference to copy from.
-2. The MPP `charge` cells are already passing interop in the new SDK
+2. The MPP `charge` cells are already passing harness in the new SDK
    (x402 reuses much of the same Solana primitives — splits, fee
    payer, replay store — so MPP-first is the correct order).
 3. The x402 scheme strings in `harness/src/implementations.ts`
@@ -52,7 +52,7 @@ expanded into a full intent leaf (matching the depth of
    JSON, replay-key namespacing (`x402-exact:consumed:<sig>` vs
    `solana-charge:consumed:<sig>` — they must not collide), how
    `methodDetails` differs from MPP's.
-5. **Test plan** — unit + interop. The interop harness will need a
+5. **Test plan** — unit + harness. The harness will need a
    new `intent: "x402-exact"` scenario.
 
 ## README matrix row

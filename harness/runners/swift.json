@@ -1,0 +1,5 @@
+{
+  "language": "swift",
+  "command": ["swift", "run", "-c", "release", "mpp-conformance"],
+  "cwd": "swift"
+}

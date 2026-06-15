@@ -1,0 +1,5 @@
+{
+  "language": "ruby",
+  "command": ["bundle", "exec", "ruby", "exe/conformance"],
+  "cwd": "ruby"
+}

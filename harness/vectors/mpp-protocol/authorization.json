@@ -1,0 +1,156 @@
+{
+  "version": "2.0.0",
+  "spec_ref": "draft-ietf-httpauth-payment §5.2",
+  "description": "Authorization header (Credential) parsing and formatting",
+  "commands": {
+    "parse": "parse-authorization",
+    "format": "format-authorization"
+  },
+  "scenarios": [
+    {
+      "name": "basic_credential",
+      "description": "Minimal credential with required fields",
+      "tags": ["happy-path", "required-fields"],
+      "object": {
+        "challenge": {
+          "id": "ch_abc123",
+          "intent": "charge",
+          "method": "tempo",
+          "realm": "api.example.com",
+          "request": {
+            "amount": "1000000",
+            "currency": "0x20c0000000000000000000000000000000000001",
+            "expires": "2026-01-29T12:00:00Z",
+            "recipient": "0x1234567890abcdef1234567890abcdef12345678"
+          }
+        },
+        "payload": {
+          "type": "transaction",
+          "signature": "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+        }
+      },
+      "wire": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9hYmMxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXhNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUl3ZURJd1l6QXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01ERWlMQ0psZUhCcGNtVnpJam9pTWpBeU5pMHdNUzB5T1ZReE1qb3dNRG93TUZvaUxDSnlaV05wY0dsbGJuUWlPaUl3ZURFeU16UTFOamM0T1RCaFltTmtaV1l4TWpNME5UWTNPRGt3WVdKalpHVm1NVEl6TkRVMk56Z2lmUSJ9LCJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiJ9fQ",
+      "tests": {
+        "parse": true,
+        "format": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "credential_with_source",
+      "description": "Credential with optional source field",
+      "tags": ["happy-path", "optional-fields"],
+      "object": {
+        "challenge": {
+          "id": "ch_source123",
+          "intent": "charge",
+          "method": "tempo",
+          "realm": "api.example.com",
+          "request": {
+            "amount": "2000000",
+            "currency": "USD",
+            "expires": "2026-01-29T14:00:00Z",
+            "recipient": "0xabcdef1234567890abcdef1234567890abcdef12"
+          }
+        },
+        "payload": {
+          "type": "hash",
+          "hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12"
+        },
+        "source": "did:pkh:eip155:42431:0x1234567890abcdef1234567890abcdef12345678"
+      },
+      "wire": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9zb3VyY2UxMjMiLCJyZWFsbSI6ImFwaS5leGFtcGxlLmNvbSIsIm1ldGhvZCI6InRlbXBvIiwiaW50ZW50IjoiY2hhcmdlIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlNREF3TURBd0lpd2lZM1Z5Y21WdVkza2lPaUpWVTBRaUxDSmxlSEJwY21Weklqb2lNakF5Tmkwd01TMHlPVlF4TkRvd01Eb3dNRm9pTENKeVpXTnBjR2xsYm5RaU9pSXdlR0ZpWTJSbFpqRXlNelExTmpjNE9UQmhZbU5rWldZeE1qTTBOVFkzT0Rrd1lXSmpaR1ZtTVRJaWZRIn0sInBheWxvYWQiOnsidHlwZSI6Imhhc2giLCJoYXNoIjoiMHgxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyIn0sInNvdXJjZSI6ImRpZDpwa2g6ZWlwMTU1OjQyNDMxOjB4MTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3OCJ9",
+      "tests": {
+        "parse": true,
+        "format": true
+      }
+    },
+    {
+      "name": "credential_with_expires",
+      "description": "Credential with challenge-level expires",
+      "tags": ["happy-path", "challenge-expires"],
+      "object": {
+        "challenge": {
+          "expires": "2026-01-29T12:30:00Z",
+          "id": "ch_expires123",
+          "intent": "authorize",
+          "method": "tempo",
+          "realm": "api.example.com",
+          "request": {
+            "amount": "100000000",
+            "currency": "0x20c0000000000000000000000000000000000001",
+            "expires": "2026-02-01T00:00:00Z"
+          }
+        },
+        "payload": {
+          "type": "transaction",
+          "signature": "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+        }
+      },
+      "wire": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJjaF9leHBpcmVzMTIzIiwicmVhbG0iOiJhcGkuZXhhbXBsZS5jb20iLCJtZXRob2QiOiJ0ZW1wbyIsImludGVudCI6ImF1dGhvcml6ZSIsInJlcXVlc3QiOiJleUpoYlc5MWJuUWlPaUl4TURBd01EQXdNREFpTENKamRYSnlaVzVqZVNJNklqQjRNakJqTURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TVNJc0ltVjRjR2x5WlhNaU9pSXlNREkyTFRBeUxUQXhWREF3T2pBd09qQXdXaUo5IiwiZXhwaXJlcyI6IjIwMjYtMDEtMjlUMTI6MzA6MDBaIn0sInBheWxvYWQiOnsidHlwZSI6InRyYW5zYWN0aW9uIiwic2lnbmF0dXJlIjoiMHhmZWRjYmEwOTg3NjU0MzIxZmVkY2JhMDk4NzY1NDMyMWZlZGNiYTA5ODc2NTQzMjFmZWRjYmEwOTg3NjU0MzIxZmVkY2JhMDk4NzY1NDMyMWZlZGNiYTA5ODc2NTQzMjFmZWRjYmEwOTg3NjU0MzIxZmVkY2JhMDk4NzY1NDMyMSJ9fQ",
+      "tests": {
+        "parse": true
+      }
+    },
+    {
+      "name": "error_missing_payment_prefix",
+      "description": "Rejects authorization without Payment prefix",
+      "tags": ["error", "invalid-prefix"],
+      "wire": "Bearer eyJjaGFsbGVuZ2UiOnt9fQ",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_invalid_base64url",
+      "description": "Rejects authorization with invalid base64url encoding",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "Payment not-valid!!!",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_challenge",
+      "description": "Rejects credential missing required challenge field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment eyJwYXlsb2FkIjp7InR5cGUiOiJ0cmFuc2FjdGlvbiIsInNpZ25hdHVyZSI6IjB4MTIzNCJ9fQ",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_missing_challenge_id",
+      "description": "Rejects credential with challenge missing required id field",
+      "tags": ["error", "missing-field"],
+      "wire": "Payment eyJjaGFsbGVuZ2UiOnsicmVhbG0iOiJhcGkiLCJtZXRob2QiOiJ0ZW1wbyIsImludGVudCI6ImNoYXJnZSIsInJlcXVlc3QiOiJlMzAifSwicGF5bG9hZCI6eyJ0eXBlIjoidHJhbnNhY3Rpb24iLCJzaWduYXR1cmUiOiIweDEyMzQifX0",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    },
+    {
+      "name": "error_invalid_json_structure",
+      "description": "Rejects credential with valid base64url that decodes to non-object JSON",
+      "tags": ["error", "invalid-encoding"],
+      "wire": "Payment W10",
+      "tests": {
+        "parse": {
+          "success": false,
+          "error_type": "parse_error"
+        }
+      }
+    }
+  ]
+}

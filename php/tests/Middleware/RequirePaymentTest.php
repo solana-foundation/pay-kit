@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace PayKit\Tests\Middleware;
 
 use Nyholm\Psr7\Factory\Psr17Factory;
-use PayKit\Client;
+use PayKit\PayKit;
 use PayKit\Config;
 use PayKit\PayCore\Currency;
 use PayKit\Gate;
@@ -25,12 +25,12 @@ use Psr\Http\Server\RequestHandlerInterface;
 
 final class RequirePaymentTest extends TestCase
 {
-    private Client $client;
+    private PayKit $client;
     private Psr17Factory $factory;
 
     protected function setUp(): void
     {
-        $this->client = new Client(new Config(
+        $this->client = new PayKit(new Config(
             network: Network::SolanaDevnet,
             operator: new Operator(recipient: Signer::generate()->pubkey(), signer: Signer::generate(), feePayer: true),
             preflight: false,
@@ -74,6 +74,18 @@ final class RequirePaymentTest extends TestCase
         $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
         $body = json_decode((string) $response->getBody(), true);
         $this->assertGreaterThanOrEqual(1, count($body['accepts']));
+    }
+
+    public function test402SetsCacheControlNoStore(): void
+    {
+        // main-audit medium finding 6: the umbrella 402 MUST NOT be
+        // cached. Without no-store a CDN could replay a stale challenge
+        // (different blockhash / expiry / amount) to a later client.
+        $gate = new Gate(amount: Price::usd('0.10'));
+        $mw = new RequirePayment($this->client, $gate);
+        $response = $mw->process($this->factory->createServerRequest('GET', '/paid'), $this->nextHandler());
+        $this->assertSame(402, $response->getStatusCode());
+        $this->assertSame('no-store', $response->getHeaderLine('cache-control'));
     }
 
     public function testWwwAuthenticateHeaderStampedFromMpp(): void
@@ -140,6 +152,10 @@ final class RequirePaymentTest extends TestCase
         $this->assertTrue(\PayKit\Middleware\isPaid($request));
         $this->assertTrue(\PayKit\Middleware\isPaidFor($request, 'report'));
         $this->assertFalse(\PayKit\Middleware\isPaidFor($request, 'other'));
+
+        // isPaidFor also accepts a Gate object: any settled payment satisfies it.
+        $gate = new Gate(Price::usd('0.01'), 'PAY_TO_RECIPIENT_BASE58_PUBKEY_111111111111');
+        $this->assertTrue(\PayKit\Middleware\isPaidFor($request, $gate));
     }
 
     public function testRequirePaymentNamespaceFunctionRaisesWithoutPayment(): void

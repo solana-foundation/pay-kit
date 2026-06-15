@@ -3,9 +3,15 @@
 require "rake/testtask"
 require "standard/rake"
 
+# Drive the suite through `test/run.rb`. It requires every `_test.rb`
+# except the standalone `test/load_order/` files, which must run in
+# fresh subprocesses (they assert on Ruby's require state) and are
+# driven from `test/pay_kit/load_order_test.rb`. Globbing them directly
+# would load them in a process where Sinatra is already required and the
+# TracePoint late-binding assertion can no longer hold.
 Rake::TestTask.new(:test) do |task|
   task.libs << "test"
-  task.pattern = "test/**/*_test.rb"
+  task.test_files = ["test/run.rb"]
 end
 
 task default: [:standard, :test]
