@@ -198,7 +198,7 @@ jobs:
           PORT: "3002"
           NETWORK: localnet
           RPC_URL: http://localhost:8899
-          MPP_SECRET_KEY: playground-ci-secret
+          MPP_SECRET_KEY: playground-ci-secret-padding-0123456789
         run: go run ./examples/playground-api &
       - name: Wait for playground server
         working-directory: .
