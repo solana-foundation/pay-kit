@@ -4,10 +4,6 @@
 so applications can process delivered messages and call ``ack``/``commit``
 instead of manually signing and posting vouchers. A failed commit never
 advances the local watermark, so the same directive can be retried safely.
-
-Behavior mirrors the Rust spine in
-``rust/crates/mpp/src/client/session_consumer.rs`` and the parity-verified Go
-port in ``go/protocols/mpp/client/session_consumer.go``.
 """
 
 from __future__ import annotations
@@ -40,9 +36,8 @@ class CommitTransport(Protocol):
     ``commit_url``, ``proof``, or other routing hints without those fields being
     repeated in the signed commit body.
 
-    The ``commit`` signature mirrors the Rust ``CommitTransport`` trait exactly:
-    it takes the directive and the :class:`CommitPayload` and returns a
-    :class:`CommitReceipt`.
+    The ``commit`` method takes the directive and the :class:`CommitPayload` and
+    returns a :class:`CommitReceipt`.
     """
 
     def commit(self, directive: MeteringDirective, payload: CommitPayload) -> CommitReceipt:
@@ -54,17 +49,17 @@ class SessionConsumer:
     """Client-side consumer for session-metered deliveries.
 
     Not safe for concurrent use; the underlying :class:`ActiveSession` watermark
-    is advanced inside :meth:`commit_directive`. Mirrors rust ``SessionConsumer``.
+    is advanced inside :meth:`commit_directive`.
     """
 
     def __init__(self, session: ActiveSession, transport: CommitTransport) -> None:
-        """Wrap a session and a commit transport. Mirrors rust ``SessionConsumer::new``."""
+        """Wrap a session and a commit transport."""
         self._session = session
         self._transport = transport
 
     @property
     def session(self) -> ActiveSession:
-        """The wrapped session. Mirrors rust ``SessionConsumer::session``."""
+        """The wrapped session."""
         return self._session
 
     @property
@@ -76,8 +71,7 @@ class SessionConsumer:
         """Validate an envelope and return a delivery handle with ``ack``/``commit``.
 
         The directive is validated up front so a mismatched session is rejected
-        before the application processes the payload. Mirrors rust
-        ``SessionConsumer::accept``.
+        before the application processes the payload.
         """
         self._validate_directive(envelope.metering)
         return MeteredDelivery(consumer=self, payload=envelope.payload, metering=envelope.metering)
@@ -91,11 +85,10 @@ class SessionConsumer:
         split makes a failed commit safe to retry without double-counting: the
         voucher is prepared (no watermark advance), sent, and recorded once the
         transport returns a receipt. The prepared voucher is recorded for both
-        ``committed`` and ``replayed`` receipts, exactly mirroring rust
-        ``SessionConsumer::commit_directive`` and the TypeScript
-        ``SessionConsumer``: the server's deliveryId dedupe keeps the settled
-        amount authoritative on its side, and the locally signed cumulative
-        stays the client watermark so subsequent vouchers remain monotonic.
+        ``committed`` and ``replayed`` receipts: the server's deliveryId dedupe
+        keeps the settled amount authoritative on its side, and the locally
+        signed cumulative stays the client watermark so subsequent vouchers
+        remain monotonic.
         """
         self._validate_directive(directive)
         amount = directive.amount_base_units()
@@ -121,7 +114,7 @@ class MeteredDelivery(Generic[P]):
     """A delivered payload paired with its metering directive.
 
     Call :meth:`ack` (or its :meth:`commit` alias) after the application has
-    processed :attr:`payload`. Mirrors rust ``MeteredDelivery``.
+    processed :attr:`payload`.
     """
 
     def __init__(self, consumer: SessionConsumer, payload: P, metering: MeteringDirective) -> None:
@@ -140,19 +133,13 @@ class MeteredDelivery(Generic[P]):
         return self._metering
 
     def ack(self) -> CommitReceipt:
-        """Sign and commit a voucher for the directive amount.
-
-        Mirrors rust ``MeteredDelivery::ack``.
-        """
+        """Sign and commit a voucher for the directive amount."""
         return self._consumer.commit_directive(self._metering)
 
     def commit(self) -> CommitReceipt:
-        """Alias for :meth:`ack`. Mirrors rust ``MeteredDelivery::commit``."""
+        """Alias for :meth:`ack`."""
         return self.ack()
 
     def into_parts(self) -> tuple[P, MeteringDirective]:
-        """Return the payload and metering directive without committing.
-
-        Mirrors rust ``MeteredDelivery::into_parts``.
-        """
+        """Return the payload and metering directive without committing."""
         return self._payload, self._metering

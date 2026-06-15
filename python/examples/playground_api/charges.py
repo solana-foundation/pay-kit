@@ -12,9 +12,11 @@ fully-validated :class:`Gate`. Guard dependencies (404 unknown city/product,
 400 missing query) are declared ahead of the payment dependency so they fire
 before the 402, matching the Express middleware ordering.
 
-The stock routes serve canned demo data rather than a live market feed: the
-example exists to exercise the payment gate, and the Python playground stays
-network-free like its weather / marketplace / x402 routes.
+The stock routes pull live market data from the ``yfinance`` library (the
+Python counterpart to the TypeScript example's ``yahoo-finance2``): quote via
+``Ticker.info``, search via ``yf.Search``, history via ``Ticker.history``. Any
+lookup failure degrades gracefully so the example still runs offline: an
+unknown symbol is a 404 and a network outage returns a small safe default.
 
 The fortune route drops to the protocol layer (:class:`Mpp` with HTML enabled)
 because the umbrella dispatcher renders the cross-SDK JSON challenge body;
@@ -30,6 +32,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 import pay_kit
@@ -140,6 +143,61 @@ def _city_key(city: str) -> str:
     return city.lower().replace(" ", "-")
 
 
+# --- live stock data via the yfinance library --------------------------------
+
+# History ranges accepted by yfinance's ``period=`` argument. Anything else
+# falls back to one month.
+_HISTORY_RANGES = {"1d", "5d", "1mo", "3mo", "6mo", "1y"}
+
+
+def _quote(symbol: str) -> dict[str, Any]:
+    """Live quote via ``Ticker.info``; 404 for an unknown symbol, a safe default
+    when the network is unreachable so the example still runs offline.
+    """
+    import yfinance as yf
+
+    sym = symbol.upper()
+    try:
+        info = yf.Ticker(sym).info
+    except Exception:  # noqa: BLE001 (offline / lib error -> safe default)
+        return {"symbol": sym, "regularMarketPrice": 150.0, "currency": "USD"}
+    price = info.get("regularMarketPrice") or info.get("currentPrice")
+    if price is None:
+        raise HTTPException(status_code=404, detail=json_error(f"Unknown symbol: {sym}"))
+    return info
+
+
+def _search(query: str) -> list[dict[str, Any]]:
+    """Live symbol search via ``yf.Search``; an empty list when offline."""
+    import yfinance as yf
+
+    try:
+        return yf.Search(query).quotes
+    except Exception:  # noqa: BLE001 (offline / lib error -> empty result set)
+        return []
+
+
+def _history(symbol: str, range_: str) -> dict[str, Any]:
+    """Live OHLC history via ``Ticker.history``; a safe single-point default
+    when offline, a 404 when the symbol has no data.
+    """
+    import yfinance as yf
+
+    sym = symbol.upper()
+    period = range_ if range_ in _HISTORY_RANGES else "1mo"
+    try:
+        frame = yf.Ticker(sym).history(period=period)
+    except Exception:  # noqa: BLE001 (offline / lib error -> safe default)
+        return {"symbol": sym, "quotes": [{"close": 150.0}]}
+    if frame.empty:
+        raise HTTPException(status_code=404, detail=json_error(f"Unknown symbol: {sym}"))
+    quotes = [
+        {"date": index.isoformat(), "close": round(float(row["Close"]), 4)}
+        for index, row in frame.iterrows()
+    ]
+    return {"symbol": sym, "quotes": quotes}
+
+
 # --- registration -----------------------------------------------------------
 
 
@@ -224,7 +282,7 @@ def register_charges(app: FastAPI, state: Any) -> None:
     @app.get("/api/v1/stocks/quote/{symbol}", dependencies=[Depends(gate_stock_quote)])
     async def stock_quote(request: Request, symbol: str) -> JSONResponse:
         _log_settlement(request)
-        return JSONResponse({"symbol": symbol.upper(), "regularMarketPrice": 150.0, "currency": "USD"})
+        return JSONResponse(await run_in_threadpool(_quote, symbol))
 
     @app.get(
         "/api/v1/stocks/search",
@@ -233,12 +291,13 @@ def register_charges(app: FastAPI, state: Any) -> None:
     async def stock_search(request: Request) -> JSONResponse:
         _log_settlement(request)
         q = request.query_params.get("q", "")
-        return JSONResponse([{"symbol": q.upper(), "shortname": q.upper(), "exchange": "NMS"}])
+        return JSONResponse(await run_in_threadpool(_search, q))
 
     @app.get("/api/v1/stocks/history/{symbol}", dependencies=[Depends(gate_stock_history)])
     async def stock_history(request: Request, symbol: str) -> JSONResponse:
         _log_settlement(request)
-        return JSONResponse({"symbol": symbol.upper(), "quotes": [{"close": 150.0}]})
+        range_ = request.query_params.get("range", "1mo")
+        return JSONResponse(await run_in_threadpool(_history, symbol, range_))
 
     # -- weather: unknown cities 404 before the payment gate -----------------
 

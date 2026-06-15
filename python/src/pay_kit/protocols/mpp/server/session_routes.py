@@ -5,15 +5,13 @@ SessionFetch-style clients POST to ``/__402/session/deliveries`` to reserve
 capacity for a metered delivery and to ``/__402/session/commit`` to commit it
 with a signed voucher. Hosts mount the two handlers on those paths themselves.
 
-Ports ``go/protocols/mpp/server/session_routes.go``. The Go ``Routes()`` is a
-method on the HTTP-facing ``Session``; the routes only ever touch the
-lower-level ``SessionServer`` (the Go ``s.core``) plus an idle-close ``touch``
-hook, so this port builds the handlers over a :class:`SessionServer` directly.
+The handlers only ever touch the lower-level :class:`SessionServer` plus an
+idle-close ``touch`` hook, so they are built over a :class:`SessionServer`
+directly.
 
-House style follows the existing server modules (``middleware.py``): handlers
-are framework-agnostic. Each takes the HTTP method and the raw request body and
-returns a :class:`RouteResponse` carrying the status and a JSON-ready body, so
-hosts can adapt it to any ASGI/WSGI framework.
+The handlers are framework-agnostic. Each takes the HTTP method and the raw
+request body and returns a :class:`RouteResponse` carrying the status and a
+JSON-ready body, so hosts can adapt it to any ASGI/WSGI framework.
 """
 
 from __future__ import annotations
@@ -35,13 +33,12 @@ __all__ = [
 _U64_MAX = (1 << 64) - 1
 
 # A touch hook called with the session id after a successful reserve/commit, so
-# a host's idle-close watchdog can be armed. ``None`` disables it. Mirrors the
-# Go ``Session.touch``.
+# a host's idle-close watchdog can be armed. ``None`` disables it.
 TouchFn = Callable[[str], None]
 
 # A handler takes the request method and the raw request body (the JSON text or
-# bytes) and returns a RouteResponse. Mirrors the Go ``http.HandlerFunc`` shape
-# (method gating + JSON body decode) in a framework-agnostic form.
+# bytes) and returns a RouteResponse: method gating plus JSON body decode in a
+# framework-agnostic form.
 RouteHandler = Callable[[str, "str | bytes"], Awaitable["RouteResponse"]]
 
 
@@ -50,7 +47,7 @@ class RouteResponse:
     """The result of a side-channel handler: an HTTP status plus a JSON-ready
     body. Successful reserves/commits carry the directive/receipt dict; failures
     carry ``{"error": message}``, the failure body the side-channel clients
-    expect (Go ``writeSessionRouteError``).
+    expect.
     """
 
     status: int
@@ -62,7 +59,7 @@ class SessionRoutes:
     """The metering side-channel handlers built by :func:`session_routes`.
 
     Both share the session's channel store, so deliveries see channels opened
-    through the session method. Mirrors Go ``SessionRoutes``.
+    through the session method.
     """
 
     # deliveries reserves capacity for a metered delivery. Mount at
@@ -76,7 +73,7 @@ class SessionRoutes:
 
 def _parse_session_u64(value: str, name: str) -> int:
     """Parse a non-negative decimal string into a u64, naming the field in the
-    error. Mirrors Go ``parseSessionU64``."""
+    error."""
     if not isinstance(value, str) or not (value.isascii() and value.isdigit()):
         raise ValueError(f"{name} is not an unsigned integer string: {value}")
     parsed = int(value, 10)
@@ -86,8 +83,8 @@ def _parse_session_u64(value: str, name: str) -> int:
 
 
 def _decode_body(raw: str | bytes) -> dict[str, Any]:
-    """Decode a JSON object request body. Raises on non-object or invalid JSON,
-    mirroring Go's ``json.NewDecoder(r.Body).Decode(&body)`` into a struct."""
+    """Decode a JSON object request body. Raises on a non-object value or
+    invalid JSON."""
     decoded = json.loads(raw)
     if not isinstance(decoded, dict):
         raise ValueError("request body must be a JSON object")
@@ -96,16 +93,15 @@ def _decode_body(raw: str | bytes) -> dict[str, Any]:
 
 class _DecodeError(ValueError):
     """A request-body type mismatch caught at the decode layer. Surfaced as
-    HTTP 400 "invalid request body", matching Go's ``json.Decode`` rejection of
-    a JSON value whose type does not match the typed struct field."""
+    HTTP 400 "invalid request body": a JSON value whose type does not match the
+    expected typed field is rejected before any processing."""
 
 
 def _string_field(body: dict[str, Any], name: str) -> str:
     """Read a JSON string field, defaulting an absent/null value to "".
 
-    Mirrors a Go ``string`` struct field: a present value of any non-string JSON
-    type (number, bool, object, array) fails ``json.Decode``, so reject it as
-    ``invalid request body`` before any processing."""
+    A present value of any non-string JSON type (number, bool, object, array)
+    is rejected as ``invalid request body`` before any processing."""
     value = body.get(name)
     if value is None:
         return ""
@@ -117,9 +113,8 @@ def _string_field(body: dict[str, Any], name: str) -> str:
 def _int64_field(body: dict[str, Any], name: str) -> int:
     """Read a JSON integer field, defaulting an absent/null value to 0.
 
-    Mirrors a Go ``int64`` struct field: ``json.Decode`` accepts only a JSON
-    integer. A JSON float (``10.0``/``10.5``), a numeric or non-numeric string
-    (``"10"``/``"soon"``), or a bool all fail decode, so reject them as
+    Only a JSON integer is accepted. A JSON float (``10.0``/``10.5``), a numeric
+    or non-numeric string (``"10"``/``"soon"``), or a bool is rejected as
     ``invalid request body`` before any processing. (Python parses ``bool`` as a
     subclass of ``int`` and JSON integers as ``int``; exclude ``bool`` so only
     true integers pass.)"""
@@ -135,8 +130,7 @@ def session_routes(core: SessionServer, touch: TouchFn | None = None) -> Session
     """Build the metering side-channel handlers for a session server.
 
     ``touch`` is the idle-close hook called with the session id after a
-    successful reserve/commit; ``None`` disables it. Mirrors Go
-    ``Session.Routes`` (whose handlers delegate to ``s.core`` and ``s.touch``).
+    successful reserve/commit; ``None`` disables it.
     """
 
     def _touch(session_id: str) -> None:
@@ -148,9 +142,8 @@ def session_routes(core: SessionServer, touch: TouchFn | None = None) -> Session
             return _error(405, "POST required")
         try:
             body = _decode_body(raw)
-            # Strict typed decode (Go sessionDeliveryRequestBody): reject any
-            # field whose JSON type does not match the Go struct field before any
-            # store access, matching Go's json.Decode rejection.
+            # Strict typed decode: reject any field whose JSON type does not
+            # match the expected field type before any store access.
             session_id = _string_field(body, "sessionId")
             amount_raw = _string_field(body, "amount")
             delivery_id = _string_field(body, "deliveryId")
@@ -188,8 +181,8 @@ def session_routes(core: SessionServer, touch: TouchFn | None = None) -> Session
             return _error(405, "POST required")
         try:
             body = _decode_body(raw)
-            # Strict typed decode (Go sessionCommitRequestBody): deliveryId is a
-            # string field, so a non-string JSON value is rejected up front.
+            # Strict typed decode: deliveryId is a string field, so a non-string
+            # JSON value is rejected up front.
             delivery_id = _string_field(body, "deliveryId")
         except (ValueError, json.JSONDecodeError):
             return _error(400, "invalid request body")
@@ -211,5 +204,5 @@ def session_routes(core: SessionServer, touch: TouchFn | None = None) -> Session
 
 def _error(status: int, message: str) -> RouteResponse:
     """Build the ``{"error": message}`` failure body the side-channel clients
-    expect. Mirrors Go ``writeSessionRouteError``."""
+    expect."""
     return RouteResponse(status=status, body={"error": message})

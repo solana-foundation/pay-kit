@@ -5,11 +5,9 @@ HTTP. This module keeps the parser transport-neutral (an incremental
 :class:`SseDecoder` plus the metered event state machine), then layers a small
 httpx adapter on top for applications that want batteries included.
 
-Mirrors ``rust/crates/mpp/src/client/http_stream.rs``; the TypeScript
-counterpart is ``typescript/packages/mpp/src/client/HttpStream.ts``. The
-metering rules enforced here are the skill-mandated pair: a usage event's
-``deliveryId`` must match the live directive, and usage overrides only the
-amount, never the ``deliveryId``.
+Two metering invariants are enforced while folding a stream: a usage event's
+``deliveryId`` must match the live metering directive, and a usage event may
+override only the committed amount, never the ``deliveryId``.
 """
 
 from __future__ import annotations
@@ -41,11 +39,15 @@ __all__ = [
 
 @dataclass
 class SseEvent:
-    """A parsed Server-Sent Event frame. Mirrors rust ``SseEvent``."""
+    """A parsed Server-Sent Event frame."""
 
+    #: Event name from the ``event:`` field, or ``None`` for a default message.
     event: str | None = None
+    #: Concatenated ``data:`` field payload (lines joined with newlines).
     data: str = ""
+    #: Last-event-id from the ``id:`` field, if present.
     id: str | None = None
+    #: Reconnection delay in milliseconds from the ``retry:`` field, if present.
     retry: int | None = None
 
 
@@ -54,7 +56,6 @@ class SseDecoder:
 
     Feed raw HTTP chunks with :meth:`push_chunk`. It returns all complete
     events decoded from that chunk and retains partial data internally.
-    Mirrors rust ``SseDecoder``.
     """
 
     def __init__(self) -> None:
@@ -136,14 +137,19 @@ class SseDecoder:
 class MeteredSseEvent:
     """A parsed metered SSE event, tagged by ``kind``.
 
-    Mirrors the rust ``MeteredSseEvent`` enum: exactly one payload field is set
-    for the matching ``kind`` (``done`` carries none).
+    Exactly one payload field is set for the matching ``kind``; a ``done`` event
+    carries no payload.
     """
 
+    #: Which kind of event this is, selecting the populated payload field.
     kind: Literal["metering", "usage", "message", "done", "other"]
+    #: Metering directive payload, set when ``kind`` is ``"metering"``.
     metering: MeteringDirective | None = None
+    #: Usage payload, set when ``kind`` is ``"usage"``.
     usage: MeteringUsage | None = None
+    #: Decoded JSON message payload, set when ``kind`` is ``"message"``.
     message: Any = None
+    #: Raw passthrough frame, set when ``kind`` is ``"other"``.
     other: SseEvent | None = None
 
 
@@ -152,8 +158,8 @@ def parse_metered_sse_event(event: SseEvent) -> MeteredSseEvent:
 
     Recognizes the canonical event names ``mpp.metering``/``metering`` and
     ``mpp.usage``/``usage``, the ``done`` event, and the ``[DONE]`` sentinel on
-    a plain message. Mirrors rust ``parse_metered_sse_event``; message payloads
-    are decoded as JSON values rather than a typed parameter.
+    a plain message. Message payloads are decoded as JSON values; any other
+    event name passes through unchanged as an ``"other"`` frame.
     """
     event_name = event.event if event.event is not None else "message"
     if event_name in ("mpp.metering", "metering"):
@@ -184,7 +190,8 @@ def parse_metered_sse_event(event: SseEvent) -> MeteredSseEvent:
 class _MeteredStreamState:
     """Directive/usage/done bookkeeping shared by the stream wrappers.
 
-    Mirrors rust ``MeteredStreamState``.
+    Tracks the live metering directive, the final usage amount once one
+    arrives, and whether the stream has ended.
     """
 
     def __init__(self) -> None:
@@ -232,11 +239,12 @@ class MeteredSseSession:
     Feed decoded frames with :meth:`accept_event`; call :meth:`ack` after the
     stream ends to sign and commit a voucher for the metered amount (the
     reserved directive amount, or the final usage amount when one arrived).
-    Mirrors rust ``MeteredSseSession``.
+    This wrapper does not own its frame source: the caller decodes and feeds
+    frames in.
     """
 
     def __init__(self, consumer: SessionConsumer) -> None:
-        """Wrap a consumer; mirrors rust ``SessionConsumer::metered_sse``."""
+        """Wrap a session consumer with fresh metering state."""
         self._consumer = consumer
         self._state = _MeteredStreamState()
 
@@ -263,9 +271,9 @@ class MeteredSseSession:
 class MeteredSseStream:
     """A metered SSE stream over any iterable of raw byte chunks.
 
-    Works with ``httpx.Response.iter_bytes()`` or any other chunk source; the
-    rust counterpart (``ReqwestMeteredSseStream``) binds to reqwest, Python
-    stays transport-neutral. Iterate with :meth:`next` (or as an iterator) and
+    Works with ``httpx.Response.iter_bytes()`` or any other source of raw byte
+    chunks; the stream stays transport-neutral and owns its own decoder and
+    metering state. Iterate with :meth:`next` (or as an iterator) and call
     :meth:`ack` once to commit.
     """
 
@@ -323,8 +331,8 @@ class HttpCommitTransport:
 
     Posts the :class:`CommitPayload` JSON to the directive ``commitUrl`` (or a
     default), optionally with an Authorization header, and decodes the
-    :class:`CommitReceipt`. Mirrors rust ``HttpCommitTransport``; pass an
-    ``httpx.Client`` to control timeouts or inject a mock transport in tests.
+    :class:`CommitReceipt`. Pass an ``httpx.Client`` to control timeouts or to
+    inject a mock transport in tests; one is created lazily when omitted.
     """
 
     def __init__(

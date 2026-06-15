@@ -6,7 +6,7 @@ stay correct) and the session intent (:class:`SessionRequest` plus the
 :class:`SessionAction` credential union, signed vouchers, and the metering
 types). It also re-exports the :func:`parse_units` helper that converts a
 human-readable decimal amount into base units at the SDK boundary. The wire
-format mirrors ``rust/crates/mpp/src/protocol/intents/{charge,session}.rs``.
+format is defined by the MPP specification's charge and session intents.
 
 The individual intent modules
 (:mod:`pay_kit.protocols.mpp.intents.charge`,

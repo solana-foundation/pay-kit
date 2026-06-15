@@ -5,19 +5,16 @@ calls per channel id with a per-channel lock, so the read-modify-write sequence
 inside the mutator is atomic from the perspective of any other caller targeting
 the same channel while updates to different channels run concurrently.
 
-The voucher verifier (a follow-up ``session_voucher`` port) is intentionally
-side-effect-free: it computes a verdict, and the caller persists any accepted
-delta through :meth:`ChannelStore.update_channel`.
+The voucher verifier is intentionally side-effect-free: it computes a verdict,
+and the caller persists any accepted delta through
+:meth:`ChannelStore.update_channel`.
 
-This mirrors the Go ``session_store.go`` public interface (snake_case of the Go
-names) and the Rust spine wire shape in ``rust/crates/mpp/src/store.rs``. The
-``ChannelState`` JSON tags are the shared snake_case wire names so durable
+The ``ChannelState`` JSON tags are the shared snake_case wire names so durable
 stores interoperate across the language SDKs; the per-delivery records use the
-camelCase ``deliveryId``/``expiresAt``/``voucherSignature`` keys from the spine.
+camelCase ``deliveryId``/``expiresAt``/``voucherSignature`` keys.
 
-House style follows the existing server modules: plain dataclasses with
-``to_dict()``/``from_dict()``, ``asyncio`` locking where Go is concurrent, and
-explicit type hints.
+The module uses plain dataclasses with ``to_dict()``/``from_dict()``,
+``asyncio`` locking for concurrent access, and explicit type hints.
 """
 
 from __future__ import annotations
@@ -43,8 +40,7 @@ class PendingDelivery:
     """One delivery the server has reserved against a channel but not yet
     received a signed voucher for.
 
-    Mirrors Go ``PendingDelivery`` and rust ``PendingDelivery``; the wire keys
-    are camelCase (``deliveryId``/``expiresAt``).
+    The wire keys are camelCase (``deliveryId``/``expiresAt``).
     """
 
     # DeliveryID is the idempotency key for this delivery.
@@ -79,8 +75,6 @@ class PendingDelivery:
 class CommittedDelivery:
     """A delivery that has been committed by a signed voucher. Kept for
     idempotent commit replay.
-
-    Mirrors Go ``CommittedDelivery`` and rust ``CommittedDelivery``.
     """
 
     # DeliveryID is the idempotency key for this delivery.
@@ -116,8 +110,7 @@ class ChannelState:
     view.
 
     The JSON tags are the shared snake_case wire names, so durable stores can
-    interoperate across the language SDKs. Mirrors Go ``ChannelState`` and rust
-    ``ChannelState``.
+    interoperate across the language SDKs.
     """
 
     # ChannelID is the on-chain channel address (base58).
@@ -179,9 +172,9 @@ class ChannelState:
     def clone(self) -> ChannelState:
         """Return a deep copy so callers can never alias store-internal state.
 
-        Mirrors the Go ``clone`` method: scalar/optional fields copy by value,
-        the two delivery slices copy element-wise with their own dataclass
-        copies so a returned list cannot mutate the stored one.
+        Scalar/optional fields copy by value; the two delivery slices copy
+        element-wise with their own dataclass copies so a returned list cannot
+        mutate the stored one.
         """
         return replace(
             self,
@@ -190,12 +183,12 @@ class ChannelState:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        # Go's nil delivery slices serialize to JSON ``null`` (an empty,
-        # never-populated channel marshals ``"pending_deliveries":null``), while
-        # a populated slice serializes to an array. Python has no nil/empty
+        # An empty, never-populated delivery slice serializes to JSON ``null``
+        # (a fresh-open channel marshals ``"pending_deliveries":null``), while a
+        # populated slice serializes to an array. Python has no nil/empty
         # distinction, so an empty list emits ``None`` to keep durable records
-        # byte-for-byte identical to the Go server's fresh-open output. Rust's
-        # ``#[serde(default)]`` decodes that ``null`` back to an empty ``Vec``.
+        # byte-for-byte identical across SDKs; a decoder treating absent/null as
+        # an empty list round-trips it cleanly.
         d: dict[str, Any] = {
             "channel_id": self.channel_id,
             "authorized_signer": self.authorized_signer,
@@ -212,7 +205,7 @@ class ChannelState:
                 [c.to_dict() for c in self.committed_deliveries] if self.committed_deliveries else None
             ),
         }
-        # settled_signature is omit-empty (Go `omitempty`, rust skip on None).
+        # settled_signature is omitted from the wire form when unset.
         if self.settled_signature is not None:
             d["settled_signature"] = self.settled_signature
         return d
@@ -233,9 +226,9 @@ class ChannelState:
             settled_signature=data.get("settled_signature"),
             operator=data.get("operator"),
             next_delivery_sequence=int(data.get("next_delivery_sequence", 0)),
-            # A missing key, explicit JSON ``null`` (Go nil slice), and an empty
-            # array all decode to an empty list. ``data.get(key) or []`` folds
-            # ``None`` and ``[]`` together; ``from_dict`` never iterates ``None``.
+            # A missing key, explicit JSON ``null``, and an empty array all
+            # decode to an empty list. ``data.get(key) or []`` folds ``None``
+            # and ``[]`` together; ``from_dict`` never iterates ``None``.
             pending_deliveries=[PendingDelivery.from_dict(p) for p in (data.get("pending_deliveries") or [])],
             committed_deliveries=[CommittedDelivery.from_dict(c) for c in (data.get("committed_deliveries") or [])],
         )
@@ -243,10 +236,7 @@ class ChannelState:
 
 @dataclass
 class ListChannelsFilter:
-    """Optional filter for :meth:`ChannelStore.list_channels`.
-
-    Mirrors Go ``ListChannelsFilter``.
-    """
+    """Optional filter for :meth:`ChannelStore.list_channels`."""
 
     # finalized, when non-None, only includes channels matching this finalized
     # state.
@@ -273,8 +263,8 @@ class ChannelStore:
     always needs an atomic read-modify-write to avoid double-spend under
     concurrent vouchers, so no direct put is exposed.
 
-    Mirrors the Go ``ChannelStore`` interface. Defined as an abstract base so
-    pyright can check structural conformance of implementations.
+    Defined as an abstract base so pyright can check structural conformance of
+    implementations.
     """
 
     async def get_channel(self, channel_id: str) -> ChannelState | None:
@@ -305,9 +295,8 @@ class MemoryChannelStore(ChannelStore):
     """In-memory :class:`ChannelStore` with per-channel locking.
 
     ``update_channel`` calls for the same channel id run strictly sequentially
-    while calls for different ids run concurrently. Mirrors the Go
-    ``MemoryChannelStore``: values are cloned on the way in and out so callers
-    never share memory with the store.
+    while calls for different ids run concurrently. Values are cloned on the way
+    in and out so callers never share memory with the store.
     """
 
     def __init__(self) -> None:

@@ -20,10 +20,6 @@ transaction and confirming the signature on-chain. When ``None``, the
 transaction signature and deposit amount are trusted as provided, which is
 suitable only for unit tests or deployments that verify transactions out of
 band.
-
-Ports ``go/protocols/mpp/server/session.go`` (snake_case of the Go names). The
-wire shapes follow the Rust spine ``rust/crates/mpp/src/server/session.rs`` and
-``store.rs``.
 """
 
 from __future__ import annotations
@@ -80,8 +76,7 @@ _P = TypeVar("_P")
 # payload before channel state is persisted. Implementations typically decode
 # the attached transaction, bind the payload signature to it, and confirm the
 # signature on-chain. This is the seam the on-chain layer plugs into; ``None``
-# skips verification. Mirrors Go ``SessionTxVerifier[P]``; raising signals a
-# verification failure.
+# skips verification. Raising signals a verification failure.
 SessionTxVerifier = Callable[[_P], Awaitable[None]]
 
 
@@ -89,8 +84,7 @@ SessionTxVerifier = Callable[[_P], Awaitable[None]]
 class Split:
     """A payment split committed at channel open; distributed at close.
 
-    Mirrors Go ``Split``. ``recipient`` is a base58 public key (the Go field is
-    a ``solana.PublicKey``; this layer carries it as its base58 string form).
+    ``recipient`` is a public key carried in its base58 string form.
     """
 
     # Recipient of this split (base58).
@@ -101,7 +95,7 @@ class Split:
 
 @dataclass
 class SessionConfig:
-    """Server configuration for the session intent. Mirrors Go ``SessionConfig``."""
+    """Server configuration for the session intent."""
 
     # Operator public key (base58). Shown to clients in the challenge.
     operator: str = ""
@@ -155,8 +149,7 @@ class SessionConfig:
 class DeliveryRequest:
     """A request to reserve a metered delivery for client-side ack/commit.
 
-    Zero/empty values mean "absent" for the optional fields. Mirrors Go
-    ``DeliveryRequest``.
+    Zero/empty values mean "absent" for the optional fields.
     """
 
     # SessionID is the channel/session ID that will pay for the delivery.
@@ -183,8 +176,6 @@ class DeliveryRequest:
 def _fits_in_deposit(cumulative: int, pending_total: int, amount: int, deposit: int) -> bool:
     """Report whether cumulative + pending_total + amount <= deposit without
     overflowing u64; any overflow is treated as exceeding the deposit.
-
-    Mirrors Go ``fitsInDeposit``.
     """
     if pending_total > _U64_MAX - cumulative:
         return False
@@ -195,8 +186,9 @@ def _fits_in_deposit(cumulative: int, pending_total: int, amount: int, deposit: 
 
 
 def _parse_u64(raw: str) -> int:
-    """Parse a canonical unsigned base-10 ``u64`` (matching Go's
-    ``strconv.ParseUint(s, 10, 64)``). Raises ``ValueError`` otherwise."""
+    """Parse a canonical unsigned base-10 ``u64``: the string must be all ASCII
+    decimal digits and fit within the 64-bit unsigned range. Raises
+    ``ValueError`` otherwise."""
     if not (raw.isascii() and raw.isdigit()):
         raise ValueError(f"invalid u64: {raw}")
     value = int(raw, 10)
@@ -206,7 +198,7 @@ def _parse_u64(raw: str) -> int:
 
 
 def _find_pending(deliveries: list[PendingDelivery], delivery_id: str) -> PendingDelivery | None:
-    """Return the pending delivery with the given id, or None. Mirrors Go ``findPending``."""
+    """Return the pending delivery with the given id, or None."""
     for delivery in deliveries:
         if delivery.delivery_id == delivery_id:
             return delivery
@@ -214,7 +206,7 @@ def _find_pending(deliveries: list[PendingDelivery], delivery_id: str) -> Pendin
 
 
 def _find_committed(deliveries: list[CommittedDelivery], delivery_id: str) -> CommittedDelivery | None:
-    """Return the committed delivery with the given id, or None. Mirrors Go ``findCommitted``."""
+    """Return the committed delivery with the given id, or None."""
     for delivery in deliveries:
         if delivery.delivery_id == delivery_id:
             return delivery
@@ -224,7 +216,7 @@ def _find_committed(deliveries: list[CommittedDelivery], delivery_id: str) -> Co
 def _commit_receipt(
     delivery_id: str, session_id: str, amount: int, cumulative: int, status: CommitStatus
 ) -> CommitReceipt:
-    """Build a CommitReceipt with stringified amounts. Mirrors Go ``commitReceipt``."""
+    """Build a CommitReceipt with stringified amounts."""
     return CommitReceipt(
         delivery_id=delivery_id,
         session_id=session_id,
@@ -237,8 +229,6 @@ def _commit_receipt(
 class SessionServer:
     """Server-side session manager. Pluggable over the channel store to support
     in-memory testing and production persistence backends.
-
-    Mirrors Go ``SessionServer``.
     """
 
     def __init__(self, config: SessionConfig, store: ChannelStore) -> None:
@@ -252,15 +242,14 @@ class SessionServer:
     def config(self) -> SessionConfig:
         """The immutable server configuration captured at construction.
 
-        Exposed read-only so the HTTP-facing session method (the Go ``Session``,
-        which reads ``s.core.config`` within the package) can inspect the
+        Exposed read-only so the HTTP-facing session method can inspect the
         configured currency/decimals/network without reaching into a private
-        field. Mirrors the Go ``SessionServer.config`` field."""
+        field."""
         return self._config
 
     def store(self) -> ChannelStore:
         """Return the channel store backing this server, so hosts can share it
-        with metering side channels. Mirrors Go ``Store``."""
+        with metering side channels."""
         return self._store
 
     def build_challenge_request(self, cap: int) -> SessionRequest:
@@ -269,8 +258,7 @@ class SessionServer:
         ``cap`` is the maximum this session will allow, clamped to
         ``SessionConfig.max_cap``. ``min_voucher_delta`` is included only when
         positive, ``modes`` is omitted when push-only, and
-        ``pull_voucher_strategy`` is included only when pull is offered. Mirrors
-        Go ``BuildChallengeRequest``.
+        ``pull_voucher_strategy`` is included only when pull is offered.
         """
         effective_cap = min(cap, self._config.max_cap)
 
@@ -298,13 +286,13 @@ class SessionServer:
         return request
 
     def _push_only(self) -> bool:
-        """Report whether the configured modes reduce to push-only. Mirrors Go ``pushOnly``."""
+        """Report whether the configured modes reduce to push-only."""
         modes = self._config.modes
         return len(modes) == 0 or (len(modes) == 1 and modes[0] == "push")
 
     def _supports_mode(self, mode: SessionMode) -> bool:
         """Report whether the server accepts ``mode``. Empty configured modes
-        mean push-only. Mirrors Go ``supportsMode``."""
+        mean push-only."""
         modes = self._config.modes
         if len(modes) == 0:
             return mode == "push"
@@ -319,7 +307,7 @@ class SessionServer:
         signer, the existing state is returned unchanged and the voucher
         watermark is never reset. Opens for an existing channel are rejected
         when the channel is finalized or when the payload's authorized signer
-        differs from the stored one. Mirrors Go ``ProcessOpen``.
+        differs from the stored one.
         """
         if not self._supports_mode(payload.mode):
             raise ValueError(f"session mode {payload.mode!r} is not supported by this challenge")
@@ -373,7 +361,7 @@ class SessionServer:
         The full ordered check sequence runs as a preflight outside the store
         lock (see :func:`verify_voucher_for_channel`), then the state-dependent
         checks are re-applied inside the atomic mutator before the watermark is
-        persisted. Mirrors Go ``VerifyVoucher``.
+        persisted.
         """
         voucher = payload.voucher
         channel_id = voucher.data.channel_id
@@ -436,7 +424,7 @@ class SessionServer:
 
         The new deposit must exceed the current deposit and must not exceed the
         configured max cap. Top-ups are rejected once the channel is finalized
-        or a close has been requested. Mirrors Go ``ProcessTopUp``.
+        or a close has been requested.
         """
         try:
             new_deposit = _parse_u64(payload.new_deposit)
@@ -476,7 +464,7 @@ class SessionServer:
 
         The reservation requires cumulative + pendingTotal + amount <= deposit,
         assigns the next sequence, and defaults the delivery id to
-        "<sessionId>:<sequence>". Mirrors Go ``BeginDelivery``.
+        "<sessionId>:<sequence>".
         """
         if request.amount == 0:
             raise ValueError("delivery amount must be greater than zero")
@@ -548,7 +536,7 @@ class SessionServer:
 
         Replaying a commit for an already-committed delivery (same cumulative
         and same signature) returns the cached receipt with status replayed
-        after re-verifying the voucher signature. Mirrors Go ``ProcessCommit``.
+        after re-verifying the voucher signature.
         """
         channel_id = payload.voucher.data.channel_id
         try:
@@ -645,7 +633,7 @@ class SessionServer:
         top-ups are all rejected, and a second close is rejected with "close
         already requested". A non-monotonic final voucher is a hard error
         (unless it is an idempotent replay of the current highest voucher) and
-        leaves the state unchanged. Mirrors Go ``ProcessClose``.
+        leaves the state unchanged.
         """
         now = int(time.time())
         channel_id = payload.channel_id
@@ -694,7 +682,7 @@ class SessionServer:
 
     async def mark_finalized(self, channel_id: str) -> None:
         """Mark a channel as finalized. Call after the on-chain finalize
-        transaction confirms. Mirrors Go ``MarkFinalized``."""
+        transaction confirms."""
         await self._store.mark_finalized(channel_id)
 
 
@@ -717,17 +705,16 @@ def _voucher_state(state: ChannelState) -> VoucherChannelState:
 def _raise_voucher_error(err: str | None) -> None:
     """Raise when the voucher verifier (string-returning) reports a failure.
 
-    The Python ``verify_session_voucher`` returns an error string (or None);
-    the Go ``verifySessionVoucher`` returns an ``error``. Convert the string
-    form to a raised ``ValueError`` so the session paths surface it like Go.
+    ``verify_session_voucher`` returns an error string (or None); convert the
+    string form to a raised ``ValueError`` so the session paths surface
+    verification failures as exceptions.
     """
     if err is not None:
         raise ValueError(err)
 
 
 def _wrap(message: str, exc: Exception) -> Exception:
-    """Wrap a seam error with a message prefix, mirroring Go's
-    ``fmt.Errorf("...: %w", err)``: the prefixed message is surfaced and the
-    original error is preserved as the exception cause (callers can inspect
-    ``__cause__`` the way Go callers use ``errors.Is``)."""
+    """Wrap a seam error with a message prefix: the prefixed message is
+    surfaced and the original error is preserved as the exception cause, so
+    callers can inspect ``__cause__`` to recover the underlying failure."""
     return ValueError(f"{message}: {exc}")

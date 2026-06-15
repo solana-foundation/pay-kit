@@ -9,27 +9,21 @@ composing the lower-level building blocks: the :class:`SessionServer` core, the
 :class:`ChannelStore`, the voucher verifier, the on-chain verifier seams, and
 the idle-close watchdog.
 
-Ports the offline-core surface of ``go/protocols/mpp/server/session_method.go``
-(snake_case of the Go names); the field semantics are pinned by
-``rust/crates/mpp/src/server/session.rs``.
-
-Trust model / on-chain seam: exactly as in the Go port, the RPC client is
-optional. With no RPC client the transaction signature and deposit amount are
-trusted as provided (offline core); with an RPC client an open's confirmation
-signature is checked on-chain before the channel is persisted, and a top-up
-signature is confirmed before the deposit is raised. The on-chain check is wired
-through the :class:`SessionServer` config seams
+Trust model / on-chain seam: the RPC client is optional. With no RPC client the
+transaction signature and deposit amount are trusted as provided (offline
+core); with an RPC client an open's confirmation signature is checked on-chain
+before the channel is persisted, and a top-up signature is confirmed before the
+deposit is raised. The on-chain check is wired through the
+:class:`SessionServer` config seams
 (:func:`~pay_kit.protocols.mpp.server.session_onchain.new_open_tx_verifier` /
-:func:`~pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`),
-matching how the Python on-chain layer composes verification.
+:func:`~pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`).
 
-Not ported here (their lower-level Python building blocks do not yet exist): the
-server-broadcast open path (``OpenTxSubmitterServer`` / ``SubmitOpenTx``), the
-on-chain settlement at close (``closeAndSettleChannel`` /
-``SettlementInstructions``), and the metering side-channel HTTP routes
-(``SessionRoutes``). The idle-close watchdog is wired but, without a settlement
-path, its handler is a no-op when no RPC settlement is configured, exactly as
-the Go ``closeOnIdle`` returns early when no signer/RPC is set.
+This handler implements the offline-core surface. Not yet implemented (their
+lower-level building blocks do not exist yet): the server-broadcast open path
+(server-side fee-payer signing and open-tx submission), on-chain settlement at
+close, and the metering side-channel HTTP routes. The idle-close watchdog is
+wired but, without a settlement path, its handler is a no-op when no RPC
+settlement is configured.
 """
 
 from __future__ import annotations
@@ -82,22 +76,21 @@ __all__ = [
 
 
 # OpenTxSubmitter selects who broadcasts a push-mode payment-channel open
-# transaction. Mirrors Go ``OpenTxSubmitter``.
+# transaction.
 OpenTxSubmitter = str
 
 # The client broadcasts the open transaction itself and the server only verifies
-# it. Default. Mirrors Go ``OpenTxSubmitterClient``.
+# it. Default.
 OPEN_TX_SUBMITTER_CLIENT: OpenTxSubmitter = "client"
 
 # The server completes the fee-payer signature, broadcasts the client-built open
 # transaction, and waits for confirmation before persisting channel state.
-# Mirrors Go ``OpenTxSubmitterServer``.
 OPEN_TX_SUBMITTER_SERVER: OpenTxSubmitter = "server"
 
 
 @dataclass
 class SessionOptions:
-    """Options for :func:`new_session`. Mirrors Go ``SessionOptions``."""
+    """Options for :func:`new_session`."""
 
     # Operator public key (base58), shown to clients in the challenge.
     operator: str = ""
@@ -143,8 +136,7 @@ class SessionOptions:
 
 @dataclass
 class SessionChallengeOptions:
-    """Customize a single 402 session challenge. Mirrors Go
-    ``SessionChallengeOptions``."""
+    """Customize a single 402 session challenge."""
 
     # Cap is the requested session cap (base units, decimal string). Empty uses
     # the server maximum; larger requests are clamped to it.
@@ -159,7 +151,7 @@ class SessionChallengeOptions:
 
 def _parse_session_u64(value: str, name: str) -> int:
     """Parse a non-negative decimal string into a u64, naming the field on
-    error. Mirrors Go ``parseSessionU64``."""
+    error."""
     if not (value.isascii() and value.isdigit()):
         raise ValueError(f"{name} is not an unsigned integer string: {value}")
     parsed = int(value, 10)
@@ -173,8 +165,7 @@ async def _try_recent_blockhash(rpc: Any) -> str | None:
 
     Returns the blockhash string on success or ``None`` on any error/absence;
     the prefetch is non-fatal because the client fetches its own blockhash when
-    the challenge omits one. Mirrors the non-fatal ``GetLatestBlockhash`` branch
-    in Go ``Challenge``.
+    the challenge omits one.
     """
     getter: Any = getattr(rpc, "get_latest_blockhash", None)
     if not callable(getter):
@@ -192,8 +183,7 @@ async def _try_recent_blockhash(rpc: Any) -> str | None:
 
 
 def _success_receipt(reference: str, challenge_id: str, external_id: str) -> Receipt:
-    """Build a success receipt for a session action. Mirrors Go
-    ``successReceipt``."""
+    """Build a success receipt for a session action."""
     return Receipt.success(
         method="solana",
         reference=reference,
@@ -203,10 +193,7 @@ def _success_receipt(reference: str, challenge_id: str, external_id: str) -> Rec
 
 
 class Session:
-    """The server-side session method handler. Create with :func:`new_session`.
-
-    Mirrors Go ``Session``.
-    """
+    """The server-side session method handler. Create with :func:`new_session`."""
 
     def __init__(
         self,
@@ -242,26 +229,24 @@ class Session:
 
     def core(self) -> SessionServer:
         """Return the underlying :class:`SessionServer` so hosts can reach the
-        channel store and the lower-level lifecycle methods. Mirrors Go
-        ``Core``."""
+        channel store and the lower-level lifecycle methods."""
         return self._core
 
     def shutdown(self) -> None:
         """Cancel the idle-close watchdog timers. Hosts should call it when
-        tearing the session method down. Mirrors Go ``Shutdown``."""
+        tearing the session method down."""
         if self._lifecycle is not None:
             self._lifecycle.shutdown()
 
     def _touch(self, channel_id: str) -> None:
         """Reset the idle-close timer for ``channel_id`` when the watchdog is
-        armed. Mirrors Go ``touch``."""
+        armed."""
         if self._lifecycle is not None:
             self._lifecycle.touch(channel_id)
 
     def _supports_mode(self, mode: SessionMode) -> bool:
         """Report whether the configured modes accept ``mode``; empty modes mean
-        push-only. Mirrors the ``core.supportsMode`` check the Go ``handleOpen``
-        runs before resolving the channel facts."""
+        push-only. Checked before resolving the channel facts in an open."""
         modes = self._core.config.modes
         if not modes:
             return mode == "push"
@@ -274,7 +259,7 @@ class Session:
         is included only when positive, ``modes`` are omitted when push-only,
         ``pull_voucher_strategy`` is included only when pull is offered, and a
         recent blockhash is prefetched (non-fatally) when an RPC client is
-        configured. Mirrors Go ``Challenge``.
+        configured.
         """
         if options is None:
             options = SessionChallengeOptions()
@@ -311,7 +296,7 @@ class Session:
     async def verify_credential(self, credential: PaymentCredential) -> Receipt:
         """Verify a session Authorization credential: Tier-1 HMAC and expiry, the
         Tier-2 pinned-field backstop, then dispatch on the payload action (open /
-        voucher / commit / topUp / close). Mirrors Go ``VerifyCredential``.
+        voucher / commit / topUp / close).
         """
         challenge = PaymentChallenge(
             id=credential.challenge.id,
@@ -359,7 +344,7 @@ class Session:
         the challenge was issued by this server, fields fixed at construction
         time are compared so a credential issued for a different
         method/intent/realm or for a different recipient/currency cannot reach
-        the action handlers. Mirrors Go ``verifyPinnedSessionFields``.
+        the action handlers.
         """
         method_name = "solana"
         if credential.challenge.method != method_name:
@@ -394,11 +379,11 @@ class Session:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently. The
         receipt reference is the open signature when one exists, else the channel
-        id. Mirrors the trusted / client-broadcast path of Go ``handleOpen``.
+        id. This implements the trusted / client-broadcast open path.
         """
         if self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
-            # The server-broadcast open requires the SubmitOpenTx building block,
-            # which is not yet ported to Python.
+            # The server-broadcast open requires the open-tx submission building
+            # block, which is not yet implemented.
             raise PaymentError(
                 "openTxSubmitter=server is not supported by this port",
                 code="invalid-config",
@@ -420,7 +405,7 @@ class Session:
         if has_transaction:
             # Payment-channel-backed open verification needs the on-chain open-tx
             # verifier seam, which decodes and binds the attached transaction.
-            # That path lands with the on-chain settlement port.
+            # That path lands with the on-chain settlement layer.
             raise PaymentError(
                 "open with an attached transaction is not supported by this port",
                 code="invalid-payload",
@@ -447,7 +432,7 @@ class Session:
 
     async def _handle_voucher(self, payload: VoucherPayload) -> str:
         """Verify a cumulative voucher and advance the watermark. The receipt
-        reference is "<channelId>:<cumulative>". Mirrors Go ``handleVoucher``."""
+        reference is "<channelId>:<cumulative>"."""
         channel_id = payload.voucher.data.channel_id
         try:
             cumulative = await self._core.verify_voucher(payload)
@@ -458,7 +443,7 @@ class Session:
 
     async def _handle_commit(self, payload: CommitPayload) -> str:
         """Commit a reserved metered delivery. The receipt reference is
-        "<sessionId>:<deliveryId>:<cumulative>". Mirrors Go ``handleCommit``."""
+        "<sessionId>:<deliveryId>:<cumulative>"."""
         try:
             receipt = await self._core.process_commit(payload)
         except ValueError as exc:
@@ -469,7 +454,7 @@ class Session:
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
         """Raise a channel's deposit after optional on-chain confirmation of the
         top-up signature. The receipt reference is the top-up transaction
-        signature. Mirrors Go ``handleTopUp``."""
+        signature."""
         try:
             new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
         except ValueError as exc:
@@ -500,7 +485,7 @@ class Session:
     async def _handle_close(self, payload: ClosePayload) -> str:
         """Accept the optional final voucher and flip close-pending atomically.
         The receipt reference is the channel id (the on-chain settlement path is
-        not ported). Mirrors Go ``handleClose``.
+        not implemented here).
 
         Unlike :meth:`SessionServer.process_close`, where a second close is
         always rejected, the close here is re-drivable: when a prior close
@@ -576,15 +561,15 @@ class Session:
         return reference
 
     async def _close_on_idle(self, channel_id: str) -> None:
-        """Idle-close watchdog handler. Without a ported on-chain settlement
-        path there is nothing to broadcast, so this is a no-op, exactly as the
-        Go ``closeOnIdle`` returns early when no signer/RPC is configured.
+        """Idle-close watchdog handler. Without an on-chain settlement path
+        there is nothing to broadcast, so this is a no-op; it returns early when
+        no signer/RPC is configured.
         """
         return None
 
 
 def new_session(options: SessionOptions) -> Session:
-    """Create the server-side session method. Mirrors Go ``NewSession``."""
+    """Create the server-side session method."""
     if options.cap == 0:
         raise PaymentError("cap must be positive", code="invalid-config")
     if options.recipient == "":
@@ -642,10 +627,10 @@ def new_session(options: SessionOptions) -> Session:
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
     # The method layer performs the optional on-chain liveness confirm inline in
-    # its open / topUp handlers (mirroring Go's NewSession, which leaves the core
-    # SessionConfig verifier seams unset and confirms in the method), so the core
-    # is left to trust payload claims; the seam stays available for hosts that
-    # drive the lower-level SessionServer directly.
+    # its open / topUp handlers, leaving the core SessionConfig verifier seams
+    # unset and confirming in the method, so the core is left to trust payload
+    # claims; the seam stays available for hosts that drive the lower-level
+    # SessionServer directly.
     core = SessionServer(config, store)
     session = Session(
         core=core,

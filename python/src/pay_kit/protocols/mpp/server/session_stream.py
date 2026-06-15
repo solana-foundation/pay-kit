@@ -3,18 +3,14 @@
 Emits the Server-Sent Event frames the metered session clients decode:
 ``mpp.metering`` directives, ``mpp.usage`` final-usage events, plain data
 payload messages, and the terminal ``[DONE]`` sentinel. The event names are
-canonical: they are the ones the SDK session clients parse (this port's
+canonical: they are the ones the SDK session clients parse (this package's
 :class:`~pay_kit.protocols.mpp.client.http_stream.SseDecoder` and
 :func:`~pay_kit.protocols.mpp.client.http_stream.parse_metered_sse_event`
 among them).
 
-Port of ``go/protocols/mpp/server/session_stream.go``. Go writes to an
-``io.Writer`` / ``http.ResponseWriter`` and flushes via ``http.Flusher``; this
-port writes to any object exposing a ``write`` method and flushes any that also
-expose a ``flush`` method, the duck-typed shape the rest of the Python server
-surface uses for HTTP responses. The Rust spine has no server-side writer (it
-only decodes on the client); the wire format and the ``[DONE]`` sentinel mirror
-what the client decoder consumes.
+The stream writes to any object exposing a ``write`` method and flushes any
+that also expose a ``flush`` method, the duck-typed shape the rest of the
+Python server surface uses for HTTP responses.
 """
 
 from __future__ import annotations
@@ -32,7 +28,7 @@ __all__ = [
 ]
 
 # DONE_SENTINEL is the terminal data-only message recognized by the metered SSE
-# decoders alongside the ``done`` event name. Mirrors Go ``doneSentinel``.
+# decoders alongside the ``done`` event name.
 DONE_SENTINEL = "[DONE]"
 
 
@@ -58,7 +54,7 @@ class MeteredStream:
     Build with :func:`new_metered_stream` (HTTP responses) or
     :func:`new_metered_stream_writer` (raw writers). Every write flushes when
     the underlying writer supports it so chunks reach the client as they are
-    produced. Mirrors Go ``MeteredStream``.
+    produced.
     """
 
     def __init__(self, writer: _Writer, flush: bool = False) -> None:
@@ -72,7 +68,7 @@ class MeteredStream:
 
         Empty event names emit a default (message) frame. ``data`` must not be
         empty; multi-line data is split into one ``data:`` line per line per the
-        SSE format. Mirrors Go ``WriteEvent``.
+        SSE format.
         """
         if not data:
             raise ValueError("SSE event data must not be empty")
@@ -88,38 +84,37 @@ class MeteredStream:
 
     def write_json(self, value: Any) -> None:
         """Write a default (message) frame whose data is the JSON encoding of
-        ``value``. Use for application payload chunks. Mirrors Go ``WriteJSON``."""
+        ``value``. Use for application payload chunks."""
         data = json.dumps(value, separators=(",", ":")).encode("utf-8")
         self.write_event("", data)
 
     def write_metering(self, directive: MeteringDirective) -> None:
         """Emit an ``mpp.metering`` event carrying the metering directive the
-        client must commit after processing the paired payload. Mirrors Go
-        ``WriteMetering``."""
+        client must commit after processing the paired payload."""
         data = json.dumps(directive.to_dict(), separators=(",", ":")).encode("utf-8")
         self.write_event("mpp.metering", data)
 
     def write_usage(self, usage: MeteringUsage) -> None:
         """Emit an ``mpp.usage`` event reporting the final amount owed for a
         streamed delivery. The amount must not exceed the amount reserved by the
-        original directive. Mirrors Go ``WriteUsage``."""
+        original directive."""
         data = json.dumps(usage.to_dict(), separators=(",", ":")).encode("utf-8")
         self.write_event("mpp.usage", data)
 
     def write_envelope(self, payload: Any, directive: MeteringDirective) -> None:
         """Emit the payload as a default data frame followed by its
         ``mpp.metering`` directive, the pairing the metered session consumers
-        expect. Mirrors Go ``WriteEnvelope``."""
+        expect."""
         self.write_json(payload)
         self.write_metering(directive)
 
     def write_done(self) -> None:
-        """Emit the terminal ``[DONE]`` sentinel message. Mirrors Go ``WriteDone``."""
+        """Emit the terminal ``[DONE]`` sentinel message."""
         self.write_event("", DONE_SENTINEL.encode("utf-8"))
 
     def write_done_event(self) -> None:
         """Emit an explicit ``done`` event, the alternative terminal frame the
-        decoders accept. Mirrors Go ``WriteDoneEvent``."""
+        decoders accept."""
         self.write_event("done", DONE_SENTINEL.encode("utf-8"))
 
 
@@ -128,8 +123,7 @@ def new_metered_stream(response: _HttpResponse) -> MeteredStream:
     ``text/event-stream``, no caching) and return the stream writer.
 
     The response does not need to support flushing, but streaming is only
-    incremental when it exposes a ``flush`` method. Mirrors Go
-    ``NewMeteredStream``.
+    incremental when it exposes a ``flush`` method.
     """
     response.headers["Content-Type"] = "text/event-stream"
     response.headers["Cache-Control"] = "no-cache"
@@ -138,6 +132,5 @@ def new_metered_stream(response: _HttpResponse) -> MeteredStream:
 
 
 def new_metered_stream_writer(writer: _Writer) -> MeteredStream:
-    """Wrap a raw writer (no header handling) for transports other than HTTP.
-    Mirrors Go ``NewMeteredStreamWriter``."""
+    """Wrap a raw writer (no header handling) for transports other than HTTP."""
     return MeteredStream(writer)
