@@ -6,6 +6,10 @@ require "sinatra/base"
 require "rack/mock"
 require "pay_kit/protocols/mpp/sinatra"
 
+# HMAC secret >= 32 bytes (audit #24); the secret-key gate rejects
+# anything shorter, so every server-building test uses this.
+TEST_SECRET = "test-secret-" + ("0" * 32)
+
 # Stub RPC that never hits the network.
 class StubRpc
   def initialize(blockhash: "TestBlockhashAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
@@ -86,12 +90,13 @@ class MppCreateTest < Minitest::Test
   def test_create_returns_a_server_instance
     server = PayKit::Protocols::Mpp.create(
       method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "x", currency: "USDC", rpc: StubRpc.new),
-      secret_key: "secret",
+      secret_key: TEST_SECRET,
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
 
     assert_instance_of PayKit::Protocols::Mpp::Server::Charge, server
-    assert_equal PayKit::Protocols::Mpp::DEFAULT_REALM, server.realm
+    # No explicit realm -> derived per-recipient (audit #15).
+    assert_match(/\AApp Id - #\d+\z/, server.realm)
   end
 
   def test_charge_with_missing_auth_returns_a_challenge
@@ -133,7 +138,7 @@ class MppCreateTest < Minitest::Test
         currency: "USDC",
         rpc: StubRpc.new
       ),
-      secret_key: "secret",
+      secret_key: TEST_SECRET,
       realm: "Test",
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
@@ -147,7 +152,9 @@ class MppCreateTest < Minitest::Test
 
   def test_charge_threads_splits_through_method_details
     server = build_server
-    splits = [{"recipient" => "x", "amount" => "100"}]
+    # A valid 32-byte base58 recipient: split validation at issuance now
+    # rejects unparseable recipients (audit #21), so the fixture must be real.
+    splits = [{"recipient" => "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", "amount" => "100"}]
 
     # We can't fully verify on-chain settlement here without a real RPC; instead
     # assert that the challenge body echoes the splits we passed through.
@@ -164,7 +171,7 @@ class MppCreateTest < Minitest::Test
   def build_server
     PayKit::Protocols::Mpp.create(
       method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
-      secret_key: "secret",
+      secret_key: TEST_SECRET,
       realm: "Test",
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
@@ -257,7 +264,7 @@ class MiddlewareTest < Minitest::Test
   def build_server
     PayKit::Protocols::Mpp.create(
       method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new),
-      secret_key: "secret",
+      secret_key: TEST_SECRET,
       replay_store: PayKit::Protocols::Mpp::MemoryStore.new
     )
   end
@@ -282,7 +289,7 @@ end
 
 class SinatraHelperTest < Minitest::Test
   def test_mpp_charge_halts_with_402_when_auth_missing
-    server = PayKit::Protocols::Mpp.create(method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: "secret", realm: "T", replay_store: PayKit::Protocols::Mpp::MemoryStore.new)
+    server = PayKit::Protocols::Mpp.create(method: PayKit::Protocols::Mpp::Protocol::Solana.charge(recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", currency: "USDC", rpc: StubRpc.new), secret_key: TEST_SECRET, realm: "T", replay_store: PayKit::Protocols::Mpp::MemoryStore.new)
     app = Class.new(Sinatra::Base) do
       helpers PayKit::Protocols::Mpp::Sinatra::Helpers
       set :mpp_server, server

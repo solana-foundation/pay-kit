@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
 require "base64"
+require "digest"
 
 require "pay_core/error_codes"
+require "pay_core/solana/base58"
 require "pay_core/solana/transaction"
 require "pay_core/solana/rpc"
 
@@ -21,16 +23,23 @@ module PayKit::Protocols::Mpp
     # orchestrator (verify, settle, consume, receipt) lives in the nested
     # `Handler` class.
     class Charge
+      # NIST SP 800-107 guidance for HMAC-SHA256: the key should be at least
+      # the hash output length (32 bytes). The challenge HMAC secret binds
+      # challenge IDs, so a weak key lets an attacker forge challenges
+      # (audit #24). Mirrors the Rust spine MIN_SECRET_KEY_BYTES.
+      MIN_SECRET_KEY_BYTES = 32
+
       attr_reader :method, :realm
 
       def initialize(method:, secret_key:, realm:, replay_store:,
         settlement_header: Handler::DEFAULT_SETTLEMENT_HEADER,
         expires_in: ::PayKit::Protocols::Mpp::Protocol::Core::ChallengeStore::DEFAULT_EXPIRES_SECONDS)
         @method = method
-        @realm = realm
+        validate_secret_key!(secret_key)
+        @realm = resolve_realm(realm, method.recipient)
         @challenge_store = ::PayKit::Protocols::Mpp::Protocol::Core::ChallengeStore.new(
           secret_key: secret_key,
-          realm: realm,
+          realm: @realm,
           default_expires_seconds: expires_in
         )
         @handler = Handler.new(
@@ -54,7 +63,10 @@ module PayKit::Protocols::Mpp
       def charge(authorization, amount:, description: nil, external_id: nil, splits: nil, currency: nil)
         currency ||= method.currency
         details = method.method_details(currency: currency)
-        details = details.merge("splits" => splits) if splits && !splits.empty?
+        if splits && !splits.empty?
+          validate_splits!(splits, recipient: method.recipient)
+          details = details.merge("splits" => splits)
+        end
 
         request = ::PayKit::Protocols::Mpp::Protocol::Intents::ChargeRequest.new(
           amount: amount.to_s,
@@ -65,6 +77,102 @@ module PayKit::Protocols::Mpp
           method_details: details
         )
         @handler.handle(authorization, request)
+      end
+
+      private
+
+      MAX_SPLITS = 8
+
+      # Validate splits at challenge issuance (audit #21 + #38) rather than
+      # deferring every check to on-chain settlement. Enforces:
+      #   - count <= MAX_SPLITS
+      #   - each recipient parses as a 32-byte base58 pubkey
+      #   - each amount parses as an integer, is > 0, and fits in u64
+      #   - the aggregate does not overflow u64
+      #   - no duplicate split recipients
+      #   - (audit #38) no split whose recipient == the top-level recipient
+      #     while ataCreationRequired is true — the fee-sponsored ATA
+      #     recreate/drain shape.
+      def validate_splits!(splits, recipient:)
+        raise split_error("splits has more than #{MAX_SPLITS} entries") if splits.length > MAX_SPLITS
+
+        seen = {}
+        total = 0
+        splits.each do |split|
+          split_recipient = split["recipient"]
+          raise split_error("split recipient is required") if split_recipient.to_s.empty?
+          raise split_error("split recipient #{split_recipient.inspect} is not a valid base58 pubkey") unless valid_pubkey?(split_recipient)
+          raise split_error("duplicate split recipient #{split_recipient}") if seen[split_recipient]
+          seen[split_recipient] = true
+
+          amount = split_amount(split)
+          total += amount
+          raise split_error("split amounts overflow u64") if total > ::PayKit::Protocols::Mpp::Protocol::Intents::ChargeRequest::U64_MAX
+
+          if split_recipient == recipient && split["ataCreationRequired"] == true
+            raise split_error("primary recipient must not appear in splits with ataCreationRequired: true")
+          end
+        end
+      end
+
+      def split_amount(split)
+        value =
+          begin
+            Integer(split.fetch("amount"), 10)
+          rescue KeyError, TypeError, ArgumentError
+            raise split_error("split amount must be an integer string")
+          end
+        raise split_error("split amount must be greater than zero") unless value.positive?
+        raise split_error("split amount exceeds the maximum u64 amount") if value > ::PayKit::Protocols::Mpp::Protocol::Intents::ChargeRequest::U64_MAX
+
+        value
+      end
+
+      def valid_pubkey?(value)
+        ::PayCore::Solana::Base58.decode(value.to_s).bytesize == 32
+      rescue ArgumentError
+        false
+      end
+
+      def split_error(message)
+        ::PayKit::Protocols::Mpp::VerificationError.new(message, code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID)
+      end
+
+      # Reject empty/short HMAC secrets at boot (audit #24). Covers both the
+      # explicit `secret_key:` argument and any value resolved from the
+      # environment upstream (e.g. preflight's MPP_SECRET env path), since
+      # both funnel through here. Counts bytes, not characters.
+      def validate_secret_key!(secret_key)
+        bytes = secret_key.to_s.bytesize
+        return if bytes >= MIN_SECRET_KEY_BYTES
+
+        raise ::PayKit::Protocols::Mpp::Error.new(
+          "secret_key must be at least #{MIN_SECRET_KEY_BYTES} bytes of cryptographically-random data " \
+          "(got #{bytes}); e.g. `openssl rand -base64 32`",
+          code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID
+        )
+      end
+
+      # Resolve the realm (audit #15). An explicit non-empty realm is honoured;
+      # an explicit empty string is rejected (it would re-open the shared
+      # namespace); when the caller passes the default sentinel we derive a
+      # per-recipient realm so two servers sharing one secret but serving
+      # different recipients land in different HMAC namespaces.
+      def resolve_realm(realm, recipient)
+        return derive_default_realm(recipient) if realm == ::PayKit::Protocols::Mpp::DEFAULT_REALM
+        raise ::PayKit::Protocols::Mpp::Error.new("realm must not be empty", code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID) if realm.to_s.empty?
+
+        realm
+      end
+
+      # Deterministically derive a human-friendly default realm from the
+      # recipient pubkey: SHA-256 the recipient, take the first 4 bytes as a
+      # big-endian u32 mod 10^8. Same recipient -> same realm (restart-safe);
+      # different recipients -> different realms (closes cross-server replay).
+      def derive_default_realm(recipient)
+        digest = ::Digest::SHA256.digest(recipient.to_s)
+        suffix = digest.byteslice(0, 4).unpack1("N") % 100_000_000
+        "App Id - ##{suffix}"
       end
 
       # High-level Solana charge orchestrator: verify, settle, consume, receipt.

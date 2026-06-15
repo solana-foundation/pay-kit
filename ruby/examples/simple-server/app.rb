@@ -22,7 +22,8 @@ PayKit.configure do |c|
   # MPP signs its 402 challenges with this HMAC secret. A real
   # deployment loads it from a secret store; the demo uses a fixed
   # value so the server boots with no setup.
-  c.mpp.challenge_binding_secret = "simple-server-demo-secret"
+  # Must be >= 32 bytes; the MPP server enforces this at boot (audit #24).
+  c.mpp.challenge_binding_secret = "simple-server-demo-secret-0000000000"
 end
 
 # One gate: $0.10, settled in any configured stablecoin.

@@ -13,6 +13,13 @@ module PayKit::Protocols::Mpp
       class Verifier
         MAX_COMPUTE_UNIT_LIMIT = 200_000
         MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000
+        # Fee-sponsored pull mode (audit #25): when the server is the fee
+        # payer it signs the client-supplied transaction before broadcast, so
+        # an inflated compute-unit price is paid by the merchant. Cap it tight.
+        # Worst case ceil(10_000 * 200_000 / 1_000_000) = 2_000 lamports, ~20%
+        # of the per-signature base fee — room for honest priority bumps.
+        # Mirrors the Rust spine MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED.
+        MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10_000
 
         # Verify a credential payload against a charge challenge.
         def verify(credential, challenge, expected_request: nil)
@@ -88,9 +95,10 @@ module PayKit::Protocols::Mpp
             verify_memos(transaction, request, splits, matched)
             validate_allowlist(transaction, matched, expected_mint: nil, expected_token_program: nil, fee_payer: fee_payer, splits: splits)
           else
-            network = details["network"] || "mainnet"
+            network = details["network"] || ::PayKit::Protocols::Mpp::Protocol::Solana::DEFAULT_NETWORK
+            ::PayKit::Protocols::Mpp::Protocol::Solana.validate_network!(network)
             mint = ::PayCore::Solana::Mints.resolve(request.currency, network)
-            token_program = details["tokenProgram"] || ::PayCore::Solana::Mints.token_program_for(request.currency, network)
+            token_program = resolve_token_program(details, request.currency, network)
             if splits.any? { |split| split["ataCreationRequired"] == true } && mint != request.currency
               raise VerificationError, "ataCreationRequired requires currency to be an SPL token mint address"
             end
@@ -210,7 +218,7 @@ module PayKit::Protocols::Mpp
           transaction.message.instructions.each_with_index do |ix, index|
             program = program_id(transaction, ix)
             if program == ::PayCore::Solana::Mints::COMPUTE_BUDGET_PROGRAM
-              validate_compute_budget(ix)
+              validate_compute_budget(ix, fee_payer: fee_payer)
             elsif [::PayCore::Solana::Mints::MEMO_PROGRAM, ::PayCore::Solana::Mints::SYSTEM_PROGRAM, ::PayCore::Solana::Mints::TOKEN_PROGRAM, ::PayCore::Solana::Mints::TOKEN_2022_PROGRAM].include?(program)
               raise VerificationError, "Unexpected program instruction in payment transaction: #{program}" unless matched[index]
             elsif program == ::PayCore::Solana::Mints::ASSOCIATED_TOKEN_PROGRAM
@@ -249,7 +257,7 @@ module PayKit::Protocols::Mpp
           owner
         end
 
-        def validate_compute_budget(ix)
+        def validate_compute_budget(ix, fee_payer: nil)
           raise VerificationError, "Compute budget instruction must not have accounts" unless ix.accounts.empty?
 
           case ix.data.getbyte(0)
@@ -260,10 +268,32 @@ module PayKit::Protocols::Mpp
           when 3
             raise VerificationError, "Unsupported compute budget instruction" unless ix.data.bytesize == 9
             price = u64_le(ix.data.byteslice(1, 8))
-            raise VerificationError, "Compute unit price #{price} exceeds maximum #{MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}" if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+            # Tight cap when the server is the fee payer (audit #25); the
+            # general 5M ceiling stays for client-paid charges where the
+            # client funds its own priority fee.
+            cap = fee_payer ? MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED : MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+            raise VerificationError, "Compute unit price #{price} exceeds maximum #{cap}" if price > cap
           else
             raise VerificationError, "Unsupported compute budget instruction"
           end
+        end
+
+        # Resolve the SPL token program for verification. Prefer the embedded
+        # methodDetails.tokenProgram (pinned against the server route via
+        # verify_expected). Fall back to the static table only for known
+        # currencies; for an arbitrary, unrecognised mint with no embedded
+        # tokenProgram we REJECT rather than silently defaulting to legacy
+        # Token, which would derive the wrong ATA for a Token-2022 mint
+        # (audit #28).
+        def resolve_token_program(details, currency, network)
+          embedded = details["tokenProgram"]
+          return embedded if embedded && !embedded.to_s.empty?
+          return ::PayCore::Solana::Mints.token_program_for(currency, network) if ::PayCore::Solana::Mints.known_currency?(currency, network)
+
+          raise VerificationError.new(
+            "methodDetails.tokenProgram is required for an arbitrary mint address (cannot default to legacy Token)",
+            code: ::PayCore::ErrorCodes::CODE_PAYMENT_INVALID
+          )
         end
 
         def program_id(transaction, ix)

@@ -602,6 +602,97 @@ class TransactionVerifierTest < Minitest::Test
     assert_match(/fee payer cannot authorize|No matching SPL/, result.reason)
   end
 
+  # Audit #25: when the server is the fee payer (fee-sponsored pull mode) a
+  # tight compute-unit-price cap (10_000) applies, since the merchant pays the
+  # priority fee. A client-paid charge keeps the general 5M ceiling.
+  def test_fee_sponsored_compute_unit_price_cap
+    fee_payer = pubkey(1)
+    payer = pubkey(2)
+    recipient = pubkey(3)
+    build = lambda do |price|
+      # account_keys[0] == fee_payer (matches feePayerKey); the SOL transfer
+      # source is `payer` (index 1), not the fee payer, so the value-transfer
+      # passes and the compute-budget cap is the deciding gate.
+      tx_base64(
+        account_keys: [fee_payer, payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
+        instructions: [
+          compiled_instruction(4, [], [3].pack("C") + u64(price)),
+          compiled_instruction(3, [1, 2], u32(2) + u64(1000))
+        ]
+      )
+    end
+    fee_sponsored = charge_request(recipient: recipient, method_details: {"feePayer" => true, "feePayerKey" => fee_payer})
+
+    # Just over the tight fee-sponsored cap -> rejected.
+    result = @verifier.verify_transaction_payload(build.call(10_001), fee_sponsored)
+    refute result.ok?
+    assert_match(/Compute unit price.*exceeds maximum 10000/, result.reason)
+
+    # At the tight cap -> passes verification entirely.
+    result = @verifier.verify_transaction_payload(build.call(10_000), fee_sponsored)
+    assert result.ok?, result.reason
+  end
+
+  # Audit #25 regression: the tight cap MUST NOT apply when the client pays
+  # its own gas (no server fee payer). A price between the two caps passes.
+  def test_client_paid_compute_unit_price_keeps_general_cap
+    payer = pubkey(1)
+    recipient = pubkey(2)
+    tx = tx_base64(
+      account_keys: [payer, recipient, PROGRAMS::SYSTEM_PROGRAM, PROGRAMS::COMPUTE_BUDGET_PROGRAM],
+      instructions: [
+        compiled_instruction(3, [], [3].pack("C") + u64(1_000_000)),
+        compiled_instruction(2, [0, 1], u32(2) + u64(1000))
+      ]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, charge_request)
+
+    assert result.ok?, result.reason
+  end
+
+  # Audit #28: an arbitrary mint address (not a known stablecoin) with no
+  # embedded methodDetails.tokenProgram must be rejected rather than silently
+  # defaulting to the legacy Token program (which would derive the wrong ATA
+  # for a Token-2022 mint).
+  def test_rejects_arbitrary_mint_without_token_program
+    arbitrary_mint = pubkey(7)
+    request = charge_request(
+      currency: arbitrary_mint,
+      recipient: pubkey(2),
+      method_details: {"network" => "localnet", "decimals" => 6}
+    )
+    tx = tx_base64(
+      account_keys: [pubkey(1), pubkey(3), arbitrary_mint, pubkey(4), PROGRAMS::TOKEN_PROGRAM],
+      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, request)
+
+    refute result.ok?
+    assert_match(/tokenProgram is required for an arbitrary mint/, result.reason)
+  end
+
+  # Audit #37: the verifier rejects a non-allowlisted network slug embedded in
+  # the SPL branch (e.g. "mainnet-beta").
+  def test_rejects_unsupported_network_in_method_details
+    mint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+    request = charge_request(
+      currency: mint,
+      recipient: pubkey(2),
+      method_details: {"network" => "mainnet-beta", "decimals" => 6, "tokenProgram" => PROGRAMS::TOKEN_PROGRAM}
+    )
+    tx = tx_base64(
+      account_keys: [pubkey(1), pubkey(3), mint, pubkey(4), PROGRAMS::TOKEN_PROGRAM],
+      instructions: [compiled_instruction(4, [1, 2, 3, 0], [12].pack("C") + u64(1000) + [6].pack("C"))]
+    )
+
+    result = @verifier.verify_transaction_payload(tx, request)
+
+    refute result.ok?
+    assert_match(/Unsupported network/, result.reason)
+  end
+
   private
 
   def tx_base64(account_keys:, instructions:)

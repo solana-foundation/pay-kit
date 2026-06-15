@@ -12,8 +12,15 @@ module PayKit::Protocols::Mpp
 
         attr_reader :secret_key, :realm, :blockhash_provider, :default_expires_seconds
 
-        def initialize(secret_key:, realm: "MPP Payment", blockhash_provider: nil,
+        # `realm:` is required (audit #15): there is intentionally no shared
+        # default. The previous `"MPP Payment"` default put two servers that
+        # shared an HMAC secret into one credential namespace. The user-facing
+        # `Server::Charge` derives a per-recipient realm before constructing
+        # this store; low-level callers must pass their own.
+        def initialize(secret_key:, realm:, blockhash_provider: nil,
           default_expires_seconds: DEFAULT_EXPIRES_SECONDS)
+          raise ArgumentError, "realm must not be empty" if realm.to_s.empty?
+
           @secret_key = secret_key
           @realm = realm
           @blockhash_provider = blockhash_provider

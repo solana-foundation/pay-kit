@@ -24,7 +24,11 @@ require_relative "server/decorator"
 require_relative "server/middleware"
 
 module PayKit::Protocols::Mpp
-  DEFAULT_REALM = "MPP"
+  # Sentinel meaning "caller did not pass an explicit realm" so we can derive
+  # a per-recipient default (audit #15) instead of sharing one hardcoded
+  # namespace across every server. An explicit realm (including an explicit
+  # empty string, which is rejected) is honoured as-is.
+  DEFAULT_REALM = :__mpp_default_realm__
 
   # Sentinel used to detect when the caller did not pass an explicit
   # replay store. The sentinel allows us to distinguish "caller passed

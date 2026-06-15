@@ -48,7 +48,7 @@ class MppExpiresInTest < Minitest::Test
       network: "devnet",
       rpc: "https://api.devnet.solana.com"
     )
-    server = ::PayKit::Protocols::Mpp.create(method: method, secret_key: "secret", realm: "Test", expires_in: 42, replay_store: ::PayKit::Protocols::Mpp::MemoryStore.new)
+    server = ::PayKit::Protocols::Mpp.create(method: method, secret_key: ("secret" + ("0" * 32)), realm: "Test", expires_in: 42, replay_store: ::PayKit::Protocols::Mpp::MemoryStore.new)
     store = server.instance_variable_get(:@challenge_store)
     assert_equal 42, store.default_expires_seconds
   end
