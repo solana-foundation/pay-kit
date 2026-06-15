@@ -21,6 +21,28 @@ t.test('www-authenticate round trip', function()
   t.assert_equal(parsed.request:raw(), challenge.request:raw())
 end)
 
+-- Audit #9: the WWW-Authenticate `request` parameter must be length-capped
+-- like the credential / receipt parsers (16 KiB) so an oversized value cannot
+-- drive unbounded base64 decode + JSON parse work.
+t.test('audit #9: parse_www_authenticate rejects an oversized request param', function()
+  local huge = string.rep('A', 16 * 1024 + 1)
+  local header = 'Payment id="x", realm="r", method="solana", intent="charge", request="' .. huge .. '"'
+  t.assert_error(function()
+    mpp.ParseWWWAuthenticate(header)
+  end, 'request field exceeds maximum length')
+end)
+
+t.test('audit #9: parse_www_authenticate accepts a request param at the cap', function()
+  -- A valid base64url payload well under the cap still parses.
+  local request = mpp.NewBase64URLJSONValue({ amount = '1000', currency = 'sol' })
+  local challenge = mpp.NewChallengeWithSecretFull(
+    'secret', 'realm', mpp.NewMethodName('solana'), mpp.NewIntentName('charge'),
+    request, nil, nil, nil, nil)
+  local header = mpp.FormatWWWAuthenticate(challenge)
+  local parsed = mpp.ParseWWWAuthenticate(header)
+  t.assert_equal(parsed.request:raw(), challenge.request:raw())
+end)
+
 t.test('authorization round trip', function()
   local request = mpp.NewBase64URLJSONValue({ amount = '1000' })
   local challenge = mpp.NewChallengeWithSecret('secret', 'realm', mpp.NewMethodName('solana'), mpp.NewIntentName('charge'), request)

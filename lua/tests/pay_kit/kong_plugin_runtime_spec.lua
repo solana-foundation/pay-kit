@@ -111,7 +111,7 @@ helper.test('Kong handler access(conf) emits 402 on unpaid', function()
   patch_env({
     PAY_KIT_NETWORK = 'solana_devnet',
     PAY_KIT_OPERATOR_RECIPIENT = 'KongAccessRecipient0000000000000000000000',
-    PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'access-test',
+    PAY_KIT_MPP_CHALLENGE_BINDING_SECRET = 'access-test-key-long-enough-32bytes',
   })
   require('plugins.kong.plugins.pay-kit.init').setup()
   restore_env()

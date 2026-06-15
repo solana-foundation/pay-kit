@@ -15,7 +15,7 @@ local function setup()
   assert(pay_kit.configure({
     network  = 'solana_devnet',
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret'},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes'},
   }))
 end
 
@@ -77,7 +77,7 @@ local function reset_and_configure()
     rpc_url = 'https://api.devnet.solana.com',
     accept  = {'x402', 'mpp'},
     operator = {recipient = 'DispatcherRecipient000000000000000000000000'},
-    mpp = {realm = 'TestRealm', challenge_binding_secret = 'disp-test-secret'},
+    mpp = {realm = 'TestRealm', challenge_binding_secret = 'disp-test-secret-key-long-32bytes!'},
   })
   pay_kit.gate('paid', {amount = pay_kit.usd('0.001', 'USDC')})
 end

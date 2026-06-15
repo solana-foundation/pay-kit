@@ -38,7 +38,7 @@ helper.test('402 response carries Cache-Control: no-store', function()
   assert(pay_kit.configure({
     network  = 'solana_devnet',
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret'},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes'},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -53,7 +53,7 @@ helper.test('MPP 402 challenge carries an expiry from config.mpp.expires_in', fu
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret', expires_in = 120},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = 120},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -72,7 +72,7 @@ helper.test('MPP 402 challenge omits expiry when expires_in = false (dev opt-out
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret', expires_in = false},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = false},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -85,7 +85,7 @@ helper.test('configure rejects a non-positive expires_in', function()
   reset()
   local _, err = pay_kit.configure({
     network = 'solana_devnet',
-    mpp     = {challenge_binding_secret = 'test-secret', expires_in = 0},
+    mpp     = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = 0},
   })
   helper.assert_true(err ~= nil and err:find('expires_in', 1, true) ~= nil, tostring(err))
 end)
@@ -113,7 +113,7 @@ helper.test('adapter expected methodDetails matches the issued challenge', funct
     network  = 'solana_devnet',
     accept   = {'mpp'},
     operator = {recipient = SELLER},
-    mpp      = {challenge_binding_secret = 'test-secret', expires_in = 120},
+    mpp      = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes', expires_in = 120},
   }))
   assert(pay_kit.gate('report', {amount = assert(pay_kit.usd('0.10'))}))
   local _, _, response = pay_kit.try_payment('report', {headers = {}, path = '/report'})
@@ -149,7 +149,7 @@ end)
 
 helper.test('solana_localnet defaults to the hosted Surfpool RPC', function()
   reset()
-  assert(pay_kit.configure({mpp = {challenge_binding_secret = 'test-secret'}}))
+  assert(pay_kit.configure({mpp = {challenge_binding_secret = 'test-secret-key-long-enough-32bytes'}}))
   helper.assert_equal(pay_kit.config().rpc_url, 'https://402.surfnet.dev:8899')
 end)
 

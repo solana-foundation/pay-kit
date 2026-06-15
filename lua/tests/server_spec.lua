@@ -7,7 +7,7 @@ local function new_server()
     currency = 'USDC',
     decimals = 6,
     network = 'localnet',
-    secret_key = 'test-secret',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
     store = mpp.store.memory(),
     verify_payment = function(context)
       if context.payload.type == 'signature' then
@@ -95,8 +95,10 @@ t.test('verify credential rejects sponsored push mode', function()
     currency = 'USDC',
     decimals = 6,
     network = 'localnet',
-    secret_key = 'test-secret',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
     fee_payer = true,
+    -- Audit #16: feePayer=true now requires a fee_payer_key at boot.
+    fee_payer_key = '9yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
     verify_payment = function(context)
       return { reference = context.payload.signature or context.payload.transaction }
     end,
@@ -114,7 +116,7 @@ end)
 t.test('verify credential requires verification callback', function()
   local server = mpp.server.new({
     recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
-    secret_key = 'test-secret',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
   })
   local challenge = server:charge('1')
   local credential = mpp.NewPaymentCredential(challenge:to_echo(), {
@@ -131,7 +133,7 @@ t.test('verify credential accepts transaction payload when lua verifier hooks ar
     recipient = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h',
     currency = 'sol',
     decimals = 9,
-    secret_key = 'test-secret',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
     verifier_hooks = (function()
       local pull_tx = {
         meta = { err = nil },
@@ -248,5 +250,191 @@ t.test('charge_with_options threads explicit token_program override into methodD
     token_program = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
   })
   local request = challenge.request:decode()
+  t.assert_equal(request.methodDetails.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+end)
+
+local VALID_RECIPIENT = '3yGpUKnU5HSVSMxye83YuseTeSQykiS5N4eh6iQn1d2h'
+local SPLIT_A = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU'
+local SPLIT_B = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ'
+
+local function server_with(overrides)
+  local cfg = {
+    recipient = VALID_RECIPIENT,
+    currency = 'USDC',
+    decimals = 6,
+    network = 'localnet',
+    secret_key = 'test-secret-key-long-enough-for-hmac',
+    store = mpp.store.memory(),
+    verify_payment = function(context)
+      return { reference = context.payload.signature or context.payload.transaction }
+    end,
+  }
+  for k, v in pairs(overrides or {}) do cfg[k] = v end
+  return mpp.server.new(cfg)
+end
+
+-- Audit #24: weak secret key.
+t.test('audit #24: rejects secret key shorter than 32 bytes', function()
+  t.assert_error(function()
+    server_with({ secret_key = 'short-secret' })
+  end, 'at least 32 bytes')
+end)
+
+t.test('audit #24: accepts secret key at the 32-byte minimum', function()
+  local server = server_with({ secret_key = string.rep('a', 32) })
+  t.assert_true(server ~= nil)
+end)
+
+t.test('audit #24: MPP_SECRET_KEY env path is also length-gated', function()
+  local real = os.getenv
+  os.getenv = function(name)  -- luacheck: ignore
+    if name == 'MPP_SECRET_KEY' then return 'tiny' end
+    return real(name)
+  end
+  local ok = pcall(function()
+    mpp.server.new({ recipient = VALID_RECIPIENT, network = 'localnet' })
+  end)
+  os.getenv = real  -- luacheck: ignore
+  t.assert_true(not ok, 'expected short env secret to be rejected')
+end)
+
+-- Audit #15: per-recipient default realm.
+t.test('audit #15: default realm is derived per-recipient (not the shared default)', function()
+  local a = server_with({ recipient = VALID_RECIPIENT })
+  local b = server_with({ recipient = SPLIT_B })
+  t.assert_true(a.realm ~= 'MPP Payment')
+  t.assert_true(a.realm ~= b.realm)
+  -- Deterministic for the same recipient.
+  local a2 = server_with({ recipient = VALID_RECIPIENT })
+  t.assert_equal(a.realm, a2.realm)
+end)
+
+t.test('audit #15: explicit empty realm is rejected', function()
+  t.assert_error(function()
+    server_with({ realm = '' })
+  end, 'non%-empty')
+end)
+
+-- Audit #37: network allowlist.
+t.test('audit #37: rejects unknown network slug at boot', function()
+  t.assert_error(function()
+    server_with({ network = 'testnet' })
+  end, 'unsupported network')
+end)
+
+t.test('audit #37: rejects the mainnet-beta alias at boot', function()
+  t.assert_error(function()
+    server_with({ network = 'mainnet-beta' })
+  end, 'unsupported network')
+end)
+
+t.test('audit #37: accepts the three canonical networks', function()
+  for _, net in ipairs({ 'mainnet', 'devnet', 'localnet' }) do
+    local server = server_with({ network = net })
+    t.assert_equal(server.network, net)
+  end
+end)
+
+-- Audit #16: feePayer=true requires a key.
+t.test('audit #16: rejects fee_payer=true without a fee_payer_key at boot', function()
+  t.assert_error(function()
+    server_with({ fee_payer = true })
+  end, 'requires fee_payer_key')
+end)
+
+t.test('audit #16: accepts fee_payer=true with a fee_payer_key and emits both fields', function()
+  local server = server_with({ fee_payer = true, fee_payer_key = SPLIT_A })
+  local request = server:charge('0.001').request:decode()
+  t.assert_equal(request.methodDetails.feePayer, true)
+  t.assert_equal(request.methodDetails.feePayerKey, SPLIT_A)
+end)
+
+t.test('audit #16: per-call fee_payer override without a key is rejected', function()
+  local server = server_with({})
+  t.assert_error(function()
+    server:charge_with_options('0.001', { fee_payer = true })
+  end, 'requires a fee_payer_key')
+end)
+
+-- Audit #21: split validation at issuance.
+t.test('audit #21: rejects a zero-amount split', function()
+  local server = server_with({})
+  t.assert_error(function()
+    server:charge_with_options('0.001', {
+      splits = {{ recipient = SPLIT_A, amount = '0' }},
+    })
+  end, 'greater than zero')
+end)
+
+t.test('audit #21: rejects an unparseable split recipient', function()
+  local server = server_with({})
+  t.assert_error(function()
+    server:charge_with_options('0.001', {
+      splits = {{ recipient = 'not-a-pubkey', amount = '10' }},
+    })
+  end, 'valid Solana address')
+end)
+
+t.test('audit #21: rejects duplicate split recipients', function()
+  local server = server_with({})
+  t.assert_error(function()
+    server:charge_with_options('0.001', {
+      splits = {
+        { recipient = SPLIT_A, amount = '10' },
+        { recipient = SPLIT_A, amount = '20' },
+      },
+    })
+  end, 'duplicate split recipient')
+end)
+
+-- Audit #38: primary recipient + ataCreationRequired.
+t.test('audit #38: rejects primary recipient in splits with ataCreationRequired', function()
+  local server = server_with({})
+  t.assert_error(function()
+    server:charge_with_options('0.010', {
+      splits = {{ recipient = VALID_RECIPIENT, amount = '10', ataCreationRequired = true }},
+    })
+  end, 'primary recipient cannot appear in splits')
+end)
+
+t.test('audit #38: allows primary recipient in splits without ataCreationRequired', function()
+  local server = server_with({})
+  local request = server:charge_with_options('0.010', {
+    splits = {{ recipient = VALID_RECIPIENT, amount = '10' }},
+  }).request:decode()
+  t.assert_equal(request.methodDetails.splits[1].recipient, VALID_RECIPIENT)
+end)
+
+-- Audit #28: arbitrary-mint token program resolution.
+t.test('audit #28: arbitrary mint currency without token_program is rejected at boot', function()
+  -- A 32-byte base58 pubkey not in KNOWN_MINTS: cannot guess the program.
+  t.assert_error(function()
+    server_with({ currency = SPLIT_B })
+  end, 'arbitrary mint')
+end)
+
+t.test('audit #28: arbitrary mint resolves via an explicit token_program', function()
+  local server = server_with({
+    currency = SPLIT_B,
+    token_program = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+  })
+  local request = server:charge('0.001').request:decode()
+  t.assert_equal(request.methodDetails.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+end)
+
+t.test('audit #28: arbitrary mint resolves via a token_program_resolver hook', function()
+  local server = server_with({
+    currency = SPLIT_B,
+    token_program_resolver = function(_mint)
+      return 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+    end,
+  })
+  local request = server:charge('0.001').request:decode()
+  t.assert_equal(request.methodDetails.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
+end)
+
+t.test('audit #28: known stablecoin still resolves from the static table', function()
+  local server = server_with({ currency = 'PYUSD' })
+  local request = server:charge('0.001').request:decode()
   t.assert_equal(request.methodDetails.tokenProgram, 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 end)

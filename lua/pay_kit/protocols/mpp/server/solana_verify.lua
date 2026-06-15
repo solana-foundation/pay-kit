@@ -20,6 +20,15 @@ local MEMO_PROGRAM = protocol.MEMO_PROGRAM
 -- Caps exist so a malicious client cannot price-out a server's transactions.
 local MAX_COMPUTE_UNIT_LIMIT = 200000
 local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5000000
+-- Audit #25: in fee-sponsored pull mode the server co-signs BEFORE broadcast,
+-- so the priority fee comes out of the server's fee-payer balance. The general
+-- 5_000_000 cap × 200_000 limit = ~1_000_000 lamports (0.001 SOL) per charge,
+-- ~200x the base fee — looped, a merchant drain. Apply a tight cap when the
+-- server is the fee payer. Worst case at this cap:
+-- ceil(10_000 × 200_000 / 1_000_000) = 2_000 lamports (~20% of the per-signature
+-- base fee), still leaving honest clients room to bump priority during
+-- congestion. Mirrors the Rust spine (server/charge.rs #25).
+local MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED = 10000
 local verify_sol_transfers
 local verify_spl_transfers
 local verify_memo_instructions
@@ -29,6 +38,16 @@ local resolve_program
 
 local function is_native_sol(currency)
   return string.lower(currency or '') == 'sol'
+end
+
+-- Audit #25: the server-side fee-payer signal. True precisely when the route is
+-- server-fee-sponsored (feePayer=true), which is the authoritative server-side
+-- flag the challenge issuer set — the same signal used by the fee-payer drain
+-- guard in verify_instruction_allowlist and the B34 push-mode block. It is NOT
+-- a client-supplied field on the credential. When true the server co-signs and
+-- pays the priority fee, so the tight compute-unit-price cap must apply.
+local function is_fee_sponsored(method_details)
+  return method_details ~= nil and method_details.feePayer == true
 end
 
 local function sum_split_amounts(splits)
@@ -156,7 +175,7 @@ local function verify_confirmed_transaction(reference, tx, request, method_detai
     verify_spl_transfers(instructions, request, method_details, hooks)
   end
   verify_memo_instructions(instructions, request, method_details)
-  verify_compute_budget(instructions)
+  verify_compute_budget(instructions, is_fee_sponsored(method_details))
   verify_instruction_allowlist(instructions, request, method_details)
 
   return {
@@ -191,7 +210,13 @@ end
 
 function verify_spl_transfers(instructions, request, method_details, hooks)
   local expected = build_expected_transfers(request)
-  local program_id = method_details.tokenProgram or protocol.default_token_program_for_currency(request.currency, method_details.network)
+  -- Prefer the challenge-embedded tokenProgram. When it is absent we resolve
+  -- from the known-stablecoin table only; an arbitrary mint with no embedded
+  -- tokenProgram resolves to `nil` (audit #28 — no silent legacy fallback)
+  -- and the supported-program guard below rejects it rather than deriving a
+  -- destination ATA against the wrong program.
+  local program_id = method_details.tokenProgram
+    or protocol.default_token_program_for_currency(request.currency, method_details.network)
   local mint = protocol.resolve_mint(request.currency, method_details.network)
   if program_id ~= TOKEN_PROGRAM and program_id ~= TOKEN_2022_PROGRAM then
     error_codes.raise(error_codes.PAYMENT_INVALID, 'unsupported token program: ' .. tostring(program_id))
@@ -273,7 +298,18 @@ end
 --    server-side hook is available; otherwise the bytes are read directly.
 -- 3. Compute-budget instructions we cannot classify fail closed; without a
 --    discriminator we cannot prove the instruction stays under the cap.
-function verify_compute_budget(instructions)
+--
+-- `fee_sponsored` is true precisely when the server acts as the fee payer
+-- (feePayer route). In that mode the priority-fee cap tightens to
+-- MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED (audit #25); when the
+-- client pays its own gas the general cap applies (no merchant risk). The flag
+-- is derived from the server-side fee-payer signal by the callers — never from
+-- a client-supplied field.
+function verify_compute_budget(instructions, fee_sponsored)
+  local price_cap = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS
+  if fee_sponsored then
+    price_cap = MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
+  end
   for _, ix in ipairs(instructions or {}) do
     -- Use resolve_program (forward-declared above) so an instruction
     -- that ships only the `computeBudget` alias still passes through
@@ -292,7 +328,7 @@ function verify_compute_budget(instructions)
         handled = true
       elseif parsed_type == 'setComputeUnitPrice' or info.microLamports ~= nil then
         local price = tonumber(info.microLamports or 0) or 0
-        if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+        if price > price_cap then
           error('compute unit price exceeds cap')
         end
         handled = true
@@ -316,7 +352,7 @@ function verify_compute_budget(instructions)
           local low = b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
           local high = b5 + b6 * 256 + b7 * 65536 + b8 * 16777216
           local price = low + high * 4294967296
-          if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS then
+          if price > price_cap then
             error('compute unit price exceeds cap')
           end
           handled = true
@@ -520,8 +556,11 @@ function M.verify_transaction(context, hooks)
     error('parse_transaction result is missing message.instructions')
   end
   -- Pre-broadcast: compute-budget cap + instruction allowlist (incl.
-  -- fee-payer drain guard). Reject BEFORE any RPC call.
-  verify_compute_budget(pre_instructions)
+  -- fee-payer drain guard). Reject BEFORE any RPC call. In fee-sponsored pull
+  -- mode the server co-signs here, so the tight compute-unit-price cap (audit
+  -- #25) applies; is_fee_sponsored reads the server-side feePayer signal, never
+  -- a client-supplied field.
+  verify_compute_budget(pre_instructions, is_fee_sponsored(method_details))
   verify_instruction_allowlist(pre_instructions, request, method_details)
 
   local signature = hooks.send_transaction(payload.transaction)
@@ -563,10 +602,27 @@ function M.verify_transaction(context, hooks)
   return result
 end
 
-function M.new_signature_verifier(hooks)
+-- `hooks` carries the per-credential callbacks (fetch_transaction,
+-- send_transaction, ...). Push mode (type=signature) is OPT-IN: pass
+-- `hooks.accept_push_mode = true` (or a second `opts` table) to enable it.
+--
+-- Audit #5: spec §13.5 ("Front-running (Push Mode)") accepts that push mode
+-- binds a confirmed transaction to a challenge by shape only — two challenges
+-- with identical terms can satisfy each other ("first accepted presentation
+-- wins"). The base flow is spec-compliant, but the Rust spine defaults push
+-- OFF so a server that does not need it does not carry that trade-off. We
+-- mirror that: signature credentials are rejected unless the operator opts in.
+-- The gate runs before B34 (push + fee-sponsored), so a default server returns
+-- the disabled message; an opted-in fee-sponsored route still hits B34.
+function M.new_signature_verifier(hooks, opts)
+  hooks = hooks or {}
+  local accept_push_mode = (opts and opts.accept_push_mode) or hooks.accept_push_mode or false
   return function(context)
     if context.payload.type == 'transaction' then
       return M.verify_transaction(context, hooks)
+    end
+    if not accept_push_mode then
+      error('Push-mode credentials are disabled on this server (enable accept_push_mode to opt in; spec §13.5)')
     end
     return M.verify_signature(context, hooks)
   end

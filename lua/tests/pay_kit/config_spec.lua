@@ -139,8 +139,8 @@ end)
 
 helper.test('configure() mpp.challenge_binding_secret is stored', function()
   reset()
-  assert(pay_kit.configure({mpp = {challenge_binding_secret = 'rotate-me'}}))
-  helper.assert_equal(pay_kit.config().mpp.challenge_binding_secret, 'rotate-me')
+  assert(pay_kit.configure({mpp = {challenge_binding_secret = 'rotate-me-key-long-enough-32bytes!!'}}))
+  helper.assert_equal(pay_kit.config().mpp.challenge_binding_secret, 'rotate-me-key-long-enough-32bytes!!')
 end)
 
 helper.test('configure() mpp.expires_in default + override', function()
@@ -164,13 +164,13 @@ helper.test('configure() preserves mpp.replay_store and other mpp fields', funct
   local sentinel_store = { put_if_absent = function() return true end }
   assert(pay_kit.configure({mpp = {
     replay_store = sentinel_store,
-    challenge_binding_secret = 'rotate-me',
+    challenge_binding_secret = 'rotate-me-key-long-enough-32bytes!!',
     expires_in = 90,
   }}))
   local cfg = pay_kit.config()
   helper.assert_equal(cfg.mpp.replay_store, sentinel_store)
   -- Normalized fields still applied alongside the preserved store.
-  helper.assert_equal(cfg.mpp.challenge_binding_secret, 'rotate-me')
+  helper.assert_equal(cfg.mpp.challenge_binding_secret, 'rotate-me-key-long-enough-32bytes!!')
   helper.assert_equal(cfg.mpp.expires_in, 90)
   helper.assert_equal(cfg.mpp.realm, 'App')
 end)
