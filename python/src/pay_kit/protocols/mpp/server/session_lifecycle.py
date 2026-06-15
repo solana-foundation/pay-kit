@@ -9,11 +9,9 @@ without waiting for a client close action.
 The idle-close watchdog is an extension beyond the draft MPP spec; without
 it, hosts drive close explicitly.
 
-Port of ``go/protocols/mpp/server/session_lifecycle.go``. Go arms background
-goroutine timers via ``time.AfterFunc``; this port uses ``asyncio`` single-shot
-timers scheduled on the running event loop, and the handler is an async
-coroutine to match the rest of the async server surface. ``close_delay`` is a
-duration in seconds (Go uses ``time.Duration``).
+Single-shot ``asyncio`` timers are scheduled on the running event loop, and the
+handler is an async coroutine to match the rest of the async server surface.
+``close_delay`` is a duration in seconds.
 """
 
 from __future__ import annotations
@@ -90,8 +88,8 @@ class SessionLifecycle:
     def _fire(self, channel_id: str) -> None:
         """Timer callback: drop the timer and schedule the idle-close handler.
 
-        Mirrors the Go ``time.AfterFunc`` closure: forget the timer, bail if a
-        shutdown raced in, otherwise dispatch ``close_on_idle``.
+        Forget the timer, bail if a shutdown raced in, otherwise dispatch
+        ``close_on_idle``.
         """
         with self._lock:
             self._timers.pop(channel_id, None)

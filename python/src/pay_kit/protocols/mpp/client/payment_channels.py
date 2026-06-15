@@ -5,9 +5,7 @@ This is the challenge-driven layer above the raw instruction builders in
 from a :class:`~pay_kit.protocols.mpp.intents.session.SessionRequest`
 challenge (mint from the currency, deposit from the cap, token program from the
 currency, splits, salt) and assembles the partially signed open transaction the
-operator broadcasts. Mirrors ``rust/crates/mpp/src/client/payment_channels.rs``
-line by line; the TypeScript counterpart is
-``typescript/packages/mpp/src/client/PaymentChannels.ts``.
+operator broadcasts.
 
 Encoding boundary: the open transaction travels as standard-alphabet base64
 WITH padding (it is an opaque transaction, not part of the canonical-JSON
@@ -64,12 +62,14 @@ __all__ = [
     "unique_salt",
 ]
 
-#: Default payment-channel close grace period (seconds). Mirrors rust
-#: ``DEFAULT_GRACE_PERIOD_SECONDS`` and the TypeScript client.
+#: Default payment-channel close grace period, in seconds, applied to a derived
+#: open when the caller does not override it.
 DEFAULT_GRACE_PERIOD_SECONDS = 900
 
-#: Placeholder signature used while the operator still needs to submit the
-#: server-broadcast open transaction. Mirrors rust ``PENDING_SERVER_SIGNATURE``.
+#: Placeholder signature carried by an open action while the operator still
+#: needs to submit the server-broadcast open transaction. The all-ones base58
+#: value is the default (zero) Solana signature, used as a sentinel until the
+#: real on-chain signature is known.
 PENDING_SERVER_SIGNATURE = "1111111111111111111111111111111111111111111111111111111111111111"
 
 _U64_MAX = 2**64 - 1
@@ -78,19 +78,20 @@ _U64_MAX = 2**64 - 1
 def unique_salt() -> int:
     """Return a random u64 channel salt.
 
-    Mirrors rust ``unique_salt`` (which reads eight unique bytes little-endian);
-    Python draws the eight bytes from the CSPRNG.
+    Draws eight bytes from the cryptographically secure RNG and interprets them
+    little-endian. The salt distinguishes channels that share the same payer,
+    payee, mint, and authorized signer so each derives a distinct channel PDA.
     """
     return int.from_bytes(secrets.token_bytes(8), "little")
 
 
 def generate_authorized_signer() -> Keypair:
-    """Generate an ephemeral session signing key (canonical-flow step 2).
+    """Generate an ephemeral session signing key.
 
     The keypair's public key becomes the channel ``authorizedSigner``; pass the
     keypair to the openers (or directly to :class:`ActiveSession`) as the
-    session signer. Mirrors the TypeScript openers' ``generateKeyPairSigner``
-    call; the rust openers take an externally supplied ``SolanaSigner``.
+    session signer. Use this when the caller does not already hold a dedicated
+    signer for the session and wants one minted on the spot.
     """
     return Keypair()
 
@@ -99,25 +100,41 @@ def generate_authorized_signer() -> Keypair:
 class PaymentChannelOpen:
     """A fully derived payment-channel open: addresses plus channel parameters.
 
-    Mirrors rust ``PaymentChannelOpen``.
+    Holds everything needed to open one channel: the derived channel PDA, the
+    payer and payee, the SPL mint and its token program, the authorized session
+    signer, the salt that made the PDA unique, the deposit amount and close
+    grace period (both in base units / seconds), the payout split recipients,
+    and the on-chain program that owns the channel.
     """
 
+    #: Derived on-chain channel account address (the channel PDA).
     channel_id: Pubkey
+    #: Account that funds the deposit and signs the open transaction.
     payer: Pubkey
+    #: Account that receives the channel payouts.
     payee: Pubkey
+    #: SPL token mint the channel is denominated in.
     mint: Pubkey
+    #: Ephemeral public key authorized to sign vouchers against the channel.
     authorized_signer: Pubkey
+    #: u64 salt that makes the channel PDA unique for a given key tuple.
     salt: int
+    #: Amount, in token base units, deposited into the channel on open.
     deposit: int
+    #: Close grace period, in seconds, before the channel can be torn down.
     grace_period: int
+    #: Payout split recipients and their basis-point shares.
     recipients: list[Distribution]
+    #: SPL token program owning the mint (classic Token or Token-2022).
     token_program: Pubkey
+    #: On-chain program that owns the channel account.
     program_id: Pubkey
 
     def open_channel_params(self) -> OpenChannelParams:
         """Return the instruction-builder params for this open.
 
-        Mirrors rust ``PaymentChannelOpen::open_channel_params``.
+        Repackages the derived addresses and parameters into the argument
+        object the low-level open-instruction builder expects.
         """
         return OpenChannelParams(
             payer=self.payer,
@@ -135,7 +152,9 @@ class PaymentChannelOpen:
     def open_payload(self, mode: SessionMode, signature: str) -> OpenPayload:
         """Build the open action payload carrying the full channel parameters.
 
-        Mirrors rust ``PaymentChannelOpen::open_payload``.
+        Serializes the channel's addresses, deposit, salt, grace period, and
+        authorized signer into the ``open`` payload sent to the operator,
+        tagged with the session ``mode`` and the open-transaction ``signature``.
         """
         return OpenPayload.payment_channel_with_mode(
             mode,
@@ -153,13 +172,11 @@ class PaymentChannelOpen:
 
 @dataclass
 class PaymentChannelOpenTransaction:
-    """A built open transaction plus the channel it opens.
+    """A built open transaction plus the channel it opens."""
 
-    ``transaction`` is standard base64 with padding. Mirrors rust
-    ``PaymentChannelOpenTransaction``.
-    """
-
+    #: Derived on-chain channel account address the transaction opens.
     channel_id: Pubkey
+    #: Serialized open transaction as standard-alphabet base64 with padding.
     transaction: str
 
 
@@ -173,54 +190,62 @@ class PaymentChannelOpenOptions:
     ``programId`` (else the production program), ``recipients`` to the
     challenge ``splits``, ``salt`` to :func:`unique_salt`, and
     ``token_program`` to the program resolved from the challenge currency
-    (Token-2022 for PYUSD/USDG/CASH). Mirrors rust
-    ``PaymentChannelOpenOptions``.
+    (Token-2022 for PYUSD/USDG/CASH).
     """
 
+    #: Deposit in token base units; defaults to the challenge cap.
     deposit: int | None = None
+    #: Close grace period in seconds; defaults to :data:`DEFAULT_GRACE_PERIOD_SECONDS`.
     grace_period: int | None = None
+    #: Owning program; defaults to the challenge ``programId`` or the production program.
     program_id: Pubkey | None = None
+    #: Payout split recipients; defaults to the challenge ``splits``.
     recipients: list[Distribution] | None = None
+    #: Channel salt; defaults to a fresh value from :func:`unique_salt`.
     salt: int | None = None
+    #: SPL token program; defaults to the program resolved from the currency.
     token_program: Pubkey | None = None
 
 
 @dataclass
 class PaymentChannelSessionOpen:
-    """A derived open, the session tracking it, and the open action to send.
+    """A derived open, the session tracking it, and the open action to send."""
 
-    Mirrors rust ``PaymentChannelSessionOpen``.
-    """
-
+    #: The fully derived channel open (addresses and parameters).
     open: PaymentChannelOpen
+    #: Live session keyed to the derived channel, ready to issue vouchers.
     session: ActiveSession
+    #: Open action to send to the operator to register the channel.
     action: SessionAction
 
 
 @dataclass
 class PaymentChannelSessionOpenOptions:
-    """Options for :func:`create_payment_channel_session_opener`.
+    """Options for :func:`create_payment_channel_session_opener`."""
 
-    Mirrors rust ``PaymentChannelSessionOpenOptions``.
-    """
-
+    #: Overrides for deriving the channel open.
     open: PaymentChannelOpenOptions = field(default_factory=PaymentChannelOpenOptions)
+    #: Open-action signature; defaults to :data:`PENDING_SERVER_SIGNATURE`.
     signature: str | None = None
+    #: Initial cumulative spent amount for the session; defaults to 0.
     cumulative: int | None = None
+    #: Session expiry as a Unix timestamp; defaults to the session default.
     expires_at: int | None = None
 
 
 @dataclass
 class ServerOpenedPaymentChannelSessionOpenOptions:
-    """Options for :func:`create_server_opened_payment_channel_session_opener`.
+    """Options for :func:`create_server_opened_payment_channel_session_opener`."""
 
-    Mirrors rust ``ServerOpenedPaymentChannelSessionOpenOptions``.
-    """
-
+    #: Overrides for deriving the channel open.
     open: PaymentChannelOpenOptions = field(default_factory=PaymentChannelOpenOptions)
+    #: Channel payer; defaults to the challenge ``operator`` (server-funded).
     payer: Pubkey | None = None
+    #: Open-action signature; defaults to :data:`PENDING_SERVER_SIGNATURE`.
     signature: str | None = None
+    #: Initial cumulative spent amount for the session; defaults to 0.
     cumulative: int | None = None
+    #: Session expiry as a Unix timestamp; defaults to the session default.
     expires_at: int | None = None
 
 
@@ -235,8 +260,8 @@ def derive_payment_channel_open(
     Resolves the mint from the challenge currency (localnet falls back to the
     mainnet mint), the deposit from the cap when no explicit deposit is given,
     the token program from the currency, the recipients from the challenge
-    splits, and a random salt; then derives the channel PDA. Mirrors rust
-    ``derive_payment_channel_open``.
+    splits, and a random salt; then derives the channel PDA. Any field set on
+    ``options`` overrides the corresponding challenge-derived default.
     """
     options = options if options is not None else PaymentChannelOpenOptions()
     network = request.network if request.network is not None else "mainnet"
@@ -297,8 +322,7 @@ def build_open_payment_channel_transaction(
 
     The fee payer defaults to the challenge ``operator`` and its signature slot
     is intentionally left empty: the payer partial-signs only its own slot and
-    the server completes the fee-payer signature before broadcasting. Mirrors
-    rust ``build_open_payment_channel_transaction``.
+    the server completes the fee-payer signature before broadcasting.
     """
     if fee_payer is None:
         fee_payer = _parse_pubkey(request.operator, "operator")
@@ -324,8 +348,7 @@ def create_payment_channel_session_opener(
     partially signed open transaction (fee payer = operator), attaches it to
     the open action, and returns the :class:`ActiveSession` keyed to the
     derived channel. The action signature defaults to
-    :data:`PENDING_SERVER_SIGNATURE` until the operator broadcasts. Mirrors
-    rust ``create_payment_channel_session_opener``.
+    :data:`PENDING_SERVER_SIGNATURE` until the operator broadcasts.
     """
     options = options if options is not None else PaymentChannelSessionOpenOptions()
     _ensure_client_voucher_pull(request)
@@ -352,8 +375,7 @@ def create_server_opened_payment_channel_session_opener(
     """Open a pull/clientVoucher session whose channel the operator funds.
 
     No transaction is built: the payer defaults to the challenge ``operator``
-    and the server constructs, funds, and broadcasts the open itself. Mirrors
-    rust ``create_server_opened_payment_channel_session_opener``.
+    and the server constructs, funds, and broadcasts the open itself.
     """
     options = options if options is not None else ServerOpenedPaymentChannelSessionOpenOptions()
     _ensure_client_voucher_pull(request)
@@ -374,10 +396,9 @@ def _build_open_payment_channel_tx(
 ) -> PaymentChannelOpenTransaction:
     """Assemble the open message and partial-sign only the payer slot.
 
-    Mirrors rust ``build_open_payment_channel_tx``: a legacy transaction whose
-    fee payer is the operator (signature slot left as the default placeholder)
-    and whose payer signature is filled in, serialized as standard base64 with
-    padding.
+    Builds a legacy transaction whose fee payer is the operator (its signature
+    slot left as the default placeholder) and whose payer signature slot is
+    filled in, serialized as standard-alphabet base64 with padding.
     """
     blockhash = recent_blockhash if isinstance(recent_blockhash, Hash) else Hash.from_string(recent_blockhash)
     ix = build_open_instruction(open_.open_channel_params())
@@ -402,7 +423,8 @@ def _build_open_payment_channel_tx(
 def _ensure_client_voucher_pull(request: SessionRequest) -> None:
     """Require the challenge to advertise pull mode with clientVoucher.
 
-    Mirrors rust ``ensure_client_voucher_pull``.
+    Raises ``ValueError`` if the challenge does not list ``pull`` among its
+    modes, or if its pull voucher strategy is not ``clientVoucher``.
     """
     if "pull" not in request.modes:
         raise ValueError("session challenge does not advertise pull mode")
@@ -418,7 +440,9 @@ def _configured_session(
 ) -> ActiveSession:
     """Build the opener's ActiveSession with resume options applied.
 
-    Mirrors rust ``configure_session``.
+    Keys the session to the derived channel and the session signer, applying
+    the supplied expiry and cumulative-spent values or their defaults when
+    ``None`` (useful for resuming a session at a known cumulative amount).
     """
     return ActiveSession(
         channel_id,
@@ -443,7 +467,7 @@ def _signer_pubkey(signer: Any) -> Pubkey:
 
 
 def _parse_u64_string(value: str, label: str) -> int:
-    """Parse a u64 decimal string, mirroring rust ``parse_u64_string``."""
+    """Parse a u64 decimal string, raising a labeled ``ValueError`` on failure."""
     try:
         return _parse_base_units(value)
     except ValueError as exc:
@@ -451,7 +475,7 @@ def _parse_u64_string(value: str, label: str) -> int:
 
 
 def _parse_pubkey(value: str, label: str) -> Pubkey:
-    """Parse a base58 pubkey, mirroring rust ``parse_pubkey``."""
+    """Parse a base58 pubkey, raising a labeled ``ValueError`` on failure."""
     try:
         return Pubkey.from_string(value)
     except (ValueError, TypeError) as exc:

@@ -14,10 +14,9 @@ Pull/operatedVoucher (the multi-delegator program) and the server verification
 path are out of scope, but the wire fields stay present so the action union
 round-trips.
 
-Behavior mirrors the Rust spine in ``rust/crates/mpp/src/client/session.rs`` and
-the parity-verified Go port in
-``go/protocols/mpp/client/session.go`` so the cross-language SDKs produce
-byte-identical voucher signatures and credentials.
+Voucher signatures and credentials are byte-deterministic: the signed preimage
+and the JCS-canonicalized credential are fully specified by the MPP session
+intent, so a given session state always produces the same bytes on the wire.
 
 The signer is duck-typed against the pay_kit signer contract shared with the
 charge client: ``pubkey() -> str`` (base58 public key) and
@@ -59,15 +58,15 @@ __all__ = [
 
 #: Default voucher expiry: 2100-01-01T00:00:00Z. Stays below JavaScript's max
 #: safe integer so JSON intermediaries do not round it before the credential is
-#: decoded. Mirrors rust ``DEFAULT_VOUCHER_EXPIRES_AT``.
+#: decoded.
 DEFAULT_VOUCHER_EXPIRES_AT = DEFAULT_SESSION_EXPIRES_AT
 
 # The session intent name carried in a challenge ``intent`` field.
 _SESSION_INTENT = "session"
 
 # u64 upper bound; the cumulative watermark is a Solana base-unit amount and the
-# voucher preimage packs it as a little-endian u64. Mirrors the Go overflow
-# guard (``addCumulative``) which rejects a wrapped watermark.
+# voucher preimage packs it as a little-endian u64. A computed watermark that
+# exceeds this bound is rejected rather than allowed to wrap.
 _U64_MAX = (1 << 64) - 1
 
 
@@ -75,10 +74,10 @@ _U64_MAX = (1 << 64) - 1
 class VoucherSigner(Protocol):
     """Minimal Ed25519 message-signing surface for voucher signing.
 
-    Mirrors the Go ``VoucherSigner`` alias (``solanatx.Signer``) and the pay_kit
-    :class:`pay_kit.signer.LocalSigner` duck type shared with the charge client.
-    A solders ``Keypair`` also satisfies this shape via ``pubkey()`` plus
-    ``sign_message()``; :func:`_sign_base58` bridges the two method names.
+    Satisfied by the pay_kit :class:`pay_kit.signer.LocalSigner` duck type shared
+    with the charge client. A solders ``Keypair`` also satisfies this shape via
+    ``pubkey()`` plus ``sign_message()``; :func:`_sign_base58` bridges the two
+    method names.
     """
 
     def pubkey(self) -> Any:
@@ -94,9 +93,9 @@ def _sign_base58(signer: Any, message: bytes) -> str:
     """Sign ``message`` and return the signature as base58.
 
     Accepts both the pay_kit signer (``sign(bytes) -> bytes``) and a solders
-    ``Keypair`` (``sign_message(bytes) -> Signature``). The Go port returns
-    ``sig.String()`` (base58); this normalizes the 64-byte signature to the same
-    base58 form via the solders ``Signature`` type.
+    ``Keypair`` (``sign_message(bytes) -> Signature``). The 64-byte signature is
+    normalized to its base58 string form via the solders ``Signature`` type,
+    which is the encoding the credential carries on the wire.
     """
     from solders.signature import Signature  # type: ignore[import-untyped]
 
@@ -123,7 +122,6 @@ class ActiveSession:
     ``authorizedSigner`` passed to the server in the open action.
 
     Not safe for concurrent use; serialize access or guard it with a lock.
-    Mirrors rust ``ActiveSession``.
     """
 
     def __init__(
@@ -142,9 +140,8 @@ class ActiveSession:
         method); ``expires_at`` is the Unix timestamp applied to newly signed
         vouchers, defaulting to :data:`DEFAULT_VOUCHER_EXPIRES_AT`;
         ``cumulative`` seeds the watermark when resuming a known channel
-        position (the payment-channel openers use it, mirroring the rust
-        ``configure_session`` helper writing the public ``cumulative`` field).
-        Mirrors rust ``ActiveSession::new`` / ``new_with_expiry``.
+        position (the payment-channel openers use it to write the starting
+        ``cumulative`` value).
         """
         self._channel_id = channel_id
         self._signer = signer
@@ -154,11 +151,7 @@ class ActiveSession:
 
     @classmethod
     def at_expiry(cls, channel_id: Any, signer: VoucherSigner | Any, expires_at: int) -> ActiveSession:
-        """Create a session tracker with an explicit voucher expiry.
-
-        Mirrors rust ``ActiveSession::new_with_expiry`` and the Go
-        ``NewActiveSessionAt`` constructor.
-        """
+        """Create a session tracker with an explicit voucher expiry."""
         return cls(channel_id, signer, expires_at)
 
     @property
@@ -183,7 +176,7 @@ class ActiveSession:
 
     @property
     def channel_id_string(self) -> str:
-        """Channel address as base58. Mirrors rust ``channel_id_str``."""
+        """Channel address as base58."""
         return str(self._channel_id)
 
     @property
@@ -192,10 +185,7 @@ class ActiveSession:
         return _pubkey_str(self._signer)
 
     def set_expires_at(self, expires_at: int) -> None:
-        """Update the expiry timestamp used for subsequent vouchers.
-
-        Mirrors rust ``ActiveSession::set_expires_at``.
-        """
+        """Update the expiry timestamp used for subsequent vouchers."""
         self._expires_at = expires_at
 
     # -- voucher signing ----------------------------------------------------
@@ -206,7 +196,7 @@ class ActiveSession:
         This keeps ack/commit transports safe to retry: a failed commit can be
         resent with the same cumulative amount without the local state drifting
         ahead of the server. ``cumulative`` MUST strictly exceed the current
-        watermark. Mirrors rust ``ActiveSession::prepare_voucher``.
+        watermark.
         """
         if cumulative <= self._cumulative:
             raise ValueError(f"voucher cumulative {cumulative} must exceed current watermark {self._cumulative}")
@@ -226,8 +216,6 @@ class ActiveSession:
     def prepare_increment(self, amount: int) -> SignedVoucher:
         """Sign a voucher adding ``amount`` to the current cumulative without
         advancing the watermark.
-
-        Mirrors rust ``ActiveSession::prepare_increment``.
         """
         return self.prepare_voucher(self._add_cumulative(amount))
 
@@ -237,8 +225,7 @@ class ActiveSession:
         The voucher's channel MUST match this session and its cumulative MUST
         strictly exceed the current watermark; the nonce advances to the larger
         of the current nonce and the voucher nonce (current nonce + 1 when the
-        voucher carries none), exactly mirroring rust
-        ``ActiveSession::record_voucher``.
+        voucher carries none).
         """
         if voucher.data.channel_id != self.channel_id_string:
             raise ValueError(
@@ -258,27 +245,20 @@ class ActiveSession:
         """Sign a voucher with an absolute cumulative amount and advance the
         local watermark.
 
-        ``cumulative`` MUST strictly exceed the current watermark. Mirrors rust
-        ``ActiveSession::sign_voucher``.
+        ``cumulative`` MUST strictly exceed the current watermark.
         """
         voucher = self.prepare_voucher(cumulative)
         self.record_voucher(voucher)
         return voucher
 
     def sign_increment(self, amount: int) -> SignedVoucher:
-        """Sign a voucher adding ``amount`` to the current cumulative.
-
-        Mirrors rust ``ActiveSession::sign_increment``.
-        """
+        """Sign a voucher adding ``amount`` to the current cumulative."""
         return self.sign_voucher(self._add_cumulative(amount))
 
     # -- action builders ----------------------------------------------------
 
     def voucher_action(self, amount: int) -> SessionAction:
-        """Sign a fresh increment and wrap it as a voucher action.
-
-        Mirrors rust ``ActiveSession::voucher_action``.
-        """
+        """Sign a fresh increment and wrap it as a voucher action."""
         voucher = self.sign_increment(amount)
         return SessionAction.voucher_action(VoucherPayload(voucher=voucher))
 
@@ -287,7 +267,7 @@ class ActiveSession:
 
         When ``final_increment`` is greater than zero it signs one last voucher
         for the remaining balance before closing; otherwise the close carries no
-        voucher. Mirrors rust ``ActiveSession::close_action``.
+        voucher.
         """
         payload = ClosePayload(channel_id=self.channel_id_string)
         if final_increment > 0:
@@ -298,8 +278,7 @@ class ActiveSession:
         """Build a push-mode open action.
 
         Call this after the on-chain open transaction has confirmed; the session
-        channel ID MUST match the confirmed channel address. Mirrors rust
-        ``ActiveSession::open_action``.
+        channel ID MUST match the confirmed channel address.
         """
         return SessionAction.open_action(
             OpenPayload.push(
@@ -322,8 +301,6 @@ class ActiveSession:
     ) -> SessionAction:
         """Build a payment-channel push open action carrying the full channel
         parameters.
-
-        Mirrors rust ``ActiveSession::open_payment_channel_action``.
         """
         return self.open_payment_channel_action_with_mode(
             "push", deposit, payer, payee, mint, salt, grace_period, open_tx_signature
@@ -340,10 +317,7 @@ class ActiveSession:
         grace_period: int,
         open_tx_signature: str,
     ) -> SessionAction:
-        """Build a payment-channel open action with an explicit submission mode.
-
-        Mirrors rust ``ActiveSession::open_payment_channel_action_with_mode``.
-        """
+        """Build a payment-channel open action with an explicit submission mode."""
         return SessionAction.open_action(
             OpenPayload.payment_channel_with_mode(
                 mode,
@@ -369,7 +343,7 @@ class ActiveSession:
 
         The session channel ID is used as the token account, so callers should
         construct the :class:`ActiveSession` with the delegated token-account
-        pubkey as the channel ID. Mirrors rust ``ActiveSession::open_pull_action``.
+        pubkey as the channel ID.
         """
         return SessionAction.open_action(
             OpenPayload.pull(
@@ -382,10 +356,7 @@ class ActiveSession:
         )
 
     def top_up_action(self, new_deposit: int, topup_tx_signature: str) -> SessionAction:
-        """Build a top-up action after a top-up transaction confirms.
-
-        Mirrors rust ``ActiveSession::topup_action``.
-        """
+        """Build a top-up action after a top-up transaction confirms."""
         return SessionAction.top_up_action(
             TopUpPayload(
                 channel_id=self.channel_id_string,
@@ -404,8 +375,7 @@ class ActiveSession:
         """Build the ``Payment <base64url(JCS)>`` Authorization header value.
 
         Echoes ``challenge`` and JCS-canonicalizes the credential, reusing the
-        same core wire layer the charge client uses. Mirrors the Go
-        ``SerializeSessionCredential`` free function.
+        same core wire layer the charge client uses.
         """
         return serialize_session_credential(challenge, action)
 
@@ -414,9 +384,8 @@ class ActiveSession:
     def _add_cumulative(self, amount: int) -> int:
         """Add ``amount`` to the current watermark, rejecting u64 overflow.
 
-        Mirrors the Go ``addCumulative`` guard so a wrapped watermark can never
-        be signed; rust relies on debug-mode overflow panics for the same
-        invariant.
+        Guards against a wrapped watermark ever being signed: if the sum exceeds
+        the u64 range the voucher would pack, it raises instead of wrapping.
         """
         nxt = self._cumulative + amount
         if nxt > _U64_MAX:
@@ -431,9 +400,8 @@ def serialize_session_credential(
     """Build an Authorization header value for a session action.
 
     Echoes the challenge and JCS-canonicalizes the credential, producing
-    ``"Payment <base64url(JCS(PaymentCredential))>"``. Mirrors the Go
-    ``SerializeSessionCredential`` and the credential framing rust uses for
-    session actions (``format_authorization``).
+    ``"Payment <base64url(JCS(PaymentCredential))>"``, the credential framing the
+    MPP "Payment" HTTP auth scheme defines for session actions.
     """
     credential = PaymentCredential(
         challenge=challenge.to_echo(),
@@ -446,7 +414,7 @@ def parse_session_challenge(header: str) -> tuple[PaymentChallenge, SessionReque
     """Parse a WWW-Authenticate header into the challenge and session request.
 
     Rejects non-session intents so callers do not accidentally treat a charge
-    challenge as a session. Mirrors the Go ``ParseSessionChallenge``.
+    challenge as a session.
     """
     challenge = parse_www_authenticate(header)
     if challenge.intent != _SESSION_INTENT:
@@ -459,8 +427,6 @@ def session_request_modes(request: SessionRequest) -> list[SessionMode]:
     """Return the funding modes advertised by a session challenge.
 
     ``modes`` omitted or empty means push-only; an explicit ``[]`` therefore
-    decodes the same as a missing field. Mirrors the TypeScript
-    ``sessionRequestModes`` helper; the rust client checks ``modes`` membership
-    directly with the same default semantics.
+    decodes the same as a missing field, yielding ``["push"]``.
     """
     return list(request.modes) if request.modes else ["push"]

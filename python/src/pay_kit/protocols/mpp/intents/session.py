@@ -2,14 +2,14 @@
 
 The session intent opens a payment channel between a client and server,
 allowing incremental payments via off-chain signed vouchers backed by the
-on-chain payment-channels program. The wire format mirrors the Rust spine in
-``rust/crates/mpp/src/protocol/intents/session.rs`` and the parity-verified Go
-port in ``go/protocols/mpp/intents/session.go``.
+on-chain payment-channels program. The wire format is defined by the MPP
+specification's session intent.
 
-The house style is plain :func:`dataclasses.dataclass` with explicit
-``to_dict()``/``from_dict()`` helpers, camelCase on the wire, and omit-empty by
-conditional inclusion in ``to_dict()``. ``parse_units`` is re-exported from the
-charge intent so callers keep a stable amount-parsing entry point.
+Types are plain :func:`dataclasses.dataclass` with explicit
+``to_dict()``/``from_dict()`` helpers, camelCase field names on the wire, and
+omit-empty behaviour implemented by conditional inclusion in ``to_dict()``.
+``parse_units`` is re-exported from the charge intent so callers keep a stable
+amount-parsing entry point.
 """
 
 from __future__ import annotations
@@ -44,8 +44,7 @@ __all__ = [
 # Default session voucher/directive expiry: 2100-01-01T00:00:00Z.
 #
 # This stays below JavaScript's max safe integer so JSON intermediaries do not
-# round it before the credential is decoded. Mirrors rust
-# DEFAULT_SESSION_EXPIRES_AT.
+# round it before the credential is decoded.
 DEFAULT_SESSION_EXPIRES_AT = 4_102_444_800
 
 _U64_MAX = 2**64 - 1
@@ -54,10 +53,10 @@ _U64_MAX = 2**64 - 1
 def _parse_base_units(raw: object) -> int:
     """Parse a canonical unsigned base-unit decimal string into a ``u64``.
 
-    Rejects empty, signed, fractional, non-ASCII-digit, or out-of-range values,
-    matching the rust/Go typed ``u64`` parsers so a malformed amount (e.g.
-    ``"-1"``) cannot slip past zero/max-cap checks or fail later when packed for
-    Solana.
+    Rejects empty, signed, fractional, non-ASCII-digit, or out-of-range values.
+    The amount is validated up front as a typed ``u64`` so a malformed value
+    (e.g. ``"-1"``) cannot slip past zero/max-cap checks or fail later when
+    packed for Solana.
     """
     s = str(raw)
     if not (s.isascii() and s.isdigit()):
@@ -70,18 +69,19 @@ def _parse_base_units(raw: object) -> int:
 
 # On-chain funding mechanism for a session. Advertised by the server in
 # ``SessionRequest.modes``; the client picks the mode it will use in its open
-# action. Mirrors rust SessionMode (rename_all="camelCase").
+# action. Encoded on the wire as the camelCase string ``"push"`` or ``"pull"``.
 SessionMode = Literal["push", "pull"]
 
-# Voucher authority used when ``"pull"`` mode is advertised. Mirrors rust
-# SessionPullVoucherStrategy (rename_all="camelCase").
+# Voucher authority used when ``"pull"`` mode is advertised. Encoded on the wire
+# as the camelCase string ``"clientVoucher"`` or ``"operatedVoucher"``.
 SessionPullVoucherStrategy = Literal["clientVoucher", "operatedVoucher"]
 
-# Commit receipt status. Mirrors rust CommitStatus (rename_all="camelCase").
+# Commit receipt status. Encoded on the wire as the camelCase string
+# ``"committed"`` or ``"replayed"``.
 CommitStatus = Literal["committed", "replayed"]
 
-# Action discriminator values. Note ``"topUp"`` is camelCase on the wire, just
-# like rust's serde(tag="action", rename_all="camelCase").
+# Action discriminator values. Note ``"topUp"`` is camelCase on the wire, in
+# line with the rest of the session field naming.
 _SessionActionTag = Literal["open", "voucher", "commit", "topUp", "close"]
 
 
@@ -90,7 +90,8 @@ class SessionSplit:
     """A payment split committed at channel open; distributed to a specific
     recipient when the channel closes.
 
-    Mirrors rust ``SessionSplit``.
+    ``recipient`` is the destination address and ``bps`` is that recipient's
+    share of the settled amount in basis points (hundredths of a percent).
     """
 
     recipient: str
@@ -108,9 +109,11 @@ class SessionSplit:
 class SessionRequest:
     """Session intent request, the payload embedded in a 402 challenge.
 
-    Describes the channel parameters: cap, currency, splits, network, etc.
-    Mirrors rust ``SessionRequest``; optional fields are omitted from
-    ``to_dict()`` when ``None`` and ``splits``/``modes`` are omitted when empty.
+    Describes the channel parameters the server is offering: the spending cap,
+    currency and decimals, recipient and operator addresses, optional payment
+    splits, network, program id, and the funding modes the server supports.
+    Optional fields are omitted from ``to_dict()`` when ``None`` and
+    ``splits``/``modes`` are omitted when empty.
     """
 
     cap: str
@@ -160,9 +163,9 @@ class SessionRequest:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionRequest:
         decimals = data.get("decimals")
-        # rust deserializes ``modes`` as Vec<SessionMode> and
-        # ``pullVoucherStrategy`` as an enum, so unknown variants fail at
-        # decode; mirror that instead of deferring the failure downstream.
+        # ``modes`` and ``pullVoucherStrategy`` are validated against their known
+        # values at decode time, so an unknown variant fails here rather than
+        # being deferred to a downstream consumer.
         modes: list[SessionMode] = []
         for mode in data.get("modes", []):
             if mode not in ("push", "pull"):
@@ -192,9 +195,8 @@ class SessionRequest:
 def _salt_to_wire(salt: int | None) -> str | None:
     """Serialize an optional salt as a decimal string.
 
-    Mirrors rust ``serialize_optional_u64_as_string``: authorization headers are
-    JSON canonicalized and arbitrary ``u64`` values are not safe JSON numbers,
-    so the salt always travels as a decimal string.
+    Authorization headers are JSON canonicalized and an arbitrary ``u64`` is not
+    a safe JSON number, so the salt always travels as a decimal string.
     """
     if salt is None:
         return None
@@ -204,16 +206,15 @@ def _salt_to_wire(salt: int | None) -> str | None:
 def _salt_from_wire(value: Any) -> int | None:
     """Parse an optional salt from a decimal string or a JSON number.
 
-    Mirrors rust ``deserialize_optional_u64_from_string_or_number``. ``int`` is
-    accepted directly (no float precision loss because Python ints are
-    arbitrary precision); strings are parsed as base-10 integers.
+    ``int`` is accepted directly (no float precision loss because Python ints
+    are arbitrary precision); strings are parsed as base-10 integers.
     """
     if value is None:
         return None
     if isinstance(value, bool):
         raise ValueError("salt must be a decimal string or unsigned 64-bit integer")
-    # rust deserializes salt as u64 and rejects negative / out-of-range values;
-    # match that here rather than letting a malformed salt fail later inside
+    # The salt is validated as a ``u64``, rejecting negative or out-of-range
+    # values here rather than letting a malformed salt fail later inside
     # struct.pack. Accept an int directly (no float precision loss) or a strict
     # unsigned-decimal string.
     if isinstance(value, int):
@@ -235,9 +236,12 @@ class OpenPayload:
     Use :meth:`push`, :meth:`payment_channel`, :meth:`payment_channel_with_mode`,
     or :meth:`pull` to construct. Inspect :attr:`mode` to distinguish variants on
     the server. ``mode`` is required: :meth:`from_dict` raises when it is absent.
+    Push-mode fields (``channel_id``, ``deposit``, ``payer``, ``payee``,
+    ``mint``, ``salt``, ``grace_period``, ``transaction``) and pull-mode fields
+    (``token_account``, ``approved_amount``, ``owner``, ``init_multi_delegate_tx``,
+    ``update_delegation_tx``) are populated according to the selected mode.
 
     ``salt`` serializes as a decimal string and decodes from string or number.
-    Mirrors rust ``OpenPayload``.
     """
 
     mode: SessionMode
@@ -269,7 +273,8 @@ class OpenPayload:
     ) -> OpenPayload:
         """Construct a **push** payment-channel open payload.
 
-        Mirrors rust ``OpenPayload::push``.
+        Sets ``mode`` to ``"push"`` and records the channel id and deposit along
+        with the authorized signer and its signature.
         """
         return cls(
             mode="push",
@@ -292,9 +297,11 @@ class OpenPayload:
         authorized_signer: str,
         signature: str,
     ) -> OpenPayload:
-        """Construct a payment-channel **push** open payload.
+        """Construct a payment-channel **push** open payload with full channel
+        details.
 
-        Mirrors rust ``OpenPayload::payment_channel``.
+        Records the full set of payment-channel fields (channel id, deposit,
+        payer, payee, mint, salt, grace period) in ``"push"`` mode.
         """
         return cls.payment_channel_with_mode(
             "push",
@@ -326,7 +333,8 @@ class OpenPayload:
         """Construct a payment-channel open payload with an explicit submission
         mode.
 
-        Mirrors rust ``OpenPayload::payment_channel_with_mode``.
+        Like :meth:`payment_channel` but lets the caller choose the ``mode``
+        (``"push"`` or ``"pull"``) under which the channel fields are submitted.
         """
         return cls(
             mode=mode,
@@ -352,7 +360,9 @@ class OpenPayload:
     ) -> OpenPayload:
         """Construct a **pull** (SPL delegation) open payload.
 
-        Mirrors rust ``OpenPayload::pull``.
+        Sets ``mode`` to ``"pull"`` and records the delegated token account, the
+        approved amount, and the owner along with the authorized signer and its
+        signature.
         """
         return cls(
             mode="pull",
@@ -366,7 +376,8 @@ class OpenPayload:
     def with_transaction(self, tx_base64: str) -> OpenPayload:
         """Attach a signed open transaction for operator/server broadcast.
 
-        Mirrors rust ``OpenPayload::with_transaction``.
+        Stores the base64-encoded transaction in ``transaction`` and returns
+        ``self`` for chaining.
         """
         self.transaction = tx_base64
         return self
@@ -375,7 +386,8 @@ class OpenPayload:
         """Attach a pre-signed ``InitMultiDelegate`` + ``CreateFixedDelegation``
         transaction.
 
-        Mirrors rust ``OpenPayload::with_init_tx``.
+        Stores the base64-encoded transaction in ``init_multi_delegate_tx`` and
+        returns ``self`` for chaining.
         """
         self.init_multi_delegate_tx = tx_base64
         return self
@@ -384,7 +396,8 @@ class OpenPayload:
         """Attach a pre-signed ``CreateFixedDelegation`` (cap update)
         transaction.
 
-        Mirrors rust ``OpenPayload::with_update_tx``.
+        Stores the base64-encoded transaction in ``update_delegation_tx`` and
+        returns ``self`` for chaining.
         """
         self.update_delegation_tx = tx_base64
         return self
@@ -395,7 +408,7 @@ class OpenPayload:
         - Payment channel: ``channel_id``
         - Operated-voucher pull: ``token_account``
 
-        Mirrors rust ``OpenPayload::session_id``.
+        Raises when the required identifier for the current mode is absent.
         """
         if self.channel_id is not None:
             return self.channel_id
@@ -410,7 +423,9 @@ class OpenPayload:
     def deposit_amount(self) -> int:
         """Deposit / approved amount for this open (base units).
 
-        Mirrors rust ``OpenPayload::deposit_amount``.
+        Returns ``deposit`` in push mode and ``approved_amount`` in pull mode,
+        parsed as a ``u64``. Raises when the required amount for the current
+        mode is absent or malformed.
         """
         if self.deposit is not None:
             raw = self.deposit
@@ -465,8 +480,8 @@ class OpenPayload:
         mode = data.get("mode")
         if not mode:
             raise ValueError("open payload: missing mode")
-        # rust deserializes ``mode`` as the SessionMode enum, rejecting unknown
-        # variants at decode; mirror that rather than failing later inside
+        # ``mode`` is validated against the known session modes at decode time,
+        # rejecting unknown variants here rather than failing later inside
         # session_id()/deposit_amount().
         if mode not in ("push", "pull"):
             raise ValueError(f"open payload: unknown mode {mode!r}")
@@ -497,7 +512,7 @@ class VoucherData:
     Serialized as the on-chain ``VoucherArgs`` layout before signing:
     ``channel_id || cumulative_amount_le || expires_at_le``. The wire field for
     the cumulative amount is ``cumulativeAmount`` with a ``cumulative`` decode
-    alias. Mirrors rust ``VoucherData``.
+    alias. ``nonce`` is optional and omitted from the wire when ``None``.
     """
 
     channel_id: str
@@ -543,12 +558,10 @@ class VoucherData:
         Layout (exactly 48 bytes): ``channel_id``\\ (32, base58-decoded) ||
         ``cumulative_amount`` little-endian ``u64`` (offset 32) || ``expires_at``
         little-endian ``i64`` (offset 40). Delegates to the canonical packer so
-        the 48-byte layout has a single source of truth, mirroring rust
-        ``VoucherData::message_bytes`` (which calls ``voucher_message_bytes``).
+        the 48-byte layout has a single source of truth.
         """
-        # Lazy import so the module imports without solders installed, matching
-        # the charge intent's discipline (no cycle: the glue does not import the
-        # intent layer).
+        # Lazy import so the module imports without solders installed (no cycle:
+        # the glue does not import the intent layer).
         from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
         from pay_kit.protocols.mpp._paymentchannels import voucher_message_bytes
@@ -570,7 +583,8 @@ class SignedVoucher:
 
     Vouchers are cumulative: the server always uses the latest valid voucher it
     has received. The client MUST increment ``cumulative`` with each request.
-    Mirrors rust ``SignedVoucher``.
+    ``signature`` is the client's Ed25519 signature over the voucher's
+    ``message_bytes``.
     """
 
     data: VoucherData
@@ -591,7 +605,8 @@ class SignedVoucher:
 class VoucherPayload:
     """Payload for the ``voucher`` action (per-request micropayment).
 
-    Mirrors rust ``VoucherPayload``.
+    Carries the single :class:`SignedVoucher` the client presents to authorize a
+    request against an open channel.
     """
 
     voucher: SignedVoucher
@@ -608,7 +623,8 @@ class VoucherPayload:
 class CommitPayload:
     """Payload for the ``commit`` action.
 
-    Mirrors rust ``CommitPayload``.
+    Acknowledges a specific delivery (``delivery_id``) by submitting the
+    :class:`SignedVoucher` that pays for it.
     """
 
     delivery_id: str
@@ -629,7 +645,8 @@ class CommitPayload:
 class TopUpPayload:
     """Payload for the ``topUp`` action.
 
-    Mirrors rust ``TopUpPayload``.
+    Raises the deposit backing an open channel (``channel_id``) to
+    ``new_deposit``, authorized by ``signature``.
     """
 
     channel_id: str
@@ -656,7 +673,8 @@ class TopUpPayload:
 class ClosePayload:
     """Payload for the ``close`` action.
 
-    Mirrors rust ``ClosePayload``; ``voucher`` is omitted when ``None``.
+    Closes the channel identified by ``channel_id``. The final
+    :class:`SignedVoucher` is optional and omitted from the wire when ``None``.
     """
 
     channel_id: str
@@ -684,8 +702,7 @@ class SessionAction:
     Serialized as a tagged object with
     ``"action": "open" | "voucher" | "commit" | "topUp" | "close"`` and the
     payload fields flattened alongside the discriminator. Exactly one payload is
-    set for a valid action. Mirrors rust ``SessionAction``
-    (serde tag="action", rename_all="camelCase").
+    set for a valid action.
     """
 
     open: OpenPayload | None = None
@@ -722,8 +739,8 @@ class SessionAction:
     def to_dict(self) -> dict[str, Any]:
         """Flatten the active payload alongside an ``"action"`` discriminator.
 
-        Mirrors rust's ``#[serde(tag="action")]`` enum encoding. Exactly one
-        variant must be set.
+        The active variant's fields are emitted at the top level next to the
+        ``"action"`` tag. Exactly one variant must be set, otherwise this raises.
         """
         variants: list[tuple[_SessionActionTag, dict[str, Any]]] = []
         if self.open is not None:
@@ -747,8 +764,7 @@ class SessionAction:
     def from_dict(cls, data: dict[str, Any]) -> SessionAction:
         """Read the ``"action"`` discriminator and decode the flattened payload.
 
-        Mirrors rust's ``#[serde(tag="action")]`` decoding: an empty discriminator
-        and an unknown action both raise.
+        An empty discriminator and an unknown action both raise.
         """
         action = data.get("action")
         if not action:
@@ -772,8 +788,8 @@ class MeteringDirective:
 
     Clients treat this like an offset in a message log: once the message has been
     processed successfully, ``ack``/``commit`` signs a voucher for ``amount`` and
-    sends a :class:`CommitPayload` back to the server. Mirrors rust
-    ``MeteringDirective``.
+    sends a :class:`CommitPayload` back to the server. ``commit_url`` and
+    ``proof`` are optional and omitted from the wire when ``None``.
     """
 
     delivery_id: str
@@ -788,7 +804,7 @@ class MeteringDirective:
     def amount_base_units(self) -> int:
         """Parse ``amount`` as base units.
 
-        Mirrors rust ``MeteringDirective::amount_base_units``.
+        Returns the reserved amount as a ``u64``, raising when it is malformed.
         """
         try:
             return _parse_base_units(self.amount)
@@ -829,7 +845,8 @@ class MeteringUsage:
     """Final usage reported by a streaming response.
 
     The amount MUST be less than or equal to the amount reserved by the original
-    :class:`MeteringDirective`. Mirrors rust ``MeteringUsage``.
+    :class:`MeteringDirective`. ``delivery_id`` ties the usage back to that
+    directive.
     """
 
     delivery_id: str
@@ -838,7 +855,7 @@ class MeteringUsage:
     def amount_base_units(self) -> int:
         """Parse ``amount`` as base units.
 
-        Mirrors rust ``MeteringUsage::amount_base_units``.
+        Returns the reported usage as a ``u64``, raising when it is malformed.
         """
         try:
             return _parse_base_units(self.amount)
@@ -857,8 +874,9 @@ class MeteringUsage:
 class MeteredEnvelope:
     """A payload paired with the metering directive required to acknowledge it.
 
-    The payload is left as an opaque value (any JSON-serializable object),
-    mirroring rust ``MeteredEnvelope<T>``.
+    The payload is left as an opaque value (any JSON-serializable object) and
+    ``metering`` carries the :class:`MeteringDirective` the client must commit
+    against once the payload is processed.
     """
 
     payload: Any
@@ -879,7 +897,10 @@ class MeteredEnvelope:
 class CommitReceipt:
     """Result returned after a delivery commit is accepted.
 
-    Mirrors rust ``CommitReceipt``.
+    Reports the committed ``delivery_id`` and ``session_id``, the ``amount``
+    charged for this commit, the running ``cumulative`` total, and a ``status``
+    of ``"committed"`` (newly applied) or ``"replayed"`` (a duplicate that was
+    deduplicated server-side).
     """
 
     delivery_id: str
@@ -913,9 +934,9 @@ class CommitReceipt:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CommitReceipt:
-        # rust deserializes ``status`` as the CommitStatus enum, so a missing
-        # or unknown status fails at decode; mirror that so a malformed receipt
-        # can never advance client state.
+        # ``status`` is validated against the known commit statuses at decode
+        # time, so a missing or unknown status fails here and a malformed
+        # receipt can never advance client state.
         status = data.get("status")
         if status not in ("committed", "replayed"):
             raise ValueError(f"commit receipt: unknown status {status!r}")

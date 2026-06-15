@@ -1,9 +1,8 @@
 """On-chain verification and settlement for the session intent.
 
-Python counterpart of ``go/protocols/mpp/server/session_onchain.go`` (and the
-field semantics pinned by ``rust/crates/mpp/src/server/session.rs``). This
-module ports the standalone open-transaction verifier and the verifier-seam
-factories.
+Provides the standalone open-transaction verifier and the verifier-seam
+factories the session server installs to validate client-submitted on-chain
+activity.
 
 Trust model: when no verifier is installed (the seam is ``None``), transaction
 signatures and deposit amounts are trusted as provided. :func:`verify_open_tx`
@@ -14,10 +13,6 @@ requires an RPC client. :func:`new_top_up_tx_verifier` is purely RPC-backed (the
 top-up payload carries only a signature, no transaction), so without an RPC
 client the top-up seam stays ``None`` and the new deposit is trusted as
 provided.
-
-The ``SessionServer``-bound ``SettlementInstructions`` method from the Go file
-lands with the base session server port (not yet ported to Python); the field
-semantics here are the self-contained slice that does not depend on it.
 """
 
 from __future__ import annotations
@@ -47,15 +42,13 @@ __all__ = [
 ]
 
 # Payment-channel open instruction discriminator (single-byte Anchor-numeric
-# form, not the 8-byte sha256 convention). Matches OPEN_DISCRIMINATOR in the
-# vendored Codama clients and ``openInstructionDiscriminator`` in the Go port.
+# form, not the 8-byte sha256 convention).
 _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 
 
 class RpcClient(Protocol):
     """Minimal RPC seam used for the optional on-chain liveness check.
 
-    Mirrors the ``solanatx.RPCClient`` surface the Go port consumes:
     ``get_signature_statuses`` returns the per-signature status list (each entry
     is a status dict with an ``err`` field, or ``None`` when unknown)."""
 
@@ -63,17 +56,14 @@ class RpcClient(Protocol):
 
 
 #: A verifier seam installed on the session config: validates a payload (open
-#: or top-up) and raises on rejection. Mirrors the Go
-#: ``SessionTxVerifier[T]`` function type.
+#: or top-up) and raises on rejection.
 OpenTxVerifier = Callable[[OpenPayload], Awaitable[None]]
 TopUpTxVerifier = Callable[[TopUpPayload], Awaitable[None]]
 
 
 class OpenVerifierConfig(Protocol):
-    """The subset of the session config :func:`new_open_tx_verifier` reads.
-
-    Mirrors the fields ``NewOpenTxVerifier`` pulls off ``SessionConfig``:
-    challenge currency/network/recipient, the deposit cap, and the optional
+    """The subset of the session config :func:`new_open_tx_verifier` reads:
+    the challenge currency/network/recipient, the deposit cap, and the optional
     payment-channels program id override."""
 
     currency: str
@@ -86,7 +76,7 @@ class OpenVerifierConfig(Protocol):
 @dataclass
 class VerifyOpenTxExpected:
     """The challenge-side values a client-submitted open transaction is
-    validated against. Mirrors ``VerifyOpenTxExpected`` in the Go port."""
+    validated against."""
 
     authorized_signer: str
     currency: str
@@ -99,8 +89,7 @@ class VerifyOpenTxExpected:
 
 @dataclass
 class VerifyOpenTxResult:
-    """The channel facts extracted from a verified open transaction. Mirrors
-    ``VerifyOpenTxResult`` in the Go port."""
+    """The channel facts extracted from a verified open transaction."""
 
     channel_id: str
     deposit: int
@@ -111,8 +100,7 @@ class VerifyOpenTxResult:
 def is_placeholder_signature(signature: str) -> bool:
     """Report whether ``signature`` is the pending placeholder produced by the
     server-completed open flow (an empty string or a run of 40+ ``'1'``
-    characters, the base58 encoding of the all-ones marker). Mirrors
-    ``isPlaceholderSignature`` in the Go port."""
+    characters, the base58 encoding of the all-ones marker)."""
     if signature == "":
         return True
     if len(signature) < 40:
@@ -123,7 +111,7 @@ def is_placeholder_signature(signature: str) -> bool:
 def _decode_transaction(transaction_b64: str) -> tuple[list[str], list, list[str]]:
     """Decode a base64 (legacy or v0) transaction into ``(account_keys,
     instructions, signatures)`` as base58 strings / compiled-instruction
-    objects. Mirrors ``solanatx.DecodeTransactionBase64`` consumption in Go."""
+    objects."""
     from solders.transaction import Transaction, VersionedTransaction
 
     from pay_kit._paycore.transaction import is_v0_wire_bytes
@@ -156,7 +144,7 @@ async def verify_open_tx(
     rpc_client: RpcClient | None,
 ) -> VerifyOpenTxResult:
     """Decode and validate a client-submitted payment-channel open transaction
-    against the session challenge. Mirrors ``VerifyOpenTx`` in the Go port.
+    against the session challenge.
 
     Both legacy and v0 transaction encodings are accepted. The embedded open
     instruction must target the configured payment-channels program, the payee
@@ -224,7 +212,7 @@ async def verify_open_tx(
     if open_ix is None:
         raise PaymentError("no payment-channels open instruction found", code="invalid-payload")
 
-    # Open instruction account layout (matches the generated client):
+    # Open instruction account layout:
     # 0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
     # 5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, ...
     accounts = [int(i) for i in open_ix.accounts]
@@ -287,7 +275,6 @@ async def verify_open_tx(
 
 def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | None) -> OpenTxVerifier:
     """Return the on-chain open verifier to install on the session config.
-    Mirrors ``NewOpenTxVerifier`` in the Go port.
 
     When the open payload carries a transaction, it is structurally validated
     against the challenge via :func:`verify_open_tx` (with an on-chain liveness
@@ -321,7 +308,7 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
 def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
     """Return the on-chain top-up verifier to install on the session config: it
     confirms the top-up transaction signature on-chain via
-    ``getSignatureStatuses``. Mirrors ``NewTopUpTxVerifier`` in the Go port.
+    ``getSignatureStatuses``.
 
     A ``None`` ``rpc_client`` returns ``None`` so the seam stays unset, and the
     new deposit is trusted as provided; suitable only for unit tests or
@@ -339,7 +326,7 @@ def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | No
 async def confirm_transaction_signature(rpc_client: RpcClient, signature: str, label: str) -> None:
     """Check once via ``getSignatureStatuses`` that ``signature`` names a known,
     successful transaction. ``label`` names the transaction in error messages
-    ("open", "top-up"). Mirrors ``confirmTransactionSignature`` in the Go port.
+    ("open", "top-up").
     """
     try:
         Signature.from_string(signature)

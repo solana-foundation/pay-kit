@@ -5,15 +5,13 @@ whether to accept (and what the new watermark would be), reject, or treat as an
 idempotent replay. The caller persists any accepted delta through the channel
 store, re-checking inside the atomic mutator.
 
-The check sequence (order and operators) is pinned across the language SDKs and
-harness-tested::
+The check sequence (order and operators) is normative and must be applied in
+exactly this order::
 
     parse u64 -> finalized -> close pending -> idempotent replay (same
     cumulative AND same signature, signature re-verified) -> cumulative >
     watermark strictly -> cumulative <= deposit -> delta >= min_voucher_delta ->
     Ed25519 verify against the stored authorized_signer -> expires_at > now.
-
-Ports ``go/protocols/mpp/server/session_voucher.go``.
 """
 
 from __future__ import annotations
@@ -26,10 +24,7 @@ from pay_kit.protocols.mpp.intents.session import SignedVoucher
 
 
 class VoucherVerifyStatus(StrEnum):
-    """The outcome class of a voucher verification.
-
-    Mirrors Go ``VoucherVerifyStatus``.
-    """
+    """The outcome class of a voucher verification."""
 
     #: The voucher advanced the channel watermark.
     ACCEPTED = "accepted"
@@ -43,8 +38,8 @@ class VoucherVerifyStatus(StrEnum):
 
 class VoucherRejectReason(StrEnum):
     """A stable string tag for voucher rejections so the caller can map to HTTP
-    statuses / log levels without parsing free text. The tag values are stable
-    across the language SDKs. Mirrors Go ``VoucherRejectReason``.
+    statuses / log levels without parsing free text. The tag values are part of
+    the wire contract and must not change.
     """
 
     #: The delta is below the configured minimum.
@@ -78,8 +73,7 @@ class ChannelState:
     of view, as read by the voucher verifier.
 
     The voucher verifier only reads a subset of the full channel state; this
-    dataclass carries the fields it needs. Mirrors the verifier-relevant fields
-    of Go ``ChannelState`` (see ``session_store.go``).
+    dataclass carries the fields it needs.
     """
 
     #: The on-chain channel address (base58).
@@ -116,8 +110,7 @@ class VoucherVerifyResult:
 
     ``status`` selects which fields are meaningful: ``new_cumulative`` for
     accepted and replayed; ``new_expires_at`` and ``new_signature`` for accepted
-    only; ``reason`` and ``detail`` for rejected only. Mirrors Go
-    ``VoucherVerifyResult``.
+    only; ``reason`` and ``detail`` for rejected only.
     """
 
     #: The outcome class.
@@ -142,9 +135,7 @@ class VoucherVerifyResult:
 
 @dataclass
 class VerifyVoucherArgs:
-    """The inputs to :func:`verify_voucher_for_channel`. Mirrors Go
-    ``VerifyVoucherArgs``.
-    """
+    """The inputs to :func:`verify_voucher_for_channel`."""
 
     #: The channel snapshot, typically read just before calling.
     state: ChannelState
@@ -171,8 +162,7 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
 
     Returns a verdict; the caller is responsible for persisting any accepted
     delta via the channel store. The verifier is pure: no store, network, or
-    clock side effects (the clock is injectable). Mirrors Go
-    ``VerifyVoucherForChannel``.
+    clock side effects (the clock is injectable).
     """
     state = args.state
     signed = args.signed
@@ -254,15 +244,12 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
 
 
 def _voucher_reject(reason: VoucherRejectReason, detail: str) -> VoucherVerifyResult:
-    """Build a rejected verdict. Mirrors Go ``voucherReject``."""
+    """Build a rejected verdict."""
     return VoucherVerifyResult(status=VoucherVerifyStatus.REJECTED, reason=reason, detail=detail)
 
 
 def _voucher_now(override: int | None) -> int:
-    """Return the override when set, otherwise the wall clock in Unix seconds.
-
-    Mirrors Go ``voucherNow``.
-    """
+    """Return the override when set, otherwise the wall clock in Unix seconds."""
     if override is not None:
         return override
     return int(time.time())
@@ -274,8 +261,7 @@ _U64_MAX = (1 << 64) - 1
 def _parse_u64(raw: str) -> int:
     """Parse a canonical unsigned base-10 ``u64``.
 
-    Rejects empty, signed, fractional, non-ASCII-digit, or out-of-range values,
-    matching Go's ``strconv.ParseUint(s, 10, 64)``.
+    Rejects empty, signed, fractional, non-ASCII-digit, or out-of-range values.
     """
     if not (raw.isascii() and raw.isdigit()):
         raise ValueError(f"invalid cumulative {raw!r}")
@@ -291,7 +277,6 @@ def _verify_voucher_signature_bytes(signed: SignedVoucher, authorized_signer: st
     included; callers order it explicitly.
 
     Returns ``None`` on success or a human-readable error string on failure.
-    Mirrors Go ``verifyVoucherSignatureBytes``.
     """
     from solders.pubkey import Pubkey  # type: ignore[import-untyped]
     from solders.signature import Signature  # type: ignore[import-untyped]
@@ -318,7 +303,7 @@ def verify_session_voucher(signed: SignedVoucher, authorized_signer: str) -> str
 
     Used by the commit and close paths; the voucher handler orders the two
     checks itself. Returns ``None`` on success or a human-readable error string
-    on failure. Mirrors Go ``verifySessionVoucher``.
+    on failure.
     """
     if signed.data.expires_at <= int(time.time()):
         return "voucher has expired"
