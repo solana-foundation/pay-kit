@@ -64,7 +64,7 @@ func TestPlaygroundSessionE2ESurfpool(t *testing.T) {
 		network:   "localnet",
 		rpcURL:    sandboxRPCURL(),
 		recipient: feePayer.PublicKey().String(),
-		secretKey: "playground-e2e-secret",
+		secretKey: "playground-e2e-secret-0123456789abc",
 		feePayer:  feePayer,
 		rpcClient: rpcClient,
 		repoRoot:  t.TempDir(),

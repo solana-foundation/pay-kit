@@ -194,7 +194,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		options.Network = "mainnet"
 	}
 	if options.Realm == "" {
-		options.Realm = DetectRealm()
+		options.Realm = DetectRealm(options.Recipient)
 	}
 	switch options.OpenTxSubmitter {
 	case "":

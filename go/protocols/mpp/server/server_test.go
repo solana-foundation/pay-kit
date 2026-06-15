@@ -32,7 +32,7 @@ func newTestMpp(t *testing.T) (*Mpp, *testutil.FakeRPC, testutilConfig) {
 	cfg := testutilConfig{
 		Recipient: recipientSigner.PublicKey().String(),
 		Client:    testutil.NewPrivateKey(),
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 	}
 	handler, err := New(Config{
 		Recipient: cfg.Recipient,
@@ -42,6 +42,9 @@ func newTestMpp(t *testing.T) (*Mpp, *testutil.FakeRPC, testutilConfig) {
 		SecretKey: cfg.SecretKey,
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
+		// Push-mode (type="signature") credentials are opt-in (#5); the shared
+		// fixture enables them so the signature-flow tests exercise settlement.
+		AcceptPushMode: true,
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -96,7 +99,7 @@ func TestVerifyCredentialTransactionSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization failed: %v", err)
 	}
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -119,10 +122,10 @@ func TestVerifyCredentialSignatureReplayRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err != nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err != nil {
 		t.Fatalf("first verify failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected replay to be rejected")
 	}
 }
@@ -141,10 +144,10 @@ func TestVerifyCredentialTransactionReplayRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err != nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err != nil {
 		t.Fatalf("first verify failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected replay to be rejected")
 	}
 }
@@ -158,7 +161,7 @@ func TestVerifyCredentialRejectsSponsoredPushMode(t *testing.T) {
 		Currency:       "sol",
 		Decimals:       9,
 		Network:        "localnet",
-		SecretKey:      "test-secret",
+		SecretKey:      "test-secret-key-0123456789abcdef",
 		RPC:            rpcClient,
 		Store:          core.NewMemoryStore(),
 		FeePayerSigner: feePayer,
@@ -177,7 +180,7 @@ func TestVerifyCredentialRejectsSponsoredPushMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected sponsored push mode to fail")
 	}
 }
@@ -189,13 +192,14 @@ func TestVerifyCredentialTokenSignatureSuccess(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	rpcClient.MintOwners[mint.String()] = solana.TokenProgramID
 	handler, err := New(Config{
-		Recipient: recipient.PublicKey().String(),
-		Currency:  mint.String(),
-		Decimals:  6,
-		Network:   "localnet",
-		SecretKey: "test-secret",
-		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
+		Recipient:      recipient.PublicKey().String(),
+		Currency:       mint.String(),
+		Decimals:       6,
+		Network:        "localnet",
+		SecretKey:      "test-secret-key-0123456789abcdef",
+		RPC:            rpcClient,
+		Store:          core.NewMemoryStore(),
+		AcceptPushMode: true,
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -212,7 +216,7 @@ func TestVerifyCredentialTokenSignatureSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization failed: %v", err)
 	}
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -228,13 +232,14 @@ func TestVerifyCredentialUSDCSymbolSignatureSuccess(t *testing.T) {
 	usdcMint := solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
 	rpcClient.MintOwners[usdcMint.String()] = solana.TokenProgramID
 	handler, err := New(Config{
-		Recipient: recipient.PublicKey().String(),
-		Currency:  "USDC",
-		Decimals:  6,
-		Network:   "localnet",
-		SecretKey: "test-secret",
-		RPC:       rpcClient,
-		Store:     core.NewMemoryStore(),
+		Recipient:      recipient.PublicKey().String(),
+		Currency:       "USDC",
+		Decimals:       6,
+		Network:        "localnet",
+		SecretKey:      "test-secret-key-0123456789abcdef",
+		RPC:            rpcClient,
+		Store:          core.NewMemoryStore(),
+		AcceptPushMode: true,
 	})
 	if err != nil {
 		t.Fatalf("new mpp failed: %v", err)
@@ -251,7 +256,7 @@ func TestVerifyCredentialUSDCSymbolSignatureSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorization failed: %v", err)
 	}
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -519,7 +524,7 @@ func TestVerifyCredentialExpiredChallengeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected expired challenge to fail")
 	}
 }
@@ -545,15 +550,26 @@ func TestNewMissingSecretKey(t *testing.T) {
 }
 
 func TestNewSecretKeyFromEnv(t *testing.T) {
-	t.Setenv("MPP_SECRET_KEY", "env-secret")
+	const envSecret = "env-secret-key-0123456789abcdef012345"
+	t.Setenv("MPP_SECRET_KEY", envSecret)
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	rpcClient := testutil.NewFakeRPC()
 	handler, err := New(Config{Recipient: recipient, RPC: rpcClient})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if handler.secretKey != "env-secret" {
+	if handler.secretKey != envSecret {
 		t.Fatalf("expected env secret, got %q", handler.secretKey)
+	}
+}
+
+func TestNewRejectsShortEnvSecretKey(t *testing.T) {
+	// The env-var path shares the >= 32-byte gate with Config.SecretKey (#24).
+	t.Setenv("MPP_SECRET_KEY", "too-short")
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	rpcClient := testutil.NewFakeRPC()
+	if _, err := New(Config{Recipient: recipient, RPC: rpcClient}); err == nil {
+		t.Fatal("expected error for short env secret key")
 	}
 }
 
@@ -565,7 +581,7 @@ func TestChargeToken(t *testing.T) {
 		Currency:  "USDC",
 		Decimals:  6,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -606,10 +622,12 @@ func TestChargeWithOptionsDescriptionAndExternalID(t *testing.T) {
 
 func TestChargeWithOptionsSplits(t *testing.T) {
 	handler, _, _ := newTestMpp(t)
+	vendor := testutil.NewPrivateKey().PublicKey().String()
+	processor := testutil.NewPrivateKey().PublicKey().String()
 	challenge, err := handler.ChargeWithOptions(context.Background(), "1.00", ChargeOptions{
 		Splits: []paycore.Split{
-			{Recipient: "VendorPayoutsWaLLetxxxxxxxxxxxxxxxxxxxxxx1111", Amount: "500000", Memo: "Vendor payout"},
-			{Recipient: "ProcessorFeeWaLLetxxxxxxxxxxxxxxxxxxxxxxx1111", Amount: "29000"},
+			{Recipient: vendor, Amount: "500000", Memo: "Vendor payout"},
+			{Recipient: processor, Amount: "29000"},
 		},
 	})
 	if err != nil {
@@ -668,7 +686,7 @@ func TestVerifyCredentialMissingPayloadType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for missing payload type")
 	}
 }
@@ -683,7 +701,7 @@ func TestVerifyCredentialMissingTransactionData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for missing transaction data")
 	}
 }
@@ -698,7 +716,7 @@ func TestVerifyCredentialSimulationFailure(t *testing.T) {
 	credential, _ := core.ParseAuthorization(authHeader)
 	// Make simulation fail
 	rpcClient.SimulateErr = fmt.Errorf("simulation failed")
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for simulation failure")
 	}
 }
@@ -712,7 +730,7 @@ func TestVerifyCredentialSendFailure(t *testing.T) {
 	}
 	credential, _ := core.ParseAuthorization(authHeader)
 	rpcClient.SendErr = fmt.Errorf("send failed")
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for send failure")
 	}
 }
@@ -726,7 +744,7 @@ func TestVerifyCredentialGetTxFailure(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -742,7 +760,7 @@ func TestVerifyCredentialGetTxFailure(t *testing.T) {
 	credential, _ := core.ParseAuthorization(authHeader)
 	// Make GetTransaction fail
 	rpcClient.GetTxErr = fmt.Errorf("transaction not found")
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for get transaction failure")
 	}
 }
@@ -757,7 +775,7 @@ func TestVerifyCredentialMissingSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for missing signature")
 	}
 }
@@ -771,7 +789,7 @@ func TestChargeWithFeePayer(t *testing.T) {
 		Currency:       "sol",
 		Decimals:       9,
 		Network:        "localnet",
-		SecretKey:      "test-secret",
+		SecretKey:      "test-secret-key-0123456789abcdef",
 		RPC:            rpcClient,
 		Store:          core.NewMemoryStore(),
 		FeePayerSigner: feePayer,
@@ -804,7 +822,7 @@ func TestNewWithDefaultValues(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	handler, err := New(Config{
 		Recipient: recipient,
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 	})
 	if err != nil {
@@ -816,8 +834,8 @@ func TestNewWithDefaultValues(t *testing.T) {
 	if handler.decimals != 6 {
 		t.Fatalf("expected default decimals 6, got %d", handler.decimals)
 	}
-	if handler.network != "mainnet-beta" {
-		t.Fatalf("expected default network mainnet-beta, got %q", handler.network)
+	if handler.network != "mainnet" {
+		t.Fatalf("expected default network mainnet, got %q", handler.network)
 	}
 }
 
@@ -837,8 +855,8 @@ func TestChargeKnownStablecoinTokenPrograms(t *testing.T) {
 			Recipient: testutil.NewPrivateKey().PublicKey().String(),
 			Currency:  tt.currency,
 			Decimals:  6,
-			Network:   "mainnet-beta",
-			SecretKey: "test-secret",
+			Network:   "mainnet",
+			SecretKey: "test-secret-key-0123456789abcdef",
 			RPC:       rpcClient,
 			Store:     core.NewMemoryStore(),
 		})
@@ -874,7 +892,7 @@ func TestVerifyCredentialTokenTransactionSuccess(t *testing.T) {
 		Currency:  mint.String(),
 		Decimals:  6,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -891,7 +909,7 @@ func TestVerifyCredentialTokenTransactionSuccess(t *testing.T) {
 		t.Fatalf("build credential failed: %v", err)
 	}
 	credential, _ := core.ParseAuthorization(authHeader)
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -908,7 +926,7 @@ func TestVerifyCredentialSignatureSuccess(t *testing.T) {
 		t.Fatalf("build credential failed: %v", err)
 	}
 	credential, _ := core.ParseAuthorization(authHeader)
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -922,7 +940,7 @@ func TestRPCURL(t *testing.T) {
 	recipient := testutil.NewPrivateKey().PublicKey().String()
 	handler, err := New(Config{
 		Recipient: recipient,
-		SecretKey: "secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		Network:   "devnet",
 		RPC:       rpcClient,
 	})
@@ -944,7 +962,7 @@ func TestVerifyCredentialTransactionWithFeePayerSigner(t *testing.T) {
 		Currency:       "sol",
 		Decimals:       9,
 		Network:        "localnet",
-		SecretKey:      "test-secret",
+		SecretKey:      "test-secret-key-0123456789abcdef",
 		RPC:            rpcClient,
 		Store:          core.NewMemoryStore(),
 		FeePayerSigner: feePayer,
@@ -959,7 +977,7 @@ func TestVerifyCredentialTransactionWithFeePayerSigner(t *testing.T) {
 		t.Fatalf("build credential failed: %v", err)
 	}
 	credential, _ := core.ParseAuthorization(authHeader)
-	receipt, err := handler.VerifyCredential(context.Background(), credential)
+	receipt, err := verifyCredentialEchoed(handler, context.Background(), credential)
 	if err != nil {
 		t.Fatalf("verify failed: %v", err)
 	}
@@ -985,7 +1003,7 @@ func TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast(t *testing.T) {
 		Currency:       "sol",
 		Decimals:       9,
 		Network:        "localnet",
-		SecretKey:      "test-secret",
+		SecretKey:      "test-secret-key-0123456789abcdef",
 		RPC:            rpcClient,
 		Store:          core.NewMemoryStore(),
 		FeePayerSigner: feePayer,
@@ -1053,7 +1071,7 @@ func TestVerifyCredentialRejectsTamperedTransferBeforeBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rebuild credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), tamperedCredential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), tamperedCredential); err == nil {
 		t.Fatal("expected tampered transfer amount to be rejected pre-broadcast")
 	}
 	// Pre-broadcast rejection: the FakeRPC must not have observed any
@@ -1079,7 +1097,7 @@ func TestVerifyCredentialChallengeMismatchRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected challenge mismatch to fail")
 	}
 }
@@ -1202,7 +1220,7 @@ func TestVerifyCredentialRejectsInvalidPayloadType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected invalid payload type to fail")
 	}
 }
@@ -1242,7 +1260,7 @@ func TestVerifyCredentialMalformedTransactionData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential failed: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected error for malformed transaction data")
 	}
 }
@@ -1367,7 +1385,7 @@ func TestVerifyTransactionMissingTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected missing transaction error")
 	}
 }
@@ -1385,7 +1403,7 @@ func TestVerifyTransactionInvalidBase64(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected invalid base64 error")
 	}
 }
@@ -1402,7 +1420,7 @@ func TestVerifyTransactionUnknownPayloadType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected invalid payload type error")
 	}
 }
@@ -1420,7 +1438,7 @@ func TestVerifySignatureMissingSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected missing signature error")
 	}
 }
@@ -1438,7 +1456,7 @@ func TestVerifySignatureInvalidSignatureBase58(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected invalid signature base58 error")
 	}
 }
@@ -1479,7 +1497,7 @@ func TestVerifyTransactionSimulateError(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       wrapped,
 		Store:     core.NewMemoryStore(),
 	})
@@ -1499,7 +1517,7 @@ func TestVerifyTransactionSimulateError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected simulate error")
 	}
 }
@@ -1520,7 +1538,7 @@ func TestVerifyTransactionSendError(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       wrapped,
 		Store:     core.NewMemoryStore(),
 	})
@@ -1540,7 +1558,7 @@ func TestVerifyTransactionSendError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected send error")
 	}
 }
@@ -1561,7 +1579,7 @@ func TestVerifyOnChainTransactionNotFound(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       wrapped,
 		Store:     core.NewMemoryStore(),
 	})
@@ -1580,7 +1598,7 @@ func TestVerifyOnChainTransactionNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected transaction not found error")
 	}
 }
@@ -1605,7 +1623,7 @@ func TestVerifyTransactionStoreError(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     errStore{},
 	})
@@ -1625,7 +1643,7 @@ func TestVerifyTransactionStoreError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected store error")
 	}
 }
@@ -1638,7 +1656,7 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 		Currency:  "sol",
 		Decimals:  9,
 		Network:   "localnet",
-		SecretKey: "test-secret",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -1662,7 +1680,7 @@ func TestVerifyTransactionMissingPrimarySignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected missing primary signature error")
 	}
 }
@@ -1674,8 +1692,8 @@ func TestVerifyTransactionWrongNetworkBlockhash(t *testing.T) {
 		Recipient: recipient.PublicKey().String(),
 		Currency:  "sol",
 		Decimals:  9,
-		Network:   "mainnet-beta",
-		SecretKey: "test-secret",
+		Network:   "mainnet",
+		SecretKey: "test-secret-key-0123456789abcdef",
 		RPC:       rpcClient,
 		Store:     core.NewMemoryStore(),
 	})
@@ -1701,7 +1719,7 @@ func TestVerifyTransactionWrongNetworkBlockhash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("credential: %v", err)
 	}
-	if _, err := handler.VerifyCredential(context.Background(), credential); err == nil {
+	if _, err := verifyCredentialEchoed(handler, context.Background(), credential); err == nil {
 		t.Fatal("expected wrong network error")
 	}
 }

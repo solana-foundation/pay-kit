@@ -273,7 +273,7 @@ func mustClient(t *testing.T) *paykit.Client {
 		Network:   paykit.SolanaLocalnet,
 		Preflight: disabled(),
 		MPP: paykit.MPPConfig{
-			ChallengeBindingSecret: []byte("test-secret"),
+			ChallengeBindingSecret: []byte("test-secret-key-0123456789abcdef"),
 		},
 	})
 	if err != nil {

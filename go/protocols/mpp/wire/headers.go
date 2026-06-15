@@ -32,6 +32,13 @@ func ParseWWWAuthenticate(header string) (PaymentChallenge, error) {
 	if !ok || requestRaw == "" {
 		return PaymentChallenge{}, fmt.Errorf("missing %q field", "request")
 	}
+	// Cap the base64url request param before decoding/JSON-parsing it, matching
+	// the credential (ParseAuthorization) and receipt (ParseReceipt) parsers.
+	// request is the only challenge field that drives O(n) decode + JSON-parse
+	// work; an oversized value would otherwise do unbounded work here.
+	if len(requestRaw) > maxTokenLen {
+		return PaymentChallenge{}, fmt.Errorf("request field exceeds maximum length of %d bytes", maxTokenLen)
+	}
 	requestBytes, err := Base64URLDecode(requestRaw)
 	if err != nil {
 		return PaymentChallenge{}, fmt.Errorf("invalid request field: %w", err)

@@ -5,7 +5,10 @@
 // byte-identical across language SDKs.
 package paycore
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Solana program and well-known mint addresses used by the SDK.
 // Mirrors the constant tables in rust/src/protocol/solana.rs so the
@@ -57,6 +60,26 @@ var token2022Stablecoins = map[string]struct{}{
 	"CASH":  {},
 }
 
+// RequireKnownNetwork validates a network slug against the canonical
+// allowlist {mainnet, devnet, localnet}. The legacy "mainnet-beta" spelling
+// (any case) is rejected in favor of the canonical "mainnet"; an empty slug
+// or any other value (e.g. "testnet") is also rejected. Mirrors the Rust
+// reference validate_network (protocol/solana.rs) so a misconfigured server
+// fails fast at boot rather than silently resolving an unknown slug to
+// mainnet mints. Returns the canonical slug on success.
+func RequireKnownNetwork(network string) (SolanaNetwork, error) {
+	if strings.TrimSpace(network) == "" {
+		return "", fmt.Errorf("network is required (one of %s, %s, %s)", NetworkMainnet, NetworkDevnet, NetworkLocalnet)
+	}
+	switch network {
+	case string(NetworkMainnet), string(NetworkDevnet), string(NetworkLocalnet):
+		return SolanaNetwork(network), nil
+	default:
+		return "", fmt.Errorf("unsupported network %q (must be one of %s, %s, %s; the legacy %q spelling is not accepted)",
+			network, NetworkMainnet, NetworkDevnet, NetworkLocalnet, "mainnet-beta")
+	}
+}
+
 // DefaultRPCURL returns the default RPC endpoint for a Solana network.
 func DefaultRPCURL(network string) string {
 	switch network {
@@ -69,6 +92,17 @@ func DefaultRPCURL(network string) string {
 	}
 }
 
+// mintNetworkKey folds a network slug onto the key used in the knownMints
+// table. The table is keyed by the legacy "mainnet-beta" spelling for
+// historical reasons; the canonical "mainnet" slug (and unknown slugs) map
+// to it so the wire-format mint tables stay stable.
+func mintNetworkKey(network string) string {
+	if string(ParseSolanaNetwork(network)) == string(NetworkMainnet) {
+		return "mainnet-beta"
+	}
+	return network
+}
+
 // ResolveMint converts a symbolic currency into a mint address.
 // Returns an empty string for native SOL.
 func ResolveMint(currency string, network string) string {
@@ -78,7 +112,7 @@ func ResolveMint(currency string, network string) string {
 		return ""
 	}
 	if mints, ok := knownMints[normalized]; ok {
-		if mint, ok := mints[network]; ok {
+		if mint, ok := mints[mintNetworkKey(network)]; ok {
 			return mint
 		}
 		return mints["mainnet-beta"]

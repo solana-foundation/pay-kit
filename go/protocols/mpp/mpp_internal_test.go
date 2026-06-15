@@ -35,7 +35,7 @@ func testCfg() paykit.Config {
 		Network:     paykit.SolanaLocalnet,
 		Stablecoins: []paykit.Stablecoin{paykit.USDC},
 		Operator:    paykit.Operator{Signer: demo, Recipient: demo.Pubkey(), FeePayer: true},
-		MPP:         paykit.MPPConfig{Realm: "Unit", ChallengeBindingSecret: []byte("secret")},
+		MPP:         paykit.MPPConfig{Realm: "Unit", ChallengeBindingSecret: []byte("unit-test-binding-secret-0123456789abcdef")},
 		RPCURL:      "https://example.invalid", // never dialed in these tests
 	}
 }

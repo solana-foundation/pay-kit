@@ -255,7 +255,7 @@ func TestBuildChargeTransactionToken2022(t *testing.T) {
 
 	payload, err := BuildChargeTransaction(context.Background(), signer, rpcClient, "1000", mint.String(), recipient, paycore.MethodDetails{
 		Decimals: &decimals,
-	}, BuildOptions{})
+	}, BuildOptions{AllowUnknownToken2022: true})
 	if err != nil {
 		t.Fatalf("build failed: %v", err)
 	}
@@ -335,9 +335,11 @@ func TestBuildChargeTransactionTokenWithSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	// 2 compute budget + 1 primary transfer + 2 split instructions + 1 split memo = 6
-	if len(tx.Message.Instructions) != 6 {
-		t.Fatalf("expected 6 instructions, got %d", len(tx.Message.Instructions))
+	// 2 compute budget + 1 primary transfer + 1 split transfer + 1 split memo
+	// = 5. No split ATA-create: the split does not set ataCreationRequired, so
+	// after the #20 fix the client no longer auto-creates it in client-paid mode.
+	if len(tx.Message.Instructions) != 5 {
+		t.Fatalf("expected 5 instructions, got %d", len(tx.Message.Instructions))
 	}
 	if !hasMemoText(memoTexts(t, tx), "platform fee") {
 		t.Fatalf("expected split memo instruction")

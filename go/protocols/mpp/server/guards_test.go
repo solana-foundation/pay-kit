@@ -113,7 +113,7 @@ func TestValidateComputeBudgetInstructions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tx := buildTxWithComputeBudgetIx(t, tc.data)
-			err := validateComputeBudgetInstructions(tx)
+			err := validateComputeBudgetInstructions(tx, false)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil")
@@ -139,6 +139,26 @@ func TestValidateComputeBudgetInstructions(t *testing.T) {
 	}
 }
 
+// #25: in fee-sponsored mode the tight price cap applies; in client-paid mode
+// the general 5M cap still applies.
+func TestComputeUnitPriceFeeSponsoredCap(t *testing.T) {
+	// Just under the tight cap: accepted in fee-sponsored mode.
+	tx := buildTxWithComputeBudgetIx(t, encodeUnitPrice(maxComputeUnitPriceMicroLamportsFeeSponsored))
+	if err := validateComputeBudgetInstructions(tx, true); err != nil {
+		t.Fatalf("at-tight-cap price should pass fee-sponsored: %v", err)
+	}
+	// One over the tight cap: rejected in fee-sponsored mode.
+	tx = buildTxWithComputeBudgetIx(t, encodeUnitPrice(maxComputeUnitPriceMicroLamportsFeeSponsored+1))
+	if err := validateComputeBudgetInstructions(tx, true); err == nil {
+		t.Fatal("above-tight-cap price should be rejected fee-sponsored")
+	}
+	// The same above-tight value is fine in client-paid mode (general 5M cap).
+	tx = buildTxWithComputeBudgetIx(t, encodeUnitPrice(maxComputeUnitPriceMicroLamportsFeeSponsored+1))
+	if err := validateComputeBudgetInstructions(tx, false); err != nil {
+		t.Fatalf("tight cap must not apply when client pays: %v", err)
+	}
+}
+
 // TestValidateComputeBudgetInstructions_NonComputeBudgetIgnored confirms
 // that instructions targeting other programs do not trip the validator.
 func TestValidateComputeBudgetInstructions_NonComputeBudgetIgnored(t *testing.T) {
@@ -151,7 +171,7 @@ func TestValidateComputeBudgetInstructions_NonComputeBudgetIgnored(t *testing.T)
 			},
 		},
 	}
-	if err := validateComputeBudgetInstructions(tx); err != nil {
+	if err := validateComputeBudgetInstructions(tx, false); err != nil {
 		t.Fatalf("expected nil error for non-compute-budget instruction, got %v", err)
 	}
 }
@@ -228,7 +248,7 @@ func TestValidateComputeBudgetInstructions_OutOfRangeProgramIndex(t *testing.T) 
 			},
 		},
 	}
-	err := validateComputeBudgetInstructions(tx)
+	err := validateComputeBudgetInstructions(tx, false)
 	if err == nil {
 		t.Fatal("expected error for out-of-range ProgramIDIndex")
 	}
@@ -252,7 +272,7 @@ func TestValidateComputeBudgetInstructions_RejectsAccounts(t *testing.T) {
 			},
 		},
 	}
-	err := validateComputeBudgetInstructions(tx)
+	err := validateComputeBudgetInstructions(tx, false)
 	if err == nil {
 		t.Fatal("expected error for compute-budget instruction with accounts")
 	}

@@ -78,7 +78,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *app) {
 		network:   "localnet",
 		rpcURL:    stub.URL,
 		recipient: feePayer.PublicKey().String(),
-		secretKey: "playground-smoke-secret",
+		secretKey: "playground-smoke-secret-0123456789ab",
 		feePayer:  feePayer,
 		rpcClient: rpc.New(stub.URL),
 		repoRoot:  t.TempDir(), // empty root: no docs generated, no SPA dist
