@@ -378,6 +378,35 @@ impl Mpp {
         self.charge_with_options(amount, ChargeOptions::default())
     }
 
+    /// Verify a payment credential against a route priced at `amount`.
+    ///
+    /// Convenience wrapper for the common "gate this route at `amount`" flow:
+    /// it parses the `Authorization: Payment` header value, rebuilds this
+    /// route's expected request from `amount` (via [`charge`](Self::charge)),
+    /// and verifies the credential against it with
+    /// [`verify_credential_with_expected`](Self::verify_credential_with_expected).
+    /// Because the expected request is rebuilt from `amount`, a credential
+    /// issued for a different price on the same server is rejected — this is the
+    /// cross-route replay protection the axum helpers ([`paid_get`]) rely on.
+    ///
+    /// [`paid_get`]: crate::server::axum::paid_get
+    pub async fn verify_payment_for_amount(
+        &self,
+        credential_str: &str,
+        amount: &str,
+    ) -> Result<Receipt, VerificationError> {
+        let credential = crate::protocol::core::headers::parse_authorization(credential_str)
+            .map_err(|e| VerificationError::new(format!("Failed to parse Authorization: {e}")))?;
+        let challenge = self
+            .charge(amount)
+            .map_err(|e| VerificationError::new(format!("Failed to build route challenge: {e}")))?;
+        let expected: ChargeRequest = challenge.request.decode().map_err(|e| {
+            VerificationError::new(format!("Failed to decode expected request: {e}"))
+        })?;
+        self.verify_credential_with_expected(&credential, &expected)
+            .await
+    }
+
     /// Generate a charge challenge with additional options.
     pub fn charge_with_options(
         &self,
