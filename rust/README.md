@@ -13,7 +13,11 @@ Rust implementations of the Solana payment protocols supported by this repo:
 - **MPP** (`solana-mpp`) — Machine Payments Protocol (charge + session intents).
 - **x402** (`solana-x402`) — HTTP 402 with the `exact` scheme, plus SIWX.
 - **pay-kit** (`solana-pay-kit`) — facade crate that re-exports both behind
-  feature flags `mpp` and `x402` (both default).
+  feature flags `mpp` and `x402` (both default), and ships the unified
+  dual-protocol axum gate.
+
+**New here? Start with the SDK guide: [`crates/kit/README.md`](crates/kit/README.md)** —
+how to gate a route (accepting both MPP and x402) and pay a 402 endpoint.
 
 ## Layout
 
