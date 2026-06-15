@@ -261,7 +261,7 @@ test('e2e: fee payer mode — server co-signs and pays fees', async () => {
     const feePayerSigner = await generateKeyPairSigner();
     await client.airdrop(feePayerSigner.address, lamports(10_000_000_000n));
 
-    const secretKey = 'test-secret-key-feepayer';
+    const secretKey = 'test-secret-key-feepayer-padded-32b';
 
     const feePayerMppx = ServerMppx.create({
         secretKey,
@@ -358,7 +358,7 @@ test('e2e: USDC charge via pull mode with fee payer', async () => {
     await fundUsdc(clientSigner.address, 100_000_000); // 100 USDC
     await fundUsdc(recipientSigner.address, 0);
 
-    const secretKey = 'test-secret-key-usdc';
+    const secretKey = 'test-secret-key-usdc-padded-to-32bytes';
 
     const usdcMppx = ServerMppx.create({
         secretKey,
@@ -428,7 +428,7 @@ test('e2e: USDC charge with splits (platform fee)', async () => {
     await fundUsdc(recipientSigner.address, 0);
     await fundUsdc(platformSigner.address, 0);
 
-    const secretKey = 'test-secret-key-splits';
+    const secretKey = 'test-secret-key-splits-padded-32bytes';
     const splits = [{ recipient: platformSigner.address, amount: '5000', memo: 'platform fee' }];
 
     const splitsMppx = ServerMppx.create({
@@ -493,7 +493,7 @@ test('e2e: native SOL charge with splits', async () => {
     const platformSigner = await generateKeyPairSigner();
     const referrerSigner = await generateKeyPairSigner();
 
-    const secretKey = 'test-secret-key-sol-splits';
+    const secretKey = 'test-secret-key-sol-splits-padded-32b';
     // Split amounts must be >= rent-exempt minimum (~890_880 lamports)
     // because the recipient accounts are freshly generated keypairs that
     // don't yet exist on-chain, and Solana refuses to create system

@@ -19,7 +19,8 @@ import { Mppx } from 'mppx/server';
 import { charge } from '../server/Charge.js';
 
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
-const SECRET_KEY = 'cross-route-replay-test-secret';
+// >= 32 bytes (audit #24 secret-key floor enforced by the secret guard).
+const SECRET_KEY = 'cross-route-replay-test-secret-32-bytes';
 const REALM = 'api.example.com';
 
 function makeHandler() {
