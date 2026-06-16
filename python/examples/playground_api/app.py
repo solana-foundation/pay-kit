@@ -27,15 +27,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, Response
 from solders.keypair import Keypair
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import pay_kit
 from pay_kit._paycore.network import Network
-from pay_kit.fastapi import install_exception_handler
+from pay_kit.fastapi import install
 from pay_kit.signer import LocalSigner
 
 from .docs import build_docs_router, find_repo_root
@@ -45,9 +43,6 @@ from .utils import env_or, json_error, rpc_call
 from .x402 import register_x402
 
 logger = logging.getLogger("playground-api")
-
-# Payment headers the browser playground reads off cross-origin responses.
-_EXPOSE_HEADERS = ["www-authenticate", "payment-receipt", "x-payment-required", "x-payment-response"]
 
 
 @dataclass
@@ -294,24 +289,10 @@ def create_app(state: AppState | None = None) -> FastAPI:
     )
 
     app = FastAPI(title="PayKit Playground (Python)")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=_EXPOSE_HEADERS,
-    )
-    # SDK shim: maps PayKitError (incl. the 402 challenge) to its HTTP response
-    # and echoes settlement headers onto gated success responses.
-    install_exception_handler(app)
-
-    # Guard handlers raise HTTPException(detail=json_error(...)); Starlette would
-    # wrap the dict as {"detail": {...}}, so unwrap it to the bare {"error": ...}
-    # shape the TS/Go examples return.
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(_request: Request, exc: StarletteHTTPException) -> Response:
-        body = exc.detail if isinstance(exc.detail, dict) else {"error": exc.detail}
-        return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+    # One-call pay-kit setup: payment-header CORS, the PayKitError -> HTTP
+    # response mapping + settlement-header echo, and the bare-dict HTTPException
+    # shape the guards rely on.
+    install(app)
 
     register_hub(app, state)
     register_faucet(app, state)

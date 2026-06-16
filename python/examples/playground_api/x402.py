@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 import pay_kit
 from pay_kit import Gate, Protocol, usd
-from pay_kit.fastapi import Payment, RequirePayment, install_exception_handler
+from pay_kit.fastapi import Payment, RequirePayment
 
 from .utils import rpc_call
 
@@ -42,8 +42,6 @@ FACTS = [
 
 def register_x402(app: FastAPI, state: AppState) -> None:
     """Mount the embedded facilitator and the x402-gated routes."""
-    install_exception_handler(app)
-
     # --- embedded facilitator -----------------------------------------------
 
     @app.get("/facilitator/supported")

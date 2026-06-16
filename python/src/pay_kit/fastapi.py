@@ -27,7 +27,7 @@ Starlette lowercase header names at the boundary, so canonical casing is safe).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 try:
@@ -88,6 +88,60 @@ def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
         return payment
 
     return dependency
+
+
+#: Response headers carrying MPP/x402 payment challenges and settlement proofs.
+#: A browser client reading them cross-origin needs them in the CORS expose list.
+PAYMENT_HEADERS: tuple[str, ...] = (
+    "www-authenticate",
+    "payment-receipt",
+    "x-payment-required",
+    "x-payment-response",
+)
+
+
+def install(app: Any, *, cors_origins: Sequence[str] | None = ("*",)) -> None:
+    """One-call FastAPI setup for a pay-kit server.
+
+    Bundles what every pay-kit FastAPI server otherwise repeats by hand:
+
+    * CORS that exposes the payment challenge / settlement headers
+      (:data:`PAYMENT_HEADERS`) so a browser client can read them cross-origin.
+      Pass ``cors_origins=None`` to skip CORS (e.g. behind a gateway that adds
+      it), or a concrete origin list to lock it down.
+    * the :class:`~pay_kit.errors.PayKitError` -> HTTP handler and the
+      settlement-header echo middleware (see :func:`install_exception_handler`).
+    * an ``HTTPException`` handler that renders a ``dict`` detail as the bare
+      response body, so a guard raising ``HTTPException(detail={"error": ...})``
+      keeps that shape instead of Starlette's ``{"detail": {...}}`` wrapper.
+
+    Usage::
+
+        app = FastAPI()
+        pay_kit.fastapi.install(app)
+    """
+    if cors_origins is not None:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=list(PAYMENT_HEADERS),
+        )
+
+    install_exception_handler(app)
+
+    from fastapi.responses import JSONResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(  # pyright: ignore[reportUnusedFunction]  # registered via @app.exception_handler
+        _request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        body = exc.detail if isinstance(exc.detail, dict) else {"error": exc.detail}
+        return JSONResponse(body, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
 
 def install_exception_handler(app: Any) -> None:
