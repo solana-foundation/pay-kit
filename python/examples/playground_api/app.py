@@ -1,10 +1,9 @@
 # examples/playground_api/app.py
 """The HTTP API behind the pay-kit playground (FastAPI).
 
-Serves the playground endpoints with their payment gating (MPP charges through
-the ``pay_kit`` umbrella surface, x402 through the x402 adapter, sessions
-through the MPP session method), so the playground web app works against it by
-only setting ``PAYKIT_PLAYGROUND_API_URL``.
+Serves the playground endpoints with their payment gating (MPP charges and
+sessions through the ``pay_kit`` umbrella surface), so the playground web app
+works against it by only setting ``PAYKIT_PLAYGROUND_API_URL``.
 
     cd python
     uvicorn examples.playground_api.app:app --port 3000
@@ -13,9 +12,9 @@ Environment: PORT, NETWORK, RPC_URL, RECIPIENT, FEE_PAYER_KEY, MPP_SECRET_KEY.
 See README.md for the full table.
 
 This module owns the boot wiring (:class:`AppState`, :func:`create_app`) and
-the free hub endpoints (health, config catalog). The charge / session / x402 /
-faucet / docs / subscription feature endpoints plug into the ``register_*`` seam
-in :func:`create_app` and are filled in separately.
+the free hub endpoints (health, config catalog). The charge / session / faucet
+/ docs feature endpoints plug into the ``register_*`` seam in
+:func:`create_app` and are filled in separately.
 """
 
 from __future__ import annotations
@@ -40,7 +39,6 @@ from .docs import build_docs_router, find_repo_root
 from .faucet import register_faucet
 from .sessions import register_sessions
 from .utils import env_or, json_error, rpc_call
-from .x402 import register_x402
 
 logger = logging.getLogger("playground-api")
 
@@ -112,10 +110,8 @@ def state_from_env() -> AppState:
 def build_endpoint_list() -> list[dict[str, Any]]:
     """Build the ``/api/v1/config`` endpoint catalog.
 
-    Declared inline, mirroring the TS ``buildEndpointList``. The subscription
-    entry is omitted because the Python SDK has no subscription server method
-    yet (see README.md); the stocks-search / stocks-history / weather / fortune
-    / x402 routes stay live server-side but are not advertised in the nav.
+    Declared inline, mirroring the TS ``buildEndpointList``. Every advertised
+    entry has a live server route; the playground exposes exactly these.
     """
     return [
         {
@@ -207,10 +203,9 @@ def register_hub(app: FastAPI, state: AppState) -> None:
 
 # --- feature-module registration seam ---------------------------------------
 #
-# The charge / session / subscription endpoints plug in here. faucet, docs, and
-# x402 register from their own modules directly in create_app. Each registrar
-# takes the app and shared state and mounts its routes; sessions returns a
-# shutdown hook.
+# The charge endpoints plug in here. faucet, docs, and sessions register from
+# their own modules directly in create_app. Each registrar takes the app and
+# shared state and mounts its routes; sessions returns a shutdown hook.
 
 
 def register_charges(app: FastAPI, state: AppState) -> None:
@@ -220,20 +215,6 @@ def register_charges(app: FastAPI, state: AppState) -> None:
     from .charges import register_charges as _register
 
     _register(app, state)
-
-
-def register_subscriptions(app: FastAPI) -> None:
-    """Mount the documented subscription stub.
-
-    The Python SDK has no ``solana.subscription`` server method yet, so the
-    ``/api/v1/premium/feed`` route answers 501 with a pointer at the gap and the
-    catalog omits the subscription entry (the UI renders its empty state). TS
-    gates the real route behind ``if (plan)``. Implemented in
-    :mod:`subscriptions`.
-    """
-    from .subscriptions import register_subscriptions as _register
-
-    _register(app)
 
 
 # --- SPA static serving ------------------------------------------------------
@@ -298,9 +279,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
     register_faucet(app, state)
     app.include_router(build_docs_router(state))
     register_charges(app, state)
-    register_subscriptions(app)
     sessions_shutdown = register_sessions(app, state)
-    register_x402(app, state)
 
     # The SPA catch-all must register after every API route.
     register_spa(app, state.repo_root)
