@@ -109,11 +109,37 @@ class SessionSplit:
 class SessionRequest:
     """Session intent request, the payload embedded in a 402 challenge.
 
-    Describes the channel parameters the server is offering: the spending cap,
-    currency and decimals, recipient and operator addresses, optional payment
-    splits, network, program id, and the funding modes the server supports.
-    Optional fields are omitted from ``to_dict()`` when ``None`` and
-    ``splits``/``modes`` are omitted when empty.
+    Describes the channel parameters the server is offering. Optional fields are
+    omitted from ``to_dict()`` when ``None``; ``splits``/``modes`` are omitted
+    when empty.
+
+    Attributes:
+        cap: Maximum cumulative amount the session may bill, as a canonical
+            base-unit decimal string (e.g. ``"500000"`` for 0.50 USDC at 6
+            decimals). Vouchers may never sign a cumulative above this.
+        currency: The settlement currency: an SPL mint address or a known
+            symbol (e.g. ``"USDC"``).
+        operator: Base58 address of the operator that meters the session and
+            co-signs settlement (the fee payer for on-chain commits).
+        recipient: Base58 address that receives the settled funds.
+        decimals: Token decimals for ``currency``; required to interpret
+            ``cap`` and voucher amounts when ``currency`` is a mint address.
+        network: Target Solana network (``"mainnet"`` / ``"devnet"`` /
+            ``"localnet"``).
+        splits: Payment splits committed at channel open, each taking a
+            basis-point share of every settlement.
+        program_id: Base58 id of the on-chain payment-channel (push) or
+            delegation (pull) program the channel is opened against.
+        description: Human-readable label shown on the challenge.
+        external_id: Caller-supplied correlation id echoed back on settlement.
+        min_voucher_delta: Minimum increase between two consecutive vouchers,
+            as a base-unit decimal string; rejects dust-sized increments.
+        modes: Funding modes the server accepts (``push`` payment channel,
+            ``pull`` SPL delegation).
+        pull_voucher_strategy: For pull mode, how vouchers are produced
+            (e.g. per-delivery vs. cumulative).
+        recent_blockhash: Optional blockhash the client reuses when building
+            the open transaction, avoiding an extra RPC round-trip.
     """
 
     cap: str
@@ -236,12 +262,34 @@ class OpenPayload:
     Use :meth:`push`, :meth:`payment_channel`, :meth:`payment_channel_with_mode`,
     or :meth:`pull` to construct. Inspect :attr:`mode` to distinguish variants on
     the server. ``mode`` is required: :meth:`from_dict` raises when it is absent.
-    Push-mode fields (``channel_id``, ``deposit``, ``payer``, ``payee``,
-    ``mint``, ``salt``, ``grace_period``, ``transaction``) and pull-mode fields
-    (``token_account``, ``approved_amount``, ``owner``, ``init_multi_delegate_tx``,
-    ``update_delegation_tx``) are populated according to the selected mode.
-
+    The mode-specific fields are populated according to the selected mode;
     ``salt`` serializes as a decimal string and decodes from string or number.
+
+    Attributes:
+        mode: The funding variant (``push`` payment channel, ``pull`` SPL
+            delegation); selects which mode-specific fields apply.
+        authorized_signer: Base58 of the key the channel authorizes to sign
+            vouchers against the deposit.
+        signature: Signature authorizing this open payload.
+        channel_id: (push) Base58 id of the opened payment channel.
+        deposit: (push) Amount funding the channel, as a base-unit decimal
+            string; the ceiling vouchers can draw against.
+        payer: (push) Base58 address funding the channel.
+        payee: (push) Base58 address the channel settles to.
+        mint: (push) SPL mint of the channel's token.
+        salt: (push) Numeric salt deriving the channel PDA; distinct salts let
+            one payer open several channels to one payee.
+        grace_period: (push) Seconds after expiry before the channel can be
+            force-closed.
+        transaction: (push) Base64 signed transaction that opens the channel.
+        token_account: (pull) Base58 SPL token account the delegation draws
+            from.
+        approved_amount: (pull) Delegation cap, as a base-unit decimal string.
+        owner: (pull) Base58 owner of ``token_account``.
+        init_multi_delegate_tx: (pull) Base64 transaction initializing the
+            multi-delegate account when one is not yet present.
+        update_delegation_tx: (pull) Base64 transaction setting/updating the
+            delegation to ``approved_amount``.
     """
 
     mode: SessionMode
