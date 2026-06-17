@@ -107,57 +107,54 @@ def state_from_env() -> AppState:
 # --- endpoint catalog (drives the playground web app's sidebar) -------------
 
 
-def build_endpoint_list() -> list[dict[str, Any]]:
-    """Build the ``/api/v1/config`` endpoint catalog.
-
-    Declared inline, mirroring the TS ``buildEndpointList``. Every advertised
-    entry has a live server route; the playground exposes exactly these.
-    """
-    return [
-        {
-            "id": "stocks-quote",
-            "primitive": "charge",
-            "method": "GET",
-            "path": "/api/v1/stocks/quote/:symbol",
-            "title": "Stock quote",
-            "description": "Real-time price for a single ticker.",
-            "cost": "0.01 USDC",
-            "params": [{"name": "symbol", "default": "AAPL"}],
-        },
-        {
-            "id": "marketplace-buy",
-            "primitive": "charge",
-            "method": "GET",
-            "path": "/api/v1/marketplace/buy/:productId",
-            "title": "Marketplace purchase",
-            "description": "Multi-recipient split (seller + platform + referral).",
-            "cost": "varies",
-            "params": [
-                {"name": "productId", "default": "sol-hoodie"},
-                {"name": "referrer", "default": ""},
-            ],
-        },
-        {
-            "id": "sessions-stream",
-            "primitive": "session",
-            "method": "GET",
-            "path": "/sessions/stream",
-            "title": "Metered stream",
-            "description": "Pay-per-chunk SSE delivery via session vouchers.",
-            "cost": "0.0001 USDC / chunk",
-            "unitPrice": "100",
-        },
-        {
-            "id": "sessions-compute",
-            "primitive": "session",
-            "method": "POST",
-            "path": "/sessions/compute",
-            "title": "Pay-per-call compute",
-            "description": "Voucher-billed inference; cap 0.50 USDC per session.",
-            "cost": "0.005 USDC / call",
-            "unitPrice": "5000",
-        },
-    ]
+# The /api/v1/config endpoint catalog the web app renders in its sidebar. A
+# curated subset of the live routes (mirrors the TS buildEndpointList): every
+# entry here has a server route, but not every route is advertised.
+_ENDPOINT_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "stocks-quote",
+        "primitive": "charge",
+        "method": "GET",
+        "path": "/api/v1/stocks/quote/:symbol",
+        "title": "Stock quote",
+        "description": "Real-time price for a single ticker.",
+        "cost": "0.01 USDC",
+        "params": [{"name": "symbol", "default": "AAPL"}],
+    },
+    {
+        "id": "marketplace-buy",
+        "primitive": "charge",
+        "method": "GET",
+        "path": "/api/v1/marketplace/buy/:productId",
+        "title": "Marketplace purchase",
+        "description": "Multi-recipient split (seller + platform + referral).",
+        "cost": "varies",
+        "params": [
+            {"name": "productId", "default": "sol-hoodie"},
+            {"name": "referrer", "default": ""},
+        ],
+    },
+    {
+        "id": "sessions-stream",
+        "primitive": "session",
+        "method": "GET",
+        "path": "/sessions/stream",
+        "title": "Metered stream",
+        "description": "Pay-per-chunk SSE delivery via session vouchers.",
+        "cost": "0.0001 USDC / chunk",
+        "unitPrice": "100",
+    },
+    {
+        "id": "sessions-compute",
+        "primitive": "session",
+        "method": "POST",
+        "path": "/sessions/compute",
+        "title": "Pay-per-call compute",
+        "description": "Voucher-billed inference; cap 0.50 USDC per session.",
+        "cost": "0.005 USDC / call",
+        "unitPrice": "5000",
+    },
+]
 
 
 # --- hub endpoints: health / config -----------------------------------------
@@ -196,7 +193,7 @@ def register_hub(app: FastAPI, state: AppState) -> None:
                 "recipient": state.recipient,
                 "network": state.network,
                 "feePayer": state.fee_payer_pubkey,
-                "endpoints": build_endpoint_list(),
+                "endpoints": _ENDPOINT_CATALOG,
             }
         )
 
@@ -209,8 +206,8 @@ def register_hub(app: FastAPI, state: AppState) -> None:
 
 
 def register_charges(app: FastAPI, state: AppState) -> None:
-    """Mount the MPP charge-gated endpoints (stocks, weather, marketplace,
-    fortune). Implemented in :mod:`charges`.
+    """Mount the MPP charge-gated endpoints (stock quote, marketplace purchase)
+    plus the free product catalog. Implemented in :mod:`charges`.
     """
     from .charges import register_charges as _register
 
