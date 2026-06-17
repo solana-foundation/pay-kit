@@ -24,7 +24,7 @@ import datetime
 import json
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from pay_kit._paycore.errors import PaymentError, payment_required_response
@@ -64,15 +64,16 @@ TOKEN_CHUNKS = [
 
 
 def _session_gate(session: Session, options: SessionChallengeOptions):
-    """Build the 402 gate for a route (the Python SDK has no ``SessionMiddleware``).
+    """Build the 402 gate for a route as a FastAPI dependency (the Python SDK has
+    no ``SessionMiddleware``), mirroring how charge routes use ``RequirePayment``.
 
-    Returns an async callable that yields the verified-receipt response headers
-    when an Authorization credential verifies, or a 402 :class:`JSONResponse`
+    Returns an async dependency that yields the verified-receipt response headers
+    when an Authorization credential verifies, or raises ``HTTPException(402)``
     (challenge in WWW-Authenticate) otherwise. The challenge is built only when a
     402 is issued, so the verify path never prefetches a blockhash.
     """
 
-    async def gate(request: Request) -> dict[str, str] | JSONResponse:
+    async def gate(request: Request) -> dict[str, str]:
         error: PaymentError | None = None
         auth_header = request.headers.get(AUTHORIZATION_HEADER)
         if auth_header:
@@ -93,7 +94,7 @@ def _session_gate(session: Session, options: SessionChallengeOptions):
             code=(error.code if error and error.code else "payment_invalid"),
             challenge_header=format_www_authenticate(challenge),
         )
-        return JSONResponse(problem["body"], status_code=problem["status_code"], headers=problem["headers"])
+        raise HTTPException(status_code=problem["status_code"], detail=problem["body"], headers=problem["headers"])
 
     return gate
 
@@ -174,13 +175,14 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
         SessionChallengeOptions(cap="500000", description="Voucher-billed inference call"),
     )
 
+    # Gates as FastAPI dependencies, so the session routes read like the charge
+    # routes (assigned first to keep the Depends call out of the arg default).
+    stream_dep = Depends(stream_gate)
+    compute_dep = Depends(compute_gate)
+
     # GET /sessions/stream: stream tokens as SSE; each chunk costs 0.0001 USDC.
     @app.get("/sessions/stream")
-    async def sessions_stream_get(request: Request) -> Any:
-        gated = await stream_gate(request)
-        if isinstance(gated, JSONResponse):
-            return gated
-
+    async def sessions_stream_get(headers: dict[str, str] = stream_dep) -> Any:
         async def body() -> Any:
             for chunk in TOKEN_CHUNKS:
                 yield "data: " + json.dumps({"chunk": chunk, "cost": "100"}, separators=(",", ":")) + "\n\n"
@@ -190,33 +192,23 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
         return StreamingResponse(
             body(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", **gated},
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", **headers},
         )
 
     # POST /sessions/stream: voucher commits arrive on the URL the session was
     # opened against; the gate's verify path applies the voucher, the body is an ack.
     @app.post("/sessions/stream")
-    async def sessions_stream_post(request: Request) -> JSONResponse:
-        gated = await stream_gate(request)
-        if isinstance(gated, JSONResponse):
-            return gated
-        return JSONResponse(_commit_ack(await _body(request)), headers=gated)
+    async def sessions_stream_post(request: Request, headers: dict[str, str] = stream_dep) -> JSONResponse:
+        return JSONResponse(_commit_ack(await _body(request)), headers=headers)
 
     # POST /sessions/compute: pay-per-call compute; the same handler accepts
     # voucher commits (a deliveryId in the body discriminates).
     @app.post("/sessions/compute")
-    async def sessions_compute_post(request: Request) -> JSONResponse:
-        gated = await compute_gate(request)
-        if isinstance(gated, JSONResponse):
-            return gated
+    async def sessions_compute_post(request: Request, headers: dict[str, str] = compute_dep) -> JSONResponse:
         body = await _body(request)
-        delivery_id = str(body.get("deliveryId", ""))
-        if delivery_id != "":
-            return JSONResponse(
-                {"amount": "0", "deliveryId": delivery_id, "status": "committed"},
-                headers=gated,
-            )
-        log_payment(request.url.path, gated)
+        if str(body.get("deliveryId", "")) != "":
+            return JSONResponse(_commit_ack(body), headers=headers)
+        log_payment(request.url.path, headers)
         prompt = str(body.get("prompt", ""))
         return JSONResponse(
             {
@@ -224,7 +216,7 @@ def register_sessions(app: FastAPI, state: AppState) -> Any:
                 "output": "Echo: " + prompt + " (computed for 0.005 USDC)",
                 "computedAt": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
-            headers=gated,
+            headers=headers,
         )
 
     # Side-channel metering routes: clients reserve capacity for each metered
