@@ -10,16 +10,17 @@ Payment Sandbox (a hosted test validator, no real funds):
   umbrella surface, plus a faucet that funds wallets through surfpool cheatcodes.
 - **Sessions**: the in-process MPP session method gating `/sessions/stream`
   (pay-per-chunk SSE) and `/sessions/compute` (pay-per-call), with voucher
-  metering through the `/__402/session/*` side channel and on-chain settlement
-  via the idle-close watchdog.
+  metering through the `/__402/session/*` side channel. On-chain settle-at-close
+  is not yet ported, so a closed channel's `settledSignature` stays `null`.
 - `/api/v1/config`: the endpoint catalog and wallet/network metadata the web
   app renders.
 
 This is the application skeleton: the boot wiring, shared config/state, the
 free endpoints (health, config, faucet, docs, SPA), and the `register_*` seam
 the charge / session feature endpoints plug into. The feature endpoints are
-implemented separately. Every route the server exposes is advertised in the
-`/api/v1/config` catalog the web app renders.
+implemented separately. The `/api/v1/config` catalog is a curated subset of the
+live routes: every catalog entry has a route, but infra routes (health, docs,
+faucet, the session side channel) are live without being advertised.
 
 ## Running
 
@@ -81,10 +82,24 @@ PAYKIT_PLAYGROUND_API_URL=http://localhost:3210 pnpm dev
 
 ## Differences from the other playground APIs
 
-The Python SDK does not implement the `solana.subscription` server method yet,
-so the playground exposes no subscription route (the other examples gate one).
-The endpoint catalog omits the subscription entry and the playground UI renders
-its graceful empty state.
+This Python playground is deliberately a leaner subset of the Go/TS ones. The
+endpoints below exist in Go/TS but are intentionally omitted here. None are in
+any `/api/v1/config` catalog there either (they are live-but-unadvertised), so
+dropping them changes no advertised surface:
+
+- **`/api/v1/stocks/search`, `/api/v1/stocks/history`** — extra yfinance call
+  paths that add no SDK surface beyond `stocks/quote`.
+- **`/api/v1/weather/{city}`** — a charge gating a canned hardcoded-city table;
+  no coverage `stocks/quote` does not already give.
+- **`/api/v1/fortune`** — the `html=true` interactive payment page. It requires
+  dropping below the `pay_kit` helper layer; the html charge path is covered by
+  the SDK's own tests rather than the playground.
+- **x402 (`/x402/*`) and the embedded facilitator** — the reference facilitator
+  is demo theater (`verify` rubber-stamps, `settle` is a stub). x402 is
+  exercised by the SDK's own conformance suite.
+- **Subscriptions (`/api/v1/premium/feed`)** — the Python SDK has no
+  `solana.subscription` server method yet, so there is no route (Go/TS gate a
+  501 stub). The catalog omits the entry and the UI renders its empty state.
 
 ## Layout
 

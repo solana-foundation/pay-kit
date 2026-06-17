@@ -88,16 +88,20 @@ def _display_usd(price: Price) -> str:
 
 
 def _quote(symbol: str) -> dict[str, Any]:
-    """Live quote via ``yfinance.Ticker.info``; a 404 for an unknown symbol and
-    a safe default when the network is unreachable so the example runs offline.
+    """Live quote via ``yfinance.Ticker.info``: a 404 for an unknown symbol and
+    a 502 when the upstream lookup fails.
+
+    The lookup error is surfaced rather than swallowed: the charge has already
+    settled by the time this runs, so returning an invented price would hand the
+    payer fabricated data behind a real payment.
     """
     import yfinance as yf
 
     sym = symbol.upper()
     try:
         info = yf.Ticker(sym).info
-    except Exception:  # noqa: BLE001 (offline / lib error -> safe default)
-        return {"symbol": sym, "regularMarketPrice": 150.0, "currency": "USD"}
+    except Exception as exc:  # noqa: BLE001 (surface upstream failure, never fabricate)
+        raise HTTPException(status_code=502, detail=json_error(f"Quote lookup failed for {sym}")) from exc
     price = info.get("regularMarketPrice") or info.get("currentPrice")
     if price is None:
         raise HTTPException(status_code=404, detail=json_error(f"Unknown symbol: {sym}"))
@@ -145,12 +149,22 @@ def register_charges(app: FastAPI, state: Any) -> None:
 
     # -- marketplace: free catalog plus a split-fee purchase -----------------
 
+    def _split_fees(product: _Product, referrer: str) -> tuple[Price, Price | None]:
+        """The fees charged on top of the list price: platform always, referral
+        only when a referrer is supplied. Computed once and fed both the gate
+        and the human-readable breakdown.
+        """
+        platform_fee = _bps(product.price, _PLATFORM_FEE_BPS)
+        referral_fee = _bps(product.price, _REFERRAL_FEE_BPS) if referrer else None
+        return platform_fee, referral_fee
+
     def _buy_gate(request: Request) -> Gate:
         product = _PRODUCTS[request.path_params["productId"]]  # validated by the guard dependency
-        fee_on_top: dict[str, Price] = {platform: _bps(product.price, _PLATFORM_FEE_BPS)}
         referrer = request.query_params.get("referrer", "")
-        if referrer:
-            fee_on_top[referrer] = _bps(product.price, _REFERRAL_FEE_BPS)
+        platform_fee, referral_fee = _split_fees(product, referrer)
+        fee_on_top: dict[str, Price] = {platform: platform_fee}
+        if referral_fee is not None:
+            fee_on_top[referrer] = referral_fee
         return Gate.build(
             name="marketplaceBuy",
             amount=product.price,
@@ -181,14 +195,13 @@ def register_charges(app: FastAPI, state: Any) -> None:
     )
     async def marketplace_buy(request: Request, productId: str) -> JSONResponse:  # noqa: N803 (route path param)
         product = _PRODUCTS[productId]
-        platform_fee = _bps(product.price, _PLATFORM_FEE_BPS)
+        platform_fee, referral_fee = _split_fees(product, request.query_params.get("referrer", ""))
         total = product.price.amount + platform_fee.amount
         breakdown = {
             "seller": _display_usd(product.price),
             "platformFee": _display_usd(platform_fee),
         }
-        if request.query_params.get("referrer"):
-            referral_fee = _bps(product.price, _REFERRAL_FEE_BPS)
+        if referral_fee is not None:
             breakdown["referralFee"] = _display_usd(referral_fee)
             total += referral_fee.amount
         breakdown["total"] = f"{total:.2f} USDC"
