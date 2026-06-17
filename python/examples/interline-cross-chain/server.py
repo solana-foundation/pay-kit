@@ -36,6 +36,7 @@ import os
 import sys
 
 from fastapi import Depends, FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 
 # --- pay-kit (Solana-native x402 + MPP) ----------------------------------------
 import pay_kit
@@ -103,13 +104,20 @@ async def solana_report(payment: Payment = require_solana) -> dict[str, object]:
 # buyer's agent pays on whichever it speaks. Adding a chain is one list entry.
 # ============================================================================
 def _evm_x402_requirements(resource: str) -> dict:
-    """x402 USDC on Base Sepolia (the chain pay-kit can't reach)."""
+    """x402 USDC on Base Sepolia (the chain pay-kit can't reach).
+
+    `resource` is the path being paid for; we echo it into the requirements so a
+    multi-route service produces a distinct 402 per resource (the callback is
+    invoked per-resource by the Paywall — ignoring it would advertise identical
+    requirements for every route).
+    """
     return {
         "scheme": "exact",
         "network": "eip155:84532",  # Base Sepolia (CAIP-2)
         "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",  # test USDC
         "amount": "100000",  # atomic; USDC has 6 decimals -> 0.10 USDC
         "payTo": EVM_PAY_TO,
+        "resource": resource,
         "maxTimeoutSeconds": 120,
         "extra": {"name": "USDC", "version": "2", "chainId": 84532},
     }
@@ -123,12 +131,15 @@ interline_paywall = Paywall(rails=[
 
 
 @app.get("/crosschain/report")
-def crosschain_report(request: Request):
+async def crosschain_report(request: Request):
     """Paid via Interline. One line gates the work; Interline runs the 402 dance,
     selects the rail the buyer speaks (here: Base/EVM x402), settles, and returns
     the on-chain receipt header. Pair this route with the pay-kit route above and
-    your service accepts agents on Solana AND Base."""
-    return interline_paywall.gate(request, premium_report)
+    your service accepts agents on Solana AND Base.
+
+    `gate()` may perform blocking facilitator I/O (verify/settle HTTP calls), so it
+    runs in a worker thread — keeps the event loop free under concurrency."""
+    return await run_in_threadpool(interline_paywall.gate, request, premium_report)
 
 
 @app.get("/health")
