@@ -639,7 +639,6 @@ fn pubkey_string(pubkey: &Pubkey) -> String {
     bs58::encode(pubkey.as_ref()).into_string()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

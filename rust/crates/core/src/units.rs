@@ -72,9 +72,9 @@ pub fn parse_units(amount: &str, decimals: u8) -> Result<String> {
         let value: u128 = amount
             .parse()
             .map_err(|_| Error::Other(format!("Invalid amount: {amount}")))?;
-        let factor = 10u128.checked_pow(decimals).ok_or_else(|| {
-            Error::Other(format!("10^{decimals} overflows u128 in parse_units"))
-        })?;
+        let factor = 10u128
+            .checked_pow(decimals)
+            .ok_or_else(|| Error::Other(format!("10^{decimals} overflows u128 in parse_units")))?;
         let product = value.checked_mul(factor).ok_or_else(|| {
             Error::Other(format!(
                 "{value} * 10^{decimals} overflows u128 in parse_units"
@@ -111,7 +111,10 @@ mod tests {
     #[test]
     fn decimals_cap_and_overflow() {
         assert!(parse_units("1", MAX_DECIMALS + 1).is_err());
-        assert_eq!(parse_units("1", MAX_DECIMALS).unwrap(), "1000000000000000000");
+        assert_eq!(
+            parse_units("1", MAX_DECIMALS).unwrap(),
+            "1000000000000000000"
+        );
         let huge = format!("1{}", "0".repeat(21));
         assert!(parse_units(&huge, MAX_DECIMALS).is_err());
     }

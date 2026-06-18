@@ -10,7 +10,8 @@ use crate::error::Error;
 use super::types::{UptoPayload, UptoRequirements, PROFILE_PAYMENT_CHANNEL};
 
 /// Scheme-specific error string for an over-ceiling settlement.
-pub const ERR_SETTLEMENT_EXCEEDS_AMOUNT: &str = "invalid_upto_svm_payload_settlement_exceeds_amount";
+pub const ERR_SETTLEMENT_EXCEEDS_AMOUNT: &str =
+    "invalid_upto_svm_payload_settlement_exceeds_amount";
 
 /// Verify an `upto` payload against the route's pinned requirements.
 ///

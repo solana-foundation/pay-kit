@@ -128,8 +128,9 @@ impl X402Upto {
 
     fn program_id(&self) -> Result<Pubkey, Error> {
         match &self.config.program_id {
-            Some(value) => Pubkey::from_str(value)
-                .map_err(|e| Error::Other(format!("invalid programId: {e}"))),
+            Some(value) => {
+                Pubkey::from_str(value).map_err(|e| Error::Other(format!("invalid programId: {e}")))
+            }
             None => Ok(pc::default_program_id()),
         }
     }
@@ -272,7 +273,9 @@ impl X402Upto {
         // Read the confirmed channel state and bind it.
         let channel = self.fetch_channel(&channel_id)?;
         if channel.status != CHANNEL_STATUS_OPEN {
-            return Err(Error::Other("channel is not open after broadcast".to_string()));
+            return Err(Error::Other(
+                "channel is not open after broadcast".to_string(),
+            ));
         }
         if pc::from_address(&channel.mint) != expected_mint {
             return Err(Error::MintMismatch {
@@ -420,8 +423,7 @@ impl X402Upto {
             .rpc
             .get_account_data(channel_id)
             .map_err(|e| Error::Rpc(format!("channel account fetch failed: {e}")))?;
-        Channel::from_bytes(&data)
-            .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+        Channel::from_bytes(&data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
     }
 }
 

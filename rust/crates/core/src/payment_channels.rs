@@ -499,8 +499,9 @@ pub async fn build_open_payment_channel_tx(
         .await
         .map_err(|e| Error::Other(format!("payment-channel open signing failed: {e}")))?;
 
-    let bytes = bincode::serialize(&tx)
-        .map_err(|e| Error::Serialization(format!("payment-channel open tx serialization failed: {e}")))?;
+    let bytes = bincode::serialize(&tx).map_err(|e| {
+        Error::Serialization(format!("payment-channel open tx serialization failed: {e}"))
+    })?;
     Ok(PaymentChannelOpenTransaction {
         channel_id,
         transaction: base64::engine::general_purpose::STANDARD.encode(bytes),

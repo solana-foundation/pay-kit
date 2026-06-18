@@ -425,8 +425,10 @@ pub fn build_subscribe_ix(
         .payer
         .map(|payer| vec![AccountMeta::new(to_addr(&payer), true)])
         .unwrap_or_default();
-    let mut ix =
-        gen.instruction_with_remaining_accounts(SubscribeInstructionArgs { subscribe_data }, &remaining);
+    let mut ix = gen.instruction_with_remaining_accounts(
+        SubscribeInstructionArgs { subscribe_data },
+        &remaining,
+    );
     ix.program_id = to_addr(&program_id);
     ix
 }

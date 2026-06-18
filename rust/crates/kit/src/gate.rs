@@ -741,7 +741,11 @@ async fn upto_gate_middleware(
 ///
 /// Requires a `fee_payer_signer` on [`PayKitConfig`] (the operator signs
 /// settlement vouchers).
-pub fn paid_upto_get<H, T, S>(handler: H, max_price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+pub fn paid_upto_get<H, T, S>(
+    handler: H,
+    max_price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
 where
     H: Handler<T, S>,
     T: 'static,

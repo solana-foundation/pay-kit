@@ -58,10 +58,8 @@ pub async fn build_upto_payload(
     let token_program = match &requirements.extra.token_program {
         Some(value) => Pubkey::from_str(value)
             .map_err(|e| Error::Other(format!("invalid tokenProgram: {e}")))?,
-        None => Pubkey::from_str(
-            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-        )
-        .expect("valid token program"),
+        None => Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            .expect("valid token program"),
     };
     let recent_blockhash = requirements
         .extra
