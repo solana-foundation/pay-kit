@@ -1,18 +1,28 @@
 //! Typed helpers for the payment-channels program.
 //!
 //! The generated Codama client is kept as a path dependency and re-exported
-//! through this module.  Everything here is hand-written adapter code: PDA
+//! through this module.  Everything else here is hand-written adapter code: PDA
 //! derivation, associated token derivation, distribution hashing, voucher bytes,
-//! and convenience instruction builders.
+//! and convenience instruction/transaction builders.
+//!
+//! This module lives in `solana-pay-core` so both `solana-mpp` (which re-exports
+//! it at `mpp::program::payment_channels`) and `solana-x402` (which uses it to
+//! back the `upto` scheme) share one implementation without depending on each
+//! other.
 
 use std::str::FromStr;
 
+use base64::Engine;
 use solana_address::Address;
+use solana_hash::Hash;
 use solana_instruction::AccountMeta;
 use solana_instruction::Instruction;
+use solana_keychain::SolanaSigner;
+use solana_message::Message;
 use solana_pubkey::Pubkey;
+use solana_transaction::Transaction;
 
-use crate::error::{Error, Result};
+use crate::{Error, Result};
 
 pub use payment_channels_client as generated;
 use payment_channels_client::generated::instructions::{
@@ -26,6 +36,12 @@ use payment_channels_client::generated::types::{
 
 /// Canonical payment-channels program ID deployed to Surfnet.
 pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc";
+
+/// Associated Token Account program ID.
+pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
+/// Default payment-channel close grace period, in seconds.
+pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 900;
 
 /// Channel PDA seed prefix.
 pub const CHANNEL_SEED: &[u8] = b"channel";
@@ -76,8 +92,30 @@ pub struct ChannelAddresses {
     pub event_authority: Pubkey,
 }
 
+/// Output of [`build_open_payment_channel_tx`]: the derived channel PDA and the
+/// base64-encoded (payer-signed, fee-payer-unsigned) open transaction.
+#[derive(Debug, Clone)]
+pub struct PaymentChannelOpenTransaction {
+    pub channel_id: Pubkey,
+    pub transaction: String,
+}
+
 pub fn default_program_id() -> Pubkey {
     Pubkey::from_str(PAYMENT_CHANNELS_PROGRAM_ID).expect("valid payment-channels program id")
+}
+
+/// Generate a random `u64` channel salt.
+///
+/// Used to derive a unique channel PDA per open. Uses the OS CSPRNG so salts
+/// don't collide across processes or restarts.
+pub fn random_salt() -> u64 {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("getrandom CSPRNG failure");
+    u64::from_le_bytes(bytes)
+}
+
+pub fn associated_token_program_id() -> Pubkey {
+    Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM).expect("valid associated token program id")
 }
 
 pub fn instructions_sysvar_id() -> Pubkey {
@@ -138,8 +176,7 @@ pub fn find_associated_token_address(
     mint: &Pubkey,
     token_program: &Pubkey,
 ) -> (Pubkey, u8) {
-    let ata_program = Pubkey::from_str(crate::protocol::solana::programs::ASSOCIATED_TOKEN_PROGRAM)
-        .expect("valid associated token program id");
+    let ata_program = associated_token_program_id();
     Pubkey::find_program_address(
         &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
         &ata_program,
@@ -190,7 +227,7 @@ pub fn voucher_message_bytes(
         expires_at,
     };
     borsh::to_vec(&voucher)
-        .map_err(|e| Error::Other(format!("voucher Borsh serialization failed: {e}")))
+        .map_err(|e| Error::Serialization(format!("voucher Borsh serialization failed: {e}")))
 }
 
 pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
@@ -214,10 +251,7 @@ pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
         .channel_token_account(to_address(&addresses.channel_token_account))
         .token_program(to_address(&params.token_program))
         .rent(to_address(&rent_sysvar_id()))
-        .associated_token_program(to_address(
-            &Pubkey::from_str(crate::protocol::solana::programs::ASSOCIATED_TOKEN_PROGRAM)
-                .expect("valid associated token program id"),
-        ))
+        .associated_token_program(to_address(&associated_token_program_id()))
         .event_authority(to_address(&addresses.event_authority))
         .self_program(to_address(&params.program_id))
         .open_args(OpenArgs {
@@ -421,6 +455,56 @@ pub fn build_distribute_instruction(
         .instruction();
     ix.program_id = to_address(program_id);
     ix
+}
+
+/// Build a payer-signed (fee-payer-unsigned) channel `open` transaction.
+///
+/// The `payer` (the `signer`) signs to authorize the deposit; `fee_payer` is the
+/// account that pays the network fee and must co-sign before broadcast (e.g. the
+/// operator). Returns the derived channel PDA and the base64-encoded transaction.
+#[allow(clippy::too_many_arguments)]
+pub async fn build_open_payment_channel_tx(
+    signer: &dyn SolanaSigner,
+    payee: &Pubkey,
+    mint: &Pubkey,
+    authorized_signer: &Pubkey,
+    salt: u64,
+    deposit: u64,
+    grace_period: u32,
+    recipients: Vec<Distribution>,
+    token_program: &Pubkey,
+    program_id: &Pubkey,
+    fee_payer: &Pubkey,
+    recent_blockhash: Hash,
+) -> Result<PaymentChannelOpenTransaction> {
+    let params = OpenChannelParams {
+        payer: signer.pubkey(),
+        payee: *payee,
+        mint: *mint,
+        authorized_signer: *authorized_signer,
+        salt,
+        deposit,
+        grace_period,
+        recipients,
+        token_program: *token_program,
+        program_id: *program_id,
+    };
+    let channel_id = derive_channel_addresses(&params).channel;
+    let ix = build_open_instruction(&params);
+    let message = Message::new_with_blockhash(&[ix], Some(fee_payer), &recent_blockhash);
+    let mut tx = Transaction::new_unsigned(message);
+
+    signer
+        .sign_transaction(&mut tx)
+        .await
+        .map_err(|e| Error::Other(format!("payment-channel open signing failed: {e}")))?;
+
+    let bytes = bincode::serialize(&tx)
+        .map_err(|e| Error::Serialization(format!("payment-channel open tx serialization failed: {e}")))?;
+    Ok(PaymentChannelOpenTransaction {
+        channel_id,
+        transaction: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 #[cfg(test)]

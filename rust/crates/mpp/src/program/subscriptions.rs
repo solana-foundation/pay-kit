@@ -17,10 +17,28 @@
 
 use std::str::FromStr;
 
+use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
+use subscriptions_client::generated::instructions::{
+    CreatePlan as GenCreatePlan, CreatePlanInstructionArgs,
+    InitSubscriptionAuthority as GenInitSubscriptionAuthority, Subscribe as GenSubscribe,
+    SubscribeInstructionArgs, TransferSubscription as GenTransferSubscription,
+    TransferSubscriptionInstructionArgs,
+};
+use subscriptions_client::generated::types::{
+    PlanData as GenPlanData, PlanTerms as GenPlanTerms, SubscribeData as GenSubscribeData,
+    TransferData as GenTransferData,
+};
+
 use crate::error::{Error, Result};
+
+/// Convert a `Pubkey` to the `solana_address::Address` used by the generated
+/// subscriptions client.
+fn to_addr(pubkey: &Pubkey) -> Address {
+    Address::from(pubkey.to_bytes())
+}
 
 /// Canonical mainnet program ID for the subscriptions program.
 pub const SUBSCRIPTIONS_PROGRAM_ID: &str = "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44";
@@ -336,17 +354,29 @@ pub fn build_create_plan_ix(
     data: &CreatePlanData,
 ) -> Instruction {
     let system_program = Pubkey::from_str(SYSTEM_PROGRAM_ID).expect("valid system program id");
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(accounts.merchant, true),
-            AccountMeta::new(accounts.plan_pda, false),
-            AccountMeta::new_readonly(accounts.token_mint, false),
-            AccountMeta::new_readonly(system_program, false),
-            AccountMeta::new_readonly(accounts.token_program, false),
-        ],
-        data: data.to_bytes(),
+    let plan_data = GenPlanData {
+        plan_id: data.plan_id,
+        mint: to_addr(&data.mint),
+        terms: GenPlanTerms {
+            amount: data.terms.amount,
+            period_hours: data.terms.period_hours,
+            created_at: data.terms.created_at,
+        },
+        end_ts: data.end_ts,
+        destinations: data.destinations.map(|p| to_addr(&p)),
+        pullers: data.pullers.map(|p| to_addr(&p)),
+        metadata_uri: data.metadata_uri,
+    };
+    let mut ix = GenCreatePlan {
+        merchant: to_addr(&accounts.merchant),
+        plan_pda: to_addr(&accounts.plan_pda),
+        token_mint: to_addr(&accounts.token_mint),
+        system_program: to_addr(&system_program),
+        token_program: to_addr(&accounts.token_program),
     }
+    .instruction(CreatePlanInstructionArgs { plan_data });
+    ix.program_id = to_addr(&program_id);
+    ix
 }
 
 /// Account inputs for [`build_subscribe_ix`]. `payer` is optional — when
@@ -370,24 +400,35 @@ pub fn build_subscribe_ix(
     data: &SubscribeData,
 ) -> Instruction {
     let system_program = Pubkey::from_str(SYSTEM_PROGRAM_ID).expect("valid system program id");
-    let mut metas = vec![
-        AccountMeta::new(accounts.subscriber, true),
-        AccountMeta::new_readonly(accounts.merchant, false),
-        AccountMeta::new_readonly(accounts.plan_pda, false),
-        AccountMeta::new(accounts.subscription_pda, false),
-        AccountMeta::new_readonly(accounts.subscription_authority_pda, false),
-        AccountMeta::new_readonly(system_program, false),
-        AccountMeta::new_readonly(accounts.event_authority, false),
-        AccountMeta::new_readonly(program_id, false),
-    ];
-    if let Some(payer) = accounts.payer {
-        metas.push(AccountMeta::new(payer, true));
-    }
-    Instruction {
-        program_id,
-        accounts: metas,
-        data: data.to_bytes(),
-    }
+    let subscribe_data = GenSubscribeData {
+        plan_id: data.plan_id,
+        plan_bump: data.plan_bump,
+        expected_mint: to_addr(&data.expected_mint),
+        expected_amount: data.expected_amount,
+        expected_period_hours: data.expected_period_hours,
+        expected_created_at: data.expected_created_at,
+        expected_subscription_authority_init_id: data.expected_subscription_authority_init_id,
+    };
+    let gen = GenSubscribe {
+        subscriber: to_addr(&accounts.subscriber),
+        merchant: to_addr(&accounts.merchant),
+        plan_pda: to_addr(&accounts.plan_pda),
+        subscription_pda: to_addr(&accounts.subscription_pda),
+        subscription_authority_pda: to_addr(&accounts.subscription_authority_pda),
+        system_program: to_addr(&system_program),
+        event_authority: to_addr(&accounts.event_authority),
+        self_program: to_addr(&program_id),
+    };
+    // The optional payer rides as a trailing (writable, signer) account, exactly
+    // as the program's `resolve_optional_payer` expects.
+    let remaining: Vec<AccountMeta> = accounts
+        .payer
+        .map(|payer| vec![AccountMeta::new(to_addr(&payer), true)])
+        .unwrap_or_default();
+    let mut ix =
+        gen.instruction_with_remaining_accounts(SubscribeInstructionArgs { subscribe_data }, &remaining);
+    ix.program_id = to_addr(&program_id);
+    ix
 }
 
 /// Account inputs for [`build_transfer_subscription_ix`].
@@ -412,22 +453,26 @@ pub fn build_transfer_subscription_ix(
     accounts: TransferSubscriptionAccounts,
     data: &TransferData,
 ) -> Instruction {
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(accounts.subscription_pda, false),
-            AccountMeta::new_readonly(accounts.plan_pda, false),
-            AccountMeta::new_readonly(accounts.subscription_authority, false),
-            AccountMeta::new(accounts.delegator_ata, false),
-            AccountMeta::new(accounts.receiver_ata, false),
-            AccountMeta::new_readonly(accounts.caller, true),
-            AccountMeta::new_readonly(accounts.token_mint, false),
-            AccountMeta::new_readonly(accounts.token_program, false),
-            AccountMeta::new_readonly(accounts.event_authority, false),
-            AccountMeta::new_readonly(program_id, false),
-        ],
-        data: data.to_bytes(INSTRUCTION_TRANSFER_SUBSCRIPTION),
+    let transfer_data = GenTransferData {
+        amount: data.amount,
+        delegator: to_addr(&data.delegator),
+        mint: to_addr(&data.mint),
+    };
+    let mut ix = GenTransferSubscription {
+        subscription_pda: to_addr(&accounts.subscription_pda),
+        plan_pda: to_addr(&accounts.plan_pda),
+        subscription_authority: to_addr(&accounts.subscription_authority),
+        delegator_ata: to_addr(&accounts.delegator_ata),
+        receiver_ata: to_addr(&accounts.receiver_ata),
+        caller: to_addr(&accounts.caller),
+        token_mint: to_addr(&accounts.token_mint),
+        token_program: to_addr(&accounts.token_program),
+        event_authority: to_addr(&accounts.event_authority),
+        self_program: to_addr(&program_id),
     }
+    .instruction(TransferSubscriptionInstructionArgs { transfer_data });
+    ix.program_id = to_addr(&program_id);
+    ix
 }
 
 /// Account inputs for [`build_cancel_subscription_ix`].
@@ -445,6 +490,12 @@ pub fn build_cancel_subscription_ix(
     program_id: Pubkey,
     accounts: CancelSubscriptionAccounts,
 ) -> Instruction {
+    // NOTE: not delegated to the generated client. Both agree `subscriber` is a
+    // signer, but the vendored IDL marks it read-only while the program treats
+    // it as writable (rent is refunded to the subscriber on cancel). Adopting
+    // the generated builder would make `subscriber` read-only and risk breaking
+    // the refund. Until the IDL is fixed and regenerated, keep the hand-written
+    // account metas — see `generated_cancel_subscription_idl_still_diverges_from_program`.
     Instruction {
         program_id,
         accounts: vec![
@@ -475,18 +526,17 @@ pub fn build_initialize_subscription_authority_ix(
     accounts: InitializeSubscriptionAuthorityAccounts,
 ) -> Instruction {
     let system_program = Pubkey::from_str(SYSTEM_PROGRAM_ID).expect("valid system program id");
-    Instruction {
-        program_id,
-        accounts: vec![
-            AccountMeta::new(accounts.owner, true),
-            AccountMeta::new(accounts.subscription_authority, false),
-            AccountMeta::new_readonly(accounts.token_mint, false),
-            AccountMeta::new(accounts.user_ata, false),
-            AccountMeta::new_readonly(system_program, false),
-            AccountMeta::new_readonly(accounts.token_program, false),
-        ],
-        data: vec![INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY],
+    let mut ix = GenInitSubscriptionAuthority {
+        owner: to_addr(&accounts.owner),
+        subscription_authority: to_addr(&accounts.subscription_authority),
+        token_mint: to_addr(&accounts.token_mint),
+        user_ata: to_addr(&accounts.user_ata),
+        system_program: to_addr(&system_program),
+        token_program: to_addr(&accounts.token_program),
     }
+    .instruction();
+    ix.program_id = to_addr(&program_id);
+    ix
 }
 
 #[cfg(test)]
@@ -806,6 +856,57 @@ mod tests {
         // Subscription PDA writable at slot 2.
         assert!(ix.accounts[2].is_writable);
         assert_eq!(ix.data, vec![INSTRUCTION_CANCEL_SUBSCRIPTION]);
+    }
+
+    #[test]
+    fn build_initialize_subscription_authority_ix_account_shape() {
+        let program = default_program_id();
+        let owner = Pubkey::new_unique();
+        let token_program =
+            Pubkey::from_str(crate::protocol::solana::programs::TOKEN_PROGRAM).unwrap();
+        let ix = build_initialize_subscription_authority_ix(
+            program,
+            InitializeSubscriptionAuthorityAccounts {
+                owner,
+                subscription_authority: Pubkey::new_unique(),
+                token_mint: Pubkey::new_unique(),
+                user_ata: Pubkey::new_unique(),
+                token_program,
+            },
+        );
+        assert_eq!(ix.program_id, program);
+        assert_eq!(ix.accounts.len(), 6);
+        assert!(ix.accounts[0].is_signer && ix.accounts[0].is_writable); // owner
+        assert!(ix.accounts[1].is_writable && !ix.accounts[1].is_signer); // authority PDA
+        assert!(!ix.accounts[2].is_writable); // mint
+        assert!(ix.accounts[3].is_writable && !ix.accounts[3].is_signer); // user ATA
+        assert_eq!(ix.data, vec![INSTRUCTION_INITIALIZE_SUBSCRIPTION_AUTHORITY]);
+    }
+
+    /// Locks the known IDL discrepancy: `build_cancel_subscription_ix` is the one
+    /// builder NOT delegated to the generated client because the vendored IDL
+    /// marks the subscriber read-only, while the program treats it as a writable
+    /// signer (rent refund). Both agree it is a signer. If the writable
+    /// assertion fails the IDL was fixed — regenerate and switch
+    /// `build_cancel_subscription_ix` to the generated builder.
+    #[test]
+    fn generated_cancel_subscription_idl_still_diverges_from_program() {
+        use subscriptions_client::generated::instructions::CancelSubscription as Gen;
+        let gen = Gen {
+            subscriber: to_addr(&Pubkey::new_unique()),
+            plan_pda: to_addr(&Pubkey::new_unique()),
+            subscription_pda: to_addr(&Pubkey::new_unique()),
+            event_authority: to_addr(&Pubkey::new_unique()),
+            self_program: to_addr(&default_program_id()),
+        }
+        .instruction();
+        // Both sides agree the subscriber signs.
+        assert!(gen.accounts[0].is_signer);
+        // The divergence: the IDL marks it read-only; we require writable.
+        assert!(
+            !gen.accounts[0].is_writable,
+            "IDL cancel subscriber is now writable — migrate cancel to the generated builder"
+        );
     }
 
     #[test]

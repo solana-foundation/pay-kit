@@ -22,92 +22,21 @@ pub use subscription::{
     SubscriptionReceiptExtensions, SubscriptionRequest,
 };
 
-/// Audit #39: upper bound on the `decimals` argument to `parse_units`.
+/// Upper bound on the `decimals` argument to [`parse_units`].
 ///
-/// Solana's SPL convention is 0–9 (the protocol spec says so). 18 gives
-/// ERC-20-style headroom while staying well below the cliff at 39 where
-/// `10u128.pow(decimals)` actually overflows. The point of the cap is to
-/// give us a single rejection site so any callsite that hasn't validated
-/// `decimals` upstream gets a clear error rather than a panic or wrap.
-pub const MAX_DECIMALS: u8 = 18;
+/// Re-exported from `solana-pay-core`, the canonical shared implementation.
+pub use solana_pay_core::MAX_DECIMALS;
 
 /// Convert a human-readable amount to base units.
 ///
 /// Matches the TypeScript SDK's `parseUnits(amount, decimals)`.
 /// e.g., `parse_units("1.5", 6)` → `"1500000"`.
 ///
-/// Audit #39: rejects `decimals > MAX_DECIMALS` and uses checked
-/// arithmetic in the integer branch so a hostile or buggy caller cannot
-/// trigger a panic (debug) or silent overflow (release).
-///
-/// Audits #44 and #45: validate input shape and content.
-/// - Reject empty amount and amounts with more than one `.` (e.g.
-///   `"1.2.3"`) — `split_once('.')` only splits on the first dot, which
-///   would otherwise let `"1.2.3"` parse as `"1" + "23"` and silently
-///   produce the wrong value.
-/// - Reject inputs that aren't strict ASCII digit strings on either side
-///   of the dot — `"1a.2"`, `".5"`, `"5."`, `"."` all become errors.
+/// Delegates to [`solana_pay_core::parse_units`] — the audited shared
+/// implementation (decimals cap, checked arithmetic, strict input validation) —
+/// mapping its error into this crate's error type.
 pub fn parse_units(amount: &str, decimals: u8) -> Result<String, crate::error::Error> {
-    if decimals > MAX_DECIMALS {
-        return Err(crate::error::Error::Other(format!(
-            "Decimals {decimals} exceeds maximum {MAX_DECIMALS}"
-        )));
-    }
-    if amount.is_empty() {
-        return Err(crate::error::Error::Other("Empty amount".into()));
-    }
-    if amount.matches('.').count() > 1 {
-        return Err(crate::error::Error::Other(format!(
-            "Invalid amount `{amount}`: more than one decimal point"
-        )));
-    }
-    let decimals = decimals as u32;
-
-    if let Some((integer, fraction)) = amount.split_once('.') {
-        // Audit #44/#45: require non-empty digit strings on both sides
-        // of the dot. `".5"`, `"5."`, `"."`, `"1a.2"` all rejected.
-        if integer.is_empty() || fraction.is_empty() {
-            return Err(crate::error::Error::Other(format!(
-                "Invalid amount `{amount}`: integer and fractional parts must both be non-empty"
-            )));
-        }
-        if !integer.bytes().all(|b| b.is_ascii_digit())
-            || !fraction.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(crate::error::Error::Other(format!(
-                "Invalid amount `{amount}`: only ASCII digits and a single optional decimal point are allowed"
-            )));
-        }
-        let frac_len = fraction.len() as u32;
-        if frac_len > decimals {
-            return Err(crate::error::Error::Other(format!(
-                "Too many decimal places: {frac_len} > {decimals}"
-            )));
-        }
-        let padding = decimals - frac_len;
-        let combined = format!("{integer}{fraction}{}", "0".repeat(padding as usize));
-        // Strip leading zeros but keep at least one digit.
-        let trimmed = combined.trim_start_matches('0');
-        if trimmed.is_empty() {
-            Ok("0".to_string())
-        } else {
-            Ok(trimmed.to_string())
-        }
-    } else {
-        // No decimal point — multiply by 10^decimals.
-        let value: u128 = amount
-            .parse()
-            .map_err(|_| crate::error::Error::Other(format!("Invalid amount: {amount}")))?;
-        let factor = 10u128.checked_pow(decimals).ok_or_else(|| {
-            crate::error::Error::Other(format!("10^{decimals} overflows u128 in parse_units"))
-        })?;
-        let product = value.checked_mul(factor).ok_or_else(|| {
-            crate::error::Error::Other(format!(
-                "{value} * 10^{decimals} overflows u128 in parse_units"
-            ))
-        })?;
-        Ok(product.to_string())
-    }
+    solana_pay_core::parse_units(amount, decimals).map_err(Into::into)
 }
 
 /// Deserialize a request from a base64url JSON string.

@@ -3,8 +3,6 @@
 pub mod authenticate;
 mod charge;
 pub mod http_stream;
-pub mod multi_delegate;
-pub mod payment_channels;
 pub mod session;
 pub mod session_consumer;
 pub mod subscription;
@@ -15,7 +13,16 @@ pub use authenticate::{
 };
 pub use charge::*;
 pub use http_stream::*;
-pub use payment_channels::*;
+// The payment-channel session opener now lives in `session`; re-export the
+// same symbols here to preserve the historical `mpp::client::*` paths.
+pub use session::{
+    build_open_payment_channel_transaction, create_payment_channel_session_opener,
+    create_server_opened_payment_channel_session_opener, derive_payment_channel_open,
+    BuildOpenPaymentChannelTransactionParams, DerivePaymentChannelOpenParams, PaymentChannelOpen,
+    PaymentChannelOpenOptions, PaymentChannelSessionOpen, PaymentChannelSessionOpenOptions,
+    ServerOpenedPaymentChannelSessionOpenOptions, DEFAULT_GRACE_PERIOD_SECONDS,
+    PENDING_SERVER_SIGNATURE,
+};
 pub use session_consumer::*;
 pub use subscription::{
     build_subscription_activation_transaction,

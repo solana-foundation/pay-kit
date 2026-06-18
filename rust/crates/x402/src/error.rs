@@ -58,3 +58,12 @@ pub enum Error {
     #[error("{0}")]
     Other(String),
 }
+
+impl From<solana_pay_core::Error> for Error {
+    fn from(err: solana_pay_core::Error) -> Self {
+        match err {
+            solana_pay_core::Error::Serialization(msg) => Error::Other(msg),
+            solana_pay_core::Error::Other(msg) => Error::Other(msg),
+        }
+    }
+}

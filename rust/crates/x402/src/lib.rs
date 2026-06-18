@@ -25,6 +25,7 @@ pub mod siwx;
 pub use constants::*;
 pub use error::Error;
 pub use protocol::schemes::exact;
+pub use protocol::schemes::upto;
 pub use siwx::*;
 
 // Re-export crates callers need to use with the payment builder.

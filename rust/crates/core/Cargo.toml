@@ -7,3 +7,29 @@ license = "MIT"
 repository = "https://github.com/solana-foundation/pay-kit"
 
 [dependencies]
+# Signing — solana-keychain with sdk-v3 (matches mpp/x402 pins)
+solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "abf75944", default-features = false, features = ["memory", "sdk-v3"] }
+
+# Solana — atomic crates only
+solana-hash = { version = "3.1", default-features = false }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "3.0", default-features = false }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-transaction = { version = "3.0", default-features = false }
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
+
+# Payment-channels program client (generated)
+payment_channels_client = { package = "payment-channels-client", path = "../programs/payment-channels" }
+
+# Randomness (channel salt)
+getrandom = "0.3"
+
+# Serialization / hashing
+borsh = { version = "1.0", features = ["derive"] }
+blake3 = "1"
+bs58 = "0.5"
+base64 = "0.22"
+bincode = "1"
+
+# Errors
+thiserror = "2"

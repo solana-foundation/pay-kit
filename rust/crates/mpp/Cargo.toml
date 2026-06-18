@@ -49,7 +49,8 @@ bs58 = "0.5"
 base64 = "0.22"
 bincode = "1"
 borsh = { version = "1.0", features = ["derive"] }
-payment_channels_client = { package = "payment-channels-client", path = "../programs/payment-channels" }
+solana-pay-core = { path = "../core" }
+subscriptions_client = { package = "subscriptions-client", path = "../programs/subscriptions" }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 
 # Crypto (HMAC challenge IDs + distribution hash + voucher verification)

@@ -25,7 +25,7 @@
 //! let app: Router = Router::new().route("/report", paid_get(report, "0.10", &pay));
 //! ```
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::{FromRequestParts, Request, State};
 use axum::handler::Handler;
@@ -38,7 +38,9 @@ use axum::routing::{get, post, MethodRouter};
 use solana_mpp::server::{Config as MppConfig, Mpp};
 use solana_mpp::solana_keychain::SolanaSigner;
 use solana_mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
-use solana_x402::server::{Config as X402Config, ExactOptions, VerifiedExactPayment, X402};
+use solana_x402::server::{
+    Config as X402Config, ExactOptions, UptoConfig, VerifiedExactPayment, X402Upto, X402,
+};
 use solana_x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
 
 const PAYMENT_RECEIPT_HEADER: &str = "Payment-Receipt";
@@ -117,7 +119,14 @@ impl Default for PayKitConfig {
 pub struct PayKit {
     mpp: Arc<Mpp>,
     x402: Arc<X402>,
+    /// Usage-based x402 `upto` handler. `Some` only when `fee_payer_signer` is
+    /// set — the operator must sign settlement vouchers, so `upto` routes
+    /// require a signer.
+    x402_upto: Option<Arc<X402Upto>>,
 }
+
+/// Default `upto` completion window (seconds) advertised in `maxTimeoutSeconds`.
+const UPTO_MAX_TIMEOUT_SECONDS: u64 = 300;
 
 impl PayKit {
     /// Build both protocol handlers from one config.
@@ -155,9 +164,34 @@ impl PayKit {
         })
         .map_err(|e| PayKitError::X402(e.to_string()))?;
 
+        // The `upto` scheme needs an operator signer to settle vouchers, so it
+        // is only available when the gate sponsors fees with a signer.
+        let x402_upto = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| {
+                X402Upto::new(UptoConfig {
+                    recipient: config.recipient.clone(),
+                    currency: config.currency.clone(),
+                    decimals: config.decimals,
+                    cluster: config.network.clone(),
+                    rpc_url: config.rpc_url.clone(),
+                    resource: String::new(),
+                    description: None,
+                    max_timeout_seconds: UPTO_MAX_TIMEOUT_SECONDS,
+                    token_program: None,
+                    program_id: None,
+                    operator_signer: signer.clone(),
+                })
+                .map(Arc::new)
+                .map_err(|e| PayKitError::X402(e.to_string()))
+            })
+            .transpose()?;
+
         Ok(Self {
             mpp: Arc::new(mpp),
             x402: Arc::new(x402),
+            x402_upto,
         })
     }
 
@@ -169,6 +203,11 @@ impl PayKit {
     /// The underlying x402 handler.
     pub fn x402(&self) -> &Arc<X402> {
         &self.x402
+    }
+
+    /// The underlying x402 `upto` handler, when a fee-payer signer is configured.
+    pub fn x402_upto(&self) -> Option<&Arc<X402Upto>> {
+        self.x402_upto.as_ref()
     }
 }
 
@@ -213,6 +252,48 @@ impl<S: Send + Sync> FromRequestParts<S> for Payment {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Payment extractor used on a route not gated by paid_get/paid_post",
+            )
+                .into_response()
+        })
+    }
+}
+
+/// Usage meter for [`paid_upto_get`] / [`paid_upto_post`] routes.
+///
+/// The route handler reports the actual amount consumed (in base units) by
+/// calling [`Charge::charge`]. The gate settles that amount — never more than
+/// the authorized ceiling — after the handler returns, refunding the remainder.
+/// If the handler never calls `charge`, the settled amount is `0`.
+#[derive(Clone)]
+pub struct Charge {
+    cell: Arc<Mutex<Option<u64>>>,
+    max_base_units: u64,
+}
+
+impl Charge {
+    /// Record the actual amount consumed, in token base units. Values above the
+    /// authorized maximum are clamped to it.
+    pub fn charge(&self, base_units: u64) {
+        let clamped = base_units.min(self.max_base_units);
+        if let Ok(mut slot) = self.cell.lock() {
+            *slot = Some(clamped);
+        }
+    }
+
+    /// The authorized maximum for this request, in base units.
+    pub fn max_base_units(&self) -> u64 {
+        self.max_base_units
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Charge {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Charge>().cloned().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Charge extractor used on a route not gated by paid_upto_get/paid_upto_post",
             )
                 .into_response()
         })
@@ -546,6 +627,156 @@ where
     ))
 }
 
+/// Build the 402 response advertising the x402 `upto` challenge.
+fn upto_challenge_response(upto: &X402Upto, amount: &str) -> Response {
+    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    match upto.payment_required_header(amount) {
+        Ok((name, value)) => match (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            (Ok(n), Ok(v)) => {
+                resp.headers_mut().insert(n, v);
+            }
+            _ => tracing::warn!(amount = %amount, "invalid x402 upto PAYMENT-REQUIRED header"),
+        },
+        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build upto challenge"),
+    }
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Usage-based gate: verify the authorization and broadcast the channel open,
+/// run the handler, then settle the actual metered amount and refund the rest.
+async fn upto_gate_middleware(
+    State(state): State<GateState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let amount = {
+        let ctx = PriceCtx {
+            method: req.method(),
+            uri: req.uri(),
+            headers: req.headers(),
+        };
+        state.price.resolve(&ctx)
+    };
+
+    let Some(upto) = state.pay.x402_upto.clone() else {
+        tracing::error!("paid_upto route used but no fee_payer_signer configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "upto routes require a fee_payer_signer",
+        )
+            .into_response();
+    };
+
+    let x402_header = req
+        .headers()
+        .get(PAYMENT_SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let Some(header_value) = x402_header else {
+        return upto_challenge_response(&upto, &amount);
+    };
+
+    // Verify the authorization and broadcast + confirm the channel open.
+    let open = match upto.verify_open(&header_value, &amount).await {
+        Ok(open) => open,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "upto open verification failed");
+            return upto_challenge_response(&upto, &amount);
+        }
+    };
+
+    // Run the handler with a usage meter; default to a zero charge.
+    let cell = Arc::new(Mutex::new(None));
+    let charge = Charge {
+        cell: cell.clone(),
+        max_base_units: open.max_amount,
+    };
+    req.extensions_mut().insert(Payment {
+        amount: amount.clone(),
+        protocol: Protocol::X402,
+        reference: open.channel_id.to_string(),
+    });
+    req.extensions_mut().insert(charge);
+    let mut resp = next.run(req).await;
+
+    let actual = cell.lock().ok().and_then(|slot| *slot).unwrap_or(0);
+
+    // Settle the actual amount and refund the remainder.
+    match upto.settle_actual(&open, actual).await {
+        Ok(settlement) => match upto.settlement_header(&settlement) {
+            Ok((name, value)) => {
+                if let (Ok(n), Ok(v)) = (
+                    HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(&value),
+                ) {
+                    resp.headers_mut().insert(n, v);
+                }
+                resp
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to encode upto settlement header");
+                resp
+            }
+        },
+        Err(e) => {
+            tracing::error!(actual, error = %e, "upto settlement failed after handler ran");
+            (
+                StatusCode::BAD_GATEWAY,
+                "payment settlement failed; the channel can be reclaimed after its grace period",
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Gate a `GET` handler behind x402 `upto` (usage-based) payment at the given
+/// **maximum** price. The handler reports actual usage via the [`Charge`]
+/// extractor; the gate settles that amount and refunds the rest.
+///
+/// Requires a `fee_payer_signer` on [`PayKitConfig`] (the operator signs
+/// settlement vouchers).
+pub fn paid_upto_get<H, T, S>(handler: H, max_price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    get(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: max_price.into(),
+        },
+        upto_gate_middleware,
+    ))
+}
+
+/// Gate a `POST` handler behind x402 `upto` (usage-based) payment at the given
+/// **maximum** price. See [`paid_upto_get`].
+pub fn paid_upto_post<H, T, S>(
+    handler: H,
+    max_price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: max_price.into(),
+        },
+        upto_gate_middleware,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +799,56 @@ mod tests {
 
     async fn report(_payment: Payment) -> &'static str {
         "ok"
+    }
+
+    fn test_signer() -> Arc<dyn SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Arc::new(solana_mpp::solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    /// PayKit with an operator signer (enables `upto`). A bogus RPC URL makes
+    /// the best-effort blockhash fetch fail fast so the challenge builds offline.
+    fn upto_paykit() -> PayKit {
+        PayKit::new(PayKitConfig {
+            recipient: TEST_RECIPIENT.to_string(),
+            challenge_binding_secret: Some(TEST_SECRET.to_string()),
+            network: "devnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            fee_payer_signer: Some(test_signer()),
+            ..Default::default()
+        })
+        .expect("valid paykit config")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_upto_without_signer_returns_500() {
+        // No fee_payer_signer → no upto handler → misconfiguration surfaces as 500.
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_upto_unpaid_returns_402_with_upto_challenge() {
+        let pay = upto_paykit();
+        let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
+        assert!(resp.headers().contains_key("payment-required"));
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
     }
 
     fn ctx<'a>(method: &'a Method, uri: &'a Uri, headers: &'a HeaderMap) -> PriceCtx<'a> {

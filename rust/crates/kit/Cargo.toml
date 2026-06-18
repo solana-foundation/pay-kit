@@ -30,7 +30,12 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 serde_json = "1"
+ed25519-dalek = "2"
 
 [[example]]
 name = "axum_quickstart"
+required-features = ["axum"]
+
+[[example]]
+name = "axum_upto"
 required-features = ["axum"]

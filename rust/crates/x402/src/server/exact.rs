@@ -699,47 +699,13 @@ fn managed_signers_for_requirements(
         .unwrap_or_else(|| Ok(Vec::new()))
 }
 
-fn parse_units(amount: &str, decimals: u8) -> Result<String, Error> {
-    if amount.is_empty() {
-        return Err(Error::Other("amount is required".into()));
-    }
-    if amount.starts_with('-') {
-        return Err(Error::Other("amount must be non-negative".into()));
-    }
-
-    let mut parts = amount.split('.');
-    let whole = parts.next().unwrap_or_default();
-    let fractional = parts.next();
-    if parts.next().is_some() {
-        return Err(Error::Other(format!("Invalid amount: {amount}")));
-    }
-
-    if !whole.chars().all(|c| c.is_ascii_digit()) {
-        return Err(Error::Other(format!("Invalid amount: {amount}")));
-    }
-
-    let fractional = fractional.unwrap_or_default();
-    if !fractional.chars().all(|c| c.is_ascii_digit()) {
-        return Err(Error::Other(format!("Invalid amount: {amount}")));
-    }
-    if fractional.len() > decimals as usize {
-        return Err(Error::Other(format!(
-            "Too many decimal places for amount: {amount}"
-        )));
-    }
-
-    let mut units = whole.to_string();
-    units.push_str(fractional);
-    while units.len() < whole.len() + decimals as usize {
-        units.push('0');
-    }
-
-    let normalized = units.trim_start_matches('0');
-    Ok(if normalized.is_empty() {
-        "0".to_string()
-    } else {
-        normalized.to_string()
-    })
+/// Convert a human-readable amount to base units.
+///
+/// Delegates to [`solana_pay_core::parse_units`] — the audited shared
+/// implementation used by both protocol crates — mapping its error into this
+/// crate's error type.
+pub(crate) fn parse_units(amount: &str, decimals: u8) -> Result<String, Error> {
+    solana_pay_core::parse_units(amount, decimals).map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -696,11 +696,11 @@ impl VoucherData {
             .cumulative
             .parse()
             .map_err(|_| crate::error::Error::Other("invalid voucher cumulative".to_string()))?;
-        crate::program::payment_channels::voucher_message_bytes(
+        Ok(crate::program::payment_channels::voucher_message_bytes(
             &channel_id,
             cumulative,
             self.expires_at,
-        )
+        )?)
     }
 }
 

@@ -176,16 +176,21 @@ payer, broadcasts, polls to `confirmed`, and emits `Payment-Receipt`.
 
 ## x402
 
-[x402](https://x402.org) revives HTTP `402 Payment Required` with a
-single-recipient `exact` scheme. The Rust implementation
-(`solana-pay-kit::x402`, the `solana-x402` crate) ships the `exact` server and
-client plus SIWX.
+[x402](https://x402.org) revives HTTP `402 Payment Required`. The Rust
+implementation (`solana-pay-kit::x402`, the `solana-x402` crate) ships the
+single-recipient `exact` scheme and the usage-based `upto` scheme — both server
+and client — plus SIWX.
 
 | Intent             | Status |
 |--------------------|--------|
 | `exact`            | ✅      |
-| `upto`             | —      |
+| `upto`             | ✅      |
 | `batch-settlement` | —      |
+
+`upto` charges for actual usage up to a ceiling: it settles on a payment channel
+after the handler runs, so it needs a `fee_payer_signer` (the operator signs the
+settlement voucher) and is gated with `paid_upto_get` / `paid_upto_post` rather
+than `paid_get` / `paid_post`.
 
 ## Client
 

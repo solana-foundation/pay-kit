@@ -11,6 +11,9 @@ server = ["dep:tokio"]
 client = ["dep:reqwest"]
 
 [dependencies]
+# Shared channel primitives (PDA/voucher/instruction builders for the upto scheme)
+solana-pay-core = { path = "../core" }
+
 # Signing — solana-keychain with sdk-v3
 solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "abf75944", default-features = false, features = ["memory", "sdk-v3"] }
 
