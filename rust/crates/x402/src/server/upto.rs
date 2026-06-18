@@ -154,15 +154,14 @@ impl X402Upto {
     /// `max_amount` is a human-decimal amount (e.g. `"0.10"`), converted to base
     /// units using the configured decimals — same convention as the `exact`
     /// scheme, so the gate passes one dollar string everywhere.
+    ///
+    /// Pure (no RPC): `extra.recent_blockhash` is left `None` and filled in by
+    /// [`upto`] when building the 402 challenge. The verify path reuses this
+    /// without fetching (or diverging on) a blockhash.
     pub fn upto_requirements(&self, max_amount: &str) -> Result<UptoRequirements, Error> {
         let mint = self.mint()?;
         let token_program = self.token_program()?;
         let base_units = crate::server::exact::parse_units(max_amount, self.config.decimals)?;
-        let recent_blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .ok()
-            .map(|hash| hash.to_string());
 
         Ok(UptoRequirements {
             scheme: UPTO_SCHEME.to_string(),
@@ -177,15 +176,23 @@ impl X402Upto {
                 token_program: Some(pc::pubkey_string(&token_program)),
                 facilitator: self.operator(),
                 program_id: Some(pc::pubkey_string(&self.program_id()?)),
-                recent_blockhash,
+                recent_blockhash: None,
                 valid_after: None,
             },
         })
     }
 
     /// Build the full `PAYMENT-REQUIRED` envelope for an `upto` challenge.
+    ///
+    /// This is where the (best-effort) recent blockhash is fetched and attached,
+    /// so the client can build the channel `open` without an extra RPC.
     pub fn upto(&self, max_amount: &str) -> Result<UptoRequiredEnvelope, Error> {
-        let requirement = self.upto_requirements(max_amount)?;
+        let mut requirement = self.upto_requirements(max_amount)?;
+        requirement.extra.recent_blockhash = self
+            .rpc
+            .get_latest_blockhash()
+            .ok()
+            .map(|hash| hash.to_string());
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),
             description: self.config.description.clone(),

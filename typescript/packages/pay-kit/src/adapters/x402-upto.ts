@@ -166,7 +166,7 @@ export class X402Upto {
         return {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
-            extra: { facilitatorAddress: this.#operator, feePayer: this.#operator },
+            extra: { facilitator: this.#operator, feePayer: this.#operator },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
             payTo: this.#recipient,

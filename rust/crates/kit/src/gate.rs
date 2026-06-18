@@ -275,9 +275,9 @@ impl Charge {
     /// authorized maximum are clamped to it.
     pub fn charge(&self, base_units: u64) {
         let clamped = base_units.min(self.max_base_units);
-        if let Ok(mut slot) = self.cell.lock() {
-            *slot = Some(clamped);
-        }
+        // Recover from a poisoned lock (a panicked handler) rather than dropping
+        // the charge — otherwise a panic after `charge()` would settle for zero.
+        *self.cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(clamped);
     }
 
     /// The authorized maximum for this request, in base units.
@@ -705,7 +705,9 @@ async fn upto_gate_middleware(
     req.extensions_mut().insert(charge);
     let mut resp = next.run(req).await;
 
-    let actual = cell.lock().ok().and_then(|slot| *slot).unwrap_or(0);
+    // Recover from poisoning so a handler that panicked *after* recording a
+    // charge still settles the amount it consumed (not a silent zero refund).
+    let actual = (*cell.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or(0);
 
     // Settle the actual amount and refund the remainder.
     match upto.settle_actual(&open, actual).await {

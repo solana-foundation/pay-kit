@@ -58,7 +58,7 @@ describe('x402 upto engine', () => {
         expect(entry.scheme).toBe('upto');
         expect(entry.amount).toBe('1000000'); // 1.00 USDC ceiling
         expect(entry.payTo).toBe(config.operator.recipient);
-        expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBe(config.operator.signer.pubkey);
+        expect((entry.extra as { facilitator?: string }).facilitator).toBe(config.operator.signer.pubkey);
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
     });
 

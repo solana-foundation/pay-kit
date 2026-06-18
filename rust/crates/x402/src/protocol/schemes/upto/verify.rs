@@ -69,11 +69,10 @@ pub fn verify_upto_payload(
         )));
     }
 
-    if requirements.extra.facilitator != operator {
-        return Err(Error::Other(
-            "requirement facilitator does not match this operator".to_string(),
-        ));
-    }
+    // The meaningful binding: the client must have authorized *this* operator as
+    // the channel's voucher signer. (We don't re-check `requirements.extra
+    // .facilitator` — it is always built server-side as `self.operator()`, so the
+    // comparison can never fail; the authorized_signer check is what matters.)
     if payload.authorized_signer != operator {
         return Err(Error::Other(
             "voucher authorized_signer must be the operator for the payment-channel profile"
