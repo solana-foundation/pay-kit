@@ -628,19 +628,31 @@ where
 }
 
 /// Build the 402 response advertising the x402 `upto` challenge.
+///
+/// If the challenge can't be built — e.g. the operator's RPC is down so no
+/// recent blockhash is available — return a retryable `503` instead of a `402`
+/// carrying no challenge the client could act on.
 fn upto_challenge_response(upto: &X402Upto, amount: &str) -> Response {
+    let (name, value) = match upto.payment_required_header(amount) {
+        Ok(header) => header,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "failed to build upto challenge");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "payment challenge temporarily unavailable",
+            )
+                .into_response();
+        }
+    };
     let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
-    match upto.payment_required_header(amount) {
-        Ok((name, value)) => match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(&value),
-        ) {
-            (Ok(n), Ok(v)) => {
-                resp.headers_mut().insert(n, v);
-            }
-            _ => tracing::warn!(amount = %amount, "invalid x402 upto PAYMENT-REQUIRED header"),
-        },
-        Err(e) => tracing::warn!(amount = %amount, error = %e, "failed to build upto challenge"),
+    match (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        (Ok(n), Ok(v)) => {
+            resp.headers_mut().insert(n, v);
+        }
+        _ => tracing::warn!(amount = %amount, "invalid x402 upto PAYMENT-REQUIRED header"),
     }
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -816,7 +828,8 @@ mod tests {
     }
 
     /// PayKit with an operator signer (enables `upto`). A bogus RPC URL makes
-    /// the best-effort blockhash fetch fail fast so the challenge builds offline.
+    /// the recent-blockhash fetch fail fast — so the challenge can't be built
+    /// offline and the gate surfaces a retryable 503.
     fn upto_paykit() -> PayKit {
         PayKit::new(PayKitConfig {
             recipient: TEST_RECIPIENT.to_string(),
@@ -842,19 +855,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn paid_upto_unpaid_returns_402_with_upto_challenge() {
+    async fn paid_upto_unpaid_returns_503_when_challenge_rpc_unavailable() {
+        // With the operator RPC unreachable, no recent blockhash can be embedded
+        // in the challenge, so the gate returns a retryable 503 rather than a
+        // 402 carrying a challenge the in-SDK client could not act on.
         let pay = upto_paykit();
         let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
         let resp = app
             .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
-        assert!(resp.headers().contains_key("payment-required"));
-        assert_eq!(
-            resp.headers().get(header::CACHE_CONTROL).unwrap(),
-            "no-store"
-        );
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     fn ctx<'a>(method: &'a Method, uri: &'a Uri, headers: &'a HeaderMap) -> PriceCtx<'a> {

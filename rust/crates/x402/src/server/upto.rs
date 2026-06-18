@@ -12,8 +12,9 @@
 //!    amount and submits `settle_and_finalize` + `distribute`, refunding
 //!    `deposit − actual` to the payer.
 
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_keychain::SolanaSigner;
@@ -41,6 +42,10 @@ use crate::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
+
+/// `Open` instruction discriminator in the generated payment-channels client
+/// (`payment_channels_client::generated::instructions::OPEN_DISCRIMINATOR`).
+const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 
 /// Server configuration for the Solana x402 `upto` scheme.
 #[derive(Clone)]
@@ -72,7 +77,10 @@ pub struct UptoConfig {
 
 /// A confirmed, on-chain-verified channel open, carried from
 /// [`X402Upto::verify_open`] to [`X402Upto::settle_actual`].
-#[derive(Debug, Clone)]
+///
+/// Not `Clone`: it holds the in-flight guard for its channel, released when this
+/// value is dropped (after settlement, or on any error/panic path).
+#[derive(Debug)]
 pub struct VerifiedUptoOpen {
     pub channel_id: Pubkey,
     pub payer: Pubkey,
@@ -83,6 +91,26 @@ pub struct VerifiedUptoOpen {
     pub max_amount: u64,
     pub expires_at: i64,
     pub network: String,
+    /// Releases this channel from the in-flight set on drop.
+    _in_flight: InFlightGuard,
+}
+
+/// RAII guard removing a channel id from [`X402Upto`]'s in-flight set on drop,
+/// so a channel being processed can't be served concurrently (replay), and the
+/// slot is always freed — including on early-return errors or a handler panic.
+#[derive(Debug)]
+struct InFlightGuard {
+    set: Arc<Mutex<HashSet<Pubkey>>>,
+    channel_id: Pubkey,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.channel_id);
+    }
 }
 
 /// Server-side payment handler for the Solana x402 `upto` scheme.
@@ -91,6 +119,9 @@ pub struct X402Upto {
     rpc: Arc<RpcClient>,
     config: UptoConfig,
     operator: Pubkey,
+    /// Channel ids currently being processed (verify_open → settle_actual), to
+    /// reject concurrent replays of the same authorization.
+    in_flight: Arc<Mutex<HashSet<Pubkey>>>,
 }
 
 fn now_unix() -> i64 {
@@ -118,6 +149,7 @@ impl X402Upto {
             rpc: Arc::new(RpcClient::new(rpc_url)),
             config,
             operator,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -188,11 +220,15 @@ impl X402Upto {
     /// so the client can build the channel `open` without an extra RPC.
     pub fn upto(&self, max_amount: &str) -> Result<UptoRequiredEnvelope, Error> {
         let mut requirement = self.upto_requirements(max_amount)?;
-        requirement.extra.recent_blockhash = self
+        // Fail loudly (retryable) rather than issuing a 402 with no blockhash:
+        // the in-SDK client hard-requires `extra.recentBlockhash` to build the
+        // channel open, so a silent `None` would surface as a non-retryable
+        // payment failure on a transient RPC hiccup.
+        let blockhash = self
             .rpc
             .get_latest_blockhash()
-            .ok()
-            .map(|hash| hash.to_string());
+            .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?;
+        requirement.extra.recent_blockhash = Some(blockhash.to_string());
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),
             description: self.config.description.clone(),
@@ -266,12 +302,33 @@ impl X402Upto {
             .map_err(|e| Error::Other(format!("invalid payer: {e}")))?;
         let max = payload.max_amount()?;
 
+        // In-flight dedup: reject a concurrent request replaying the same
+        // channel before its first settlement finalizes. The guard releases the
+        // slot on drop — including every early-return below and a handler panic.
+        let in_flight = {
+            let mut set = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            if !set.insert(channel_id) {
+                return Err(Error::Other(
+                    "channel is already being processed (concurrent request)".to_string(),
+                ));
+            }
+            InFlightGuard {
+                set: self.in_flight.clone(),
+                channel_id,
+            }
+        };
+
         // Broadcast the client-signed open (pull). Push (already broadcast) is
         // not yet supported; require the transaction.
         let open_tx_b64 = payload.open_transaction.as_deref().ok_or_else(|| {
             Error::Other("payment-channel profile requires openTransaction (pull)".to_string())
         })?;
         let mut tx = decode_transaction(open_tx_b64)?;
+        // SECURITY: the operator co-signs as fee payer, so it must only ever
+        // sign the expected channel-open instruction — never an arbitrary
+        // operator-authorized instruction (e.g. a SystemProgram transfer that
+        // drains the operator). Validate before co-signing/broadcasting.
+        self.validate_open_transaction(&tx, &payer, &expected_payee, &expected_mint, &channel_id)?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
             .send_and_confirm_transaction(&tx)
@@ -307,6 +364,16 @@ impl X402Upto {
                 channel.deposit
             )));
         }
+        // Bind the on-chain payer: settlement's `distribute` refunds to this
+        // account, and the program enforces it equals `channel.payer`. A
+        // mismatch would fail settlement on-chain after the resource was served.
+        if pc::from_address(&channel.payer) != payer {
+            return Err(Error::Other(format!(
+                "channel payer {} does not match payload.from {}",
+                pc::pubkey_string(&pc::from_address(&channel.payer)),
+                pc::pubkey_string(&payer)
+            )));
+        }
 
         Ok(VerifiedUptoOpen {
             channel_id,
@@ -318,6 +385,7 @@ impl X402Upto {
             max_amount: max,
             expires_at: payload.expires_at,
             network: requirements.network,
+            _in_flight: in_flight,
         })
     }
 
@@ -401,6 +469,33 @@ impl X402Upto {
         })
     }
 
+    /// Verify the client transaction is exactly the expected payment-channels
+    /// `open` instruction before the operator co-signs it as fee payer.
+    ///
+    /// Without this, a malicious client could include any operator-authorized
+    /// instruction (e.g. a SystemProgram transfer draining the operator) and the
+    /// operator would blindly sign it. We require a single instruction, on the
+    /// payment-channels program, with the `open` discriminator, whose accounts
+    /// bind the expected payer / payee / mint / operator / channel.
+    fn validate_open_transaction(
+        &self,
+        tx: &VersionedTransaction,
+        payer: &Pubkey,
+        payee: &Pubkey,
+        mint: &Pubkey,
+        channel_id: &Pubkey,
+    ) -> Result<(), Error> {
+        validate_open_instruction(
+            tx,
+            &self.program_id()?,
+            &self.operator,
+            payer,
+            payee,
+            mint,
+            channel_id,
+        )
+    }
+
     /// Co-sign the fee-payer (operator) slot of a partially-signed transaction.
     async fn cosign_fee_payer(&self, tx: &mut VersionedTransaction) -> Result<(), Error> {
         let account_keys = tx.message.static_account_keys();
@@ -442,4 +537,193 @@ fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
         .map(VersionedTransaction::from)
         .or_else(|_| bincode::deserialize::<VersionedTransaction>(&bytes))
         .map_err(|e| Error::Other(format!("invalid transaction: {e}")))
+}
+
+/// Assert `tx` is exactly the expected payment-channels `open` instruction so the
+/// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
+fn validate_open_instruction(
+    tx: &VersionedTransaction,
+    program_id: &Pubkey,
+    operator: &Pubkey,
+    payer: &Pubkey,
+    payee: &Pubkey,
+    mint: &Pubkey,
+    channel_id: &Pubkey,
+) -> Result<(), Error> {
+    let keys = tx.message.static_account_keys();
+    let instructions = tx.message.instructions();
+    if instructions.len() != 1 {
+        return Err(Error::Other(format!(
+            "open transaction must contain exactly one instruction, found {}",
+            instructions.len()
+        )));
+    }
+    let ix = &instructions[0];
+    let prog = keys
+        .get(ix.program_id_index as usize)
+        .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))?;
+    if prog != program_id {
+        return Err(Error::Other(
+            "open transaction targets an unexpected program".to_string(),
+        ));
+    }
+    if ix.data.first() != Some(&OPEN_INSTRUCTION_DISCRIMINATOR) {
+        return Err(Error::Other(
+            "open transaction is not a channel-open instruction".to_string(),
+        ));
+    }
+    // Account order from `build_open_instruction`:
+    // [payer, payee, mint, authorized_signer, channel, ...].
+    let account_at = |pos: usize| -> Option<Pubkey> {
+        ix.accounts
+            .get(pos)
+            .and_then(|&i| keys.get(i as usize))
+            .copied()
+    };
+    let expect = |pos: usize, want: &Pubkey, label: &str| -> Result<(), Error> {
+        match account_at(pos) {
+            Some(got) if got == *want => Ok(()),
+            other => Err(Error::Other(format!(
+                "open transaction {label} mismatch: expected {}, got {}",
+                pc::pubkey_string(want),
+                other
+                    .map(|p| pc::pubkey_string(&p))
+                    .unwrap_or_else(|| "<none>".to_string())
+            ))),
+        }
+    };
+    expect(0, payer, "payer")?;
+    expect(1, payee, "payee")?;
+    expect(2, mint, "mint")?;
+    expect(3, operator, "authorized_signer")?;
+    expect(4, channel_id, "channel")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_pay_core::payment_channels::{
+        build_open_instruction, derive_channel_addresses, OpenChannelParams,
+    };
+
+    fn token_program() -> Pubkey {
+        Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap()
+    }
+
+    fn open_params(
+        payer: Pubkey,
+        payee: Pubkey,
+        mint: Pubkey,
+        operator: Pubkey,
+    ) -> OpenChannelParams {
+        OpenChannelParams {
+            payer,
+            payee,
+            mint,
+            authorized_signer: operator,
+            salt: 7,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![],
+            token_program: token_program(),
+            program_id: pc::default_program_id(),
+        }
+    }
+
+    fn unsigned_tx(instructions: &[solana_instruction::Instruction]) -> VersionedTransaction {
+        let msg = Message::new(instructions, Some(&Pubkey::new_unique()));
+        VersionedTransaction::from(Transaction::new_unsigned(msg))
+    }
+
+    #[test]
+    fn accepts_a_well_formed_open() {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &channel,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_a_foreign_program_instruction() {
+        // The SOL-drain vector: a SystemProgram transfer from the operator.
+        let operator = Pubkey::new_unique();
+        let system = Pubkey::from_str("11111111111111111111111111111111").unwrap();
+        let evil = solana_instruction::Instruction {
+            program_id: system,
+            accounts: vec![],
+            data: vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // transfer-ish
+        };
+        let tx = unsigned_tx(&[evil]);
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+            &Pubkey::new_unique(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_extra_instructions_and_account_mismatch() {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let open = build_open_instruction(&params);
+
+        // A second instruction smuggled in alongside the open.
+        let extra = solana_instruction::Instruction {
+            program_id: Pubkey::from_str("11111111111111111111111111111111").unwrap(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let two = unsigned_tx(&[open.clone(), extra]);
+        assert!(validate_open_instruction(
+            &two,
+            &pc::default_program_id(),
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &channel,
+        )
+        .is_err());
+
+        // Right shape, wrong expected payee.
+        let one = unsigned_tx(&[open]);
+        assert!(validate_open_instruction(
+            &one,
+            &pc::default_program_id(),
+            &operator,
+            &payer,
+            &Pubkey::new_unique(),
+            &mint,
+            &channel,
+        )
+        .is_err());
+    }
 }
