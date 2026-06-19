@@ -24,7 +24,8 @@
   "prettier": "@solana/prettier-config-solana",
   "pnpm": {
     "overrides": {
-      "ws": "^8.21.0"
+      "ws": "^8.21.0",
+      "@x402/core": "file:.x402-vendor/x402-core-2.15.0.tgz"
     }
   },
   "devDependencies": {

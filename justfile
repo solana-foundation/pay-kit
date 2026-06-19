@@ -70,6 +70,18 @@ payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs
 
 # ── TypeScript ──
 
+# Rebuild the vendored @x402 tarballs from the external/x402 submodule.
+# @solana/pay-kit bundles @x402/core + @x402/svm (a fork not on npm) into its
+# dist; the tarballs are committed for reproducible installs. Run after the
+# submodule moves, then `pnpm install` to refresh the lockfile.
+x402-vendor:
+    git submodule update --init typescript/external/x402
+    cd typescript/external/x402/typescript && pnpm install
+    cd typescript/external/x402/typescript && pnpm --filter @x402/core build && pnpm --filter @x402/svm build
+    mkdir -p typescript/.x402-vendor
+    cd typescript/external/x402/typescript && pnpm --dir packages/core pack --pack-destination "{{justfile_directory()}}/typescript/.x402-vendor"
+    cd typescript/external/x402/typescript && pnpm --dir packages/mechanisms/svm pack --pack-destination "{{justfile_directory()}}/typescript/.x402-vendor"
+
 # Install TypeScript dependencies
 ts-install:
     cd typescript && pnpm install
