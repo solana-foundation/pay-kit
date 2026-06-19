@@ -17,7 +17,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.longOrNull
 
 /**
  * MPP payment-channel session wire types, mirroring the Rust spine
@@ -65,11 +64,10 @@ object SaltStringSerializer : KSerializer<ULong?> {
         return when (val element = input.decodeJsonElement()) {
             is JsonNull -> null
             is JsonPrimitive ->
-                if (element.isString) {
-                    element.content.toULongOrNull() ?: throw MppException.InvalidJson()
-                } else {
-                    element.longOrNull?.toULong() ?: throw MppException.InvalidJson()
-                }
+                // Read the raw content as ULong for both the string and number
+                // forms: a u64 salt above Long.MAX_VALUE (about half the range)
+                // would be lost via longOrNull when sent as a JSON number.
+                element.content.toULongOrNull() ?: throw MppException.InvalidJson()
             else -> throw MppException.InvalidJson()
         }
     }
