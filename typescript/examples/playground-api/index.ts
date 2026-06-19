@@ -71,6 +71,10 @@ const pay = await createPayKit({
       externalId: 'paykit/joke: seller payout',
       feeWithin: { [PLATFORM]: { memo: 'paykit/joke: platform fee', price: usd('0.003') } },
     },
+    // Fixed charge, settled over MPP or x402 (client's choice). This is the
+    // canonical paid endpoint the payment-link E2E + cross-language harnesses
+    // drive (they expect GET /api/v1/fortune → 402 → `{ "fortune": ... }`).
+    fortune: { amount: usd('0.01'), description: 'A fortune cookie' },
     quote: { amount: usd('0.01'), description: 'Stock quote' },
     stream: session(usd('1.00'), { closeDelayMs: 2000, description: 'Metered token stream', unitPrice: usd('0.0001') }),
     summarize: usage(usd('0.1'), { description: 'Summarize text, billed per token' }),
@@ -82,6 +86,12 @@ const JOKES = [
   'Why do programmers prefer dark mode? Because light attracts bugs.',
   'A SQL query walks into a bar, sees two tables, and asks: "Can I JOIN you?"',
   'There are 10 kinds of people: those who understand binary and those who don’t.',
+]
+const FORTUNES = [
+  'A smooth long journey! Great expectations.',
+  'Your code will compile on the first try today.',
+  'A thrilling time is in your immediate future.',
+  'The settlement you await will confirm on-chain.',
 ]
 const HEADLINES = [
   { tag: 'engineering', title: 'Solana session validators hit a new throughput record' },
@@ -120,6 +130,12 @@ if (NETWORK === 'localnet') {
 app.get('/api/v1/quote/:symbol', pay.express('quote'), (req: Request, res: Response) => {
   const symbol = String(req.params.symbol).toUpperCase()
   res.json({ price: 100 + (symbol.charCodeAt(0) % 50), symbol, via: pay.payment(req)?.protocol })
+})
+
+// Fixed charge, settled over whichever protocol the client picks. Canonical
+// paid endpoint for the payment-link E2E + cross-language harnesses.
+app.get('/api/v1/fortune', pay.express('fortune'), (_req: Request, res: Response) => {
+  res.json({ fortune: FORTUNES[Math.floor(Math.random() * FORTUNES.length)] })
 })
 
 // MPP charge with a split: the platform takes 0.003, the seller nets 0.007.
