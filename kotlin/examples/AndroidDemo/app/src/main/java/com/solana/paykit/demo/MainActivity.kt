@@ -307,26 +307,34 @@ private fun DemoScreen() {
                             enabled = busy == null && signer != null,
                             onClick = onClick@{
                                 val s = signer ?: return@onClick
-                                // The demo settles one-shot charge endpoints over MPP. Other
-                                // intents (session streaming, subscription, x402 upto) are
-                                // multi-step flows with dedicated APIs, not the 402 -> charge ->
-                                // retry loop — explain instead of firing a charge the server's
-                                // non-charge 402 would reject.
-                                if (endpoint.intent != "charge") {
-                                    append(
+                                when (endpoint.intent) {
+                                    // One-shot charge: the 402 -> sign -> retry MPP loop.
+                                    "charge" -> {
+                                        busy = BusyKind.Pay(endpoint.id)
+                                        scope.launch {
+                                            append(consume(s, endpoint))
+                                            refreshBalance()
+                                            busy = null
+                                        }
+                                    }
+                                    // Session: open a payment channel, stream metered SSE
+                                    // deliveries, sign + commit a voucher, settle.
+                                    "session" -> {
+                                        busy = BusyKind.Pay(endpoint.id)
+                                        scope.launch {
+                                            append(consumeSession(s, endpoint))
+                                            refreshBalance()
+                                            busy = null
+                                        }
+                                    }
+                                    // Other intents (subscription, x402 upto) use dedicated
+                                    // pay-kit APIs the tap demo doesn't drive.
+                                    else -> append(
                                         LogEntry.failure(
                                             endpoint,
-                                            "${endpoint.label} is an mpp/${endpoint.intent} flow, not a one-shot charge. " +
-                                                "Open it with the session API (PaymentChannelSession) — this tap-to-pay demo only settles charge endpoints.",
+                                            "${endpoint.label} is an mpp/${endpoint.intent} flow this demo doesn't drive; use the matching pay-kit API.",
                                         )
                                     )
-                                    return@onClick
-                                }
-                                busy = BusyKind.Pay(endpoint.id)
-                                scope.launch {
-                                    append(consume(s, endpoint))
-                                    refreshBalance()
-                                    busy = null
                                 }
                             },
                         )
@@ -559,14 +567,24 @@ private fun EndpointCard(
             fontFamily = FontFamily.Monospace,
             color = Color.White.copy(alpha = 0.9f),
         )
-        Text(
-            text = endpoint.protocols,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            color = Color.White.copy(alpha = 0.85f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            endpoint.methods.forEachIndexed { index, method ->
+                if (index > 0) {
+                    Text("·", fontSize = 11.sp, color = Color.White.copy(alpha = 0.45f))
+                }
+                val selected = method == endpoint.selectedProtocol
+                Text(
+                    text = method,
+                    fontSize = 11.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                    color = Color.White.copy(alpha = if (selected) 1f else 0.55f),
+                )
+            }
+            if (endpoint.intent != "charge") {
+                Text("·", fontSize = 11.sp, color = Color.White.copy(alpha = 0.45f))
+                Text(endpoint.intent, fontSize = 11.sp, color = Color.White.copy(alpha = 0.55f))
+            }
+        }
     }
 }
 
@@ -734,6 +752,33 @@ private val httpClient = OkHttpClient()
  * and lets the charge interceptor run the 402 -> pay -> retry loop. The on-chain
  * signature is pulled from the `Payment-Receipt` envelope on success.
  */
+/**
+ * Drive the full payment-channel **session** for a session endpoint: open the
+ * channel, stream the metered SSE deliveries, sign + commit a voucher, and poll
+ * the settle signature (see [SessionStream]). Mirrors the iOS demo's session path.
+ */
+private suspend fun consumeSession(signer: SolanaSigner, endpoint: Endpoint): LogEntry = withContext(Dispatchers.IO) {
+    try {
+        val client = OkHttpClient.Builder()
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        val result = SessionStream.consume(client, "$PLAYGROUND_BASE${endpoint.path}", signer)
+        val paid = "$" + BigDecimal(result.totalPaidBaseUnits)
+            .divide(BigDecimal(1_000_000))
+            .stripTrailingZeros()
+            .toPlainString()
+        LogEntry.success(
+            endpoint = endpoint,
+            signature = result.settleSignature,
+            body = "streamed ${result.chunks} chunks · paid $paid over a payment-channel session " +
+                "(cumulative ${result.cumulative} base units)",
+        )
+    } catch (t: Throwable) {
+        android.util.Log.e("PayKitDemo", "session consume failed", t)
+        LogEntry.failure(endpoint, "${t.javaClass.simpleName}: ${t.message ?: "(no message)"}")
+    }
+}
+
 private suspend fun consume(signer: SolanaSigner, endpoint: Endpoint): LogEntry = withContext(Dispatchers.IO) {
     val url = "$PLAYGROUND_BASE${endpoint.path}"
     try {

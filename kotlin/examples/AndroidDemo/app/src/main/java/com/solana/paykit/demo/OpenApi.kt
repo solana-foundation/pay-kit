@@ -31,12 +31,14 @@ data class Endpoint(
     val priceUsd: String,
     val icon: ImageVector,
     val tint: Color,
-    /** Discovery intent of the first offer (`charge` / `session` / …); the demo
-     *  only settles `charge` over MPP and explains the rest. */
+    /** Discovery intent of the first offer (`charge` / `session` / …). */
     val intent: String,
-    /** Display string of the accepted protocols + non-charge intent, e.g.
-     *  `x402 · mpp` or `mpp · session`. */
-    val protocols: String,
+    /** Accepted protocols in offer order, e.g. `["x402", "mpp"]`. */
+    val methods: List<String>,
+    /** The protocol this demo settles over (`mpp` for charge endpoints that
+     *  advertise it); `null` for flows it doesn't consume. Rendered emphasized
+     *  on the card so it's clear which offer is used. */
+    val selectedProtocol: String?,
 )
 
 /** Vertical-gradient bottom stop: the tint darkened ~12% (mirrors the iOS
@@ -134,26 +136,28 @@ object OpenApi {
             priceUsd = priceString(firstOffer),
             icon = iconFor(intent = intent, scheme = scheme, method = payMethod),
             tint = PALETTE[index % PALETTE.size],
-            intent = if (!intent.isNullOrEmpty()) intent else "charge",
-            protocols = protocolsLabel(offers, intent),
+            intent = if (!intent.isNullOrEmpty()) intent.lowercase() else "charge",
+            methods = methodsOf(offers),
+            selectedProtocol = selectedProtocol(offers, intent),
         )
     }
 
-    /**
-     * Display string of the accepted protocols (offer `method`s, de-duplicated
-     * in offer order) plus the intent when it is not a plain charge, so the card
-     * surfaces the MPP/x402 split and flags session/subscription routes.
-     * E.g. `x402 · mpp`, `mpp`, `mpp · session`.
-     */
-    private fun protocolsLabel(offers: kotlinx.serialization.json.JsonArray?, intent: String?): String {
+    /** Accepted protocols (offer `method`s) de-duplicated in offer order. */
+    private fun methodsOf(offers: kotlinx.serialization.json.JsonArray?): List<String> {
         val methods = LinkedHashSet<String>()
         offers?.forEach { offer ->
             ((offer as? JsonObject)?.get("method") as? JsonPrimitive)?.contentOrNull
                 ?.takeIf { it.isNotEmpty() }?.let { methods.add(it) }
         }
-        val parts = methods.toMutableList()
-        if (intent != null && intent.lowercase() != "charge") parts.add(intent.lowercase())
-        return if (parts.isEmpty()) "—" else parts.joinToString(" · ")
+        return methods.toList()
+    }
+
+    /** The protocol the demo settles over: it drives charge endpoints through the
+     *  MPP client, so `mpp` is selected when a charge endpoint advertises it. */
+    private fun selectedProtocol(offers: kotlinx.serialization.json.JsonArray?, intent: String?): String? {
+        if ((intent?.lowercase() ?: "charge") != "charge") return null
+        val ms = methodsOf(offers)
+        return if (ms.contains("mpp")) "mpp" else ms.firstOrNull()
     }
 
     /**
