@@ -233,15 +233,36 @@ struct ContentView: View {
     private func pay(_ endpoint: Endpoint) async {
         guard let signer else { return }
 
-        // The demo settles one-shot `charge` endpoints over MPP. Other intents
-        // (session streaming, subscription, x402 `upto` usage) are multi-step
-        // flows the SDK exposes through dedicated APIs, not the 402 -> charge ->
-        // retry loop — explain rather than firing a charge that the server's
-        // non-charge 402 would reject.
+        // Session endpoints run the real payment-channel flow (open -> stream
+        // SSE deliveries -> sign + commit a voucher -> settle), not the one-shot
+        // 402 -> charge -> retry loop.
+        if endpoint.intent == "session" {
+            busy = .pay(endpoint.id)
+            defer { busy = nil }
+            do {
+                let result = try await SessionStream.consume(
+                    streamURL: playgroundURL.appendingPathComponent(endpoint.path),
+                    payer: signer
+                )
+                let paid = Self.formatBaseUnitsUSD(result.totalPaidBaseUnits)
+                append(.success(
+                    endpoint: endpoint,
+                    signature: result.settleSignature,
+                    body: "streamed \(result.chunks) chunks · paid \(paid) over a payment-channel session (cumulative \(result.cumulative) base units)"
+                ))
+                await refreshBalance()
+            } catch {
+                append(.failure(endpoint: endpoint, message: String(describing: error)))
+            }
+            return
+        }
+
+        // Other non-charge intents (subscription, x402 `upto` usage) are
+        // multi-step flows with dedicated pay-kit APIs the tap demo doesn't drive.
         guard endpoint.intent == "charge" else {
             append(.failure(
                 endpoint: endpoint,
-                message: "\(endpoint.label) is an mpp/\(endpoint.intent) flow, not a one-shot charge. Open it with the session API (PaymentChannelSession) — this tap-to-pay demo only settles charge endpoints."
+                message: "\(endpoint.label) is an mpp/\(endpoint.intent) flow this demo doesn't drive; use the matching pay-kit API."
             ))
             return
         }
@@ -321,6 +342,13 @@ struct ContentView: View {
         return "\(formatted) USDC"
     }
 
+    /// Format USDC base units (6 decimals) as a dollar string for the log.
+    static func formatBaseUnitsUSD(_ baseUnits: UInt64) -> String {
+        let dollars = Decimal(baseUnits) / 1_000_000
+        let formatted = usdcFormatter.string(from: dollars as NSDecimalNumber) ?? "\(dollars)"
+        return "$\(formatted)"
+    }
+
     /// Decode a `Payment-Receipt` header (base64url-no-pad JSON envelope
     /// produced by the gateway's `format_receipt`) and return the
     /// `reference` field — the on-chain signature.
@@ -367,9 +395,12 @@ struct Endpoint: Identifiable, Hashable {
     /// Discovery intent of the first offer (`charge` / `session` / …); the demo
     /// only settles `charge` over MPP and explains the rest.
     let intent: String
-    /// Display string of the accepted protocols + non-charge intent, e.g.
-    /// `x402 · mpp` or `mpp · session`.
-    let protocols: String
+    /// Accepted protocols in offer order, e.g. `["x402", "mpp"]`.
+    let methods: [String]
+    /// The protocol this demo actually settles over (`mpp` for charge endpoints
+    /// that advertise it); `nil` for flows the demo doesn't consume. Rendered
+    /// emphasized on the card so it's clear which offer is used.
+    let selectedProtocol: String?
 }
 
 // MARK: - Endpoint card
@@ -406,10 +437,20 @@ private struct EndpointCard: View {
                 Text(endpoint.priceUSD)
                     .font(.caption.monospacedDigit())
                     .opacity(0.9)
-                Text(endpoint.protocols)
-                    .font(.caption2.weight(.medium))
-                    .opacity(0.85)
-                    .lineLimit(1)
+                HStack(spacing: 3) {
+                    ForEach(Array(endpoint.methods.enumerated()), id: \.offset) { index, method in
+                        if index > 0 { Text("·").opacity(0.45) }
+                        Text(method)
+                            .fontWeight(method == endpoint.selectedProtocol ? .bold : .regular)
+                            .opacity(method == endpoint.selectedProtocol ? 1.0 : 0.55)
+                    }
+                    if endpoint.intent != "charge" {
+                        Text("·").opacity(0.45)
+                        Text(endpoint.intent).opacity(0.55)
+                    }
+                }
+                .font(.caption2)
+                .lineLimit(1)
             }
             .padding(12)
             .frame(width: 150, height: 130, alignment: .topLeading)

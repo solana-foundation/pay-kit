@@ -77,27 +77,32 @@ enum OpenAPI {
             priceUSD: priceString(from: firstOffer),
             systemImage: systemImage(intent: intent, scheme: scheme, method: payMethod),
             tint: tint(for: index),
-            intent: (intent?.isEmpty == false) ? intent! : "charge",
-            protocols: protocols(from: offers, intent: intent)
+            intent: (intent?.isEmpty == false) ? intent!.lowercased() : "charge",
+            methods: methods(from: offers),
+            selectedProtocol: selectedProtocol(from: offers, intent: intent)
         )
     }
 
-    /// Display string of the accepted protocols (offer `method`s, de-duplicated
-    /// in offer order) plus the intent when it is not a plain charge — so the
-    /// card surfaces the MPP/x402 split and flags session/subscription routes.
-    /// E.g. `x402 · mpp`, `mpp`, `mpp · session`.
-    static func protocols(from offers: [[String: Any]], intent: String?) -> String {
+    /// Accepted protocols (offer `method`s) de-duplicated in offer order, so the
+    /// card can surface the MPP/x402 split. E.g. `["x402", "mpp"]`.
+    static func methods(from offers: [[String: Any]]) -> [String] {
         var methods: [String] = []
         for offer in offers {
             if let m = offer["method"] as? String, !m.isEmpty, !methods.contains(m) {
                 methods.append(m)
             }
         }
-        var parts = methods
-        if let intent, intent.lowercased() != "charge" {
-            parts.append(intent.lowercased())
-        }
-        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+        return methods
+    }
+
+    /// The protocol the demo actually settles over: it drives charge endpoints
+    /// through the MPP client, so `mpp` is selected whenever a charge endpoint
+    /// advertises it. Non-charge flows aren't consumed here, so nothing is
+    /// selected.
+    static func selectedProtocol(from offers: [[String: Any]], intent: String?) -> String? {
+        guard intent?.lowercased() ?? "charge" == "charge" else { return nil }
+        let ms = methods(from: offers)
+        return ms.contains("mpp") ? "mpp" : ms.first
     }
 
     // MARK: - Field derivation
