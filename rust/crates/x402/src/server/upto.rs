@@ -353,6 +353,9 @@ impl X402Upto {
                 actual: pc::pubkey_string(&pc::from_address(&channel.payee)),
             });
         }
+        // This first slice does not advertise split recipients, so bind the
+        // confirmed channel to the empty-recipient distribution before serving.
+        validate_empty_recipient_distribution_hash(&channel.distribution_hash)?;
         if pc::from_address(&channel.authorized_signer) != self.operator {
             return Err(Error::Other(
                 "channel authorized_signer is not the operator".to_string(),
@@ -537,6 +540,16 @@ fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
         .map(VersionedTransaction::from)
         .or_else(|_| bincode::deserialize::<VersionedTransaction>(&bytes))
         .map_err(|e| Error::Other(format!("invalid transaction: {e}")))
+}
+
+fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> Result<(), Error> {
+    let expected = pc::distribution_hash(&[]);
+    if distribution_hash != &expected {
+        return Err(Error::Other(
+            "x402 upto currently supports only empty-recipient payment channels".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Assert `tx` is exactly the expected payment-channels `open` instruction so the
@@ -725,5 +738,17 @@ mod tests {
             &channel,
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_non_empty_recipient_distribution_hash() {
+        let empty = pc::distribution_hash(&[]);
+        assert!(validate_empty_recipient_distribution_hash(&empty).is_ok());
+
+        let non_empty = pc::distribution_hash(&[pc::Distribution {
+            recipient: Pubkey::new_unique(),
+            bps: 10_000,
+        }]);
+        assert!(validate_empty_recipient_distribution_hash(&non_empty).is_err());
     }
 }
