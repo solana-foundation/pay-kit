@@ -1,17 +1,19 @@
 # PayKitDemo
 
 SwiftUI app that exercises `SolanaPayKit` end-to-end against the
-bundled `pay server demo` gateway. The app generates a Keychain-backed
-account, tops it up over Surfpool cheatcodes, then lets you tap any of
-the demo gateway's metered endpoints (`/usage`, `/compute`,
-`/checkout`, etc.) and surfaces each charge's settlement signature in
-an append-only log.
+pay-kit playground. On launch it fetches the playground's
+`/openapi.json`, renders every priced operation (read from each route's
+`x-payment-info` offers) as a tappable collection, generates a
+Keychain-backed account, tops it up over Surfpool cheatcodes, then lets
+you consume any endpoint and surfaces each charge's settlement
+signature in an append-only log.
 
 ![PayKitDemo screenshot](docs/paykit-demo-screenshot.png)
 
 ## What you need
 
-- [`pay`](https://github.com/solana-foundation/pay) installed and on `$PATH`
+- The pay-kit playground running on `http://127.0.0.1:3000` (see
+  [`typescript/examples/playground-api`](../../../typescript/examples/playground-api))
 - Xcode 16+ and an iOS 17+ Simulator
 
 The demo's signer is **stored in iOS Keychain** under
@@ -21,17 +23,20 @@ Wallet Adapter or the Seeker Seed Vault.
 
 ## Run it
 
-### 1. Start the gateway
+### 1. Start the playground
 
-In one terminal, from anywhere:
+In one terminal:
 
 ```sh
-pay server demo
+cd typescript/examples/playground-api
+pnpm install
+pnpm start
 ```
 
-This boots the bundled `payment-debugger` spec on
-`http://127.0.0.1:1402`, routing settlement through the hosted Surfpool
-sandbox (`https://402.surfnet.dev:8899`). Leave it running.
+This boots the pay-kit playground on `http://127.0.0.1:3000`, serving
+`/openapi.json` plus the priced routes and routing settlement through
+the hosted Surfpool sandbox (`https://402.surfnet.dev:8899`). Leave it
+running.
 
 ### 2. Launch the app
 
@@ -53,10 +58,11 @@ Inside the app:
    `surfnet_setAccount` / `surfnet_setTokenAccount` cheatcodes against
    the hosted Surfpool RPC. The cell collapses into a `Balance`
    readout (e.g. `1000 USDC`) once funding lands.
-3. Tap any card in **Endpoints (http://127.0.0.1:1402)** — `Usage
-   Report`, `Compute Job`, `Subscription`, etc. The SDK handles the
-   `402 → sign → 200` dance and appends the result to the **Log**
-   section below.
+3. Tap any card in **Endpoints (… from OpenAPI)** — the cards are built
+   from the playground's `/openapi.json`, so they reflect whatever the
+   running server prices (e.g. `Stock quote`, `A programmer joke`). The
+   SDK handles the `402 → sign → 200` dance and appends the result to the
+   **Log** section below.
 
 The address persists across launches; **Reset Account** in the bottom
 toolbar wipes it from Keychain.

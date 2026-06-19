@@ -2,17 +2,20 @@ import SwiftUI
 import SolanaPayKit
 
 struct ContentView: View {
-    // Hardcoded for the demo. `pay server demo` binds the gateway to
-    // `0.0.0.0:1402` and routes settlement through the hosted Surfpool
-    // sandbox at `402.surfnet.dev:8899`. To target a local Surfpool
-    // instead (`pay server demo --local`), edit these two constants.
+    // Hardcoded for the demo. The playground API (`examples/playground-api`,
+    // `pnpm dev`) serves its priced routes + `/openapi.json` discovery on
+    // :3000 and routes settlement through the hosted Surfpool sandbox at
+    // `402.surfnet.dev:8899`. The iOS simulator shares the host network, so
+    // `127.0.0.1` reaches the local playground.
     private let rpcURL = URL(string: "https://402.surfnet.dev:8899")!
-    private let gatewayURL = URL(string: "http://127.0.0.1:1402")!
+    private let playgroundURL = URL(string: "http://127.0.0.1:3000")!
 
     @State private var signer: MemorySigner?
     @State private var usdcBalance: Decimal?
     @State private var log: [LogEntry] = []
     @State private var busy: BusyKind?
+    @State private var endpoints: [Endpoint] = []
+    @State private var endpointsError: String?
 
     var body: some View {
         NavigationStack {
@@ -42,6 +45,7 @@ struct ContentView: View {
             } catch {
                 append(.system("Failed to load signer: \(error.localizedDescription)", success: false))
             }
+            await loadEndpoints()
         }
     }
 
@@ -98,21 +102,34 @@ struct ContentView: View {
 
     @ViewBuilder
     private var endpointsSection: some View {
-        Section("Endpoints (\(gatewayURL.absoluteString))") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(EndpointCatalog.all) { endpoint in
-                        EndpointCard(endpoint: endpoint, busy: busy == .pay(endpoint.id)) {
-                            Task { await pay(endpoint) }
-                        }
-                        .disabled(busy != nil || signer == nil)
-                    }
+        Section("Endpoints (\(endpoints.count) from OpenAPI)") {
+            if let endpointsError {
+                Label(endpointsError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if endpoints.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading \(playgroundURL.absoluteString)/openapi.json…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 4)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(endpoints) { endpoint in
+                            EndpointCard(endpoint: endpoint, busy: busy == .pay(endpoint.id)) {
+                                Task { await pay(endpoint) }
+                            }
+                            .disabled(busy != nil || signer == nil)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             }
-            .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
 
-            if signer == nil {
+            if signer == nil && !endpoints.isEmpty {
                 Text("Tap **Setup Account** to enable these.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -192,9 +209,30 @@ struct ContentView: View {
         }
     }
 
+    /// Fetch `/openapi.json` from the playground and build the priced-endpoint
+    /// collection. Surfaces a fetch/decode failure in `endpointsError` so the
+    /// section shows it instead of an empty spinner.
+    private func loadEndpoints() async {
+        endpointsError = nil
+        let url = playgroundURL.appendingPathComponent("openapi.json")
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw OpenAPIError.httpStatus(http.statusCode)
+            }
+            let loaded = try OpenAPI.endpoints(from: data)
+            endpoints = loaded
+            if loaded.isEmpty {
+                endpointsError = "No priced endpoints in the OpenAPI spec."
+            }
+        } catch {
+            endpointsError = "Could not load \(url.absoluteString): \(error.localizedDescription)"
+        }
+    }
+
     private func pay(_ endpoint: Endpoint) async {
         guard let signer else { return }
-        let url = gatewayURL.appendingPathComponent(endpoint.path)
+        let url = playgroundURL.appendingPathComponent(endpoint.path)
 
         busy = .pay(endpoint.id)
         defer { busy = nil }
@@ -300,8 +338,10 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Endpoint catalog
+// MARK: - Endpoint
 
+/// A priced operation discovered from the playground's `/openapi.json`,
+/// rendered as a tappable card in the endpoints collection.
 struct Endpoint: Identifiable, Hashable {
     let id: String
     let label: String
@@ -310,74 +350,6 @@ struct Endpoint: Identifiable, Hashable {
     let priceUSD: String
     let systemImage: String
     let tint: Color
-}
-
-enum EndpointCatalog {
-    static let all: [Endpoint] = [
-        Endpoint(
-            id: "reports-usage",
-            label: "Usage Report",
-            method: .get,
-            path: "api/v1/reports/usage",
-            priceUSD: "$0.01",
-            systemImage: "chart.bar.fill",
-            tint: .blue
-        ),
-        Endpoint(
-            id: "compute-run",
-            label: "Compute Job",
-            method: .post,
-            path: "api/v1/compute/run",
-            priceUSD: "$0.10",
-            systemImage: "cpu",
-            tint: .indigo
-        ),
-        Endpoint(
-            id: "subscriptions-charge",
-            label: "Subscription",
-            method: .post,
-            path: "api/v1/subscriptions/charge",
-            priceUSD: "$49.99",
-            systemImage: "repeat.circle.fill",
-            tint: .purple
-        ),
-        Endpoint(
-            id: "invoices-pay",
-            label: "Pay Invoice",
-            method: .post,
-            path: "api/v1/invoices/pay",
-            priceUSD: "$100",
-            systemImage: "doc.text.fill",
-            tint: .pink
-        ),
-        Endpoint(
-            id: "referrals-purchase",
-            label: "Referral Purchase",
-            method: .post,
-            path: "api/v1/referrals/purchase",
-            priceUSD: "$199",
-            systemImage: "person.2.fill",
-            tint: .orange
-        ),
-        Endpoint(
-            id: "orders-checkout",
-            label: "Checkout",
-            method: .post,
-            path: "api/v1/orders/checkout",
-            priceUSD: "$250",
-            systemImage: "cart.fill",
-            tint: .green
-        ),
-        Endpoint(
-            id: "settlements-disburse",
-            label: "Disbursement",
-            method: .post,
-            path: "api/v1/settlements/disburse",
-            priceUSD: "$1000",
-            systemImage: "banknote.fill",
-            tint: .red
-        ),
-    ]
 }
 
 // MARK: - Endpoint card
