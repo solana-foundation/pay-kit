@@ -198,13 +198,12 @@ class _ReplayTransport:
         )
 
 
-def test_duplicate_delivery_returns_replayed_receipt_and_records_prepared_voucher() -> None:
+def test_duplicate_delivery_replay_does_not_double_count() -> None:
     # Re-committing the same deliveryId returns a replayed receipt pinned to the
-    # originally settled cumulative. The consumer still records the voucher it
-    # prepared for the retry, exactly like rust ``SessionConsumer::commit_directive``
-    # (session_consumer.rs records unconditionally after the transport returns)
-    # and the TS ``SessionConsumer``: the server's dedupe keeps the settled
-    # amount authoritative on its side and the server records exactly one commit.
+    # originally settled cumulative (100). The consumer reconciles to that settled
+    # value (clamped to the prepared voucher) instead of recording the freshly
+    # prepared higher voucher, so a duplicate send does not double-count. Mirrors
+    # Go SessionConsumer.commit_directive (settled.min(prepared), never regress).
     transport = _RecordingTransport()
     consumer = _consumer(transport)
     d = _directive(consumer.session.channel_id_string, 100, delivery_id="d1")
@@ -216,18 +215,36 @@ def test_duplicate_delivery_returns_replayed_receipt_and_records_prepared_vouche
     r2 = consumer.commit_directive(d)
     assert r2.status == "replayed"
     assert r2.cumulative == "100"
-    assert consumer.session.cumulative == 200
+    assert consumer.session.cumulative == 100  # no double-count
     assert len(transport.commits) == 1
 
 
-def test_replayed_receipt_records_prepared_voucher() -> None:
-    # Lost-response case: the server reports the delivery as already settled at
-    # 100, but the client watermark advances to the cumulative it just signed
-    # (250), keeping the locally signed voucher the high-water mark. Mirrors the
-    # unconditional record in rust session_consumer.rs and TS SessionConsumer.
+def test_replayed_receipt_reconciles_to_clamped_settled() -> None:
+    # Lost-response case: the server reports the delivery already settled at 100.
+    # The client reconciles its watermark to the settled value, clamped to the
+    # voucher it just prepared (250) since the server is untrusted: min(100, 250)
+    # = 100. Mirrors Go reconcile_settled (the #162 fix).
     consumer = _consumer(_ReplayTransport(settled="100"))
     receipt = consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
     assert receipt.status == "replayed"
+    assert consumer.session.cumulative == 100
+
+
+def test_replayed_receipt_never_regresses_watermark() -> None:
+    # Client is already ahead at 300 (later deliveries settled). A stale replayed
+    # receipt at 100 must not regress the watermark.
+    consumer = _consumer(_ReplayTransport(settled="100"))
+    consumer.session.reconcile_settled(300)
+    consumer.commit_directive(_directive(consumer.session.channel_id_string, 50))
+    assert consumer.session.cumulative == 300
+
+
+def test_replayed_receipt_clamps_inflated_server_cumulative() -> None:
+    # A malicious/buggy server reports a replay settled far above the prepared
+    # voucher; the watermark clamps to the prepared value (250), never the
+    # inflated one, so the next voucher cannot over-authorize.
+    consumer = _consumer(_ReplayTransport(settled="1000000"))
+    consumer.commit_directive(_directive(consumer.session.channel_id_string, 250))
     assert consumer.session.cumulative == 250
 
 

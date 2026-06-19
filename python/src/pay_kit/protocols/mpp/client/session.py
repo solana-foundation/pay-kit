@@ -241,6 +241,21 @@ class ActiveSession:
         candidate = voucher.data.nonce if voucher.data.nonce is not None else self._nonce + 1
         self._nonce = max(self._nonce, candidate)
 
+    def reconcile_settled(self, settled: int) -> None:
+        """Reconcile the watermark to a server-settled cumulative, e.g. the
+        ``cumulative`` of a ``replayed`` commit receipt.
+
+        Advances to ``settled`` only when it is ahead of the current watermark
+        and never regresses, so retrying a delivery the server already accepted
+        (lost-response case) catches the client up without recording the freshly
+        prepared higher voucher. When it advances, the request nonce advances by
+        one too, so the next prepared voucher does not reuse the settled nonce.
+        Mirrors the Rust/Go ``reconcile_settled``.
+        """
+        if settled > self._cumulative:
+            self._cumulative = settled
+            self._nonce += 1
+
     def sign_voucher(self, cumulative: int) -> SignedVoucher:
         """Sign a voucher with an absolute cumulative amount and advance the
         local watermark.
