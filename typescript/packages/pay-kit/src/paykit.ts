@@ -317,21 +317,28 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             return { accepts, headers, resource: new URL(request.url).pathname };
         };
 
-        const claimed = eligible.find(adapter => adapter.detect(request));
-        if (!claimed) {
-            // Before the standard JSON 402, give a protocol a chance to own the
-            // response for browser / service-worker requests (MPP's HTML payment
-            // page + worker). API clients (no `text/html`, no worker param) keep
-            // the combined JSON 402 that advertises every accepted protocol.
+        // A browser (`Accept: text/html`) or the service-worker request should
+        // get the protocol's own response (MPP's interactive payment page +
+        // worker) rather than the JSON 402 — for both an unpaid request and a
+        // rejected one (re-render the page so the user can retry). API clients
+        // (no `text/html`, no worker param) keep the combined JSON 402 that
+        // advertises every accepted protocol.
+        const htmlRespond = async (): Promise<PaymentRespond | undefined> => {
             const url = new URL(request.url);
             const wantsHtml = (request.headers.get('accept') ?? '').includes('text/html');
             const isWorker = url.searchParams.has('__mppx_worker') || url.searchParams.has('__mpp_worker');
-            if (wantsHtml || isWorker) {
-                for (const adapter of eligible) {
-                    const respond = await adapter.respond?.(gate, request);
-                    if (respond) return { respond };
-                }
+            if (!wantsHtml && !isWorker) return undefined;
+            for (const adapter of eligible) {
+                const respond = await adapter.respond?.(gate, request);
+                if (respond) return { respond };
             }
+            return undefined;
+        };
+
+        const claimed = eligible.find(adapter => adapter.detect(request));
+        if (!claimed) {
+            const html = await htmlRespond();
+            if (html) return html;
             const challenge = await buildChallenge();
             return { challenge, response: render402(challenge, { accepts: challenge.accepts }), status: 402 };
         }
@@ -342,6 +349,10 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             return granted(payment, () => Promise.resolve(payment.settlementHeaders));
         } catch (error) {
             if (!(error instanceof InvalidProofError)) throw error;
+            // Verification failed — re-render the HTML payment page for browsers
+            // (retry-friendly), JSON for API clients.
+            const html = await htmlRespond();
+            if (html) return html;
             const challenge = await buildChallenge();
             return {
                 challenge,
