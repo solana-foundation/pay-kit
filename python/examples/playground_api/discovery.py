@@ -16,6 +16,7 @@ Discovery is advisory; the runtime 402 challenge stays authoritative.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from pay_kit._paycore.protocol import Protocol
@@ -59,6 +60,9 @@ def charge_offers(gate: Gate, config: Config, *, currency: str = "USDC") -> list
     """
     accept = _effective_accept(gate, config)
     amount = base_units(gate.total())
+    # Offer-level description is a price hint (matches the TS offer shape, e.g.
+    # "0.01 USDC"); the human prose stays on the route-level summary.
+    price = f"{gate.total().amount_string()} {currency}"
     network = config.network.caip2()
     pay_to = gate.pay_to
     operator = config.operator.signer.pubkey()
@@ -68,7 +72,7 @@ def charge_offers(gate: Gate, config: Config, *, currency: str = "USDC") -> list
             _offer(
                 amount=amount,
                 currency=currency,
-                description=gate.description,
+                description=price,
                 feePayer=operator,
                 intent="charge",
                 method="x402",
@@ -82,7 +86,7 @@ def charge_offers(gate: Gate, config: Config, *, currency: str = "USDC") -> list
             _offer(
                 amount=amount,
                 currency=currency,
-                description=gate.description,
+                description=price,
                 intent="charge",
                 method="mpp",
                 network=network,
@@ -99,14 +103,18 @@ def session_offer(
     cap_base_units: str,
     unit_price_base_units: str,
     pay_to: str,
-    description: str,
     currency: str = "USDC",
 ) -> dict[str, Any]:
-    """The single MPP `session` discovery offer (cap + per-delivery unit price)."""
+    """The single MPP `session` discovery offer (cap + per-delivery unit price).
+
+    Offer `description` is an "up to <cap> <currency>" price hint, mirroring the
+    TS session offer shape.
+    """
+    cap_human = format(Decimal(cap_base_units) / (Decimal(10) ** USDC_DECIMALS), "f")
     return _offer(
         amount=cap_base_units,
         currency=currency,
-        description=description,
+        description=f"up to {cap_human} {currency}",
         intent="session",
         method="mpp",
         network=config.network.caip2(),

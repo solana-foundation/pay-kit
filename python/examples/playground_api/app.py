@@ -43,7 +43,7 @@ from pay_kit.fastapi import Payment, RequirePayment, install
 
 from . import discovery
 from .docs import register_docs
-from .sandbox import fund_sandbox, register_faucet
+from .sandbox import fund_sandbox, fund_usdc, register_faucet
 
 pay_kit.configure(network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"))
 
@@ -150,7 +150,9 @@ if _cfg.network.value == "solana_localnet":
     # Optional zero-config funding for a live localnet run. Off by default so the
     # smoke test (which boots the app) never touches the network.
     if os.getenv("PAY_KIT_PLAYGROUND_FUND") == "1":
-        fund_sandbox(_cfg.effective_rpc_url(), _cfg.operator.signer.pubkey(), _RECIPIENT, PLATFORM)
+        fund_sandbox(_cfg.effective_rpc_url(), _cfg.operator.signer.pubkey(), _RECIPIENT)
+        # The split recipient only needs a USDC account to receive its cut (no SOL).
+        fund_usdc(_cfg.effective_rpc_url(), PLATFORM)
 
 
 # ── Discovery ──
@@ -184,10 +186,9 @@ _OPENAPI = discovery.build_openapi_document(
             "offers": [
                 discovery.session_offer(
                     _cfg,
-                    cap_base_units="500000",
+                    cap_base_units="1000000",
                     unit_price_base_units="100",
                     pay_to=_RECIPIENT,
-                    description="Metered token stream",
                 )
             ],
         },
