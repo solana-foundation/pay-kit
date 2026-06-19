@@ -1,0 +1,6 @@
+{
+  "language": "kotlin",
+  "command": ["gradle", "-q", "--console=plain", "run"],
+  "cwd": "kotlin-conformance",
+  "intents": ["session"]
+}
