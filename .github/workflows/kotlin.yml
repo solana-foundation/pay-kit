@@ -69,9 +69,9 @@ jobs:
       - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
-      - name: Pre-warm Gradle for the Kotlin conformance runner
+      - name: Build the Kotlin conformance runner
         working-directory: harness/kotlin-conformance
-        run: gradle classes --no-daemon
+        run: gradle installDist --no-daemon
       - name: Run Kotlin cross-SDK conformance vectors
         working-directory: harness
         env:
