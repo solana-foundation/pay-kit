@@ -42,11 +42,13 @@ export function toSolanaNetwork(network: Network): 'devnet' | 'localnet' | 'main
 /**
  * CAIP-2 chain identifier advertised in `accepts[]` entries.
  *
- * Surfpool-localnet clones mainnet state but reuses the devnet genesis hash
- * by convention, matching the harness fixtures and the other PayKit SDKs.
+ * Surfpool-localnet clones mainnet state *including its genesis hash*
+ * (`getGenesisHash` returns the mainnet hash `5eykt4…`), so it advertises the
+ * mainnet CAIP-2 — that's what a CAIP-2-validating client sees on-chain.
+ * Only `devnet` uses the devnet genesis.
  */
 export function caip2(network: Network): string {
-    return network === 'solana_mainnet'
-        ? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'
-        : 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+    return network === 'solana_devnet'
+        ? 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1'
+        : 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 }

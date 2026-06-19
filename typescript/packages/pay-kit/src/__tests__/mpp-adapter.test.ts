@@ -38,7 +38,7 @@ describe('createMppAdapter', () => {
         expect(entry).toMatchObject({
             amount: '10000000',
             currency: 'USDC',
-            network: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+            network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
             payTo: SELLER,
             protocol: 'mpp',
             realm: 'Adapter test',

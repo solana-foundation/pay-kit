@@ -27,8 +27,13 @@ describe('configure', () => {
         expect(config.operator.recipient).toBe(signer.pubkey);
     });
 
+    it('accepts the shipped protocols (mpp + x402)', async () => {
+        const config = await configure({ ...SECRET, accept: ['x402', 'mpp'] });
+        expect(config.accept).toEqual(['x402', 'mpp']);
+    });
+
     it('rejects protocols this SDK does not ship', async () => {
-        await expect(configure({ ...SECRET, accept: ['x402', 'mpp'] })).rejects.toThrow(ProtocolNotSupportedError);
+        await expect(configure({ ...SECRET, accept: ['stripe' as never] })).rejects.toThrow(ProtocolNotSupportedError);
         await expect(configure({ ...SECRET, accept: [] })).rejects.toThrow(ConfigurationError);
     });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { RequestBuilder } from './RequestBuilder'
 import { FlowTimeline } from './FlowTimeline'
@@ -82,7 +82,10 @@ export function EndpointWorkbench({
   const [response, setResponse] = useState<ResponsePayload | null>(null)
   const [running, setRunning] = useState(false)
   const [tab, setTab] = useState<'response' | 'code'>('response')
-  const [logIdSeed, setLogIdSeed] = useState(0)
+  // Which protocol to pay with when the endpoint accepts more than one.
+  const [protocol, setProtocol] = useState<'mpp' | 'x402'>('mpp')
+  const logId = useRef(0)
+  const dual = (endpoint?.protocols?.length ?? 0) > 1
 
   // Reset state when the endpoint changes.
   useEffect(() => {
@@ -91,6 +94,7 @@ export function EndpointWorkbench({
     setLog([])
     setResponse(null)
     setRunning(false)
+    setProtocol(endpoint?.protocols?.includes('mpp') ? 'mpp' : endpoint?.protocols?.[0] ?? 'mpp')
   }, [endpoint?.id])
 
   // If the URL doesn't pin an endpoint, set the first one as the default.
@@ -102,10 +106,11 @@ export function EndpointWorkbench({
 
   const pushLog = useCallback(
     (message: string, kind: LogLine['kind'], detail?: string, link?: LogLine['link']) => {
-      setLogIdSeed((id) => {
-        setLog((prev) => [...prev, { id, ts: nowIso(), message, kind, detail, link }])
-        return id + 1
-      })
+      // Compute the entry (incl. its id) outside the updater so `setLog` stays
+      // pure — a nested setState here would double-fire under StrictMode and
+      // log every line twice.
+      const entry: LogLine = { id: logId.current++, ts: nowIso(), message, kind, detail, link }
+      setLog((prev) => [...prev, entry])
     },
     [],
   )
@@ -128,7 +133,7 @@ export function EndpointWorkbench({
     pushLog(`${endpoint.method} ${url}`, 'req')
 
     try {
-      for await (const step of runFlow(endpoint, url, paramValues, primitive)) {
+      for await (const step of runFlow(endpoint, url, paramValues, primitive, dual ? protocol : undefined)) {
         handleProgress(step, advance, pushLog, setResponse)
       }
     } catch (err) {
@@ -161,6 +166,21 @@ export function EndpointWorkbench({
         <span className={`method ${endpoint.method}`}>{endpoint.method}</span>
         <span className="path">{endpoint.path}</span>
         <span className="desc">{endpoint.description}</span>
+        {dual && (
+          <div className="protocol-toggle" role="group" aria-label="Payment protocol">
+            {endpoint.protocols!.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={`protocol-opt${protocol === p ? ' active' : ''}`}
+                onClick={() => setProtocol(p)}
+                disabled={running}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
         <span className={`cost${endpoint.cost === 'free' ? ' free' : ''}`}>{endpoint.cost}</span>
       </div>
 
@@ -215,10 +235,12 @@ async function* runFlow(
   url: string,
   paramValues: Record<string, string>,
   primitive: Primitive,
+  protocol?: 'mpp' | 'x402',
 ): AsyncGenerator<FlowProgress> {
   void paramValues
   for await (const step of payAndFetch(url, {
     primitive,
+    protocol,
     unitPrice: endpoint.unitPrice,
     init: { method: endpoint.method },
   })) {

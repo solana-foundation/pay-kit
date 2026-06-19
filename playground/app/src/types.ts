@@ -16,6 +16,9 @@ export interface Endpoint {
   title: string
   description: string
   cost: string
+  /** Protocols the server accepts for this route (from the offers). When more
+   * than one, the workbench shows a toggle to pick which to pay with. */
+  protocols?: Array<'mpp' | 'x402'>
   /** Machine-readable per-delivery price in base units (sessions only). */
   unitPrice?: string
   params?: ParamSpec[]

@@ -18,5 +18,10 @@
     "concurrently": "^9.1.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@x402/core": "file:/Users/ludo/Coding/x402/.local-tarballs/x402-core-2.10.0.tgz"
+    }
   }
 }

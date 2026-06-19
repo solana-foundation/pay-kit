@@ -11,16 +11,18 @@ const target = process.env.PAYKIT_PLAYGROUND_API_URL || `http://localhost:${PLAY
 
 export default defineConfig({
   plugins: [react()],
+  // `@solana/pay-kit` (+ `@solana/mpp`, `@x402/*`) are local `file:` deps whose
+  // content changes faster than their version, so Vite's dep cache goes stale.
+  // Re-optimize on every dev start while they're vendored locally; drop this
+  // once they're published to npm.
+  optimizeDeps: { force: true },
   server: {
     port: 5173,
     proxy: {
-      '/api': target,
-      '/x402': target,
-      '/facilitator': target,
-      '/sessions': target,
-      // SessionFetchClient's delivery-reservation side channel.
-      '/__402': target,
-      '/mpp': target,
+      '/openapi.json': target,
+      '/api': target, // priced routes (/api/v1/*) + meta (health, faucet, docs)
+      '/sessions': target, // session receipt poll
+      '/__402': target, // session delivery side-channel
     },
   },
 })

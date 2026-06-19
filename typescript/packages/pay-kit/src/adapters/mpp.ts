@@ -1,4 +1,4 @@
-import { resolveStablecoinMint } from '@solana/mpp';
+import { resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
@@ -18,10 +18,14 @@ type ChargeResult =
     | { readonly status: 200; readonly withReceipt: (response: Response) => Response };
 type ChargeHandler = (request: Request) => Promise<ChargeResult>;
 
-type Split = { readonly amount: string; readonly recipient: string };
+type Split = { readonly amount: string; readonly memo?: string; readonly recipient: string };
 
 function splitsFor(gate: Gate): readonly Split[] {
-    return gate.fees.map(fee => ({ amount: fee.price.baseUnits().toString(), recipient: fee.recipient }));
+    return gate.fees.map(fee => ({
+        amount: fee.price.baseUnits().toString(),
+        recipient: fee.recipient,
+        ...(fee.memo ? { memo: fee.memo } : {}),
+    }));
 }
 
 /**
@@ -31,6 +35,11 @@ function splitsFor(gate: Gate): readonly Split[] {
  */
 function totalAmount(gate: Gate): bigint {
     return gate.total().baseUnits();
+}
+
+/** The MPP scheme a gate settles through: `subscription` for recurring gates, else `charge`. */
+function schemeFor(gate: Gate): 'charge' | 'subscription' {
+    return gate.kind === 'subscription' ? 'subscription' : 'charge';
 }
 
 /**
@@ -52,26 +61,57 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     function handlerFor(gate: Gate): ChargeHandler {
         const { mint } = coinFor(gate);
         const splits = splitsFor(gate);
-        const key = JSON.stringify([gate.payTo, mint, splits]);
+        const key = JSON.stringify([gate.kind, gate.payTo, mint, splits, gate.subscription ?? null]);
         let handler = handlers.get(key);
         if (!handler) {
-            const mppx = Mppx.create({
-                methods: [
-                    solana.charge({
+            const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
+            if (gate.subscription) {
+                const { periodCount, periodUnit, planId, puller } = gate.subscription;
+                const mppx = Mppx.create({
+                    methods: [
+                        solana.subscription({
+                            decimals: 6,
+                            mint,
+                            network,
+                            periodCount,
+                            periodUnit,
+                            planId,
+                            puller,
+                            recipient: gate.payTo,
+                            rpcUrl: config.rpcUrl,
+                            tokenProgram: TOKEN_PROGRAM,
+                            ...signer,
+                        }),
+                    ],
+                    realm: config.mpp.realm,
+                    secretKey: config.mpp.challengeBindingSecret,
+                });
+                handler = request =>
+                    mppx.subscription({
+                        amount: totalAmount(gate).toString(),
                         currency: mint,
-                        decimals: 6,
-                        network,
-                        recipient: gate.payTo,
-                        rpcUrl: config.rpcUrl,
-                        ...(config.operator.feePayer ? { signer: config.operator.signer.signer } : {}),
-                        ...(splits.length > 0 ? { splits: [...splits] } : {}),
-                        ...(config.replayStore ? { store: config.replayStore } : {}),
-                    }),
-                ],
-                realm: config.mpp.realm,
-                secretKey: config.mpp.challengeBindingSecret,
-            });
-            handler = request => mppx.charge(optionsFor(gate))(request);
+                        ...(gate.description ? { description: gate.description } : {}),
+                        ...(gate.externalId ? { externalId: gate.externalId } : {}),
+                    })(request);
+            } else {
+                const mppx = Mppx.create({
+                    methods: [
+                        solana.charge({
+                            currency: mint,
+                            decimals: 6,
+                            network,
+                            recipient: gate.payTo,
+                            rpcUrl: config.rpcUrl,
+                            ...signer,
+                            ...(splits.length > 0 ? { splits: [...splits] } : {}),
+                            ...(config.replayStore ? { store: config.replayStore } : {}),
+                        }),
+                    ],
+                    realm: config.mpp.realm,
+                    secretKey: config.mpp.challengeBindingSecret,
+                });
+                handler = request => mppx.charge(optionsFor(gate))(request);
+            }
             handlers.set(key, handler);
         }
         return handler;
@@ -99,8 +139,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 payTo: gate.payTo,
                 protocol: 'mpp',
                 realm: config.mpp.realm,
-                scheme: 'charge',
+                scheme: schemeFor(gate),
                 ...(splits.length > 0 ? { splits } : {}),
+                ...(gate.subscription ? { planId: gate.subscription.planId } : {}),
             });
         },
 
@@ -132,7 +173,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                 payer: undefined,
                 protocol: 'mpp',
                 raw: request.headers.get('authorization') ?? undefined,
-                scheme: 'charge',
+                scheme: schemeFor(gate),
                 settlementHeaders: {
                     ...(receiptHeader ? { 'payment-receipt': receiptHeader } : {}),
                     ...(transaction ? { [SETTLEMENT_SIGNATURE_HEADER]: transaction } : {}),

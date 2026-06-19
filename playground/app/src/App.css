@@ -178,6 +178,7 @@ body {
 .topnav-pill.pay          { --tile: var(--ios-blue);   --tile-2: var(--ios-blue-2); }
 .topnav-pill.subscription { --tile: var(--ios-yellow); --tile-2: var(--ios-yellow-2); color: #1a1a1a; }
 .topnav-pill.session      { --tile: var(--ios-pink);   --tile-2: var(--ios-pink-2); }
+.topnav-pill.upto         { --tile: var(--ios-pink);   --tile-2: var(--ios-pink-2); }
 .topnav-pill.docs         { --tile: var(--ios-gray);   --tile-2: var(--ios-gray-2); }
 
 /* Yellow tile uses dark text — overrides the white-text defaults below. */
@@ -479,6 +480,45 @@ body {
 .page-head .cost.free {
   color: var(--fg-muted);
   background: var(--bg-raised);
+}
+
+/* Dual-protocol toggle: a small segmented control to pick the rail (mpp/x402)
+   when an endpoint advertises both. */
+.protocol-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.protocol-opt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-secondary);
+  background: transparent;
+  border: 0;
+  padding: 3px 9px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.protocol-opt:hover:not(.active):not(:disabled) {
+  color: var(--fg);
+}
+
+.protocol-opt.active {
+  color: #fff;
+  background: var(--ios-blue);
+}
+
+.protocol-opt:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .req-builder {

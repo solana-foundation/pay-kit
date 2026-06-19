@@ -109,9 +109,9 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
     const accept = params.accept ?? ['mpp'];
     if (accept.length === 0) throw new ConfigurationError('accept must list at least one protocol.');
     for (const protocol of accept) {
-        if (protocol !== 'mpp') {
+        if (protocol !== 'mpp' && protocol !== 'x402') {
             throw new ProtocolNotSupportedError(
-                `Protocol "${protocol}" is not available in the TypeScript SDK yet (MPP only).`,
+                `Protocol "${String(protocol)}" is not available in the TypeScript SDK yet (MPP and x402 only).`,
             );
         }
     }
@@ -147,10 +147,16 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         throw new ConfigurationError('mpp.expiresIn must be a non-negative integer number of seconds.');
     }
 
+    // The MPP challenge-binding secret is only meaningful when MPP is accepted;
+    // an x402-only server must not be forced to provide one.
+    const challengeBindingSecret = accept.includes('mpp')
+        ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
+        : (params.mpp?.challengeBindingSecret ?? '');
+
     return Object.freeze({
         accept: Object.freeze([...accept]),
         mpp: Object.freeze({
-            challengeBindingSecret: resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret),
+            challengeBindingSecret,
             expiresIn,
             realm: params.mpp?.realm ?? 'App',
         }),
