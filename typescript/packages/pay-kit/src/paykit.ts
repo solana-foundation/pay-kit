@@ -376,15 +376,17 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         };
         payments.set(request, provisional);
 
-        let settled: Readonly<Record<string, string>> | undefined;
-        const settle = async (): Promise<Readonly<Record<string, string>>> => {
-            if (!settled) {
+        // Memoize the in-flight Promise (not its resolved value) so concurrent
+        // callers — e.g. `Promise.all([result.settle(), result.withSettlement(r)])`,
+        // both reachable from the public PaymentGranted API — share one settle
+        // and `upto.settle()` broadcasts exactly once.
+        let settlePromise: Promise<Readonly<Record<string, string>>> | undefined;
+        const settle = (): Promise<Readonly<Record<string, string>>> =>
+            (settlePromise ??= (async () => {
                 const result = await upto.settle(verified, meter.settledBaseUnits());
-                settled = result.settlementHeaders;
                 payments.set(request, { ...provisional, transaction: result.transaction });
-            }
-            return settled;
-        };
+                return result.settlementHeaders;
+            })());
 
         return granted(provisional, settle, meter);
     }
@@ -555,8 +557,14 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             return async (c, next) => {
                 const result = await instance.requirePayment(c.req.raw, gate);
                 if (result.status === 402) return result.response;
-                await next();
-                for (const [name, value] of Object.entries(await result.settle())) c.res.headers.set(name, value);
+                try {
+                    await next();
+                } finally {
+                    // Settle even if the handler threw: for usage (upto) gates
+                    // `verifyOpen` already escrowed the ceiling on-chain, so the
+                    // channel must be finalized regardless of the handler outcome.
+                    for (const [name, value] of Object.entries(await result.settle())) c.res.headers.set(name, value);
+                }
                 return undefined;
             };
         },
@@ -700,6 +708,15 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         next();
     } catch (error) {
         restoreAndReplay();
+        // Finalize the channel even on a synchronous handler throw: for usage
+        // (upto) gates `verifyOpen` already escrowed the ceiling on-chain, so
+        // skipping settle would leave it open. The meter is 0 here, so this
+        // refunds. Best-effort — forward the original handler error regardless.
+        try {
+            await result.settle();
+        } catch {
+            /* swallow settle failure; the handler error is what matters */
+        }
         next(error);
         return;
     }

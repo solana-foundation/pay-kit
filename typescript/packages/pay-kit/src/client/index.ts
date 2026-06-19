@@ -131,10 +131,13 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             // uniform flow (challenge → signing → paying → paid) on both rails.
             const required = http.getPaymentRequiredResponse(name => probe.headers.get(name));
             const requirement = required.accepts?.[0];
+            // Decimals are intentionally omitted: the x402 requirement carries
+            // only the asset address, not its precision. Hardcoding 6 would
+            // misreport non-6-decimal assets, so leave it to the consumer to
+            // resolve from asset metadata.
             onProgress?.({
                 amount: requirement?.amount,
                 currency: requirement?.asset,
-                decimals: 6,
                 recipient: requirement?.payTo,
                 type: 'challenge',
             });
