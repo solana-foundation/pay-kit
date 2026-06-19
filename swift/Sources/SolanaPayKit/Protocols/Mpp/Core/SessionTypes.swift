@@ -296,7 +296,10 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         try c.encode(signature, forKey: .signature)
     }
 
-    /// Reads `salt` from either a JSON string or number; absent → nil.
+    /// Reads `salt` from either a JSON string ("42") or an integer (42); absent → nil.
+    /// A non-integer number (e.g. a float or negative) or a key present with the wrong
+    /// type is treated as nil because the first `UInt64` attempt swallows its error via
+    /// `try?`; only a present-but-non-numeric string raises.
     private static func decodeSalt(_ c: KeyedDecodingContainer<CodingKeys>) throws -> UInt64? {
         if let value = try? c.decode(UInt64.self, forKey: .salt) {
             return value
