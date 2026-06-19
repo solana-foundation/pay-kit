@@ -16,6 +16,7 @@ env wiring.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -49,7 +50,7 @@ session = new_session(
     SessionOptions(
         operator=_cfg.operator.signer.pubkey(),
         recipient=_cfg.effective_recipient(),
-        cap=500_000,
+        cap=1_000_000,
         currency=resolve_mint("USDC", "mainnet"),
         decimals=6,
         network=_cfg.network.value,
@@ -59,7 +60,7 @@ session = new_session(
     )
 )
 
-_challenge = SessionChallengeOptions(cap="500000", description="Metered compute")
+_challenge = SessionChallengeOptions(cap="1000000", description="Metered token stream")
 
 
 async def _session_gate(request: Request) -> dict[str, str]:
@@ -113,6 +114,7 @@ async def stream(headers: dict[str, str] = _gate) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         for chunk in _TOKEN_CHUNKS:
             yield f"data: {json.dumps({'chunk': chunk, 'cost': str(_PRICE_PER_CHUNK)})}\n\n"
+            await asyncio.sleep(0.08)  # pace deliveries, mirroring the TS stream
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
