@@ -22,10 +22,10 @@
     "paths": {
       "express": ["./node_modules/@types/express"],
       "@solana/kit": ["./node_modules/@solana/kit"],
+      "@solana/pay-kit": ["./node_modules/@solana/pay-kit/dist/index.d.ts"],
+      "@solana/pay-kit/client": ["./node_modules/@solana/pay-kit/dist/client/index.d.ts"],
       "@solana/mpp/server": ["./node_modules/@solana/mpp/dist/server/index.d.ts"],
-      "@solana/mpp/client": ["./node_modules/@solana/mpp/dist/client/index.d.ts"],
-      "x402-fetch": ["./node_modules/x402-fetch/dist/esm/index.d.mts"],
-      "x402/types": ["./node_modules/x402/dist/esm/types/index.d.mts"]
+      "@solana/mpp/client": ["./node_modules/@solana/mpp/dist/client/index.d.ts"]
     }
   },
   "include": ["../../docs/snippets/**/*.ts"]
