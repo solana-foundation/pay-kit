@@ -72,6 +72,17 @@ struct ActiveSessionTests {
     }
 
     @Test
+    func recordVoucherRejectsForeignChannel() throws {
+        let session = try makeSession()
+        let foreign = SignedVoucher(
+            data: VoucherData(channelId: "11111111111111111111111111111112", cumulative: "10", expiresAt: defaultSessionExpiresAt),
+            signature: "sig"
+        )
+        #expect(throws: MppError.self) { try session.recordVoucher(foreign) }
+        #expect(session.cumulative == 0)
+    }
+
+    @Test
     func reconcileSettledAdvancesAndNeverRegresses() throws {
         let session = try makeSession()
         session.reconcileSettled(300)

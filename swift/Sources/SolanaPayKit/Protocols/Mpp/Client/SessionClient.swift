@@ -62,10 +62,16 @@ public final class ActiveSession {
         try await prepareVoucher(try addToWatermark(amount))
     }
 
-    /// Advance the watermark to a recorded voucher. Rejects a non-increasing or
-    /// unparseable cumulative; advances the nonce to the voucher's nonce (or by
-    /// one when absent).
+    /// Advance the watermark to a recorded voucher: rejects a voucher bound to a
+    /// different channel, a non-increasing cumulative, or an unparseable
+    /// cumulative; advances the nonce to at least `nonce + 1` (or the voucher's
+    /// nonce when higher). Mirrors Go `RecordVoucher`.
     public func recordVoucher(_ voucher: SignedVoucher) throws {
+        guard voucher.data.channelId == channelIdString() else {
+            throw MppError.invalidTransaction(
+                "voucher channel \(voucher.data.channelId) does not match active session \(channelIdString())"
+            )
+        }
         guard let cumulative = UInt64(voucher.data.cumulative) else {
             throw MppError.invalidTransaction("invalid voucher cumulative")
         }
@@ -75,7 +81,9 @@ public final class ActiveSession {
             )
         }
         self.cumulative = cumulative
-        self.nonce = max(self.nonce, voucher.data.nonce ?? (self.nonce + 1))
+        var candidate = self.nonce + 1
+        if let nonce = voucher.data.nonce, nonce > candidate { candidate = nonce }
+        self.nonce = candidate
     }
 
     /// Reconcile the watermark to a server-settled cumulative (e.g. a replayed
