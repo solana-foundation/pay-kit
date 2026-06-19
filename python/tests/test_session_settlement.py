@@ -17,6 +17,8 @@ from pay_kit.protocols.mpp.server.session_store import ChannelState
 from pay_kit.signer import LocalSigner
 
 _BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
+# A valid base58 signature the fake RPC returns; the open path confirms it.
+_SENT_SIGNATURE = str(Keypair.from_seed(bytes([99] * 32)).sign_message(b"settle"))
 
 
 class _Resp:
@@ -43,7 +45,7 @@ class _SettleRpc:
 
     async def send_raw_transaction(self, raw_tx: bytes) -> _Resp:
         self.sent.append(raw_tx)
-        return _Resp("SettleSig" + "1" * 80)
+        return _Resp(_SENT_SIGNATURE)
 
 
 def _session(rpc: _SettleRpc, operator: Keypair):
@@ -97,7 +99,7 @@ async def test_close_settles_with_voucher_and_records_signature() -> None:
 
     settled = await session._settle_channel(channel)
 
-    assert settled == "SettleSig" + "1" * 80
+    assert settled == _SENT_SIGNATURE
     final = await session._core.store().get_channel(channel)
     assert final is not None
     assert final.finalized is True
@@ -155,3 +157,84 @@ async def test_settle_is_noop_without_signer_or_rpc() -> None:
         ),
     )
     assert await session._settle_channel(channel) is None
+
+
+# --- A4: server-broadcast open --------------------------------------------------
+
+
+def _server_open_payload(operator: Keypair):
+    from pay_kit.protocols.mpp.client.payment_channels import (
+        PENDING_SERVER_SIGNATURE,
+        PaymentChannelOpenOptions,
+        derive_payment_channel_open,
+    )
+    from pay_kit.protocols.mpp.intents.session import SessionRequest
+
+    auth = Keypair.from_seed(bytes([9] * 32))
+    request = SessionRequest(
+        cap="1000000",
+        currency="USDC",
+        operator=str(operator.pubkey()),
+        recipient=str(operator.pubkey()),
+        decimals=6,
+        network="localnet",
+        modes=["pull"],
+        pull_voucher_strategy="clientVoucher",
+    )
+    open_ = derive_payment_channel_open(request, operator.pubkey(), auth.pubkey(), PaymentChannelOpenOptions(salt=42))
+    return open_, open_.open_payload("pull", PENDING_SERVER_SIGNATURE)
+
+
+@pytest.mark.asyncio
+async def test_server_broadcast_open_builds_signs_and_persists() -> None:
+    operator = Keypair.from_seed(bytes([8] * 32))
+    rpc = _SettleRpc()
+    session = new_session(
+        SessionOptions(
+            operator=str(operator.pubkey()),
+            recipient=str(operator.pubkey()),
+            cap=1_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            open_tx_submitter="server",
+            signer=LocalSigner.from_keypair(operator),
+            rpc=rpc,
+        )
+    )
+    open_, payload = _server_open_payload(operator)
+
+    signature = await session._handle_open(payload)
+
+    assert signature == _SENT_SIGNATURE
+    # One open transaction broadcast, a single open instruction (discriminator 1).
+    assert len(rpc.sent) == 1
+    assert _instruction_discriminators(rpc.sent[0]) == [1]
+    # The channel is persisted under its derived id.
+    persisted = await session._core.store().get_channel(str(open_.channel_id))
+    assert persisted is not None
+
+
+@pytest.mark.asyncio
+async def test_server_open_requires_signer_and_rpc() -> None:
+    operator = Keypair.from_seed(bytes([10] * 32))
+    session = new_session(
+        SessionOptions(
+            operator=str(operator.pubkey()),
+            recipient=str(operator.pubkey()),
+            cap=1_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            open_tx_submitter="server",
+        )
+    )
+    _open, payload = _server_open_payload(operator)
+    with pytest.raises(Exception, match="requires a signer"):
+        await session._handle_open(payload)
