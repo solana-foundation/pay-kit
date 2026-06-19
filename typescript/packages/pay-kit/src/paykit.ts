@@ -598,7 +598,20 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                 const result = await instance.requirePayment(request, gate);
                 if ('respond' in result) return result.respond;
                 if (result.status === 402) return result.response;
-                const response = await handler(request, result.payment);
+                let response: Response;
+                try {
+                    response = await handler(request, result.payment);
+                } catch (error) {
+                    // Finalize the upto channel even if the handler threw —
+                    // verifyOpen already escrowed the ceiling on-chain (meter is
+                    // 0, so this refunds). Best-effort; re-throw the original error.
+                    try {
+                        await result.settle();
+                    } catch {
+                        /* swallow settle failure; the handler error is what matters */
+                    }
+                    throw error;
+                }
                 return await result.withSettlement(response);
             };
         },
@@ -614,7 +627,14 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     // Settle even if the handler threw: for usage (upto) gates
                     // `verifyOpen` already escrowed the ceiling on-chain, so the
                     // channel must be finalized regardless of the handler outcome.
-                    for (const [name, value] of Object.entries(await result.settle())) c.res.headers.set(name, value);
+                    // Best-effort — a transient settle (RPC) failure must not mask
+                    // the handler's response (success) or its error (throw).
+                    try {
+                        for (const [name, value] of Object.entries(await result.settle()))
+                            c.res.headers.set(name, value);
+                    } catch {
+                        /* swallow settle failure; preserve the handler outcome */
+                    }
                 }
                 return undefined;
             };
