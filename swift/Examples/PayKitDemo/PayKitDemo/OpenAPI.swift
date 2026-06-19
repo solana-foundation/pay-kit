@@ -76,8 +76,28 @@ enum OpenAPI {
             path: requestPath(from: path),
             priceUSD: priceString(from: firstOffer),
             systemImage: systemImage(intent: intent, scheme: scheme, method: payMethod),
-            tint: tint(for: index)
+            tint: tint(for: index),
+            intent: (intent?.isEmpty == false) ? intent! : "charge",
+            protocols: protocols(from: offers, intent: intent)
         )
+    }
+
+    /// Display string of the accepted protocols (offer `method`s, de-duplicated
+    /// in offer order) plus the intent when it is not a plain charge — so the
+    /// card surfaces the MPP/x402 split and flags session/subscription routes.
+    /// E.g. `x402 · mpp`, `mpp`, `mpp · session`.
+    static func protocols(from offers: [[String: Any]], intent: String?) -> String {
+        var methods: [String] = []
+        for offer in offers {
+            if let m = offer["method"] as? String, !m.isEmpty, !methods.contains(m) {
+                methods.append(m)
+            }
+        }
+        var parts = methods
+        if let intent, intent.lowercased() != "charge" {
+            parts.append(intent.lowercased())
+        }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
 
     // MARK: - Field derivation

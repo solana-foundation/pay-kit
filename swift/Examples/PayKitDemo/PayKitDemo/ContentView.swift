@@ -232,6 +232,20 @@ struct ContentView: View {
 
     private func pay(_ endpoint: Endpoint) async {
         guard let signer else { return }
+
+        // The demo settles one-shot `charge` endpoints over MPP. Other intents
+        // (session streaming, subscription, x402 `upto` usage) are multi-step
+        // flows the SDK exposes through dedicated APIs, not the 402 -> charge ->
+        // retry loop — explain rather than firing a charge that the server's
+        // non-charge 402 would reject.
+        guard endpoint.intent == "charge" else {
+            append(.failure(
+                endpoint: endpoint,
+                message: "\(endpoint.label) is an mpp/\(endpoint.intent) flow, not a one-shot charge. Open it with the session API (PaymentChannelSession) — this tap-to-pay demo only settles charge endpoints."
+            ))
+            return
+        }
+
         let url = playgroundURL.appendingPathComponent(endpoint.path)
 
         busy = .pay(endpoint.id)
@@ -350,6 +364,12 @@ struct Endpoint: Identifiable, Hashable {
     let priceUSD: String
     let systemImage: String
     let tint: Color
+    /// Discovery intent of the first offer (`charge` / `session` / …); the demo
+    /// only settles `charge` over MPP and explains the rest.
+    let intent: String
+    /// Display string of the accepted protocols + non-charge intent, e.g.
+    /// `x402 · mpp` or `mpp · session`.
+    let protocols: String
 }
 
 // MARK: - Endpoint card
@@ -386,6 +406,10 @@ private struct EndpointCard: View {
                 Text(endpoint.priceUSD)
                     .font(.caption.monospacedDigit())
                     .opacity(0.9)
+                Text(endpoint.protocols)
+                    .font(.caption2.weight(.medium))
+                    .opacity(0.85)
+                    .lineLimit(1)
             }
             .padding(12)
             .frame(width: 150, height: 130, alignment: .topLeading)
