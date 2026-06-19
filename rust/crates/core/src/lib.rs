@@ -4,14 +4,22 @@
 //! both protocol crates (and the unified `solana-pay-kit` gate) can build on the
 //! same on-chain plumbing without depending on each other.
 //!
-//! Currently exposes [`payment_channels`]: PDA derivation, voucher bytes,
-//! distribution hashing, and instruction/transaction builders for the on-chain
-//! payment-channels program. `solana-mpp` re-exports this module at
-//! `mpp::program::payment_channels`, and `solana-x402` uses it to back the
-//! `upto` scheme.
+//! Exposes:
+//! - [`payment_channels`]: PDA derivation, voucher bytes, distribution hashing,
+//!   and instruction/transaction builders for the on-chain payment-channels
+//!   program (`solana-mpp` re-exports it at `mpp::program::payment_channels`;
+//!   `solana-x402` uses it for the `upto` and `batch-settlement` schemes).
+//! - [`store`]: replay-protection + payment-channel session state stores
+//!   (`solana-mpp` re-exports at `mpp::store`).
+//! - [`voucher`] / [`session`]: wire-agnostic cumulative-voucher verification and
+//!   acceptance, shared by the MPP `session` intent and the x402
+//!   `batch-settlement` scheme.
 
 pub mod payment_channels;
+pub mod session;
+pub mod store;
 pub mod units;
+pub mod voucher;
 
 pub use units::{parse_units, MAX_DECIMALS};
 

@@ -463,120 +463,26 @@ impl<S: ChannelStore> SessionServer<S> {
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
     pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<u64> {
         let voucher = &payload.voucher;
-        let channel_id = &voucher.data.channel_id;
-
-        // 1. Parse new_cumulative from payload
         let new_cumulative: u64 = voucher
             .data
             .cumulative
             .parse()
             .map_err(|_| Error::Other("Invalid cumulative in voucher".to_string()))?;
 
-        // 2. Get channel state (for authorized_signer — never changes after open)
-        let state = self
-            .store
-            .get_channel(channel_id)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
-
-        // 3. Check finalized
-        if state.finalized {
-            return Err(Error::Other("Channel is already finalized".to_string()));
-        }
-
-        // 4. Check close-pending
-        if state.close_requested_at.is_some() {
-            return Err(Error::Other(
-                "Channel close is pending — no further vouchers accepted".to_string(),
-            ));
-        }
-
-        // 5. Idempotent replay: same cumulative AND same signature
-        if new_cumulative == state.cumulative
-            && state.highest_voucher_signature.as_deref() == Some(voucher.signature.as_str())
-        {
-            verify_signature(voucher, &state.authorized_signer)?;
-            return Ok(new_cumulative);
-        }
-
-        // 6. Must exceed watermark (non-replay case)
-        if new_cumulative <= state.cumulative {
-            return Err(Error::Other(format!(
-                "Voucher cumulative {new_cumulative} must exceed watermark {}",
-                state.cumulative
-            )));
-        }
-
-        // 7. Must not exceed deposit
-        if new_cumulative > state.deposit {
-            return Err(Error::Other(format!(
-                "Voucher cumulative {new_cumulative} exceeds deposit {}",
-                state.deposit
-            )));
-        }
-
-        // 8. Min delta check
-        let delta = new_cumulative - state.cumulative;
-        let min = self.config.min_voucher_delta;
-        if min > 0 && delta < min {
-            return Err(Error::Other(format!(
-                "Voucher delta {delta} is below minimum {min}"
-            )));
-        }
-
-        // 9. Verify signature (expensive, before touching store)
-        verify_signature(voucher, &state.authorized_signer)?;
-
-        // 10. Clone sig for use in closure
-        let sig = voucher.signature.clone();
-        let expires_at = voucher.data.expires_at;
-
-        // 11. Atomic read-modify-write
-        let new_state = self
-            .store
-            .update_channel(
-                channel_id,
-                Box::new(move |state_opt| {
-                    let state = state_opt
-                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
-                    // Re-check finalized inside closure
-                    if state.finalized {
-                        return Err(StoreError::Internal(
-                            "Channel is already finalized".to_string(),
-                        ));
-                    }
-                    // Re-check close-pending inside closure
-                    if state.close_requested_at.is_some() {
-                        return Err(StoreError::Internal(
-                            "Channel close is pending — no further vouchers accepted".to_string(),
-                        ));
-                    }
-                    // Idempotent replay inside closure
-                    if new_cumulative == state.cumulative
-                        && state.highest_voucher_signature.as_deref() == Some(&sig)
-                    {
-                        return Ok(state);
-                    }
-                    // Concurrent watermark advancement check
-                    if new_cumulative <= state.cumulative {
-                        return Err(StoreError::Internal(
-                            "Concurrent update: watermark advanced".to_string(),
-                        ));
-                    }
-                    Ok(ChannelState {
-                        cumulative: new_cumulative,
-                        highest_voucher_signature: Some(sig),
-                        highest_voucher_expires_at: Some(expires_at),
-                        ..state
-                    })
-                }),
-            )
-            .await
-            .map_err(store_err)?;
-
-        // 12. Return new cumulative
-        Ok(new_state.cumulative)
+        // Wire-agnostic acceptance (signature + monotonicity + deposit cap +
+        // min-delta + idempotent replay + atomic advance) lives in core so the
+        // x402 `batch-settlement` scheme shares it.
+        solana_pay_core::session::accept_voucher(
+            &self.store,
+            &voucher.data.channel_id,
+            new_cumulative,
+            voucher.data.expires_at,
+            &voucher.signature,
+            now_unix_secs(),
+            self.config.min_voucher_delta,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Process a `topup` action: atomically update the channel's deposit cap.
@@ -1145,41 +1051,33 @@ fn expected_payment_channel_mint(config: &SessionConfig) -> Result<Pubkey> {
     parse_pubkey_field(mint, "currency")
 }
 
-/// Verify an Ed25519 voucher signature against the authorized signer.
-fn verify_signature(voucher: &SignedVoucher, authorized_signer: &str) -> Result<()> {
-    use ed25519_dalek::{Signature, VerifyingKey};
-
-    let now = std::time::SystemTime::now()
+/// Current Unix time in seconds.
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
-    if voucher.data.expires_at <= now {
-        return Err(Error::Other("Voucher has expired".to_string()));
-    }
+        .as_secs() as i64
+}
 
-    let message = voucher.data.message_bytes()?;
-
-    let sig_bytes = bs58::decode(&voucher.signature)
-        .into_vec()
-        .map_err(|e| Error::Other(format!("Invalid signature encoding: {e}")))?;
-    let pubkey_bytes = bs58::decode(authorized_signer)
-        .into_vec()
-        .map_err(|e| Error::Other(format!("Invalid authorized_signer: {e}")))?;
-
-    let key_arr: [u8; 32] = pubkey_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Pubkey is not 32 bytes".to_string()))?;
-    let sig_arr: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| Error::Other("Signature is not 64 bytes".to_string()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&key_arr)
-        .map_err(|e| Error::Other(format!("Invalid authorized_signer key: {e}")))?;
-    let signature = Signature::from_bytes(&sig_arr);
-
-    verifying_key
-        .verify_strict(&message, &signature)
-        .map_err(|_| Error::Other("Voucher signature verification failed".to_string()))
+/// Verify an Ed25519 voucher signature against the authorized signer.
+///
+/// Delegates to [`solana_pay_core::voucher::verify_voucher_signature`] — the
+/// shared implementation also used by the x402 `batch-settlement` scheme.
+fn verify_signature(voucher: &SignedVoucher, authorized_signer: &str) -> Result<()> {
+    let cumulative: u64 = voucher
+        .data
+        .cumulative
+        .parse()
+        .map_err(|_| Error::Other("Invalid cumulative in voucher".to_string()))?;
+    solana_pay_core::voucher::verify_voucher_signature(
+        &voucher.data.channel_id,
+        cumulative,
+        voucher.data.expires_at,
+        &voucher.signature,
+        authorized_signer,
+        now_unix_secs(),
+    )
+    .map_err(Into::into)
 }
 
 /// Compute the payment-channel distribution hash for explicit recipients.
@@ -2439,7 +2337,8 @@ mod tests {
                 || msg.contains("encoding")
                 || msg.contains("Invalid")
                 || msg.contains("bytes")
-                || msg.contains("key"),
+                || msg.contains("key")
+                || msg.contains("channelId"),
             "Expected signature-related error, got: {msg}"
         );
     }

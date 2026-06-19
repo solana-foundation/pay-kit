@@ -30,6 +30,14 @@ blake3 = "1"
 bs58 = "0.5"
 base64 = "0.22"
 bincode = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Voucher signature verification
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
 
 # Errors
 thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
