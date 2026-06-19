@@ -59,6 +59,8 @@ private struct VectorInput: Decodable {
     // `value` is an arbitrary JSON document Codable cannot model directly.
     let encodeBase64Url: EncodeBase64URL?
     let challengeId: ChallengeID?
+    // session canonical-bytes: the 48-byte Ed25519 voucher preimage.
+    let voucherPreimage: VoucherPreimage?
     // x402-exact build inputs.
     let x402Version: Int?
     let x402Offer: JSONValue?
@@ -104,6 +106,14 @@ private struct RPCFixtures: Decodable {
 private struct EncodeBase64URL: Decodable {
     let hexBytes: String?
     let utf8: String?
+}
+
+// session voucher preimage input (mirror schema.ts voucherPreimage):
+// channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64.
+private struct VoucherPreimage: Decodable {
+    let channelId: String
+    let cumulativeAmount: String
+    let expiresAt: Int64
 }
 
 // challenge-id HMAC input (mirror schema.ts / ts-runner challengeId).
@@ -740,6 +750,19 @@ private func runCanonicalBytes(_ vector: Vector, rawValue: Any?) throws -> Exact
         let key = SymmetricKey(data: Data(c.secretKey.utf8))
         let mac = HMAC<SHA256>.authenticationCode(for: Data(hmacInput.utf8), using: key)
         eb.base64Url = base64Url(Data(mac))
+    }
+    if let vp = vector.input.voucherPreimage {
+        // Drive the real SDK preimage encoder so the byte assertion exercises
+        // the same path the session voucher signer uses.
+        guard let cumulative = UInt64(vp.cumulativeAmount) else {
+            throw RunnerError.message("invalid voucher cumulativeAmount \(vp.cumulativeAmount)")
+        }
+        let channel = try Pubkey(base58: vp.channelId)
+        let preimage = PaymentChannels.voucherMessageBytes(
+            channelId: channel, cumulative: cumulative, expiresAt: vp.expiresAt
+        )
+        eb.bytes = [UInt8](preimage).map { Int($0) }
+        eb.base64Url = base64Url(preimage)
     }
     return eb
 }
