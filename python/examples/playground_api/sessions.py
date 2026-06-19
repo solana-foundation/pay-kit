@@ -16,8 +16,11 @@ env wiring.
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import pay_kit
 from pay_kit._paycore.errors import PaymentError, payment_required_response
@@ -84,11 +87,35 @@ async def _session_gate(request: Request) -> dict[str, str]:
 
 _gate = Depends(_session_gate)
 
+# Streamed deliveries, billed per chunk against the session voucher. Mirrors the
+# TypeScript playground's `GET /api/v1/stream` (SSE) session route.
+_TOKEN_CHUNKS = (
+    "A payment channel ",
+    "lets a client and server ",
+    "authorize many small ",
+    "off-chain debits ",
+    "against a single on-chain ",
+    "deposit, settling the highest ",
+    "cumulative voucher at close.",
+)
+#: Per-chunk price in USDC base units (6 decimals): $0.0001.
+_PRICE_PER_CHUNK = 100
 
-@router.post("/compute")
-async def compute(headers: dict[str, str] = _gate) -> JSONResponse:
-    """Metered route: each call is billed against the session voucher."""
-    return JSONResponse({"ok": True, "output": "computed"}, headers=headers)
+
+@router.get("/api/v1/stream")
+async def stream(headers: dict[str, str] = _gate) -> StreamingResponse:
+    """Metered SSE stream: open a session, then emit per-chunk deliveries.
+
+    Settlement runs out-of-band (the client commits vouchers via the side-channel
+    routes below); each chunk advertises its per-delivery cost.
+    """
+
+    async def events() -> AsyncIterator[str]:
+        for chunk in _TOKEN_CHUNKS:
+            yield f"data: {json.dumps({'chunk': chunk, 'cost': str(_PRICE_PER_CHUNK)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
 
 
 # Reserve/commit side channel: the shipped session_routes builder, mounted as-is
@@ -106,3 +133,24 @@ async def deliveries(request: Request) -> JSONResponse:
 async def commit(request: Request) -> JSONResponse:
     r = await _routes.commit(request.method, await request.body() or b"{}")
     return JSONResponse(r.body, status_code=r.status)
+
+
+@router.get("/sessions/receipt/{channel_id}")
+async def receipt(channel_id: str) -> JSONResponse:
+    """Settle-status poll for a channel — mirrors the TS playground's receipt route.
+
+    Settlement is out-of-band (idle-close watchdog), so a client polls this for
+    the settled signature once the channel finalizes.
+    """
+    state = await session.core().store().get_channel(channel_id)
+    if state is None:
+        return JSONResponse({"error": "channel-not-found"}, status_code=404)
+    return JSONResponse(
+        {
+            "channelId": channel_id,
+            "cumulative": str(state.cumulative),
+            "deposit": str(state.deposit),
+            "finalized": state.finalized,
+            "settledSignature": state.settled_signature,
+        }
+    )
