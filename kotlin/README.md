@@ -135,7 +135,7 @@ The Machine Payments Protocol charge intent. The client parses the
 |---|:---:|
 | `mpp/charge/pull` | ✅ |
 | `mpp/charge/push` | ✅ |
-| `mpp/session` | — |
+| `mpp/session` | ✅ |
 | `mpp/subscription` | — |
 
 ## Vocabulary
