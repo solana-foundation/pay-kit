@@ -89,6 +89,28 @@ struct SessionWireTests {
         )
         #expect(fromNumber.salt == 42)
     }
+
+    @Test
+    func meteringUsageParsesAmountAndRejectsInvalid() throws {
+        let usage = MeteringUsage(deliveryId: "d1", amount: "250")
+        #expect(try usage.amountBaseUnits() == 250)
+        // Round-trips through the wire.
+        let decoded = try JSONDecoder().decode(MeteringUsage.self, from: try JSONEncoder().encode(usage))
+        #expect(decoded == usage)
+        #expect(throws: MppError.self) { _ = try MeteringUsage(deliveryId: "d1", amount: "bad").amountBaseUnits() }
+    }
+
+    @Test
+    func unknownSessionActionTagIsRejected() {
+        let json = Data(#"{"action":"frobnicate","channelId":"Chan"}"#.utf8)
+        #expect(throws: (any Error).self) { _ = try JSONDecoder().decode(SessionAction.self, from: json) }
+    }
+
+    @Test
+    func voucherMessageBytesRejectsInvalidCumulative() {
+        let data = VoucherData(channelId: "11111111111111111111111111111112", cumulative: "not-a-number", expiresAt: 1)
+        #expect(throws: MppError.self) { _ = try data.messageBytes() }
+    }
 }
 
 /// The payment-channel session opener: pull + clientVoucher only, payer-signed

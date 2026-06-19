@@ -159,5 +159,17 @@ struct ActiveSessionTests {
         } else {
             Issue.record("expected topUp action")
         }
+
+        if case let .open(payload) = session.openPaymentChannelAction(
+            mode: .pull, deposit: 9_000, payer: "Payer", payee: "Payee", mint: "Mint", salt: 42, gracePeriod: 60, signature: "open-sig"
+        ) {
+            #expect(payload.mode == .pull)
+            #expect(payload.deposit == "9000")
+            #expect(payload.salt == 42)
+            #expect(payload.gracePeriod == 60)
+            #expect(payload.signature == "open-sig")
+        } else {
+            Issue.record("expected open action")
+        }
     }
 }
