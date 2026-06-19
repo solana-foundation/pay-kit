@@ -45,8 +45,9 @@ describe('createPayKit usage flow', () => {
         const request = new Request('http://api.test/summarize');
         const result = await pay.requirePayment(request, 'summarize');
 
+        expect('challenge' in result).toBe(true);
+        if (!('challenge' in result)) return;
         expect(result.status).toBe(402);
-        if (result.status !== 402) return;
         const entry = result.challenge.accepts[0];
         expect(entry?.scheme).toBe('upto');
         expect(entry?.protocol).toBe('x402');

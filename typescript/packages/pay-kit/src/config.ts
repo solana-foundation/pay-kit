@@ -16,6 +16,13 @@ export type MppOptions = {
     readonly challengeBindingSecret?: string;
     /** Challenge TTL in seconds. `0` means never expires (dev only). */
     readonly expiresIn?: number;
+    /**
+     * Serve the interactive HTML payment page (the "Continue with Solana"
+     * pay.sh experience) on `402`s for browser requests (`Accept: text/html`),
+     * plus its service worker. API clients (JSON) still get the JSON `402`.
+     * Default `false`.
+     */
+    readonly html?: boolean;
     readonly realm?: string;
 };
 
@@ -60,7 +67,12 @@ export type ConfigureParams = {
 /** Resolved, immutable boot configuration. */
 export type PayKitConfig = {
     readonly accept: readonly Protocol[];
-    readonly mpp: { readonly challengeBindingSecret: string; readonly expiresIn: number; readonly realm: string };
+    readonly mpp: {
+        readonly challengeBindingSecret: string;
+        readonly expiresIn: number;
+        readonly html: boolean;
+        readonly realm: string;
+    };
     readonly network: Network;
     readonly operator: Operator;
     readonly preflight: boolean;
@@ -158,6 +170,7 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         mpp: Object.freeze({
             challengeBindingSecret,
             expiresIn,
+            html: params.mpp?.html ?? false,
             realm: params.mpp?.realm ?? 'App',
         }),
         network,

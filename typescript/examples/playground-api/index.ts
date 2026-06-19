@@ -48,7 +48,9 @@ const PLAN_ID = NETWORK === 'localnet' ? await bootstrapPlan(RPC_URL) : process.
 // ── PayKit: one config object declares the server + the priced routes ──
 const pay = await createPayKit({
   accept: ['x402', 'mpp'],
-  mpp: { challengeBindingSecret: SECRET_KEY },
+  // `html: true` serves the interactive pay.sh payment page (+ service worker)
+  // on 402s for browser requests; API clients still get the JSON 402.
+  mpp: { challengeBindingSecret: SECRET_KEY, html: true },
   network: NETWORK,
   operator: { recipient: RECIPIENT, signer: operator },
   pricing: {

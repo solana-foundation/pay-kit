@@ -61,8 +61,9 @@ describe('createPayKit', () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report');
         const result = await paykit.requirePayment(request, 'report');
+        expect('challenge' in result).toBe(true);
+        if (!('challenge' in result)) return;
         expect(result.status).toBe(402);
-        if (result.status !== 402) return;
         expect(result.challenge.resource).toBe('/report');
         expect(result.challenge.accepts).toHaveLength(1);
         expect(result.challenge.accepts[0]?.amount).toBe('100000');
@@ -77,8 +78,9 @@ describe('createPayKit', () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report', { headers: { [CREDENTIAL_HEADER]: 'valid' } });
         const result = await paykit.requirePayment(request, 'report');
+        expect('payment' in result).toBe(true);
+        if (!('payment' in result)) return;
         expect(result.status).toBe(200);
-        if (result.status !== 200) return;
         expect(result.payment.transaction).toBe('TxSig');
         expect(result.payment.gateName).toBe('report');
         expect(result.payment.scheme).toBe('charge');
@@ -99,25 +101,77 @@ describe('createPayKit', () => {
         const paykit = await setup();
         const request = new Request('http://api.test/report', { headers: { [CREDENTIAL_HEADER]: 'replayed' } });
         const result = await paykit.requirePayment(request, 'report');
+        expect('challenge' in result).toBe(true);
+        if (!('challenge' in result)) return;
         expect(result.status).toBe(402);
-        if (result.status !== 402) return;
         const body = (await result.response.json()) as { code: string; detail: string };
         expect(body.code).toBe('signature_consumed');
         expect(body.detail).toBe('already used');
         expect(paykit.paid(request)).toBe(false);
     });
 
+    it('serves a protocol-owned response for browser/worker requests, JSON 402 for API', async () => {
+        const config = await configure({ mpp: { challengeBindingSecret: 's3cret', html: true } });
+        const htmlAdapter: ProtocolAdapter = {
+            ...fakeAdapter(config),
+            async respond(_gate, request) {
+                const url = new URL(request.url);
+                if (url.searchParams.has('__mppx_worker'))
+                    return new Response('addEventListener', {
+                        headers: { 'content-type': 'application/javascript' },
+                        status: 200,
+                    });
+                if ((request.headers.get('accept') ?? '').includes('text/html'))
+                    return new Response('<!doctype html>', { headers: { 'content-type': 'text/html' }, status: 402 });
+                return undefined;
+            },
+        };
+        const pay = await createPayKit({
+            adapters: [htmlAdapter],
+            config,
+            pricing: { report: { amount: usd('0.10') } },
+        });
+
+        const browser = await pay.requirePayment(
+            new Request('http://api.test/report', { headers: { accept: 'text/html' } }),
+            'report',
+        );
+        expect('respond' in browser).toBe(true);
+        if ('respond' in browser) {
+            expect(browser.respond.status).toBe(402);
+            expect(browser.respond.headers.get('content-type')).toContain('text/html');
+        }
+
+        const worker = await pay.requirePayment(
+            new Request('http://api.test/report?__mppx_worker=1', { headers: { accept: 'text/html' } }),
+            'report',
+        );
+        expect('respond' in worker).toBe(true);
+        if ('respond' in worker) {
+            expect(worker.respond.status).toBe(200);
+            expect(worker.respond.headers.get('content-type')).toContain('application/javascript');
+        }
+
+        // API clients (no text/html, no worker param) keep the JSON 402.
+        const api = await pay.requirePayment(
+            new Request('http://api.test/report', { headers: { accept: 'application/json' } }),
+            'report',
+        );
+        expect('challenge' in api).toBe(true);
+        if ('challenge' in api) expect(api.status).toBe(402);
+    });
+
     it('resolves gates by name, price, and resolver', async () => {
         const paykit = await setup();
         const denied = await paykit.requirePayment(new Request('http://api.test/x'), usd('0.25'));
-        expect(denied.status).toBe(402);
-        if (denied.status === 402) expect(denied.challenge.accepts[0]?.amount).toBe('250000');
+        expect('challenge' in denied).toBe(true);
+        if ('challenge' in denied) expect(denied.challenge.accepts[0]?.amount).toBe('250000');
 
         const pro = await paykit.requirePayment(new Request('http://api.test/x?tier=pro'), 'tiered');
-        if (pro.status === 402) expect(pro.challenge.accepts[0]?.amount).toBe('5000000');
+        if ('challenge' in pro) expect(pro.challenge.accepts[0]?.amount).toBe('5000000');
 
         const inline = await paykit.requirePayment(new Request('http://api.test/x'), () => usd('1.00'));
-        if (inline.status === 402) expect(inline.challenge.accepts[0]?.amount).toBe('1000000');
+        if ('challenge' in inline) expect(inline.challenge.accepts[0]?.amount).toBe('1000000');
 
         await expect(
             // @ts-expect-error 'missing' is not a catalogue gate (caught at compile time; also throws at runtime)

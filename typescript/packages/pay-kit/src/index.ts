@@ -66,6 +66,7 @@ export {
     type PayKit,
     type PaymentDenied,
     type PaymentGranted,
+    type PaymentRespond,
     type RequirePaymentResult,
     type SessionRouteHandlers,
     type SessionRouteRequest,

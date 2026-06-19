@@ -99,6 +99,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                         solana.charge({
                             currency: mint,
                             decimals: 6,
+                            ...(config.mpp.html ? { html: true } : {}),
                             network,
                             recipient: gate.payTo,
                             rpcUrl: config.rpcUrl,
@@ -157,6 +158,18 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         },
 
         protocol: 'mpp',
+
+        // The mppx charge method (with `html: true`) content-negotiates the 402:
+        // `result.challenge` is the interactive HTML payment page for browsers
+        // (`Accept: text/html`) and the service-worker script for the
+        // `?__mppx_worker` request — each with its own status (402 / 200). Hand
+        // that Response back verbatim for pay-kit to send.
+        async respond(gate: Gate, request: Request): Promise<Response | undefined> {
+            if (!config.mpp.html) return undefined;
+            const result = await handlerFor(gate)(request);
+            return result.status === 402 ? result.challenge : undefined;
+        },
+
         scheme: 'charge',
 
         async verifyAndSettle(gate: Gate, request: Request): Promise<Payment> {

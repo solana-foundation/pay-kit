@@ -85,8 +85,17 @@ export type PaymentGranted = {
     readonly withSettlement: (response: Response) => Promise<Response>;
 };
 
+/**
+ * Send `respond` verbatim — a protocol owns the response for an unpaid request
+ * (e.g. MPP's HTML payment page or its service worker). Status comes from the
+ * Response itself.
+ */
+export type PaymentRespond = {
+    readonly respond: Response;
+};
+
 /** Result of {@link PayKit.requirePayment}. */
-export type RequirePaymentResult = PaymentDenied | PaymentGranted;
+export type RequirePaymentResult = PaymentDenied | PaymentGranted | PaymentRespond;
 
 /** Express/Connect-style middleware returned by {@link PayKit.express}. */
 export type ExpressMiddleware = (req: NodeRequest, res: NodeResponse, next: NextFunction) => Promise<void>;
@@ -306,6 +315,19 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
 
         const claimed = eligible.find(adapter => adapter.detect(request));
         if (!claimed) {
+            // Before the standard JSON 402, give a protocol a chance to own the
+            // response for browser / service-worker requests (MPP's HTML payment
+            // page + worker). API clients (no `text/html`, no worker param) keep
+            // the combined JSON 402 that advertises every accepted protocol.
+            const url = new URL(request.url);
+            const wantsHtml = (request.headers.get('accept') ?? '').includes('text/html');
+            const isWorker = url.searchParams.has('__mppx_worker') || url.searchParams.has('__mpp_worker');
+            if (wantsHtml || isWorker) {
+                for (const adapter of eligible) {
+                    const respond = await adapter.respond?.(gate, request);
+                    if (respond) return { respond };
+                }
+            }
             const challenge = await buildChallenge();
             return { challenge, response: render402(challenge, { accepts: challenge.accepts }), status: 402 };
         }
@@ -525,6 +547,10 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     next(error);
                     return;
                 }
+                if ('respond' in result) {
+                    await sendResponse(res, result.respond);
+                    return;
+                }
                 if (result.status === 402) {
                     await sendResponse(res, result.response);
                     return;
@@ -547,6 +573,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         fetch(gate: GateRef<P>, handler: FetchHandler): (request: Request) => Promise<Response> {
             return async request => {
                 const result = await instance.requirePayment(request, gate);
+                if ('respond' in result) return result.respond;
                 if (result.status === 402) return result.response;
                 const response = await handler(request, result.payment);
                 return await result.withSettlement(response);
@@ -556,6 +583,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         hono(gate: GateRef<P>): HonoMiddleware {
             return async (c, next) => {
                 const result = await instance.requirePayment(c.req.raw, gate);
+                if ('respond' in result) return result.respond;
                 if (result.status === 402) return result.response;
                 try {
                     await next();
