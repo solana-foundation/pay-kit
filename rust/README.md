@@ -164,7 +164,7 @@ Supported in Rust (`solana-pay-kit::mpp`):
 | Intent         | Client | Server |
 |----------------|:------:|:------:|
 | `charge/pull`  | ✅      | ✅      |
-| `charge/push`  | ✅      | ✅ (opt-in via `accept_push_mode`) |
+| `charge/push`  | ✅      | ✅      |
 | `session`      | ✅      | ✅      |
 | `subscription` | ✅      | ✅      |
 
@@ -181,16 +181,22 @@ implementation (`solana-pay-kit::x402`, the `solana-x402` crate) ships the
 single-recipient `exact` scheme and the usage-based `upto` scheme — both server
 and client — plus SIWX.
 
-| Intent             | Status |
-|--------------------|--------|
-| `exact`            | ✅      |
-| `upto`             | ✅      |
-| `batch-settlement` | —      |
+| Scheme         | Client | Server |
+|----------------|:------:|:------:|
+| `exact`        | ✅      | ✅      |
+| `upto`         | ✅      | ✅      |
+| `batch-settlement` | ✅      | ✅      |
 
 `upto` charges for actual usage up to a ceiling: it settles on a payment channel
 after the handler runs, so it needs a `fee_payer_signer` (the operator signs the
 settlement voucher) and is gated with `paid_upto_get` / `paid_upto_post` rather
 than `paid_get` / `paid_post`.
+
+`batch-settlement` is for high-throughput APIs: the client opens one channel and
+signs a cumulative voucher per request, which the gate (`paid_batch_get` /
+`paid_batch_post`) verifies off-chain and serves immediately. The operator
+redeems vouchers on-chain later in batches via `pay.x402_batch()` (`settle_batch`
+/ `distribute`). It also needs a `fee_payer_signer`.
 
 ## Client
 

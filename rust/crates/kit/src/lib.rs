@@ -19,6 +19,6 @@ mod gate;
 
 #[cfg(feature = "axum")]
 pub use gate::{
-    paid_get, paid_post, paid_upto_get, paid_upto_post, Charge, PayKit, PayKitConfig, PayKitError,
-    Payment, Price, PriceCtx, Protocol,
+    paid_batch_get, paid_batch_post, paid_get, paid_post, paid_upto_get, paid_upto_post, Charge,
+    PayKit, PayKitConfig, PayKitError, Payment, Price, PriceCtx, Protocol,
 };

@@ -39,3 +39,7 @@ required-features = ["axum"]
 [[example]]
 name = "axum_upto"
 required-features = ["axum"]
+
+[[example]]
+name = "axum_batch"
+required-features = ["axum"]

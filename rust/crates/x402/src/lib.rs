@@ -24,6 +24,7 @@ pub mod siwx;
 
 pub use constants::*;
 pub use error::Error;
+pub use protocol::schemes::batch_settlement;
 pub use protocol::schemes::exact;
 pub use protocol::schemes::upto;
 pub use siwx::*;

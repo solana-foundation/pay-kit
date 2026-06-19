@@ -50,3 +50,4 @@ thiserror = "2"
 [dev-dependencies]
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
+ed25519-dalek = "2"

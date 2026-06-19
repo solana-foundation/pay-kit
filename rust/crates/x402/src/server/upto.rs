@@ -501,26 +501,7 @@ impl X402Upto {
 
     /// Co-sign the fee-payer (operator) slot of a partially-signed transaction.
     async fn cosign_fee_payer(&self, tx: &mut VersionedTransaction) -> Result<(), Error> {
-        let account_keys = tx.message.static_account_keys();
-        let idx = account_keys
-            .iter()
-            .position(|k| k == &self.operator)
-            .ok_or_else(|| Error::Other("operator (fee payer) not in open transaction".into()))?;
-        if idx >= tx.signatures.len() {
-            return Err(Error::Other(
-                "operator is not a required signer in the open transaction".into(),
-            ));
-        }
-        let msg_data = tx.message.serialize();
-        let sig_bytes: [u8; 64] = self
-            .config
-            .operator_signer
-            .sign_message(&msg_data)
-            .await
-            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?
-            .into();
-        tx.signatures[idx] = Signature::from(sig_bytes);
-        Ok(())
+        cosign_operator_fee_payer(self.config.operator_signer.as_ref(), &self.operator, tx).await
     }
 
     fn fetch_channel(&self, channel_id: &Pubkey) -> Result<Channel, Error> {
@@ -532,8 +513,35 @@ impl X402Upto {
     }
 }
 
+/// Co-sign the operator's (fee-payer) slot of a partially-signed transaction.
+/// Shared by the `upto` and `batch-settlement` servers.
+pub(crate) async fn cosign_operator_fee_payer(
+    signer: &dyn SolanaSigner,
+    operator: &Pubkey,
+    tx: &mut VersionedTransaction,
+) -> Result<(), Error> {
+    let account_keys = tx.message.static_account_keys();
+    let idx = account_keys
+        .iter()
+        .position(|k| k == operator)
+        .ok_or_else(|| Error::Other("operator (fee payer) not in transaction".into()))?;
+    if idx >= tx.signatures.len() {
+        return Err(Error::Other(
+            "operator is not a required signer in the transaction".into(),
+        ));
+    }
+    let msg_data = tx.message.serialize();
+    let sig_bytes: [u8; 64] = signer
+        .sign_message(&msg_data)
+        .await
+        .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?
+        .into();
+    tx.signatures[idx] = Signature::from(sig_bytes);
+    Ok(())
+}
+
 /// Decode a base64 (standard) bincode transaction, accepting legacy and v0.
-fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
+pub(crate) fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
         .map_err(|e| Error::Other(format!("invalid base64 transaction: {e}")))?;
     bincode::deserialize::<Transaction>(&bytes)
@@ -554,7 +562,7 @@ fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> R
 
 /// Assert `tx` is exactly the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
-fn validate_open_instruction(
+pub(crate) fn validate_open_instruction(
     tx: &VersionedTransaction,
     program_id: &Pubkey,
     operator: &Pubkey,

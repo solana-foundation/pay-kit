@@ -39,7 +39,8 @@ use solana_mpp::server::{Config as MppConfig, Mpp};
 use solana_mpp::solana_keychain::SolanaSigner;
 use solana_mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
 use solana_x402::server::{
-    Config as X402Config, ExactOptions, UptoConfig, VerifiedExactPayment, X402Upto, X402,
+    BatchConfig, Config as X402Config, ExactOptions, UptoConfig, VerifiedExactPayment,
+    X402BatchSettlement, X402Upto, X402,
 };
 use solana_x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
 
@@ -123,6 +124,9 @@ pub struct PayKit {
     /// set — the operator must sign settlement vouchers, so `upto` routes
     /// require a signer.
     x402_upto: Option<Arc<X402Upto>>,
+    /// High-throughput x402 `batch-settlement` handler. `Some` only when
+    /// `fee_payer_signer` is set (the operator signs settlement transactions).
+    x402_batch: Option<Arc<X402BatchSettlement>>,
 }
 
 /// Default `upto` completion window (seconds) advertised in `maxTimeoutSeconds`.
@@ -188,10 +192,30 @@ impl PayKit {
             })
             .transpose()?;
 
+        // `batch-settlement` likewise needs an operator signer for settlement.
+        let x402_batch = config
+            .fee_payer_signer
+            .as_ref()
+            .map(|signer| {
+                let mut batch = BatchConfig::new(
+                    config.recipient.clone(),
+                    config.network.clone(),
+                    signer.clone(),
+                );
+                batch.currency = config.currency.clone();
+                batch.decimals = config.decimals;
+                batch.rpc_url = config.rpc_url.clone();
+                X402BatchSettlement::new(batch)
+                    .map(Arc::new)
+                    .map_err(|e| PayKitError::X402(e.to_string()))
+            })
+            .transpose()?;
+
         Ok(Self {
             mpp: Arc::new(mpp),
             x402: Arc::new(x402),
             x402_upto,
+            x402_batch,
         })
     }
 
@@ -208,6 +232,12 @@ impl PayKit {
     /// The underlying x402 `upto` handler, when a fee-payer signer is configured.
     pub fn x402_upto(&self) -> Option<&Arc<X402Upto>> {
         self.x402_upto.as_ref()
+    }
+
+    /// The underlying x402 `batch-settlement` handler, when a fee-payer signer is
+    /// configured. Drive `settle_batch` / `distribute` on it out of band.
+    pub fn x402_batch(&self) -> Option<&Arc<X402BatchSettlement>> {
+        self.x402_batch.as_ref()
     }
 }
 
@@ -795,6 +825,141 @@ where
     ))
 }
 
+/// Build the 402 response advertising the x402 `batch-settlement` challenge, or
+/// a retryable `503` if it can't be built (e.g. the operator RPC is down).
+fn batch_challenge_response(batch: &X402BatchSettlement, amount: &str) -> Response {
+    let (name, value) = match batch.payment_required_header(amount) {
+        Ok(header) => header,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "failed to build batch-settlement challenge");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "payment challenge temporarily unavailable",
+            )
+                .into_response();
+        }
+    };
+    let mut resp = (StatusCode::PAYMENT_REQUIRED, "Payment Required").into_response();
+    if let (Ok(n), Ok(v)) = (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(&value),
+    ) {
+        resp.headers_mut().insert(n, v);
+    }
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// High-throughput gate: verify the cumulative voucher (or process a deposit /
+/// cooperative refund) and serve. On-chain settlement is deferred — the operator
+/// drives `settle_batch` / `distribute` out of band via [`PayKit::x402_batch`].
+async fn batch_gate_middleware(
+    State(state): State<GateState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let amount = {
+        let ctx = PriceCtx {
+            method: req.method(),
+            uri: req.uri(),
+            headers: req.headers(),
+        };
+        state.price.resolve(&ctx)
+    };
+
+    let Some(batch) = state.pay.x402_batch.clone() else {
+        tracing::error!("paid_batch route used but no fee_payer_signer configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "batch-settlement routes require a fee_payer_signer",
+        )
+            .into_response();
+    };
+
+    let x402_header = req
+        .headers()
+        .get(PAYMENT_SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let Some(header_value) = x402_header else {
+        return batch_challenge_response(&batch, &amount);
+    };
+
+    let outcome = match batch.verify_payment(&header_value, &amount).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(amount = %amount, error = %e, "batch-settlement verification failed");
+            return batch_challenge_response(&batch, &amount);
+        }
+    };
+
+    let settlement_header = batch.settlement_header(&outcome.response).ok();
+    let mut resp = if outcome.serve {
+        req.extensions_mut().insert(Payment {
+            amount: amount.clone(),
+            protocol: Protocol::X402,
+            reference: outcome
+                .response
+                .channel_state
+                .as_ref()
+                .map(|c| c.channel_id.clone())
+                .unwrap_or_default(),
+        });
+        next.run(req).await
+    } else {
+        // A cooperative refund is a payment-control operation, not a paid
+        // request — acknowledge it without invoking the protected handler.
+        (StatusCode::OK, "channel closed").into_response()
+    };
+    if let Some((name, value)) = settlement_header {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(&value),
+        ) {
+            resp.headers_mut().insert(n, v);
+        }
+    }
+    resp
+}
+
+/// Gate a `GET` handler behind x402 `batch-settlement` at the per-request
+/// `price`. Requires a `fee_payer_signer`; settlement is batched out of band.
+pub fn paid_batch_get<H, T, S>(handler: H, price: impl Into<Price>, pay: &PayKit) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    get(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        batch_gate_middleware,
+    ))
+}
+
+/// Gate a `POST` handler behind x402 `batch-settlement`. See [`paid_batch_get`].
+pub fn paid_batch_post<H, T, S>(
+    handler: H,
+    price: impl Into<Price>,
+    pay: &PayKit,
+) -> MethodRouter<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    post(handler).layer(from_fn_with_state(
+        GateState {
+            pay: pay.clone(),
+            price: price.into(),
+        },
+        batch_gate_middleware,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,6 +1028,30 @@ mod tests {
         let app: Router = Router::new().route("/u", paid_upto_get(report, "1.00", &pay));
         let resp = app
             .oneshot(Request::builder().uri("/u").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_batch_without_signer_returns_500() {
+        let pay = test_paykit();
+        let app: Router = Router::new().route("/b", paid_batch_get(report, "0.01", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/b").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paid_batch_unpaid_returns_503_when_challenge_rpc_unavailable() {
+        // The batch challenge embeds a recent blockhash; with the operator RPC
+        // unreachable the gate returns a retryable 503 rather than a 402.
+        let pay = upto_paykit();
+        let app: Router = Router::new().route("/b", paid_batch_get(report, "0.01", &pay));
+        let resp = app
+            .oneshot(Request::builder().uri("/b").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
