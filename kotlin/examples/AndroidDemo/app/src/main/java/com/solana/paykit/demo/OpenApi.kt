@@ -1,11 +1,11 @@
 package com.solana.paykit.demo
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CreditCard
-import androidx.compose.material.icons.filled.FormatQuote
-import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.serialization.json.Json
@@ -116,6 +116,8 @@ object OpenApi {
         val label = if (!summary.isNullOrEmpty()) summary else path
 
         val intent = (firstOffer?.get("intent") as? JsonPrimitive)?.contentOrNull
+        val scheme = (firstOffer?.get("scheme") as? JsonPrimitive)?.contentOrNull
+        val payMethod = (firstOffer?.get("method") as? JsonPrimitive)?.contentOrNull
 
         return Endpoint(
             id = "$method $path",
@@ -123,30 +125,33 @@ object OpenApi {
             method = method,
             path = requestPath(path),
             priceUsd = priceString(firstOffer),
-            icon = iconFor(path = path, label = label, intent = intent),
+            icon = iconFor(intent = intent, scheme = scheme, method = payMethod),
             tint = PALETTE[index % PALETTE.size],
         )
     }
 
     /**
-     * Pick a Material icon from the endpoint's path/label/intent, matching the
-     * iOS demo's per-endpoint SF Symbol selection:
-     *   stock quote                  -> Icons.Filled.ShowChart
-     *   joke                         -> Icons.Filled.FormatQuote
-     *   fortune                      -> Icons.Filled.AutoAwesome
-     *   money / charge (generic)     -> Icons.Filled.CreditCard
-     *   fallback                     -> Icons.Filled.Bolt
+     * Pick a Material icon by payment intent/scheme/method, mirroring the iOS
+     * demo's `systemImage(intent:scheme:method:)` so the cards carry the same
+     * glyph as Swift (every `charge` endpoint shows the credit-card icon):
+     *   charge -> CreditCard, session -> Sensors, subscription -> Repeat,
+     *   usage -> Speed; else by scheme (exact -> Bolt, upto -> Speed);
+     *   else x402 -> Bolt, otherwise CreditCard.
      */
-    private fun iconFor(path: String, label: String, intent: String?): ImageVector {
-        val hay = "$path $label ${intent.orEmpty()}".lowercase()
-        return when {
-            "quote" in hay || "stock" in hay || "price" in hay -> Icons.Filled.ShowChart
-            "joke" in hay -> Icons.Filled.FormatQuote
-            "fortune" in hay || "cookie" in hay -> Icons.Filled.AutoAwesome
-            "charge" in hay || "pay" in hay || "money" in hay || "usdc" in hay ->
-                Icons.Filled.CreditCard
-            else -> Icons.Filled.Bolt
+    private fun iconFor(intent: String?, scheme: String?, method: String?): ImageVector {
+        when (intent?.lowercase()) {
+            "charge" -> return Icons.Filled.CreditCard
+            "session" -> return Icons.Filled.Sensors
+            "subscription" -> return Icons.Filled.Repeat
+            "usage" -> return Icons.Filled.Speed
         }
+        when (scheme?.lowercase()) {
+            "exact" -> return Icons.Filled.Bolt
+            "upto" -> return Icons.Filled.Speed
+            "subscription" -> return Icons.Filled.Repeat
+            "session" -> return Icons.Filled.Sensors
+        }
+        return if (method?.lowercase() == "x402") Icons.Filled.Bolt else Icons.Filled.CreditCard
     }
 
     /**
