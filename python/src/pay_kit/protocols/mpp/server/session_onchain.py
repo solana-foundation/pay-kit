@@ -34,7 +34,9 @@ from pay_kit._paycore.solana import default_token_program_for_currency, resolve_
 from pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     Distribution,
+    OpenChannelParams,
     build_distribute_instruction,
+    build_open_instruction,
     build_settle_and_finalize_instructions,
     find_channel_pda,
 )
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
 __all__ = [
     "VerifyOpenTxExpected",
     "VerifyOpenTxResult",
+    "build_sign_broadcast_open",
     "settle_and_finalize_channel",
     "verify_open_tx",
     "new_open_tx_verifier",
@@ -437,3 +440,45 @@ async def settle_and_finalize_channel(
     tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
     sent = await rpc.send_raw_transaction(bytes(tx))
     return str(sent.value)
+
+
+async def build_sign_broadcast_open(
+    payload: OpenPayload,
+    *,
+    payer_signer: Keypair,
+    rpc: RpcClient,
+    config: SessionConfig,
+) -> str:
+    """Build, sign, and broadcast a payment-channel open the operator funds.
+
+    The server-broadcast flow (``openTxSubmitter=server``) has the client send
+    the channel facts without a transaction; the operator is the channel payer
+    and the sole fee-payer signer. Builds the open instruction from the payload
+    facts (splits come from the server config), signs with the operator, sends,
+    and confirms. Returns the confirmed open signature. Mirrors Go SubmitOpenTx.
+    """
+    if not (payload.payer and payload.payee and payload.mint and payload.deposit):
+        raise PaymentError("server-broadcast open payload missing payer/payee/mint/deposit", code="invalid-payload")
+    if payload.salt is None or payload.grace_period is None:
+        raise PaymentError("server-broadcast open payload missing salt/gracePeriod", code="invalid-payload")
+
+    program_id = Pubkey.from_string(config.program_id) if config.program_id else PROGRAM_ID
+    params = OpenChannelParams(
+        payer=Pubkey.from_string(payload.payer),
+        payee=Pubkey.from_string(payload.payee),
+        mint=Pubkey.from_string(payload.mint),
+        authorized_signer=Pubkey.from_string(payload.authorized_signer),
+        salt=payload.salt,
+        deposit=int(payload.deposit),
+        grace_period=payload.grace_period,
+        recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
+        token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
+        program_id=program_id,
+    )
+    open_ix = build_open_instruction(params)
+    blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
+    tx = Transaction.new_signed_with_payer([open_ix], payer_signer.pubkey(), [payer_signer], blockhash)
+    sent = await rpc.send_raw_transaction(bytes(tx))
+    signature = str(sent.value)
+    await confirm_transaction_signature(rpc, signature, "open")
+    return signature

@@ -21,9 +21,9 @@ deposit is raised. The on-chain check is wired through the
 On-chain settlement at close (settle_and_finalize + distribute, populating
 ``settledSignature``) runs when both a signer and an RPC client are configured;
 without them, close is a pure state-flip. The idle-close watchdog settles the
-same way. Not yet implemented: the server-broadcast open path
-(``openTxSubmitter=server``, server-side fee-payer signing + open-tx
-submission).
+same way. The server-broadcast open path (``openTxSubmitter=server``) also runs
+when a signer and RPC are configured: the server builds, funds, signs, and
+broadcasts the open from the payload facts.
 """
 
 from __future__ import annotations
@@ -57,8 +57,11 @@ from pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer, S
 from pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
+    VerifyOpenTxExpected,
+    build_sign_broadcast_open,
     confirm_transaction_signature,
     settle_and_finalize_channel,
+    verify_open_tx,
 )
 from pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
 from pay_kit.signer import LocalSigner
@@ -387,18 +390,23 @@ class Session:
 
     async def _handle_open(self, payload: OpenPayload) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
-        invariants, and insert the channel state atomically and idempotently. The
-        receipt reference is the open signature when one exists, else the channel
-        id. This implements the trusted / client-broadcast open path.
-        """
-        if self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
-            # The server-broadcast open requires the open-tx submission building
-            # block, which is not yet implemented.
-            raise PaymentError(
-                "openTxSubmitter=server is not supported by this port",
-                code="invalid-config",
-            )
+        invariants, and insert the channel state atomically and idempotently.
 
+        Three submitter paths:
+
+        - ``openTxSubmitter=server``: the server builds, funds, signs, and
+          broadcasts the open from the payload facts (requires a signer + RPC),
+          then persists.
+        - client-broadcast carrying a ``transaction``: validate it against the
+          challenge (structural always; on-chain liveness when an RPC client is
+          configured) before persisting.
+        - client-broadcast without a transaction: the client asserts a
+          previously broadcast open; the open signature is confirmed on-chain
+          when an RPC is present, otherwise the channel facts are trusted.
+
+        The receipt reference is the open signature when one exists, else the
+        channel id.
+        """
         mode = payload.mode
         if not self._supports_mode(mode):
             raise PaymentError(f"session mode {mode!r} is not supported by this challenge", code="invalid-payload")
@@ -408,27 +416,49 @@ class Session:
                 code="invalid-config",
             )
 
+        if self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
+            if self._signer is None or self._rpc is None:
+                raise PaymentError(
+                    "openTxSubmitter=server requires a signer and an RPC client",
+                    code="invalid-config",
+                )
+            try:
+                payload.signature = await build_sign_broadcast_open(
+                    payload, payer_signer=self._signer.keypair, rpc=self._rpc, config=self._core.config
+                )
+            except PaymentError:
+                raise
+            except Exception as exc:
+                raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
+            try:
+                state = await self._core.process_open(payload)
+            except ValueError as exc:
+                raise PaymentError(str(exc), code="invalid-payload") from exc
+            self._touch(state.channel_id)
+            return payload.signature
+
         # Empty strings count as missing.
         has_transaction = payload.transaction is not None and payload.transaction != ""
         has_channel_id = payload.channel_id is not None and payload.channel_id != ""
 
         if has_transaction:
-            # Payment-channel-backed open verification needs the on-chain open-tx
-            # verifier seam, which decodes and binds the attached transaction.
-            # That path lands with the on-chain settlement layer.
-            raise PaymentError(
-                "open with an attached transaction is not supported by this port",
-                code="invalid-payload",
+            expected = VerifyOpenTxExpected(
+                authorized_signer=payload.authorized_signer,
+                currency=self._currency,
+                recipient=self._recipient,
+                network=self._network,
+                max_cap=self._core.config.max_cap,
+                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
             )
-        if mode == "push" and not has_channel_id:
+            try:
+                await verify_open_tx(expected, payload, self._rpc)
+            except PaymentError:
+                raise
+            except Exception as exc:
+                raise PaymentError(f"open transaction verification failed: {exc}", code="invalid-payload") from exc
+        elif mode == "push" and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
-
-        # No transaction in the payload: the client asserts a previously
-        # broadcast open. With an RPC client the open signature is confirmed
-        # on-chain before persisting; without one the channelId/deposit fields
-        # are trusted as-is. (Pull mode without a tx trusts the
-        # channelId/tokenAccount + approvedAmount.)
-        if mode == "push" and self._rpc is not None:
+        elif mode == "push" and self._rpc is not None:
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
 
         try:
