@@ -307,6 +307,21 @@ private fun DemoScreen() {
                             enabled = busy == null && signer != null,
                             onClick = onClick@{
                                 val s = signer ?: return@onClick
+                                // The demo settles one-shot charge endpoints over MPP. Other
+                                // intents (session streaming, subscription, x402 upto) are
+                                // multi-step flows with dedicated APIs, not the 402 -> charge ->
+                                // retry loop — explain instead of firing a charge the server's
+                                // non-charge 402 would reject.
+                                if (endpoint.intent != "charge") {
+                                    append(
+                                        LogEntry.failure(
+                                            endpoint,
+                                            "${endpoint.label} is an mpp/${endpoint.intent} flow, not a one-shot charge. " +
+                                                "Open it with the session API (PaymentChannelSession) — this tap-to-pay demo only settles charge endpoints.",
+                                        )
+                                    )
+                                    return@onClick
+                                }
                                 busy = BusyKind.Pay(endpoint.id)
                                 scope.launch {
                                     append(consume(s, endpoint))
@@ -543,6 +558,14 @@ private fun EndpointCard(
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
             color = Color.White.copy(alpha = 0.9f),
+        )
+        Text(
+            text = endpoint.protocols,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color.White.copy(alpha = 0.85f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

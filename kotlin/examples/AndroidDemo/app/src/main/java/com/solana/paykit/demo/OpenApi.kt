@@ -31,6 +31,12 @@ data class Endpoint(
     val priceUsd: String,
     val icon: ImageVector,
     val tint: Color,
+    /** Discovery intent of the first offer (`charge` / `session` / …); the demo
+     *  only settles `charge` over MPP and explains the rest. */
+    val intent: String,
+    /** Display string of the accepted protocols + non-charge intent, e.g.
+     *  `x402 · mpp` or `mpp · session`. */
+    val protocols: String,
 )
 
 /** Vertical-gradient bottom stop: the tint darkened ~12% (mirrors the iOS
@@ -110,7 +116,8 @@ object OpenApi {
 
     private fun endpoint(path: String, method: String, operation: JsonObject, index: Int): Endpoint {
         val paymentInfo = operation["x-payment-info"]?.jsonObject
-        val firstOffer = paymentInfo?.get("offers")?.jsonArray?.firstOrNull()?.jsonObject
+        val offers = paymentInfo?.get("offers")?.jsonArray
+        val firstOffer = offers?.firstOrNull()?.jsonObject
 
         val summary = (operation["summary"] as? JsonPrimitive)?.contentOrNull?.trim()
         val label = if (!summary.isNullOrEmpty()) summary else path
@@ -127,7 +134,26 @@ object OpenApi {
             priceUsd = priceString(firstOffer),
             icon = iconFor(intent = intent, scheme = scheme, method = payMethod),
             tint = PALETTE[index % PALETTE.size],
+            intent = if (!intent.isNullOrEmpty()) intent else "charge",
+            protocols = protocolsLabel(offers, intent),
         )
+    }
+
+    /**
+     * Display string of the accepted protocols (offer `method`s, de-duplicated
+     * in offer order) plus the intent when it is not a plain charge, so the card
+     * surfaces the MPP/x402 split and flags session/subscription routes.
+     * E.g. `x402 · mpp`, `mpp`, `mpp · session`.
+     */
+    private fun protocolsLabel(offers: kotlinx.serialization.json.JsonArray?, intent: String?): String {
+        val methods = LinkedHashSet<String>()
+        offers?.forEach { offer ->
+            ((offer as? JsonObject)?.get("method") as? JsonPrimitive)?.contentOrNull
+                ?.takeIf { it.isNotEmpty() }?.let { methods.add(it) }
+        }
+        val parts = methods.toMutableList()
+        if (intent != null && intent.lowercase() != "charge") parts.add(intent.lowercase())
+        return if (parts.isEmpty()) "—" else parts.joinToString(" · ")
     }
 
     /**
