@@ -1,30 +1,43 @@
 package com.solana.paykit.demo
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowCircleDown
+import androidx.compose.material.icons.filled.Dangerous
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MonetizationOn
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -42,9 +55,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.solana.paykit.client.PayKitClient
@@ -168,27 +183,54 @@ private fun DemoScreen() {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+            .padding(vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(32.dp),
     ) {
         Text(
             text = "PayKit Demo",
             fontSize = 34.sp,
             fontWeight = FontWeight.Bold,
             color = IosColors.Label,
+            modifier = Modifier.padding(start = 16.dp),
         )
 
         // Account section.
         Section(title = "Account") {
             val s = signer
             if (s != null) {
-                LabeledRow(label = "Address", value = shortAddress(s.address), mono = true)
+                LabeledRow(label = "Address") {
+                    Text(
+                        text = shortAddress(s.address),
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = IosColors.SecondaryLabel,
+                    )
+                }
                 val balance = usdcBalance
                 if (balance != null) {
-                    LabeledRow(label = "Balance", value = "${formatUsdc(balance)} USDC", mono = true)
+                    SectionDivider()
+                    LabeledRow(label = "Balance") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Filled.MonetizationOn,
+                                contentDescription = null,
+                                tint = IosColors.Green,
+                                modifier = Modifier.size(17.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "${formatUsdc(balance)} USDC",
+                                fontSize = 17.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = IosColors.Label,
+                            )
+                        }
+                    }
                 } else {
+                    SectionDivider()
                     ActionRow(
                         title = "Topup 1000 USDC + 100 SOL",
+                        icon = Icons.Filled.ArrowCircleDown,
                         active = busy == BusyKind.Topup,
                         enabled = busy == null,
                         onClick = {
@@ -210,6 +252,7 @@ private fun DemoScreen() {
             } else {
                 ActionRow(
                     title = "Setup Account",
+                    icon = Icons.Filled.VpnKey,
                     active = false,
                     enabled = busy == null,
                     onClick = {
@@ -227,16 +270,24 @@ private fun DemoScreen() {
             }
         }
 
-        // Endpoints section.
-        Section(title = "Endpoints (${endpoints.size} from OpenAPI)") {
+        // Endpoints section. The card carries no internal padding so the
+        // LazyRow can bleed its 12dp content insets to the card edges.
+        Section(
+            title = "Endpoints (${endpoints.size} from OpenAPI)",
+            contentPadding = PaddingValues(0.dp),
+        ) {
             val error = endpointsError
             when {
                 error != null -> Text(
                     text = error,
                     fontSize = 13.sp,
                     color = IosColors.Orange,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
                 )
-                endpoints.isEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
+                endpoints.isEmpty() -> Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
                     Text(
@@ -245,13 +296,11 @@ private fun DemoScreen() {
                         color = IosColors.SecondaryLabel,
                     )
                 }
-                else -> Row(
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 4.dp),
+                else -> LazyRow(
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    endpoints.forEach { endpoint ->
+                    items(endpoints, key = { it.id }) { endpoint ->
                         EndpointCard(
                             endpoint = endpoint,
                             busy = busy == BusyKind.Pay(endpoint.id),
@@ -274,6 +323,7 @@ private fun DemoScreen() {
                     text = "Tap Setup Account to enable these.",
                     fontSize = 13.sp,
                     color = IosColors.SecondaryLabel,
+                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 11.dp),
                 )
             }
         }
@@ -283,19 +333,32 @@ private fun DemoScreen() {
             title = "Log",
             trailing = {
                 if (log.isNotEmpty()) {
-                    TextButton(onClick = { log.clear() }) { Text("Clear", fontSize = 13.sp) }
+                    TextButton(
+                        onClick = { log.clear() },
+                        contentPadding = PaddingValues(0.dp),
+                    ) {
+                        Text(
+                            text = "Clear",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Normal,
+                            color = IosColors.Blue,
+                        )
+                    }
                 }
             },
+            contentPadding = PaddingValues(horizontal = 16.dp),
         ) {
             if (log.isEmpty()) {
                 Text(
                     text = "Tap an endpoint above to send a charge.",
-                    fontSize = 14.sp,
+                    fontSize = 17.sp,
                     color = IosColors.SecondaryLabel,
+                    modifier = Modifier.padding(vertical = 11.dp),
                 )
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    log.forEach { entry -> LogRow(entry) }
+                log.forEachIndexed { index, entry ->
+                    if (index > 0) SectionDivider()
+                    LogRow(entry)
                 }
             }
         }
@@ -304,22 +367,25 @@ private fun DemoScreen() {
 
 // region UI building blocks
 
-/** An iOS-style inset grouped section: bold gray header + a white rounded card. */
+/** An iOS-style inset grouped section: a gray uppercase header + a white
+ *  rounded card (10dp radius, 16dp inset, no shadow). The optional [trailing]
+ *  sits at the header's trailing edge (the Log's "Clear" button). */
 @Composable
 private fun Section(
     title: String,
     trailing: @Composable (() -> Unit)? = null,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp),
     content: @Composable () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = title.uppercase(Locale.US),
                 fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.Normal,
                 color = IosColors.SecondaryLabel,
                 modifier = Modifier.weight(1f),
             )
@@ -328,43 +394,82 @@ private fun Section(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
+                .padding(horizontal = 16.dp)
+                .clip(RoundedCornerShape(10.dp))
                 .background(IosColors.Card)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(contentPadding),
         ) {
             content()
         }
     }
 }
 
+/** Hairline separator between in-card rows (#C6C6C8). */
 @Composable
-private fun LabeledRow(label: String, value: String, mono: Boolean) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(text = label, fontSize = 16.sp, color = IosColors.Label, modifier = Modifier.weight(1f))
+private fun SectionDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(IosColors.Separator),
+    )
+}
+
+/** A label-left / value-right grouped row with 11dp vertical, 16dp horizontal
+ *  padding handled by the caller's card insets (here only vertical). */
+@Composable
+private fun LabeledRow(label: String, value: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
-            text = value,
-            fontSize = if (mono) 14.sp else 16.sp,
-            color = IosColors.SecondaryLabel,
-            fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+            text = label,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Normal,
+            color = IosColors.Label,
+            modifier = Modifier.weight(1f),
         )
+        value()
     }
 }
 
+/** A full-width plain tinted row (icon + text left, spinner right when busy):
+ *  Setup Account / Topup. No filled pill background, ~44dp tall. */
 @Composable
-private fun ActionRow(title: String, active: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+private fun ActionRow(
+    title: String,
+    icon: ImageVector,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .clickableNoRipple(enabled = enabled, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = title, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = IosColors.Blue,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = title,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Normal,
+            color = IosColors.Blue,
+            modifier = Modifier.weight(1f),
+        )
         if (active) {
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
                 strokeWidth = 2.dp,
-                color = Color.White,
+                color = IosColors.Blue,
             )
         }
     }
@@ -379,25 +484,29 @@ private fun EndpointCard(
     onClick: () -> Unit,
 ) {
     val gradient = Brush.verticalGradient(
-        listOf(endpoint.tint, endpoint.tint.copy(alpha = 0.78f)),
+        listOf(endpoint.tint, endpoint.tint.darkenBy(0.12f)),
     )
-    val clickModifier = if (enabled) Modifier.clickableNoRipple(onClick) else Modifier
     Column(
         modifier = Modifier
-            .width(160.dp)
-            .height(132.dp)
+            .width(150.dp)
+            .height(130.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(gradient)
-            .then(clickModifier)
+            .clickableNoRipple(enabled = enabled, onClick = onClick)
             .padding(12.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "$", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Icon(
+                imageVector = endpoint.icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
             if (busy) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp),
@@ -412,39 +521,49 @@ private fun EndpointCard(
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 ) {
                     Text(
-                        text = endpoint.method,
-                        fontSize = 10.sp,
+                        text = endpoint.method.uppercase(Locale.US),
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
                     )
                 }
             }
         }
-        Column {
-            Text(
-                text = endpoint.label,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White,
-                maxLines = 2,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = endpoint.priceUsd,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace,
-                color = Color.White.copy(alpha = 0.9f),
-            )
-        }
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = endpoint.label,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = endpoint.priceUsd,
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            color = Color.White.copy(alpha = 0.9f),
+        )
     }
 }
 
 @Composable
 private fun LogRow(entry: LogEntry) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(10.dp).clip(RoundedCornerShape(50)).background(entry.accent))
-            Spacer(Modifier.width(8.dp))
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = entry.statusIcon,
+                contentDescription = null,
+                tint = entry.statusTint,
+                modifier = Modifier.size(17.dp),
+            )
             Text(
                 text = entry.title,
                 fontSize = 15.sp,
@@ -466,6 +585,17 @@ private fun LogRow(entry: LogEntry) {
                 fontFamily = FontFamily.Monospace,
                 color = IosColors.Label,
                 maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "View receipt on pay.sh",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Normal,
+                color = IosColors.Blue,
+                modifier = Modifier.clickableNoRipple {
+                    val uri = Uri.parse("https://pay.sh/receipt/$sig?network=sandbox")
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+                },
             )
         }
         entry.detail?.let { detail ->
@@ -474,19 +604,21 @@ private fun LogRow(entry: LogEntry) {
                 fontSize = 13.sp,
                 fontFamily = if (entry.monoDetail) FontFamily.Monospace else FontFamily.Default,
                 color = IosColors.SecondaryLabel,
-                maxLines = 6,
+                maxLines = entry.detailMaxLines,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
 
-/** Clickable without the Material ripple, to keep the gradient card clean. */
+/** Clickable without the Material ripple, to keep the surrounding cells clean. */
 @Composable
-private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier {
+private fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Modifier {
     val interactionSource = remember { MutableInteractionSource() }
     return this.clickable(
         interactionSource = interactionSource,
         indication = null,
+        enabled = enabled,
         onClick = onClick,
     )
 }
@@ -498,10 +630,12 @@ private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier {
 private data class LogEntry(
     val title: String,
     val time: String,
-    val accent: Color,
+    val statusIcon: ImageVector,
+    val statusTint: Color,
     val signature: String? = null,
     val detail: String? = null,
     val monoDetail: Boolean = true,
+    val detailMaxLines: Int = 6,
 ) {
     companion object {
         private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
@@ -511,26 +645,31 @@ private data class LogEntry(
         fun success(endpoint: Endpoint, signature: String?, body: String): LogEntry = LogEntry(
             title = "${endpoint.label} — 200 OK",
             time = now(),
-            accent = IosColors.Green,
+            statusIcon = Icons.Filled.Verified,
+            statusTint = IosColors.Green,
             signature = signature,
             detail = when {
                 body.isNotBlank() -> body
                 signature == null -> "No Payment-Receipt header in response."
                 else -> null
             },
+            detailMaxLines = 4,
         )
 
         fun failure(endpoint: Endpoint?, message: String): LogEntry = LogEntry(
             title = endpoint?.let { "${it.label} — failed" } ?: "Error",
             time = now(),
-            accent = IosColors.Red,
+            statusIcon = Icons.Filled.Dangerous,
+            statusTint = IosColors.Red,
             detail = message,
+            detailMaxLines = 6,
         )
 
         fun system(message: String, success: Boolean): LogEntry = LogEntry(
             title = "System",
             time = now(),
-            accent = if (success) IosColors.Blue else IosColors.Orange,
+            statusIcon = if (success) Icons.Filled.Info else Icons.Filled.Warning,
+            statusTint = if (success) IosColors.Blue else IosColors.Orange,
             detail = message,
             monoDetail = false,
         )
@@ -549,9 +688,10 @@ private sealed interface BusyKind {
 private object IosColors {
     val GroupedBackground = Color(0xFFF2F2F7)
     val Card = Color(0xFFFFFFFF)
-    val Label = Color(0xFF1C1C1E)
+    val Label = Color(0xFF000000)
     val SecondaryLabel = Color(0xFF8E8E93)
-    val Blue = Color(0xFF0A84FF)
+    val Separator = Color(0xFFC6C6C8)
+    val Blue = Color(0xFF007AFF)
     val Green = Color(0xFF34C759)
     val Red = Color(0xFFFF3B30)
     val Orange = Color(0xFFFF9500)

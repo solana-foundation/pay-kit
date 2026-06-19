@@ -1,6 +1,13 @@
 package com.solana.paykit.demo
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.ShowChart
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -22,8 +29,16 @@ data class Endpoint(
     val method: String,
     val path: String,
     val priceUsd: String,
+    val icon: ImageVector,
     val tint: Color,
 )
+
+/** Vertical-gradient bottom stop: the tint darkened ~12% (mirrors the iOS
+ *  `Color.gradient` shading used on the endpoint cards). */
+fun Color.darkenBy(fraction: Float = 0.12f): Color {
+    val k = 1f - fraction
+    return Color(red = red * k, green = green * k, blue = blue * k, alpha = alpha)
+}
 
 /**
  * Decodes the playground's `GET /openapi.json` discovery document into the
@@ -52,14 +67,14 @@ object OpenApi {
      * the iOS palette order so the two demos read the same.
      */
     private val PALETTE = listOf(
-        Color(0xFF0A84FF), // blue
+        Color(0xFF007AFF), // blue
         Color(0xFF5E5CE6), // indigo
-        Color(0xFFAF52DE), // purple
-        Color(0xFFFF2D55), // pink
-        Color(0xFFFF9500), // orange
+        Color(0xFFFF2D55), // pink/magenta
         Color(0xFF34C759), // green
+        Color(0xFFFF9500), // orange
+        Color(0xFFAF52DE), // purple
         Color(0xFFFF3B30), // red
-        Color(0xFF30B0C7), // teal
+        Color(0xFF5AC8FA), // teal/cyan
     )
 
     /**
@@ -100,14 +115,38 @@ object OpenApi {
         val summary = (operation["summary"] as? JsonPrimitive)?.contentOrNull?.trim()
         val label = if (!summary.isNullOrEmpty()) summary else path
 
+        val intent = (firstOffer?.get("intent") as? JsonPrimitive)?.contentOrNull
+
         return Endpoint(
             id = "$method $path",
             label = label,
             method = method,
             path = requestPath(path),
             priceUsd = priceString(firstOffer),
+            icon = iconFor(path = path, label = label, intent = intent),
             tint = PALETTE[index % PALETTE.size],
         )
+    }
+
+    /**
+     * Pick a Material icon from the endpoint's path/label/intent, matching the
+     * iOS demo's per-endpoint SF Symbol selection:
+     *   stock quote                  -> Icons.Filled.ShowChart
+     *   joke                         -> Icons.Filled.FormatQuote
+     *   fortune                      -> Icons.Filled.AutoAwesome
+     *   money / charge (generic)     -> Icons.Filled.CreditCard
+     *   fallback                     -> Icons.Filled.Bolt
+     */
+    private fun iconFor(path: String, label: String, intent: String?): ImageVector {
+        val hay = "$path $label ${intent.orEmpty()}".lowercase()
+        return when {
+            "quote" in hay || "stock" in hay || "price" in hay -> Icons.Filled.ShowChart
+            "joke" in hay -> Icons.Filled.FormatQuote
+            "fortune" in hay || "cookie" in hay -> Icons.Filled.AutoAwesome
+            "charge" in hay || "pay" in hay || "money" in hay || "usdc" in hay ->
+                Icons.Filled.CreditCard
+            else -> Icons.Filled.Bolt
+        }
     }
 
     /**
