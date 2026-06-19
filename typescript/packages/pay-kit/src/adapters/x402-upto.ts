@@ -169,7 +169,10 @@ export class X402Upto {
         return {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
-            extra: { facilitatorAddress: this.#operator, feePayer: this.#operator },
+            // Spec field names (scheme_upto_svm.md §4.1): `facilitator` (not the
+            // old non-spec `facilitatorAddress`) + the required `profiles`, so a
+            // Rust/other-SDK upto client can act on this challenge.
+            extra: { facilitator: this.#operator, feePayer: this.#operator, profiles: ['payment-channel'] },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
             payTo: this.#recipient,

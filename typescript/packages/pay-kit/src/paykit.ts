@@ -221,6 +221,10 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
 
     const payments = new WeakMap<object, Payment>();
     const charges = new WeakMap<object, Charge>();
+    // Usage (upto) channel IDs currently being served — guards against a
+    // concurrent replay of the same authorization serving the resource twice
+    // for one deposit. Acquired after verify, released when settle completes.
+    const inFlightUptoChannels = new Set<string>();
     // One session engine per session gate (shared store across its routes).
     const sessionEngines = new Map<string, SessionEngine>();
 
@@ -385,6 +389,21 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             throw error;
         }
 
+        // In-flight dedup: reject a concurrent request bearing the same channel
+        // authorization before its handler runs, so a replayed PAYMENT-SIGNATURE
+        // can't serve the (expensive, metered) resource twice for one deposit.
+        // has()+add() are synchronous — no await between — so the check is atomic
+        // under the single-threaded event loop. Released when settle completes.
+        const channelId = (verified.payload.payload as { channelId?: string }).channelId;
+        if (channelId !== undefined) {
+            if (inFlightUptoChannels.has(channelId)) {
+                return await usageChallenge(
+                    new InvalidProofError('upto_channel_in_flight', 'channel already being served'),
+                );
+            }
+            inFlightUptoChannels.add(channelId);
+        }
+
         const meter = new Charge(verified.maxBaseUnits);
         charges.set(request, meter);
         const provisional: Payment = {
@@ -405,9 +424,13 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         let settlePromise: Promise<Readonly<Record<string, string>>> | undefined;
         const settle = (): Promise<Readonly<Record<string, string>>> =>
             (settlePromise ??= (async () => {
-                const result = await upto.settle(verified, meter.settledBaseUnits());
-                payments.set(request, { ...provisional, transaction: result.transaction });
-                return result.settlementHeaders;
+                try {
+                    const result = await upto.settle(verified, meter.settledBaseUnits());
+                    payments.set(request, { ...provisional, transaction: result.transaction });
+                    return result.settlementHeaders;
+                } finally {
+                    if (channelId !== undefined) inFlightUptoChannels.delete(channelId);
+                }
             })());
 
         return granted(provisional, settle, meter);
@@ -464,8 +487,8 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         const coin = coinFor(gate);
         const intent = intentFor(gate);
         const toOffer = (entry: AcceptsEntry, max: boolean): PaymentOffer => {
-            const extra = (entry.extra ?? {}) as { facilitatorAddress?: unknown; feePayer?: unknown };
-            const feePayer = extra.feePayer ?? extra.facilitatorAddress ?? entry.feePayer;
+            const extra = (entry.extra ?? {}) as { facilitator?: unknown; feePayer?: unknown };
+            const feePayer = extra.feePayer ?? extra.facilitator ?? entry.feePayer;
             return {
                 amount: entry.amount,
                 currency: typeof entry.currency === 'string' ? entry.currency : coin,
