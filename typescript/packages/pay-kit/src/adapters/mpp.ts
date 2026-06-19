@@ -163,11 +163,24 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         // `result.challenge` is the interactive HTML payment page for browsers
         // (`Accept: text/html`) and the service-worker script for the
         // `?__mppx_worker` request — each with its own status (402 / 200). Hand
-        // that Response back verbatim for pay-kit to send.
+        // that Response back for pay-kit to send.
         async respond(gate: Gate, request: Request): Promise<Response | undefined> {
             if (!config.mpp.html) return undefined;
             const result = await handlerFor(gate)(request);
-            return result.status === 402 ? result.challenge : undefined;
+            if (result.status !== 402) return undefined;
+            const response = result.challenge;
+            // The service worker is served from the resource's sub-path (e.g.
+            // /api/v1/x?__mppx_worker) but the page registers it at scope "/".
+            // Browsers reject that broader scope unless the worker response
+            // carries `Service-Worker-Allowed: /` — mppx doesn't set it, so add
+            // it here (otherwise registration throws and the payment flow stalls).
+            const url = new URL(request.url);
+            if (url.searchParams.has('__mppx_worker') || url.searchParams.has('__mpp_worker')) {
+                const headers = new Headers(response.headers);
+                headers.set('Service-Worker-Allowed', '/');
+                return new Response(response.body, { headers, status: response.status });
+            }
+            return response;
         },
 
         scheme: 'charge',
