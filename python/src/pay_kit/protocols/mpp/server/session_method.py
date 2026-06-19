@@ -58,8 +58,8 @@ from pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
     VerifyOpenTxExpected,
-    build_sign_broadcast_open,
     confirm_transaction_signature,
+    cosign_and_broadcast_open,
     settle_and_finalize_channel,
     verify_open_tx,
 )
@@ -423,8 +423,8 @@ class Session:
                     code="invalid-config",
                 )
             try:
-                payload.signature = await build_sign_broadcast_open(
-                    payload, payer_signer=self._signer.keypair, rpc=self._rpc, config=self._core.config
+                payload.signature = await cosign_and_broadcast_open(
+                    payload, fee_payer=self._signer.keypair, rpc=self._rpc
                 )
             except PaymentError:
                 raise

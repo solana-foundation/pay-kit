@@ -163,14 +163,15 @@ async def test_settle_is_noop_without_signer_or_rpc() -> None:
 
 
 def _server_open_payload(operator: Keypair):
+    """A client-built open whose fee-payer (operator) slot the server completes."""
     from pay_kit.protocols.mpp.client.payment_channels import (
-        PENDING_SERVER_SIGNATURE,
-        PaymentChannelOpenOptions,
-        derive_payment_channel_open,
+        PaymentChannelSessionOpenOptions,
+        create_payment_channel_session_opener,
     )
     from pay_kit.protocols.mpp.intents.session import SessionRequest
 
-    auth = Keypair.from_seed(bytes([9] * 32))
+    payer = Keypair.from_seed(bytes([11] * 32))
+    session_signer = Keypair.from_seed(bytes([9] * 32))
     request = SessionRequest(
         cap="1000000",
         currency="USDC",
@@ -181,8 +182,12 @@ def _server_open_payload(operator: Keypair):
         modes=["pull"],
         pull_voucher_strategy="clientVoucher",
     )
-    open_ = derive_payment_channel_open(request, operator.pubkey(), auth.pubkey(), PaymentChannelOpenOptions(salt=42))
-    return open_, open_.open_payload("pull", PENDING_SERVER_SIGNATURE)
+    opener = create_payment_channel_session_opener(
+        request, payer, session_signer, _BLOCKHASH, PaymentChannelSessionOpenOptions()
+    )
+    payload = opener.action.open
+    assert payload is not None
+    return opener.open, payload
 
 
 @pytest.mark.asyncio
