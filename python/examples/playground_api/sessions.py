@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import pay_kit
 from pay_kit._paycore.errors import PaymentError, payment_required_response
+from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit._paycore.solana import resolve_mint
 from pay_kit.protocols.mpp.core.headers import (
     AUTHORIZATION_HEADER,
@@ -42,9 +43,12 @@ from pay_kit.protocols.mpp.server import (
 
 router = APIRouter()
 
-# One session method, built from the shared pay_kit config. cap is the ceiling
-# the server will offer in a challenge (0.50 USDC at 6 decimals); pull mode +
-# clientVoucher is the metered-billing flavour.
+# One session method, built from the shared pay_kit config. cap is the 1.00 USDC
+# ceiling the server offers in a challenge; pull mode + clientVoucher is the
+# metered-billing flavour. The operator signer + RPC + server-side open submitter
+# make the channel settle on-chain (so the receipt poll returns a real signature),
+# and close_delay arms the idle-close watchdog that settles after the last
+# delivery — mirroring the TypeScript playground's session config.
 _cfg = pay_kit.config()
 session = new_session(
     SessionOptions(
@@ -57,6 +61,10 @@ session = new_session(
         secret_key=_cfg.mpp.challenge_binding_secret or "",
         modes=["pull"],
         pull_voucher_strategy="clientVoucher",
+        signer=_cfg.operator.signer,
+        rpc=SolanaRpc(_cfg.effective_rpc_url()),
+        open_tx_submitter="server",
+        close_delay=2.0,
     )
 )
 
@@ -120,9 +128,31 @@ async def stream(headers: dict[str, str] = _gate) -> StreamingResponse:
     return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
 
 
-# Reserve/commit side channel: the shipped session_routes builder, mounted as-is
-# so a client can sign and commit each voucher. No custom logic.
-_routes = session_routes(session.core())
+@router.post("/api/v1/stream")
+async def stream_voucher(request: Request, headers: dict[str, str] = _gate) -> JSONResponse:
+    """Voucher commit at the resource URL.
+
+    The SessionFetch client re-POSTs each signed voucher (in the Authorization
+    credential) to the URL it opened against; ``_gate`` verifies it (or answers
+    402) and returns the receipt headers. Mirrors the TS ``streamRoutes.voucher``
+    handler — without it the client's commit hits 405.
+    """
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    return JSONResponse(
+        {
+            "amount": str(body.get("amount", "0")),
+            "deliveryId": str(body.get("deliveryId", "")),
+            "status": "committed",
+        },
+        headers=headers,
+    )
+
+
+# Reserve/commit side channel: the shipped session_routes builder. The touch hook
+# resets the idle-close watchdog after each reserve/commit so the channel settles
+# only once deliveries stop.
+_routes = session_routes(session.core(), touch=session._touch)
 
 
 @router.post("/__402/session/deliveries")
