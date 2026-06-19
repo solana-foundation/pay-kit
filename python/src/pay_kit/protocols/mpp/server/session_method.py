@@ -18,12 +18,12 @@ deposit is raised. The on-chain check is wired through the
 (:func:`~pay_kit.protocols.mpp.server.session_onchain.new_open_tx_verifier` /
 :func:`~pay_kit.protocols.mpp.server.session_onchain.new_top_up_tx_verifier`).
 
-This handler implements the offline-core surface. Not yet implemented (their
-lower-level building blocks do not exist yet): the server-broadcast open path
-(server-side fee-payer signing and open-tx submission), on-chain settlement at
-close, and the metering side-channel HTTP routes. The idle-close watchdog is
-wired but, without a settlement path, its handler is a no-op when no RPC
-settlement is configured.
+On-chain settlement at close (settle_and_finalize + distribute, populating
+``settledSignature``) runs when both a signer and an RPC client are configured;
+without them, close is a pure state-flip. The idle-close watchdog settles the
+same way. Not yet implemented: the server-broadcast open path
+(``openTxSubmitter=server``, server-side fee-payer signing + open-tx
+submission).
 """
 
 from __future__ import annotations
@@ -58,8 +58,10 @@ from pay_kit.protocols.mpp.server.session_lifecycle import SessionLifecycle
 from pay_kit.protocols.mpp.server.session_onchain import (
     RpcClient,
     confirm_transaction_signature,
+    settle_and_finalize_channel,
 )
 from pay_kit.protocols.mpp.server.session_store import ChannelStore, MemoryChannelStore
+from pay_kit.signer import LocalSigner
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,10 @@ class SessionOptions:
     # RPC is the optional RPC client used for on-chain checks. None skips every
     # on-chain check and trusts payload claims as provided.
     rpc: RpcClient | None = None
+    # Signer is the operator/merchant local signer that funds and signs the
+    # on-chain settle-at-close (and the server-broadcast open) transactions.
+    # None (or no RPC) leaves close a pure state-flip with settledSignature unset.
+    signer: LocalSigner | None = None
 
 
 @dataclass
@@ -208,6 +214,7 @@ class Session:
         open_tx_submitter: OpenTxSubmitter,
         rpc: RpcClient | None,
         lifecycle: SessionLifecycle | None,
+        signer: LocalSigner | None = None,
     ) -> None:
         # core is the lower-level SessionServer dispatching open / voucher /
         # commit / topUp / close against the channel store.
@@ -226,6 +233,9 @@ class Session:
         self._rpc = rpc
         # lifecycle is the idle-close watchdog; None when close_delay is zero.
         self._lifecycle = lifecycle
+        # signer settles the channel on-chain at close (and broadcasts server
+        # opens); None or no rpc leaves close a state-flip with no settlement.
+        self._signer = signer
 
     def core(self) -> SessionServer:
         """Return the underlying :class:`SessionServer` so hosts can reach the
@@ -555,16 +565,57 @@ class Session:
             await self._core.store().update_channel(channel_id, mutator)
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
-        reference = payload.channel_id
         if self._lifecycle is not None:
             self._lifecycle.remove_channel(payload.channel_id)
-        return reference
+        settled = await self._settle_channel(channel_id)
+        # On a successful settle the reference is the on-chain signature; without
+        # a signer/RPC the close is a state-flip and the channel id stands in.
+        return settled or payload.channel_id
+
+    async def _settle_channel(self, channel_id: str) -> str | None:
+        """Settle and finalize the channel on-chain, returning the settlement
+        signature. A no-op (returns ``None``) when no signer or RPC is configured;
+        returns the recorded signature when the channel is already finalized.
+        Mirrors the gated settle in the Go/TS servers.
+        """
+        if self._signer is None or self._rpc is None:
+            return None
+        state = await self._core.store().get_channel(channel_id)
+        if state is None:
+            return None
+        if state.finalized:
+            return state.settled_signature
+
+        signature = await settle_and_finalize_channel(
+            state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
+        )
+
+        from pay_kit.protocols.mpp.server.session_store import ChannelState
+
+        def finalize(current: ChannelState | None) -> ChannelState:
+            if current is None:
+                raise ValueError(f"channel {channel_id} disappeared during settle")
+            nxt = current.clone()
+            nxt.finalized = True
+            nxt.settled_signature = signature
+            return nxt
+
+        await self._core.store().update_channel(channel_id, finalize)
+        return signature
 
     async def _close_on_idle(self, channel_id: str) -> None:
-        """Idle-close watchdog handler. Without an on-chain settlement path
-        there is nothing to broadcast, so this is a no-op; it returns early when
-        no signer/RPC is configured.
+        """Idle-close watchdog handler: close the channel and settle on-chain.
+
+        Settlement only runs when a signer and RPC are configured; a transient
+        failure is swallowed (logged) so it cannot crash the timer, and the
+        channel stays re-drivable with ``settledSignature`` unset.
         """
+        if self._signer is None or self._rpc is None:
+            return None
+        try:
+            await self._handle_close(ClosePayload(channel_id=channel_id, voucher=None))
+        except Exception:
+            logging.getLogger(__name__).warning("idle-close settle failed for channel %s", channel_id, exc_info=True)
         return None
 
 
@@ -643,6 +694,7 @@ def new_session(options: SessionOptions) -> Session:
         open_tx_submitter=open_tx_submitter,
         rpc=options.rpc,
         lifecycle=None,
+        signer=options.signer,
     )
     if options.close_delay > 0:
         session._lifecycle = SessionLifecycle(session._close_on_idle, options.close_delay)

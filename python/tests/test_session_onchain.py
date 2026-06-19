@@ -82,6 +82,12 @@ class _FakeRpc:
                 out.append({"err": None, "confirmationStatus": "confirmed"})
         return out
 
+    async def get_latest_blockhash(self, commitment: str = "confirmed"):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # not exercised by the open/top-up verifier tests
+
+    async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # not exercised by the open/top-up verifier tests
+
 
 def _kp(seed: int) -> Keypair:
     return Keypair.from_seed(bytes([seed] * 32))

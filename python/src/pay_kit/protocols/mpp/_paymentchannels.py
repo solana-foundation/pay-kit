@@ -27,7 +27,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-from solders.instruction import Instruction  # type: ignore[import-untyped]
+from solders.instruction import AccountMeta, Instruction  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from pay_kit._paycore.solana import (
@@ -35,32 +35,51 @@ from pay_kit._paycore.solana import (
     SYSTEM_PROGRAM,
     TOKEN_PROGRAM,
 )
+from pay_kit.protocols.programs.paymentchannels.instructions.distribute import Distribute
 from pay_kit.protocols.programs.paymentchannels.instructions.open import Open
+from pay_kit.protocols.programs.paymentchannels.instructions.settleAndFinalize import SettleAndFinalize
 from pay_kit.protocols.programs.paymentchannels.instructions.topUp import TopUp
+from pay_kit.protocols.programs.paymentchannels.types.distributeArgs import DistributeArgs
 from pay_kit.protocols.programs.paymentchannels.types.distributionEntry import (
     DistributionEntry,
 )
 from pay_kit.protocols.programs.paymentchannels.types.openArgs import (
     OpenArgs as _OpenArgs,
 )
+from pay_kit.protocols.programs.paymentchannels.types.settleAndFinalizeArgs import SettleAndFinalizeArgs
 from pay_kit.protocols.programs.paymentchannels.types.topUpArgs import (
     TopUpArgs as _TopUpArgs,
 )
 from pay_kit.protocols.programs.paymentchannels.types.voucherArgs import VoucherArgs
 
 __all__ = [
+    "ED25519_PROGRAM_ID",
     "PAYMENT_CHANNELS_PROGRAM_ID",
     "PROGRAM_ID",
+    "SYSVAR_INSTRUCTIONS",
     "Distribution",
     "OpenChannelParams",
     "TopUpParams",
+    "build_distribute_instruction",
+    "build_ed25519_verify_instruction",
     "build_open_instruction",
+    "build_settle_and_finalize_instructions",
     "build_top_up_instruction",
     "find_associated_token_address",
     "find_channel_pda",
     "find_event_authority_pda",
+    "treasury_owner",
     "voucher_message_bytes",
 ]
+
+#: The Ed25519 native signature-verification precompile program id. A settle
+#: that redeems a voucher must place this instruction immediately before
+#: settle_and_finalize so the program confirms the voucher signature by index.
+ED25519_PROGRAM_ID = "Ed25519SigVerify111111111111111111111111111"
+
+#: The Solana instructions sysvar, read by settle_and_finalize to locate the
+#: preceding Ed25519 precompile by index.
+SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
 
 # Canonical payment-channels program id deployed to the network. The IDL
 # placeholder ``CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg`` is NOT the
@@ -357,4 +376,143 @@ def build_top_up_instruction(params: TopUpParams) -> Instruction:
             "tokenProgram": params.token_program,
         },
         program_id=PROGRAM_ID,
+    )
+
+
+def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes, message: bytes) -> Instruction:
+    """Build the Ed25519 precompile instruction that verifies a voucher signature.
+
+    The on-chain settle reads the voucher's Ed25519 signature from a sibling
+    instruction; this precompile must sit immediately before ``settleAndFinalize``
+    in the transaction. The public key, signature, and message all live in this
+    instruction's own data, so the three offset fields point here (the ``0xffff``
+    markers mean "current instruction"). Layout mirrors the Rust/Go builders:
+    pubkey at byte 16, signature at 48, message at 112.
+
+    Args:
+        authorized_signer: The voucher's signer pubkey (verified key).
+        signature: The 64-byte Ed25519 signature over ``message``.
+        message: The signed voucher preimage (see :func:`voucher_message_bytes`).
+    """
+    if len(signature) != 64:
+        raise ValueError(f"ed25519 signature must be 64 bytes, got {len(signature)}")
+    public_key_offset = 16
+    signature_offset = 48
+    message_data_offset = 112
+    current_instruction = 0xFFFF
+    if len(message) > 0xFFFF:
+        raise ValueError(f"voucher message too long: {len(message)} bytes")
+
+    data = bytearray(message_data_offset + len(message))
+    data[0] = 1  # num_signatures
+    data[1] = 0  # padding
+    struct.pack_into("<H", data, 2, signature_offset)
+    struct.pack_into("<H", data, 4, current_instruction)
+    struct.pack_into("<H", data, 6, public_key_offset)
+    struct.pack_into("<H", data, 8, current_instruction)
+    struct.pack_into("<H", data, 10, message_data_offset)
+    struct.pack_into("<H", data, 12, len(message))
+    struct.pack_into("<H", data, 14, current_instruction)
+    data[public_key_offset : public_key_offset + 32] = bytes(authorized_signer)
+    data[signature_offset : signature_offset + 64] = signature
+    data[message_data_offset:] = message
+
+    return Instruction(Pubkey.from_string(ED25519_PROGRAM_ID), bytes(data), [])
+
+
+def treasury_owner() -> Pubkey:
+    """Treasury owner of the current payment-channels deployment: 32 bytes of
+    repeated ``0xBE 0xEF``. Mirrors the Rust/Go ``TreasuryOwner``."""
+    return Pubkey.from_bytes(bytes([0xBE, 0xEF] * 16))
+
+
+def build_settle_and_finalize_instructions(
+    *,
+    merchant: Pubkey,
+    channel: Pubkey,
+    authorized_signer: Pubkey,
+    signature: bytes | None,
+    cumulative: int,
+    expires_at: int,
+    program_id: Pubkey = PROGRAM_ID,
+) -> list[Instruction]:
+    """Build the settle-and-finalize instruction set.
+
+    When a voucher was recorded, prepend the Ed25519 precompile that verifies it
+    (the program reads the signature from the sibling instruction by index) and
+    set ``hasVoucher``. Returns ``[ed25519?, settleAndFinalize]`` in the order
+    the program expects.
+    """
+    instructions: list[Instruction] = []
+    has_voucher = 0
+    if signature is not None:
+        message = voucher_message_bytes(channel, cumulative, expires_at)
+        instructions.append(build_ed25519_verify_instruction(authorized_signer, signature, message))
+        has_voucher = 1
+
+    settle = SettleAndFinalize(
+        {
+            "settleAndFinalizeArgs": SettleAndFinalizeArgs(
+                voucher=VoucherArgs(channelId=channel, cumulativeAmount=cumulative, expiresAt=expires_at),
+                hasVoucher=has_voucher,
+            )
+        },
+        {
+            "merchant": merchant,
+            "channel": channel,
+            "instructionsSysvar": Pubkey.from_string(SYSVAR_INSTRUCTIONS),
+        },
+        program_id=program_id,
+    )
+    instructions.append(settle)
+    return instructions
+
+
+def build_distribute_instruction(
+    *,
+    channel: Pubkey,
+    payer: Pubkey,
+    payee: Pubkey,
+    mint: Pubkey,
+    recipients: list[Distribution],
+    token_program: Pubkey,
+    program_id: Pubkey = PROGRAM_ID,
+    treasury: Pubkey | None = None,
+) -> Instruction:
+    """Build the distribute instruction that pays out a settled channel.
+
+    Derives the channel / payer / payee / treasury ATAs and one ATA per split
+    recipient (appended as writable remaining accounts, mirroring the Rust/Go
+    builders).
+    """
+    owner = treasury if treasury is not None else treasury_owner()
+    channel_token, _ = find_associated_token_address(channel, mint, token_program)
+    payer_token, _ = find_associated_token_address(payer, mint, token_program)
+    payee_token, _ = find_associated_token_address(payee, mint, token_program)
+    treasury_token, _ = find_associated_token_address(owner, mint, token_program)
+    event_authority, _ = find_event_authority_pda(program_id)
+
+    entries: list[DistributionEntry] = []
+    remaining: list[AccountMeta] = []
+    for entry in recipients:
+        recipient_token, _ = find_associated_token_address(entry.recipient, mint, token_program)
+        remaining.append(AccountMeta(pubkey=recipient_token, is_signer=False, is_writable=True))
+        entries.append(DistributionEntry(recipient=entry.recipient, bps=entry.bps))
+
+    return Distribute(
+        {"distributeArgs": DistributeArgs(recipients=entries)},
+        {
+            "channel": channel,
+            "payer": payer,
+            "channelTokenAccount": channel_token,
+            "payerTokenAccount": payer_token,
+            "payeeTokenAccount": payee_token,
+            "treasuryTokenAccount": treasury_token,
+            "mint": mint,
+            "tokenProgram": token_program,
+            "eventAuthority": event_authority,
+            "selfProgram": program_id,
+        },
+        program_id=program_id,
+        remaining_accounts=remaining or None,
     )

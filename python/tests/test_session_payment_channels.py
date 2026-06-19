@@ -22,8 +22,10 @@ from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from pay_kit._paycore.solana import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 from pay_kit.protocols.mpp._paymentchannels import (
+    ED25519_PROGRAM_ID,
     PROGRAM_ID,
     Distribution,
+    build_ed25519_verify_instruction,
     find_channel_pda,
 )
 from pay_kit.protocols.mpp.client.payment_channels import (
@@ -358,3 +360,36 @@ def test_generate_authorized_signer_returns_usable_session_keypair() -> None:
     voucher = opened.session.sign_increment(5)
     sig = Signature.from_string(voucher.signature)
     assert sig.verify(signer.pubkey(), voucher.data.message_bytes())
+
+
+# -- build_ed25519_verify_instruction (settle precompile) ---------------------
+
+
+def test_ed25519_verify_instruction_golden_layout() -> None:
+    """The Ed25519 precompile data layout must match the Rust/Go builders:
+    one signature, all three offsets pointing into this instruction's own data
+    (pubkey@16, signature@48, message@112), 0xffff = current-instruction."""
+    import struct
+
+    signer = _pk(7)
+    signature = bytes(range(64))
+    message = bytes([0xAB] * 48)  # voucher preimage is 48 bytes
+
+    ix = build_ed25519_verify_instruction(signer, signature, message)
+
+    assert str(ix.program_id) == ED25519_PROGRAM_ID
+    assert ix.accounts == []
+    data = bytes(ix.data)
+    assert len(data) == 112 + len(message)
+    assert data[0] == 1  # num_signatures
+    assert data[1] == 0  # padding
+    # offset header: sig=48, 0xffff, pubkey=16, 0xffff, msg=112, msg_len, 0xffff
+    assert struct.unpack_from("<7H", data, 2) == (48, 0xFFFF, 16, 0xFFFF, 112, len(message), 0xFFFF)
+    assert data[16:48] == bytes(signer)
+    assert data[48:112] == signature
+    assert data[112:] == message
+
+
+def test_ed25519_verify_instruction_rejects_bad_signature_length() -> None:
+    with pytest.raises(ValueError, match="64 bytes"):
+        build_ed25519_verify_instruction(_pk(1), b"\x00" * 63, b"msg")

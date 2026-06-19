@@ -21,19 +21,33 @@ import base64
 import struct
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
+from solders.hash import Hash  # type: ignore[import-untyped]
+from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
+from solders.transaction import Transaction  # type: ignore[import-untyped]
 
 from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.solana import resolve_mint
-from pay_kit.protocols.mpp._paymentchannels import PROGRAM_ID, find_channel_pda
+from pay_kit._paycore.solana import default_token_program_for_currency, resolve_mint
+from pay_kit.protocols.mpp._paymentchannels import (
+    PROGRAM_ID,
+    Distribution,
+    build_distribute_instruction,
+    build_settle_and_finalize_instructions,
+    find_channel_pda,
+)
 from pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+
+if TYPE_CHECKING:
+    from pay_kit.protocols.mpp.server.session import SessionConfig
+    from pay_kit.protocols.mpp.server.session_store import ChannelState
 
 __all__ = [
     "VerifyOpenTxExpected",
     "VerifyOpenTxResult",
+    "settle_and_finalize_channel",
     "verify_open_tx",
     "new_open_tx_verifier",
     "new_top_up_tx_verifier",
@@ -47,12 +61,18 @@ _OPEN_INSTRUCTION_DISCRIMINATOR = 1
 
 
 class RpcClient(Protocol):
-    """Minimal RPC seam used for the optional on-chain liveness check.
+    """Minimal RPC seam used for the optional on-chain liveness check and the
+    settle-at-close broadcast.
 
     ``get_signature_statuses`` returns the per-signature status list (each entry
-    is a status dict with an ``err`` field, or ``None`` when unknown)."""
+    is a status dict with an ``err`` field, or ``None`` when unknown);
+    ``get_latest_blockhash`` / ``send_raw_transaction`` back the settle path."""
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]: ...
+
+    async def get_latest_blockhash(self, commitment: str = ...) -> Any: ...
+
+    async def send_raw_transaction(self, raw_tx: bytes) -> Any: ...
 
 
 #: A verifier seam installed on the session config: validates a payload (open
@@ -346,3 +366,74 @@ async def confirm_transaction_signature(rpc_client: RpcClient, signature: str, l
         )
     if status.get("err") is not None:
         raise PaymentError(f"{label} tx {signature!r} failed on-chain: {status['err']}", code="transaction-failed")
+
+
+async def settle_and_finalize_channel(
+    state: ChannelState,
+    *,
+    merchant: Keypair,
+    rpc: RpcClient,
+    config: SessionConfig,
+) -> str:
+    """Build, sign, and broadcast the close settlement transaction; return the
+    on-chain signature.
+
+    Mirrors the Rust/Go close path: a settle_and_finalize instruction (preceded
+    by the Ed25519 precompile when a voucher was recorded) plus a distribute
+    instruction in one transaction whose fee payer is the merchant. The caller
+    persists ``settled_signature`` on success.
+    """
+    channel = Pubkey.from_string(state.channel_id)
+    program_id = Pubkey.from_string(config.program_id) if config.program_id else PROGRAM_ID
+    merchant_pubkey = merchant.pubkey()
+
+    voucher_signature: bytes | None = None
+    authorized_signer = merchant_pubkey
+    expires_at = 0
+    if state.highest_voucher_signature is not None:
+        voucher_signature = bytes(Signature.from_string(state.highest_voucher_signature))
+        if not state.authorized_signer:
+            raise PaymentError(
+                f"channel {state.channel_id} has a voucher but no authorized signer", code="invalid-config"
+            )
+        authorized_signer = Pubkey.from_string(state.authorized_signer)
+        if state.highest_voucher_expires_at is None:
+            raise PaymentError(
+                f"channel {state.channel_id} has a voucher signature but no expiry", code="invalid-config"
+            )
+        expires_at = state.highest_voucher_expires_at
+
+    settle = build_settle_and_finalize_instructions(
+        merchant=merchant_pubkey,
+        channel=channel,
+        authorized_signer=authorized_signer,
+        signature=voucher_signature,
+        cumulative=state.cumulative,
+        expires_at=expires_at,
+        program_id=program_id,
+    )
+
+    mint_address = resolve_mint(config.currency, config.network)
+    if not mint_address:
+        raise PaymentError(
+            f"session settlement requires an SPL token, got currency '{config.currency}'", code="invalid-config"
+        )
+    payer_address = state.operator or config.recipient
+    if not payer_address:
+        raise PaymentError(
+            f"channel {state.channel_id} payer is unknown; cannot derive the refund account", code="invalid-config"
+        )
+    distribute = build_distribute_instruction(
+        channel=channel,
+        payer=Pubkey.from_string(payer_address),
+        payee=Pubkey.from_string(config.recipient),
+        mint=Pubkey.from_string(mint_address),
+        recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
+        token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
+        program_id=program_id,
+    )
+
+    blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
+    tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
+    sent = await rpc.send_raw_transaction(bytes(tx))
+    return str(sent.value)
