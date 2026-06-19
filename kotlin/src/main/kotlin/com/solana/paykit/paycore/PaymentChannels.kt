@@ -175,9 +175,14 @@ object PaymentChannels {
         require(signature.size == 64) { "open signature must be 64 bytes (got ${signature.size})" }
         val signerIndex = message.accountKeys.indexOfFirst { it.bytes.contentEquals(payerPubkey.bytes) }
         if (signerIndex < 0) {
-            throw MppException.InvalidTransaction("payer is not a required signer of the open transaction")
+            throw MppException.InvalidTransaction("payer is not in the open transaction account list")
         }
         val signatures = MutableList<ByteArray?>(message.header.numRequiredSignatures) { null }
+        // The payer must land in the signer prefix of the account list; guard the
+        // index so a non-signer slot throws instead of going out of bounds.
+        if (signerIndex >= signatures.size) {
+            throw MppException.InvalidTransaction("payer signer index $signerIndex is outside the required-signer range")
+        }
         signatures[signerIndex] = signature
         val txBytes = Transaction.serializeLegacyTransaction(message, signatures)
         return OpenTransaction(channelId = channelId, transaction = Base64.getEncoder().encodeToString(txBytes))
