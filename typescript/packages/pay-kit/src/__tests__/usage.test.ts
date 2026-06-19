@@ -27,9 +27,9 @@ describe('usage() gate', () => {
     });
 
     it('rejects an explicit accept that excludes x402', () => {
-        expect(() =>
-            Gate.create({ accept: ['mpp'], amount: usd('1.00'), kind: 'usage', name: 'u' }, DEFAULTS),
-        ).toThrow(ProtocolIncompatibleError);
+        expect(() => Gate.create({ accept: ['mpp'], amount: usd('1.00'), kind: 'usage', name: 'u' }, DEFAULTS)).toThrow(
+            ProtocolIncompatibleError,
+        );
     });
 });
 

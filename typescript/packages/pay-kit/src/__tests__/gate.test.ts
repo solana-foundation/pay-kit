@@ -101,10 +101,7 @@ describe('Gate', () => {
 
 describe('Gate — subscription kind', () => {
     it('builds an MPP-only subscription gate from the helper', () => {
-        const gate = Gate.create(
-            { ...subscription(usd('0.10'), { ...SUB }), name: 'feed' },
-            X402_MPP,
-        );
+        const gate = Gate.create({ ...subscription(usd('0.10'), { ...SUB }), name: 'feed' }, X402_MPP);
         expect(gate.kind).toBe('subscription');
         expect(gate.accept).toEqual(['mpp']); // narrowed off x402 even when defaults allow it
         expect(gate.subscription).toEqual(SUB);
@@ -119,7 +116,13 @@ describe('Gate — subscription kind', () => {
     it('rejects fees on a subscription gate', () => {
         expect(() =>
             Gate.create(
-                { amount: usd('0.10'), feeOnTop: { [PLATFORM]: usd('0.01') }, kind: 'subscription', name: 'feed', subscription: SUB },
+                {
+                    amount: usd('0.10'),
+                    feeOnTop: { [PLATFORM]: usd('0.01') },
+                    kind: 'subscription',
+                    name: 'feed',
+                    subscription: SUB,
+                },
                 DEFAULTS,
             ),
         ).toThrow(ProtocolIncompatibleError);
@@ -127,7 +130,10 @@ describe('Gate — subscription kind', () => {
 
     it('rejects an explicit x402 accept on a subscription gate', () => {
         expect(() =>
-            Gate.create({ accept: ['x402'], amount: usd('0.10'), kind: 'subscription', name: 'feed', subscription: SUB }, DEFAULTS),
+            Gate.create(
+                { accept: ['x402'], amount: usd('0.10'), kind: 'subscription', name: 'feed', subscription: SUB },
+                DEFAULTS,
+            ),
         ).toThrow(ProtocolIncompatibleError);
     });
 });
@@ -153,7 +159,13 @@ describe('Gate — session kind', () => {
     it('rejects fees on a session gate', () => {
         expect(() =>
             Gate.create(
-                { amount: usd('1.00'), feeOnTop: { [PLATFORM]: usd('0.01') }, kind: 'session', name: 'stream', session: { unitPrice: 100n } },
+                {
+                    amount: usd('1.00'),
+                    feeOnTop: { [PLATFORM]: usd('0.01') },
+                    kind: 'session',
+                    name: 'stream',
+                    session: { unitPrice: 100n },
+                },
                 DEFAULTS,
             ),
         ).toThrow(ProtocolIncompatibleError);

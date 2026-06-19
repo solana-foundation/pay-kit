@@ -34,11 +34,7 @@ export {
     ProtocolNotSupportedError,
     UnknownGateError,
 } from './errors.js';
-export {
-    type ExpressRoutesApp,
-    introspectExpressRoutes,
-    type IntrospectedRoute,
-} from './express-routes.js';
+export { type ExpressRoutesApp, introspectExpressRoutes, type IntrospectedRoute } from './express-routes.js';
 export type { Fee, FeeKind } from './fee.js';
 export {
     type FeeSpec,

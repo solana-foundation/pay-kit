@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@x402/core': file:/Users/ludo/Coding/x402/.local-tarballs/x402-core-2.10.0.tgz
-
 importers:
 
   .:
@@ -23,12 +20,6 @@ importers:
       '@solana/pay-kit':
         specifier: file:../../packages/pay-kit
         version: file:../../packages/pay-kit(@solana/addresses@6.9.0(typescript@5.9.3))(@solana/codecs-core@6.9.0(typescript@5.9.3))(@solana/codecs-strings@6.9.0(typescript@5.9.3))(@solana/keys@6.9.0(typescript@5.9.3))(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/mpp@file:../../packages/mpp(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(mppx@0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(typescript@5.9.3))(@solana/signers@6.9.0(typescript@5.9.3))(@solana/sysvars@6.9.0(typescript@5.9.3))(@solana/transactions@6.9.0(typescript@5.9.3))(mppx@0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)))
-      '@x402/core':
-        specifier: file:/Users/ludo/Coding/x402/.local-tarballs/x402-core-2.10.0.tgz
-        version: file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz
-      '@x402/svm':
-        specifier: file:/Users/ludo/Coding/x402/.local-tarballs/x402-svm-2.10.0.tgz
-        version: file:../../../../x402/.local-tarballs/x402-svm-2.10.0.tgz(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@6.9.0(typescript@5.9.3))
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -746,16 +737,6 @@ packages:
   '@types/serve-static@2.2.0':
     resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
 
-  '@x402/core@file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz':
-    resolution: {integrity: sha512-MQRLFyWapX6Q5vKVHl7qWvsRxm+qwct7UpLP9NBBRtZHABuZecbMWcwY6aDrIbx143S4U8h5v9KkIYqmNctsFQ==, tarball: file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz}
-    version: 2.10.0
-
-  '@x402/svm@file:../../../../x402/.local-tarballs/x402-svm-2.10.0.tgz':
-    resolution: {integrity: sha512-DWKp0ZJeGusS5ya88Vd+dT33mRMUZwc8rAyXLnvwqfDQvSUhEecGBhj+CQqaQLhoLwpBIJ5gbPqR3JYXvQ23fA==, tarball: file:../../../../x402/.local-tarballs/x402-svm-2.10.0.tgz}
-    version: 2.10.0
-    peerDependencies:
-      '@solana/kit': '>=5.1.0'
-
   abitype@1.2.3:
     resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
     peerDependencies:
@@ -1366,9 +1347,6 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
-
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -1766,11 +1744,12 @@ snapshots:
 
   '@solana/pay-kit@file:../../packages/pay-kit(@solana/addresses@6.9.0(typescript@5.9.3))(@solana/codecs-core@6.9.0(typescript@5.9.3))(@solana/codecs-strings@6.9.0(typescript@5.9.3))(@solana/keys@6.9.0(typescript@5.9.3))(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/mpp@file:../../packages/mpp(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(mppx@0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(typescript@5.9.3))(@solana/signers@6.9.0(typescript@5.9.3))(@solana/sysvars@6.9.0(typescript@5.9.3))(@solana/transactions@6.9.0(typescript@5.9.3))(mppx@0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)))':
     dependencies:
+      '@solana-program/compute-budget': 0.11.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
+      '@solana-program/token': 0.9.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
+      '@solana-program/token-2022': 0.6.1(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@6.9.0(typescript@5.9.3))
       '@solana/keychain-memory': 1.3.0(@solana/addresses@6.9.0(typescript@5.9.3))(@solana/codecs-core@6.9.0(typescript@5.9.3))(@solana/codecs-strings@6.9.0(typescript@5.9.3))(@solana/keys@6.9.0(typescript@5.9.3))(@solana/signers@6.9.0(typescript@5.9.3))(@solana/transactions@6.9.0(typescript@5.9.3))
       '@solana/kit': 6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/mpp': file:../../packages/mpp(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(mppx@0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)))(typescript@5.9.3)
-      '@x402/core': file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz
-      '@x402/svm': file:../../../../x402/.local-tarballs/x402-svm-2.10.0.tgz(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@6.9.0(typescript@5.9.3))
       mppx: 0.5.17(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(express@4.22.2)(hono@4.12.25)(typescript@5.9.3)(viem@2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3))
     transitivePeerDependencies:
       - '@solana/addresses'
@@ -2103,20 +2082,6 @@ snapshots:
     dependencies:
       '@types/http-errors': 2.0.5
       '@types/node': 25.9.3
-
-  '@x402/core@file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz':
-    dependencies:
-      zod: 3.25.76
-
-  '@x402/svm@file:../../../../x402/.local-tarballs/x402-svm-2.10.0.tgz(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@6.9.0(typescript@5.9.3))':
-    dependencies:
-      '@solana-program/compute-budget': 0.11.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
-      '@solana-program/token': 0.9.0(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
-      '@solana-program/token-2022': 0.6.1(@solana/kit@6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@6.9.0(typescript@5.9.3))
-      '@solana/kit': 6.9.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
-      '@x402/core': file:../../../../x402/.local-tarballs/x402-core-2.10.0.tgz
-    transitivePeerDependencies:
-      - '@solana/sysvars'
 
   abitype@1.2.3(typescript@5.9.3)(zod@4.4.3):
     optionalDependencies:
@@ -2840,7 +2805,5 @@ snapshots:
     dependencies:
       zod: 4.4.3
     optional: true
-
-  zod@3.25.76: {}
 
   zod@4.4.3: {}

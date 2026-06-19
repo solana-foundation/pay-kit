@@ -198,9 +198,7 @@ export class Gate {
         } else if (kind === 'subscription' || kind === 'session') {
             // `subscription` and `session` are MPP-only methods.
             if (params.accept && !params.accept.includes('mpp')) {
-                throw new ProtocolIncompatibleError(
-                    `Gate "${params.name}": ${kind} gates require the mpp protocol.`,
-                );
+                throw new ProtocolIncompatibleError(`Gate "${params.name}": ${kind} gates require the mpp protocol.`);
             }
             if (kind === 'subscription' && !params.subscription) {
                 throw new ConfigurationError(

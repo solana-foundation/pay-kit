@@ -25,7 +25,12 @@ async function paykit() {
         mpp: { challengeBindingSecret: 'openapi-test-secret' },
         network: 'solana_localnet',
         pricing: {
-            feed: subscription(usd('0.10'), { periodCount: 1, periodUnit: 'day', planId: PLAN, puller: 'PuLLer11111111111111111111111111111111111' }),
+            feed: subscription(usd('0.10'), {
+                periodCount: 1,
+                periodUnit: 'day',
+                planId: PLAN,
+                puller: 'PuLLer11111111111111111111111111111111111',
+            }),
             joke: { accept: ['x402'], amount: usd('0.001') },
             quote: usd('0.01'),
             stream: session(usd('1.00'), { unitPrice: usd('0.0001') }),
@@ -77,12 +82,24 @@ describe('pay.openapi', () => {
         // Subscription: MPP-only, intent `subscription`, scheme `subscription`, carries the planId.
         const feed = doc.paths['/api/v1/premium/feed'].get['x-payment-info']?.offers ?? [];
         expect(feed).toHaveLength(1);
-        expect(feed[0]).toMatchObject({ amount: '100000', intent: 'subscription', method: 'mpp', planId: PLAN, scheme: 'subscription' });
+        expect(feed[0]).toMatchObject({
+            amount: '100000',
+            intent: 'subscription',
+            method: 'mpp',
+            planId: PLAN,
+            scheme: 'subscription',
+        });
 
         // Session: MPP-only, intent `session`, carries the per-delivery unitPrice (0.0001 USDC).
         const stream = doc.paths['/sessions/stream'].get['x-payment-info']?.offers ?? [];
         expect(stream).toHaveLength(1);
-        expect(stream[0]).toMatchObject({ amount: '1000000', intent: 'session', method: 'mpp', scheme: 'session', unitPrice: '100' });
+        expect(stream[0]).toMatchObject({
+            amount: '1000000',
+            intent: 'session',
+            method: 'mpp',
+            scheme: 'session',
+            unitPrice: '100',
+        });
     });
 
     it('omits x-payment-info on a route with no offers and supports service info', async () => {
@@ -90,7 +107,11 @@ describe('pay.openapi', () => {
         const doc = (await pay.openapi([{ gate: 'quote', method: 'GET', path: '/q', summary: 'Quote' }], {
             info: { title: 'Demo API', version: '2.0.0' },
             serviceInfo: { categories: ['finance'] },
-        })) as { info: { title: string; version: string }; paths: Record<string, Record<string, Operation>>; 'x-service-info'?: unknown };
+        })) as {
+            info: { title: string; version: string };
+            paths: Record<string, Record<string, Operation>>;
+            'x-service-info'?: unknown;
+        };
 
         expect(doc.info).toEqual({ title: 'Demo API', version: '2.0.0' });
         expect(doc['x-service-info']).toEqual({ categories: ['finance'] });

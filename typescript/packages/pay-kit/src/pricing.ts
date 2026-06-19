@@ -60,10 +60,7 @@ export type PricingDef = Readonly<Record<string, GateResolver | InlineGateParams
  * @param params - Optional description / externalId / payTo
  * @returns A usage gate definition
  */
-export function usage(
-    max: Price,
-    params: Omit<UsageGateParams, 'amount' | 'kind'> = {},
-): UsageGateParams {
+export function usage(max: Price, params: Omit<UsageGateParams, 'amount' | 'kind'> = {}): UsageGateParams {
     return { ...params, amount: max, kind: 'usage' };
 }
 

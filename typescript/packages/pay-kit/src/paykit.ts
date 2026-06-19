@@ -142,7 +142,10 @@ export type PayKit<P extends PricingDef = PricingDef> = {
     /** Hono middleware gating downstream handlers on `gate`. */
     readonly hono: (gate: GateRef<P>) => HonoMiddleware;
     /** Build an OpenAPI 3.1 discovery document (`x-payment-info` per route) for the given priced routes. */
-    readonly openapi: (routes: readonly OpenApiRoute<P>[], options?: OpenApiOptions) => Promise<Record<string, unknown>>;
+    readonly openapi: (
+        routes: readonly OpenApiRoute<P>[],
+        options?: OpenApiOptions,
+    ) => Promise<Record<string, unknown>>;
     /** Like {@link openapi}, but discovers the routes by introspecting a mounted Express app. */
     readonly openapiFromExpress: (app: ExpressRoutesApp, options?: OpenApiOptions) => Promise<Record<string, unknown>>;
     /** Whether `request` already carries a verified payment (optionally for a specific gate). */
@@ -261,7 +264,11 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         });
     }
 
-    function granted(payment: Payment, settle: () => Promise<Readonly<Record<string, string>>>, charge?: Charge): PaymentGranted {
+    function granted(
+        payment: Payment,
+        settle: () => Promise<Readonly<Record<string, string>>>,
+        charge?: Charge,
+    ): PaymentGranted {
         return {
             charge,
             payment,
@@ -338,7 +345,9 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                 challenge,
                 response: render402(challenge, {
                     accepts,
-                    ...(error ? { code: error.code, ...(error.message !== error.code ? { detail: error.message } : {}) } : {}),
+                    ...(error
+                        ? { code: error.code, ...(error.message !== error.code ? { detail: error.message } : {}) }
+                        : {}),
                 }),
                 status: 402,
             };
@@ -467,7 +476,9 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             ];
         }
         const eligible = adapters.filter(adapter => gate.accepts(adapter.protocol));
-        return await Promise.all(eligible.map(async adapter => toOffer(await adapter.acceptsEntry(gate, request), false)));
+        return await Promise.all(
+            eligible.map(async adapter => toOffer(await adapter.acceptsEntry(gate, request), false)),
+        );
     }
 
     /** Build the OpenAPI document from a set of (method, path, gate) routes. */
@@ -580,7 +591,9 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
             // so rebuild the web Request with that body (toWebRequest is headers-only).
             const withBody = (req: SessionRouteRequest): Request => {
                 const base = toWebRequest(req);
-                return req.body === undefined ? base : new Request(base, { body: JSON.stringify(req.body), method: base.method });
+                return req.body === undefined
+                    ? base
+                    : new Request(base, { body: JSON.stringify(req.body), method: base.method });
             };
             const json = (res: NodeResponse, status: number, body: unknown): void => {
                 res.statusCode = status;
@@ -616,7 +629,11 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                         return;
                     }
                     const body = (req.body ?? {}) as { amount?: string; deliveryId?: string };
-                    const ack = Response.json({ amount: body.amount ?? '0', deliveryId: body.deliveryId ?? '', status: 'committed' });
+                    const ack = Response.json({
+                        amount: body.amount ?? '0',
+                        deliveryId: body.deliveryId ?? '',
+                        status: 'committed',
+                    });
                     await sendResponse(res, result.withReceipt(ack));
                 },
             };

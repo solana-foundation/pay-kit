@@ -94,7 +94,9 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
     let subscriptionMppx: ReturnType<typeof Mppx.create> | undefined;
     const forward = onProgress ? (event: unknown) => onProgress(event) : undefined;
     const chargeClient = (): ReturnType<typeof Mppx.create> =>
-        (chargeMppx ??= Mppx.create({ methods: [solana.charge({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })] }));
+        (chargeMppx ??= Mppx.create({
+            methods: [solana.charge({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
+        }));
     const subscriptionClient = (): ReturnType<typeof Mppx.create> =>
         (subscriptionMppx ??= Mppx.create({
             methods: [solana.subscription({ onProgress: forward, rpcUrl: options.rpcUrl, signer: options.signer })],
@@ -129,7 +131,13 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             // uniform flow (challenge → signing → paying → paid) on both rails.
             const required = http.getPaymentRequiredResponse(name => probe.headers.get(name));
             const requirement = required.accepts?.[0];
-            onProgress?.({ amount: requirement?.amount, currency: requirement?.asset, decimals: 6, recipient: requirement?.payTo, type: 'challenge' });
+            onProgress?.({
+                amount: requirement?.amount,
+                currency: requirement?.asset,
+                decimals: 6,
+                recipient: requirement?.payTo,
+                type: 'challenge',
+            });
             onProgress?.({ type: 'signing' });
             const payload = await http.createPaymentPayload(required);
             const payHeaders = http.encodePaymentSignatureHeader(payload);

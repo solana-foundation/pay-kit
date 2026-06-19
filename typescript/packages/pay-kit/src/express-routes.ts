@@ -12,7 +12,7 @@
  */
 
 /** Symbol under which `pay.express(gate)` stashes the gate on its middleware. */
-export const GATE_METADATA = Symbol.for('paykit.openapi.gate')
+export const GATE_METADATA = Symbol.for('paykit.openapi.gate');
 
 /** A route discovered on an Express app: HTTP method, OpenAPI path, and its gate. */
 export type IntrospectedRoute = { gate: unknown; method: string; path: string };
@@ -29,7 +29,7 @@ export type ExpressRoutesApp = {
 
 /** Convert an Express path (`/q/:sym`) to the OpenAPI form (`/q/{sym}`). */
 function toOpenApiPath(path: string): string {
-    return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}')
+    return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
 }
 
 /**
@@ -39,20 +39,20 @@ function toOpenApiPath(path: string): string {
  * a deprecation error rather than returning undefined.
  */
 function routerStackOf(app: ExpressRoutesApp): RouteLayer[] {
-    if (app._router?.stack) return app._router.stack
+    if (app._router?.stack) return app._router.stack;
     try {
-        return app.router?.stack ?? []
+        return app.router?.stack ?? [];
     } catch {
-        return []
+        return [];
     }
 }
 
 function gateOf(stack: { handle?: unknown }[] | undefined): unknown {
     for (const layer of stack ?? []) {
-        const gate = (layer.handle as { [GATE_METADATA]?: unknown } | undefined)?.[GATE_METADATA]
-        if (gate !== undefined) return gate
+        const gate = (layer.handle as { [GATE_METADATA]?: unknown } | undefined)?.[GATE_METADATA];
+        if (gate !== undefined) return gate;
     }
-    return undefined
+    return undefined;
 }
 
 /**
@@ -62,19 +62,19 @@ function gateOf(stack: { handle?: unknown }[] | undefined): unknown {
  * @returns One entry per (method, path) guarded by a `pay.express` gate
  */
 export function introspectExpressRoutes(app: ExpressRoutesApp): IntrospectedRoute[] {
-    const stack = routerStackOf(app)
-    const routes: IntrospectedRoute[] = []
+    const stack = routerStackOf(app);
+    const routes: IntrospectedRoute[] = [];
     for (const layer of stack) {
-        const route = layer.route
-        if (!route?.path) continue
-        const gate = gateOf(route.stack)
-        if (gate === undefined) continue
-        const paths = Array.isArray(route.path) ? route.path : [route.path]
+        const route = layer.route;
+        if (!route?.path) continue;
+        const gate = gateOf(route.stack);
+        if (gate === undefined) continue;
+        const paths = Array.isArray(route.path) ? route.path : [route.path];
         for (const path of paths) {
             for (const method of Object.keys(route.methods ?? { get: true })) {
-                routes.push({ gate, method: method.toUpperCase(), path: toOpenApiPath(path) })
+                routes.push({ gate, method: method.toUpperCase(), path: toOpenApiPath(path) });
             }
         }
     }
-    return routes
+    return routes;
 }
