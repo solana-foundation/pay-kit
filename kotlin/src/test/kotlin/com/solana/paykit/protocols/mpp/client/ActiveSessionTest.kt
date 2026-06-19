@@ -68,6 +68,14 @@ class ActiveSessionTest {
     }
 
     @Test
+    fun recordVoucherRejectsForeignChannel() {
+        val session = session()
+        val foreign = SignedVoucher(VoucherData("11111111111111111111111111111112", "10", DEFAULT_SESSION_EXPIRES_AT), "sig")
+        assertFailsWith<MppException> { session.recordVoucher(foreign) }
+        assertEquals(0uL, session.cumulative)
+    }
+
+    @Test
     fun reconcileSettledAdvancesAndNeverRegresses() {
         val session = session()
         session.reconcileSettled(300uL)

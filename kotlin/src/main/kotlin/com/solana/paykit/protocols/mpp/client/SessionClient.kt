@@ -79,8 +79,18 @@ class ActiveSession(
 
     fun prepareIncrement(amount: ULong): SignedVoucher = prepareVoucher(addToWatermark(amount))
 
-    /** Advance the watermark to a recorded voucher (rejects non-increasing). */
+    /**
+     * Advance the watermark to a recorded voucher: rejects a voucher bound to a
+     * different channel, a non-increasing cumulative, or an unparseable
+     * cumulative; advances the nonce to at least `nonce + 1` (or the voucher's
+     * nonce when higher). Mirrors Go `RecordVoucher`.
+     */
     fun recordVoucher(voucher: SignedVoucher) {
+        if (voucher.data.channelId != channelIdString()) {
+            throw MppException.InvalidTransaction(
+                "voucher channel ${voucher.data.channelId} does not match active session ${channelIdString()}"
+            )
+        }
         val cumulative = voucher.data.cumulative.toULongOrNull()
             ?: throw MppException.InvalidTransaction("invalid voucher cumulative")
         if (cumulative <= this.cumulative) {
@@ -89,7 +99,10 @@ class ActiveSession(
             )
         }
         this.cumulative = cumulative
-        this.nonce = maxOf(this.nonce, voucher.data.nonce?.toULong() ?: (this.nonce + 1uL))
+        var candidate = this.nonce + 1uL
+        val voucherNonce = voucher.data.nonce?.toULong()
+        if (voucherNonce != null && voucherNonce > candidate) candidate = voucherNonce
+        this.nonce = candidate
     }
 
     /**
