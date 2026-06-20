@@ -284,7 +284,12 @@ struct ContentView: View {
             client = PayKit.HttpClient.x402(
                 signer: signer,
                 rpc: RpcClient(endpoint: rpcURL),
-                selection: X402ChallengeSelection()
+                selection: X402ChallengeSelection(),
+                // x402 settles in the `Payment-Response` header (a base64
+                // envelope whose `transaction` field is the on-chain
+                // signature), not the MPP `Payment-Receipt` header. Read
+                // that so the signature surfaces instead of "no receipt".
+                settlementHeader: "payment-response"
             )
         } else {
             client = PayKit.HttpClient.mpp(
@@ -369,9 +374,9 @@ struct ContentView: View {
         return "$\(formatted)"
     }
 
-    /// Decode a `Payment-Receipt` header (base64url-no-pad JSON envelope
-    /// produced by the gateway's `format_receipt`) and return the
-    /// `reference` field — the on-chain signature.
+    /// Decode a settlement header (base64url-no-pad JSON envelope) and return
+    /// the on-chain signature. MPP's `Payment-Receipt` carries it in
+    /// `reference`; x402's `X-PAYMENT-RESPONSE` carries it in `transaction`.
     static func signatureFromReceiptHeader(_ header: String) -> String? {
         // Re-pad and translate URL-safe alphabet to standard base64 so
         // Foundation's decoder accepts it.
@@ -381,11 +386,10 @@ struct ContentView: View {
         let pad = (4 - s.count % 4) % 4
         s.append(String(repeating: "=", count: pad))
         guard let data = Data(base64Encoded: s),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let reference = json["reference"] as? String,
-              !reference.isEmpty
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return reference
+        let signature = (json["reference"] as? String) ?? (json["transaction"] as? String)
+        return (signature?.isEmpty == false) ? signature : nil
     }
 
     @ViewBuilder
@@ -574,9 +578,9 @@ private struct LogRow: View {
                         .font(.footnote)
                 }
             } else {
-                Text("No `Payment-Receipt` header in response.")
+                Text("Settled. No settlement signature in response.")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
             if !body.isEmpty {
                 Text(body)
