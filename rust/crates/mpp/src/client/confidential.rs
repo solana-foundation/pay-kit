@@ -393,9 +393,9 @@ pub(crate) async fn confidential_charge_payload(
 
 /// Stage `proof_bytes` into a fresh spl-record account in tx-sized chunks. The
 /// first tx creates + initializes + writes the first chunk; the final write tx
-/// carries `trailing_ixs` (with `trailing_signers`) so the range context create
-/// + verify-from-account ride along. `payer` (the gateway) is the rent funder
-/// and the record authority, so the gateway co-signs each write at settlement.
+/// carries `trailing_ixs` (with `trailing_signers`) so the range context's
+/// create-and-verify-from-account ride along. `payer` (the gateway) is the rent
+/// funder and record authority, so the gateway co-signs each write at settlement.
 /// Returns one partially-signed tx per transaction.
 #[allow(clippy::too_many_arguments)]
 async fn stage_range_proof_record(
