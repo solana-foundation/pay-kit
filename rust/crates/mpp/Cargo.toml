@@ -27,6 +27,7 @@ confidential = [
     "dep:bytemuck",
     "dep:solana-keypair",
     "dep:solana-signer",
+    "dep:solana-rpc-client-api",
 ]
 
 [dependencies]
@@ -44,6 +45,9 @@ solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-commitment-config = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4", default-features = false }
+# Program-account scan (memcmp by gateway authority) for the confidential
+# orphan sweeper. Optional; pulled in only by the `confidential` feature.
+solana-rpc-client-api = { version = "4", default-features = false, optional = true }
 solana-signature = { version = "3.1", default-features = false, features = ["default"] }
 solana-system-interface = { version = "2.0", default-features = false }
 solana-transaction = { version = "3", default-features = false }

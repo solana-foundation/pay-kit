@@ -72,6 +72,21 @@ const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
 /// ZK ElGamal Proof program id (proof verification + close_context_state).
 const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 
+/// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
+#[cfg(feature = "confidential")]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConfidentialSweepReport {
+    /// Orphaned ZK proof-context accounts closed this pass.
+    pub closed_contexts: u64,
+    /// Orphaned spl-record accounts closed this pass.
+    pub closed_records: u64,
+    /// Gateway-owned accounts seen for the first time — marked and deferred to
+    /// the next sweep so an in-flight settlement is never closed out from under.
+    pub deferred: u64,
+    /// Accounts confirmed orphaned but whose close failed (retried next sweep).
+    pub failed: u64,
+}
+
 /// Audit #15: derive a per-app default realm from the recipient pubkey.
 ///
 /// `realm` is part of the HMAC ID input. With a fixed default of
@@ -1224,6 +1239,176 @@ impl Mpp {
         Ok(final_sig)
     }
 
+    /// Sweep gateway-owned orphaned confidential proof/record accounts left by
+    /// partially-failed bundles and reclaim their rent back to the gateway.
+    ///
+    /// A confidential bundle creates ZK proof-context accounts and an spl-record
+    /// account — all funded by and authored by the gateway — and closes them in
+    /// its final transaction. If a bundle fails partway (e.g. the blockhash
+    /// expires mid-bundle), those accounts are orphaned with the gateway's rent
+    /// locked inside. Because the gateway is their authority, it can close them.
+    ///
+    /// Race safety: a bundle that is currently settling also has live context
+    /// accounts, but it creates and closes them within one bounded
+    /// `settle_confidential_bundle` call (well under the blockhash window). To
+    /// avoid closing those, this uses a two-pass guard backed by the store: an
+    /// account is closed only if it was already seen in a PRIOR sweep. First
+    /// sighting ⇒ record + defer; still present next sweep ⇒ orphaned ⇒ close.
+    /// Schedule this with an interval comfortably larger than settlement latency.
+    #[cfg(feature = "confidential")]
+    pub async fn sweep_confidential_orphans(
+        &self,
+    ) -> Result<ConfidentialSweepReport, VerificationError> {
+        use solana_rpc_client_api::config::{
+            RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding, UiDataSliceConfig,
+        };
+        use solana_rpc_client_api::filter::{Memcmp, RpcFilterType};
+        use solana_rpc_client_api::request::RpcRequest;
+        use solana_rpc_client_api::response::RpcKeyedAccount;
+
+        let signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
+            VerificationError::new("Confidential sweep requires a fee-payer signer")
+        })?;
+        let gateway = signer.pubkey();
+        let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
+        let record_program = spl_record::id();
+
+        // Scan a program for accounts whose authority field equals the gateway.
+        // ZK ProofContextState stores its authority at offset 0; spl-record's
+        // RecordData stores it at offset 1 (after the version byte). We slice
+        // zero data bytes — only the pubkeys are needed, and a full-data scan
+        // would force base64 on large accounts for nothing.
+        let scan =
+            |program: &Pubkey, authority_offset: usize| -> Result<Vec<Pubkey>, VerificationError> {
+                let config = RpcProgramAccountsConfig {
+                    filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                        authority_offset,
+                        gateway.to_bytes().to_vec(),
+                    ))]),
+                    account_config: RpcAccountInfoConfig {
+                        encoding: Some(UiAccountEncoding::Base64),
+                        data_slice: Some(UiDataSliceConfig {
+                            offset: 0,
+                            length: 0,
+                        }),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                // The blocking RpcClient 4.0 exposes no with-config variant, so
+                // issue the request directly. with_context defaults to None ⇒ a bare
+                // array of keyed accounts; we only need their pubkeys.
+                let params = serde_json::json!([program.to_string(), config]);
+                let keyed: Vec<RpcKeyedAccount> = self
+                    .rpc
+                    .send(RpcRequest::GetProgramAccounts, params)
+                    .map_err(|e| {
+                        VerificationError::network_error(format!("getProgramAccounts failed: {e}"))
+                    })?;
+                Ok(keyed
+                    .into_iter()
+                    .filter_map(|k| Pubkey::from_str(&k.pubkey).ok())
+                    .collect())
+            };
+
+        let candidates: Vec<(Pubkey, bool)> = scan(&zk_program, 0)?
+            .into_iter()
+            .map(|pk| (pk, false))
+            .chain(scan(&record_program, 1)?.into_iter().map(|pk| (pk, true)))
+            .collect();
+
+        let mut report = ConfidentialSweepReport::default();
+        for (pubkey, is_record) in candidates {
+            // First sighting ⇒ mark + defer (it could be an in-flight bundle);
+            // already seen ⇒ it survived a full sweep interval ⇒ orphaned.
+            if !confirm_orphan_seen(self.store.as_ref(), &pubkey).await? {
+                report.deferred += 1;
+                continue;
+            }
+            // Survived a full sweep interval ⇒ orphaned. Close it to the gateway.
+            let ix = if is_record {
+                spl_record::instruction::close_account(&pubkey, &gateway, &gateway)
+            } else {
+                let gw = solana_address::Address::from(gateway.to_bytes());
+                solana_zk_elgamal_proof_interface::instruction::close_context_state(
+                    solana_zk_elgamal_proof_interface::instruction::ContextStateInfo {
+                        context_state_account: &solana_address::Address::from(pubkey.to_bytes()),
+                        context_state_authority: &gw,
+                    },
+                    &gw,
+                )
+            };
+            match self.broadcast_close(signer.as_ref(), &gateway, ix).await {
+                Ok(()) => {
+                    self.store.delete(&orphan_seen_key(&pubkey)).await.ok();
+                    if is_record {
+                        report.closed_records += 1;
+                    } else {
+                        report.closed_contexts += 1;
+                    }
+                }
+                Err(e) => {
+                    // Leave the seen-mark so the next sweep retries the close.
+                    report.failed += 1;
+                    tracing::warn!(account = %pubkey, error = %e, "confidential orphan close failed");
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Build, gateway-sign, simulate, broadcast, and confirm a single close
+    /// instruction. Used by the orphan sweeper.
+    #[cfg(feature = "confidential")]
+    async fn broadcast_close(
+        &self,
+        signer: &dyn solana_keychain::SolanaSigner,
+        gateway: &Pubkey,
+        ix: solana_instruction::Instruction,
+    ) -> Result<(), VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
+        let blockhash = self
+            .rpc
+            .get_latest_blockhash()
+            .map_err(|e| VerificationError::network_error(format!("get_latest_blockhash: {e}")))?;
+        let message = solana_message::Message::new_with_blockhash(&[ix], Some(gateway), &blockhash);
+        let mut tx = Transaction::new_unsigned(message);
+        let sig_bytes = signer
+            .sign_message(&tx.message_data())
+            .await
+            .map_err(|e| VerificationError::new(format!("sign close: {e}")))?;
+        tx.signatures[0] = Signature::from(<[u8; 64]>::from(sig_bytes));
+        let tx = VersionedTransaction::from(tx);
+
+        let sim = self
+            .rpc
+            .simulate_transaction(&tx)
+            .map_err(|e| VerificationError::network_error(format!("simulate close: {e}")))?;
+        if let Some(err) = sim.value.err {
+            return Err(VerificationError::transaction_failed(format!(
+                "close simulation failed: {err}"
+            )));
+        }
+        let sig = self
+            .rpc
+            .send_transaction(&tx)
+            .map_err(|e| VerificationError::network_error(format!("broadcast close: {e}")))?;
+        for _ in 0..30 {
+            if let Ok(resp) = self
+                .rpc
+                .confirm_transaction_with_commitment(&sig, CommitmentConfig::confirmed())
+            {
+                if resp.value {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Err(VerificationError::network_error(format!(
+            "close tx {sig} not confirmed in time"
+        )))
+    }
+
     // ── Settlement ──
 
     /// Reserve the settlement signature in the replay store. Returns an
@@ -2063,6 +2248,37 @@ fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), Verific
 /// Anything else (System transfer, Memo, ComputeBudget price, unknown program)
 /// is rejected. Memo is intentionally disallowed: confidential charges
 /// reconcile by signature, not an on-chain order-id marker (privacy).
+/// Store key marking that the orphan sweeper has seen `pubkey` in a prior pass.
+#[cfg(feature = "confidential")]
+fn orphan_seen_key(pubkey: &Pubkey) -> String {
+    format!("confidential-orphan:seen:{pubkey}")
+}
+
+/// Two-pass orphan guard: returns `true` only if `pubkey` was already recorded
+/// in a previous sweep (⇒ it has survived a full interval and is genuinely
+/// orphaned, not an in-flight settlement's transient account). On the first
+/// sighting it records the mark and returns `false` (defer to the next sweep).
+#[cfg(feature = "confidential")]
+async fn confirm_orphan_seen(
+    store: &dyn Store,
+    pubkey: &Pubkey,
+) -> Result<bool, VerificationError> {
+    let key = orphan_seen_key(pubkey);
+    let seen = store
+        .get(&key)
+        .await
+        .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
+        .is_some();
+    if !seen {
+        store
+            .put(&key, serde_json::json!(true))
+            .await
+            .map_err(|e| VerificationError::new(format!("Store error: {e}")))?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 #[cfg(feature = "confidential")]
 fn verify_confidential_bundle_tx(
     tx: &VersionedTransaction,
@@ -3789,6 +4005,23 @@ mod tests {
             signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
             message: VersionedMessage::V0(message),
         }
+    }
+
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn orphan_guard_defers_first_sighting_then_confirms() {
+        let store = MemoryStore::new();
+        let acct = Pubkey::new_unique();
+        // First sweep: never seen ⇒ deferred (not closed), and now recorded.
+        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
+        // Second sweep: still present ⇒ confirmed orphaned.
+        assert!(confirm_orphan_seen(&store, &acct).await.unwrap());
+        // A different account starts over (independent two-pass state).
+        let other = Pubkey::new_unique();
+        assert!(!confirm_orphan_seen(&store, &other).await.unwrap());
+        // After a successful close we clear the mark; it then starts fresh.
+        store.delete(&orphan_seen_key(&acct)).await.unwrap();
+        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
     }
 
     #[cfg(feature = "confidential")]
