@@ -2515,38 +2515,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_charge_transaction_rejects_confidential_without_auditor() {
-        // Confidential without an auditor is rejected by the shared gate
-        // before any signing work.
-        let signer = make_signer();
-        let rpc = dummy_rpc();
-        let md = MethodDetails {
-            network: Some("mainnet".to_string()),
-            decimals: Some(6),
-            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
-            confidential: Some(true),
-            recent_blockhash: Some(ZERO_HASH.to_string()),
-            ..Default::default()
-        };
-        let err = build_charge_transaction_with_options(
-            signer.as_ref(),
-            &rpc,
-            "1000000",
-            crate::protocol::solana::mints::USDPT_MAINNET,
-            RECIPIENT,
-            &md,
-            BuildChargeTransactionOptions::default(),
-        )
-        .await
-        .err()
-        .expect("confidential without auditor should be rejected");
-        assert!(
-            format!("{err}").contains("auditorElgamalPubkey"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test]
     async fn build_charge_transaction_accepts_matching_network() {
         let signer = make_signer();
         let rpc = dummy_rpc();

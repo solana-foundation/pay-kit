@@ -960,8 +960,9 @@ impl Mpp {
             .token_program
             .as_deref()
             .unwrap_or(programs::TOKEN_2022_PROGRAM);
-        let token_program = Pubkey::from_str(token_program_str)
-            .map_err(|e| VerificationError::invalid_payload(format!("Invalid token program: {e}")))?;
+        let token_program = Pubkey::from_str(token_program_str).map_err(|e| {
+            VerificationError::invalid_payload(format!("Invalid token program: {e}"))
+        })?;
         let mint = resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
         let recipient = Pubkey::from_str(&self.recipient)
             .map_err(|e| VerificationError::invalid_recipient(format!("Invalid recipient: {e}")))?;
@@ -985,7 +986,9 @@ impl Mpp {
                 )
                 .await
                 .map_err(|e| {
-                    VerificationError::new(format!("Failed to derive recipient confidential keys: {e}"))
+                    VerificationError::new(format!(
+                        "Failed to derive recipient confidential keys: {e}"
+                    ))
                 })?,
             ),
             None => None,
@@ -1116,8 +1119,9 @@ impl Mpp {
         // Transfer instruction must target the expected recipient ATA, so the
         // bundle can't quietly pay someone else. The Token-2022 transfer's
         // destination is its 3rd account (source, mint, destination, ...).
-        let final_tx = final_tx
-            .ok_or_else(|| VerificationError::new("Confidential bundle produced no transactions"))?;
+        let final_tx = final_tx.ok_or_else(|| {
+            VerificationError::new("Confidential bundle produced no transactions")
+        })?;
         let account_keys = final_tx.message.static_account_keys();
         let token_prog_idx = account_keys.iter().position(|k| k == &token_program);
         let targets_recipient = token_prog_idx.is_some_and(|tp| {

@@ -724,17 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_confidential_requires_auditor() {
+    fn validate_confidential_auditor_optional() {
+        // No auditor is allowed: verification is recipient-key, and the auditor
+        // is the mint issuer's optional compliance facility.
         let mut md = confidential_md();
         md.auditor_elgamal_pubkey = None;
-        let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
-            .err()
-            .expect("missing auditor rejected");
-        assert!(
-            format!("{err}").contains("auditorElgamalPubkey"),
-            "got: {err}"
-        );
+        validate_confidential_charge(mints::USDPT_MAINNET, &md)
+            .expect("missing auditor is allowed");
 
+        // A present-but-empty auditor pubkey is malformed and rejected.
         md.auditor_elgamal_pubkey = Some(String::new());
         let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
             .err()
@@ -917,9 +915,9 @@ pub fn checked_sum_split_amounts(splits: &[Split]) -> Option<u64> {
 /// the spec's confidential profile:
 /// 1. `currency` is an SPL mint, not native SOL.
 /// 2. `token_program`, if declared, is the Token-2022 program.
-/// 3. `auditor_elgamal_pubkey` is present and non-empty — the server verifies
-///    the encrypted amount through the auditor handle, so an auditor is
-///    mandatory.
+/// 3. `auditor_elgamal_pubkey`, if present, is non-empty. The auditor is the
+///    mint issuer's optional compliance facility, NOT required for a charge —
+///    the payee verifies the amount it received with its own recipient key.
 /// 4. No `splits` (combining confidential transfers with splits is out of
 ///    scope for `draft-00`).
 ///
@@ -950,13 +948,13 @@ pub fn validate_confidential_charge(
         }
     }
 
-    match md.auditor_elgamal_pubkey.as_deref() {
-        Some(key) if !key.is_empty() => {}
-        _ => {
-            return Err(Error::InvalidConfig(
-                "confidential transfers require auditorElgamalPubkey".into(),
-            ))
-        }
+    // The auditor key is the mint issuer's optional compliance facility — NOT
+    // required for a charge (the payee verifies the amount it received with its
+    // own recipient key). Only reject a present-but-empty value as malformed.
+    if matches!(md.auditor_elgamal_pubkey.as_deref(), Some("")) {
+        return Err(Error::InvalidConfig(
+            "auditorElgamalPubkey, when present, must not be empty".into(),
+        ));
     }
 
     if md.splits.as_ref().is_some_and(|s| !s.is_empty()) {

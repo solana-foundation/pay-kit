@@ -300,8 +300,7 @@ mod tests {
         use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
         use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
 
-        let zk_program =
-            Pubkey::from_str_const("ZkE1Gama1Proof11111111111111111111111111111");
+        let zk_program = Pubkey::from_str_const("ZkE1Gama1Proof11111111111111111111111111111");
         let token_program = spl_token_2022::id();
         let decimals: u8 = 0;
 
@@ -336,11 +335,8 @@ mod tests {
                       extra_signers: &[&Keypair],
                       label: &str| {
             let blockhash = svm.latest_blockhash();
-            let msg = solana_message::Message::new_with_blockhash(
-                ixs,
-                Some(&payer.pubkey()),
-                &blockhash,
-            );
+            let msg =
+                solana_message::Message::new_with_blockhash(ixs, Some(&payer.pubkey()), &blockhash);
             let mut tx = Transaction::new_unsigned(msg);
             let data = tx.message_data();
             set_sig(&mut tx, &payer.pubkey(), payer.sign_message(&data));
@@ -366,9 +362,10 @@ mod tests {
         // ---------------------------------------------------------------
         let mint = Keypair::new();
         let mint_authority = Keypair::new();
-        let mint_space =
-            ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::ConfidentialTransferMint])
-                .unwrap();
+        let mint_space = ExtensionType::try_calculate_account_len::<Mint>(&[
+            ExtensionType::ConfidentialTransferMint,
+        ])
+        .unwrap();
         let mint_rent = svm.minimum_balance_for_rent_exemption(mint_space);
         submit(
             &mut svm,
@@ -383,9 +380,9 @@ mod tests {
                 initialize_mint(
                     &token_program,
                     &mint.pubkey(),
-                    None,  // confidential-transfer authority
-                    true,  // auto_approve_new_accounts
-                    None,  // no auditor — recipient verification doesn't need one
+                    None, // confidential-transfer authority
+                    true, // auto_approve_new_accounts
+                    None, // no auditor — recipient verification doesn't need one
                 )
                 .unwrap(),
                 initialize_mint_base(
@@ -407,9 +404,7 @@ mod tests {
         //    inline into a context account, then `configure_account` references
         //    it via ProofLocation::ContextStateAccount.
         // ---------------------------------------------------------------
-        let configure = |svm: &mut LiteSVM,
-                         owner: &Keypair|
-         -> (Pubkey, ElGamalKeypair, AeKey) {
+        let configure = |svm: &mut LiteSVM, owner: &Keypair| -> (Pubkey, ElGamalKeypair, AeKey) {
             let ata = get_associated_token_address_with_program_id(
                 &owner.pubkey(),
                 &mint.pubkey(),
@@ -527,7 +522,9 @@ mod tests {
         {
             let acc = svm.get_account(&sender_ata).unwrap();
             let state = StateWithExtensions::<TokenAccount>::unpack(&acc.data).unwrap();
-            let ext = state.get_extension::<ConfidentialTransferAccount>().unwrap();
+            let ext = state
+                .get_extension::<ConfidentialTransferAccount>()
+                .unwrap();
             let decrypt = |key: &ElGamalKeypair, ct: &PodElGamalCiphertextLegacy| -> u64 {
                 let bytes: [u8; 64] = bytemuck::bytes_of(ct).try_into().unwrap();
                 let c = solana_zk_sdk::encryption::elgamal::ElGamalCiphertext::from_bytes(&bytes)
@@ -577,17 +574,17 @@ mod tests {
             .get_extension::<ConfidentialTransferAccount>()
             .unwrap();
         let current_available: solana_zk_sdk::encryption::elgamal::ElGamalCiphertext = {
-            let bytes: [u8; 64] =
-                bytemuck::bytes_of(&sender_ext.available_balance).try_into().unwrap();
+            let bytes: [u8; 64] = bytemuck::bytes_of(&sender_ext.available_balance)
+                .try_into()
+                .unwrap();
             solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext(bytes)
                 .try_into()
                 .unwrap()
         };
         let current_decryptable: solana_zk_sdk::encryption::auth_encryption::AeCiphertext = {
-            let bytes: [u8; 36] =
-                bytemuck::bytes_of(&sender_ext.decryptable_available_balance)
-                    .try_into()
-                    .unwrap();
+            let bytes: [u8; 36] = bytemuck::bytes_of(&sender_ext.decryptable_available_balance)
+                .try_into()
+                .unwrap();
             solana_zk_sdk::encryption::auth_encryption::AeCiphertext::from_bytes(&bytes).unwrap()
         };
 
@@ -623,18 +620,22 @@ mod tests {
         };
         let authority_addr = Address::from(sender.pubkey().to_bytes());
 
-        let equality_account =
-            make_ctx(&mut svm, size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>());
+        let equality_account = make_ctx(
+            &mut svm,
+            size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>(),
+        );
         let equality_addr = Address::from(equality_account.pubkey().to_bytes());
         submit(
             &mut svm,
-            &[ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
-                Some(ContextStateInfo {
-                    context_state_account: &equality_addr,
-                    context_state_authority: &authority_addr,
-                }),
-                &proof.equality_proof_data,
-            )],
+            &[
+                ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
+                    Some(ContextStateInfo {
+                        context_state_account: &equality_addr,
+                        context_state_authority: &authority_addr,
+                    }),
+                    &proof.equality_proof_data,
+                ),
+            ],
             &[],
             "verify equality proof",
         );
@@ -646,32 +647,38 @@ mod tests {
         let validity_addr = Address::from(validity_account.pubkey().to_bytes());
         submit(
             &mut svm,
-            &[ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
-                .encode_verify_proof(
-                    Some(ContextStateInfo {
-                        context_state_account: &validity_addr,
-                        context_state_authority: &authority_addr,
-                    }),
-                    &proof
-                        .ciphertext_validity_proof_data_with_ciphertext
-                        .proof_data,
-                )],
+            &[
+                ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
+                    .encode_verify_proof(
+                        Some(ContextStateInfo {
+                            context_state_account: &validity_addr,
+                            context_state_authority: &authority_addr,
+                        }),
+                        &proof
+                            .ciphertext_validity_proof_data_with_ciphertext
+                            .proof_data,
+                    ),
+            ],
             &[],
             "verify ciphertext-validity proof",
         );
 
-        let range_account =
-            make_ctx(&mut svm, size_of::<ProofContextState<BatchedRangeProofContext>>());
+        let range_account = make_ctx(
+            &mut svm,
+            size_of::<ProofContextState<BatchedRangeProofContext>>(),
+        );
         let range_addr = Address::from(range_account.pubkey().to_bytes());
         submit(
             &mut svm,
-            &[ProofInstruction::VerifyBatchedRangeProofU128.encode_verify_proof(
-                Some(ContextStateInfo {
-                    context_state_account: &range_addr,
-                    context_state_authority: &authority_addr,
-                }),
-                &proof.range_proof_data,
-            )],
+            &[
+                ProofInstruction::VerifyBatchedRangeProofU128.encode_verify_proof(
+                    Some(ContextStateInfo {
+                        context_state_account: &range_addr,
+                        context_state_authority: &authority_addr,
+                    }),
+                    &proof.range_proof_data,
+                ),
+            ],
             &[],
             "verify range proof",
         );
@@ -679,10 +686,16 @@ mod tests {
         // New decryptable available balance for the sender post-transfer.
         let new_avail = starting_balance - amount;
         let new_decryptable = cast_ae_v7_to_legacy(&sender_ae.encrypt(new_avail));
-        let recipient_lo =
-            cast_ct_v7_to_legacy(&proof.ciphertext_validity_proof_data_with_ciphertext.ciphertext_lo);
-        let recipient_hi =
-            cast_ct_v7_to_legacy(&proof.ciphertext_validity_proof_data_with_ciphertext.ciphertext_hi);
+        let recipient_lo = cast_ct_v7_to_legacy(
+            &proof
+                .ciphertext_validity_proof_data_with_ciphertext
+                .ciphertext_lo,
+        );
+        let recipient_hi = cast_ct_v7_to_legacy(
+            &proof
+                .ciphertext_validity_proof_data_with_ciphertext
+                .ciphertext_hi,
+        );
 
         let transfer_ix = inner_transfer(
             &token_program,
@@ -699,7 +712,12 @@ mod tests {
             ProofLocation::ContextStateAccount(&range_account.pubkey()),
         )
         .expect("build transfer instruction");
-        submit(&mut svm, &[transfer_ix], &[&sender], "confidential transfer");
+        submit(
+            &mut svm,
+            &[transfer_ix],
+            &[&sender],
+            "confidential transfer",
+        );
 
         // ---------------------------------------------------------------
         // 5. THE ASSERTION: the recipient recovers the received amount from
