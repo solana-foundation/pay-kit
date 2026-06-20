@@ -15,19 +15,19 @@ client = ["dep:reqwest"]
 solana-pay-core = { path = "../core" }
 
 # Signing — solana-keychain with sdk-v3
-solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "abf75944", default-features = false, features = ["memory", "sdk-v3"] }
+solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "d788028edbe02a94ef5eee7585d0230ad771296e", default-features = false, features = ["memory", "sdk-v3"] }
 
 # Solana — atomic crates only
 solana-hash = { version = "3.1", default-features = false }
 solana-address = { version = "1.1", default-features = false }
 solana-instruction = { version = "3.1", default-features = false }
-solana-message = { version = "3.1", default-features = false }
+solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
-solana-rpc-client = { version = "3.1", default-features = false }
+solana-rpc-client = { version = "4", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
 solana-system-interface = { version = "2.0", default-features = false }
-solana-transaction = { version = "3.1", default-features = false }
-solana-transaction-status = { version = "3.1", default-features = false }
+solana-transaction = { version = "3", default-features = false }
+solana-transaction-status-client-types = { version = "4", default-features = false }
 
 # Async
 tokio = { version = "1", features = ["full"], optional = true }

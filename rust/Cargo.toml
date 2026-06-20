@@ -8,3 +8,11 @@ members = [
     "crates/x402",
     "crates/kit",
 ]
+
+# Use a locally-patched litesvm whose `solana-address` pin is loosened from
+# `=2.2.0` so it can coexist with the confidential-transfer proof crates
+# (solana-zk-sdk 6/7 require `solana-address ^2.5`). Applies to litesvm pulled
+# transitively by surfpool-sdk as well. Track upstreaming the pin fix.
+[patch.crates-io]
+litesvm = { path = "../../litesvm/crates/litesvm" }
+litesvm-token = { path = "../../litesvm/crates/token" }

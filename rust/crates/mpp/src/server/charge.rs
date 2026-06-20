@@ -33,7 +33,7 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::{versioned::VersionedTransaction, Transaction};
-use solana_transaction_status::UiTransactionEncoding;
+use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
 use crate::error::Error;
@@ -875,6 +875,14 @@ impl Mpp {
                 let signature_str = self.verify_push(signature, request, &method_details)?;
                 self.consume_signature(&signature_str).await?;
                 signature_str
+            }
+            CredentialPayload::Bundle { .. } => {
+                // Confidential-transfer bundle settlement is not yet
+                // implemented (auditor decryption + sequential submission).
+                // Fail closed until the bundle settlement path lands.
+                return Err(VerificationError::credential_mismatch(
+                    "Confidential-transfer bundle credentials are not yet supported by this server",
+                ));
             }
         };
 
@@ -2766,7 +2774,7 @@ fn resolve_expected_mint(
 
 /// Extract parsed instructions from an encoded transaction.
 fn extract_parsed_instructions(
-    tx: &solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta,
+    tx: &solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta,
 ) -> Result<Vec<serde_json::Value>, VerificationError> {
     let tx_json = serde_json::to_value(&tx.transaction.transaction)
         .map_err(|e| VerificationError::new(format!("Failed to serialize transaction: {e}")))?;

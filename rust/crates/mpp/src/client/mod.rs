@@ -2,6 +2,10 @@
 
 pub mod authenticate;
 mod charge;
+#[cfg(feature = "confidential")]
+mod confidential;
+#[cfg(feature = "confidential")]
+pub use confidential::{build_confidential_transfer_bundle, ConfidentialTransferParams};
 pub mod http_stream;
 pub mod session;
 pub mod session_consumer;

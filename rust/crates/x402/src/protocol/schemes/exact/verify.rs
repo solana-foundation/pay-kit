@@ -6,7 +6,7 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction::Transaction;
-use solana_transaction_status::{
+use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
     UiParsedInstruction, UiTransactionEncoding,
 };
@@ -154,7 +154,7 @@ fn matches_parsed_transfer(
 }
 
 fn matches_raw_transfer(
-    instruction: &solana_transaction_status::UiCompiledInstruction,
+    instruction: &solana_transaction_status_client_types::UiCompiledInstruction,
     account_keys: &[String],
     expected_destination: &str,
     expected_mint: &str,
@@ -573,7 +573,7 @@ mod tests {
     use solana_transaction::versioned::VersionedTransaction;
     use solana_transaction::Transaction;
     use solana_transaction::TransactionError;
-    use solana_transaction_status::{
+    use solana_transaction_status_client_types::{
         option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
         UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
     };
@@ -602,6 +602,7 @@ mod tests {
     fn tx_with_meta(err: Option<TransactionError>) -> EncodedConfirmedTransactionWithStatusMeta {
         EncodedConfirmedTransactionWithStatusMeta {
             slot: 1,
+            transaction_index: None,
             transaction: EncodedTransactionWithStatusMeta {
                 transaction: EncodedTransaction::Json(UiTransaction {
                     signatures: vec!["sig".to_string()],

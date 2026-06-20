@@ -685,15 +685,4 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
     assert_eq!(amount, 100_000_000, "Signer should still have all 100 USDC");
 }
 
-// ─── Report generation ─────────────────────────────────────────────────
-
-/// Generate an HTML report from all surfpool report data.
-/// Run after other tests: cargo test --test charge_integration generate_report
-#[test]
-fn generate_report() {
-    if let Ok(report) =
-        surfpool_sdk::report::SurfpoolReport::from_directory("target/surfpool-reports")
-    {
-        let _ = report.write_html("target/surfpool-report.html");
-    }
-}
+// (The surfpool HTML report helper was removed upstream in surfpool 1.4.)

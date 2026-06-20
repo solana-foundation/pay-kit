@@ -95,6 +95,24 @@ pub struct SelectChargeChallengeOptions<'a> {
 }
 
 /// Build a charge transaction from challenge parameters and additional client options.
+/// Resolve the blockhash to sign with: prefer the server-provided
+/// `recentBlockhash`, else fetch one at `confirmed` commitment.
+///
+/// Audit #36: ask for `confirmed` explicitly instead of leaning on the RPC
+/// client's default commitment. Solana's client guidance recommends
+/// `confirmed` for blockhash fetches — a `processed` hash can disappear under
+/// reorgs and produce signed transactions that fail with BlockhashNotFound.
+fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
+    if let Some(bh) = &method_details.recent_blockhash {
+        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))
+    } else {
+        use solana_commitment_config::CommitmentConfig;
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .map(|(hash, _last_valid_block_height)| hash)
+            .map_err(|e| Error::Rpc(e.to_string()))
+    }
+}
+
 pub async fn build_charge_transaction_with_options(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -123,6 +141,36 @@ pub async fn build_charge_transaction_with_options(
             return Err(Error::Other(format!(
                 "Challenge network `{actual}` does not match client expected_network `{expected}`"
             )));
+        }
+    }
+
+    // Confidential charges settle via an encrypted, multi-transaction bundle,
+    // not the plaintext transfer this function builds. Validate the spec
+    // constraints first (Token-2022, auditor present, no splits), then branch
+    // to the confidential bundle builder. We MUST NOT silently settle a
+    // confidential charge as a cleartext transfer.
+    crate::protocol::solana::validate_confidential_charge(currency, method_details)?;
+    if method_details.confidential.unwrap_or(false) {
+        #[cfg(feature = "confidential")]
+        {
+            let blockhash = resolve_blockhash(rpc, method_details)?;
+            return super::confidential::confidential_charge_payload(
+                signer,
+                rpc,
+                total_amount,
+                currency,
+                recipient,
+                blockhash,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "confidential"))]
+        {
+            return Err(Error::Other(
+                "Confidential-transfer charges require the `confidential` feature \
+                 to be enabled in this build"
+                    .into(),
+            ));
         }
     }
 
@@ -205,19 +253,7 @@ pub async fn build_charge_transaction_with_options(
     }
 
     // Build and sign.
-    let blockhash = if let Some(bh) = &method_details.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
-    } else {
-        // Audit #36: ask for `confirmed` explicitly instead of leaning on
-        // the RPC client's default commitment. Solana's client guidance
-        // recommends `confirmed` for blockhash fetches — a `processed`
-        // hash can disappear under reorgs and produce signed transactions
-        // that fail with BlockhashNotFound after broadcast.
-        use solana_commitment_config::CommitmentConfig;
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .map(|(hash, _last_valid_block_height)| hash)
-            .map_err(|e| Error::Rpc(e.to_string()))?
-    };
+    let blockhash = resolve_blockhash(rpc, method_details)?;
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
@@ -2440,6 +2476,73 @@ mod tests {
         assert!(
             msg.contains("does not match client expected_network"),
             "unexpected error: {msg}"
+        );
+    }
+
+    // Without the `confidential` feature, a well-formed confidential challenge
+    // must NOT be settled as a plaintext transfer: the builder fails closed,
+    // pointing at the missing feature rather than degrading to a cleartext tx.
+    #[cfg(not(feature = "confidential"))]
+    #[tokio::test]
+    async fn build_charge_transaction_fails_closed_on_confidential() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            network: Some("mainnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            auditor_elgamal_pubkey: Some("auditor-key".to_string()),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            crate::protocol::solana::mints::USDPT_MAINNET,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .err()
+        .expect("confidential charge should fail closed");
+        assert!(
+            format!("{err}").contains("feature"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_charge_transaction_rejects_confidential_without_auditor() {
+        // Confidential without an auditor is rejected by the shared gate
+        // before any signing work.
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            network: Some("mainnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            crate::protocol::solana::mints::USDPT_MAINNET,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .err()
+        .expect("confidential without auditor should be rejected");
+        assert!(
+            format!("{err}").contains("auditorElgamalPubkey"),
+            "unexpected error: {err}"
         );
     }
 

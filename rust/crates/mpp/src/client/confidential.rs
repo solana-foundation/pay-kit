@@ -1,0 +1,546 @@
+//! Client-side construction of a Token-2022 confidential transfer bundle.
+//!
+//! Produces the ordered set of signed transactions (`CredentialPayload::Bundle`)
+//! that settle a confidential charge: pre-verify the equality, ciphertext-
+//! validity, and range proofs into context state accounts, then reference them
+//! from the Token-2022 `transfer` instruction, then close the accounts.
+//!
+//! Proofs are generated with `spl-token-confidential-transfer-proof-generation`
+//! (zk-sdk 7.0.1) and byte-cast to spl-token-2022 10.0.0's zk-sdk-4.0 POD types
+//! at the instruction boundary (see the `cast_*` helpers). The oversized U128
+//! range proof is staged into an spl-record account and verified from there.
+//!
+//! This first cut uses the client as fee payer for every bundle transaction
+//! (each tx is fully signed client-side); the gateway submits them in order.
+
+use base64::Engine;
+use solana_address::Address;
+use solana_hash::Hash;
+use solana_instruction::Instruction;
+use solana_keychain::SolanaSigner;
+use solana_keypair::Keypair;
+use solana_message::Message;
+use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_signature::Signature;
+use solana_signer::Signer;
+use solana_system_interface::instruction as system_instruction;
+use std::mem::size_of;
+use std::str::FromStr;
+
+use solana_zk_elgamal_proof_interface::{
+    instruction::{close_context_state, ContextStateInfo, ProofInstruction},
+    proof_data::{
+        BatchedGroupedCiphertext3HandlesValidityProofContext, BatchedRangeProofContext,
+        CiphertextCommitmentEqualityProofContext,
+    },
+    state::ProofContextState,
+};
+use solana_zk_sdk::encryption::{
+    auth_encryption::AeCiphertext,
+    elgamal::{ElGamalCiphertext, ElGamalPubkey},
+};
+use solana_zk_sdk_pod::encryption::elgamal::{
+    PodElGamalCiphertext as PodElGamalCiphertextV7, PodElGamalPubkey as PodElGamalPubkeyV7,
+};
+use spl_token_2022::{
+    extension::{
+        confidential_transfer::{
+            instruction::inner_transfer, ConfidentialTransferAccount, ConfidentialTransferMint,
+        },
+        BaseStateWithExtensions, StateWithExtensions,
+    },
+    solana_zk_sdk::encryption::pod::{
+        auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
+        elgamal::{
+            PodElGamalCiphertext as PodElGamalCiphertextLegacy,
+            PodElGamalPubkey as PodElGamalPubkeyLegacy,
+        },
+    },
+    state::{Account as TokenAccount, Mint},
+};
+use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
+use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
+
+use crate::error::Error;
+use crate::protocol::confidential::derive_confidential_keys;
+use crate::protocol::solana::CredentialPayload;
+
+/// The native ZK ElGamal Proof program.
+const ZK_PROOF_PROGRAM_ID: &str = "ZkE1Gama1Proof11111111111111111111111111111";
+
+/// Byte offset of the proof inside an spl-record account
+/// (`RecordData::WRITABLE_START_INDEX`: 1-byte version + 32-byte authority).
+const RECORD_PROOF_OFFSET: u32 = 33;
+
+/// First record-write payload (smaller: shares its tx with create + initialize).
+const RECORD_FIRST_CHUNK: usize = 750;
+/// Subsequent record-write payload size (write-only txs).
+const RECORD_WRITE_CHUNK: usize = 900;
+
+/// Inputs for building a confidential transfer bundle.
+pub struct ConfidentialTransferParams<'a> {
+    /// Token-2022 mint (must have the ConfidentialTransfer extension).
+    pub mint: &'a Pubkey,
+    /// Recipient wallet (owner of the destination confidential account).
+    pub recipient: &'a Pubkey,
+    /// Transfer amount in base units.
+    pub amount: u64,
+    /// Recent blockhash to sign all bundle transactions with. The gateway must
+    /// submit the bundle while this blockhash is still valid.
+    pub blockhash: Hash,
+}
+
+/// Build the ordered, signed transaction bundle for a confidential transfer.
+///
+/// `signer` is the sender — it acts as transfer authority, fee payer, and
+/// rent funder for the proof context and record accounts. Returns the
+/// base64-encoded serialized transactions in submission order.
+pub async fn build_confidential_transfer_bundle(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    params: ConfidentialTransferParams<'_>,
+) -> Result<Vec<String>, Error> {
+    let zk_program = Pubkey::from_str(ZK_PROOF_PROGRAM_ID).expect("valid zk proof program id");
+    let token_program = spl_token_2022::id();
+    let sender_pubkey = signer.pubkey();
+
+    let sender_token_account =
+        spl_associated_token_account::get_associated_token_address_with_program_id(
+            &sender_pubkey,
+            params.mint,
+            &token_program,
+        );
+    let recipient_token_account =
+        spl_associated_token_account::get_associated_token_address_with_program_id(
+            params.recipient,
+            params.mint,
+            &token_program,
+        );
+
+    // ----- Recipient ElGamal pubkey (legacy 4.0 → v7 byte-cast) -----
+    let recipient_acc = rpc
+        .get_account(&recipient_token_account)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let recipient_state = StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data)
+        .map_err(|e| Error::Other(format!("unpack recipient account: {e}")))?;
+    let recipient_ext = recipient_state
+        .get_extension::<ConfidentialTransferAccount>()
+        .map_err(|e| Error::Other(format!("recipient has no confidential account: {e}")))?;
+    let recipient_elgamal: ElGamalPubkey =
+        cast_elgamal_pubkey_legacy_to_v7(&recipient_ext.elgamal_pubkey)?
+            .try_into()
+            .map_err(|e| Error::Other(format!("recipient ElGamal pubkey: {e:?}")))?;
+
+    // ----- Auditor ElGamal pubkey (read from the mint; required) -----
+    let mint_acc = rpc
+        .get_account(params.mint)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let mint_state = StateWithExtensions::<Mint>::unpack(&mint_acc.data)
+        .map_err(|e| Error::Other(format!("unpack mint: {e}")))?;
+    let mint_ext = mint_state
+        .get_extension::<ConfidentialTransferMint>()
+        .map_err(|e| Error::Other(format!("mint has no confidential config: {e}")))?;
+    let auditor_elgamal: Option<ElGamalPubkey> = {
+        let pod_opt: Option<PodElGamalPubkeyLegacy> = mint_ext.auditor_elgamal_pubkey.into();
+        match pod_opt {
+            Some(pod) => Some(
+                cast_elgamal_pubkey_legacy_to_v7(&pod)?
+                    .try_into()
+                    .map_err(|e| Error::Other(format!("auditor ElGamal pubkey: {e:?}")))?,
+            ),
+            None => None,
+        }
+    };
+
+    // ----- Sender keys + current confidential balance -----
+    let sender_keys = derive_confidential_keys(signer, &sender_token_account).await?;
+    let sender_acc = rpc
+        .get_account(&sender_token_account)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let sender_state = StateWithExtensions::<TokenAccount>::unpack(&sender_acc.data)
+        .map_err(|e| Error::Other(format!("unpack sender account: {e}")))?;
+    let sender_ext = sender_state
+        .get_extension::<ConfidentialTransferAccount>()
+        .map_err(|e| Error::Other(format!("sender has no confidential account: {e}")))?;
+
+    let current_available: ElGamalCiphertext =
+        cast_elgamal_ciphertext_legacy_to_v7(&sender_ext.available_balance)?
+            .try_into()
+            .map_err(|e| Error::Other(format!("sender available balance: {e:?}")))?;
+    let current_decryptable: AeCiphertext =
+        cast_ae_ciphertext_legacy_to_v7(&sender_ext.decryptable_available_balance)?;
+
+    // ----- Generate the three split-transfer proofs (zk-sdk 7.0.1) -----
+    let proof_data = transfer_split_proof_data(
+        &current_available,
+        &current_decryptable,
+        params.amount,
+        &sender_keys.elgamal,
+        &sender_keys.ae,
+        &recipient_elgamal,
+        auditor_elgamal.as_ref(),
+    )
+    .map_err(|e| Error::Other(format!("transfer_split_proof_data: {e}")))?;
+
+    let mut bundle: Vec<String> = Vec::new();
+
+    // ----- 1. Equality proof context account -----
+    let equality_account = Keypair::new();
+    let equality_size = size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>();
+    let equality_rent = rpc
+        .get_minimum_balance_for_rent_exemption(equality_size)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let equality_create = system_instruction::create_account(
+        &sender_pubkey,
+        &equality_account.pubkey(),
+        equality_rent,
+        equality_size as u64,
+        &zk_program,
+    );
+    let equality_verify = ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
+        Some(ContextStateInfo {
+            context_state_account: &Address::from(equality_account.pubkey().to_bytes()),
+            context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+        }),
+        &proof_data.equality_proof_data,
+    );
+    bundle.push(
+        sign_tx(
+            signer,
+            &sender_pubkey,
+            &[&equality_account],
+            &[equality_create, equality_verify],
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 2. Ciphertext-validity proof context account -----
+    let validity_account = Keypair::new();
+    let validity_size =
+        size_of::<ProofContextState<BatchedGroupedCiphertext3HandlesValidityProofContext>>();
+    let validity_rent = rpc
+        .get_minimum_balance_for_rent_exemption(validity_size)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let validity_create = system_instruction::create_account(
+        &sender_pubkey,
+        &validity_account.pubkey(),
+        validity_rent,
+        validity_size as u64,
+        &zk_program,
+    );
+    let validity_verify = ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
+        .encode_verify_proof(
+            Some(ContextStateInfo {
+                context_state_account: &Address::from(validity_account.pubkey().to_bytes()),
+                context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+            }),
+            &proof_data
+                .ciphertext_validity_proof_data_with_ciphertext
+                .proof_data,
+        );
+    bundle.push(
+        sign_tx(
+            signer,
+            &sender_pubkey,
+            &[&validity_account],
+            &[validity_create, validity_verify],
+            params.blockhash,
+        )
+        .await?,
+    );
+
+    // ----- 3. Range proof: stage into an spl-record account, verify from it -----
+    let record_account = Keypair::new();
+    let range_account = Keypair::new();
+    let range_size = size_of::<ProofContextState<BatchedRangeProofContext>>();
+    let range_rent = rpc
+        .get_minimum_balance_for_rent_exemption(range_size)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let range_create = system_instruction::create_account(
+        &sender_pubkey,
+        &range_account.pubkey(),
+        range_rent,
+        range_size as u64,
+        &zk_program,
+    );
+    let range_verify = ProofInstruction::VerifyBatchedRangeProofU128
+        .encode_verify_proof_from_account(
+            Some(ContextStateInfo {
+                context_state_account: &Address::from(range_account.pubkey().to_bytes()),
+                context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+            }),
+            &Address::from(record_account.pubkey().to_bytes()),
+            RECORD_PROOF_OFFSET,
+        );
+    let proof_bytes = bytemuck::bytes_of(&proof_data.range_proof_data);
+    let mut record_txs = stage_range_proof_record(
+        signer,
+        rpc,
+        &sender_pubkey,
+        &record_account,
+        proof_bytes,
+        &[range_create, range_verify],
+        &[&range_account],
+        params.blockhash,
+    )
+    .await?;
+    bundle.append(&mut record_txs);
+
+    // ----- 4. Transfer + close all proof/record accounts -----
+    let current_plaintext = current_decryptable
+        .decrypt(&sender_keys.ae)
+        .ok_or_else(|| Error::Other("decrypt current available balance".into()))?;
+    let new_plaintext = current_plaintext
+        .checked_sub(params.amount)
+        .ok_or_else(|| Error::Other("insufficient confidential balance".into()))?;
+    let new_decryptable = sender_keys.ae.encrypt(new_plaintext);
+    let new_decryptable_legacy = cast_ae_ciphertext_v7_to_legacy(&new_decryptable);
+
+    let auditor_lo_legacy = cast_elgamal_ciphertext_v7_to_legacy(
+        &proof_data
+            .ciphertext_validity_proof_data_with_ciphertext
+            .ciphertext_lo,
+    );
+    let auditor_hi_legacy = cast_elgamal_ciphertext_v7_to_legacy(
+        &proof_data
+            .ciphertext_validity_proof_data_with_ciphertext
+            .ciphertext_hi,
+    );
+
+    let transfer_ix = inner_transfer(
+        &token_program,
+        &sender_token_account,
+        params.mint,
+        &recipient_token_account,
+        &new_decryptable_legacy,
+        &auditor_lo_legacy,
+        &auditor_hi_legacy,
+        &sender_pubkey,
+        &[],
+        ProofLocation::ContextStateAccount(&equality_account.pubkey()),
+        ProofLocation::ContextStateAccount(&validity_account.pubkey()),
+        ProofLocation::ContextStateAccount(&range_account.pubkey()),
+    )
+    .map_err(|e| Error::Other(format!("build transfer instruction: {e}")))?;
+
+    let sender_addr = Address::from(sender_pubkey.to_bytes());
+    let close = |ctx: &Pubkey| {
+        close_context_state(
+            ContextStateInfo {
+                context_state_account: &Address::from(ctx.to_bytes()),
+                context_state_authority: &sender_addr,
+            },
+            &sender_addr,
+        )
+    };
+    let final_ixs = vec![
+        transfer_ix,
+        close(&equality_account.pubkey()),
+        close(&validity_account.pubkey()),
+        close(&range_account.pubkey()),
+        spl_record::instruction::close_account(
+            &record_account.pubkey(),
+            &sender_pubkey,
+            &sender_pubkey,
+        ),
+    ];
+    bundle.push(sign_tx(signer, &sender_pubkey, &[], &final_ixs, params.blockhash).await?);
+
+    Ok(bundle)
+}
+
+/// Charge-path adapter: build the confidential transfer bundle and wrap it as a
+/// `CredentialPayload::Bundle`. Called from the charge credential builder when
+/// `methodDetails.confidential` is set.
+pub(crate) async fn confidential_charge_payload(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    amount: u64,
+    mint: &str,
+    recipient: &str,
+    blockhash: Hash,
+) -> Result<CredentialPayload, Error> {
+    let mint_pk =
+        Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint `{mint}`: {e}")))?;
+    let recipient_pk = Pubkey::from_str(recipient)
+        .map_err(|e| Error::Other(format!("invalid recipient `{recipient}`: {e}")))?;
+    let transactions = build_confidential_transfer_bundle(
+        signer,
+        rpc,
+        ConfidentialTransferParams {
+            mint: &mint_pk,
+            recipient: &recipient_pk,
+            amount,
+            blockhash,
+        },
+    )
+    .await?;
+    Ok(CredentialPayload::Bundle { transactions })
+}
+
+/// Stage `proof_bytes` into a fresh spl-record account in tx-sized chunks. The
+/// first tx creates + initializes + writes the first chunk; the final write tx
+/// carries `trailing_ixs` (with `trailing_signers`) so the range context create
+/// + verify-from-account ride along. Returns one signed tx per transaction.
+#[allow(clippy::too_many_arguments)]
+async fn stage_range_proof_record(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    payer: &Pubkey,
+    record_account: &Keypair,
+    proof_bytes: &[u8],
+    trailing_ixs: &[Instruction],
+    trailing_signers: &[&Keypair],
+    blockhash: Hash,
+) -> Result<Vec<String>, Error> {
+    if proof_bytes.is_empty() {
+        return Err(Error::Other("range proof had no bytes to stage".into()));
+    }
+    let space = proof_bytes.len() + RECORD_PROOF_OFFSET as usize;
+    let rent = rpc
+        .get_minimum_balance_for_rent_exemption(space)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+
+    let first_len = proof_bytes.len().min(RECORD_FIRST_CHUNK);
+    let (first, rest) = proof_bytes.split_at(first_len);
+
+    let mut txs = Vec::new();
+    let mut offset = 0u64;
+
+    // tx 1: create + initialize + write first chunk.
+    txs.push(
+        sign_tx(
+            signer,
+            payer,
+            &[record_account],
+            &[
+                system_instruction::create_account(
+                    payer,
+                    &record_account.pubkey(),
+                    rent,
+                    space as u64,
+                    &spl_record::id(),
+                ),
+                spl_record::instruction::initialize(&record_account.pubkey(), payer),
+                spl_record::instruction::write(&record_account.pubkey(), payer, 0, first),
+            ],
+            blockhash,
+        )
+        .await?,
+    );
+    offset += first.len() as u64;
+
+    // Remaining chunks are write-only; the trailing ixs ride the last one.
+    let mut chunks = rest.chunks(RECORD_WRITE_CHUNK).peekable();
+    let mut trailing_attached = false;
+    while let Some(chunk) = chunks.next() {
+        let mut ixs = vec![spl_record::instruction::write(
+            &record_account.pubkey(),
+            payer,
+            offset,
+            chunk,
+        )];
+        let mut extra: Vec<&Keypair> = Vec::new();
+        if chunks.peek().is_none() {
+            ixs.extend_from_slice(trailing_ixs);
+            extra.extend_from_slice(trailing_signers);
+            trailing_attached = true;
+        }
+        txs.push(sign_tx(signer, payer, &extra, &ixs, blockhash).await?);
+        offset += chunk.len() as u64;
+    }
+
+    // Single-chunk proof: no write-only tx existed to carry the trailing ixs.
+    if !trailing_attached {
+        txs.push(sign_tx(signer, payer, trailing_signers, trailing_ixs, blockhash).await?);
+    }
+
+    Ok(txs)
+}
+
+/// Build a transaction with `payer` (the async signer) as fee payer, co-sign it
+/// with any `extra` ephemeral keypairs, and return the base64-encoded bytes.
+async fn sign_tx(
+    signer: &dyn SolanaSigner,
+    payer: &Pubkey,
+    extra: &[&Keypair],
+    instructions: &[Instruction],
+    blockhash: Hash,
+) -> Result<String, Error> {
+    use solana_transaction::Transaction;
+    let message = Message::new_with_blockhash(instructions, Some(payer), &blockhash);
+    let mut tx = Transaction::new_unsigned(message);
+    let msg = tx.message_data();
+
+    // Async signer (fee payer / authority / rent funder).
+    let sig_bytes = signer
+        .sign_message(&msg)
+        .await
+        .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
+    set_signature(&mut tx, payer, Signature::from(<[u8; 64]>::from(sig_bytes)))?;
+
+    // Ephemeral account keypairs sign synchronously.
+    for kp in extra {
+        set_signature(&mut tx, &kp.pubkey(), kp.sign_message(&msg))?;
+    }
+
+    let serialized =
+        bincode::serialize(&tx).map_err(|e| Error::Other(format!("serialize tx: {e}")))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(serialized))
+}
+
+fn set_signature(
+    tx: &mut solana_transaction::Transaction,
+    pubkey: &Pubkey,
+    sig: Signature,
+) -> Result<(), Error> {
+    let idx = tx
+        .message
+        .account_keys
+        .iter()
+        .position(|k| k == pubkey)
+        .ok_or_else(|| Error::Other(format!("signer {pubkey} not in transaction accounts")))?;
+    tx.signatures[idx] = sig;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// POD byte-casts across the zk-sdk 4.0 (token-2022 ABI) ↔ 7.0.1 (proof gen)
+// boundary. The wire format of these fixed-size types is identical; the Rust
+// types are just version-tagged wrappers.
+// ---------------------------------------------------------------------------
+
+fn cast_elgamal_pubkey_legacy_to_v7(
+    legacy: &PodElGamalPubkeyLegacy,
+) -> Result<PodElGamalPubkeyV7, Error> {
+    let bytes: [u8; 32] = bytemuck::bytes_of(legacy)
+        .try_into()
+        .map_err(|_| Error::Other("PodElGamalPubkey size".into()))?;
+    Ok(PodElGamalPubkeyV7(bytes))
+}
+
+fn cast_elgamal_ciphertext_legacy_to_v7(
+    legacy: &PodElGamalCiphertextLegacy,
+) -> Result<PodElGamalCiphertextV7, Error> {
+    let bytes: [u8; 64] = bytemuck::bytes_of(legacy)
+        .try_into()
+        .map_err(|_| Error::Other("PodElGamalCiphertext size".into()))?;
+    Ok(PodElGamalCiphertextV7(bytes))
+}
+
+fn cast_elgamal_ciphertext_v7_to_legacy(v7: &PodElGamalCiphertextV7) -> PodElGamalCiphertextLegacy {
+    PodElGamalCiphertextLegacy::from(v7.0)
+}
+
+fn cast_ae_ciphertext_legacy_to_v7(legacy: &PodAeCiphertextLegacy) -> Result<AeCiphertext, Error> {
+    let bytes: [u8; 36] = bytemuck::bytes_of(legacy)
+        .try_into()
+        .map_err(|_| Error::Other("PodAeCiphertext size".into()))?;
+    AeCiphertext::from_bytes(&bytes).ok_or_else(|| Error::Other("decode AeCiphertext".into()))
+}
+
+fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphertextLegacy {
+    PodAeCiphertextLegacy::from(v7.to_bytes())
+}
