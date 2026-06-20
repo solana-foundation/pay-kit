@@ -163,6 +163,10 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
             realm: Some("MPP Harness".to_string()),
             fee_payer: !push_mode,
             fee_payer_signer: if push_mode { None } else { Some(fee_payer) },
+            // The harness has no separate payee wallet signer; confidential
+            // bundle settlement (which needs the recipient ElGamal key) is not
+            // exercised here, so leave it unset.
+            recipient_signer: None,
             store: None,
             html: false,
             // Interop tests exercise push mode end-to-end; the gate is

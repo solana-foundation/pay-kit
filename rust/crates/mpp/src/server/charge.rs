@@ -193,6 +193,12 @@ pub struct Config {
     pub fee_payer: bool,
     /// Fee payer signer (if fee_payer is true).
     pub fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    /// Payee (recipient) wallet signer, used to derive the recipient ElGamal
+    /// key for confidential-transfer settlement. Confidential bundles confirm
+    /// payment by decrypting the gateway's OWN received amount with its OWN
+    /// recipient key (recipient-key verification, NOT auditor). Absence ⇒
+    /// confidential bundles are rejected. Not used for non-confidential flows.
+    pub recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     /// Replay protection store (defaults to in-memory).
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
@@ -225,6 +231,7 @@ impl Default for Config {
             realm: None,
             fee_payer: false,
             fee_payer_signer: None,
+            recipient_signer: None,
             store: None,
             html: false,
             accept_push_mode: false,
@@ -267,6 +274,12 @@ pub struct Mpp {
     network: String,
     fee_payer: bool,
     fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    /// Payee wallet signer for confidential-transfer recipient-key
+    /// verification (derives the recipient ElGamal key). `None` ⇒ confidential
+    /// bundles are rejected.
+    // Only read by the confidential bundle-settlement path.
+    #[cfg_attr(not(feature = "confidential"), allow(dead_code))]
+    recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     store: Arc<dyn Store>,
     html: bool,
     /// Audit #5: opt-in for push-mode credentials.
@@ -331,6 +344,7 @@ impl Mpp {
             network: config.network,
             fee_payer: config.fee_payer,
             fee_payer_signer: config.fee_payer_signer,
+            recipient_signer: config.recipient_signer,
             store,
             html: config.html,
             accept_push_mode: config.accept_push_mode,
@@ -876,12 +890,26 @@ impl Mpp {
                 self.consume_signature(&signature_str).await?;
                 signature_str
             }
+            #[cfg(feature = "confidential")]
+            CredentialPayload::Bundle { ref transactions } => {
+                let final_sig = self
+                    .settle_confidential_bundle(transactions, request, &method_details)
+                    .await?;
+                // The Receipt type has no pending/delivery field (its only
+                // ReceiptStatus is Success), so we emit success like the other
+                // arms once the confidential transfer has confirmed on-chain
+                // and the recipient-recovered amount matches the charge.
+                // TODO: pending-delivery semantics — a future Receipt revision
+                // could mark delivery as "pending" for asynchronous flows.
+                final_sig
+            }
+            #[cfg(not(feature = "confidential"))]
             CredentialPayload::Bundle { .. } => {
-                // Confidential-transfer bundle settlement is not yet
-                // implemented (auditor decryption + sequential submission).
-                // Fail closed until the bundle settlement path lands.
+                // Confidential-transfer bundle settlement requires the
+                // `confidential` feature (ZK proof + Token-2022 deps). Fail
+                // closed when it is not compiled in.
                 return Err(VerificationError::credential_mismatch(
-                    "Confidential-transfer bundle credentials are not yet supported by this server",
+                    "Confidential-transfer bundle credentials are not supported by this server (built without the `confidential` feature)",
                 ));
             }
         };
@@ -891,6 +919,215 @@ impl Mpp {
             &signature_str,
             credential.challenge.id.clone(),
         ))
+    }
+
+    /// Settle a confidential-transfer bundle (recipient-key verification).
+    ///
+    /// The gateway is the payee: it confirms it was paid by decrypting its OWN
+    /// received amount with its OWN recipient ElGamal key — no auditor key is
+    /// involved. The bundle's transactions are fully client-signed (the client
+    /// is the fee payer in the bundle builder), so the server just submits
+    /// them in order and reads its confidential account's pending balance
+    /// before and after to recover the delta.
+    ///
+    /// Returns the final (transfer) transaction signature.
+    #[cfg(feature = "confidential")]
+    async fn settle_confidential_bundle(
+        &self,
+        transactions: &[String],
+        request: &ChargeRequest,
+        method_details: &MethodDetails,
+    ) -> Result<String, VerificationError> {
+        use solana_commitment_config::CommitmentConfig;
+        use spl_associated_token_account::get_associated_token_address_with_program_id;
+        use spl_token_2022::{
+            extension::{
+                confidential_transfer::ConfidentialTransferAccount, BaseStateWithExtensions,
+                StateWithExtensions,
+            },
+            state::Account as TokenAccount,
+        };
+
+        if transactions.is_empty() {
+            return Err(VerificationError::invalid_payload(
+                "Confidential bundle contains no transactions",
+            ));
+        }
+
+        // Recipient-key verification needs the payee's wallet signer to derive
+        // the recipient ElGamal key. Without it we cannot confirm payment, so
+        // reject (fail closed).
+        let recipient_signer = self.recipient_signer.as_ref().ok_or_else(|| {
+            VerificationError::new(
+                "Confidential bundle settlement requires a recipient_signer, but none is configured",
+            )
+        })?;
+
+        // Confidential transfers are Token-2022 only. Resolve the mint the same
+        // way the rest of the verifier does, then derive the recipient ATA
+        // under the Token-2022 program.
+        let token_program_str = method_details
+            .token_program
+            .as_deref()
+            .unwrap_or(programs::TOKEN_2022_PROGRAM);
+        let token_program = Pubkey::from_str(token_program_str)
+            .map_err(|e| VerificationError::invalid_payload(format!("Invalid token program: {e}")))?;
+        let mint = resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
+        let recipient = Pubkey::from_str(&self.recipient)
+            .map_err(|e| VerificationError::invalid_recipient(format!("Invalid recipient: {e}")))?;
+        let recipient_ata =
+            get_associated_token_address_with_program_id(&recipient, &mint, &token_program);
+
+        // Derive the recipient ElGamal key from the payee wallet + ATA seed.
+        let recipient_keys =
+            crate::protocol::confidential::derive_confidential_keys(recipient_signer.as_ref(), &recipient_ata)
+                .await
+                .map_err(|e| {
+                    VerificationError::new(format!("Failed to derive recipient confidential keys: {e}"))
+                })?;
+
+        // Read the recipient's confidential pending balance BEFORE submitting
+        // the bundle. A not-yet-existing account is treated as zero.
+        let read_pending = |data: &[u8]| -> Result<Option<u64>, VerificationError> {
+            let state = StateWithExtensions::<TokenAccount>::unpack(data).map_err(|e| {
+                VerificationError::invalid_payload(format!(
+                    "Failed to unpack recipient token account: {e}"
+                ))
+            })?;
+            let ext = state
+                .get_extension::<ConfidentialTransferAccount>()
+                .map_err(|e| {
+                    VerificationError::invalid_payload(format!(
+                        "Recipient account has no ConfidentialTransfer extension: {e}"
+                    ))
+                })?;
+            let lo = bytemuck::bytes_of(&ext.pending_balance_lo);
+            let hi = bytemuck::bytes_of(&ext.pending_balance_hi);
+            Ok(crate::protocol::confidential::recover_split_amount(
+                &recipient_keys.elgamal,
+                lo,
+                hi,
+            ))
+        };
+
+        let before: u64 = match self.rpc.get_account(&recipient_ata) {
+            Ok(account) => read_pending(&account.data)?.ok_or_else(|| {
+                VerificationError::new(
+                    "Failed to decrypt recipient pending balance (before) with recipient key",
+                )
+            })?,
+            // Account doesn't exist yet (will be created/initialized by the
+            // bundle) ⇒ treat the pre-settlement pending balance as zero.
+            Err(_) => 0,
+        };
+
+        // Submit each transaction IN ORDER. The bundle is fully client-signed,
+        // so we do NOT co-sign and we do NOT run the SPL-transferChecked
+        // pre-broadcast verifier (which would reject confidential txs). The
+        // final tx carries the confidential transfer instruction; its
+        // signature is the settlement signature.
+        let mut final_sig = String::new();
+        for (idx, tx_b64) in transactions.iter().enumerate() {
+            let tx_bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
+                    .map_err(|e| {
+                        VerificationError::invalid_payload(format!(
+                            "Invalid base64 transaction at index {idx}: {e}"
+                        ))
+                    })?;
+            let tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
+                .map(VersionedTransaction::from)
+                .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
+                .map_err(|e| {
+                    VerificationError::invalid_payload(format!(
+                        "Invalid transaction at index {idx}: {e}"
+                    ))
+                })?;
+
+            check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
+
+            // Simulate before broadcasting to avoid fee loss / partial bundles.
+            let sim = self.rpc.simulate_transaction(&tx).map_err(|e| {
+                VerificationError::network_error(format!(
+                    "Simulation RPC error for bundle tx {idx}: {e}"
+                ))
+            })?;
+            if let Some(err) = sim.value.err {
+                let logs = sim
+                    .value
+                    .logs
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|l| l.contains("Error") || l.contains("error") || l.contains("failed"))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let log_detail = if logs.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", logs.join("; "))
+                };
+                return Err(VerificationError::transaction_failed(format!(
+                    "Bundle tx {idx} simulation failed: {err}{log_detail}"
+                )));
+            }
+
+            let signature = self.rpc.send_transaction(&tx).map_err(|e| {
+                VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
+            })?;
+            let signature_str = signature.to_string();
+
+            // Confirm at `confirmed` before moving on: later txs in the bundle
+            // (and the final balance read) depend on earlier ones landing.
+            let commitment = CommitmentConfig::confirmed();
+            let mut confirmed = false;
+            for _ in 0..30 {
+                if let Ok(resp) = self
+                    .rpc
+                    .confirm_transaction_with_commitment(&signature, commitment)
+                {
+                    if resp.value {
+                        confirmed = true;
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            if !confirmed {
+                return Err(VerificationError::network_error(format!(
+                    "Bundle tx {idx} ({signature_str}) was not confirmed in time"
+                )));
+            }
+
+            final_sig = signature_str;
+        }
+
+        // Read the recipient's pending balance AFTER and recover the delta with
+        // the recipient's own key. `delta` is what the gateway actually
+        // received.
+        let after_account = self.rpc.get_account(&recipient_ata).map_err(|e| {
+            VerificationError::network_error(format!(
+                "Failed to read recipient account after settlement: {e}"
+            ))
+        })?;
+        let after = read_pending(&after_account.data)?.ok_or_else(|| {
+            VerificationError::new(
+                "Failed to decrypt recipient pending balance (after) with recipient key",
+            )
+        })?;
+        let delta = after.saturating_sub(before);
+
+        let expected: u64 = request.amount.parse().map_err(|_| {
+            VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
+        })?;
+        if delta != expected {
+            return Err(VerificationError::invalid_amount(format!(
+                "Confidential amount mismatch: recovered {delta}, expected {expected}"
+            )));
+        }
+
+        self.consume_signature(&final_sig).await?;
+        Ok(final_sig)
     }
 
     // ── Settlement ──

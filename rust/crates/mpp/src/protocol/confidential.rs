@@ -12,7 +12,6 @@ use solana_zk_sdk::encryption::{
     derivation::derive_confidential_keys_from_signature,
     elgamal::{ElGamalCiphertext, ElGamalKeypair},
 };
-use solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext;
 
 use crate::error::Error;
 
@@ -65,27 +64,30 @@ pub async fn derive_confidential_keys(
     Ok(ConfidentialKeys { elgamal, ae })
 }
 
-/// Recover a confidential transfer amount from its auditor ciphertexts.
+/// Recover a confidential-transfer amount from a split (low 16-bit / high)
+/// ElGamal ciphertext pair, using the ElGamal secret of whoever the ciphertexts
+/// were encrypted for.
 ///
-/// A confidential transfer encrypts the amount — split into a low 16-bit part
-/// and a high part — under the mint auditor's ElGamal key. The verifying server
-/// holds the auditor secret, so it can decrypt both halves and recombine them
-/// to confirm the on-chain amount matches the charge, without the amount ever
-/// appearing in cleartext on-chain. Returns `None` if either half fails to
-/// decrypt (e.g. wrong auditor key or a malformed ciphertext).
+/// This is the shared decryption primitive for confidential-balance amounts.
+/// The verifying party uses it with **its own** key on the ciphertexts encoded
+/// for it: the payee (gateway) decrypts the **receiver** handle / its pending
+/// balance with its recipient key to confirm it was paid; a mint **auditor**
+/// (the issuer's compliance role — not the gateway) would use the auditor key
+/// on the auditor handle. Either way the amount never appears in cleartext
+/// on-chain. Returns `None` if either half fails to decrypt (wrong key or a
+/// malformed ciphertext).
 ///
-/// `ciphertext_lo`/`ciphertext_hi` are the auditor-handle ciphertexts carried by
-/// the Token-2022 `Transfer` instruction (and produced by proof generation as
-/// `CiphertextValidityProofWithAuditorCiphertext`).
-pub fn recover_amount_via_auditor(
-    auditor: &ElGamalKeypair,
-    ciphertext_lo: &PodElGamalCiphertext,
-    ciphertext_hi: &PodElGamalCiphertext,
+/// `ciphertext_lo`/`ciphertext_hi` are the 64-byte ElGamal ciphertexts for the
+/// two halves of the amount (`amount = lo + (hi << 16)`).
+pub fn recover_split_amount(
+    key: &ElGamalKeypair,
+    ciphertext_lo: &[u8],
+    ciphertext_hi: &[u8],
 ) -> Option<u64> {
-    let lo_ct = ElGamalCiphertext::from_bytes(&ciphertext_lo.0)?;
-    let hi_ct = ElGamalCiphertext::from_bytes(&ciphertext_hi.0)?;
-    let lo = auditor.secret().decrypt_u32(&lo_ct)?;
-    let hi = auditor.secret().decrypt_u32(&hi_ct)?;
+    let lo_ct = ElGamalCiphertext::from_bytes(ciphertext_lo)?;
+    let hi_ct = ElGamalCiphertext::from_bytes(ciphertext_hi)?;
+    let lo = key.secret().decrypt_u32(&lo_ct)?;
+    let hi = key.secret().decrypt_u32(&hi_ct)?;
     hi.checked_shl(TRANSFER_AMOUNT_LO_BITS)?.checked_add(lo)
 }
 
@@ -229,6 +231,507 @@ mod tests {
         );
     }
 
+    /// Full Token-2022 confidential-transfer lifecycle in litesvm, proving
+    /// RECIPIENT-SIDE amount verification: the payee decrypts what it received
+    /// with its OWN ElGamal key (not an auditor key).
+    ///
+    /// Lifecycle: create a confidential mint (auto-approve, no auditor) →
+    /// configure sender + recipient confidential accounts (PubkeyValidity proof
+    /// verified inline into a context account) → fund sender (mint → deposit →
+    /// apply-pending) → confidential transfer sender→recipient (the 3 split
+    /// proofs verified inline into context accounts, then `inner_transfer`
+    /// referencing them) → read the recipient's `ConfidentialTransferAccount`
+    /// and recover the amount from its **pending balance** ciphertexts with the
+    /// recipient's own key.
+    ///
+    /// Token-2022 is loaded automatically: `LiteSVM::new()` calls
+    /// `with_default_programs()`, which registers `spl_token_2022` (v11 ELF) and
+    /// the associated-token-account program — no manual `add_program` needed.
+    /// The ZK ElGamal Proof program is a litesvm builtin. No spl-record: litesvm
+    /// does not enforce the 1232-byte packet limit, so every proof (incl. the
+    /// U128 range proof) is verified inline into a context-state account.
+    #[test]
+    fn recipient_recovers_confidential_transfer_amount_in_litesvm() {
+        use std::mem::size_of;
+
+        use litesvm::LiteSVM;
+        use solana_address::Address;
+        use solana_keypair::Keypair;
+        use solana_signer::Signer;
+        use solana_system_interface::instruction as system_instruction;
+        use solana_transaction::Transaction;
+        use solana_zk_elgamal_proof_interface::{
+            instruction::{ContextStateInfo, ProofInstruction},
+            proof_data::{
+                BatchedGroupedCiphertext3HandlesValidityProofContext, BatchedRangeProofContext,
+                CiphertextCommitmentEqualityProofContext, PubkeyValidityProofContext,
+            },
+            state::ProofContextState,
+        };
+        use solana_zk_sdk::{
+            encryption::{auth_encryption::AeKey, elgamal::ElGamalKeypair},
+            zk_elgamal_proof_program::pubkey_validity::build_pubkey_validity_proof_data,
+        };
+        use spl_associated_token_account::{
+            get_associated_token_address_with_program_id,
+            instruction::create_associated_token_account,
+        };
+        use spl_token_2022::{
+            extension::{
+                confidential_transfer::{
+                    instruction::{
+                        apply_pending_balance, configure_account, deposit, initialize_mint,
+                        inner_transfer,
+                    },
+                    ConfidentialTransferAccount,
+                },
+                BaseStateWithExtensions, ExtensionType, StateWithExtensions,
+            },
+            instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
+            solana_zk_sdk::encryption::pod::{
+                auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
+                elgamal::{
+                    PodElGamalCiphertext as PodElGamalCiphertextLegacy,
+                    PodElGamalPubkey as PodElGamalPubkeyLegacy,
+                },
+            },
+            state::{Account as TokenAccount, Mint},
+        };
+        use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
+        use spl_token_confidential_transfer_proof_generation::transfer::transfer_split_proof_data;
+
+        let zk_program =
+            Pubkey::from_str_const("ZkE1Gama1Proof11111111111111111111111111111");
+        let token_program = spl_token_2022::id();
+        let decimals: u8 = 0;
+
+        // ----- POD byte-cast helpers across the zk-sdk 7 (proof gen) ↔ 4.0
+        // (token-2022 instruction ABI) boundary. Wire format is identical; the
+        // Rust types are just version-tagged wrappers. (Same as
+        // client/confidential.rs.)
+        fn cast_ct_v7_to_legacy(
+            v7: &solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext,
+        ) -> PodElGamalCiphertextLegacy {
+            PodElGamalCiphertextLegacy::from(v7.0)
+        }
+        fn cast_ae_v7_to_legacy(
+            v7: &solana_zk_sdk::encryption::auth_encryption::AeCiphertext,
+        ) -> PodAeCiphertextLegacy {
+            PodAeCiphertextLegacy::from(v7.to_bytes())
+        }
+        fn cast_pubkey_legacy_to_v7(
+            legacy: &PodElGamalPubkeyLegacy,
+        ) -> solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey {
+            let bytes: [u8; 32] = bytemuck::bytes_of(legacy).try_into().unwrap();
+            solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey(bytes)
+        }
+
+        let mut svm = LiteSVM::new();
+        let payer = Keypair::new();
+        svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
+
+        // Tiny helper: build, sign, and submit a legacy tx; panic with context.
+        let submit = |svm: &mut LiteSVM,
+                      ixs: &[solana_instruction::Instruction],
+                      extra_signers: &[&Keypair],
+                      label: &str| {
+            let blockhash = svm.latest_blockhash();
+            let msg = solana_message::Message::new_with_blockhash(
+                ixs,
+                Some(&payer.pubkey()),
+                &blockhash,
+            );
+            let mut tx = Transaction::new_unsigned(msg);
+            let data = tx.message_data();
+            set_sig(&mut tx, &payer.pubkey(), payer.sign_message(&data));
+            for kp in extra_signers {
+                set_sig(&mut tx, &kp.pubkey(), kp.sign_message(&data));
+            }
+            svm.send_transaction(tx)
+                .unwrap_or_else(|e| panic!("{label} failed: {:?}", e.err));
+        };
+        fn set_sig(tx: &mut Transaction, pk: &Pubkey, sig: solana_signature::Signature) {
+            let idx = tx
+                .message
+                .account_keys
+                .iter()
+                .position(|k| k == pk)
+                .unwrap_or_else(|| panic!("signer {pk} not in tx accounts"));
+            tx.signatures[idx] = sig;
+        }
+
+        // ---------------------------------------------------------------
+        // 1. Create the confidential mint (Token-2022 + ConfidentialTransfer
+        //    extension): auto-approve, no auditor.
+        // ---------------------------------------------------------------
+        let mint = Keypair::new();
+        let mint_authority = Keypair::new();
+        let mint_space =
+            ExtensionType::try_calculate_account_len::<Mint>(&[ExtensionType::ConfidentialTransferMint])
+                .unwrap();
+        let mint_rent = svm.minimum_balance_for_rent_exemption(mint_space);
+        submit(
+            &mut svm,
+            &[
+                system_instruction::create_account(
+                    &payer.pubkey(),
+                    &mint.pubkey(),
+                    mint_rent,
+                    mint_space as u64,
+                    &token_program,
+                ),
+                initialize_mint(
+                    &token_program,
+                    &mint.pubkey(),
+                    None,  // confidential-transfer authority
+                    true,  // auto_approve_new_accounts
+                    None,  // no auditor — recipient verification doesn't need one
+                )
+                .unwrap(),
+                initialize_mint_base(
+                    &token_program,
+                    &mint.pubkey(),
+                    &mint_authority.pubkey(),
+                    None,
+                    decimals,
+                )
+                .unwrap(),
+            ],
+            &[&mint],
+            "create confidential mint",
+        );
+
+        // ---------------------------------------------------------------
+        // 2. Configure sender + recipient confidential accounts. Each owner
+        //    holds its own ElGamal + AES key. PubkeyValidity proof is verified
+        //    inline into a context account, then `configure_account` references
+        //    it via ProofLocation::ContextStateAccount.
+        // ---------------------------------------------------------------
+        let configure = |svm: &mut LiteSVM,
+                         owner: &Keypair|
+         -> (Pubkey, ElGamalKeypair, AeKey) {
+            let ata = get_associated_token_address_with_program_id(
+                &owner.pubkey(),
+                &mint.pubkey(),
+                &token_program,
+            );
+            // Create the ATA (base token account, no CT extension yet).
+            submit(
+                svm,
+                &[create_associated_token_account(
+                    &payer.pubkey(),
+                    &owner.pubkey(),
+                    &mint.pubkey(),
+                    &token_program,
+                )],
+                &[],
+                "create ATA",
+            );
+
+            // Per-account keys (consistent across configure/deposit/apply/transfer).
+            let elgamal = ElGamalKeypair::new_rand();
+            let ae = AeKey::new_rand();
+            let decryptable_zero = cast_ae_v7_to_legacy(&ae.encrypt(0u64));
+
+            // PubkeyValidity proof verified inline into a context account.
+            let proof_data = build_pubkey_validity_proof_data(&elgamal).unwrap();
+            let proof_account = Keypair::new();
+            let ctx_size = size_of::<ProofContextState<PubkeyValidityProofContext>>();
+            let ctx_rent = svm.minimum_balance_for_rent_exemption(ctx_size);
+            let create_ctx = system_instruction::create_account(
+                &payer.pubkey(),
+                &proof_account.pubkey(),
+                ctx_rent,
+                ctx_size as u64,
+                &zk_program,
+            );
+            let verify = ProofInstruction::VerifyPubkeyValidity.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: &Address::from(proof_account.pubkey().to_bytes()),
+                    context_state_authority: &Address::from(owner.pubkey().to_bytes()),
+                }),
+                &proof_data,
+            );
+
+            // Reallocate the ATA for the CT extension, then configure_account
+            // referencing the verified proof context.
+            let realloc = reallocate(
+                &token_program,
+                &ata,
+                &payer.pubkey(),
+                &owner.pubkey(),
+                &[&owner.pubkey()],
+                &[ExtensionType::ConfidentialTransferAccount],
+            )
+            .unwrap();
+            let proof_loc = ProofLocation::ContextStateAccount(&proof_account.pubkey());
+            let configure_ixs = configure_account(
+                &token_program,
+                &ata,
+                &mint.pubkey(),
+                &decryptable_zero,
+                65536, // max_pending_balance_credit_counter
+                &owner.pubkey(),
+                &[],
+                proof_loc,
+            )
+            .unwrap();
+
+            let mut ixs = vec![create_ctx, verify, realloc];
+            ixs.extend(configure_ixs);
+            submit(svm, &ixs, &[owner, &proof_account], "configure account");
+
+            (ata, elgamal, ae)
+        };
+
+        let sender = Keypair::new();
+        let recipient = Keypair::new();
+        let (sender_ata, sender_elgamal, sender_ae) = configure(&mut svm, &sender);
+        let (recipient_ata, recipient_elgamal, _recipient_ae) = configure(&mut svm, &recipient);
+
+        // ---------------------------------------------------------------
+        // 3. Fund the sender: mint plaintext tokens → deposit into pending
+        //    confidential balance → apply_pending_balance to make it available.
+        // ---------------------------------------------------------------
+        let starting_balance: u64 = 50_000;
+        submit(
+            &mut svm,
+            &[mint_to(
+                &token_program,
+                &mint.pubkey(),
+                &sender_ata,
+                &mint_authority.pubkey(),
+                &[],
+                starting_balance,
+            )
+            .unwrap()],
+            &[&mint_authority],
+            "mint_to sender",
+        );
+        submit(
+            &mut svm,
+            &[deposit(
+                &token_program,
+                &sender_ata,
+                &mint.pubkey(),
+                starting_balance,
+                decimals,
+                &sender.pubkey(),
+                &[&sender.pubkey()],
+            )
+            .unwrap()],
+            &[&sender],
+            "deposit",
+        );
+        // apply_pending_balance: decrypt pending, re-encrypt as new available.
+        {
+            let acc = svm.get_account(&sender_ata).unwrap();
+            let state = StateWithExtensions::<TokenAccount>::unpack(&acc.data).unwrap();
+            let ext = state.get_extension::<ConfidentialTransferAccount>().unwrap();
+            let decrypt = |key: &ElGamalKeypair, ct: &PodElGamalCiphertextLegacy| -> u64 {
+                let bytes: [u8; 64] = bytemuck::bytes_of(ct).try_into().unwrap();
+                let c = solana_zk_sdk::encryption::elgamal::ElGamalCiphertext::from_bytes(&bytes)
+                    .unwrap();
+                key.secret().decrypt_u32(&c).unwrap()
+            };
+            let pending_lo = decrypt(&sender_elgamal, &ext.pending_balance_lo);
+            let pending_hi = decrypt(&sender_elgamal, &ext.pending_balance_hi);
+            let pending_total = pending_lo + (pending_hi << 16);
+            let expected_counter: u64 = ext.pending_balance_credit_counter.into();
+            let new_decryptable = cast_ae_v7_to_legacy(&sender_ae.encrypt(pending_total));
+            let apply_ix = apply_pending_balance(
+                &token_program,
+                &sender_ata,
+                expected_counter,
+                &new_decryptable,
+                &sender.pubkey(),
+                &[&sender.pubkey()],
+            )
+            .unwrap();
+            submit(&mut svm, &[apply_ix], &[&sender], "apply_pending_balance");
+        }
+
+        // ---------------------------------------------------------------
+        // 4. Confidential transfer sender→recipient. Amount < 65536 so the
+        //    whole value sits in the `lo` ciphertext (hi == 0) — matching
+        //    recover_split_amount's 16-bit split assumption.
+        // ---------------------------------------------------------------
+        let amount: u64 = 1_000;
+
+        // Recipient ElGamal pubkey from its configured account (legacy → v7).
+        let recipient_acc = svm.get_account(&recipient_ata).unwrap();
+        let recipient_state =
+            StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data).unwrap();
+        let recipient_ext = recipient_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        let recipient_elgamal_pubkey: solana_zk_sdk::encryption::elgamal::ElGamalPubkey =
+            cast_pubkey_legacy_to_v7(&recipient_ext.elgamal_pubkey)
+                .try_into()
+                .unwrap();
+
+        // Sender's current available balance ciphertext + decryptable.
+        let sender_acc = svm.get_account(&sender_ata).unwrap();
+        let sender_state = StateWithExtensions::<TokenAccount>::unpack(&sender_acc.data).unwrap();
+        let sender_ext = sender_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+        let current_available: solana_zk_sdk::encryption::elgamal::ElGamalCiphertext = {
+            let bytes: [u8; 64] =
+                bytemuck::bytes_of(&sender_ext.available_balance).try_into().unwrap();
+            solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext(bytes)
+                .try_into()
+                .unwrap()
+        };
+        let current_decryptable: solana_zk_sdk::encryption::auth_encryption::AeCiphertext = {
+            let bytes: [u8; 36] =
+                bytemuck::bytes_of(&sender_ext.decryptable_available_balance)
+                    .try_into()
+                    .unwrap();
+            solana_zk_sdk::encryption::auth_encryption::AeCiphertext::from_bytes(&bytes).unwrap()
+        };
+
+        // Generate the three split-transfer proofs (no auditor).
+        let proof = transfer_split_proof_data(
+            &current_available,
+            &current_decryptable,
+            amount,
+            &sender_elgamal,
+            &sender_ae,
+            &recipient_elgamal_pubkey,
+            None,
+        )
+        .expect("generate split-transfer proofs");
+
+        // Verify each proof inline into its own context account.
+        let make_ctx = |svm: &mut LiteSVM, size: usize| -> Keypair {
+            let kp = Keypair::new();
+            let rent = svm.minimum_balance_for_rent_exemption(size);
+            submit(
+                svm,
+                &[system_instruction::create_account(
+                    &payer.pubkey(),
+                    &kp.pubkey(),
+                    rent,
+                    size as u64,
+                    &zk_program,
+                )],
+                &[&kp],
+                "create proof context account",
+            );
+            kp
+        };
+        let authority_addr = Address::from(sender.pubkey().to_bytes());
+
+        let equality_account =
+            make_ctx(&mut svm, size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>());
+        let equality_addr = Address::from(equality_account.pubkey().to_bytes());
+        submit(
+            &mut svm,
+            &[ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: &equality_addr,
+                    context_state_authority: &authority_addr,
+                }),
+                &proof.equality_proof_data,
+            )],
+            &[],
+            "verify equality proof",
+        );
+
+        let validity_account = make_ctx(
+            &mut svm,
+            size_of::<ProofContextState<BatchedGroupedCiphertext3HandlesValidityProofContext>>(),
+        );
+        let validity_addr = Address::from(validity_account.pubkey().to_bytes());
+        submit(
+            &mut svm,
+            &[ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
+                .encode_verify_proof(
+                    Some(ContextStateInfo {
+                        context_state_account: &validity_addr,
+                        context_state_authority: &authority_addr,
+                    }),
+                    &proof
+                        .ciphertext_validity_proof_data_with_ciphertext
+                        .proof_data,
+                )],
+            &[],
+            "verify ciphertext-validity proof",
+        );
+
+        let range_account =
+            make_ctx(&mut svm, size_of::<ProofContextState<BatchedRangeProofContext>>());
+        let range_addr = Address::from(range_account.pubkey().to_bytes());
+        submit(
+            &mut svm,
+            &[ProofInstruction::VerifyBatchedRangeProofU128.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: &range_addr,
+                    context_state_authority: &authority_addr,
+                }),
+                &proof.range_proof_data,
+            )],
+            &[],
+            "verify range proof",
+        );
+
+        // New decryptable available balance for the sender post-transfer.
+        let new_avail = starting_balance - amount;
+        let new_decryptable = cast_ae_v7_to_legacy(&sender_ae.encrypt(new_avail));
+        let recipient_lo =
+            cast_ct_v7_to_legacy(&proof.ciphertext_validity_proof_data_with_ciphertext.ciphertext_lo);
+        let recipient_hi =
+            cast_ct_v7_to_legacy(&proof.ciphertext_validity_proof_data_with_ciphertext.ciphertext_hi);
+
+        let transfer_ix = inner_transfer(
+            &token_program,
+            &sender_ata,
+            &mint.pubkey(),
+            &recipient_ata,
+            &new_decryptable,
+            &recipient_lo,
+            &recipient_hi,
+            &sender.pubkey(),
+            &[],
+            ProofLocation::ContextStateAccount(&equality_account.pubkey()),
+            ProofLocation::ContextStateAccount(&validity_account.pubkey()),
+            ProofLocation::ContextStateAccount(&range_account.pubkey()),
+        )
+        .expect("build transfer instruction");
+        submit(&mut svm, &[transfer_ix], &[&sender], "confidential transfer");
+
+        // ---------------------------------------------------------------
+        // 5. THE ASSERTION: the recipient recovers the received amount from
+        //    its OWN pending-balance ciphertexts using its OWN ElGamal key —
+        //    no auditor key involved.
+        // ---------------------------------------------------------------
+        let recipient_acc = svm.get_account(&recipient_ata).unwrap();
+        let recipient_state =
+            StateWithExtensions::<TokenAccount>::unpack(&recipient_acc.data).unwrap();
+        let recipient_ext = recipient_state
+            .get_extension::<ConfidentialTransferAccount>()
+            .unwrap();
+
+        let lo_bytes = bytemuck::bytes_of(&recipient_ext.pending_balance_lo);
+        let hi_bytes = bytemuck::bytes_of(&recipient_ext.pending_balance_hi);
+        let recovered = recover_split_amount(&recipient_elgamal, lo_bytes, hi_bytes)
+            .expect("recipient key recovers received amount");
+        assert_eq!(
+            recovered, amount,
+            "recipient must recover the exact transferred amount with its own key"
+        );
+
+        // A different (wrong) key must NOT recover the amount — the recipient
+        // assertion is genuinely key-bound.
+        let wrong_key = ElGamalKeypair::new_rand();
+        assert_ne!(
+            recover_split_amount(&wrong_key, lo_bytes, hi_bytes),
+            Some(amount),
+            "a non-recipient key must not recover the amount"
+        );
+    }
+
     /// The auditor (verifying server) recovers the exact transferred amount
     /// from the transfer's auditor ciphertexts — including amounts that span
     /// the 16-bit lo/hi split — so it can confirm the on-chain amount matches
@@ -262,13 +765,13 @@ mod tests {
             let ct = &proof.ciphertext_validity_proof_data_with_ciphertext;
 
             let recovered =
-                recover_amount_via_auditor(&auditor, &ct.ciphertext_lo, &ct.ciphertext_hi)
-                    .expect("auditor decrypts amount");
-            assert_eq!(recovered, amount, "auditor must recover the exact amount");
+                recover_split_amount(&auditor, &ct.ciphertext_lo.0, &ct.ciphertext_hi.0)
+                    .expect("matching key decrypts amount");
+            assert_eq!(recovered, amount, "must recover the exact amount");
 
-            // A different auditor key must not recover the charged amount.
+            // A non-matching key must not recover the charged amount.
             let wrong =
-                recover_amount_via_auditor(&wrong_auditor, &ct.ciphertext_lo, &ct.ciphertext_hi);
+                recover_split_amount(&wrong_auditor, &ct.ciphertext_lo.0, &ct.ciphertext_hi.0);
             assert_ne!(
                 wrong,
                 Some(amount),
