@@ -954,18 +954,8 @@ impl Mpp {
             ));
         }
 
-        // Recipient-key verification needs the payee's wallet signer to derive
-        // the recipient ElGamal key. Without it we cannot confirm payment, so
-        // reject (fail closed).
-        let recipient_signer = self.recipient_signer.as_ref().ok_or_else(|| {
-            VerificationError::new(
-                "Confidential bundle settlement requires a recipient_signer, but none is configured",
-            )
-        })?;
-
-        // Confidential transfers are Token-2022 only. Resolve the mint the same
-        // way the rest of the verifier does, then derive the recipient ATA
-        // under the Token-2022 program.
+        // Confidential transfers are Token-2022 only. Resolve the mint and the
+        // recipient's confidential ATA under the Token-2022 program.
         let token_program_str = method_details
             .token_program
             .as_deref()
@@ -978,17 +968,34 @@ impl Mpp {
         let recipient_ata =
             get_associated_token_address_with_program_id(&recipient, &mint, &token_program);
 
-        // Derive the recipient ElGamal key from the payee wallet + ATA seed.
-        let recipient_keys =
-            crate::protocol::confidential::derive_confidential_keys(recipient_signer.as_ref(), &recipient_ata)
+        // Two settlement modes:
+        //   * recipient_signer SET (the gateway controls the payee) ⇒ derive the
+        //     recipient ElGamal key and ENFORCE the exact amount by decrypting
+        //     the recipient's own pending-balance delta.
+        //   * recipient_signer ABSENT (facilitator settling to an arbitrary
+        //     recipient) ⇒ trust-proofs: the gateway cannot decrypt the amount,
+        //     so it only verifies the transfer targets the recipient and that
+        //     the bundle lands (the on-chain ZK program guarantees the proofs
+        //     are valid); the recipient reconciles the amount out of band.
+        let recipient_keys = match self.recipient_signer.as_ref() {
+            Some(signer) => Some(
+                crate::protocol::confidential::derive_confidential_keys(
+                    signer.as_ref(),
+                    &recipient_ata,
+                )
                 .await
                 .map_err(|e| {
                     VerificationError::new(format!("Failed to derive recipient confidential keys: {e}"))
-                })?;
+                })?,
+            ),
+            None => None,
+        };
 
-        // Read the recipient's confidential pending balance BEFORE submitting
-        // the bundle. A not-yet-existing account is treated as zero.
-        let read_pending = |data: &[u8]| -> Result<Option<u64>, VerificationError> {
+        // Decrypt the recipient's pending balance from raw account data with the
+        // recipient key (used only in amount-enforcing mode).
+        let read_pending = |data: &[u8],
+                            keys: &crate::protocol::confidential::ConfidentialKeys|
+         -> Result<Option<u64>, VerificationError> {
             let state = StateWithExtensions::<TokenAccount>::unpack(data).map_err(|e| {
                 VerificationError::invalid_payload(format!(
                     "Failed to unpack recipient token account: {e}"
@@ -1001,24 +1008,25 @@ impl Mpp {
                         "Recipient account has no ConfidentialTransfer extension: {e}"
                     ))
                 })?;
-            let lo = bytemuck::bytes_of(&ext.pending_balance_lo);
-            let hi = bytemuck::bytes_of(&ext.pending_balance_hi);
             Ok(crate::protocol::confidential::recover_split_amount(
-                &recipient_keys.elgamal,
-                lo,
-                hi,
+                &keys.elgamal,
+                bytemuck::bytes_of(&ext.pending_balance_lo),
+                bytemuck::bytes_of(&ext.pending_balance_hi),
             ))
         };
 
-        let before: u64 = match self.rpc.get_account(&recipient_ata) {
-            Ok(account) => read_pending(&account.data)?.ok_or_else(|| {
-                VerificationError::new(
-                    "Failed to decrypt recipient pending balance (before) with recipient key",
-                )
-            })?,
-            // Account doesn't exist yet (will be created/initialized by the
-            // bundle) ⇒ treat the pre-settlement pending balance as zero.
-            Err(_) => 0,
+        // In amount-enforcing mode, snapshot the recipient's pending balance
+        // BEFORE the bundle (a not-yet-existing account is treated as zero).
+        let before: u64 = match &recipient_keys {
+            Some(keys) => match self.rpc.get_account(&recipient_ata) {
+                Ok(account) => read_pending(&account.data, keys)?.ok_or_else(|| {
+                    VerificationError::new(
+                        "Failed to decrypt recipient pending balance (before) with recipient key",
+                    )
+                })?,
+                Err(_) => 0,
+            },
+            None => 0,
         };
 
         // Submit each transaction IN ORDER. The bundle is fully client-signed,
@@ -1027,6 +1035,7 @@ impl Mpp {
         // final tx carries the confidential transfer instruction; its
         // signature is the settlement signature.
         let mut final_sig = String::new();
+        let mut final_tx: Option<VersionedTransaction> = None;
         for (idx, tx_b64) in transactions.iter().enumerate() {
             let tx_bytes =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
@@ -1100,30 +1109,58 @@ impl Mpp {
             }
 
             final_sig = signature_str;
+            final_tx = Some(tx);
         }
 
-        // Read the recipient's pending balance AFTER and recover the delta with
-        // the recipient's own key. `delta` is what the gateway actually
-        // received.
-        let after_account = self.rpc.get_account(&recipient_ata).map_err(|e| {
-            VerificationError::network_error(format!(
-                "Failed to read recipient account after settlement: {e}"
-            ))
-        })?;
-        let after = read_pending(&after_account.data)?.ok_or_else(|| {
-            VerificationError::new(
-                "Failed to decrypt recipient pending balance (after) with recipient key",
-            )
-        })?;
-        let delta = after.saturating_sub(before);
+        // Structural check (both modes): the final transaction's confidential
+        // Transfer instruction must target the expected recipient ATA, so the
+        // bundle can't quietly pay someone else. The Token-2022 transfer's
+        // destination is its 3rd account (source, mint, destination, ...).
+        let final_tx = final_tx
+            .ok_or_else(|| VerificationError::new("Confidential bundle produced no transactions"))?;
+        let account_keys = final_tx.message.static_account_keys();
+        let token_prog_idx = account_keys.iter().position(|k| k == &token_program);
+        let targets_recipient = token_prog_idx.is_some_and(|tp| {
+            final_tx.message.instructions().iter().any(|ix| {
+                ix.program_id_index as usize == tp
+                    && ix
+                        .accounts
+                        .get(2)
+                        .and_then(|i| account_keys.get(*i as usize))
+                        == Some(&recipient_ata)
+            })
+        });
+        if !targets_recipient {
+            return Err(VerificationError::credential_mismatch(
+                "Confidential transfer does not target the expected recipient account",
+            ));
+        }
 
-        let expected: u64 = request.amount.parse().map_err(|_| {
-            VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
-        })?;
-        if delta != expected {
-            return Err(VerificationError::invalid_amount(format!(
-                "Confidential amount mismatch: recovered {delta}, expected {expected}"
-            )));
+        // Amount enforcement (only when the gateway controls the recipient):
+        // read the recipient's pending balance AFTER and require the delta to
+        // equal the charged amount. In facilitator (trust-proofs) mode the
+        // gateway can't decrypt the amount, so it relies on the on-chain proofs
+        // and the recipient reconciling out of band.
+        if let Some(keys) = &recipient_keys {
+            let after_account = self.rpc.get_account(&recipient_ata).map_err(|e| {
+                VerificationError::network_error(format!(
+                    "Failed to read recipient account after settlement: {e}"
+                ))
+            })?;
+            let after = read_pending(&after_account.data, keys)?.ok_or_else(|| {
+                VerificationError::new(
+                    "Failed to decrypt recipient pending balance (after) with recipient key",
+                )
+            })?;
+            let delta = after.saturating_sub(before);
+            let expected: u64 = request.amount.parse().map_err(|_| {
+                VerificationError::invalid_amount(format!("Invalid amount: {}", request.amount))
+            })?;
+            if delta != expected {
+                return Err(VerificationError::invalid_amount(format!(
+                    "Confidential amount mismatch: recovered {delta}, expected {expected}"
+                )));
+            }
         }
 
         self.consume_signature(&final_sig).await?;
