@@ -10,8 +10,11 @@
 //! at the instruction boundary (see the `cast_*` helpers). The oversized U128
 //! range proof is staged into an spl-record account and verified from there.
 //!
-//! This first cut uses the client as fee payer for every bundle transaction
-//! (each tx is fully signed client-side); the gateway submits them in order.
+//! Clients hold no SOL, so the bundle is gateway-paid: the gateway is the fee
+//! payer, rent funder, proof/record-account authority, and rent-reclaim
+//! destination on every tx. The client partially signs (transfer authority +
+//! ephemeral account keypairs) and leaves the fee-payer slot for the gateway to
+//! co-sign at settlement, then the gateway submits the txs in order.
 
 use base64::Engine;
 use solana_address::Address;
