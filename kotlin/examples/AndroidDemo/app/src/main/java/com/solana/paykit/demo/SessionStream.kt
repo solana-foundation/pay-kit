@@ -47,6 +47,9 @@ object SessionStream {
         val totalPaidBaseUnits: Long,
         val cumulative: String,
         val settleSignature: String?,
+        /** Ordered trace of each step's output, surfaced in the log so the flow
+         *  is visible (open -> stream -> commit -> settle). */
+        val steps: List<String>,
     )
 
     private val json = Json {
@@ -57,6 +60,7 @@ object SessionStream {
     private val JSON_MEDIA = "application/json".toMediaType()
 
     fun consume(client: OkHttpClient, streamUrl: String, payer: SolanaSigner): Result {
+        val steps = mutableListOf<String>()
         // 1. Unauthenticated GET -> 402 session challenge.
         val challenge = client.newCall(
             Request.Builder().url(streamUrl).header("Accept", "application/json").get().build()
@@ -75,6 +79,7 @@ object SessionStream {
         val opener = PaymentChannelSession.open(request, payer, sessionSigner, blockhash)
         val channelId = opener.open.channelId.toBase58()
         val credential = PaymentChannelSession.serializeSessionCredential(challenge.echo(), opener.action)
+        steps.add("opened channel ${shortId(channelId)} · deposit ${usd(request.cap)}")
 
         // 3. Retry the GET with the open credential -> 200 SSE; read deliveries.
         var chunks = 0
@@ -97,20 +102,33 @@ object SessionStream {
                 (obj["cost"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull()?.let { total += it }
             }
         }
+        steps.add("streamed $chunks chunks · metered ${usd(total)}")
 
         // 4. Reserve one aggregate delivery, then sign + commit the voucher.
         var cumulative = "0"
         if (total > 0) {
             val directive = reserveDelivery(client, sideChannel(streamUrl, "/__402/session/deliveries"), channelId, total, streamUrl)
             val consumer = SessionConsumer(opener.session, HttpCommitTransport(client, sideChannel(streamUrl, "/__402/session/commit")))
-            cumulative = consumer.commitDirective(directive).cumulative
+            val receipt = consumer.commitDirective(directive)
+            cumulative = receipt.cumulative
+            steps.add("committed voucher · cumulative ${receipt.cumulative} (${receipt.status.name.lowercase()})")
         }
 
         // 5. Best-effort receipt poll for the settle signature.
         val settle = runCatching { pollReceipt(client, sideChannel(streamUrl, "/sessions/receipt/$channelId")) }.getOrNull()
+        steps.add(if (settle != null) "settled on-chain · ${shortId(settle)}" else "settle pending (idle-close runs server-side)")
 
-        return Result(channelId, chunks, total, cumulative, settle)
+        return Result(channelId, chunks, total, cumulative, settle, steps)
     }
+
+    private fun shortId(value: String): String =
+        if (value.length > 14) "${value.take(6)}…${value.takeLast(6)}" else value
+
+    private fun usd(baseUnits: Long): String =
+        "$" + java.math.BigDecimal(baseUnits).divide(java.math.BigDecimal(1_000_000)).stripTrailingZeros().toPlainString()
+
+    private fun usd(baseUnitsString: String): String =
+        baseUnitsString.toLongOrNull()?.let { usd(it) } ?: baseUnitsString
 
     private fun reserveDelivery(
         client: OkHttpClient,

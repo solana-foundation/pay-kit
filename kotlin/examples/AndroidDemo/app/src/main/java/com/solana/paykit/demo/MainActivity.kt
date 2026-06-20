@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -147,6 +148,8 @@ private fun DemoScreen() {
     var usdcBalance by remember { mutableStateOf<BigDecimal?>(null) }
     var endpoints by remember { mutableStateOf<List<Endpoint>>(emptyList()) }
     var endpointsError by remember { mutableStateOf<String?>(null) }
+    // Per-endpoint protocol the user picked to settle over (endpoint id -> method).
+    var protocolChoice by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var busy by remember { mutableStateOf<BusyKind?>(null) }
     val log = remember { mutableStateListOf<LogEntry>() }
 
@@ -305,14 +308,18 @@ private fun DemoScreen() {
                             endpoint = endpoint,
                             busy = busy == BusyKind.Pay(endpoint.id),
                             enabled = busy == null && signer != null,
+                            selected = protocolChoice[endpoint.id] ?: endpoint.selectedProtocol,
+                            onSelectProtocol = { protocolChoice = protocolChoice + (endpoint.id to it) },
                             onClick = onClick@{
                                 val s = signer ?: return@onClick
                                 when (endpoint.intent) {
-                                    // One-shot charge: the 402 -> sign -> retry MPP loop.
+                                    // One-shot charge: the 402 -> sign -> retry loop, over the
+                                    // protocol the user picked (default: the advertised mpp).
                                     "charge" -> {
                                         busy = BusyKind.Pay(endpoint.id)
+                                        val proto = protocolChoice[endpoint.id] ?: endpoint.selectedProtocol
                                         scope.launch {
-                                            append(consume(s, endpoint))
+                                            append(consume(s, endpoint, proto))
                                             refreshBalance()
                                             busy = null
                                         }
@@ -504,8 +511,13 @@ private fun EndpointCard(
     endpoint: Endpoint,
     busy: Boolean,
     enabled: Boolean,
+    selected: String?,
     onClick: () -> Unit,
+    onSelectProtocol: (String) -> Unit,
 ) {
+    // Charge endpoints advertising more than one protocol let the user pick which
+    // to settle over by tapping a method chip.
+    val selectable = endpoint.intent == "charge" && endpoint.methods.size > 1
     val gradient = Brush.verticalGradient(
         listOf(endpoint.tint, endpoint.tint.darkenBy(0.12f)),
     )
@@ -572,12 +584,18 @@ private fun EndpointCard(
                 if (index > 0) {
                     Text("·", fontSize = 11.sp, color = Color.White.copy(alpha = 0.45f))
                 }
-                val selected = method == endpoint.selectedProtocol
+                val isSelected = method == selected
                 Text(
                     text = method,
                     fontSize = 11.sp,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    color = Color.White.copy(alpha = if (selected) 1f else 0.55f),
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    textDecoration = if (isSelected && selectable) TextDecoration.Underline else null,
+                    color = Color.White.copy(alpha = if (isSelected) 1f else 0.55f),
+                    modifier = if (selectable) {
+                        Modifier.clickableNoRipple(enabled = true) { onSelectProtocol(method) }
+                    } else {
+                        Modifier
+                    },
                 )
             }
             if (endpoint.intent != "charge") {
@@ -763,15 +781,10 @@ private suspend fun consumeSession(signer: SolanaSigner, endpoint: Endpoint): Lo
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .build()
         val result = SessionStream.consume(client, "$PLAYGROUND_BASE${endpoint.path}", signer)
-        val paid = "$" + BigDecimal(result.totalPaidBaseUnits)
-            .divide(BigDecimal(1_000_000))
-            .stripTrailingZeros()
-            .toPlainString()
         LogEntry.success(
             endpoint = endpoint,
             signature = result.settleSignature,
-            body = "streamed ${result.chunks} chunks · paid $paid over a payment-channel session " +
-                "(cumulative ${result.cumulative} base units)",
+            body = result.steps.joinToString("\n"),
         )
     } catch (t: Throwable) {
         android.util.Log.e("PayKitDemo", "session consume failed", t)
@@ -779,13 +792,15 @@ private suspend fun consumeSession(signer: SolanaSigner, endpoint: Endpoint): Lo
     }
 }
 
-private suspend fun consume(signer: SolanaSigner, endpoint: Endpoint): LogEntry = withContext(Dispatchers.IO) {
+private suspend fun consume(signer: SolanaSigner, endpoint: Endpoint, protocol: String?): LogEntry = withContext(Dispatchers.IO) {
     val url = "$PLAYGROUND_BASE${endpoint.path}"
     try {
-        val client = PayKitClient.Builder()
-            .signer(signer)
-            .charge(blockhashProvider = JsonRpcClient(RPC_URL))
-            .build()
+        // Settle over the protocol the user picked (default: the advertised mpp).
+        val client = if (protocol == "x402") {
+            PayKitClient.Builder().signer(signer).x402(rpc = RPC_URL, network = "devnet").build()
+        } else {
+            PayKitClient.Builder().signer(signer).charge(blockhashProvider = JsonRpcClient(RPC_URL)).build()
+        }
 
         val payResponse = if (endpoint.method == "POST") {
             client.post(

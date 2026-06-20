@@ -220,7 +220,10 @@ object OpenApi {
                 .divide(BigDecimal(1_000_000))
                 .setScale(2, RoundingMode.HALF_UP)
                 .stripTrailingZerosOrTwo()
-            val prefix = if ((offer["scheme"] as? JsonPrimitive)?.contentOrNull == "upto") "up to " else ""
+            // `upto` usage and `session` deposits are ceilings, not the amount
+            // actually settled — label them so the price isn't read as a fixed charge.
+            val scheme = (offer["scheme"] as? JsonPrimitive)?.contentOrNull?.lowercase()
+            val prefix = if (scheme == "upto" || scheme == "session") "up to " else ""
             return "$prefix$$dollars"
         }
         val description = (offer?.get("description") as? JsonPrimitive)?.contentOrNull
