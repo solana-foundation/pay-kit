@@ -9,10 +9,10 @@ members = [
     "crates/kit",
 ]
 
-# Use a locally-patched litesvm whose `solana-address` pin is loosened from
-# `=2.2.0` so it can coexist with the confidential-transfer proof crates
-# (solana-zk-sdk 6/7 require `solana-address ^2.5`). Applies to litesvm pulled
-# transitively by surfpool-sdk as well. Track upstreaming the pin fix.
+# Patched litesvm whose `solana-address` pin is loosened from `=2.2.0` so it can
+# coexist with the confidential-transfer proof crates (solana-zk-sdk 6/7 require
+# `solana-address ^2.5`). Applies to litesvm pulled transitively by surfpool-sdk
+# too. Pending upstream PR: github.com/litesvm/litesvm (fork branch below).
 [patch.crates-io]
-litesvm = { path = "../../litesvm/crates/litesvm" }
-litesvm-token = { path = "../../litesvm/crates/token" }
+litesvm = { git = "https://github.com/lgalabru/litesvm.git", branch = "loosen-solana-address-constraint" }
+litesvm-token = { git = "https://github.com/lgalabru/litesvm.git", branch = "loosen-solana-address-constraint" }
