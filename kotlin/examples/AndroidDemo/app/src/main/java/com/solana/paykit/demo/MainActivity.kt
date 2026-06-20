@@ -709,7 +709,7 @@ private data class LogEntry(
             signature = signature,
             detail = when {
                 body.isNotBlank() -> body
-                signature == null -> "No Payment-Receipt header in response."
+                signature == null -> "Settled. No settlement signature in response."
                 else -> null
             },
             detailMaxLines = 4,
@@ -836,15 +836,21 @@ private suspend fun consume(signer: SolanaSigner, endpoint: Endpoint, protocol: 
 }
 
 /**
- * Decode a `Payment-Receipt` header (base64url-no-pad JSON envelope produced by
- * the gateway's `format_receipt`) and return the `reference` field — the
- * on-chain signature. Mirrors the iOS `signatureFromReceiptHeader`.
+ * Decode a settlement header (base64url-no-pad JSON envelope) and return the
+ * on-chain signature. MPP's `Payment-Receipt` carries it in `reference`;
+ * x402's `X-PAYMENT-RESPONSE` carries it in `transaction`. Mirrors the iOS
+ * `signatureFromReceiptHeader`.
  */
 private fun signatureFromReceiptHeader(header: String): String? {
     return try {
-        val decoded = JBase64.getUrlDecoder().decode(header.padBase64Url())
+        // MPP's `Payment-Receipt` is base64url; x402's `X-PAYMENT-RESPONSE` is
+        // standard base64 (`btoa`). Normalize to url-safe so one decoder fits both.
+        val normalized = header.replace('+', '-').replace('/', '_').trimEnd('=')
+        val decoded = JBase64.getUrlDecoder().decode(normalized.padBase64Url())
         val json = responseJson.parseToJsonElement(String(decoded)) as? JsonObject ?: return null
-        json["reference"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }
+        // MPP's `Payment-Receipt` carries the on-chain signature in `reference`;
+        // x402's `X-PAYMENT-RESPONSE` carries it in `transaction`.
+        (json["reference"] ?: json["transaction"])?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() }
     } catch (_: Throwable) {
         null
     }
