@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var busy: BusyKind?
     @State private var endpoints: [Endpoint] = []
     @State private var endpointsError: String?
+    /// Per-endpoint protocol the user picked to settle over (endpoint id -> method).
+    @State private var protocolChoice: [String: String] = [:]
 
     var body: some View {
         NavigationStack {
@@ -118,9 +120,13 @@ struct ContentView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(endpoints) { endpoint in
-                            EndpointCard(endpoint: endpoint, busy: busy == .pay(endpoint.id)) {
-                                Task { await pay(endpoint) }
-                            }
+                            EndpointCard(
+                                endpoint: endpoint,
+                                busy: busy == .pay(endpoint.id),
+                                selected: protocolChoice[endpoint.id] ?? endpoint.selectedProtocol,
+                                onTap: { Task { await pay(endpoint) } },
+                                onSelect: { method in protocolChoice[endpoint.id] = method }
+                            )
                             .disabled(busy != nil || signer == nil)
                         }
                     }
@@ -244,11 +250,10 @@ struct ContentView: View {
                     streamURL: playgroundURL.appendingPathComponent(endpoint.path),
                     payer: signer
                 )
-                let paid = Self.formatBaseUnitsUSD(result.totalPaidBaseUnits)
                 append(.success(
                     endpoint: endpoint,
                     signature: result.settleSignature,
-                    body: "streamed \(result.chunks) chunks · paid \(paid) over a payment-channel session (cumulative \(result.cumulative) base units)"
+                    body: result.steps.joined(separator: "\n")
                 ))
                 await refreshBalance()
             } catch {
@@ -272,11 +277,22 @@ struct ContentView: View {
         busy = .pay(endpoint.id)
         defer { busy = nil }
 
-        let client = PayKit.HttpClient.mpp(
-            signer: signer,
-            rpc: RpcClient(endpoint: rpcURL),
-            settlementHeader: "payment-receipt"
-        )
+        // Settle over the protocol the user picked (default: the advertised mpp).
+        let selected = protocolChoice[endpoint.id] ?? endpoint.selectedProtocol
+        let client: PayKit.HttpClient
+        if selected == "x402" {
+            client = PayKit.HttpClient.x402(
+                signer: signer,
+                rpc: RpcClient(endpoint: rpcURL),
+                selection: X402ChallengeSelection()
+            )
+        } else {
+            client = PayKit.HttpClient.mpp(
+                signer: signer,
+                rpc: RpcClient(endpoint: rpcURL),
+                settlementHeader: "payment-receipt"
+            )
+        }
         var headers: [String: String] = ["Accept": "application/json"]
         var body: Data? = nil
         if endpoint.method == .post {
@@ -296,7 +312,11 @@ struct ContentView: View {
                 // signature lives in the envelope's `reference` field;
                 // that's what the pay.sh receipt page expects in its
                 // `/receipt/<sig>` path.
+                // MPP wraps the signature in a base64url Payment-Receipt envelope
+                // (`reference` field); x402 returns the bare settlement signature.
+                // Decode the envelope when present, else use the raw value.
                 let signature = response.settlementSignature.flatMap(Self.signatureFromReceiptHeader)
+                    ?? response.settlementSignature
                 append(.success(
                     endpoint: endpoint,
                     signature: signature,
@@ -408,57 +428,68 @@ struct Endpoint: Identifiable, Hashable {
 private struct EndpointCard: View {
     let endpoint: Endpoint
     let busy: Bool
+    /// The protocol currently selected to settle over (the user's tap choice, or
+    /// the default). Rendered emphasized.
+    let selected: String?
     let onTap: () -> Void
+    let onSelect: (String) -> Void
+
+    /// Charge endpoints that advertise more than one protocol let the user pick
+    /// which to settle over by tapping a method chip.
+    private var selectable: Bool { endpoint.intent == "charge" && endpoint.methods.count > 1 }
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: endpoint.systemImage)
-                        .font(.title2)
-                    Spacer()
-                    if busy {
-                        ProgressView()
-                            .tint(.white)
-                    } else {
-                        Text(endpoint.method.rawValue)
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.white.opacity(0.25))
-                            .clipShape(Capsule())
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: endpoint.systemImage)
+                    .font(.title2)
+                Spacer()
+                if busy {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text(endpoint.method.rawValue)
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.25))
+                        .clipShape(Capsule())
                 }
-                Spacer(minLength: 0)
-                Text(endpoint.label)
-                    .font(.subheadline.weight(.semibold))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2)
-                Text(endpoint.priceUSD)
-                    .font(.caption.monospacedDigit())
-                    .opacity(0.9)
-                HStack(spacing: 3) {
-                    ForEach(Array(endpoint.methods.enumerated()), id: \.offset) { index, method in
-                        if index > 0 { Text("·").opacity(0.45) }
-                        Text(method)
-                            .fontWeight(method == endpoint.selectedProtocol ? .bold : .regular)
-                            .opacity(method == endpoint.selectedProtocol ? 1.0 : 0.55)
-                    }
-                    if endpoint.intent != "charge" {
-                        Text("·").opacity(0.45)
-                        Text(endpoint.intent).opacity(0.55)
-                    }
-                }
-                .font(.caption2)
-                .lineLimit(1)
             }
-            .padding(12)
-            .frame(width: 150, height: 130, alignment: .topLeading)
-            .background(endpoint.tint.gradient)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            Spacer(minLength: 0)
+            Text(endpoint.label)
+                .font(.subheadline.weight(.semibold))
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
+            Text(endpoint.priceUSD)
+                .font(.caption.monospacedDigit())
+                .opacity(0.9)
+            HStack(spacing: 3) {
+                ForEach(Array(endpoint.methods.enumerated()), id: \.offset) { index, method in
+                    if index > 0 { Text("·").opacity(0.45) }
+                    let isSelected = method == selected
+                    Text(method)
+                        .fontWeight(isSelected ? .bold : .regular)
+                        .opacity(isSelected ? 1.0 : 0.55)
+                        .underline(isSelected && selectable)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if selectable { onSelect(method) } }
+                }
+                if endpoint.intent != "charge" {
+                    Text("·").opacity(0.45)
+                    Text(endpoint.intent).opacity(0.55)
+                }
+            }
+            .font(.caption2)
+            .lineLimit(1)
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .frame(width: 150, height: 130, alignment: .topLeading)
+        .background(endpoint.tint.gradient)
+        .foregroundStyle(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture { onTap() }
     }
 }
 

@@ -136,7 +136,11 @@ enum OpenAPI {
         if let amount = offer?["amount"] as? String,
            let baseUnits = Decimal(string: amount),
            let formatted = Self.dollarFormatter.string(from: (baseUnits / 1_000_000) as NSDecimalNumber) {
-            let prefix = (offer?["scheme"] as? String) == "upto" ? "up to " : ""
+            // `upto` usage and `session` deposits are ceilings, not the amount
+            // actually settled — label them so the card price isn't mistaken for
+            // a fixed charge.
+            let scheme = (offer?["scheme"] as? String)?.lowercased()
+            let prefix = (scheme == "upto" || scheme == "session") ? "up to " : ""
             return prefix + "$" + formatted
         }
         if let description = offer?["description"] as? String, !description.isEmpty {

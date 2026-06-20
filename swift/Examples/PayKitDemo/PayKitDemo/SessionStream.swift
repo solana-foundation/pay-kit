@@ -26,6 +26,9 @@ enum SessionStream {
         let totalPaidBaseUnits: UInt64
         let cumulative: String
         let settleSignature: String?
+        /// Ordered trace of each step's output, surfaced in the log so the flow
+        /// is visible (open -> stream -> commit -> settle).
+        let steps: [String]
     }
 
     /// Run the session against `streamURL` (e.g. `<playground>/api/v1/stream`),
@@ -34,6 +37,7 @@ enum SessionStream {
     /// signer for this channel).
     static func consume(streamURL: URL, payer: SolanaSigner) async throws -> Result {
         let session = URLSession.shared
+        var steps: [String] = []
 
         // 1. Unauthenticated GET → 402 session challenge.
         let challenge = try await fetchChallenge(streamURL, using: session)
@@ -53,17 +57,17 @@ enum SessionStream {
         )
         let channelId = opener.open.channelId.base58
         let credential = try serializeSessionCredential(challenge: challenge.echo(), action: opener.action)
+        steps.append("opened channel \(shortId(channelId)) · deposit \(usd(request.cap))")
 
         // 3. Retry the GET with the open credential → 200 SSE; read deliveries.
         let (chunks, totalCost) = try await readStream(streamURL, authorization: credential, using: session)
+        steps.append("streamed \(chunks) chunks · metered \(usd(totalCost))")
 
         // 4. Reserve one aggregate delivery, then sign + commit the voucher.
         var cumulative = "0"
         if totalCost > 0 {
-            let base = streamURL.deletingLastPathComponent()
-            let deliveriesURL = base.appendingPathComponent("__402/session/deliveries", isDirectory: false)
-            // The pay-kit session side channel lives at the resource origin.
-            let originDeliveries = URL(string: "/__402/session/deliveries", relativeTo: streamURL)?.absoluteURL ?? deliveriesURL
+            let originDeliveries = URL(string: "/__402/session/deliveries", relativeTo: streamURL)?.absoluteURL
+                ?? streamURL.deletingLastPathComponent().appendingPathComponent("__402/session/deliveries")
             let commitURL = URL(string: "/__402/session/commit", relativeTo: streamURL)?.absoluteURL
 
             let directive = try await reserveDelivery(
@@ -79,17 +83,20 @@ enum SessionStream {
             )
             let receipt = try await consumer.commitDirective(directive)
             cumulative = receipt.cumulative
+            steps.append("committed voucher · cumulative \(receipt.cumulative) (\(receipt.status.rawValue))")
         }
 
         // 5. Best-effort receipt poll for the settle signature (server idle-closes).
         let settle = try? await pollReceipt(streamURL: streamURL, channelId: channelId, using: session)
+        steps.append(settle != nil ? "settled on-chain · \(shortId(settle!))" : "settle pending (idle-close runs server-side)")
 
         return Result(
             channelId: channelId,
             chunks: chunks,
             totalPaidBaseUnits: totalCost,
             cumulative: cumulative,
-            settleSignature: settle
+            settleSignature: settle,
+            steps: steps
         )
     }
 
@@ -195,6 +202,19 @@ enum SessionStream {
 
     private static func randomSeed() -> Data {
         Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+    }
+
+    private static func shortId(_ value: String) -> String {
+        value.count > 14 ? "\(value.prefix(6))…\(value.suffix(6))" : value
+    }
+
+    private static func usd(_ baseUnits: UInt64) -> String {
+        let dollars = Decimal(baseUnits) / 1_000_000
+        return "$\(NSDecimalNumber(decimal: dollars))"
+    }
+
+    private static func usd(_ baseUnitsString: String) -> String {
+        UInt64(baseUnitsString).map(usd) ?? baseUnitsString
     }
 }
 
