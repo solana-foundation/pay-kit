@@ -597,3 +597,98 @@ fn cast_ae_ciphertext_legacy_to_v7(legacy: &PodAeCiphertextLegacy) -> Result<AeC
 fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphertextLegacy {
     PodAeCiphertextLegacy::from(v7.to_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_zk_sdk::encryption::auth_encryption::AeKey;
+
+    fn memory_signer(seed: u8) -> Box<dyn SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    fn decode_tx(b64: &str) -> solana_transaction::Transaction {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        bincode::deserialize(&bytes).unwrap()
+    }
+
+    #[test]
+    fn elgamal_pubkey_cast_preserves_bytes() {
+        let legacy = PodElGamalPubkeyLegacy::from([7u8; 32]);
+        let v7 = cast_elgamal_pubkey_legacy_to_v7(&legacy).unwrap();
+        assert_eq!(v7.0, [7u8; 32]);
+    }
+
+    #[test]
+    fn elgamal_ciphertext_cast_round_trips() {
+        let legacy = PodElGamalCiphertextLegacy::from([3u8; 64]);
+        let v7 = cast_elgamal_ciphertext_legacy_to_v7(&legacy).unwrap();
+        assert_eq!(v7.0, [3u8; 64]);
+        let back = cast_elgamal_ciphertext_v7_to_legacy(&v7);
+        assert_eq!(bytemuck::bytes_of(&back), &[3u8; 64]);
+    }
+
+    #[test]
+    fn ae_ciphertext_cast_round_trips() {
+        let ae = AeKey::new_rand();
+        let v7 = ae.encrypt(42u64);
+        let legacy = cast_ae_ciphertext_v7_to_legacy(&v7);
+        let back = cast_ae_ciphertext_legacy_to_v7(&legacy).unwrap();
+        assert_eq!(back.decrypt(&ae), Some(42));
+    }
+
+    // partial_sign_tx must leave the gateway (fee-payer) slot empty for the
+    // gateway to co-sign, while signing the client-held keys.
+
+    #[tokio::test]
+    async fn partial_sign_leaves_gateway_unsigned_signs_ephemeral() {
+        let signer = memory_signer(1);
+        let gateway = memory_signer(2).pubkey();
+        let eph = Keypair::new();
+        let ix = system_instruction::create_account(
+            &gateway,
+            &eph.pubkey(),
+            1000,
+            100,
+            &Pubkey::new_unique(),
+        );
+        let b64 = partial_sign_tx(signer.as_ref(), &gateway, &[&eph], &[ix], Hash::default())
+            .await
+            .unwrap();
+        let tx = decode_tx(&b64);
+        let keys = &tx.message.account_keys;
+
+        // Gateway is fee payer (index 0) and MUST be left unsigned.
+        let gw = keys.iter().position(|k| *k == gateway).unwrap();
+        assert_eq!(tx.signatures[gw], Signature::default());
+        // Ephemeral account signed; sender isn't even a signer here.
+        let e = keys.iter().position(|k| *k == eph.pubkey()).unwrap();
+        assert_ne!(tx.signatures[e], Signature::default());
+        assert!(!keys.iter().any(|k| *k == signer.pubkey()));
+    }
+
+    #[tokio::test]
+    async fn partial_sign_signs_sender_when_it_is_a_required_signer() {
+        let signer = memory_signer(1);
+        let sender = signer.pubkey();
+        let gateway = memory_signer(2).pubkey();
+        // Transfer makes `sender` a required signer; gateway is the fee payer.
+        let ix = system_instruction::transfer(&sender, &gateway, 1);
+        let b64 = partial_sign_tx(signer.as_ref(), &gateway, &[], &[ix], Hash::default())
+            .await
+            .unwrap();
+        let tx = decode_tx(&b64);
+        let keys = &tx.message.account_keys;
+
+        let gw = keys.iter().position(|k| *k == gateway).unwrap();
+        assert_eq!(tx.signatures[gw], Signature::default());
+        let s = keys.iter().position(|k| *k == sender).unwrap();
+        assert_ne!(tx.signatures[s], Signature::default());
+    }
+}
