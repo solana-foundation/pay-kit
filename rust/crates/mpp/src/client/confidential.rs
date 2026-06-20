@@ -182,6 +182,33 @@ pub async fn build_confidential_transfer_bundle(
     let current_decryptable: AeCiphertext =
         cast_ae_ciphertext_legacy_to_v7(&sender_ext.decryptable_available_balance)?;
 
+    // ----- Pre-flight: fail fast BEFORE the expensive proof generation -----
+    // The recipient must accept incoming confidential credits, the sender's
+    // account must be approved to transact, and the sender must hold enough
+    // confidential balance. (Without these, the bundle would build, generate
+    // proofs, and only fail on-chain — or fail late at the subtract below.)
+    if !bool::from(recipient_ext.allow_confidential_credits) {
+        return Err(Error::Other(
+            "recipient does not allow confidential credits".into(),
+        ));
+    }
+    if !bool::from(sender_ext.approved) {
+        return Err(Error::Other(
+            "sender confidential account is not approved by the mint".into(),
+        ));
+    }
+    let current_plaintext = current_decryptable
+        .decrypt(&sender_keys.ae)
+        .ok_or_else(|| Error::Other("failed to decrypt sender confidential balance".into()))?;
+    let new_plaintext = current_plaintext
+        .checked_sub(params.amount)
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "insufficient confidential balance: have {current_plaintext}, need {} base units",
+                params.amount
+            ))
+        })?;
+
     // ----- Generate the three split-transfer proofs (zk-sdk 7.0.1) -----
     let proof_data = transfer_split_proof_data(
         &current_available,
@@ -300,12 +327,7 @@ pub async fn build_confidential_transfer_bundle(
     bundle.append(&mut record_txs);
 
     // ----- 4. Transfer + close all proof/record accounts -----
-    let current_plaintext = current_decryptable
-        .decrypt(&sender_keys.ae)
-        .ok_or_else(|| Error::Other("decrypt current available balance".into()))?;
-    let new_plaintext = current_plaintext
-        .checked_sub(params.amount)
-        .ok_or_else(|| Error::Other("insufficient confidential balance".into()))?;
+    // `new_plaintext` was computed during pre-flight, above.
     let new_decryptable = sender_keys.ae.encrypt(new_plaintext);
     let new_decryptable_legacy = cast_ae_ciphertext_v7_to_legacy(&new_decryptable);
 
