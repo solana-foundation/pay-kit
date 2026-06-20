@@ -65,6 +65,12 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
 const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
+/// Upper bound on transactions in a gateway-paid confidential bundle. The
+/// builder emits ~5 (3 proof contexts + range-proof record staging + the
+/// transfer/close tx); the headroom covers multi-chunk range-proof writes.
+const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
+/// ZK ElGamal Proof program id (proof verification + close_context_state).
+const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 
 /// Audit #15: derive a per-app default realm from the recipient pubkey.
 ///
@@ -969,6 +975,16 @@ impl Mpp {
         let recipient_ata =
             get_associated_token_address_with_program_id(&recipient, &mint, &token_program);
 
+        // Clients hold no SOL: the gateway is the fee payer, rent funder, and
+        // proof/record-account authority for every bundle tx. A fee-payer signer
+        // is therefore REQUIRED — we co-sign each tx's empty fee-payer slot.
+        let fee_payer_signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
+            VerificationError::new(
+                "Confidential settlement requires a fee-payer signer (the gateway pays bundle fees)",
+            )
+        })?;
+        let gateway_pubkey = fee_payer_signer.pubkey();
+
         // Two settlement modes:
         //   * recipient_signer SET (the gateway controls the payee) ⇒ derive the
         //     recipient ElGamal key and ENFORCE the exact amount by decrypting
@@ -1032,11 +1048,22 @@ impl Mpp {
             None => 0,
         };
 
-        // Submit each transaction IN ORDER. The bundle is fully client-signed,
-        // so we do NOT co-sign and we do NOT run the SPL-transferChecked
-        // pre-broadcast verifier (which would reject confidential txs). The
-        // final tx carries the confidential transfer instruction; its
-        // signature is the settlement signature.
+        // Bound the bundle size so a client can't make the operator spin on a
+        // huge bundle (the builder emits ~5 txs; allow generous headroom for
+        // multi-chunk range-proof staging).
+        if transactions.len() > MAX_CONFIDENTIAL_BUNDLE_TXS {
+            return Err(VerificationError::invalid_payload(format!(
+                "Confidential bundle has {} transactions (max {MAX_CONFIDENTIAL_BUNDLE_TXS})",
+                transactions.len()
+            )));
+        }
+
+        // Submit each transaction IN ORDER. The bundle is gateway-paid and
+        // arrives partially signed (the fee-payer slot is empty). For every tx
+        // we (1) hard-verify it only does allow-listed, non-draining work, then
+        // (2) co-sign the gateway fee-payer slot, then simulate + broadcast. The
+        // final tx carries the confidential transfer; its signature is the
+        // settlement signature.
         let mut final_sig = String::new();
         let mut final_tx: Option<VersionedTransaction> = None;
         for (idx, tx_b64) in transactions.iter().enumerate() {
@@ -1047,7 +1074,7 @@ impl Mpp {
                             "Invalid base64 transaction at index {idx}: {e}"
                         ))
                     })?;
-            let tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
+            let mut tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
                 .map(VersionedTransaction::from)
                 .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
                 .map_err(|e| {
@@ -1057,6 +1084,32 @@ impl Mpp {
                 })?;
 
             check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
+
+            // (1) Allow-list every instruction + assert the gateway is fee payer
+            // and the only rent funder, so the operator can't be drained.
+            verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program).map_err(|e| {
+                VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
+            })?;
+
+            // (2) Co-sign the empty gateway fee-payer slot.
+            let msg_data = tx.message.serialize();
+            let sig_bytes = fee_payer_signer
+                .sign_message(&msg_data)
+                .await
+                .map_err(|e| {
+                    VerificationError::new(format!("Gateway fee-payer signing failed: {e}"))
+                })?;
+            let gw_idx = tx
+                .message
+                .static_account_keys()
+                .iter()
+                .position(|k| k == &gateway_pubkey)
+                .ok_or_else(|| {
+                    VerificationError::invalid_payload(format!(
+                        "Bundle tx {idx}: gateway not in account keys"
+                    ))
+                })?;
+            tx.signatures[gw_idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
 
             // Simulate before broadcasting to avoid fee loss / partial bundles.
             let sim = self.rpc.simulate_transaction(&tx).map_err(|e| {
@@ -1987,6 +2040,92 @@ fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), Verific
         return Err(VerificationError::invalid_payload(
             "v0 transactions with address lookup tables are not supported",
         ));
+    }
+
+    Ok(())
+}
+
+/// Per-tx structural verification for a gateway-paid confidential bundle.
+///
+/// Because the gateway pays and funds every transaction, a malicious client
+/// could otherwise slip in instructions that drain the operator (a System
+/// transfer out of the fee payer, a priority-fee bomb) or mislead it (an
+/// arbitrary CPI). We therefore require, for each tx:
+///
+/// 1. the fee payer (account_keys[0]) is the gateway;
+/// 2. every instruction belongs to an allow-listed program — the ZK proof
+///    program, spl-record, Token-2022, or the System program; and
+/// 3. each System instruction is `create_account` only, funded by the gateway,
+///    assigning the new account to the ZK or record program (so it is a
+///    closeable proof/record account, never a free-floating account the gateway
+///    funds for nothing).
+///
+/// Anything else (System transfer, Memo, ComputeBudget price, unknown program)
+/// is rejected. Memo is intentionally disallowed: confidential charges
+/// reconcile by signature, not an on-chain order-id marker (privacy).
+#[cfg(feature = "confidential")]
+fn verify_confidential_bundle_tx(
+    tx: &VersionedTransaction,
+    gateway: &Pubkey,
+    token_program: &Pubkey,
+) -> Result<(), VerificationError> {
+    reject_address_lookup_tables(tx)?;
+
+    let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
+    let record_program = spl_record::id();
+    let system_program = solana_system_interface::program::ID;
+
+    let keys = tx.message.static_account_keys();
+    if keys.first() != Some(gateway) {
+        return Err(VerificationError::credential_mismatch(
+            "fee payer is not the gateway",
+        ));
+    }
+
+    for ix in tx.message.instructions() {
+        let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
+            VerificationError::invalid_payload("instruction references unknown program")
+        })?;
+
+        if *program == system_program {
+            // create_account is System instruction tag 0 (little-endian u32),
+            // data layout: tag(4) | lamports(8) | space(8) | owner(32), so the
+            // assigned owner is at byte offset 20..52.
+            let tag = ix
+                .data
+                .get(0..4)
+                .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")));
+            if tag != Some(0) {
+                return Err(VerificationError::credential_mismatch(
+                    "only System create_account is allowed",
+                ));
+            }
+            let funder = ix.accounts.first().and_then(|i| keys.get(*i as usize));
+            if funder != Some(gateway) {
+                return Err(VerificationError::credential_mismatch(
+                    "create_account is not funded by the gateway",
+                ));
+            }
+            let owner = ix
+                .data
+                .get(20..52)
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .map(Pubkey::from);
+            if owner != Some(zk_program) && owner != Some(record_program) {
+                return Err(VerificationError::credential_mismatch(
+                    "create_account assigns a non-proof/record account",
+                ));
+            }
+        } else if *program == zk_program || *program == record_program || *program == *token_program
+        {
+            // Allowed: proof verify/close, record init/write/close, Token-2022
+            // confidential transfer. The transfer destination + amount are
+            // checked separately after the bundle lands.
+        } else {
+            return Err(VerificationError::credential_mismatch(format!(
+                "disallowed program {program}"
+            )));
+        }
     }
 
     Ok(())
@@ -3650,6 +3789,67 @@ mod tests {
             signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
             message: VersionedMessage::V0(message),
         }
+    }
+
+    #[cfg(feature = "confidential")]
+    #[test]
+    fn confidential_bundle_allowlist_accepts_and_rejects() {
+        let gateway = Pubkey::new_unique();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let zk = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).unwrap();
+        let record = spl_record::id();
+        let create = solana_system_interface::instruction::create_account;
+        let vtx = |ixs: Vec<Instruction>, payer: &Pubkey| {
+            VersionedTransaction::from(dummy_tx(ixs, payer))
+        };
+
+        // OK: gateway-funded create_account owned by the ZK program.
+        let ok = vtx(
+            vec![create(&gateway, &Pubkey::new_unique(), 1000, 100, &zk)],
+            &gateway,
+        );
+        assert!(verify_confidential_bundle_tx(&ok, &gateway, &token_program).is_ok());
+
+        // OK: ZK + record + Token-2022 instructions.
+        let mk = |p: Pubkey| Instruction {
+            program_id: p,
+            accounts: vec![],
+            data: vec![],
+        };
+        let ok2 = vtx(vec![mk(zk), mk(record), mk(token_program)], &gateway);
+        assert!(verify_confidential_bundle_tx(&ok2, &gateway, &token_program).is_ok());
+
+        // REJECT: System transfer drains the gateway.
+        let drain = vtx(
+            vec![solana_system_interface::instruction::transfer(
+                &gateway,
+                &Pubkey::new_unique(),
+                1,
+            )],
+            &gateway,
+        );
+        assert!(verify_confidential_bundle_tx(&drain, &gateway, &token_program).is_err());
+
+        // REJECT: create_account assigning to a non-proof/record program.
+        let bad_owner = vtx(
+            vec![create(
+                &gateway,
+                &Pubkey::new_unique(),
+                1000,
+                100,
+                &token_program,
+            )],
+            &gateway,
+        );
+        assert!(verify_confidential_bundle_tx(&bad_owner, &gateway, &token_program).is_err());
+
+        // REJECT: unknown program (arbitrary CPI).
+        let alien = vtx(vec![mk(Pubkey::new_unique())], &gateway);
+        assert!(verify_confidential_bundle_tx(&alien, &gateway, &token_program).is_err());
+
+        // REJECT: fee payer is not the gateway.
+        let wrong = vtx(vec![mk(zk)], &Pubkey::new_unique());
+        assert!(verify_confidential_bundle_tx(&wrong, &gateway, &token_program).is_err());
     }
 
     fn charge_request(amount: u64, currency: &str, recipient: &Pubkey) -> ChargeRequest {

@@ -153,6 +153,19 @@ pub async fn build_charge_transaction_with_options(
     if method_details.confidential.unwrap_or(false) {
         #[cfg(feature = "confidential")]
         {
+            // Clients hold no SOL, so confidential bundles are gateway-paid: the
+            // challenge MUST carry the gateway fee-payer key, which becomes the
+            // fee payer, rent funder, and proof/record-account authority for
+            // every bundle transaction (the client only signs the transfer
+            // authority and the ephemeral account keypairs).
+            let fee_payer_key = method_details.fee_payer_key.as_deref().ok_or_else(|| {
+                Error::InvalidConfig(
+                    "confidential charges require feePayerKey (the gateway pays bundle fees)"
+                        .into(),
+                )
+            })?;
+            let fee_payer = Pubkey::from_str(fee_payer_key)
+                .map_err(|e| Error::Other(format!("invalid feePayerKey `{fee_payer_key}`: {e}")))?;
             let blockhash = resolve_blockhash(rpc, method_details)?;
             return super::confidential::confidential_charge_payload(
                 signer,
@@ -160,6 +173,7 @@ pub async fn build_charge_transaction_with_options(
                 total_amount,
                 currency,
                 recipient,
+                &fee_payer,
                 blockhash,
             )
             .await;

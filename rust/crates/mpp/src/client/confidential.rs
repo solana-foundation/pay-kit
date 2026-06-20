@@ -86,16 +86,24 @@ pub struct ConfidentialTransferParams<'a> {
     pub recipient: &'a Pubkey,
     /// Transfer amount in base units.
     pub amount: u64,
+    /// Gateway fee-payer pubkey (from `methodDetails.feePayerKey`). Clients hold
+    /// no SOL, so the gateway is the fee payer, rent funder, proof/record-account
+    /// authority, and close (rent-reclaim) destination for every bundle tx.
+    pub fee_payer: &'a Pubkey,
     /// Recent blockhash to sign all bundle transactions with. The gateway must
     /// submit the bundle while this blockhash is still valid.
     pub blockhash: Hash,
 }
 
-/// Build the ordered, signed transaction bundle for a confidential transfer.
+/// Build the ordered, partially-signed transaction bundle for a confidential
+/// transfer.
 ///
-/// `signer` is the sender — it acts as transfer authority, fee payer, and
-/// rent funder for the proof context and record accounts. Returns the
-/// base64-encoded serialized transactions in submission order.
+/// `signer` is the sender; it signs only the transfer authority and the
+/// ephemeral proof/record account keypairs. `params.fee_payer` (the gateway)
+/// is the fee payer, rent funder, proof/record authority, and rent-reclaim
+/// destination on every transaction — its signature slot is left empty for the
+/// gateway to co-sign at settlement. Returns the base64-encoded serialized
+/// transactions in submission order.
 pub async fn build_confidential_transfer_bundle(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -104,6 +112,9 @@ pub async fn build_confidential_transfer_bundle(
     let zk_program = Pubkey::from_str(ZK_PROOF_PROGRAM_ID).expect("valid zk proof program id");
     let token_program = spl_token_2022::id();
     let sender_pubkey = signer.pubkey();
+    // The gateway pays, funds, and owns every proof/record account.
+    let fee_payer = params.fee_payer;
+    let fee_payer_addr = Address::from(fee_payer.to_bytes());
 
     let sender_token_account =
         spl_associated_token_account::get_associated_token_address_with_program_id(
@@ -192,7 +203,7 @@ pub async fn build_confidential_transfer_bundle(
         .get_minimum_balance_for_rent_exemption(equality_size)
         .map_err(|e| Error::Rpc(e.to_string()))?;
     let equality_create = system_instruction::create_account(
-        &sender_pubkey,
+        fee_payer,
         &equality_account.pubkey(),
         equality_rent,
         equality_size as u64,
@@ -201,14 +212,14 @@ pub async fn build_confidential_transfer_bundle(
     let equality_verify = ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
         Some(ContextStateInfo {
             context_state_account: &Address::from(equality_account.pubkey().to_bytes()),
-            context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+            context_state_authority: &fee_payer_addr,
         }),
         &proof_data.equality_proof_data,
     );
     bundle.push(
-        sign_tx(
+        partial_sign_tx(
             signer,
-            &sender_pubkey,
+            fee_payer,
             &[&equality_account],
             &[equality_create, equality_verify],
             params.blockhash,
@@ -224,7 +235,7 @@ pub async fn build_confidential_transfer_bundle(
         .get_minimum_balance_for_rent_exemption(validity_size)
         .map_err(|e| Error::Rpc(e.to_string()))?;
     let validity_create = system_instruction::create_account(
-        &sender_pubkey,
+        fee_payer,
         &validity_account.pubkey(),
         validity_rent,
         validity_size as u64,
@@ -234,16 +245,16 @@ pub async fn build_confidential_transfer_bundle(
         .encode_verify_proof(
             Some(ContextStateInfo {
                 context_state_account: &Address::from(validity_account.pubkey().to_bytes()),
-                context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+                context_state_authority: &fee_payer_addr,
             }),
             &proof_data
                 .ciphertext_validity_proof_data_with_ciphertext
                 .proof_data,
         );
     bundle.push(
-        sign_tx(
+        partial_sign_tx(
             signer,
-            &sender_pubkey,
+            fee_payer,
             &[&validity_account],
             &[validity_create, validity_verify],
             params.blockhash,
@@ -259,7 +270,7 @@ pub async fn build_confidential_transfer_bundle(
         .get_minimum_balance_for_rent_exemption(range_size)
         .map_err(|e| Error::Rpc(e.to_string()))?;
     let range_create = system_instruction::create_account(
-        &sender_pubkey,
+        fee_payer,
         &range_account.pubkey(),
         range_rent,
         range_size as u64,
@@ -269,7 +280,7 @@ pub async fn build_confidential_transfer_bundle(
         .encode_verify_proof_from_account(
             Some(ContextStateInfo {
                 context_state_account: &Address::from(range_account.pubkey().to_bytes()),
-                context_state_authority: &Address::from(sender_pubkey.to_bytes()),
+                context_state_authority: &fee_payer_addr,
             }),
             &Address::from(record_account.pubkey().to_bytes()),
             RECORD_PROOF_OFFSET,
@@ -278,7 +289,7 @@ pub async fn build_confidential_transfer_bundle(
     let mut record_txs = stage_range_proof_record(
         signer,
         rpc,
-        &sender_pubkey,
+        fee_payer,
         &record_account,
         proof_bytes,
         &[range_create, range_verify],
@@ -325,14 +336,16 @@ pub async fn build_confidential_transfer_bundle(
     )
     .map_err(|e| Error::Other(format!("build transfer instruction: {e}")))?;
 
-    let sender_addr = Address::from(sender_pubkey.to_bytes());
+    // Close every proof/record account back to the gateway (it funded the rent
+    // and is the authority), so net rent ≈ 0 and the gateway can also sweep
+    // orphans after a partial failure.
     let close = |ctx: &Pubkey| {
         close_context_state(
             ContextStateInfo {
                 context_state_account: &Address::from(ctx.to_bytes()),
-                context_state_authority: &sender_addr,
+                context_state_authority: &fee_payer_addr,
             },
-            &sender_addr,
+            &fee_payer_addr,
         )
     };
     let final_ixs = vec![
@@ -340,13 +353,9 @@ pub async fn build_confidential_transfer_bundle(
         close(&equality_account.pubkey()),
         close(&validity_account.pubkey()),
         close(&range_account.pubkey()),
-        spl_record::instruction::close_account(
-            &record_account.pubkey(),
-            &sender_pubkey,
-            &sender_pubkey,
-        ),
+        spl_record::instruction::close_account(&record_account.pubkey(), fee_payer, fee_payer),
     ];
-    bundle.push(sign_tx(signer, &sender_pubkey, &[], &final_ixs, params.blockhash).await?);
+    bundle.push(partial_sign_tx(signer, fee_payer, &[], &final_ixs, params.blockhash).await?);
 
     Ok(bundle)
 }
@@ -360,6 +369,7 @@ pub(crate) async fn confidential_charge_payload(
     amount: u64,
     mint: &str,
     recipient: &str,
+    fee_payer: &Pubkey,
     blockhash: Hash,
 ) -> Result<CredentialPayload, Error> {
     let mint_pk =
@@ -373,6 +383,7 @@ pub(crate) async fn confidential_charge_payload(
             mint: &mint_pk,
             recipient: &recipient_pk,
             amount,
+            fee_payer,
             blockhash,
         },
     )
@@ -383,7 +394,9 @@ pub(crate) async fn confidential_charge_payload(
 /// Stage `proof_bytes` into a fresh spl-record account in tx-sized chunks. The
 /// first tx creates + initializes + writes the first chunk; the final write tx
 /// carries `trailing_ixs` (with `trailing_signers`) so the range context create
-/// + verify-from-account ride along. Returns one signed tx per transaction.
+/// + verify-from-account ride along. `payer` (the gateway) is the rent funder
+/// and the record authority, so the gateway co-signs each write at settlement.
+/// Returns one partially-signed tx per transaction.
 #[allow(clippy::too_many_arguments)]
 async fn stage_range_proof_record(
     signer: &dyn SolanaSigner,
@@ -411,7 +424,7 @@ async fn stage_range_proof_record(
 
     // tx 1: create + initialize + write first chunk.
     txs.push(
-        sign_tx(
+        partial_sign_tx(
             signer,
             payer,
             &[record_account],
@@ -448,38 +461,53 @@ async fn stage_range_proof_record(
             extra.extend_from_slice(trailing_signers);
             trailing_attached = true;
         }
-        txs.push(sign_tx(signer, payer, &extra, &ixs, blockhash).await?);
+        txs.push(partial_sign_tx(signer, payer, &extra, &ixs, blockhash).await?);
         offset += chunk.len() as u64;
     }
 
     // Single-chunk proof: no write-only tx existed to carry the trailing ixs.
     if !trailing_attached {
-        txs.push(sign_tx(signer, payer, trailing_signers, trailing_ixs, blockhash).await?);
+        txs.push(partial_sign_tx(signer, payer, trailing_signers, trailing_ixs, blockhash).await?);
     }
 
     Ok(txs)
 }
 
-/// Build a transaction with `payer` (the async signer) as fee payer, co-sign it
-/// with any `extra` ephemeral keypairs, and return the base64-encoded bytes.
-async fn sign_tx(
+/// Build a transaction with `fee_payer` (the gateway) as fee payer and
+/// partially sign it with the client-held keys only: the sender `signer` when
+/// it is a required signer on this tx (e.g. the transfer authority) and any
+/// `extra` ephemeral account keypairs. The gateway fee-payer signature slot is
+/// left empty (all-zero) for the gateway to co-sign at settlement. Returns the
+/// base64-encoded serialized partially-signed transaction.
+async fn partial_sign_tx(
     signer: &dyn SolanaSigner,
-    payer: &Pubkey,
+    fee_payer: &Pubkey,
     extra: &[&Keypair],
     instructions: &[Instruction],
     blockhash: Hash,
 ) -> Result<String, Error> {
     use solana_transaction::Transaction;
-    let message = Message::new_with_blockhash(instructions, Some(payer), &blockhash);
+    let message = Message::new_with_blockhash(instructions, Some(fee_payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
     let msg = tx.message_data();
 
-    // Async signer (fee payer / authority / rent funder).
-    let sig_bytes = signer
-        .sign_message(&msg)
-        .await
-        .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
-    set_signature(&mut tx, payer, Signature::from(<[u8; 64]>::from(sig_bytes)))?;
+    // Sign the sender slot only when the sender is a required signer on this tx
+    // (the final transfer's authority). The proof/record-account txs have no
+    // sender signer — only the gateway (fee payer/authority) and the ephemeral
+    // account. Never sign the gateway slot; the gateway co-signs at settlement.
+    let sender_pubkey = signer.pubkey();
+    let num_signers = tx.message.header.num_required_signatures as usize;
+    if tx.message.account_keys[..num_signers].contains(&sender_pubkey) {
+        let sig_bytes = signer
+            .sign_message(&msg)
+            .await
+            .map_err(|e| Error::Other(format!("signing failed: {e}")))?;
+        set_signature(
+            &mut tx,
+            &sender_pubkey,
+            Signature::from(<[u8; 64]>::from(sig_bytes)),
+        )?;
+    }
 
     // Ephemeral account keypairs sign synchronously.
     for kp in extra {
