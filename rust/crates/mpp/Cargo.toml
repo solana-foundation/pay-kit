@@ -87,7 +87,11 @@ spl-token-confidential-transfer-proof-extraction = { version = "0.5.1", optional
 solana-zk-elgamal-proof-interface = { version = "0.1.2", optional = true }
 solana-zk-sdk-pod = { version = "0.1.1", optional = true }
 spl-record = { version = "0.4.0", optional = true, features = ["no-entrypoint"] }
-spl-associated-token-account = { version = "8.0.0", optional = true }
+# `no-entrypoint`: we only use ATA address derivation. Without it the crate
+# emits the on-chain `entrypoint` symbol, which collides ("duplicate symbol:
+# entrypoint") at link time with surfpool's bundled programs when a downstream
+# integration test links confidential + surfpool together (linux ld).
+spl-associated-token-account = { version = "8.0.0", optional = true, features = ["no-entrypoint"] }
 bytemuck = { version = "1.25", optional = true }
 # Ephemeral keypairs for proof context-state + record accounts (client-side).
 solana-keypair = { version = "3.0", optional = true }
