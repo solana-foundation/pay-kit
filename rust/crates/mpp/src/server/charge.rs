@@ -92,6 +92,14 @@ const MAX_BUNDLE_TX_BASE64_LEN: usize = 2048;
 const CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS: usize = 30;
 #[cfg(feature = "confidential")]
 const CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS: u64 = 200;
+/// Max `SetComputeUnitLimit` a confidential bundle tx may request. The
+/// confidential transfer + proof CPIs can exceed the 200k default, so this is
+/// higher than the non-confidential `MAX_COMPUTE_UNIT_LIMIT`; it is bounded by
+/// Solana's per-tx ceiling. The gateway is the fee payer, but priority cost is
+/// `price * units` and the price is capped at the fee-sponsored limit, so even
+/// at this ceiling the worst-case priority fee is negligible (~14k lamports).
+#[cfg(feature = "confidential")]
+const MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
 /// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
 #[cfg(feature = "worker")]
@@ -2398,6 +2406,8 @@ fn verify_confidential_bundle_tx(
     let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
     let record_program = spl_record::id();
     let system_program = solana_system_interface::program::ID;
+    let compute_budget_program =
+        Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).expect("valid compute budget program id");
 
     let keys = tx.message.static_account_keys();
     if keys.first() != Some(gateway) {
@@ -2486,6 +2496,36 @@ fn verify_confidential_bundle_tx(
                 if auth != Some(gateway) || receiver != Some(gateway) {
                     return Err(VerificationError::credential_mismatch(
                         "spl-record close_account must return rent to and be authorized by the gateway",
+                    ));
+                }
+            }
+        } else if *program == compute_budget_program {
+            // Allow a CU limit + priority fee so bundle txs aren't dropped under
+            // congestion and the confidential transfer (which can exceed the 200k
+            // default) gets enough compute. The gateway is the fee payer, so the
+            // price is capped at the fee-sponsored limit to bound what a client
+            // can spend on its behalf; only SetComputeUnitLimit (2) and
+            // SetComputeUnitPrice (3) are permitted.
+            match (ix.data.first().copied(), ix.data.len()) {
+                (Some(2), 5) => {
+                    let units = u32::from_le_bytes(ix.data[1..5].try_into().unwrap());
+                    if units > MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT {
+                        return Err(VerificationError::credential_mismatch(format!(
+                            "compute unit limit {units} exceeds maximum {MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT}"
+                        )));
+                    }
+                }
+                (Some(3), 9) => {
+                    let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+                    if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED {
+                        return Err(VerificationError::credential_mismatch(format!(
+                            "compute unit price {price} exceeds the fee-sponsored maximum {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED}"
+                        )));
+                    }
+                }
+                _ => {
+                    return Err(VerificationError::credential_mismatch(
+                        "only SetComputeUnitLimit / SetComputeUnitPrice are allowed on ComputeBudget",
                     ));
                 }
             }
@@ -4343,6 +4383,55 @@ mod tests {
         // REJECT: fee payer is not the gateway.
         let wrong = vtx(vec![mk(zk)], &Pubkey::new_unique());
         assert!(verify(&wrong).is_err());
+
+        // ── ComputeBudget: CU limit + priority fee (bounded) ──
+        let cb_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap();
+        let cb = |data: Vec<u8>| Instruction {
+            program_id: cb_program,
+            accounts: vec![],
+            data,
+        };
+        let set_limit = |units: u32| {
+            let mut d = vec![2u8];
+            d.extend_from_slice(&units.to_le_bytes());
+            cb(d)
+        };
+        let set_price = |price: u64| {
+            let mut d = vec![3u8];
+            d.extend_from_slice(&price.to_le_bytes());
+            cb(d)
+        };
+
+        // OK: CU limit at the cap + price at the fee-sponsored cap, alongside a transfer.
+        let ok_cb = vtx(
+            vec![
+                set_limit(MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT),
+                set_price(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+                ct_transfer(recipient_ata),
+            ],
+            &gateway,
+        );
+        assert_eq!(verify(&ok_cb).unwrap(), 1);
+
+        // REJECT: CU limit over the cap.
+        let over_limit = vtx(
+            vec![set_limit(MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT + 1)],
+            &gateway,
+        );
+        assert!(verify(&over_limit).is_err());
+
+        // REJECT: priority price over the fee-sponsored cap (would spend the gateway's lamports).
+        let over_price = vtx(
+            vec![set_price(
+                MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED + 1,
+            )],
+            &gateway,
+        );
+        assert!(verify(&over_price).is_err());
+
+        // REJECT: a non-limit/price ComputeBudget op (e.g. RequestHeapFrame = 1).
+        let heap = vtx(vec![cb(vec![1, 0, 0, 0, 0])], &gateway);
+        assert!(verify(&heap).is_err());
     }
 
     // A Bundle credential must only settle a challenge that was issued in

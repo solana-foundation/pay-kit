@@ -72,6 +72,16 @@ use crate::protocol::solana::CredentialPayload;
 /// The native ZK ElGamal Proof program.
 const ZK_PROOF_PROGRAM_ID: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 
+/// The ComputeBudget program (CU limit / priority fee).
+const COMPUTE_BUDGET_PROGRAM_ID: &str = "ComputeBudget111111111111111111111111111111";
+
+/// CU limit requested on the final transfer tx. The confidential `Transfer`
+/// reading three proof context-state accounts plus the in-tx account closes
+/// exceeds the 200k default, so we request explicit headroom (well within the
+/// server's allow-list cap). Requesting a limit only raises the ceiling — with
+/// no priority price set it costs nothing extra (fee is charged on CU used).
+const CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT: u32 = 500_000;
+
 /// Byte offset of the proof inside an spl-record account
 /// (`RecordData::WRITABLE_START_INDEX`: 1-byte version + 32-byte authority).
 const RECORD_PROOF_OFFSET: u32 = 33;
@@ -375,7 +385,20 @@ pub async fn build_confidential_transfer_bundle(
             &fee_payer_addr,
         )
     };
+    // Request a CU limit up front: the confidential transfer + in-tx closes
+    // exceed the 200k default, so without this the gateway's simulation step
+    // would reject the bundle (or validators would drop it on mainnet).
+    let compute_budget_program =
+        Pubkey::from_str(COMPUTE_BUDGET_PROGRAM_ID).expect("valid compute budget program id");
+    let mut cu_limit_data = vec![2u8]; // SetComputeUnitLimit
+    cu_limit_data.extend_from_slice(&CONFIDENTIAL_TRANSFER_COMPUTE_UNIT_LIMIT.to_le_bytes());
+    let cu_limit_ix = Instruction {
+        program_id: compute_budget_program,
+        accounts: vec![],
+        data: cu_limit_data,
+    };
     let final_ixs = vec![
+        cu_limit_ix,
         transfer_ix,
         close(&equality_account.pubkey()),
         close(&validity_account.pubkey()),
