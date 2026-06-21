@@ -68,8 +68,10 @@ const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 /// Upper bound on transactions in a gateway-paid confidential bundle. The
 /// builder emits ~5 (3 proof contexts + range-proof record staging + the
 /// transfer/close tx); the headroom covers multi-chunk range-proof writes.
+#[cfg(feature = "confidential")]
 const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
 /// ZK ElGamal Proof program id (proof verification + close_context_state).
+#[cfg(feature = "confidential")]
 const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 
 /// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
