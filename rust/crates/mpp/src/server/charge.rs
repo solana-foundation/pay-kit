@@ -190,11 +190,23 @@ fn resolve_server_token_program(
             "Currency {currency} is neither a known symbol nor a valid mint address: {e}"
         ))
     })?;
-    let account = rpc.get_account(&mint_pk).map_err(|e| {
-        Error::InvalidConfig(format!(
-            "Failed to fetch mint account for currency {currency}: {e}"
-        ))
-    })?;
+    // Read at `confirmed` (not the default `finalized`): the mint owner is
+    // immutable, so confirmed is strictly safe, faster, and avoids a spurious
+    // failure for a freshly-created/cloned mint that isn't finalized yet.
+    let account = rpc
+        .get_account_with_commitment(
+            &mint_pk,
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        )
+        .map_err(|e| {
+            Error::InvalidConfig(format!(
+                "Failed to fetch mint account for currency {currency}: {e}"
+            ))
+        })?
+        .value
+        .ok_or_else(|| {
+            Error::InvalidConfig(format!("Mint account not found for currency {currency}"))
+        })?;
     let owner = account.owner.to_string();
     match owner.as_str() {
         programs::TOKEN_PROGRAM => Ok(Some(programs::TOKEN_PROGRAM)),
@@ -1263,11 +1275,22 @@ impl Mpp {
         // gateway can't decrypt the amount, so it relies on the on-chain proofs
         // and the recipient reconciling out of band.
         if let Some(keys) = &recipient_keys {
-            let after_account = self.rpc.get_account(&recipient_ata).map_err(|e| {
-                VerificationError::network_error(format!(
-                    "Failed to read recipient account after settlement: {e}"
-                ))
-            })?;
+            // Read at `confirmed` — the same commitment used to confirm the
+            // bundle and to snapshot the `before` balance. Using the default
+            // `finalized` here would fail valid payments during the ~6-12s gap
+            // between a transfer being confirmed and finalized.
+            let after_account = self
+                .rpc
+                .get_account_with_commitment(&recipient_ata, CommitmentConfig::confirmed())
+                .map_err(|e| {
+                    VerificationError::network_error(format!(
+                        "Failed to read recipient account after settlement: {e}"
+                    ))
+                })?
+                .value
+                .ok_or_else(|| {
+                    VerificationError::new("Recipient token account missing after settlement")
+                })?;
             let after = read_pending(&after_account.data, keys)?.ok_or_else(|| {
                 VerificationError::new(
                     "Failed to decrypt recipient pending balance (after) with recipient key",
