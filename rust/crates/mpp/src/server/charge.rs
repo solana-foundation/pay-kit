@@ -1010,6 +1010,17 @@ impl Mpp {
             state::Account as TokenAccount,
         };
 
+        // Only accept a bundle when the challenge was actually issued in
+        // confidential mode. Without this, a client could present a Bundle
+        // credential against an ordinary Token-2022 charge; in facilitator mode
+        // (no amount enforcement) it would settle with a near-zero confidential
+        // transfer, claiming any non-confidential charge for a trivial amount.
+        if method_details.confidential != Some(true) {
+            return Err(VerificationError::credential_mismatch(
+                "Bundle credentials are only valid for challenges issued with confidential mode enabled",
+            ));
+        }
+
         if transactions.is_empty() {
             return Err(VerificationError::invalid_payload(
                 "Confidential bundle contains no transactions",
@@ -4332,6 +4343,47 @@ mod tests {
         // REJECT: fee payer is not the gateway.
         let wrong = vtx(vec![mk(zk)], &Pubkey::new_unique());
         assert!(verify(&wrong).is_err());
+    }
+
+    // A Bundle credential must only settle a challenge that was issued in
+    // confidential mode. Otherwise a facilitator-mode server (no amount
+    // enforcement) would let a client claim any ordinary Token-2022 charge with
+    // a near-zero confidential transfer. The guard runs before any RPC use, so
+    // a throwaway rpc_url is never contacted.
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn bundle_rejected_when_challenge_not_confidential() {
+        let recipient = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: recipient.to_string(),
+            currency: "SOL".to_string(),
+            decimals: 6,
+            network: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some("x".repeat(32)),
+            realm: Some("test".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let request = charge_request(500_000, &Pubkey::new_unique().to_string(), &recipient);
+
+        for confidential in [None, Some(false)] {
+            let method_details = MethodDetails {
+                token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+                confidential,
+                ..Default::default()
+            };
+            let err = mpp
+                .settle_confidential_bundle(&["unused".to_string()], &request, &method_details)
+                .await
+                .unwrap_err();
+            assert!(
+                err.message.contains("confidential mode"),
+                "confidential={confidential:?} got: {}",
+                err.message
+            );
+        }
     }
 
     fn charge_request(amount: u64, currency: &str, recipient: &Pubkey) -> ChargeRequest {
