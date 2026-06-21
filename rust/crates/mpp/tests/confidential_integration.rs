@@ -462,3 +462,88 @@ async fn confidential_charge_via_worker() {
     assert_eq!(receipt.status.to_string(), "success");
     assert!(!receipt.reference.is_empty());
 }
+
+/// Orphan sweep: create gateway-owned proof-context + record accounts (as a
+/// partially-failed bundle would strand) and confirm the two-pass sweep defers
+/// on the first pass and closes them back to the gateway on the second.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn confidential_orphan_sweep() {
+    let s = setup_confidential().await;
+    let zk_program =
+        solana_pubkey::Pubkey::from_str_const("ZkE1Gama1Proof11111111111111111111111111111");
+
+    // Orphan 1: a gateway-owned spl-record account (authority at offset 1).
+    let record = Keypair::new();
+    let record_space = spl_record::state::RecordData::WRITABLE_START_INDEX;
+    let record_rent = s
+        .rpc
+        .get_minimum_balance_for_rent_exemption(record_space)
+        .unwrap();
+    submit(
+        &s.rpc,
+        &s.gateway,
+        &[
+            system_instruction::create_account(
+                &s.gateway.pubkey(),
+                &record.pubkey(),
+                record_rent,
+                record_space as u64,
+                &spl_record::id(),
+            ),
+            spl_record::instruction::initialize(&record.pubkey(), &s.gateway.pubkey()),
+        ],
+        &[&record],
+        "create orphan record",
+    );
+
+    // Orphan 2: a gateway-owned ZK proof context (authority at offset 0).
+    let elgamal = ElGamalKeypair::new_rand();
+    let proof_data = build_pubkey_validity_proof_data(&elgamal).unwrap();
+    let ctx = Keypair::new();
+    let ctx_size = size_of::<ProofContextState<PubkeyValidityProofContext>>();
+    let ctx_rent = s
+        .rpc
+        .get_minimum_balance_for_rent_exemption(ctx_size)
+        .unwrap();
+    submit(
+        &s.rpc,
+        &s.gateway,
+        &[
+            system_instruction::create_account(
+                &s.gateway.pubkey(),
+                &ctx.pubkey(),
+                ctx_rent,
+                ctx_size as u64,
+                &zk_program,
+            ),
+            ProofInstruction::VerifyPubkeyValidity.encode_verify_proof(
+                Some(ContextStateInfo {
+                    context_state_account: &Address::from(ctx.pubkey().to_bytes()),
+                    context_state_authority: &Address::from(s.gateway.pubkey().to_bytes()),
+                }),
+                &proof_data,
+            ),
+        ],
+        &[&ctx],
+        "create orphan context",
+    );
+
+    // One long-lived Mpp so the two-pass guard's store persists across sweeps.
+    let mpp = gateway_mpp(&s);
+
+    // First pass: first sighting ⇒ deferred, nothing closed.
+    let first = mpp.sweep_confidential_orphans().await.unwrap();
+    assert_eq!(first.closed_contexts + first.closed_records, 0);
+    assert!(first.deferred >= 2, "expected >=2 deferred, got {first:?}");
+
+    // Second pass: confirmed orphaned ⇒ closed back to the gateway.
+    let second = mpp.sweep_confidential_orphans().await.unwrap();
+    assert!(second.closed_records >= 1, "record not closed: {second:?}");
+    assert!(
+        second.closed_contexts >= 1,
+        "context not closed: {second:?}"
+    );
+    assert!(s.rpc.get_account(&record.pubkey()).is_err());
+    assert!(s.rpc.get_account(&ctx.pubkey()).is_err());
+}
