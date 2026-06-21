@@ -468,6 +468,7 @@ async fn confidential_charge_via_worker() {
 /// Orphan sweep: create gateway-owned proof-context + record accounts (as a
 /// partially-failed bundle would strand) and confirm the two-pass sweep defers
 /// on the first pass and closes them back to the gateway on the second.
+#[cfg(feature = "worker")]
 #[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn confidential_orphan_sweep() {

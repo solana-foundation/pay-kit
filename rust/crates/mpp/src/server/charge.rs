@@ -75,7 +75,7 @@ const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
 const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111111";
 
 /// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
-#[cfg(feature = "confidential")]
+#[cfg(feature = "worker")]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ConfidentialSweepReport {
     /// Orphaned ZK proof-context accounts closed this pass.
@@ -1245,7 +1245,7 @@ impl Mpp {
     /// account is closed only if it was already seen in a PRIOR sweep. First
     /// sighting ⇒ record + defer; still present next sweep ⇒ orphaned ⇒ close.
     /// Schedule this with an interval comfortably larger than settlement latency.
-    #[cfg(feature = "confidential")]
+    #[cfg(feature = "worker")]
     pub async fn sweep_confidential_orphans(
         &self,
     ) -> Result<ConfidentialSweepReport, VerificationError> {
@@ -1349,7 +1349,7 @@ impl Mpp {
 
     /// Build, gateway-sign, simulate, broadcast, and confirm a single close
     /// instruction. Used by the orphan sweeper.
-    #[cfg(feature = "confidential")]
+    #[cfg(feature = "worker")]
     async fn broadcast_close(
         &self,
         signer: &dyn solana_keychain::SolanaSigner,
@@ -2239,7 +2239,7 @@ fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), Verific
 /// is rejected. Memo is intentionally disallowed: confidential charges
 /// reconcile by signature, not an on-chain order-id marker (privacy).
 /// Store key marking that the orphan sweeper has seen `pubkey` in a prior pass.
-#[cfg(feature = "confidential")]
+#[cfg(feature = "worker")]
 fn orphan_seen_key(pubkey: &Pubkey) -> String {
     format!("confidential-orphan:seen:{pubkey}")
 }
@@ -2248,7 +2248,7 @@ fn orphan_seen_key(pubkey: &Pubkey) -> String {
 /// in a previous sweep (⇒ it has survived a full interval and is genuinely
 /// orphaned, not an in-flight settlement's transient account). On the first
 /// sighting it records the mark and returns `false` (defer to the next sweep).
-#[cfg(feature = "confidential")]
+#[cfg(feature = "worker")]
 async fn confirm_orphan_seen(
     store: &dyn Store,
     pubkey: &Pubkey,
@@ -4039,7 +4039,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "confidential")]
+    #[cfg(feature = "worker")]
     #[tokio::test]
     async fn orphan_guard_defers_first_sighting_then_confirms() {
         let store = MemoryStore::new();
