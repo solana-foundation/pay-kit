@@ -2474,11 +2474,13 @@ fn verify_confidential_bundle_tx(
                 ));
             }
         } else if *program == zk_program {
-            // Proof verify instructions are fine. A CloseContextState reclaims
-            // rent the GATEWAY funded, so — since the gateway co-signs — it must
-            // return that rent to, and be authorized by, the gateway; otherwise
-            // a client could redirect the gateway's rent to an attacker.
+            // Every gateway-funded context account must be OWNED by the gateway,
+            // both on the way in (verify-with-context sets context_state_authority)
+            // and on the way out (CloseContextState). Otherwise a client could set
+            // itself as authority during the verify and later close the account
+            // externally, redirecting the gateway's rent to itself.
             if ix.data.first() == Some(&ZK_CLOSE_CONTEXT_STATE) {
+                // Accounts: [context, destination, authority].
                 let dest = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
                 let auth = ix.accounts.get(2).and_then(|i| keys.get(*i as usize));
                 if dest != Some(gateway) || auth != Some(gateway) {
@@ -2486,18 +2488,65 @@ fn verify_confidential_bundle_tx(
                         "close_context_state must return rent to and be authorized by the gateway",
                     ));
                 }
-            }
-        } else if *program == record_program {
-            // spl-record init/write are fine. CloseAccount likewise must return
-            // rent to, and be authorized by, the gateway.
-            if ix.data.first() == Some(&RECORD_CLOSE_ACCOUNT) {
-                let auth = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
-                let receiver = ix.accounts.get(2).and_then(|i| keys.get(*i as usize));
-                if auth != Some(gateway) || receiver != Some(gateway) {
+            } else {
+                // Verify-with-context. The context_state_authority sits at a
+                // fixed index that depends on where the proof is read from — the
+                // program reads it by position, so we check that exact position
+                // (a trailing decoy account can't shift it):
+                //   * proof in instruction data  → [context(w), authority]
+                //   * proof in a separate account → [proof, context(w), authority]
+                // The from-account form is the one whose data is just the
+                // discriminant + a u32 byte offset (5 bytes); inline proof data
+                // is hundreds of bytes. A context-less verify writes no
+                // persistent account, so it has no authority slot at that index
+                // and is rejected (the builder always verifies into a context).
+                let authority_index = if ix.data.len() == 5 { 2 } else { 1 };
+                let auth = ix
+                    .accounts
+                    .get(authority_index)
+                    .and_then(|i| keys.get(*i as usize));
+                if auth != Some(gateway) {
                     return Err(VerificationError::credential_mismatch(
-                        "spl-record close_account must return rent to and be authorized by the gateway",
+                        "ZK verify context_state_authority must be the gateway",
                     ));
                 }
+            }
+        } else if *program == record_program {
+            // spl-record discriminants: Initialize=0, Write=1, SetAuthority=2,
+            // CloseAccount=3. The record account is gateway-funded, so the
+            // gateway must be its authority on Initialize (else a client sets
+            // itself and drains rent later), SetAuthority is forbidden (the
+            // gateway co-signs, so it would otherwise reassign authority to the
+            // client), and CloseAccount must return rent to + be authorized by
+            // the gateway. Write changes no authority and is fine.
+            const RECORD_INITIALIZE: u8 = 0;
+            const RECORD_SET_AUTHORITY: u8 = 2;
+            match ix.data.first().copied() {
+                Some(RECORD_INITIALIZE) => {
+                    // Accounts: [record, authority].
+                    let auth = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
+                    if auth != Some(gateway) {
+                        return Err(VerificationError::credential_mismatch(
+                            "spl-record initialize authority must be the gateway",
+                        ));
+                    }
+                }
+                Some(RECORD_SET_AUTHORITY) => {
+                    return Err(VerificationError::credential_mismatch(
+                        "spl-record set_authority is not allowed in a confidential bundle",
+                    ));
+                }
+                Some(RECORD_CLOSE_ACCOUNT) => {
+                    // Accounts: [record, authority, receiver].
+                    let auth = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
+                    let receiver = ix.accounts.get(2).and_then(|i| keys.get(*i as usize));
+                    if auth != Some(gateway) || receiver != Some(gateway) {
+                        return Err(VerificationError::credential_mismatch(
+                            "spl-record close_account must return rent to and be authorized by the gateway",
+                        ));
+                    }
+                }
+                _ => {}
             }
         } else if *program == compute_budget_program {
             // Allow a CU limit + priority fee so bundle txs aren't dropped under
@@ -4278,6 +4327,37 @@ mod tests {
             ],
             data: vec![27, 7],
         };
+        // ZK verify-with-context, proof inline: [context(w), authority]. Inline
+        // proof data is large (>5 bytes), so the authority is read at index 1.
+        let zk_verify_inline = |auth: Pubkey| Instruction {
+            program_id: zk,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false), // context
+                AccountMeta::new_readonly(auth, false),        // authority
+            ],
+            data: vec![1u8; 64], // discriminant 1 (a Verify*) + bulk proof bytes
+        };
+        // ZK verify-with-context, proof read from a record account:
+        // [proof, context(w), authority]. Identified by 5-byte data
+        // (discriminant + u32 offset); the authority is read at index 2.
+        let zk_verify_from_acct = |auth: Pubkey| Instruction {
+            program_id: zk,
+            accounts: vec![
+                AccountMeta::new_readonly(Pubkey::new_unique(), false), // proof source
+                AccountMeta::new(Pubkey::new_unique(), false),          // context
+                AccountMeta::new_readonly(auth, false),                 // authority
+            ],
+            data: vec![1, 0, 0, 0, 0], // discriminant + u32 offset
+        };
+        // spl-record Initialize: [record(w), authority]. Discriminant 0.
+        let record_init = |auth: Pubkey| Instruction {
+            program_id: record,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false), // record
+                AccountMeta::new_readonly(auth, false),        // authority
+            ],
+            data: vec![0],
+        };
 
         // OK: gateway-funded create_account owned by the ZK program (0 transfers).
         let ok = vtx(
@@ -4286,12 +4366,42 @@ mod tests {
         );
         assert_eq!(verify(&ok).unwrap(), 0);
 
-        // OK: ZK + record + one confidential transfer to the recipient.
+        // OK: gateway-authorized ZK verifies (inline + from-account) + record
+        // init + one confidential transfer to the recipient.
         let ok2 = vtx(
-            vec![mk(zk), mk(record), ct_transfer(recipient_ata)],
+            vec![
+                zk_verify_inline(gateway),
+                zk_verify_from_acct(gateway),
+                record_init(gateway),
+                ct_transfer(recipient_ata),
+            ],
             &gateway,
         );
         assert_eq!(verify(&ok2).unwrap(), 1);
+
+        // REJECT: ZK verify (inline) that sets an attacker as context authority —
+        // it could close the gateway-funded account externally and drain the rent.
+        let attacker = Pubkey::new_unique();
+        assert!(verify(&vtx(vec![zk_verify_inline(attacker)], &gateway)).is_err());
+        // REJECT: same via the from-account form (authority at index 2, not 1).
+        assert!(verify(&vtx(vec![zk_verify_from_acct(attacker)], &gateway)).is_err());
+        // REJECT: spl-record initialize naming an attacker authority.
+        assert!(verify(&vtx(vec![record_init(attacker)], &gateway)).is_err());
+        // REJECT: spl-record set_authority (discriminant 2) — never allowed; the
+        // gateway co-signature would otherwise reassign authority to the client.
+        let record_set_auth = vtx(
+            vec![Instruction {
+                program_id: record,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false), // record
+                    AccountMeta::new_readonly(gateway, true),      // current authority
+                    AccountMeta::new_readonly(attacker, false),    // new authority
+                ],
+                data: vec![2],
+            }],
+            &gateway,
+        );
+        assert!(verify(&record_set_auth).is_err());
 
         // REJECT: System transfer drains the gateway.
         let drain = vtx(
