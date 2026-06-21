@@ -236,10 +236,16 @@ pub struct Config {
     /// Fee payer signer (if fee_payer is true).
     pub fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     /// Payee (recipient) wallet signer, used to derive the recipient ElGamal
-    /// key for confidential-transfer settlement. Confidential bundles confirm
-    /// payment by decrypting the gateway's OWN received amount with its OWN
-    /// recipient key (recipient-key verification, NOT auditor). Absence ⇒
-    /// confidential bundles are rejected. Not used for non-confidential flows.
+    /// key for confidential-transfer settlement. Two settlement modes:
+    ///   * `Some` (recipient-key verification): the gateway controls the payee,
+    ///     so it derives the recipient key and ENFORCES the exact amount by
+    ///     decrypting the recipient's own pending-balance delta (NOT auditor).
+    ///   * `None` (facilitator trust-proofs): the gateway settles to an
+    ///     arbitrary recipient it cannot decrypt, so confidential bundles are
+    ///     ACCEPTED without amount enforcement — it only verifies the transfer
+    ///     targets the recipient and lands (the on-chain ZK program guarantees
+    ///     the proofs), and the recipient reconciles the amount out of band.
+    /// Not used for non-confidential flows.
     pub recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     /// Replay protection store (defaults to in-memory).
     pub store: Option<Arc<dyn Store>>,
@@ -317,8 +323,10 @@ pub struct Mpp {
     fee_payer: bool,
     fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     /// Payee wallet signer for confidential-transfer recipient-key
-    /// verification (derives the recipient ElGamal key). `None` ⇒ confidential
-    /// bundles are rejected.
+    /// verification (derives the recipient ElGamal key). `Some` ⇒ enforce the
+    /// exact amount via the recipient's pending-balance delta; `None` ⇒
+    /// facilitator trust-proofs mode, where bundles are accepted WITHOUT amount
+    /// enforcement (the recipient reconciles out of band). See [`Config`].
     // Only read by the confidential bundle-settlement path.
     #[cfg_attr(not(feature = "confidential"), allow(dead_code))]
     recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
@@ -2345,6 +2353,11 @@ fn verify_confidential_bundle_tx(
     const CT_TRANSFER_WITH_FEE: u8 = 13;
     // Token-2022 confidential transfer account order: [source, mint, dest, ...].
     const DEST_ACCOUNT_INDEX: usize = 2;
+    // ZK ElGamal Proof program: CloseContextState is ProofInstruction 0; its
+    // accounts are [context, destination, authority]. spl-record: CloseAccount
+    // is RecordInstruction 3; its accounts are [record, authority, receiver].
+    const ZK_CLOSE_CONTEXT_STATE: u8 = 0;
+    const RECORD_CLOSE_ACCOUNT: u8 = 3;
 
     reject_address_lookup_tables(tx)?;
 
@@ -2416,8 +2429,32 @@ fn verify_confidential_bundle_tx(
                     "create_account exceeds the allowed size/rent for a proof/record account",
                 ));
             }
-        } else if *program == zk_program || *program == record_program {
-            // Allowed: ZK proof verify/close, spl-record init/write/close.
+        } else if *program == zk_program {
+            // Proof verify instructions are fine. A CloseContextState reclaims
+            // rent the GATEWAY funded, so — since the gateway co-signs — it must
+            // return that rent to, and be authorized by, the gateway; otherwise
+            // a client could redirect the gateway's rent to an attacker.
+            if ix.data.first() == Some(&ZK_CLOSE_CONTEXT_STATE) {
+                let dest = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
+                let auth = ix.accounts.get(2).and_then(|i| keys.get(*i as usize));
+                if dest != Some(gateway) || auth != Some(gateway) {
+                    return Err(VerificationError::credential_mismatch(
+                        "close_context_state must return rent to and be authorized by the gateway",
+                    ));
+                }
+            }
+        } else if *program == record_program {
+            // spl-record init/write are fine. CloseAccount likewise must return
+            // rent to, and be authorized by, the gateway.
+            if ix.data.first() == Some(&RECORD_CLOSE_ACCOUNT) {
+                let auth = ix.accounts.get(1).and_then(|i| keys.get(*i as usize));
+                let receiver = ix.accounts.get(2).and_then(|i| keys.get(*i as usize));
+                if auth != Some(gateway) || receiver != Some(gateway) {
+                    return Err(VerificationError::credential_mismatch(
+                        "spl-record close_account must return rent to and be authorized by the gateway",
+                    ));
+                }
+            }
         } else if *program == *token_program {
             // The gateway co-signs this tx's fee-payer slot, and that same
             // Ed25519 signature authorises ANY Token-2022 instruction in the tx
@@ -4234,6 +4271,36 @@ mod tests {
         // REJECT: confidential transfer to the WRONG destination.
         let wrong_dest = vtx(vec![ct_transfer(Pubkey::new_unique())], &gateway);
         assert!(verify(&wrong_dest).is_err());
+
+        // REJECT: close_context_state redirecting the gateway's rent elsewhere
+        // (data [0] = CloseContextState; accounts [context, destination, authority]).
+        let bad_close = vtx(
+            vec![Instruction {
+                program_id: zk,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false), // context
+                    AccountMeta::new(Pubkey::new_unique(), false), // destination (attacker)
+                    AccountMeta::new_readonly(gateway, true),      // authority
+                ],
+                data: vec![0],
+            }],
+            &gateway,
+        );
+        assert!(verify(&bad_close).is_err());
+        // ...but a CloseContextState back to the gateway is allowed.
+        let ok_close = vtx(
+            vec![Instruction {
+                program_id: zk,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false),
+                    AccountMeta::new(gateway, false),
+                    AccountMeta::new_readonly(gateway, true),
+                ],
+                data: vec![0],
+            }],
+            &gateway,
+        );
+        assert_eq!(verify(&ok_close).unwrap(), 0);
 
         // REJECT: unknown program (arbitrary CPI).
         let alien = vtx(vec![mk(Pubkey::new_unique())], &gateway);
