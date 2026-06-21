@@ -1,13 +1,17 @@
-//! End-to-end confidential-charge integration test against an embedded Surfnet.
+//! End-to-end confidential-charge integration tests against an embedded Surfnet.
 //!
 //! Exercises the real gateway-paid bundle flow with on-chain execution:
 //!   set up a Token-2022 confidential mint + funded sender + recipient (the
 //!   gateway) → `build_credential_header` (client builds the partially-signed,
-//!   gateway-paid bundle) → `Mpp::verify` (gateway co-signs every tx, runs the
-//!   instruction allow-list, submits the bundle, and confirms the amount by
-//!   decrypting its own recipient balance — recipient-key settlement).
+//!   gateway-paid bundle) → settlement (gateway co-signs every tx, runs the
+//!   instruction allow-list, submits the bundle, and confirms the transfer).
 //!
-//! Run: `cargo test -p solana-mpp --features confidential --test confidential_integration`
+//! `confidential_charge_full_flow` settles directly via `Mpp::verify`
+//! (recipient-key amount enforcement, since the gateway is the recipient).
+//! `confidential_charge_via_worker` settles through the worker run-loop
+//! (trust-proofs mode), covering `server::confidential_worker`.
+//!
+//! Run: `cargo test -p solana-mpp --features worker,client --test confidential_integration`
 #![cfg(feature = "confidential")]
 
 use std::mem::size_of;
@@ -57,6 +61,7 @@ use tokio::time::{sleep, Duration};
 
 const SURFPOOL_DATASOURCE_RPC_URL_ENV: &str = "SURFPOOL_DATASOURCE_RPC_URL";
 const SECRET: &str = "test-secret-key-for-confidential-integration-32b";
+const REALM: &str = "confidential.test";
 
 async fn start_surfnet() -> Surfnet {
     let datasource = std::env::var(SURFPOOL_DATASOURCE_RPC_URL_ENV)
@@ -193,9 +198,21 @@ async fn configure(
     ata
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[serial_test::serial]
-async fn confidential_charge_full_flow() {
+/// Pieces a confidential charge needs, after on-chain setup.
+struct Setup {
+    surfnet: Surfnet,
+    rpc: RpcClient,
+    gateway: Keypair,
+    gateway_signer: Arc<dyn SolanaSigner>,
+    sender_signer: Arc<dyn SolanaSigner>,
+    mint: solana_pubkey::Pubkey,
+    decimals: u8,
+}
+
+/// Start Surfnet, create a confidential mint, configure sender + recipient
+/// (=gateway) accounts with signer-derived keys, and fund the sender's
+/// available confidential balance.
+async fn setup_confidential() -> Setup {
     let surfnet = start_surfnet().await;
     let rpc = RpcClient::new(surfnet.rpc_url().to_string());
     wait_for_surfnet(&rpc).await;
@@ -203,7 +220,6 @@ async fn confidential_charge_full_flow() {
     let token_program = spl_token_2022::id();
     let decimals: u8 = 0;
 
-    // Payer funds all setup; gateway is fee payer + recipient; sender pays.
     let payer = Keypair::new();
     let gateway = Keypair::new();
     let sender = Keypair::new();
@@ -218,7 +234,7 @@ async fn confidential_charge_full_flow() {
     let sender_signer: Arc<dyn SolanaSigner> =
         Arc::new(MemorySigner::from_bytes(&sender.to_bytes()).unwrap());
 
-    // 1. Confidential mint (auto-approve, no auditor).
+    // Confidential mint (auto-approve, no auditor).
     let mint = Keypair::new();
     let mint_authority = Keypair::new();
     let mint_space = ExtensionType::try_calculate_account_len::<Mint>(&[
@@ -253,7 +269,7 @@ async fn confidential_charge_full_flow() {
         "create confidential mint",
     );
 
-    // 2. Configure sender + recipient(=gateway) confidential accounts.
+    // Configure sender + recipient(=gateway) confidential accounts.
     let sender_ata = configure(
         &rpc,
         &payer,
@@ -271,7 +287,7 @@ async fn confidential_charge_full_flow() {
     )
     .await;
 
-    // 3. Fund the sender: mint → deposit → apply_pending_balance.
+    // Fund the sender: mint → deposit → apply_pending_balance.
     let starting: u64 = 50_000;
     submit(
         &rpc,
@@ -339,51 +355,110 @@ async fn confidential_charge_full_flow() {
         );
     }
 
-    // 4. Issue a confidential charge challenge (gateway = fee payer + recipient).
-    let amount: u64 = 1_000;
-    let mpp = Mpp::new(Config {
-        recipient: gateway.pubkey().to_string(),
-        currency: mint.pubkey().to_string(),
+    Setup {
+        surfnet,
+        rpc,
+        gateway,
+        gateway_signer,
+        sender_signer,
+        mint: mint.pubkey(),
         decimals,
-        network: "localnet".to_string(),
-        rpc_url: Some(surfnet.rpc_url().to_string()),
-        challenge_binding_secret: Some(SECRET.to_string()),
-        fee_payer: true,
-        fee_payer_signer: Some(gateway_signer.clone()),
-        // Gateway IS the recipient ⇒ recipient-key settlement (amount enforced).
-        recipient_signer: Some(gateway_signer.clone()),
-        ..Default::default()
-    })
-    .unwrap();
+    }
+}
 
+/// The confidential `ChargeRequest` the gateway issues (gateway = fee payer +
+/// recipient).
+fn confidential_request(s: &Setup, amount: u64) -> solana_mpp::ChargeRequest {
     let md = MethodDetails {
         network: Some("localnet".to_string()),
-        decimals: Some(decimals),
-        token_program: Some(token_program.to_string()),
+        decimals: Some(s.decimals),
+        token_program: Some(spl_token_2022::id().to_string()),
         confidential: Some(true),
         fee_payer: Some(true),
-        fee_payer_key: Some(gateway.pubkey().to_string()),
+        fee_payer_key: Some(s.gateway.pubkey().to_string()),
         ..Default::default()
     };
-    let request = solana_mpp::ChargeRequest {
+    solana_mpp::ChargeRequest {
         amount: amount.to_string(),
-        currency: mint.pubkey().to_string(),
-        recipient: Some(gateway.pubkey().to_string()),
+        currency: s.mint.to_string(),
+        recipient: Some(s.gateway.pubkey().to_string()),
         method_details: Some(serde_json::to_value(&md).unwrap()),
         ..Default::default()
-    };
+    }
+}
+
+/// Gateway `Mpp` that both issues the challenge and (in the direct test)
+/// settles with recipient-key amount enforcement.
+fn gateway_mpp(s: &Setup) -> Mpp {
+    Mpp::new(Config {
+        recipient: s.gateway.pubkey().to_string(),
+        currency: s.mint.to_string(),
+        decimals: s.decimals,
+        network: "localnet".to_string(),
+        rpc_url: Some(s.surfnet.rpc_url().to_string()),
+        challenge_binding_secret: Some(SECRET.to_string()),
+        realm: Some(REALM.to_string()),
+        fee_payer: true,
+        fee_payer_signer: Some(s.gateway_signer.clone()),
+        recipient_signer: Some(s.gateway_signer.clone()),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+/// Direct settlement via `Mpp::verify` — recipient-key amount enforcement.
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn confidential_charge_full_flow() {
+    let s = setup_confidential().await;
+    let request = confidential_request(&s, 1_000);
+    let mpp = gateway_mpp(&s);
     let challenge = mpp.charge_challenge(&request).unwrap();
 
-    // 5. Client builds the gateway-paid bundle credential.
-    let auth = build_credential_header(sender_signer.as_ref(), &rpc, &challenge)
+    let auth = build_credential_header(s.sender_signer.as_ref(), &s.rpc, &challenge)
         .await
         .expect("build confidential credential");
-
-    // 6. Gateway co-signs + settles the bundle, enforcing the amount.
     let receipt = mpp
         .verify_credential_with_expected(&solana_mpp::parse_authorization(&auth).unwrap(), &request)
         .await
         .expect("verify confidential credential");
+    assert_eq!(receipt.status.to_string(), "success");
+    assert!(!receipt.reference.is_empty());
+}
+
+/// Settlement through the confidential worker run-loop (trust-proofs mode).
+#[cfg(feature = "worker")]
+#[tokio::test(flavor = "multi_thread")]
+#[serial_test::serial]
+async fn confidential_charge_via_worker() {
+    use solana_mpp::server::{spawn_confidential_worker, ConfidentialWorkerConfig};
+
+    let s = setup_confidential().await;
+    let request = confidential_request(&s, 1_000);
+    // Issue the challenge with the gateway Mpp (shares secret + realm).
+    let challenge = gateway_mpp(&s).charge_challenge(&request).unwrap();
+    let auth = build_credential_header(s.sender_signer.as_ref(), &s.rpc, &challenge)
+        .await
+        .expect("build confidential credential");
+    let credential = solana_mpp::parse_authorization(&auth).unwrap();
+    let charge_request: solana_mpp::ChargeRequest = credential.challenge.request.decode().unwrap();
+
+    let handle = spawn_confidential_worker(
+        ConfidentialWorkerConfig {
+            network: "localnet".to_string(),
+            rpc_url: s.surfnet.rpc_url().to_string(),
+            challenge_binding_secret: Some(SECRET.to_string()),
+            realm: REALM.to_string(),
+            sweep_currency: s.mint.to_string(),
+            sweep_decimals: s.decimals,
+            fee_payer_pubkey: s.gateway.pubkey().to_string(),
+        },
+        s.gateway_signer.clone(),
+    );
+    let receipt = handle
+        .settle(credential, charge_request, s.mint.to_string(), s.decimals)
+        .await
+        .expect("worker settle");
     assert_eq!(receipt.status.to_string(), "success");
     assert!(!receipt.reference.is_empty());
 }
