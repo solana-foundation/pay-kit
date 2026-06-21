@@ -73,6 +73,14 @@ const MAX_CONFIDENTIAL_BUNDLE_TXS: usize = 16;
 /// ZK ElGamal Proof program id (proof verification + close_context_state).
 #[cfg(feature = "confidential")]
 const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111111";
+/// Caps on a gateway-funded `create_account` in a confidential bundle. The
+/// largest legitimate proof/record account is ~1.5 KB (the range-proof record);
+/// these leave generous headroom while preventing a malicious client from
+/// forcing the gateway to fund an oversized/expensive account.
+#[cfg(feature = "confidential")]
+const MAX_CT_CREATE_ACCOUNT_SPACE: u64 = 4096;
+#[cfg(feature = "confidential")]
+const MAX_CT_CREATE_ACCOUNT_LAMPORTS: u64 = 50_000_000; // ~0.05 SOL
 
 /// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
 #[cfg(feature = "worker")]
@@ -1057,9 +1065,22 @@ impl Mpp {
         // (so it doesn't decrypt), is treated as zero — only the *after* read
         // must decrypt, since the bundle's transfer credits it.
         let before: u64 = match &recipient_keys {
-            Some(keys) => match self.rpc.get_account(&recipient_ata) {
-                Ok(account) => read_pending(&account.data, keys)?.unwrap_or(0),
-                Err(_) => 0,
+            // Use get_account_with_commitment so a genuinely-missing account
+            // (Ok(None)) reads as zero, while a transient RPC/network error
+            // propagates instead of silently disabling amount enforcement.
+            Some(keys) => match self
+                .rpc
+                .get_account_with_commitment(&recipient_ata, CommitmentConfig::confirmed())
+            {
+                Ok(resp) => match resp.value {
+                    Some(account) => read_pending(&account.data, keys)?.unwrap_or(0),
+                    None => 0,
+                },
+                Err(e) => {
+                    return Err(VerificationError::network_error(format!(
+                        "Failed to read recipient account (before): {e}"
+                    )))
+                }
             },
             None => 0,
         };
@@ -1110,6 +1131,13 @@ impl Mpp {
                     .map_err(|e| {
                         VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
                     })?;
+            // Abort on a second transfer BEFORE co-signing/broadcasting it — a
+            // decoy/extra confidential transfer must never reach the chain.
+            if transfer_count > 1 {
+                return Err(VerificationError::credential_mismatch(
+                    "Confidential bundle contains more than one transfer",
+                ));
+            }
 
             // (2) Co-sign the empty gateway fee-payer slot.
             let msg_data = tx.message.serialize();
@@ -1176,7 +1204,9 @@ impl Mpp {
                         break;
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                // Non-blocking: confidential settlement is driven by the worker
+                // run-loop, so yield rather than block the tokio executor.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
             if !confirmed {
                 return Err(VerificationError::network_error(format!(
@@ -2337,6 +2367,28 @@ fn verify_confidential_bundle_tx(
             if owner != Some(zk_program) && owner != Some(record_program) {
                 return Err(VerificationError::credential_mismatch(
                     "create_account assigns a non-proof/record account",
+                ));
+            }
+            // Bound the rent the gateway (the funder) is asked to put up, so a
+            // malicious client can't force it to create an oversized/expensive
+            // account (locking large SOL, or a DoS if the bundle partially fails
+            // and the account is left open). Layout: lamports at 4..12, space at
+            // 12..20. Proof/record accounts are well under these caps.
+            let lamports = ix
+                .data
+                .get(4..12)
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map(u64::from_le_bytes);
+            let space = ix
+                .data
+                .get(12..20)
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map(u64::from_le_bytes);
+            if space.is_none_or(|s| s > MAX_CT_CREATE_ACCOUNT_SPACE)
+                || lamports.is_none_or(|l| l > MAX_CT_CREATE_ACCOUNT_LAMPORTS)
+            {
+                return Err(VerificationError::credential_mismatch(
+                    "create_account exceeds the allowed size/rent for a proof/record account",
                 ));
             }
         } else if *program == zk_program || *program == record_program {
@@ -4128,6 +4180,19 @@ mod tests {
             &gateway,
         );
         assert!(verify(&bad_owner).is_err());
+
+        // REJECT: create_account with oversized space (rent DoS on the gateway).
+        let oversized = vtx(
+            vec![create(
+                &gateway,
+                &Pubkey::new_unique(),
+                1000,
+                1_000_000,
+                &zk,
+            )],
+            &gateway,
+        );
+        assert!(verify(&oversized).is_err());
 
         // REJECT: a non-transfer Token-2022 opcode (transfer_checked = 12) that
         // the gateway co-signature could otherwise authorise to drain tokens.

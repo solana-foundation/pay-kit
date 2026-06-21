@@ -146,9 +146,10 @@ pub async fn build_charge_transaction_with_options(
 
     // Confidential charges settle via an encrypted, multi-transaction bundle,
     // not the plaintext transfer this function builds. Validate the spec
-    // constraints first (Token-2022, auditor present, no splits), then branch
-    // to the confidential bundle builder. We MUST NOT silently settle a
-    // confidential charge as a cleartext transfer.
+    // constraints first (Token-2022, no splits; auditor optional — read from the
+    // mint, only rejected if a present hint is empty), then branch to the
+    // confidential bundle builder. We MUST NOT silently settle a confidential
+    // charge as a cleartext transfer.
     crate::protocol::solana::validate_confidential_charge(currency, method_details)?;
     if method_details.confidential.unwrap_or(false) {
         #[cfg(feature = "confidential")]

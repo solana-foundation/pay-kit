@@ -791,14 +791,16 @@ pub struct MethodDetails {
 
     /// If true, the charge MUST settle as a Token-2022 confidential transfer
     /// (the amount is encrypted on-chain). Requires a Token-2022 mint with the
-    /// Confidential Transfer extension, an auditor (`auditor_elgamal_pubkey`),
-    /// a `bundle` credential, and no `splits`. See
+    /// Confidential Transfer extension, a `bundle` credential, and no `splits`.
+    /// An auditor is optional (mint-issuer facility). See
     /// [`validate_confidential_charge`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidential: Option<bool>,
 
     /// Base64-encoded twisted-ElGamal public key of the mint's
-    /// confidential-transfer auditor. Required when `confidential` is `true`.
+    /// confidential-transfer auditor. Optional: the auditor is the mint issuer's
+    /// compliance facility, not required for a charge (settlement is
+    /// recipient-key); only validated to be non-empty when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auditor_elgamal_pubkey: Option<String>,
 
