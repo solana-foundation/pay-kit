@@ -1052,14 +1052,13 @@ impl Mpp {
         };
 
         // In amount-enforcing mode, snapshot the recipient's pending balance
-        // BEFORE the bundle (a not-yet-existing account is treated as zero).
+        // BEFORE the bundle. A not-yet-existing account, or a freshly-configured
+        // one whose pending ciphertext is still the uninitialized/zero default
+        // (so it doesn't decrypt), is treated as zero — only the *after* read
+        // must decrypt, since the bundle's transfer credits it.
         let before: u64 = match &recipient_keys {
             Some(keys) => match self.rpc.get_account(&recipient_ata) {
-                Ok(account) => read_pending(&account.data, keys)?.ok_or_else(|| {
-                    VerificationError::new(
-                        "Failed to decrypt recipient pending balance (before) with recipient key",
-                    )
-                })?,
+                Ok(account) => read_pending(&account.data, keys)?.unwrap_or(0),
                 Err(_) => 0,
             },
             None => 0,
@@ -1392,7 +1391,10 @@ impl Mpp {
                     return Ok(());
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            // tokio sleep, not std::thread::sleep: broadcast_close is only built
+            // under the `worker` feature (tokio runtime), and the sweeper runs on
+            // the worker run-loop — a blocking sleep would stall the executor.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         Err(VerificationError::network_error(format!(
             "close tx {sig} not confirmed in time"
