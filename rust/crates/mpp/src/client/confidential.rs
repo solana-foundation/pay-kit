@@ -146,7 +146,9 @@ pub async fn build_confidential_transfer_bundle(
             .try_into()
             .map_err(|e| Error::Other(format!("recipient ElGamal pubkey: {e:?}")))?;
 
-    // ----- Auditor ElGamal pubkey (read from the mint; required) -----
+    // ----- Auditor ElGamal pubkey (read from the mint; optional) -----
+    // The mint may configure no auditor; `transfer_split_proof_data` accepts
+    // `None` and the transfer then carries only source + destination handles.
     let mint_acc = rpc
         .get_account(params.mint)
         .map_err(|e| Error::Rpc(e.to_string()))?;

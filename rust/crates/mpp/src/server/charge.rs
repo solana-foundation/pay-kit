@@ -81,6 +81,17 @@ const ZK_ELGAMAL_PROOF_PROGRAM: &str = "ZkE1Gama1Proof11111111111111111111111111
 const MAX_CT_CREATE_ACCOUNT_SPACE: u64 = 4096;
 #[cfg(feature = "confidential")]
 const MAX_CT_CREATE_ACCOUNT_LAMPORTS: u64 = 50_000_000; // ~0.05 SOL
+/// Max base64 length of a single bundle transaction. Each tx must fit Solana's
+/// 1232-byte wire limit (~1644 base64 chars); this caps decode/deserialize
+/// allocation so a client can't force large allocations with oversized strings.
+#[cfg(feature = "confidential")]
+const MAX_BUNDLE_TX_BASE64_LEN: usize = 2048;
+/// Confirmation polling for confidential bundle submission and orphan close:
+/// poll `confirm_transaction` up to N times, sleeping between attempts.
+#[cfg(feature = "confidential")]
+const CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS: usize = 30;
+#[cfg(feature = "confidential")]
+const CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS: u64 = 200;
 
 /// Outcome of one [`Mpp::sweep_confidential_orphans`] pass.
 #[cfg(feature = "worker")]
@@ -1104,6 +1115,14 @@ impl Mpp {
         let mut final_sig = String::new();
         let mut transfer_count = 0usize;
         for (idx, tx_b64) in transactions.iter().enumerate() {
+            // Bound the per-tx string before decoding so a client can't force a
+            // large allocation with a multi-MB base64 blob (each real bundle tx
+            // is well under the 1232-byte wire limit).
+            if tx_b64.len() > MAX_BUNDLE_TX_BASE64_LEN {
+                return Err(VerificationError::invalid_payload(format!(
+                    "Bundle tx {idx} exceeds the {MAX_BUNDLE_TX_BASE64_LEN}-byte base64 cap"
+                )));
+            }
             let tx_bytes =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
                     .map_err(|e| {
@@ -1194,7 +1213,7 @@ impl Mpp {
             // (and the final balance read) depend on earlier ones landing.
             let commitment = CommitmentConfig::confirmed();
             let mut confirmed = false;
-            for _ in 0..30 {
+            for _ in 0..CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS {
                 if let Ok(resp) = self
                     .rpc
                     .confirm_transaction_with_commitment(&signature, commitment)
@@ -1206,7 +1225,10 @@ impl Mpp {
                 }
                 // Non-blocking: confidential settlement is driven by the worker
                 // run-loop, so yield rather than block the tokio executor.
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS,
+                ))
+                .await;
             }
             if !confirmed {
                 return Err(VerificationError::network_error(format!(
@@ -1412,7 +1434,7 @@ impl Mpp {
             .rpc
             .send_transaction(&tx)
             .map_err(|e| VerificationError::network_error(format!("broadcast close: {e}")))?;
-        for _ in 0..30 {
+        for _ in 0..CONFIDENTIAL_CONFIRM_MAX_ATTEMPTS {
             if let Ok(resp) = self
                 .rpc
                 .confirm_transaction_with_commitment(&sig, CommitmentConfig::confirmed())
@@ -1424,7 +1446,10 @@ impl Mpp {
             // tokio sleep, not std::thread::sleep: broadcast_close is only built
             // under the `worker` feature (tokio runtime), and the sweeper runs on
             // the worker run-loop — a blocking sleep would stall the executor.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(
+                CONFIDENTIAL_CONFIRM_POLL_INTERVAL_MS,
+            ))
+            .await;
         }
         Err(VerificationError::network_error(format!(
             "close tx {sig} not confirmed in time"
