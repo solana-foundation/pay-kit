@@ -41,6 +41,12 @@ pub struct ConfidentialWorkerConfig {
     pub sweep_decimals: u8,
     /// Gateway fee-payer pubkey — the sweep `Mpp`'s nominal recipient.
     pub fee_payer_pubkey: String,
+    /// Payee wallet signer, when the gateway controls the recipient. `Some`
+    /// enables recipient-key settlement (the worker decrypts the recipient's
+    /// pending-balance delta and enforces the exact amount); `None` is
+    /// facilitator/trust-proofs mode (no amount enforcement — only valid when
+    /// the gateway is not the payee, e.g. relaying to an arbitrary recipient).
+    pub recipient_signer: Option<Arc<dyn SolanaSigner>>,
 }
 
 /// Messages the worker accepts. Boxed payloads keep the enum small.
@@ -198,6 +204,8 @@ fn build_mpp(
         realm: Some(cfg.realm.clone()),
         fee_payer: true,
         fee_payer_signer: Some(signer),
+        // Recipient-key amount enforcement when the gateway controls the payee.
+        recipient_signer: cfg.recipient_signer.clone(),
         store: Some(store),
         html: false,
         ..Default::default()

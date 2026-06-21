@@ -1082,7 +1082,7 @@ impl Mpp {
         // final tx carries the confidential transfer; its signature is the
         // settlement signature.
         let mut final_sig = String::new();
-        let mut final_tx: Option<VersionedTransaction> = None;
+        let mut transfer_count = 0usize;
         for (idx, tx_b64) in transactions.iter().enumerate() {
             let tx_bytes =
                 base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
@@ -1102,11 +1102,15 @@ impl Mpp {
 
             check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
 
-            // (1) Allow-list every instruction + assert the gateway is fee payer
-            // and the only rent funder, so the operator can't be drained.
-            verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program).map_err(|e| {
-                VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
-            })?;
+            // (1) Allow-list every instruction, assert the gateway is fee payer
+            // and the only rent funder, and validate any confidential-transfer
+            // destination — all BEFORE co-signing, so nothing draining or
+            // mis-targeted is ever signed/broadcast.
+            transfer_count +=
+                verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program, &recipient_ata)
+                    .map_err(|e| {
+                        VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
+                    })?;
 
             // (2) Co-sign the empty gateway fee-payer slot.
             let msg_data = tx.message.serialize();
@@ -1182,32 +1186,16 @@ impl Mpp {
             }
 
             final_sig = signature_str;
-            final_tx = Some(tx);
         }
 
-        // Structural check (both modes): the final transaction's confidential
-        // Transfer instruction must target the expected recipient ATA, so the
-        // bundle can't quietly pay someone else. The Token-2022 transfer's
-        // destination is its 3rd account (source, mint, destination, ...).
-        let final_tx = final_tx.ok_or_else(|| {
-            VerificationError::new("Confidential bundle produced no transactions")
-        })?;
-        let account_keys = final_tx.message.static_account_keys();
-        let token_prog_idx = account_keys.iter().position(|k| k == &token_program);
-        let targets_recipient = token_prog_idx.is_some_and(|tp| {
-            final_tx.message.instructions().iter().any(|ix| {
-                ix.program_id_index as usize == tp
-                    && ix
-                        .accounts
-                        .get(2)
-                        .and_then(|i| account_keys.get(*i as usize))
-                        == Some(&recipient_ata)
-            })
-        });
-        if !targets_recipient {
-            return Err(VerificationError::credential_mismatch(
-                "Confidential transfer does not target the expected recipient account",
-            ));
+        // The bundle must contain EXACTLY ONE confidential transfer, and (as
+        // verified pre-co-sign in verify_confidential_bundle_tx) it targets the
+        // expected recipient ATA. This rejects a transfer-less bundle (which
+        // would otherwise "settle" with no payment) and a decoy/second transfer.
+        if transfer_count != 1 {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Confidential bundle must contain exactly one transfer (found {transfer_count})"
+            )));
         }
 
         // Amount enforcement (only when the gateway controls the recipient):
@@ -2282,11 +2270,25 @@ async fn confirm_orphan_seen(
 }
 
 #[cfg(feature = "confidential")]
+/// Verify one bundle tx is safe for the gateway to co-sign. Returns the number
+/// of confidential-transfer instructions it contains (each validated to target
+/// `recipient_ata`), so the caller can require exactly one across the bundle.
 fn verify_confidential_bundle_tx(
     tx: &VersionedTransaction,
     gateway: &Pubkey,
     token_program: &Pubkey,
-) -> Result<(), VerificationError> {
+    recipient_ata: &Pubkey,
+) -> Result<usize, VerificationError> {
+    // Token-2022 ConfidentialTransferExtension (TokenInstruction = 27) +
+    // ConfidentialTransferInstruction discriminants: Transfer = 7,
+    // TransferWithFee = 13. These are the ONLY Token-2022 opcodes a bundle may
+    // carry — see the destination/drain reasoning below.
+    const CT_EXTENSION: u8 = 27;
+    const CT_TRANSFER: u8 = 7;
+    const CT_TRANSFER_WITH_FEE: u8 = 13;
+    // Token-2022 confidential transfer account order: [source, mint, dest, ...].
+    const DEST_ACCOUNT_INDEX: usize = 2;
+
     reject_address_lookup_tables(tx)?;
 
     let zk_program = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).expect("valid zk program id");
@@ -2300,6 +2302,7 @@ fn verify_confidential_bundle_tx(
         ));
     }
 
+    let mut transfer_count = 0usize;
     for ix in tx.message.instructions() {
         let program = keys.get(ix.program_id_index as usize).ok_or_else(|| {
             VerificationError::invalid_payload("instruction references unknown program")
@@ -2334,11 +2337,38 @@ fn verify_confidential_bundle_tx(
                     "create_account assigns a non-proof/record account",
                 ));
             }
-        } else if *program == zk_program || *program == record_program || *program == *token_program
-        {
-            // Allowed: proof verify/close, record init/write/close, Token-2022
-            // confidential transfer. The transfer destination + amount are
-            // checked separately after the bundle lands.
+        } else if *program == zk_program || *program == record_program {
+            // Allowed: ZK proof verify/close, spl-record init/write/close.
+        } else if *program == *token_program {
+            // The gateway co-signs this tx's fee-payer slot, and that same
+            // Ed25519 signature authorises ANY Token-2022 instruction in the tx
+            // that names the gateway as a required signer. So we permit ONLY the
+            // confidential Transfer / TransferWithFee opcode — never
+            // transfer_checked / burn / close_account, which a malicious client
+            // could otherwise use (authority = gateway) to drain gateway tokens.
+            let is_confidential_transfer = matches!(
+                (ix.data.first().copied(), ix.data.get(1).copied()),
+                (Some(CT_EXTENSION), Some(CT_TRANSFER))
+                    | (Some(CT_EXTENSION), Some(CT_TRANSFER_WITH_FEE))
+            );
+            if !is_confidential_transfer {
+                return Err(VerificationError::credential_mismatch(
+                    "only the confidential Transfer instruction is allowed on Token-2022",
+                ));
+            }
+            // Verify the transfer destination BEFORE the gateway co-signs and
+            // broadcasts — once landed it is irreversible. Tied to this specific
+            // transfer instruction, not "any Token-2022 ix with the right index".
+            let dest = ix
+                .accounts
+                .get(DEST_ACCOUNT_INDEX)
+                .and_then(|i| keys.get(*i as usize));
+            if dest != Some(recipient_ata) {
+                return Err(VerificationError::credential_mismatch(
+                    "confidential transfer destination is not the expected recipient",
+                ));
+            }
+            transfer_count += 1;
         } else {
             return Err(VerificationError::credential_mismatch(format!(
                 "disallowed program {program}"
@@ -2346,7 +2376,7 @@ fn verify_confidential_bundle_tx(
         }
     }
 
-    Ok(())
+    Ok(transfer_count)
 }
 
 fn expected_fee_payer(
@@ -4029,7 +4059,9 @@ mod tests {
     #[cfg(feature = "confidential")]
     #[test]
     fn confidential_bundle_allowlist_accepts_and_rejects() {
+        use solana_instruction::AccountMeta;
         let gateway = Pubkey::new_unique();
+        let recipient_ata = Pubkey::new_unique();
         let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
         let zk = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).unwrap();
         let record = spl_record::id();
@@ -4037,22 +4069,39 @@ mod tests {
         let vtx = |ixs: Vec<Instruction>, payer: &Pubkey| {
             VersionedTransaction::from(dummy_tx(ixs, payer))
         };
-
-        // OK: gateway-funded create_account owned by the ZK program.
-        let ok = vtx(
-            vec![create(&gateway, &Pubkey::new_unique(), 1000, 100, &zk)],
-            &gateway,
-        );
-        assert!(verify_confidential_bundle_tx(&ok, &gateway, &token_program).is_ok());
-
-        // OK: ZK + record + Token-2022 instructions.
+        let verify = |tx: &VersionedTransaction| {
+            verify_confidential_bundle_tx(tx, &gateway, &token_program, &recipient_ata)
+        };
         let mk = |p: Pubkey| Instruction {
             program_id: p,
             accounts: vec![],
             data: vec![],
         };
-        let ok2 = vtx(vec![mk(zk), mk(record), mk(token_program)], &gateway);
-        assert!(verify_confidential_bundle_tx(&ok2, &gateway, &token_program).is_ok());
+        // A confidential Transfer (CT extension 27, Transfer 7) to `dest` at the
+        // destination account index (2).
+        let ct_transfer = |dest: Pubkey| Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new(dest, false),
+            ],
+            data: vec![27, 7],
+        };
+
+        // OK: gateway-funded create_account owned by the ZK program (0 transfers).
+        let ok = vtx(
+            vec![create(&gateway, &Pubkey::new_unique(), 1000, 100, &zk)],
+            &gateway,
+        );
+        assert_eq!(verify(&ok).unwrap(), 0);
+
+        // OK: ZK + record + one confidential transfer to the recipient.
+        let ok2 = vtx(
+            vec![mk(zk), mk(record), ct_transfer(recipient_ata)],
+            &gateway,
+        );
+        assert_eq!(verify(&ok2).unwrap(), 1);
 
         // REJECT: System transfer drains the gateway.
         let drain = vtx(
@@ -4063,7 +4112,7 @@ mod tests {
             )],
             &gateway,
         );
-        assert!(verify_confidential_bundle_tx(&drain, &gateway, &token_program).is_err());
+        assert!(verify(&drain).is_err());
 
         // REJECT: create_account assigning to a non-proof/record program.
         let bad_owner = vtx(
@@ -4076,15 +4125,31 @@ mod tests {
             )],
             &gateway,
         );
-        assert!(verify_confidential_bundle_tx(&bad_owner, &gateway, &token_program).is_err());
+        assert!(verify(&bad_owner).is_err());
+
+        // REJECT: a non-transfer Token-2022 opcode (transfer_checked = 12) that
+        // the gateway co-signature could otherwise authorise to drain tokens.
+        let drain_token = vtx(
+            vec![Instruction {
+                program_id: token_program,
+                accounts: vec![AccountMeta::new(gateway, false)],
+                data: vec![12],
+            }],
+            &gateway,
+        );
+        assert!(verify(&drain_token).is_err());
+
+        // REJECT: confidential transfer to the WRONG destination.
+        let wrong_dest = vtx(vec![ct_transfer(Pubkey::new_unique())], &gateway);
+        assert!(verify(&wrong_dest).is_err());
 
         // REJECT: unknown program (arbitrary CPI).
         let alien = vtx(vec![mk(Pubkey::new_unique())], &gateway);
-        assert!(verify_confidential_bundle_tx(&alien, &gateway, &token_program).is_err());
+        assert!(verify(&alien).is_err());
 
         // REJECT: fee payer is not the gateway.
         let wrong = vtx(vec![mk(zk)], &Pubkey::new_unique());
-        assert!(verify_confidential_bundle_tx(&wrong, &gateway, &token_program).is_err());
+        assert!(verify(&wrong).is_err());
     }
 
     fn charge_request(amount: u64, currency: &str, recipient: &Pubkey) -> ChargeRequest {

@@ -452,6 +452,8 @@ async fn confidential_charge_via_worker() {
             sweep_currency: s.mint.to_string(),
             sweep_decimals: s.decimals,
             fee_payer_pubkey: s.gateway.pubkey().to_string(),
+            // Gateway is the recipient here ⇒ recipient-key amount enforcement.
+            recipient_signer: Some(s.gateway_signer.clone()),
         },
         s.gateway_signer.clone(),
     );
