@@ -19,6 +19,12 @@ import { Surfnet } from 'surfpool-sdk';
 import { charge } from '../client/Charge.js';
 import { TOKEN_PROGRAM } from '../constants.js';
 
+// Reliable RPC datasource for surfnet's account cloning. CI wires the
+// SURFPOOL_DATASOURCE_RPC_URL secret (see .github/workflows/ci.yml); without it
+// surfnet clones from the public mainnet-beta RPC, which rate-limits and crashes
+// the embedded validator mid-test. Mirrors the Rust harness's start_surfnet().
+const DATASOURCE_RPC_URL = process.env.SURFPOOL_DATASOURCE_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
+
 // ── Helpers ──
 
 /** Build a challenge object matching the schema that charge() expects. */
@@ -302,7 +308,7 @@ describe('client charge integration (surfpool)', () => {
             // Start a surfnet with mainnet RPC fallback so the USDC mint account
             // can be cloned and its owner (TOKEN_PROGRAM) resolved on-chain.
             const remoteSurfnet = Surfnet.startWithConfig({
-                remoteRpcUrl: 'https://api.mainnet-beta.solana.com',
+                remoteRpcUrl: DATASOURCE_RPC_URL,
             });
             const remoteSigner = await createKeyPairSignerFromBytes(new Uint8Array(remoteSurfnet.payerSecretKey));
             remoteSurfnet.fundSol(remoteSigner.address, 10_000_000_000);

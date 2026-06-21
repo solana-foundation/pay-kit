@@ -95,7 +95,6 @@ jobs:
 
   harness-lua:
     name: Lua harness focused matrix
-    needs: test-lua
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -135,6 +134,18 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # Cache the cargo registry + target dir so the harness_client build below
+      # doesn't recompile the whole Solana dependency tree from scratch each run
+      # (the other harness workflows — go/php/python/ruby — all cache this).
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rust-
 
       - name: Install TypeScript SDK deps
         working-directory: typescript
