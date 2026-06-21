@@ -149,7 +149,13 @@ decrypt the *same* amount with *their own* key:
 | --- | --- | --- |
 | **source** | the sender | needs it to update its own balance and prove correctness |
 | **destination** | the recipient (payee) | the credited amount lands in *their* account, decryptable with their key |
-| **auditor** | the mint issuer's compliance role | regulatory/compliance visibility into every transfer of that mint |
+| **auditor** *(optional)* | the mint issuer's compliance role | regulatory/compliance visibility, **only if the mint configures an auditor** |
+
+The auditor handle is **optional**: it is included only when the mint's
+`ConfidentialTransferMint` extension has an `auditor_elgamal_pubkey`. The builder
+reads it from the mint and passes it (or `None`) to proof generation; a mint with
+no auditor (like the test mint and our deploy) produces a source+destination
+ciphertext with no auditor handle.
 
 ```mermaid
 flowchart LR
@@ -360,10 +366,16 @@ flowchart TD
 
 The bundle builder (`build_confidential_transfer_bundle` in
 [`src/client/confidential.rs`](../src/client/confidential.rs)) produces exactly
-this. Every transaction is **fully signed client-side** (the sender is fee payer,
-transfer authority, and rent funder for the ephemeral accounts), base64-encoded,
-and handed to the gateway in submission order. The gateway just submits them in
-order — it doesn't co-sign.
+this. Because **clients hold no SOL**, the bundle is **gateway-paid**: the gateway
+(the `feePayerKey` from the challenge) is the fee payer, rent funder, and
+proof/record-account authority + rent-reclaim destination on every transaction.
+The client only **partially signs** — the transfer authority and the ephemeral
+proof/record account keypairs it generates — and leaves each tx's fee-payer
+signature slot empty. The base64 bundle is handed to the gateway, which
+**hard-verifies and then co-signs** each tx's empty fee-payer slot before
+submitting in order (see §4.4). Net rent is ~0 (the accounts are created and
+closed back to the gateway within the bundle); the gateway absorbs the small SOL
+fee.
 
 > A wrinkle visible in the code: proof *generation* uses zk-sdk `7.0.1`, but the
 > spl-token-2022 instruction ABI is built against zk-sdk `4.0`. The fixed-size
@@ -398,30 +410,30 @@ sequenceDiagram
     participant T22 as Token-2022 program
 
     CLI->>GW: request charge (confidential=true, Token-2022 mint)
-    Note over GW: reject if mint is not Token-2022
-    GW-->>CLI: 402 challenge<br/>methodDetails.confidential = true
-    Note over GW: auditor/recipient ElGamal hints NOT set;<br/>client reads recipient key from chain,<br/>auditor is the mint issuer
-    CLI->>Client: build confidential bundle
-    Client->>RPC: read recipient ATA → recipient ElGamal pubkey
-    Client->>RPC: read mint → auditor ElGamal pubkey (if any)
-    Client->>RPC: read sender CT account → available balance + decryptable
-    Note over Client: derive sender ElGamal+AES keys from wallet signature
-    Note over Client: transfer_split_proof_data → 3 proofs + 3-handle ciphertext
-    Client-->>GW: CredentialPayload::Bundle { transactions: [..] }
+    Note over GW: reject if the mint is not Token-2022
+    GW-->>CLI: 402 challenge (confidential, feePayer=true, feePayerKey=gateway, no splits)
+    Note over GW: auditor/recipient ElGamal hints left unset
+    Note over GW: client reads the recipient key from chain, auditor is the mint issuer
+    CLI->>Client: build gateway-paid bundle
+    Client->>RPC: read recipient ATA, mint, sender CT account
+    Note over Client: pre-flight (recipient allows credits, sender approved, balance ok)
+    Note over Client: derive sender keys, generate 3 proofs + 3-handle ciphertext
+    Note over Client: partially sign (transfer authority + ephemeral keys), gateway slot left empty
+    Client-->>GW: CredentialPayload::Bundle { transactions }
     loop each tx in order
-        GW->>RPC: simulate, then send_transaction
-        RPC->>ZK: Verify… (equality / validity / range)
+        Note over GW: verify (allow-list, fee payer == gateway, transfer dest == recipient)
+        GW->>RPC: co-sign gateway slot, simulate, send_transaction
+        RPC->>ZK: Verify (equality / validity / range)
         RPC->>T22: inner_transfer (final tx)
         GW->>RPC: confirm (commitment=confirmed)
     end
-    Note over GW: structural check: final tx targets recipient ATA
-    alt recipient-key mode
-        GW->>RPC: read recipient pending balance (after)
-        Note over GW: recover delta with recipient key; require delta == amount
+    Note over GW: require exactly one confidential transfer in the bundle
+    alt recipient-key mode (gateway is the payee)
+        GW->>RPC: read recipient pending balance, recover delta, require delta == amount
     else facilitator trust-proofs mode
-        Note over GW: cannot decrypt; trust on-chain proofs;<br/>recipient reconciles out of band
+        Note over GW: cannot decrypt, trust on-chain proofs, recipient reconciles out of band
     end
-    GW-->>CLI: Receipt::success(final signature)
+    GW-->>CLI: Receipt::success (final signature)
 ```
 
 ### 4.3 The challenge: what the gateway sets (and what it deliberately doesn't)
@@ -438,8 +450,10 @@ When `confidential` is requested, the gateway:
 
 `validate_confidential_charge` in
 [`src/protocol/solana.rs`](../src/protocol/solana.rs) is the spec's single source
-of truth for the *strict* profile constraints (SPL Token-2022 only, no splits,
-auditor required when present). It's a no-op unless `confidential == Some(true)`.
+of truth for the *strict* profile constraints: SPL Token-2022 only, no splits,
+and the auditor key is **optional** — it is the mint issuer's facility, not
+required for a charge, so the only auditor check is that a *present* hint is not
+empty. It's a no-op unless `confidential == Some(true)`.
 
 ### 4.4 The two server settlement modes
 
@@ -496,9 +510,21 @@ issuer.
 
 - **Simulate before broadcast.** Each bundle tx is simulated first; a failing
   simulation aborts before any fee is spent or a partial bundle lands.
-- **No SPL pre-broadcast verifier, no co-signing.** The bundle is fully
-  client-signed; the normal `transferChecked` pre-broadcast verifier would
-  reject confidential txs, so it's skipped on this path.
+- **Per-tx allow-list, then co-sign.** Before co-signing each tx's empty
+  fee-payer slot, the gateway runs `verify_confidential_bundle_tx`: every
+  instruction must be allow-listed (System `create_account` for ZK/record
+  accounts funded by the gateway, ZK proof, spl-record, and ONLY the Token-2022
+  confidential Transfer/TransferWithFee opcode), the fee payer must be the
+  gateway, and the transfer destination must be the recipient ATA — all
+  validated *before* anything is signed or broadcast (a wrong destination is
+  irreversible once it lands). The bundle must carry **exactly one** confidential
+  transfer. This matters because the gateway's fee-payer co-signature would
+  otherwise authorise any Token-2022 op (transfer_checked/burn/close) naming the
+  gateway as a signer — a token-drain vector the allow-list closes.
+- **Orphan sweeper.** A partially-failed bundle can strand gateway-funded
+  proof/record accounts; `Mpp::sweep_confidential_orphans` (worker feature) scans
+  for gateway-owned ones and closes them back, with a two-pass guard so it never
+  closes an in-flight settlement's accounts.
 - **Confirm each tx before the next.** Later txs depend on earlier ones (the
   transfer references the context accounts), so the gateway waits for
   `confirmed` between txs.
@@ -550,10 +576,11 @@ ZK ElGamal Proof program automatically).
 | Crypto primitives, key derivation, `recover_split_amount`, litesvm e2e | `pay-kit/rust/crates/mpp/src/protocol/confidential.rs` |
 | Protocol types: `MethodDetails`, `CredentialPayload::Bundle`, `validate_confidential_charge` | `pay-kit/rust/crates/mpp/src/protocol/solana.rs` |
 | Client bundle builder (`build_confidential_transfer_bundle`, spl-record staging) | `pay-kit/rust/crates/mpp/src/client/confidential.rs` |
-| Server settlement (`settle_confidential_bundle`, two modes) | `pay-kit/rust/crates/mpp/src/server/charge.rs` |
+| Server settlement (`settle_confidential_bundle`, allow-list `verify_confidential_bundle_tx`, two modes) | `pay-kit/rust/crates/mpp/src/server/charge.rs` |
+| Confidential worker run-loop + orphan sweeper (`worker` feature) | `pay-kit/rust/crates/mpp/src/server/confidential_worker.rs` + `sweep_confidential_orphans` in `charge.rs` |
+| Surfpool e2e integration tests (full lifecycle, both settlement modes, sweep) | `pay-kit/rust/crates/mpp/tests/confidential_integration.rs` |
 | `pay send --confidential` flag | `pay/rust/crates/cli/src/commands/send.rs` |
-| Gateway challenge issuance + settlement wiring | `agent-gateway/services/pay-api/crates/api/src/endpoints/send.rs` |
-| Reference implementation (lifecycle, proof-context pattern, record staging) | `/tmp/cbe-ref` (gitteri `confidential-balances-exploration`) |
+| Gateway challenge issuance (absorb fee, no splits) + worker wiring | `agent-gateway/.../endpoints/send.rs` + `state.rs` |
 
 ### 6.1 Dev shims currently in place
 
@@ -571,7 +598,16 @@ These are temporary and should be removed/updated as upstream catches up:
 
   This loosens litesvm's pinned `solana-address` constraint so it can coexist
   with the confidential-transfer proof crates (which pull a newer
-  `solana-address`). Pending an upstream PR.
+  `solana-address`). Pending an upstream PR. **Side effect:** the patch also
+  redirects surfpool's litesvm, which destabilizes its embedded validator in CI,
+  so the surfpool integration tests are gated behind `RUN_SURFPOOL_TESTS=1` and
+  skip in CI (they run locally where surfnet is stable).
+
+- **`five8_core` std.** `pay/rust/crates/core/Cargo.toml` forces
+  `five8_core = { version = "=0.1.2", features = ["std"] }` so its `impl Error for
+  DecodeError` stays enabled through dependency re-resolution (solana-keypair /
+  solana-signature rely on it; feature unification otherwise drops it and the
+  build fails with `DecodeError: std::error::Error is not satisfied`).
 
 - **pay-kit PR #181 branch dependency.** The `pay` repo tracks the
   confidential-transfer feature branch of `pay-kit` until it merges:
