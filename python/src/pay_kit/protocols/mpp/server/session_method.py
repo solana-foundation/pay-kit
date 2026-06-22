@@ -38,9 +38,16 @@ from pay_kit._paycore.errors import (
     ChallengeExpiredError,
     ChallengeMismatchError,
     PaymentError,
+    payment_required_response,
 )
 from pay_kit._paycore.solana import MAX_SPLITS
 from pay_kit.protocols.mpp.core.expires import minutes
+from pay_kit.protocols.mpp.core.headers import (
+    PAYMENT_RECEIPT_HEADER,
+    format_receipt,
+    format_www_authenticate,
+    parse_authorization,
+)
 from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential, Receipt
 from pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
@@ -75,6 +82,7 @@ __all__ = [
     "OpenTxSubmitter",
     "SessionOptions",
     "SessionChallengeOptions",
+    "SessionGateResult",
     "Session",
     "new_session",
 ]
@@ -156,6 +164,27 @@ class SessionChallengeOptions:
     external_id: str = ""
     # Expires is the challenge expiry (RFC 3339). Default five minutes.
     expires: str = ""
+
+
+@dataclass
+class SessionGateResult:
+    """Outcome of :meth:`Session.handle`: verified credential or 402 challenge.
+
+    Framework-agnostic so any host (FastAPI, ASGI, a test) can render it. On
+    success ``ok`` is True, ``status`` is 200, ``headers`` carries the receipt
+    header, and ``body`` is None. On a missing or invalid credential ``ok`` is
+    False, ``status`` is 402, ``headers`` carries the ``WWW-Authenticate``
+    challenge, and ``body`` is the ``application/problem+json`` problem document.
+    """
+
+    # ok is True when a credential verified, False when answering 402.
+    ok: bool
+    # status is 200 on success, 402 on a payment-required challenge.
+    status: int
+    # headers are the receipt headers on success, else the 402 challenge headers.
+    headers: dict[str, str]
+    # body is None on success, else the 402 problem document.
+    body: dict | None = None
 
 
 def _parse_session_u64(value: str, name: str) -> int:
@@ -351,6 +380,43 @@ class Session:
 
         external_id = request.external_id or ""
         return _success_receipt(reference, credential.challenge.id, external_id)
+
+    async def handle(self, authorization: str | None, challenge_options: SessionChallengeOptions) -> SessionGateResult:
+        """Framework-agnostic 402 session gate: verify an Authorization credential
+        or answer 402 with a fresh challenge.
+
+        When ``authorization`` is present it is parsed and verified; on success the
+        result carries the receipt header and status 200. A
+        :class:`~pay_kit._paycore.errors.PaymentError` (or any other exception,
+        mapped to ``invalid-payload``) falls through to a 402 carrying the
+        ``WWW-Authenticate`` challenge built from ``challenge_options``. Mirrors
+        the per-route gate a charge route gets for free from ``RequirePayment``.
+        """
+        error: PaymentError | None = None
+        if authorization:
+            try:
+                receipt = await self.verify_credential(parse_authorization(authorization))
+                return SessionGateResult(
+                    ok=True,
+                    status=200,
+                    headers={PAYMENT_RECEIPT_HEADER: format_receipt(receipt)},
+                    body=None,
+                )
+            except PaymentError as err:
+                error = err
+            except Exception as err:  # noqa: BLE001 (parse/framework errors map to 402)
+                error = PaymentError(str(err), code="invalid-payload")
+        problem = payment_required_response(
+            str(error) if error else "Payment required",
+            code=(error.code if error and error.code else "payment_invalid"),
+            challenge_header=format_www_authenticate(await self.challenge(challenge_options)),
+        )
+        return SessionGateResult(
+            ok=False,
+            status=problem["status_code"],
+            headers=problem["headers"],
+            body=problem["body"],
+        )
 
     def _verify_pinned_session_fields(self, credential: PaymentCredential, request: Any) -> None:
         """Tier-2 backstop for session credentials: after Tier-1 HMAC confirms

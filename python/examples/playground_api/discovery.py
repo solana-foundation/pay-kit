@@ -1,10 +1,11 @@
 # examples/playground_api/discovery.py
-"""OpenAPI 3.1 discovery, byte-aligned with the TypeScript playground.
+"""OpenAPI 3.1 discovery, aligned with the TypeScript playground.
 
-The TS SDK ships `buildOpenApiDocument` (packages/pay-kit/src/openapi.ts); the
-Python SDK has no discovery builder yet, so this is an example-local port of the
-*document shape* — not the TS code. A discovery consumer (mppx tooling, the
-payment-discovery draft) sees the same structure from either SDK:
+Neither the TS nor the Python SDK ships a discovery / OpenAPI builder yet, so
+this is an example-local OpenAPI 3.1 document builder (python-only), pending a
+future cross-SDK helper. It mirrors the *document shape* the TS playground emits
+so a discovery consumer (mppx tooling, the payment-discovery draft) sees the
+same structure from either SDK:
 
     { info, openapi: "3.1.0", paths: { <path>: { <method>: {
         responses, "x-payment-info": { offers: [...] }, summary? } } },

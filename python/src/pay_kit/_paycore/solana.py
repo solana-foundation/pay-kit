@@ -220,6 +220,17 @@ STABLECOIN_TOKEN_PROGRAMS: dict[str, str] = {
     "CASH": TOKEN_2022_PROGRAM,
 }
 
+# Base-unit precision (token decimals) per supported stablecoin. KNOWN_MINTS
+# carries no decimals column, so this is the single source of truth for the
+# decimals helper. Every supported stablecoin is 6-decimal today.
+STABLECOIN_DECIMALS: dict[str, int] = {
+    "USDC": 6,
+    "USDT": 6,
+    "USDG": 6,
+    "PYUSD": 6,
+    "CASH": 6,
+}
+
 
 def default_rpc_url(network: str) -> str:
     """Return the default RPC endpoint for a Solana network."""
@@ -266,6 +277,17 @@ def default_token_program_for_currency(currency: str, network: str) -> str:
     if symbol:
         return STABLECOIN_TOKEN_PROGRAMS[symbol]
     return TOKEN_PROGRAM
+
+
+def stablecoin_decimals(currency: str, network: str = "mainnet") -> int:
+    """Return the base-unit precision for a stablecoin symbol or known mint.
+
+    Accepts a symbol (``"USDC"``) or a raw mint address; resolves to the
+    supported stablecoin and returns its decimals (USDC/USDT/PYUSD = 6). Falls
+    back to 6 for an unknown currency, matching every supported stablecoin.
+    """
+    symbol = stablecoin_symbol(resolve_mint(currency, network)) or stablecoin_symbol(currency)
+    return STABLECOIN_DECIMALS.get(symbol or "", 6)
 
 
 def is_native_sol(currency: str) -> bool:
