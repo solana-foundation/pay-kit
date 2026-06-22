@@ -12,6 +12,7 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
+from pay_kit._paycore.errors import PaymentError
 from pay_kit.protocols.mpp.server import SessionOptions, new_session
 from pay_kit.protocols.mpp.server.session_store import ChannelState
 from pay_kit.signer import LocalSigner
@@ -107,6 +108,43 @@ async def test_close_settles_with_voucher_and_records_signature() -> None:
     # Exactly one tx, instructions [ed25519(1), settleAndFinalize(4), distribute(7)].
     assert len(rpc.sent) == 1
     assert _instruction_discriminators(rpc.sent[0]) == [1, 4, 7]
+
+
+@pytest.mark.asyncio
+async def test_settle_raises_and_does_not_finalize_when_tx_unconfirmed() -> None:
+    """A dropped/failed settle tx must raise (the broadcast is confirmed before
+    return), so the channel is NOT marked finalized with an unconfirmed
+    signature and the re-drivable-close guard still applies."""
+
+    class _FailingSettleRpc(_SettleRpc):
+        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+            return [{"err": {"InstructionError": [0, "Custom"]}} for _ in signatures]
+
+    operator = Keypair.from_seed(bytes([8] * 32))
+    auth = Keypair.from_seed(bytes([9] * 32))
+    channel = str(Keypair.from_seed(bytes([10] * 32)).pubkey())
+    rpc = _FailingSettleRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(auth.pubkey()),
+            deposit=1_000_000,
+            cumulative=500_000,
+            highest_voucher_signature=str(auth.sign_message(b"voucher")),
+            highest_voucher_expires_at=4_102_444_800,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    with pytest.raises(PaymentError, match="failed on-chain"):
+        await session._settle_channel(channel)
+
+    final = await session._core.store().get_channel(channel)
+    assert final is not None
+    assert final.finalized is False
+    assert final.settled_signature is None
 
 
 @pytest.mark.asyncio
