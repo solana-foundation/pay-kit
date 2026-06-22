@@ -184,7 +184,7 @@ class SessionGateResult:
     # headers are the receipt headers on success, else the 402 challenge headers.
     headers: dict[str, str]
     # body is None on success, else the 402 problem document.
-    body: dict | None = None
+    body: dict[str, Any] | None = None
 
 
 def _parse_session_u64(value: str, name: str) -> int:
@@ -523,14 +523,18 @@ class Session:
             except Exception as exc:
                 raise PaymentError(f"open transaction verification failed: {exc}", code="invalid-payload") from exc
             # Propagate the on-chain payer (open slot 0) so process_open records
-            # state.operator even when the client used the single-arg
-            # ActiveSession.open_action() helper (payload.payer is None there).
+            # state.operator when the attached transaction is the source of truth.
             # Without it, settle-at-close refunds the unspent balance to the
             # recipient's ATA instead of the channel opener's.
             if not payload.payer:
                 payload.payer = verified.payer
         elif mode == "push" and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
+        elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
+            raise PaymentError(
+                "push open requires payer or transaction when settle-at-close is configured",
+                code="invalid-payload",
+            )
         elif mode == "push" and self._rpc is not None:
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
 

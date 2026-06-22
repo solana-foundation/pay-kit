@@ -21,16 +21,20 @@ from decimal import Decimal
 from typing import Any
 
 from pay_kit._paycore.protocol import Protocol
+from pay_kit._paycore.solana import stablecoin_decimals
 from pay_kit.config import Config
 from pay_kit.gate import Gate
 from pay_kit.price import Price
 
-#: Solana base-unit precision for the supported stablecoins (USDC/USDT/PYUSD).
-USDC_DECIMALS = 6
+
+def _mints_network(config: Config) -> str:
+    """The bare network label consumed by the stablecoin mint registry."""
+    return config.network.mints_label()
 
 
-def base_units(price: Price, decimals: int = USDC_DECIMALS) -> str:
+def base_units(price: Price, *, currency: str = "USDC", network: str = "mainnet") -> str:
     """The integer base-unit string for a price (e.g. ``usd("0.01")`` -> ``"10000"``)."""
+    decimals = stablecoin_decimals(currency, network)
     return str(int(price.amount.scaleb(decimals).to_integral_value()))
 
 
@@ -60,7 +64,8 @@ def charge_offers(gate: Gate, config: Config, *, currency: str = "USDC") -> list
     base-unit amount, recipient, network, and (for x402) the fee-paying operator.
     """
     accept = _effective_accept(gate, config)
-    amount = base_units(gate.total())
+    network_label = _mints_network(config)
+    amount = base_units(gate.total(), currency=currency, network=network_label)
     # Offer-level description is a price hint (matches the TS offer shape, e.g.
     # "0.01 USDC"); the human prose stays on the route-level summary.
     price = f"{gate.total().amount_string()} {currency}"
@@ -111,7 +116,8 @@ def session_offer(
     Offer `description` is an "up to <cap> <currency>" price hint, mirroring the
     TS session offer shape.
     """
-    cap_human = format(Decimal(cap_base_units) / (Decimal(10) ** USDC_DECIMALS), "f")
+    decimals = stablecoin_decimals(currency, _mints_network(config))
+    cap_human = format(Decimal(cap_base_units) / (Decimal(10) ** decimals), "f")
     return _offer(
         amount=cap_base_units,
         currency=currency,

@@ -42,6 +42,7 @@ from pay_kit.protocols.mpp.server.session_method import (
     SessionOptions,
     new_session,
 )
+from pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
@@ -783,6 +784,47 @@ async def test_session_idle_close_flips_state_without_signer_or_rpc() -> None:
 
 
 # ── method-layer open guards ──
+
+
+async def test_session_push_open_requires_payer_or_transaction_for_settlement() -> None:
+    operator = Keypair.from_seed(bytes([44] * 32))
+    session = _new_test_session(
+        operator=str(operator.pubkey()),
+        recipient=SESSION_TEST_RECIPIENT,
+        signer=LocalSigner.from_keypair(operator),
+        rpc=_FakeRpc(),
+    )
+    channel_id = _new_wallet()
+    signer = _TestVoucherSigner(0x30)
+
+    with pytest.raises(PaymentError, match="requires payer or transaction"):
+        await _verify_session_action(
+            session,
+            SessionAction.open_action(
+                OpenPayload.push(channel_id, "1000", signer.address(), _confirmed_signature(0x31))
+            ),
+        )
+
+    payer = _new_wallet()
+    await _verify_session_action(
+        session,
+        SessionAction.open_action(
+            OpenPayload.payment_channel(
+                channel_id,
+                "1000",
+                payer,
+                SESSION_TEST_RECIPIENT,
+                "USDC",
+                1,
+                900,
+                signer.address(),
+                _confirmed_signature(0x32),
+            )
+        ),
+    )
+    state = await _get_channel(session, channel_id)
+    assert state is not None
+    assert state.operator == payer
 
 
 async def test_session_open_pull_without_strategy_rejected_at_method_layer() -> None:
