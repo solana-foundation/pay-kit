@@ -1109,6 +1109,78 @@ impl Mpp {
             ))
         };
 
+        // Bound the bundle size so a client can't make the operator spin on a
+        // huge bundle (the builder emits ~5 txs; allow generous headroom for
+        // multi-chunk range-proof staging).
+        if transactions.len() > MAX_CONFIDENTIAL_BUNDLE_TXS {
+            return Err(VerificationError::invalid_payload(format!(
+                "Confidential bundle has {} transactions (max {MAX_CONFIDENTIAL_BUNDLE_TXS})",
+                transactions.len()
+            )));
+        }
+
+        // PASS 1 — decode and hard-verify EVERY transaction with no network
+        // calls and no signing. This rejects a bundle that lacks exactly one
+        // valid confidential transfer (e.g. an all-`create_account` bundle that
+        // would otherwise cost the gateway rent + fees across 16 co-signed txs)
+        // before the gateway spends anything. Each tx is allow-listed, the
+        // gateway is asserted as fee payer and sole rent funder, and any
+        // transfer destination is checked here — all before co-signing in pass 2.
+        let mut decoded: Vec<VersionedTransaction> = Vec::with_capacity(transactions.len());
+        let mut transfer_count = 0usize;
+        for (idx, tx_b64) in transactions.iter().enumerate() {
+            // Bound the per-tx string before decoding so a client can't force a
+            // large allocation with a multi-MB base64 blob (each real bundle tx
+            // is well under the 1232-byte wire limit).
+            if tx_b64.len() > MAX_BUNDLE_TX_BASE64_LEN {
+                return Err(VerificationError::invalid_payload(format!(
+                    "Bundle tx {idx} exceeds the {MAX_BUNDLE_TX_BASE64_LEN}-byte base64 cap"
+                )));
+            }
+            let tx_bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
+                    .map_err(|e| {
+                        VerificationError::invalid_payload(format!(
+                            "Invalid base64 transaction at index {idx}: {e}"
+                        ))
+                    })?;
+            let tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
+                .map(VersionedTransaction::from)
+                .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
+                .map_err(|e| {
+                    VerificationError::invalid_payload(format!(
+                        "Invalid transaction at index {idx}: {e}"
+                    ))
+                })?;
+
+            check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
+
+            // Allow-list every instruction, assert the gateway is fee payer and
+            // the only rent funder, and validate any confidential-transfer
+            // destination — all before any co-sign/broadcast in pass 2.
+            transfer_count +=
+                verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program, &recipient_ata)
+                    .map_err(|e| {
+                        VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
+                    })?;
+            if transfer_count > 1 {
+                return Err(VerificationError::credential_mismatch(
+                    "Confidential bundle contains more than one transfer",
+                ));
+            }
+            decoded.push(tx);
+        }
+
+        // The bundle must contain EXACTLY ONE confidential transfer to the
+        // expected recipient (checked pre-co-sign above). Reject a transfer-less
+        // bundle (which would "settle" with no payment) or a decoy here — before
+        // the gateway co-signs/funds/broadcasts a single tx.
+        if transfer_count != 1 {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Confidential bundle must contain exactly one transfer (found {transfer_count})"
+            )));
+        }
+
         // In amount-enforcing mode, snapshot the recipient's pending balance
         // BEFORE the bundle. A not-yet-existing account, or a freshly-configured
         // one whose pending ciphertext is still the uninitialized/zero default
@@ -1135,69 +1207,11 @@ impl Mpp {
             None => 0,
         };
 
-        // Bound the bundle size so a client can't make the operator spin on a
-        // huge bundle (the builder emits ~5 txs; allow generous headroom for
-        // multi-chunk range-proof staging).
-        if transactions.len() > MAX_CONFIDENTIAL_BUNDLE_TXS {
-            return Err(VerificationError::invalid_payload(format!(
-                "Confidential bundle has {} transactions (max {MAX_CONFIDENTIAL_BUNDLE_TXS})",
-                transactions.len()
-            )));
-        }
-
-        // Submit each transaction IN ORDER. The bundle is gateway-paid and
-        // arrives partially signed (the fee-payer slot is empty). For every tx
-        // we (1) hard-verify it only does allow-listed, non-draining work, then
-        // (2) co-sign the gateway fee-payer slot, then simulate + broadcast. The
-        // final tx carries the confidential transfer; its signature is the
-        // settlement signature.
+        // PASS 2 — co-sign the empty gateway fee-payer slot, simulate, broadcast,
+        // and confirm each (already-validated) tx IN ORDER. The final tx carries
+        // the confidential transfer; its signature is the settlement signature.
         let mut final_sig = String::new();
-        let mut transfer_count = 0usize;
-        for (idx, tx_b64) in transactions.iter().enumerate() {
-            // Bound the per-tx string before decoding so a client can't force a
-            // large allocation with a multi-MB base64 blob (each real bundle tx
-            // is well under the 1232-byte wire limit).
-            if tx_b64.len() > MAX_BUNDLE_TX_BASE64_LEN {
-                return Err(VerificationError::invalid_payload(format!(
-                    "Bundle tx {idx} exceeds the {MAX_BUNDLE_TX_BASE64_LEN}-byte base64 cap"
-                )));
-            }
-            let tx_bytes =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, tx_b64)
-                    .map_err(|e| {
-                        VerificationError::invalid_payload(format!(
-                            "Invalid base64 transaction at index {idx}: {e}"
-                        ))
-                    })?;
-            let mut tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
-                .map(VersionedTransaction::from)
-                .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
-                .map_err(|e| {
-                    VerificationError::invalid_payload(format!(
-                        "Invalid transaction at index {idx}: {e}"
-                    ))
-                })?;
-
-            check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
-
-            // (1) Allow-list every instruction, assert the gateway is fee payer
-            // and the only rent funder, and validate any confidential-transfer
-            // destination — all BEFORE co-signing, so nothing draining or
-            // mis-targeted is ever signed/broadcast.
-            transfer_count +=
-                verify_confidential_bundle_tx(&tx, &gateway_pubkey, &token_program, &recipient_ata)
-                    .map_err(|e| {
-                        VerificationError::credential_mismatch(format!("Bundle tx {idx}: {e}"))
-                    })?;
-            // Abort on a second transfer BEFORE co-signing/broadcasting it — a
-            // decoy/extra confidential transfer must never reach the chain.
-            if transfer_count > 1 {
-                return Err(VerificationError::credential_mismatch(
-                    "Confidential bundle contains more than one transfer",
-                ));
-            }
-
-            // (2) Co-sign the empty gateway fee-payer slot.
+        for (idx, tx) in decoded.iter_mut().enumerate() {
             let msg_data = tx.message.serialize();
             let sig_bytes = fee_payer_signer
                 .sign_message(&msg_data)
@@ -1218,7 +1232,7 @@ impl Mpp {
             tx.signatures[gw_idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
 
             // Simulate before broadcasting to avoid fee loss / partial bundles.
-            let sim = self.rpc.simulate_transaction(&tx).map_err(|e| {
+            let sim = self.rpc.simulate_transaction(&*tx).map_err(|e| {
                 VerificationError::network_error(format!(
                     "Simulation RPC error for bundle tx {idx}: {e}"
                 ))
@@ -1243,7 +1257,7 @@ impl Mpp {
                 )));
             }
 
-            let signature = self.rpc.send_transaction(&tx).map_err(|e| {
+            let signature = self.rpc.send_transaction(&*tx).map_err(|e| {
                 VerificationError::network_error(format!("Bundle tx {idx} broadcast failed: {e}"))
             })?;
             let signature_str = signature.to_string();
@@ -1276,16 +1290,6 @@ impl Mpp {
             }
 
             final_sig = signature_str;
-        }
-
-        // The bundle must contain EXACTLY ONE confidential transfer, and (as
-        // verified pre-co-sign in verify_confidential_bundle_tx) it targets the
-        // expected recipient ATA. This rejects a transfer-less bundle (which
-        // would otherwise "settle" with no payment) and a decoy/second transfer.
-        if transfer_count != 1 {
-            return Err(VerificationError::credential_mismatch(format!(
-                "Confidential bundle must contain exactly one transfer (found {transfer_count})"
-            )));
         }
 
         // Amount enforcement (only when the gateway controls the recipient):
