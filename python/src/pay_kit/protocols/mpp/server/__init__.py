@@ -19,6 +19,7 @@ from pay_kit.protocols.mpp.server.session import (
 from pay_kit.protocols.mpp.server.session_method import (
     Session,
     SessionChallengeOptions,
+    SessionGateResult,
     SessionOptions,
     new_session,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "Session",
     "SessionChallengeOptions",
     "SessionConfig",
+    "SessionGateResult",
     "SessionOptions",
     "SessionRoutes",
     "SessionServer",

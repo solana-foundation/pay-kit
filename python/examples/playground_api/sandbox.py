@@ -18,13 +18,12 @@ import json
 import urllib.request
 from typing import Any
 
+from pay_kit._paycore.mints import SYSTEM_PROGRAM, TOKEN_PROGRAM
 from pay_kit._paycore.solana import resolve_mint
 
 # The sandbox clones mainnet state, so it funds the *mainnet* USDC mint
 # regardless of the configured network tag (mirrors sandbox.ts).
 USDC_MINT = resolve_mint("USDC", "mainnet")
-SYSTEM_PROGRAM = "11111111111111111111111111111111"
-TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 SOL_FUND_LAMPORTS = 100_000_000_000  # 100 SOL
 USDC_FUND_AMOUNT = 100_000_000  # 100 USDC (6 decimals)
 

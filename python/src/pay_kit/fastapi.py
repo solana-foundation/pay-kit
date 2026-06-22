@@ -45,8 +45,9 @@ if TYPE_CHECKING:
     from pay_kit.gate import DynamicGate, Gate
     from pay_kit.price import Price
     from pay_kit.pricing import Pricing
+    from pay_kit.protocols.mpp.server import Session, SessionChallengeOptions
 
-__all__ = ["RequirePayment", "install_exception_handler", "payment", "Payment"]
+__all__ = ["RequirePayment", "RequireSession", "install_exception_handler", "payment", "Payment"]
 
 #: Header that carries each settlement header's name through the response hook.
 _SETTLEMENT_STATE_ATTR = "paykit_settlement_headers"
@@ -86,6 +87,33 @@ def RequirePayment(  # noqa: N802 - factory reads as a dependency constructor
                 dict(payment.settlement_headers),
             )
         return payment
+
+    return dependency
+
+
+def RequireSession(  # noqa: N802 - factory reads as a dependency constructor
+    session: Session,
+    challenge_options: SessionChallengeOptions,
+) -> Callable[..., Any]:
+    """Build a FastAPI dependency that gates a route behind an MPP session.
+
+    The returned coroutine reads the ``Authorization`` header and runs the
+    framework-agnostic :meth:`~pay_kit.protocols.mpp.server.Session.handle` gate.
+    On a missing or invalid credential it raises ``HTTPException`` carrying the
+    402 challenge headers and problem body; on success it schedules the receipt
+    headers to be merged onto the response (the same settlement-header echo path
+    :func:`RequirePayment` uses) and returns the receipt headers dict, so a
+    handler can ``Depends`` on it to attach them to a ``StreamingResponse``.
+    """
+    from pay_kit.protocols.mpp.core.headers import AUTHORIZATION_HEADER
+
+    async def dependency(request: Request) -> dict[str, str]:
+        auth = request.headers.get(AUTHORIZATION_HEADER)
+        result = await session.handle(auth, challenge_options)
+        if not result.ok:
+            raise HTTPException(result.status, detail=result.body, headers=result.headers)
+        setattr(request.state, _SETTLEMENT_STATE_ATTR, dict(result.headers))
+        return result.headers
 
     return dependency
 

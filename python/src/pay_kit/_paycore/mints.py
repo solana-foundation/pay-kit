@@ -11,6 +11,7 @@ from solders.pubkey import Pubkey
 
 from pay_kit._paycore.solana import (
     ASSOCIATED_TOKEN_PROGRAM,
+    SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
     default_token_program_for_currency,
@@ -20,6 +21,7 @@ from pay_kit._paycore.solana import (
 
 __all__ = [
     "ASSOCIATED_TOKEN_PROGRAM",
+    "SYSTEM_PROGRAM",
     "TOKEN_PROGRAM",
     "TOKEN_2022_PROGRAM",
     "resolve_stablecoin_mint",

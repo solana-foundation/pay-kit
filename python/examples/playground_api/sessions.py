@@ -1,13 +1,13 @@
 # examples/playground_api/sessions.py
 """One metered-session route for the playground (FastAPI).
 
-pay_kit ships a charge/x402 route shim (``RequirePayment`` +
-``install_exception_handler``), but it ships *no* session gate: sessions live in
+pay_kit ships the session gate as ``RequireSession`` (the session counterpart of
+the charge/x402 ``RequirePayment`` shim); sessions themselves live in
 ``pay_kit.protocols.mpp.server`` as framework-agnostic primitives
-(:func:`new_session`, :func:`session_routes`). So the 402 gate below is the one
-piece an idiomatic session example must hand-roll today. It is the same shape a
-charge route gets for free: verify an ``Authorization`` credential, or answer
-402 with a ``WWW-Authenticate`` challenge.
+(:func:`new_session`, :func:`session_routes`, :meth:`Session.handle`). So the
+402 gate is one ``Depends(RequireSession(...))`` line: verify an
+``Authorization`` credential, or answer 402 with a ``WWW-Authenticate``
+challenge.
 
 Boot config comes from ``pay_kit.config()`` (the same resolved operator,
 recipient, and challenge-binding secret the charge routes use), not hand-rolled
@@ -20,20 +20,13 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import pay_kit
-from pay_kit._paycore.errors import PaymentError, payment_required_response
 from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit._paycore.solana import resolve_mint
-from pay_kit.protocols.mpp.core.headers import (
-    AUTHORIZATION_HEADER,
-    PAYMENT_RECEIPT_HEADER,
-    format_receipt,
-    format_www_authenticate,
-    parse_authorization,
-)
+from pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
+from pay_kit.fastapi import RequireSession
 from pay_kit.protocols.mpp.server import (
     SessionChallengeOptions,
     SessionOptions,
@@ -56,7 +49,7 @@ session = new_session(
         recipient=_cfg.effective_recipient(),
         cap=1_000_000,
         currency=resolve_mint("USDC", "mainnet"),
-        decimals=6,
+        decimals=stablecoin_decimals("USDC"),
         network=_cfg.network.value,
         secret_key=_cfg.mpp.challenge_binding_secret or "",
         modes=["pull"],
@@ -70,31 +63,10 @@ session = new_session(
 
 _challenge = SessionChallengeOptions(cap="1000000", description="Metered token stream")
 
-
-async def _session_gate(request: Request) -> dict[str, str]:
-    """The one hand-rolled piece (no session shim ships): verify the credential
-    or raise 402 with a fresh challenge. Mirrors what RequirePayment does for
-    charge routes."""
-    auth = request.headers.get(AUTHORIZATION_HEADER)
-    if auth:
-        try:
-            receipt = await session.verify_credential(parse_authorization(auth))
-            return {PAYMENT_RECEIPT_HEADER: format_receipt(receipt)}
-        except PaymentError as err:
-            error = err
-        except Exception as err:  # noqa: BLE001 (parse/framework errors map to 402)
-            error = PaymentError(str(err), code="invalid-payload")
-    else:
-        error = None
-    problem = payment_required_response(
-        str(error) if error else "Payment required",
-        code=(error.code if error and error.code else "payment_invalid"),
-        challenge_header=format_www_authenticate(await session.challenge(_challenge)),
-    )
-    raise HTTPException(problem["status_code"], detail=problem["body"], headers=problem["headers"])
-
-
-_gate = Depends(_session_gate)
+# The session 402 gate, now shipped by the SDK: verify an Authorization
+# credential (returning the receipt headers) or answer 402 with a fresh
+# challenge. Mirrors what RequirePayment does for charge routes.
+_gate = Depends(RequireSession(session, _challenge))
 
 # Streamed deliveries, billed per chunk against the session voucher. Mirrors the
 # TypeScript playground's `GET /api/v1/stream` (SSE) session route.
