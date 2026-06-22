@@ -167,12 +167,24 @@ pub async fn build_charge_transaction_with_options(
             })?;
             let fee_payer = Pubkey::from_str(fee_payer_key)
                 .map_err(|e| Error::Other(format!("invalid feePayerKey `{fee_payer_key}`: {e}")))?;
+            // Resolve a currency SYMBOL (e.g. "USDPT") to its mint address, the
+            // same way the non-confidential path does — the bundle builder feeds
+            // this straight to Pubkey::from_str, so a bare symbol would fail.
+            // SOL (resolve_mint -> None) is already rejected by
+            // validate_confidential_charge above; guard defensively anyway.
+            let mint =
+                resolve_mint(currency, method_details.network.as_deref()).ok_or_else(|| {
+                    Error::InvalidConfig(
+                        "confidential transfers require an SPL Token-2022 mint, not native SOL"
+                            .into(),
+                    )
+                })?;
             let blockhash = resolve_blockhash(rpc, method_details)?;
             return super::confidential::confidential_charge_payload(
                 signer,
                 rpc,
                 total_amount,
-                currency,
+                mint,
                 recipient,
                 &fee_payer,
                 blockhash,
@@ -1081,6 +1093,10 @@ mod tests {
             resolve_mint("CASH", None),
             Some(crate::protocol::solana::mints::CASH_MAINNET)
         );
+        assert_eq!(
+            resolve_mint("USDPT", None),
+            Some(crate::protocol::solana::mints::USDPT_MAINNET)
+        );
     }
 
     #[test]
@@ -1467,6 +1483,50 @@ mod tests {
     const ZERO_HASH: &str = "11111111111111111111111111111111";
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    // A confidential charge given a currency SYMBOL must resolve it to a mint
+    // address before the bundle builder (which feeds it to Pubkey::from_str).
+    // The builder parses the mint BEFORE the recipient, so with a deliberately
+    // invalid recipient the symbol case must fail at "invalid recipient" — proving
+    // the mint resolved past its own parse. An unresolved symbol would instead
+    // fail earlier at "invalid mint `USDPT`". (Integration tests use raw mint
+    // addresses, so only this exercises the symbol path; we stop before any RPC
+    // since the blocking RPC client can't run inside a tokio test.)
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn build_charge_confidential_resolves_currency_symbol() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(crate::protocol::solana::programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "USDPT",
+            "not-a-pubkey",
+            &md,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid recipient"),
+            "expected to reach recipient parse (symbol resolved), got: {msg}"
+        );
+        assert!(
+            !msg.contains("invalid mint"),
+            "currency symbol was not resolved to a mint address: {msg}"
+        );
+    }
 
     // ── build_charge_transaction: SOL happy paths ──
 
