@@ -21,7 +21,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@x402/core": "file:/Users/ludo/Coding/x402/.local-tarballs/x402-core-2.10.0.tgz"
+      "@x402/core": "file:../typescript/.x402-vendor/x402-core-2.15.0.tgz",
+      "@x402/svm": "file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz"
     }
   }
 }

@@ -25,6 +25,13 @@ pub mod mints {
     pub const PYUSD_DEVNET: &str = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM";
     pub const PYUSD_TESTNET: &str = PYUSD_DEVNET;
     pub const CASH_MAINNET: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
+
+    /// USDPT (Anchorage) — Token-2022 mint with the Confidential Transfer
+    /// extension enabled. Placeholder confidential-capable stablecoin; the
+    /// production flow targets a dedicated mint we deploy with an auditor
+    /// configured and auto-approve enabled. See
+    /// [`super::stablecoin_supports_confidential`].
+    pub const USDPT_MAINNET: &str = "HVWf8JmLoHs99Lw8Psf3fyqAtA4crWxCPkrmSdNjhNH3";
 }
 
 /// Canonical Solana network slugs per spec §7.2.
@@ -95,6 +102,7 @@ pub fn resolve_stablecoin_mint<'a>(currency: &'a str, network: Option<&str>) -> 
             _ => mints::PYUSD_MAINNET,
         }),
         "CASH" => Some(mints::CASH_MAINNET),
+        "USDPT" => Some(mints::USDPT_MAINNET),
         _ => Some(currency),
     }
 }
@@ -107,7 +115,17 @@ fn stablecoin_uses_token_2022(mint: &str) -> bool {
             | mints::USDG_MAINNET
             | mints::USDG_DEVNET
             | mints::CASH_MAINNET
+            | mints::USDPT_MAINNET
     )
+}
+
+/// Whether `mint` is a well-known stablecoin whose Token-2022 mint enables the
+/// Confidential Transfer extension. Only these mints may be used with
+/// [`MethodDetails::confidential`] set to `true`. Arbitrary mints return
+/// `false`; callers MUST confirm the `ConfidentialTransferMint` extension
+/// (and its auditor) on-chain before issuing a confidential challenge.
+pub fn stablecoin_supports_confidential(mint: &str) -> bool {
+    matches!(mint, mints::USDPT_MAINNET)
 }
 
 /// Whether `mint` is one of the well-known stablecoin mints whose token
@@ -124,6 +142,7 @@ pub fn is_known_stablecoin_mint(mint: &str) -> bool {
             | mints::PYUSD_MAINNET
             | mints::PYUSD_DEVNET
             | mints::CASH_MAINNET
+            | mints::USDPT_MAINNET
     )
 }
 
@@ -301,6 +320,9 @@ mod tests {
         assert!(md.fee_payer_key.is_none());
         assert!(md.splits.is_none());
         assert!(md.recent_blockhash.is_none());
+        assert!(md.confidential.is_none());
+        assert!(md.auditor_elgamal_pubkey.is_none());
+        assert!(md.recipient_elgamal_pubkey.is_none());
     }
 
     #[test]
@@ -319,6 +341,9 @@ mod tests {
                 memo: Some("test memo".to_string()),
             }]),
             recent_blockhash: Some("BlockhashXyz".to_string()),
+            confidential: None,
+            auditor_elgamal_pubkey: None,
+            recipient_elgamal_pubkey: None,
         };
         let json = serde_json::to_string(&md).unwrap();
         let deserialized: MethodDetails = serde_json::from_str(&json).unwrap();
@@ -567,6 +592,172 @@ mod tests {
             "got: {err}"
         );
     }
+
+    // ── Confidential transfers: registry ──
+
+    #[test]
+    fn usdpt_mint_constant_is_valid_pubkey() {
+        use solana_pubkey::Pubkey;
+        use std::str::FromStr;
+        assert!(Pubkey::from_str(mints::USDPT_MAINNET).is_ok());
+    }
+
+    #[test]
+    fn resolve_usdpt_symbol() {
+        assert_eq!(
+            resolve_stablecoin_mint("USDPT", None),
+            Some(mints::USDPT_MAINNET)
+        );
+        // Case-insensitive, like the other symbols.
+        assert_eq!(
+            resolve_stablecoin_mint("usdpt", Some("mainnet")),
+            Some(mints::USDPT_MAINNET)
+        );
+    }
+
+    #[test]
+    fn usdpt_uses_token_2022_and_is_known() {
+        assert!(stablecoin_uses_token_2022(mints::USDPT_MAINNET));
+        assert!(is_known_stablecoin_mint(mints::USDPT_MAINNET));
+        assert_eq!(
+            default_token_program_for_currency("USDPT", None),
+            programs::TOKEN_2022_PROGRAM
+        );
+    }
+
+    #[test]
+    fn stablecoin_supports_confidential_only_for_ct_mints() {
+        assert!(stablecoin_supports_confidential(mints::USDPT_MAINNET));
+        // A Token-2022 stablecoin without the CT extension is not confidential.
+        assert!(!stablecoin_supports_confidential(mints::CASH_MAINNET));
+        // A plain SPL stablecoin is not confidential.
+        assert!(!stablecoin_supports_confidential(mints::USDC_MAINNET));
+        // Arbitrary mints are not confidential until confirmed on-chain.
+        assert!(!stablecoin_supports_confidential(&unique_pubkey()));
+    }
+
+    // ── Confidential transfers: CredentialPayload::Bundle serde ──
+
+    #[test]
+    fn credential_payload_bundle_serde() {
+        let cp = CredentialPayload::Bundle {
+            transactions: vec!["txA".to_string(), "txB".to_string()],
+        };
+        let json = serde_json::to_string(&cp).unwrap();
+        assert!(json.contains("\"type\":\"bundle\""));
+        assert!(json.contains("\"transactions\":[\"txA\",\"txB\"]"));
+        let deserialized: CredentialPayload = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            CredentialPayload::Bundle { transactions } => {
+                assert_eq!(transactions, vec!["txA", "txB"]);
+            }
+            _ => panic!("Expected Bundle variant"),
+        }
+    }
+
+    // ── Confidential transfers: MethodDetails serde ──
+
+    #[test]
+    fn method_details_confidential_roundtrip() {
+        let md = MethodDetails {
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            auditor_elgamal_pubkey: Some(
+                "GCJ+UreNo+YOlsWHCswYmm7+Phb90ionwJkBsIS4OUo=".to_string(),
+            ),
+            recipient_elgamal_pubkey: Some("cmVjaXBpZW50LWVsZ2FtYWwtcHVibGljLWtleQ==".to_string()),
+            ..MethodDetails::default()
+        };
+        let json = serde_json::to_string(&md).unwrap();
+        assert!(json.contains("\"confidential\":true"));
+        assert!(json.contains("\"auditorElgamalPubkey\""));
+        assert!(json.contains("\"recipientElgamalPubkey\""));
+        let back: MethodDetails = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.confidential, Some(true));
+        assert_eq!(
+            back.auditor_elgamal_pubkey.as_deref(),
+            Some("GCJ+UreNo+YOlsWHCswYmm7+Phb90ionwJkBsIS4OUo=")
+        );
+    }
+
+    // ── Confidential transfers: validate_confidential_charge ──
+
+    fn confidential_md() -> MethodDetails {
+        MethodDetails {
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            auditor_elgamal_pubkey: Some("auditor-key".to_string()),
+            ..MethodDetails::default()
+        }
+    }
+
+    #[test]
+    fn validate_confidential_noop_when_not_confidential() {
+        let md = MethodDetails::default();
+        validate_confidential_charge("sol", &md).expect("non-confidential is unconstrained");
+    }
+
+    #[test]
+    fn validate_confidential_accepts_valid() {
+        validate_confidential_charge(mints::USDPT_MAINNET, &confidential_md())
+            .expect("valid confidential charge");
+    }
+
+    #[test]
+    fn validate_confidential_rejects_native_sol() {
+        let err = validate_confidential_charge("sol", &confidential_md())
+            .err()
+            .expect("sol rejected");
+        assert!(format!("{err}").contains("not native SOL"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_confidential_rejects_wrong_token_program() {
+        let mut md = confidential_md();
+        md.token_program = Some(programs::TOKEN_PROGRAM.to_string());
+        let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
+            .err()
+            .expect("legacy token program rejected");
+        assert!(format!("{err}").contains("Token-2022"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_confidential_auditor_optional() {
+        // No auditor is allowed: verification is recipient-key, and the auditor
+        // is the mint issuer's optional compliance facility.
+        let mut md = confidential_md();
+        md.auditor_elgamal_pubkey = None;
+        validate_confidential_charge(mints::USDPT_MAINNET, &md)
+            .expect("missing auditor is allowed");
+
+        // A present-but-empty auditor pubkey is malformed and rejected.
+        md.auditor_elgamal_pubkey = Some(String::new());
+        let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
+            .err()
+            .expect("empty auditor rejected");
+        assert!(
+            format!("{err}").contains("auditorElgamalPubkey"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_confidential_rejects_splits() {
+        let mut md = confidential_md();
+        md.splits = Some(vec![Split {
+            recipient: unique_pubkey(),
+            amount: "10".to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: None,
+        }]);
+        let err = validate_confidential_charge(mints::USDPT_MAINNET, &md)
+            .err()
+            .expect("splits rejected");
+        assert!(format!("{err}").contains("splits"), "got: {err}");
+    }
 }
 
 /// Solana-specific method details in the challenge request.
@@ -597,6 +788,27 @@ pub struct MethodDetails {
     /// Server-provided recent blockhash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
+
+    /// If true, the charge MUST settle as a Token-2022 confidential transfer
+    /// (the amount is encrypted on-chain). Requires a Token-2022 mint with the
+    /// Confidential Transfer extension, a `bundle` credential, and no `splits`.
+    /// An auditor is optional (mint-issuer facility). See
+    /// [`validate_confidential_charge`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidential: Option<bool>,
+
+    /// Base64-encoded twisted-ElGamal public key of the mint's
+    /// confidential-transfer auditor. Optional: the auditor is the mint issuer's
+    /// compliance facility, not required for a charge (settlement is
+    /// recipient-key); only validated to be non-empty when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auditor_elgamal_pubkey: Option<String>,
+
+    /// Base64-encoded twisted-ElGamal public key of the recipient's
+    /// confidential token account, supplied as a hint to save an RPC lookup.
+    /// Clients MUST verify it against on-chain state before use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_elgamal_pubkey: Option<String>,
 }
 
 /// A payment split — additional transfer in the same asset.
@@ -699,6 +911,63 @@ pub fn checked_sum_split_amounts(splits: &[Split]) -> Option<u64> {
         .try_fold(0u64, |acc, x| acc.checked_add(x))
 }
 
+/// Validate the confidential-charge constraints from the Solana charge spec.
+///
+/// A no-op when `md.confidential` is not `Some(true)`. Otherwise enforces, per
+/// the spec's confidential profile:
+/// 1. `currency` is an SPL mint, not native SOL.
+/// 2. `token_program`, if declared, is the Token-2022 program.
+/// 3. `auditor_elgamal_pubkey`, if present, is non-empty. The auditor is the
+///    mint issuer's optional compliance facility, NOT required for a charge —
+///    the payee verifies the amount it received with its own recipient key.
+/// 4. No `splits` (combining confidential transfers with splits is out of
+///    scope for `draft-00`).
+///
+/// This is the single source of truth for both the server (challenge
+/// issuance) and the client (challenge verification before building the
+/// bundle).
+pub fn validate_confidential_charge(
+    currency: &str,
+    md: &MethodDetails,
+) -> Result<(), crate::error::Error> {
+    use crate::error::Error;
+
+    if !md.confidential.unwrap_or(false) {
+        return Ok(());
+    }
+
+    if currency.eq_ignore_ascii_case("sol") {
+        return Err(Error::InvalidConfig(
+            "confidential transfers require an SPL Token-2022 mint, not native SOL".into(),
+        ));
+    }
+
+    if let Some(tp) = md.token_program.as_deref() {
+        if tp != programs::TOKEN_2022_PROGRAM {
+            return Err(Error::InvalidConfig(
+                "confidential transfers require the Token-2022 program".into(),
+            ));
+        }
+    }
+
+    // The auditor key is the mint issuer's optional compliance facility — NOT
+    // required for a charge (the payee verifies the amount it received with its
+    // own recipient key). Only reject a present-but-empty value as malformed.
+    if matches!(md.auditor_elgamal_pubkey.as_deref(), Some("")) {
+        return Err(Error::InvalidConfig(
+            "auditorElgamalPubkey, when present, must not be empty".into(),
+        ));
+    }
+
+    if md.splits.as_ref().is_some_and(|s| !s.is_empty()) {
+        return Err(Error::InvalidConfig(
+            "confidential transfers cannot be combined with splits".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Credential payload — what the client sends in the Authorization header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -714,5 +983,16 @@ pub enum CredentialPayload {
     Signature {
         /// Base58-encoded transaction signature.
         signature: String,
+    },
+    /// Confidential mode: client sends an ordered bundle of signed
+    /// transactions (proof-context setup, the confidential transfer, and
+    /// context-account cleanup). The server submits them sequentially. Used
+    /// only when `MethodDetails.confidential` is `true`.
+    #[serde(rename = "bundle")]
+    Bundle {
+        /// Ordered, non-empty list of base64-encoded serialized signed
+        /// transactions. The final element MUST contain the confidential
+        /// transfer instruction.
+        transactions: Vec<String>,
     },
 }

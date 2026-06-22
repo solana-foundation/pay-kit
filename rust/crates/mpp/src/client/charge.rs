@@ -95,6 +95,24 @@ pub struct SelectChargeChallengeOptions<'a> {
 }
 
 /// Build a charge transaction from challenge parameters and additional client options.
+/// Resolve the blockhash to sign with: prefer the server-provided
+/// `recentBlockhash`, else fetch one at `confirmed` commitment.
+///
+/// Audit #36: ask for `confirmed` explicitly instead of leaning on the RPC
+/// client's default commitment. Solana's client guidance recommends
+/// `confirmed` for blockhash fetches — a `processed` hash can disappear under
+/// reorgs and produce signed transactions that fail with BlockhashNotFound.
+fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
+    if let Some(bh) = &method_details.recent_blockhash {
+        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))
+    } else {
+        use solana_commitment_config::CommitmentConfig;
+        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .map(|(hash, _last_valid_block_height)| hash)
+            .map_err(|e| Error::Rpc(e.to_string()))
+    }
+}
+
 pub async fn build_charge_transaction_with_options(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -123,6 +141,63 @@ pub async fn build_charge_transaction_with_options(
             return Err(Error::Other(format!(
                 "Challenge network `{actual}` does not match client expected_network `{expected}`"
             )));
+        }
+    }
+
+    // Confidential charges settle via an encrypted, multi-transaction bundle,
+    // not the plaintext transfer this function builds. Validate the spec
+    // constraints first (Token-2022, no splits; auditor optional — read from the
+    // mint, only rejected if a present hint is empty), then branch to the
+    // confidential bundle builder. We MUST NOT silently settle a confidential
+    // charge as a cleartext transfer.
+    crate::protocol::solana::validate_confidential_charge(currency, method_details)?;
+    if method_details.confidential.unwrap_or(false) {
+        #[cfg(feature = "confidential")]
+        {
+            // Clients hold no SOL, so confidential bundles are gateway-paid: the
+            // challenge MUST carry the gateway fee-payer key, which becomes the
+            // fee payer, rent funder, and proof/record-account authority for
+            // every bundle transaction (the client only signs the transfer
+            // authority and the ephemeral account keypairs).
+            let fee_payer_key = method_details.fee_payer_key.as_deref().ok_or_else(|| {
+                Error::InvalidConfig(
+                    "confidential charges require feePayerKey (the gateway pays bundle fees)"
+                        .into(),
+                )
+            })?;
+            let fee_payer = Pubkey::from_str(fee_payer_key)
+                .map_err(|e| Error::Other(format!("invalid feePayerKey `{fee_payer_key}`: {e}")))?;
+            // Resolve a currency SYMBOL (e.g. "USDPT") to its mint address, the
+            // same way the non-confidential path does — the bundle builder feeds
+            // this straight to Pubkey::from_str, so a bare symbol would fail.
+            // SOL (resolve_mint -> None) is already rejected by
+            // validate_confidential_charge above; guard defensively anyway.
+            let mint =
+                resolve_mint(currency, method_details.network.as_deref()).ok_or_else(|| {
+                    Error::InvalidConfig(
+                        "confidential transfers require an SPL Token-2022 mint, not native SOL"
+                            .into(),
+                    )
+                })?;
+            let blockhash = resolve_blockhash(rpc, method_details)?;
+            return super::confidential::confidential_charge_payload(
+                signer,
+                rpc,
+                total_amount,
+                mint,
+                recipient,
+                &fee_payer,
+                blockhash,
+            )
+            .await;
+        }
+        #[cfg(not(feature = "confidential"))]
+        {
+            return Err(Error::Other(
+                "Confidential-transfer charges require the `confidential` feature \
+                 to be enabled in this build"
+                    .into(),
+            ));
         }
     }
 
@@ -205,19 +280,7 @@ pub async fn build_charge_transaction_with_options(
     }
 
     // Build and sign.
-    let blockhash = if let Some(bh) = &method_details.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
-    } else {
-        // Audit #36: ask for `confirmed` explicitly instead of leaning on
-        // the RPC client's default commitment. Solana's client guidance
-        // recommends `confirmed` for blockhash fetches — a `processed`
-        // hash can disappear under reorgs and produce signed transactions
-        // that fail with BlockhashNotFound after broadcast.
-        use solana_commitment_config::CommitmentConfig;
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .map(|(hash, _last_valid_block_height)| hash)
-            .map_err(|e| Error::Rpc(e.to_string()))?
-    };
+    let blockhash = resolve_blockhash(rpc, method_details)?;
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
@@ -1030,6 +1093,10 @@ mod tests {
             resolve_mint("CASH", None),
             Some(crate::protocol::solana::mints::CASH_MAINNET)
         );
+        assert_eq!(
+            resolve_mint("USDPT", None),
+            Some(crate::protocol::solana::mints::USDPT_MAINNET)
+        );
     }
 
     #[test]
@@ -1416,6 +1483,50 @@ mod tests {
     const ZERO_HASH: &str = "11111111111111111111111111111111";
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
     const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    // A confidential charge given a currency SYMBOL must resolve it to a mint
+    // address before the bundle builder (which feeds it to Pubkey::from_str).
+    // The builder parses the mint BEFORE the recipient, so with a deliberately
+    // invalid recipient the symbol case must fail at "invalid recipient" — proving
+    // the mint resolved past its own parse. An unresolved symbol would instead
+    // fail earlier at "invalid mint `USDPT`". (Integration tests use raw mint
+    // addresses, so only this exercises the symbol path; we stop before any RPC
+    // since the blocking RPC client can't run inside a tokio test.)
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn build_charge_confidential_resolves_currency_symbol() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(crate::protocol::solana::programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "USDPT",
+            "not-a-pubkey",
+            &md,
+        )
+        .await
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid recipient"),
+            "expected to reach recipient parse (symbol resolved), got: {msg}"
+        );
+        assert!(
+            !msg.contains("invalid mint"),
+            "currency symbol was not resolved to a mint address: {msg}"
+        );
+    }
 
     // ── build_charge_transaction: SOL happy paths ──
 
@@ -2440,6 +2551,41 @@ mod tests {
         assert!(
             msg.contains("does not match client expected_network"),
             "unexpected error: {msg}"
+        );
+    }
+
+    // Without the `confidential` feature, a well-formed confidential challenge
+    // must NOT be settled as a plaintext transfer: the builder fails closed,
+    // pointing at the missing feature rather than degrading to a cleartext tx.
+    #[cfg(not(feature = "confidential"))]
+    #[tokio::test]
+    async fn build_charge_transaction_fails_closed_on_confidential() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            network: Some("mainnet".to_string()),
+            decimals: Some(6),
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            confidential: Some(true),
+            auditor_elgamal_pubkey: Some("auditor-key".to_string()),
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            crate::protocol::solana::mints::USDPT_MAINNET,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .err()
+        .expect("confidential charge should fail closed");
+        assert!(
+            format!("{err}").contains("feature"),
+            "unexpected error: {err}"
         );
     }
 

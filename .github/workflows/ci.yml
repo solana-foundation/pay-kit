@@ -98,6 +98,8 @@ jobs:
         run: pnpm vitest run --coverage --config vitest.config.ci.ts
         env:
           SURFPOOL_REPORT: "1"
+          # Reliable RPC datasource for the embedded surfnet (see the Rust job).
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
 
       - name: Upload TS coverage
         if: always()
@@ -175,6 +177,10 @@ jobs:
         working-directory: rust
         env:
           SURFPOOL_REPORT: "1"
+          # Reliable RPC datasource for the embedded surfnet — without it the
+          # surfpool integration tests clone from the public mainnet-beta RPC,
+          # which rate-limits and crashes surfnet mid-test in CI.
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         # Lock to library scope: solana-mpp only (x402 has its own
         # coverage budget tracked separately), exclude bin entrypoints
         # (harness), on-chain program crates under src/program/,

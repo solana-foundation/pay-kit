@@ -33,7 +33,7 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_transaction::{versioned::VersionedTransaction, Transaction};
-use solana_transaction_status::UiTransactionEncoding;
+use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
 use crate::error::Error;
@@ -48,7 +48,7 @@ use crate::store::{MemoryStore, Store};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
-const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
+pub(crate) const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
 const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
 const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 /// Tighter price cap applied when the *server* is the fee payer.
@@ -62,7 +62,7 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 /// the 5_000-lamport base fee per signature, which leaves enough headroom
 /// for honest clients to bump priority during congestion without letting
 /// the merchant be drained.
-const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
+pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
 const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
@@ -148,11 +148,23 @@ fn resolve_server_token_program(
             "Currency {currency} is neither a known symbol nor a valid mint address: {e}"
         ))
     })?;
-    let account = rpc.get_account(&mint_pk).map_err(|e| {
-        Error::InvalidConfig(format!(
-            "Failed to fetch mint account for currency {currency}: {e}"
-        ))
-    })?;
+    // Read at `confirmed` (not the default `finalized`): the mint owner is
+    // immutable, so confirmed is strictly safe, faster, and avoids a spurious
+    // failure for a freshly-created/cloned mint that isn't finalized yet.
+    let account = rpc
+        .get_account_with_commitment(
+            &mint_pk,
+            solana_commitment_config::CommitmentConfig::confirmed(),
+        )
+        .map_err(|e| {
+            Error::InvalidConfig(format!(
+                "Failed to fetch mint account for currency {currency}: {e}"
+            ))
+        })?
+        .value
+        .ok_or_else(|| {
+            Error::InvalidConfig(format!("Mint account not found for currency {currency}"))
+        })?;
     let owner = account.owner.to_string();
     match owner.as_str() {
         programs::TOKEN_PROGRAM => Ok(Some(programs::TOKEN_PROGRAM)),
@@ -193,6 +205,19 @@ pub struct Config {
     pub fee_payer: bool,
     /// Fee payer signer (if fee_payer is true).
     pub fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    /// Payee (recipient) wallet signer, used to derive the recipient ElGamal
+    /// key for confidential-transfer settlement. Two settlement modes:
+    ///   * `Some` (recipient-key verification): the gateway controls the payee,
+    ///     so it derives the recipient key and ENFORCES the exact amount by
+    ///     decrypting the recipient's own pending-balance delta (NOT auditor).
+    ///   * `None` (facilitator trust-proofs): the gateway settles to an
+    ///     arbitrary recipient it cannot decrypt, so confidential bundles are
+    ///     ACCEPTED without amount enforcement — it only verifies the transfer
+    ///     targets the recipient and lands (the on-chain ZK program guarantees
+    ///     the proofs), and the recipient reconciles the amount out of band.
+    ///
+    /// Not used for non-confidential flows.
+    pub recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
     /// Replay protection store (defaults to in-memory).
     pub store: Option<Arc<dyn Store>>,
     /// Enable HTML payment link pages for browser requests.
@@ -225,6 +250,7 @@ impl Default for Config {
             realm: None,
             fee_payer: false,
             fee_payer_signer: None,
+            recipient_signer: None,
             store: None,
             html: false,
             accept_push_mode: false,
@@ -251,26 +277,34 @@ pub struct ChargeOptions<'a> {
 /// stateless HMAC-bound challenge IDs.
 #[derive(Clone)]
 pub struct Mpp {
-    rpc: Arc<RpcClient>,
-    rpc_url: String,
-    realm: String,
-    challenge_binding_secret: String,
-    currency: String,
+    pub(crate) rpc: Arc<RpcClient>,
+    pub(crate) rpc_url: String,
+    pub(crate) realm: String,
+    pub(crate) challenge_binding_secret: String,
+    pub(crate) currency: String,
     /// Token program governing `currency`. `None` for native SOL. Resolved
     /// once at `Mpp::new` time — either from the hardcoded stablecoin table
     /// or via an on-chain mint-owner lookup for arbitrary mint addresses
     /// (spec §7.2). Reused at challenge generation and at verification so
     /// the two sides stay in lockstep.
-    token_program: Option<&'static str>,
-    recipient: String,
-    decimals: u32,
-    network: String,
-    fee_payer: bool,
-    fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
-    store: Arc<dyn Store>,
-    html: bool,
+    pub(crate) token_program: Option<&'static str>,
+    pub(crate) recipient: String,
+    pub(crate) decimals: u32,
+    pub(crate) network: String,
+    pub(crate) fee_payer: bool,
+    pub(crate) fee_payer_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    /// Payee wallet signer for confidential-transfer recipient-key
+    /// verification (derives the recipient ElGamal key). `Some` ⇒ enforce the
+    /// exact amount via the recipient's pending-balance delta; `None` ⇒
+    /// facilitator trust-proofs mode, where bundles are accepted WITHOUT amount
+    /// enforcement (the recipient reconciles out of band). See [`Config`].
+    // Only read by the confidential bundle-settlement path.
+    #[cfg_attr(not(feature = "confidential"), allow(dead_code))]
+    pub(crate) recipient_signer: Option<Arc<dyn solana_keychain::SolanaSigner>>,
+    pub(crate) store: Arc<dyn Store>,
+    pub(crate) html: bool,
     /// Audit #5: opt-in for push-mode credentials.
-    accept_push_mode: bool,
+    pub(crate) accept_push_mode: bool,
 }
 
 impl Mpp {
@@ -331,6 +365,7 @@ impl Mpp {
             network: config.network,
             fee_payer: config.fee_payer,
             fee_payer_signer: config.fee_payer_signer,
+            recipient_signer: config.recipient_signer,
             store,
             html: config.html,
             accept_push_mode: config.accept_push_mode,
@@ -833,6 +868,21 @@ impl Mpp {
             })?
             .unwrap_or_default();
 
+        // A challenge issued in confidential mode (`methodDetails.confidential`)
+        // can ONLY be settled with a confidential Bundle credential. Reject a
+        // cleartext Transaction or push Signature here, fail-closed and
+        // independent of the `confidential` feature: settling one would ignore
+        // the confidential constraint entirely — no privacy, and it bypasses the
+        // bundle allow-list + amount enforcement in settle_confidential_bundle.
+        // This is the mirror of the Bundle-vs-non-confidential guard there.
+        if method_details.confidential == Some(true)
+            && !matches!(payload, CredentialPayload::Bundle { .. })
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Confidential challenges must be settled with a Bundle credential, not a cleartext transfer or push signature",
+            ));
+        }
+
         // Settle, with the consume_signature reservation sitting between
         // broadcast and confirmation polling. If the server crashes or the
         // poll loop times out after the transaction has already landed,
@@ -876,6 +926,28 @@ impl Mpp {
                 self.consume_signature(&signature_str).await?;
                 signature_str
             }
+            #[cfg(feature = "confidential")]
+            CredentialPayload::Bundle { ref transactions } => {
+                let final_sig = self
+                    .settle_confidential_bundle(transactions, request, &method_details)
+                    .await?;
+                // The Receipt type has no pending/delivery field (its only
+                // ReceiptStatus is Success), so we emit success like the other
+                // arms once the confidential transfer has confirmed on-chain
+                // and the recipient-recovered amount matches the charge.
+                // TODO: pending-delivery semantics — a future Receipt revision
+                // could mark delivery as "pending" for asynchronous flows.
+                final_sig
+            }
+            #[cfg(not(feature = "confidential"))]
+            CredentialPayload::Bundle { .. } => {
+                // Confidential-transfer bundle settlement requires the
+                // `confidential` feature (ZK proof + Token-2022 deps). Fail
+                // closed when it is not compiled in.
+                return Err(VerificationError::credential_mismatch(
+                    "Confidential-transfer bundle credentials are not supported by this server (built without the `confidential` feature)",
+                ));
+            }
         };
 
         Ok(Receipt::success(
@@ -891,7 +963,10 @@ impl Mpp {
     /// error if the same signature has already been consumed by an earlier
     /// successful settlement (replay attack) or an earlier broadcast whose
     /// confirmation poll timed out (split-brain double-pay window).
-    async fn consume_signature(&self, signature_str: &str) -> Result<(), VerificationError> {
+    pub(crate) async fn consume_signature(
+        &self,
+        signature_str: &str,
+    ) -> Result<(), VerificationError> {
         let consumed_key = format!("solana-charge:consumed:{signature_str}");
         let inserted = self
             .store
@@ -1692,7 +1767,9 @@ fn interpret_post_timeout_status(
     }
 }
 
-fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), VerificationError> {
+pub(crate) fn reject_address_lookup_tables(
+    tx: &VersionedTransaction,
+) -> Result<(), VerificationError> {
     if tx
         .message
         .address_table_lookups()
@@ -1852,6 +1929,32 @@ fn validate_instruction_allowlist(
     Ok(())
 }
 
+/// A decoded ComputeBudget instruction we permit: a unit limit or a unit price.
+/// The on-chain wire format (tag 2 = `SetComputeUnitLimit`, 5 bytes, `u32`;
+/// tag 3 = `SetComputeUnitPrice`, 9 bytes, `u64`) is identical on the plaintext
+/// and confidential paths, so it is decoded once here. Each caller applies its
+/// own caps / error type (the two paths differ on both), so this returns the
+/// raw value and stays free of policy.
+pub(crate) enum ComputeBudgetOp {
+    UnitLimit(u32),
+    UnitPrice(u64),
+}
+
+/// Decode a `SetComputeUnitLimit` / `SetComputeUnitPrice` ComputeBudget
+/// instruction. Returns `None` for any other opcode or malformed length —
+/// callers decide whether that is an error and how to report it.
+pub(crate) fn decode_compute_budget_op(ix: &CompiledInstruction) -> Option<ComputeBudgetOp> {
+    match (ix.data.first().copied(), ix.data.len()) {
+        (Some(2), 5) => Some(ComputeBudgetOp::UnitLimit(u32::from_le_bytes(
+            ix.data[1..5].try_into().unwrap(),
+        ))),
+        (Some(3), 9) => Some(ComputeBudgetOp::UnitPrice(u64::from_le_bytes(
+            ix.data[1..9].try_into().unwrap(),
+        ))),
+        _ => None,
+    }
+}
+
 fn validate_compute_budget_instruction(
     ix: &CompiledInstruction,
     fee_sponsored: bool,
@@ -1862,9 +1965,8 @@ fn validate_compute_budget_instruction(
         ));
     }
 
-    match ix.data.first().copied() {
-        Some(2) if ix.data.len() == 5 => {
-            let units = u32::from_le_bytes(ix.data[1..5].try_into().unwrap());
+    match decode_compute_budget_op(ix) {
+        Some(ComputeBudgetOp::UnitLimit(units)) => {
             if units > MAX_COMPUTE_UNIT_LIMIT {
                 return Err(VerificationError::invalid_payload(format!(
                     "Compute unit limit {units} exceeds maximum {MAX_COMPUTE_UNIT_LIMIT}"
@@ -1872,8 +1974,7 @@ fn validate_compute_budget_instruction(
             }
             Ok(())
         }
-        Some(3) if ix.data.len() == 9 => {
-            let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+        Some(ComputeBudgetOp::UnitPrice(price)) => {
             let max = if fee_sponsored {
                 MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED
             } else {
@@ -1886,7 +1987,7 @@ fn validate_compute_budget_instruction(
             }
             Ok(())
         }
-        _ => Err(VerificationError::invalid_payload(
+        None => Err(VerificationError::invalid_payload(
             "Unsupported compute budget instruction",
         )),
     }
@@ -2750,7 +2851,7 @@ fn diagnose_balances(
     }
 }
 
-fn resolve_expected_mint(
+pub(crate) fn resolve_expected_mint(
     currency: &str,
     network: Option<&str>,
 ) -> Result<Pubkey, VerificationError> {
@@ -2766,7 +2867,7 @@ fn resolve_expected_mint(
 
 /// Extract parsed instructions from an encoded transaction.
 fn extract_parsed_instructions(
-    tx: &solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta,
+    tx: &solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta,
 ) -> Result<Vec<serde_json::Value>, VerificationError> {
     let tx_json = serde_json::to_value(&tx.transaction.transaction)
         .map_err(|e| VerificationError::new(format!("Failed to serialize transaction: {e}")))?;
@@ -2985,6 +3086,16 @@ impl std::error::Error for VerificationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Confidential bundle verification + orphan-guard moved to `server::confidential`;
+    // the unit tests below stay here (they reuse this module's `dummy_tx` helper).
+    #[cfg(feature = "worker")]
+    use crate::server::confidential::{confirm_orphan_seen, orphan_seen_key};
+    #[cfg(feature = "confidential")]
+    use crate::server::confidential::{
+        verify_confidential_bundle_tx, MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT,
+        ZK_ELGAMAL_PROOF_PROGRAM,
+    };
 
     // ── check_network_blockhash ────────────────────────────────────────────
     //
@@ -3366,12 +3477,350 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "worker")]
+    #[tokio::test]
+    async fn orphan_guard_defers_first_sighting_then_confirms() {
+        let store = MemoryStore::new();
+        let acct = Pubkey::new_unique();
+        // First sweep: never seen ⇒ deferred (not closed), and now recorded.
+        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
+        // Second sweep: still present ⇒ confirmed orphaned.
+        assert!(confirm_orphan_seen(&store, &acct).await.unwrap());
+        // A different account starts over (independent two-pass state).
+        let other = Pubkey::new_unique();
+        assert!(!confirm_orphan_seen(&store, &other).await.unwrap());
+        // After a successful close we clear the mark; it then starts fresh.
+        store.delete(&orphan_seen_key(&acct)).await.unwrap();
+        assert!(!confirm_orphan_seen(&store, &acct).await.unwrap());
+    }
+
+    #[cfg(feature = "confidential")]
+    #[test]
+    fn confidential_bundle_allowlist_accepts_and_rejects() {
+        use solana_instruction::AccountMeta;
+        let gateway = Pubkey::new_unique();
+        let recipient_ata = Pubkey::new_unique();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let zk = Pubkey::from_str(ZK_ELGAMAL_PROOF_PROGRAM).unwrap();
+        let record = spl_record::id();
+        let create = solana_system_interface::instruction::create_account;
+        let vtx = |ixs: Vec<Instruction>, payer: &Pubkey| {
+            VersionedTransaction::from(dummy_tx(ixs, payer))
+        };
+        let verify = |tx: &VersionedTransaction| {
+            verify_confidential_bundle_tx(tx, &gateway, &token_program, &recipient_ata)
+        };
+        let mk = |p: Pubkey| Instruction {
+            program_id: p,
+            accounts: vec![],
+            data: vec![],
+        };
+        // A confidential Transfer (CT extension 27, Transfer 7) to `dest` at the
+        // destination account index (2).
+        let ct_transfer = |dest: Pubkey| Instruction {
+            program_id: token_program,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false),
+                AccountMeta::new_readonly(Pubkey::new_unique(), false),
+                AccountMeta::new(dest, false),
+            ],
+            data: vec![27, 7],
+        };
+        // ZK verify-with-context, proof inline: [context(w), authority]. Inline
+        // proof data is large (>5 bytes), so the authority is read at index 1.
+        let zk_verify_inline = |auth: Pubkey| Instruction {
+            program_id: zk,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false), // context
+                AccountMeta::new_readonly(auth, false),        // authority
+            ],
+            data: vec![1u8; 64], // discriminant 1 (a Verify*) + bulk proof bytes
+        };
+        // ZK verify-with-context, proof read from a record account:
+        // [proof, context(w), authority]. Identified by 5-byte data
+        // (discriminant + u32 offset); the authority is read at index 2.
+        let zk_verify_from_acct = |auth: Pubkey| Instruction {
+            program_id: zk,
+            accounts: vec![
+                AccountMeta::new_readonly(Pubkey::new_unique(), false), // proof source
+                AccountMeta::new(Pubkey::new_unique(), false),          // context
+                AccountMeta::new_readonly(auth, false),                 // authority
+            ],
+            data: vec![1, 0, 0, 0, 0], // discriminant + u32 offset
+        };
+        // spl-record Initialize: [record(w), authority]. Discriminant 0.
+        let record_init = |auth: Pubkey| Instruction {
+            program_id: record,
+            accounts: vec![
+                AccountMeta::new(Pubkey::new_unique(), false), // record
+                AccountMeta::new_readonly(auth, false),        // authority
+            ],
+            data: vec![0],
+        };
+
+        // OK: gateway-funded create_account owned by the ZK program (0 transfers).
+        let ok = vtx(
+            vec![create(&gateway, &Pubkey::new_unique(), 1000, 100, &zk)],
+            &gateway,
+        );
+        assert_eq!(verify(&ok).unwrap(), 0);
+
+        // OK: gateway-authorized ZK verifies (inline + from-account) + record
+        // init + one confidential transfer to the recipient.
+        let ok2 = vtx(
+            vec![
+                zk_verify_inline(gateway),
+                zk_verify_from_acct(gateway),
+                record_init(gateway),
+                ct_transfer(recipient_ata),
+            ],
+            &gateway,
+        );
+        assert_eq!(verify(&ok2).unwrap(), 1);
+
+        // REJECT: ZK verify (inline) that sets an attacker as context authority —
+        // it could close the gateway-funded account externally and drain the rent.
+        let attacker = Pubkey::new_unique();
+        assert!(verify(&vtx(vec![zk_verify_inline(attacker)], &gateway)).is_err());
+        // REJECT: same via the from-account form (authority at index 2, not 1).
+        assert!(verify(&vtx(vec![zk_verify_from_acct(attacker)], &gateway)).is_err());
+        // REJECT: spl-record initialize naming an attacker authority.
+        assert!(verify(&vtx(vec![record_init(attacker)], &gateway)).is_err());
+        // REJECT: spl-record set_authority (discriminant 2) — never allowed; the
+        // gateway co-signature would otherwise reassign authority to the client.
+        let record_set_auth = vtx(
+            vec![Instruction {
+                program_id: record,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false), // record
+                    AccountMeta::new_readonly(gateway, true),      // current authority
+                    AccountMeta::new_readonly(attacker, false),    // new authority
+                ],
+                data: vec![2],
+            }],
+            &gateway,
+        );
+        assert!(verify(&record_set_auth).is_err());
+
+        // REJECT: System transfer drains the gateway.
+        let drain = vtx(
+            vec![solana_system_interface::instruction::transfer(
+                &gateway,
+                &Pubkey::new_unique(),
+                1,
+            )],
+            &gateway,
+        );
+        assert!(verify(&drain).is_err());
+
+        // REJECT: create_account assigning to a non-proof/record program.
+        let bad_owner = vtx(
+            vec![create(
+                &gateway,
+                &Pubkey::new_unique(),
+                1000,
+                100,
+                &token_program,
+            )],
+            &gateway,
+        );
+        assert!(verify(&bad_owner).is_err());
+
+        // REJECT: create_account with oversized space (rent DoS on the gateway).
+        let oversized = vtx(
+            vec![create(
+                &gateway,
+                &Pubkey::new_unique(),
+                1000,
+                1_000_000,
+                &zk,
+            )],
+            &gateway,
+        );
+        assert!(verify(&oversized).is_err());
+
+        // REJECT: a non-transfer Token-2022 opcode (transfer_checked = 12) that
+        // the gateway co-signature could otherwise authorise to drain tokens.
+        let drain_token = vtx(
+            vec![Instruction {
+                program_id: token_program,
+                accounts: vec![AccountMeta::new(gateway, false)],
+                data: vec![12],
+            }],
+            &gateway,
+        );
+        assert!(verify(&drain_token).is_err());
+
+        // REJECT: confidential transfer to the WRONG destination.
+        let wrong_dest = vtx(vec![ct_transfer(Pubkey::new_unique())], &gateway);
+        assert!(verify(&wrong_dest).is_err());
+
+        // REJECT: close_context_state redirecting the gateway's rent elsewhere
+        // (data [0] = CloseContextState; accounts [context, destination, authority]).
+        let bad_close = vtx(
+            vec![Instruction {
+                program_id: zk,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false), // context
+                    AccountMeta::new(Pubkey::new_unique(), false), // destination (attacker)
+                    AccountMeta::new_readonly(gateway, true),      // authority
+                ],
+                data: vec![0],
+            }],
+            &gateway,
+        );
+        assert!(verify(&bad_close).is_err());
+        // ...but a CloseContextState back to the gateway is allowed.
+        let ok_close = vtx(
+            vec![Instruction {
+                program_id: zk,
+                accounts: vec![
+                    AccountMeta::new(Pubkey::new_unique(), false),
+                    AccountMeta::new(gateway, false),
+                    AccountMeta::new_readonly(gateway, true),
+                ],
+                data: vec![0],
+            }],
+            &gateway,
+        );
+        assert_eq!(verify(&ok_close).unwrap(), 0);
+
+        // REJECT: unknown program (arbitrary CPI).
+        let alien = vtx(vec![mk(Pubkey::new_unique())], &gateway);
+        assert!(verify(&alien).is_err());
+
+        // REJECT: fee payer is not the gateway.
+        let wrong = vtx(vec![mk(zk)], &Pubkey::new_unique());
+        assert!(verify(&wrong).is_err());
+
+        // ── ComputeBudget: CU limit + priority fee (bounded) ──
+        let cb_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap();
+        let cb = |data: Vec<u8>| Instruction {
+            program_id: cb_program,
+            accounts: vec![],
+            data,
+        };
+        let set_limit = |units: u32| {
+            let mut d = vec![2u8];
+            d.extend_from_slice(&units.to_le_bytes());
+            cb(d)
+        };
+        let set_price = |price: u64| {
+            let mut d = vec![3u8];
+            d.extend_from_slice(&price.to_le_bytes());
+            cb(d)
+        };
+
+        // OK: CU limit at the cap + price at the fee-sponsored cap, alongside a transfer.
+        let ok_cb = vtx(
+            vec![
+                set_limit(MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT),
+                set_price(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED),
+                ct_transfer(recipient_ata),
+            ],
+            &gateway,
+        );
+        assert_eq!(verify(&ok_cb).unwrap(), 1);
+
+        // REJECT: CU limit over the cap.
+        let over_limit = vtx(
+            vec![set_limit(MAX_CONFIDENTIAL_COMPUTE_UNIT_LIMIT + 1)],
+            &gateway,
+        );
+        assert!(verify(&over_limit).is_err());
+
+        // REJECT: priority price over the fee-sponsored cap (would spend the gateway's lamports).
+        let over_price = vtx(
+            vec![set_price(
+                MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED + 1,
+            )],
+            &gateway,
+        );
+        assert!(verify(&over_price).is_err());
+
+        // REJECT: a non-limit/price ComputeBudget op (e.g. RequestHeapFrame = 1).
+        let heap = vtx(vec![cb(vec![1, 0, 0, 0, 0])], &gateway);
+        assert!(verify(&heap).is_err());
+    }
+
+    // A Bundle credential must only settle a challenge that was issued in
+    // confidential mode. Otherwise a facilitator-mode server (no amount
+    // enforcement) would let a client claim any ordinary Token-2022 charge with
+    // a near-zero confidential transfer. The guard runs before any RPC use, so
+    // a throwaway rpc_url is never contacted.
+    #[cfg(feature = "confidential")]
+    #[tokio::test]
+    async fn bundle_rejected_when_challenge_not_confidential() {
+        let recipient = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: recipient.to_string(),
+            currency: "SOL".to_string(),
+            decimals: 6,
+            network: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:1".to_string()),
+            challenge_binding_secret: Some("x".repeat(32)),
+            realm: Some("test".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let request = charge_request(500_000, &Pubkey::new_unique().to_string(), &recipient);
+
+        for confidential in [None, Some(false)] {
+            let method_details = MethodDetails {
+                token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+                confidential,
+                ..Default::default()
+            };
+            let err = mpp
+                .settle_confidential_bundle(&["unused".to_string()], &request, &method_details)
+                .await
+                .unwrap_err();
+            assert!(
+                err.message.contains("confidential mode"),
+                "confidential={confidential:?} got: {}",
+                err.message
+            );
+        }
+    }
+
     fn charge_request(amount: u64, currency: &str, recipient: &Pubkey) -> ChargeRequest {
         ChargeRequest {
             amount: amount.to_string(),
             currency: currency.to_string(),
             recipient: Some(recipient.to_string()),
             ..Default::default()
+        }
+    }
+
+    // The mirror of `bundle_rejected_when_challenge_not_confidential`: a
+    // confidential challenge must NOT be settleable by a cleartext pull
+    // Transaction or a push Signature. Otherwise a client could ignore the
+    // confidential constraint and pay a plaintext transfer against a challenge
+    // issued in confidential mode (no privacy, no bundle allow-list / amount
+    // enforcement). Feature-independent (fail-closed) and runs before any RPC.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cleartext_credential_rejected_for_confidential_challenge() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "100000".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::json!({ "confidential": true })),
+            ..Default::default()
+        };
+
+        for payload in [
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+            serde_json::json!({ "type": "signature", "signature": "fakesig" }),
+        ] {
+            let cred = build_credential(&mpp, &request, payload.clone());
+            let err = mpp.verify(&cred, &request).await.unwrap_err();
+            assert!(
+                err.message.contains("Bundle credential"),
+                "payload={payload} got: {}",
+                err.message
+            );
         }
     }
 
