@@ -14,6 +14,9 @@ pub mod subscription;
 #[cfg(feature = "axum")]
 pub mod axum;
 
+#[cfg(feature = "confidential")]
+pub mod confidential;
+
 #[cfg(feature = "worker")]
 pub mod confidential_worker;
 
@@ -22,6 +25,9 @@ pub use authenticate::{
 };
 pub use charge::{check_network_blockhash, ChargeOptions, Config, Mpp, VerificationError};
 pub use subscription::{SubscriptionConfig, SubscriptionServer};
+
+#[cfg(feature = "worker")]
+pub use confidential::ConfidentialSweepReport;
 
 #[cfg(feature = "worker")]
 pub use confidential_worker::{

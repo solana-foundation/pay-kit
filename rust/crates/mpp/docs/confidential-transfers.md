@@ -586,28 +586,35 @@ ZK ElGamal Proof program automatically).
 
 These are temporary and should be removed/updated as upstream catches up:
 
-- **litesvm fork patch.** Both `pay/rust/Cargo.toml` and `pay-kit/rust/Cargo.toml`
+- **litesvm git patch.** Both `pay/rust/Cargo.toml` and `pay-kit/rust/Cargo.toml`
   contain a `[patch.crates-io]` override pointing `litesvm` / `litesvm-token` at
-  a fork branch:
+  upstream `master`:
 
   ```toml
   [patch.crates-io]
-  litesvm       = { git = "https://github.com/lgalabru/litesvm.git", branch = "loosen-solana-address-constraint" }
-  litesvm-token = { git = "https://github.com/lgalabru/litesvm.git", branch = "loosen-solana-address-constraint" }
+  litesvm       = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
+  litesvm-token = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
   ```
 
-  This loosens litesvm's pinned `solana-address` constraint so it can coexist
-  with the confidential-transfer proof crates (which pull a newer
-  `solana-address`). Pending an upstream PR. **Side effect:** the patch also
-  redirects surfpool's litesvm, which destabilizes its embedded validator in CI,
-  so the surfpool integration tests are gated behind `RUN_SURFPOOL_TESTS=1` and
-  skip in CI (they run locally where surfnet is stable).
+  Upstream master loosens litesvm's pinned `solana-address` constraint (now
+  `>=2.2, <3`) so it can coexist with the confidential-transfer proof crates
+  (which pull a newer `solana-address`). The fix is merged but not yet in a
+  crates.io release (`0.13.0` still pins `=2.2.0`), so the patch tracks `master`
+  until a release carries it, then it can be dropped entirely. **Side effect:**
+  the patch also redirects surfpool's litesvm, which destabilizes its embedded
+  validator in CI — so the confidential end-to-end tests (and the surfnet
+  integration tests in `tests/confidential_integration.rs`) live behind the
+  opt-in `confidential` Cargo feature, which CI does not enable; they run
+  locally with `cargo test -p solana-mpp --features confidential` where surfnet
+  is stable.
 
-- **`five8_core` std.** `pay/rust/crates/core/Cargo.toml` forces
-  `five8_core = { version = "=0.1.2", features = ["std"] }` so its `impl Error for
-  DecodeError` stays enabled through dependency re-resolution (solana-keypair /
-  solana-signature rely on it; feature unification otherwise drops it and the
-  build fails with `DecodeError: std::error::Error is not satisfied`).
+- **`five8_core` std.** `pay/rust/crates/core/Cargo.toml` and
+  `pay-kit/rust/crates/mpp/Cargo.toml` each force `five8_core` with
+  `features = ["std"]` so its `impl Error for DecodeError` stays enabled through
+  dependency re-resolution (solana-keypair 3.1 → five8 1.0.0 → five8_core 0.1.2,
+  whose `Error` impl is `#[cfg(feature = "std")]`; feature unification otherwise
+  drops it and the build fails with `DecodeError: std::error::Error is not
+  satisfied`). Drop once five8_core ships the impl unconditionally.
 
 - **pay-kit PR #181 branch dependency.** The `pay` repo tracks the
   confidential-transfer feature branch of `pay-kit` until it merges:

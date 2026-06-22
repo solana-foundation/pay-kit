@@ -108,6 +108,43 @@ pub struct ConfidentialTransferParams<'a> {
     pub blockhash: Hash,
 }
 
+/// Create a fresh ZK proof context-state account sized for proof type `T`,
+/// funded by and authorized to the gateway (`fee_payer`). Returns the ephemeral
+/// account keypair and its `[create_account, verify]` instruction pair; the
+/// proof-specific verify instruction is built by `make_verify`, which receives
+/// the `ContextStateInfo` bound to this account + the gateway authority.
+///
+/// Returning the instruction pair (rather than a finished tx) lets the range
+/// site hand its pair into the record-staging path unchanged — a range helper
+/// that built a tx would repack the proof bytes and risk the 1232-byte wire
+/// limit.
+fn proof_context_pair<T: bytemuck::Pod>(
+    rpc: &RpcClient,
+    fee_payer: &Pubkey,
+    fee_payer_addr: &Address,
+    zk_program: &Pubkey,
+    make_verify: impl FnOnce(ContextStateInfo) -> Instruction,
+) -> Result<(Keypair, [Instruction; 2]), Error> {
+    let account = Keypair::new();
+    let size = size_of::<ProofContextState<T>>();
+    let rent = rpc
+        .get_minimum_balance_for_rent_exemption(size)
+        .map_err(|e| Error::Rpc(e.to_string()))?;
+    let create = system_instruction::create_account(
+        fee_payer,
+        &account.pubkey(),
+        rent,
+        size as u64,
+        zk_program,
+    );
+    let ctx_addr = Address::from(account.pubkey().to_bytes());
+    let verify = make_verify(ContextStateInfo {
+        context_state_account: &ctx_addr,
+        context_state_authority: fee_payer_addr,
+    });
+    Ok((account, [create, verify]))
+}
+
 /// Build the ordered, partially-signed transaction bundle for a confidential
 /// transfer.
 ///
@@ -239,66 +276,51 @@ pub async fn build_confidential_transfer_bundle(
     let mut bundle: Vec<String> = Vec::new();
 
     // ----- 1. Equality proof context account -----
-    let equality_account = Keypair::new();
-    let equality_size = size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>();
-    let equality_rent = rpc
-        .get_minimum_balance_for_rent_exemption(equality_size)
-        .map_err(|e| Error::Rpc(e.to_string()))?;
-    let equality_create = system_instruction::create_account(
-        fee_payer,
-        &equality_account.pubkey(),
-        equality_rent,
-        equality_size as u64,
-        &zk_program,
-    );
-    let equality_verify = ProofInstruction::VerifyCiphertextCommitmentEquality.encode_verify_proof(
-        Some(ContextStateInfo {
-            context_state_account: &Address::from(equality_account.pubkey().to_bytes()),
-            context_state_authority: &fee_payer_addr,
-        }),
-        &proof_data.equality_proof_data,
-    );
+    let (equality_account, equality_ixs) =
+        proof_context_pair::<CiphertextCommitmentEqualityProofContext>(
+            rpc,
+            fee_payer,
+            &fee_payer_addr,
+            &zk_program,
+            |ctx| {
+                ProofInstruction::VerifyCiphertextCommitmentEquality
+                    .encode_verify_proof(Some(ctx), &proof_data.equality_proof_data)
+            },
+        )?;
     bundle.push(
         partial_sign_tx(
             signer,
             fee_payer,
             &[&equality_account],
-            &[equality_create, equality_verify],
+            &equality_ixs,
             params.blockhash,
         )
         .await?,
     );
 
     // ----- 2. Ciphertext-validity proof context account -----
-    let validity_account = Keypair::new();
-    let validity_size =
-        size_of::<ProofContextState<BatchedGroupedCiphertext3HandlesValidityProofContext>>();
-    let validity_rent = rpc
-        .get_minimum_balance_for_rent_exemption(validity_size)
-        .map_err(|e| Error::Rpc(e.to_string()))?;
-    let validity_create = system_instruction::create_account(
+    let (validity_account, validity_ixs) = proof_context_pair::<
+        BatchedGroupedCiphertext3HandlesValidityProofContext,
+    >(
+        rpc,
         fee_payer,
-        &validity_account.pubkey(),
-        validity_rent,
-        validity_size as u64,
+        &fee_payer_addr,
         &zk_program,
-    );
-    let validity_verify = ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity
-        .encode_verify_proof(
-            Some(ContextStateInfo {
-                context_state_account: &Address::from(validity_account.pubkey().to_bytes()),
-                context_state_authority: &fee_payer_addr,
-            }),
-            &proof_data
-                .ciphertext_validity_proof_data_with_ciphertext
-                .proof_data,
-        );
+        |ctx| {
+            ProofInstruction::VerifyBatchedGroupedCiphertext3HandlesValidity.encode_verify_proof(
+                Some(ctx),
+                &proof_data
+                    .ciphertext_validity_proof_data_with_ciphertext
+                    .proof_data,
+            )
+        },
+    )?;
     bundle.push(
         partial_sign_tx(
             signer,
             fee_payer,
             &[&validity_account],
-            &[validity_create, validity_verify],
+            &validity_ixs,
             params.blockhash,
         )
         .await?,
@@ -306,27 +328,19 @@ pub async fn build_confidential_transfer_bundle(
 
     // ----- 3. Range proof: stage into an spl-record account, verify from it -----
     let record_account = Keypair::new();
-    let range_account = Keypair::new();
-    let range_size = size_of::<ProofContextState<BatchedRangeProofContext>>();
-    let range_rent = rpc
-        .get_minimum_balance_for_rent_exemption(range_size)
-        .map_err(|e| Error::Rpc(e.to_string()))?;
-    let range_create = system_instruction::create_account(
+    let (range_account, range_ixs) = proof_context_pair::<BatchedRangeProofContext>(
+        rpc,
         fee_payer,
-        &range_account.pubkey(),
-        range_rent,
-        range_size as u64,
+        &fee_payer_addr,
         &zk_program,
-    );
-    let range_verify = ProofInstruction::VerifyBatchedRangeProofU128
-        .encode_verify_proof_from_account(
-            Some(ContextStateInfo {
-                context_state_account: &Address::from(range_account.pubkey().to_bytes()),
-                context_state_authority: &fee_payer_addr,
-            }),
-            &Address::from(record_account.pubkey().to_bytes()),
-            RECORD_PROOF_OFFSET,
-        );
+        |ctx| {
+            ProofInstruction::VerifyBatchedRangeProofU128.encode_verify_proof_from_account(
+                Some(ctx),
+                &Address::from(record_account.pubkey().to_bytes()),
+                RECORD_PROOF_OFFSET,
+            )
+        },
+    )?;
     let proof_bytes = bytemuck::bytes_of(&proof_data.range_proof_data);
     let mut record_txs = stage_range_proof_record(
         signer,
@@ -334,7 +348,7 @@ pub async fn build_confidential_transfer_bundle(
         fee_payer,
         &record_account,
         proof_bytes,
-        &[range_create, range_verify],
+        &range_ixs,
         &[&range_account],
         params.blockhash,
     )
@@ -588,9 +602,14 @@ fn set_signature(
 // POD byte-casts across the zk-sdk 4.0 (token-2022 ABI) ↔ 7.0.1 (proof gen)
 // boundary. The wire format of these fixed-size types is identical; the Rust
 // types are just version-tagged wrappers.
+//
+// This is the single canonical copy of these casts — the `protocol::confidential`
+// litesvm tests call these (rather than re-deriving them) so a future zk-sdk
+// bump can't fix prod while leaving a stale test cast green. (The separate
+// integration-test crate keeps its own copy, as it cannot see `pub(crate)`.)
 // ---------------------------------------------------------------------------
 
-fn cast_elgamal_pubkey_legacy_to_v7(
+pub(crate) fn cast_elgamal_pubkey_legacy_to_v7(
     legacy: &PodElGamalPubkeyLegacy,
 ) -> Result<PodElGamalPubkeyV7, Error> {
     let bytes: [u8; 32] = bytemuck::bytes_of(legacy)
@@ -599,7 +618,7 @@ fn cast_elgamal_pubkey_legacy_to_v7(
     Ok(PodElGamalPubkeyV7(bytes))
 }
 
-fn cast_elgamal_ciphertext_legacy_to_v7(
+pub(crate) fn cast_elgamal_ciphertext_legacy_to_v7(
     legacy: &PodElGamalCiphertextLegacy,
 ) -> Result<PodElGamalCiphertextV7, Error> {
     let bytes: [u8; 64] = bytemuck::bytes_of(legacy)
@@ -608,18 +627,22 @@ fn cast_elgamal_ciphertext_legacy_to_v7(
     Ok(PodElGamalCiphertextV7(bytes))
 }
 
-fn cast_elgamal_ciphertext_v7_to_legacy(v7: &PodElGamalCiphertextV7) -> PodElGamalCiphertextLegacy {
+pub(crate) fn cast_elgamal_ciphertext_v7_to_legacy(
+    v7: &PodElGamalCiphertextV7,
+) -> PodElGamalCiphertextLegacy {
     PodElGamalCiphertextLegacy::from(v7.0)
 }
 
-fn cast_ae_ciphertext_legacy_to_v7(legacy: &PodAeCiphertextLegacy) -> Result<AeCiphertext, Error> {
+pub(crate) fn cast_ae_ciphertext_legacy_to_v7(
+    legacy: &PodAeCiphertextLegacy,
+) -> Result<AeCiphertext, Error> {
     let bytes: [u8; 36] = bytemuck::bytes_of(legacy)
         .try_into()
         .map_err(|_| Error::Other("PodAeCiphertext size".into()))?;
     AeCiphertext::from_bytes(&bytes).ok_or_else(|| Error::Other("decode AeCiphertext".into()))
 }
 
-fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphertextLegacy {
+pub(crate) fn cast_ae_ciphertext_v7_to_legacy(v7: &AeCiphertext) -> PodAeCiphertextLegacy {
     PodAeCiphertextLegacy::from(v7.to_bytes())
 }
 

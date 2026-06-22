@@ -288,13 +288,7 @@ mod tests {
                 BaseStateWithExtensions, ExtensionType, StateWithExtensions,
             },
             instruction::{initialize_mint as initialize_mint_base, mint_to, reallocate},
-            solana_zk_sdk::encryption::pod::{
-                auth_encryption::PodAeCiphertext as PodAeCiphertextLegacy,
-                elgamal::{
-                    PodElGamalCiphertext as PodElGamalCiphertextLegacy,
-                    PodElGamalPubkey as PodElGamalPubkeyLegacy,
-                },
-            },
+            solana_zk_sdk::encryption::pod::elgamal::PodElGamalCiphertext as PodElGamalCiphertextLegacy,
             state::{Account as TokenAccount, Mint},
         };
         use spl_token_confidential_transfer_proof_extraction::instruction::ProofLocation;
@@ -304,26 +298,14 @@ mod tests {
         let token_program = spl_token_2022::id();
         let decimals: u8 = 0;
 
-        // ----- POD byte-cast helpers across the zk-sdk 7 (proof gen) ↔ 4.0
-        // (token-2022 instruction ABI) boundary. Wire format is identical; the
-        // Rust types are just version-tagged wrappers. (Same as
-        // client/confidential.rs.)
-        fn cast_ct_v7_to_legacy(
-            v7: &solana_zk_sdk_pod::encryption::elgamal::PodElGamalCiphertext,
-        ) -> PodElGamalCiphertextLegacy {
-            PodElGamalCiphertextLegacy::from(v7.0)
-        }
-        fn cast_ae_v7_to_legacy(
-            v7: &solana_zk_sdk::encryption::auth_encryption::AeCiphertext,
-        ) -> PodAeCiphertextLegacy {
-            PodAeCiphertextLegacy::from(v7.to_bytes())
-        }
-        fn cast_pubkey_legacy_to_v7(
-            legacy: &PodElGamalPubkeyLegacy,
-        ) -> solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey {
-            let bytes: [u8; 32] = bytemuck::bytes_of(legacy).try_into().unwrap();
-            solana_zk_sdk_pod::encryption::elgamal::PodElGamalPubkey(bytes)
-        }
+        // POD byte-casts across the zk-sdk 7 (proof gen) ↔ 4.0 (token-2022
+        // instruction ABI) boundary. The canonical copies live in
+        // `client::confidential`; call them here so a future zk-sdk bump can't
+        // fix prod while leaving a stale test cast green.
+        use crate::client::confidential::{
+            cast_ae_ciphertext_v7_to_legacy, cast_elgamal_ciphertext_v7_to_legacy,
+            cast_elgamal_pubkey_legacy_to_v7,
+        };
 
         let mut svm = LiteSVM::new();
         let payer = Keypair::new();
@@ -426,7 +408,7 @@ mod tests {
             // Per-account keys (consistent across configure/deposit/apply/transfer).
             let elgamal = ElGamalKeypair::new_rand();
             let ae = AeKey::new_rand();
-            let decryptable_zero = cast_ae_v7_to_legacy(&ae.encrypt(0u64));
+            let decryptable_zero = cast_ae_ciphertext_v7_to_legacy(&ae.encrypt(0u64));
 
             // PubkeyValidity proof verified inline into a context account.
             let proof_data = build_pubkey_validity_proof_data(&elgamal).unwrap();
@@ -535,7 +517,8 @@ mod tests {
             let pending_hi = decrypt(&sender_elgamal, &ext.pending_balance_hi);
             let pending_total = pending_lo + (pending_hi << 16);
             let expected_counter: u64 = ext.pending_balance_credit_counter.into();
-            let new_decryptable = cast_ae_v7_to_legacy(&sender_ae.encrypt(pending_total));
+            let new_decryptable =
+                cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(pending_total));
             let apply_ix = apply_pending_balance(
                 &token_program,
                 &sender_ata,
@@ -563,7 +546,8 @@ mod tests {
             .get_extension::<ConfidentialTransferAccount>()
             .unwrap();
         let recipient_elgamal_pubkey: solana_zk_sdk::encryption::elgamal::ElGamalPubkey =
-            cast_pubkey_legacy_to_v7(&recipient_ext.elgamal_pubkey)
+            cast_elgamal_pubkey_legacy_to_v7(&recipient_ext.elgamal_pubkey)
+                .unwrap()
                 .try_into()
                 .unwrap();
 
@@ -685,13 +669,13 @@ mod tests {
 
         // New decryptable available balance for the sender post-transfer.
         let new_avail = starting_balance - amount;
-        let new_decryptable = cast_ae_v7_to_legacy(&sender_ae.encrypt(new_avail));
-        let recipient_lo = cast_ct_v7_to_legacy(
+        let new_decryptable = cast_ae_ciphertext_v7_to_legacy(&sender_ae.encrypt(new_avail));
+        let recipient_lo = cast_elgamal_ciphertext_v7_to_legacy(
             &proof
                 .ciphertext_validity_proof_data_with_ciphertext
                 .ciphertext_lo,
         );
-        let recipient_hi = cast_ct_v7_to_legacy(
+        let recipient_hi = cast_elgamal_ciphertext_v7_to_legacy(
             &proof
                 .ciphertext_validity_proof_data_with_ciphertext
                 .ciphertext_hi,

@@ -137,6 +137,14 @@ tracing = "0.1"
 # Errors
 thiserror = "2"
 
+# Build fix: solana-keypair 3.1 pulls five8 1.0.0, which binds five8_core 0.1.2,
+# whose `std::error::Error for DecodeError` impl is `#[cfg(feature = "std")]` and
+# otherwise off — so solana-keypair's `SignatureError::from_source(DecodeError)`
+# fails to compile. Pull five8_core directly with `std` on; feature unification
+# turns the impl on for the shared 0.1.2 node. Drop once five8_core ships the
+# impl unconditionally (as it already does on the 1.0 line).
+five8_core = { version = "0.1", features = ["std"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
