@@ -868,6 +868,21 @@ impl Mpp {
             })?
             .unwrap_or_default();
 
+        // A challenge issued in confidential mode (`methodDetails.confidential`)
+        // can ONLY be settled with a confidential Bundle credential. Reject a
+        // cleartext Transaction or push Signature here, fail-closed and
+        // independent of the `confidential` feature: settling one would ignore
+        // the confidential constraint entirely — no privacy, and it bypasses the
+        // bundle allow-list + amount enforcement in settle_confidential_bundle.
+        // This is the mirror of the Bundle-vs-non-confidential guard there.
+        if method_details.confidential == Some(true)
+            && !matches!(payload, CredentialPayload::Bundle { .. })
+        {
+            return Err(VerificationError::credential_mismatch(
+                "Confidential challenges must be settled with a Bundle credential, not a cleartext transfer or push signature",
+            ));
+        }
+
         // Settle, with the consume_signature reservation sitting between
         // broadcast and confirmation polling. If the server crashes or the
         // poll loop times out after the transaction has already landed,
@@ -3775,6 +3790,37 @@ mod tests {
             currency: currency.to_string(),
             recipient: Some(recipient.to_string()),
             ..Default::default()
+        }
+    }
+
+    // The mirror of `bundle_rejected_when_challenge_not_confidential`: a
+    // confidential challenge must NOT be settleable by a cleartext pull
+    // Transaction or a push Signature. Otherwise a client could ignore the
+    // confidential constraint and pay a plaintext transfer against a challenge
+    // issued in confidential mode (no privacy, no bundle allow-list / amount
+    // enforcement). Feature-independent (fail-closed) and runs before any RPC.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cleartext_credential_rejected_for_confidential_challenge() {
+        let mpp = test_mpp();
+        let request = ChargeRequest {
+            amount: "100000".to_string(),
+            currency: "USDC".to_string(),
+            recipient: Some(TEST_RECIPIENT.to_string()),
+            method_details: Some(serde_json::json!({ "confidential": true })),
+            ..Default::default()
+        };
+
+        for payload in [
+            serde_json::json!({ "type": "transaction", "transaction": "AA==" }),
+            serde_json::json!({ "type": "signature", "signature": "fakesig" }),
+        ] {
+            let cred = build_credential(&mpp, &request, payload.clone());
+            let err = mpp.verify(&cred, &request).await.unwrap_err();
+            assert!(
+                err.message.contains("Bundle credential"),
+                "payload={payload} got: {}",
+                err.message
+            );
         }
     }
 
