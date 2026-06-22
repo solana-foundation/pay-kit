@@ -288,3 +288,23 @@ async def test_deliveries_expires_at_integer_accepted() -> None:
         "POST", _body({"amount": "200", "sessionId": channel_id, "expiresAt": _far_future()})
     )
     assert resp.status == 200
+
+
+async def test_commit_non_dict_voucher_rejected() -> None:
+    """A non-dict voucher makes SignedVoucher.from_dict raise AttributeError; the
+    handler must catch it as 400, matching Go's strict json.Decode (not a 500)."""
+    routes = session_routes(SessionServer(_config(), MemoryChannelStore()))
+    for bad in ("a-string", [1, 2], 7):
+        resp = await routes.commit("POST", _body({"deliveryId": "d-1", "voucher": bad}))
+        assert resp.status == 400
+        assert resp.body["error"] == "invalid request body"
+
+
+async def test_commit_non_numeric_expires_at_rejected() -> None:
+    """A non-numeric voucher.data.expiresAt makes VoucherData.from_dict raise
+    ValueError; it must surface as 400, not escape as a 500."""
+    routes = session_routes(SessionServer(_config(), MemoryChannelStore()))
+    voucher = {"data": {"channelId": "x", "cumulativeAmount": "1", "expiresAt": "2025-01-01"}, "signature": "s"}
+    resp = await routes.commit("POST", _body({"deliveryId": "d-1", "voucher": voucher}))
+    assert resp.status == 400
+    assert resp.body["error"] == "invalid request body"

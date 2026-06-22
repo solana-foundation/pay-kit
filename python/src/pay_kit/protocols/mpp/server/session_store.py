@@ -338,8 +338,14 @@ class MemoryChannelStore(ChannelStore):
             return next_state
 
     async def delete_channel(self, channel_id: str) -> None:
-        async with self._mu:
+        # Take the per-channel lock before mutating _data, in the same
+        # lock -> _mu order as update_channel, so a delete cannot race an
+        # in-flight mutator that would otherwise write the channel back after
+        # the pop. Matching the order means no deadlock.
+        lock = await self._channel_lock(channel_id)
+        async with lock, self._mu:
             self._data.pop(channel_id, None)
+            self._locks.pop(channel_id, None)
 
     async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
         async with self._mu:
