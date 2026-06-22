@@ -691,6 +691,13 @@ class Session:
         def finalize(current: ChannelState | None) -> ChannelState:
             if current is None:
                 raise ValueError(f"channel {channel_id} disappeared during settle")
+            # Idempotent against a concurrent re-drive (e.g. a client close
+            # racing the idle-close watchdog): if another caller already
+            # finalized under the per-channel lock, keep its signature rather
+            # than overwriting with this call's, which may be a rejected second
+            # on-chain finalize.
+            if current.finalized:
+                return current
             nxt = current.clone()
             nxt.finalized = True
             nxt.settled_signature = signature

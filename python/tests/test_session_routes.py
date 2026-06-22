@@ -308,3 +308,15 @@ async def test_commit_non_numeric_expires_at_rejected() -> None:
     resp = await routes.commit("POST", _body({"deliveryId": "d-1", "voucher": voucher}))
     assert resp.status == 400
     assert resp.body["error"] == "invalid request body"
+
+
+async def test_commit_non_dict_voucher_data_rejected() -> None:
+    """voucher is a dict but voucher.data is a string/list: VoucherData.from_dict
+    calls .get on it and raises AttributeError, which must surface as 400 (not a
+    500), matching Go's strict json.Decode."""
+    routes = session_routes(SessionServer(_config(), MemoryChannelStore()))
+    for bad_data in ("a-string", [1, 2]):
+        voucher = {"data": bad_data, "signature": "x"}
+        resp = await routes.commit("POST", _body({"deliveryId": "d-1", "voucher": voucher}))
+        assert resp.status == 400
+        assert resp.body["error"] == "invalid request body"
