@@ -116,6 +116,10 @@ class VerifyOpenTxResult:
     deposit: int
     grace_period: int
     salt: int
+    # payer is the channel funder (open instruction slot 0). The caller
+    # propagates it onto the payload so settle-at-close refunds the unspent
+    # balance to the opener's ATA, not the recipient's.
+    payer: str
 
 
 def is_placeholder_signature(signature: str) -> bool:
@@ -291,6 +295,7 @@ async def verify_open_tx(
         deposit=deposit,
         grace_period=grace_period,
         salt=salt,
+        payer=str(payer),
     )
 
 
