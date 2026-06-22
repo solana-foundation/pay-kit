@@ -47,6 +47,7 @@ from pay_kit.protocols.mpp.client.session import (
     session_request_modes,
 )
 from pay_kit.protocols.mpp.client.session_consumer import (
+    CommitTransport,
     MeteredDelivery,
     SessionConsumer,
 )
@@ -55,6 +56,7 @@ from pay_kit.protocols.mpp.client.transport import PaymentTransport
 __all__ = [
     "PaymentTransport",
     "ActiveSession",
+    "CommitTransport",
     "SessionConsumer",
     "MeteredDelivery",
     "serialize_session_credential",
