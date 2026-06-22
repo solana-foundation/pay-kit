@@ -376,8 +376,8 @@ async def settle_and_finalize_channel(
     rpc: RpcClient,
     config: SessionConfig,
 ) -> str:
-    """Build, sign, and broadcast the close settlement transaction; return the
-    on-chain signature.
+    """Build, sign, broadcast, and confirm the close settlement transaction;
+    return the confirmed on-chain signature.
 
     Mirrors the Rust/Go close path: a settle_and_finalize instruction (preceded
     by the Ed25519 precompile when a voucher was recorded) plus a distribute
@@ -437,7 +437,13 @@ async def settle_and_finalize_channel(
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)
     tx = Transaction.new_signed_with_payer([*settle, distribute], merchant_pubkey, [merchant], blockhash)
     sent = await rpc.send_raw_transaction(bytes(tx))
-    return str(sent.value)
+    signature = str(sent.value)
+    # Confirm before returning, mirroring cosign_and_broadcast_open: a dropped
+    # settle tx (blockhash expiry, congestion, duplicate-settle race) must raise
+    # here so the caller does NOT mark the channel finalized with an unconfirmed
+    # signature, which would defeat the re-drivable-close guard.
+    await confirm_transaction_signature(rpc, signature, "settle")
+    return signature
 
 
 async def cosign_and_broadcast_open(payload: OpenPayload, *, fee_payer: Any, rpc: RpcClient) -> str:
