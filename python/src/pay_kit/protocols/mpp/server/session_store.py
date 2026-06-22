@@ -342,10 +342,14 @@ class MemoryChannelStore(ChannelStore):
         # lock -> _mu order as update_channel, so a delete cannot race an
         # in-flight mutator that would otherwise write the channel back after
         # the pop. Matching the order means no deadlock.
+        #
+        # The lock entry is intentionally NOT removed: popping it while another
+        # task is still queued on it would let a later operation create a fresh
+        # lock for the same id and run unserialized against the queued one. Locks
+        # persist for the store's lifetime (as they already do for update_channel).
         lock = await self._channel_lock(channel_id)
         async with lock, self._mu:
             self._data.pop(channel_id, None)
-            self._locks.pop(channel_id, None)
 
     async def list_channels(self, filter: ListChannelsFilter | None = None) -> list[ChannelState]:
         async with self._mu:
