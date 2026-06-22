@@ -8,6 +8,7 @@ All tests are RPC-free: PDA derivation and instruction packing are pure.
 from __future__ import annotations
 
 import struct
+from dataclasses import replace
 
 import pytest
 from solders.pubkey import Pubkey
@@ -159,6 +160,20 @@ def test_build_open_instruction_program_id_and_account_count() -> None:
     assert ix.program_id == PROGRAM_ID
     assert str(ix.program_id) == PAYMENT_CHANNELS_PROGRAM_ID
     assert len(ix.accounts) == 13
+
+
+def test_build_open_instruction_rejects_out_of_range_fields() -> None:
+    """Out-of-range integer fields raise a clear ValueError before the generated
+    Borsh encoder would fail with a low-level construct error."""
+    base = _open_params()
+    with pytest.raises(ValueError, match="grace_period"):
+        build_open_instruction(replace(base, grace_period=0x1_0000_0000))
+    with pytest.raises(ValueError, match="salt"):
+        build_open_instruction(replace(base, salt=0x1_0000_0000_0000_0000))
+    with pytest.raises(ValueError, match="deposit"):
+        build_open_instruction(replace(base, deposit=-1))
+    with pytest.raises(ValueError, match="bps"):
+        build_open_instruction(replace(base, recipients=[Distribution(pk(5), 0x1_0000)]))
 
 
 def test_build_open_instruction_account_order_and_flags() -> None:

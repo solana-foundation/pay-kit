@@ -8,13 +8,13 @@ the five ``verify_credential`` actions (open / voucher / commit / topUp / close)
 with their replay and hardening semantics, including the optional RPC liveness
 confirm seam.
 
-The on-chain settlement path at close, the server-broadcast open
-(``OpenTxSubmitterServer``), the attached-transaction open verification, and the
-metering side-channel HTTP routes from the Go file are not ported here: their
-lower-level Python building blocks (``SubmitOpenTx``, ``closeAndSettleChannel``
-/ ``SettlementInstructions``, the open-tx decode through ``handle_open``, and
-``SessionRoutes``) are not yet ported. Each test name below maps to the Go test
-it mirrors in the docstring.
+This file covers the offline-core handler. The on-chain settlement path at
+close, the server-broadcast open (``OpenTxSubmitterServer``), the
+attached-transaction open verification, and the metering side-channel HTTP
+routes are exercised in their own suites (``test_session_settlement.py``,
+``test_session_onchain.py``, ``test_session_routes.py``, and the surfnet
+``test_session_e2e_surfnet.py``), not here. Each test name below maps to the Go
+test it mirrors in the docstring.
 """
 
 from __future__ import annotations

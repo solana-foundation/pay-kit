@@ -308,6 +308,19 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
     Returns:
         The assembled ``open`` instruction ready to add to a transaction.
     """
+    # Validate the integer fields against their on-chain widths up front so an
+    # out-of-range value raises a clear ValueError here rather than a low-level
+    # struct/Borsh error from PDA derivation or the generated encoder.
+    if not 0 <= params.salt <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise ValueError(f"salt {params.salt} does not fit in u64")
+    if not 0 <= params.deposit <= 0xFFFF_FFFF_FFFF_FFFF:
+        raise ValueError(f"deposit {params.deposit} does not fit in u64")
+    if not 0 <= params.grace_period <= 0xFFFF_FFFF:
+        raise ValueError(f"grace_period {params.grace_period} does not fit in u32")
+    for entry in params.recipients:
+        if not 0 <= entry.bps <= 0xFFFF:
+            raise ValueError(f"recipient bps {entry.bps} does not fit in u16")
+
     channel, _ = find_channel_pda(
         params.payer,
         params.payee,
