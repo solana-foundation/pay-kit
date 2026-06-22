@@ -170,6 +170,9 @@ async def test_verify_open_tx_accepts_legacy_encoding() -> None:
     assert result.deposit == OPEN_FIXTURE_DEPOSIT
     assert result.grace_period == OPEN_FIXTURE_GRACE
     assert result.salt == OPEN_FIXTURE_SALT
+    # payer (open slot 0) is surfaced so the method layer can record
+    # state.operator and refund the opener's ATA at settle-at-close.
+    assert result.payer == str(fixture.payer.pubkey())
 
 
 async def test_verify_open_tx_accepts_v0_encoding() -> None:

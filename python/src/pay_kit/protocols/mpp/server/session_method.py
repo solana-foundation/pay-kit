@@ -517,11 +517,18 @@ class Session:
                 program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
             )
             try:
-                await verify_open_tx(expected, payload, self._rpc)
+                verified = await verify_open_tx(expected, payload, self._rpc)
             except PaymentError:
                 raise
             except Exception as exc:
                 raise PaymentError(f"open transaction verification failed: {exc}", code="invalid-payload") from exc
+            # Propagate the on-chain payer (open slot 0) so process_open records
+            # state.operator even when the client used the single-arg
+            # ActiveSession.open_action() helper (payload.payer is None there).
+            # Without it, settle-at-close refunds the unspent balance to the
+            # recipient's ATA instead of the channel opener's.
+            if not payload.payer:
+                payload.payer = verified.payer
         elif mode == "push" and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
         elif mode == "push" and self._rpc is not None:
