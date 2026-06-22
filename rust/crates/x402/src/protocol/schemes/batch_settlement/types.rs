@@ -235,6 +235,9 @@ pub struct BatchChannelSnapshot {
     pub channel_id: String,
     pub deposit: String,
     pub settled: String,
+    /// Amount the server has swept on-chain via `distribute`. This is the
+    /// server's own accounting (`"0"` until the close sweeps the pool), not a
+    /// fresh read of the on-chain `paidOut`.
     pub paid_out: String,
     /// `open` | `closing` | `finalized`.
     pub status: String,

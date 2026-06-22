@@ -25,7 +25,7 @@ use solana_transaction::Transaction;
 use solana_pay_core::payment_channels as pc;
 use solana_pay_core::payment_channels::generated::accounts::Channel;
 use solana_pay_core::session::accept_voucher;
-use solana_pay_core::store::{ChannelState, ChannelStore, MemoryChannelStore};
+use solana_pay_core::store::{ChannelState, ChannelStore, MemoryChannelStore, StoreError};
 
 use crate::error::Error;
 use crate::protocol::schemes::batch_settlement::{
@@ -451,7 +451,10 @@ impl X402BatchSettlement {
                 network: caip2_network_for_cluster(&self.config.cluster).to_string(),
                 amount: channel.deposit.to_string(),
                 charged_amount: charged.map(|c| c.to_string()),
-                channel_state: Some(self.snapshot(&channel_b58, channel.deposit, "open").await),
+                channel_state: Some(
+                    self.snapshot(&channel_b58, channel.deposit, 0, "open")
+                        .await,
+                ),
             },
         })
     }
@@ -488,7 +491,7 @@ impl X402BatchSettlement {
                 network: caip2_network_for_cluster(&self.config.cluster).to_string(),
                 amount: String::new(),
                 charged_amount: Some(charged.to_string()),
-                channel_state: Some(self.snapshot(channel_id, deposit, "open").await),
+                channel_state: Some(self.snapshot(channel_id, deposit, 0, "open").await),
             },
         })
     }
@@ -518,20 +521,46 @@ impl X402BatchSettlement {
         if let Some(v) = &voucher {
             self.accept(channel_id, v).await?;
         }
+
+        // Freeze the channel before any on-chain work. Once `close_requested_at`
+        // is set, `accept_voucher` rejects further vouchers, so a concurrent
+        // request can no longer advance the watermark past what
+        // `settle_and_finalize` is about to read — an advance that would
+        // otherwise be accepted off-chain yet be unrecoverable on-chain after
+        // the channel is finalized at the earlier watermark.
+        let frozen = self
+            .store
+            .update_channel(
+                channel_id,
+                Box::new(|s| {
+                    let mut state =
+                        s.ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
+                    state.close_requested_at.get_or_insert(now_unix() as u64);
+                    Ok(state)
+                }),
+            )
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?;
+
         let sig = self.settle_and_finalize(channel_id).await?;
-        let distribute_sig = self.distribute(channel_id).await?;
+        // Skip the sweep when nothing was ever settled — `distribute` would just
+        // broadcast a second transaction that moves zero, wasting fees.
+        let distribute_sig = if frozen.cumulative > 0 {
+            self.distribute(channel_id).await?
+        } else {
+            None
+        };
         self.store
             .mark_finalized(channel_id)
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
-        let deposit = self
-            .store
-            .get_channel(channel_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|s| s.deposit)
-            .unwrap_or(0);
+        // `distribute` sweeps the full settled pool, so once it lands the
+        // on-chain `paidOut` equals the settled watermark.
+        let paid_out = if distribute_sig.is_some() {
+            frozen.cumulative
+        } else {
+            0
+        };
         Ok(BatchOutcome {
             serve: false,
             response: BatchSettlementResponse {
@@ -542,7 +571,10 @@ impl X402BatchSettlement {
                 network: caip2_network_for_cluster(&self.config.cluster).to_string(),
                 amount: String::new(),
                 charged_amount: None,
-                channel_state: Some(self.snapshot(channel_id, deposit, "finalized").await),
+                channel_state: Some(
+                    self.snapshot(channel_id, frozen.deposit, paid_out, "finalized")
+                        .await,
+                ),
             },
         })
     }
@@ -725,7 +757,18 @@ impl X402BatchSettlement {
         Channel::from_bytes(&data).map_err(|e| Error::Other(format!("channel decode failed: {e}")))
     }
 
-    async fn snapshot(&self, channel_id: &str, deposit: u64, status: &str) -> BatchChannelSnapshot {
+    /// Build a channel snapshot for a settlement response.
+    ///
+    /// `paid_out` is the amount the server has swept on-chain via `distribute`
+    /// (`0` while the channel is open / un-swept). It is the server's own
+    /// accounting, not a fresh read of the on-chain `paidOut`.
+    async fn snapshot(
+        &self,
+        channel_id: &str,
+        deposit: u64,
+        paid_out: u64,
+        status: &str,
+    ) -> BatchChannelSnapshot {
         let cumulative = self
             .store
             .get_channel(channel_id)
@@ -738,7 +781,7 @@ impl X402BatchSettlement {
             channel_id: channel_id.to_string(),
             deposit: deposit.to_string(),
             settled: cumulative.to_string(),
-            paid_out: "0".to_string(),
+            paid_out: paid_out.to_string(),
             status: status.to_string(),
         }
     }
