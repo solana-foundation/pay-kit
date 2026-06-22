@@ -236,7 +236,7 @@ async def test_server_broadcast_open_builds_signs_and_persists() -> None:
         SessionOptions(
             operator=str(operator.pubkey()),
             recipient=str(operator.pubkey()),
-            cap=1_000_000,
+            cap=2_000_000,
             currency="USDC",
             decimals=6,
             network="localnet",
@@ -249,6 +249,7 @@ async def test_server_broadcast_open_builds_signs_and_persists() -> None:
         )
     )
     open_, payload = _server_open_payload(operator)
+    payload.deposit = "1500000"
 
     signature = await session._handle_open(payload)
 
@@ -259,6 +260,8 @@ async def test_server_broadcast_open_builds_signs_and_persists() -> None:
     # The channel is persisted under its derived id.
     persisted = await session._core.store().get_channel(str(open_.channel_id))
     assert persisted is not None
+    assert persisted.deposit == open_.deposit
+    assert persisted.operator == str(open_.payer)
 
 
 @pytest.mark.asyncio
