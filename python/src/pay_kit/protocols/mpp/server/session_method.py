@@ -488,7 +488,19 @@ class Session:
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
+            expected = VerifyOpenTxExpected(
+                authorized_signer=payload.authorized_signer,
+                currency=self._currency,
+                recipient=self._recipient,
+                network=self._network,
+                max_cap=self._core.config.max_cap,
+                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+            )
             try:
+                verified = await verify_open_tx(expected, payload, None)
+                if not payload.payer:
+                    payload.payer = verified.payer
+                payload.deposit = str(verified.deposit)
                 payload.signature = await cosign_and_broadcast_open(
                     payload, fee_payer=self._signer.keypair, rpc=self._rpc
                 )
@@ -528,6 +540,7 @@ class Session:
             # recipient's ATA instead of the channel opener's.
             if not payload.payer:
                 payload.payer = verified.payer
+            payload.deposit = str(verified.deposit)
         elif mode == "push" and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
         elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
