@@ -203,6 +203,18 @@ impl BatchChannel {
             voucher,
         }
     }
+
+    /// Build a cooperative-close `refund` payload, signing a voucher at the
+    /// current cumulative as proof of channel ownership. The server requires
+    /// this voucher to authorize the close; the watermark is not advanced.
+    pub async fn refund_payload(&self, signer: &dyn SolanaSigner) -> Result<BatchPayload, Error> {
+        let voucher =
+            sign_voucher(signer, &self.channel_id, self.cumulative, self.expires_at).await?;
+        Ok(BatchPayload::Refund {
+            channel_id: pc::pubkey_string(&self.channel_id),
+            voucher: Some(voucher),
+        })
+    }
 }
 
 /// Wrap a payload in a `PAYMENT-SIGNATURE` envelope and base64-encode it.

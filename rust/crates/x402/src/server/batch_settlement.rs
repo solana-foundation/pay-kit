@@ -26,6 +26,7 @@ use solana_pay_core::payment_channels as pc;
 use solana_pay_core::payment_channels::generated::accounts::Channel;
 use solana_pay_core::session::accept_voucher;
 use solana_pay_core::store::{ChannelState, ChannelStore, MemoryChannelStore, StoreError};
+use solana_pay_core::voucher::verify_voucher_signature;
 
 use crate::error::Error;
 use crate::protocol::schemes::batch_settlement::{
@@ -517,9 +518,38 @@ impl X402BatchSettlement {
         channel_id: &str,
         voucher: Option<BatchVoucher>,
     ) -> Result<BatchOutcome, Error> {
-        // Accept an optional final voucher first so it settles in the close.
-        if let Some(v) = &voucher {
-            self.accept(channel_id, v).await?;
+        // A refund cooperatively closes the channel and bypasses the route, so
+        // it must prove control of the channel: the request has to carry a
+        // voucher signed by the channel's authorized signer. The channel id
+        // travels in every voucher header and is not secret, so without this
+        // anyone who observes one could force a close and evict the client.
+        let voucher = voucher.ok_or_else(|| {
+            Error::Other(
+                "refund requires a voucher signed by the channel's authorized signer".into(),
+            )
+        })?;
+        let state = self
+            .store
+            .get_channel(channel_id)
+            .await
+            .map_err(|e| Error::Other(format!("store error: {e}")))?
+            .ok_or_else(|| Error::Other(format!("Channel {channel_id} not found")))?;
+        let cumulative = voucher.cumulative()?;
+        if cumulative > state.cumulative {
+            // Advances the watermark: accept it so the final amount settles in
+            // the close. `accept` verifies the signature against the signer.
+            self.accept(channel_id, &voucher).await?;
+        } else {
+            // Proof-of-ownership only (at or below the watermark — nothing to
+            // advance): still verify the signature to authorize the close.
+            verify_voucher_signature(
+                channel_id,
+                cumulative,
+                voucher.expires_at,
+                &voucher.signature,
+                &state.authorized_signer,
+                now_unix(),
+            )?;
         }
 
         // Freeze the channel before any on-chain work. Once `close_requested_at`
@@ -601,6 +631,12 @@ impl X402BatchSettlement {
                 continue; // no voucher accepted yet
             };
             if state.cumulative == 0 {
+                continue;
+            }
+            // An expired voucher can never settle on-chain; skip it so it can't
+            // fail — and atomically abort — a transaction it shares with
+            // still-valid channels.
+            if expires_at <= now_unix() {
                 continue;
             }
             let channel = Pubkey::from_str(&state.channel_id)
@@ -784,5 +820,87 @@ impl X402BatchSettlement {
             paid_out: paid_out.to_string(),
             status: status.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::batch_settlement::sign_voucher;
+    use ed25519_dalek::SigningKey;
+    use solana_keychain::memory::MemorySigner;
+
+    const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01
+
+    fn memory_signer(seed: u8) -> MemorySigner {
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        MemorySigner::from_bytes(&sk.to_keypair_bytes()).unwrap()
+    }
+
+    fn handler(store: Arc<MemoryChannelStore>) -> X402BatchSettlement {
+        let config = BatchConfig::new(
+            "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+            "devnet",
+            Arc::new(memory_signer(1)),
+        );
+        X402BatchSettlement::with_store(config, store).unwrap()
+    }
+
+    fn seeded_state(channel_id: &str, authorized_signer: &str, cumulative: u64) -> ChannelState {
+        ChannelState {
+            channel_id: channel_id.to_string(),
+            authorized_signer: authorized_signer.to_string(),
+            deposit: 1_000_000,
+            cumulative,
+            finalized: false,
+            highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
+            close_requested_at: None,
+            operator: None,
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: vec![],
+        }
+    }
+
+    // A refund with no voucher carries no proof of ownership and must be
+    // rejected before any on-chain work (no RPC is reachable in this test).
+    #[tokio::test]
+    async fn refund_without_voucher_is_rejected() {
+        let store = Arc::new(MemoryChannelStore::new());
+        let result = handler(store).process_refund("Chan1", None).await;
+        assert!(result.is_err());
+    }
+
+    // A refund whose voucher is signed by a key other than the channel's
+    // authorized signer must be rejected, and must not freeze the channel.
+    #[tokio::test]
+    async fn refund_with_unauthorized_signer_is_rejected() {
+        let owner = memory_signer(2);
+        let attacker = memory_signer(3);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+
+        let store = Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+
+        let forged = sign_voucher(&attacker, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let result = handler(store.clone())
+            .process_refund(&channel_b58, Some(forged))
+            .await;
+        assert!(result.is_err());
+
+        // The rejected attempt left the channel open.
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.close_requested_at.is_none());
+        assert!(!state.finalized);
     }
 }
