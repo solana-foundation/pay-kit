@@ -324,7 +324,10 @@ impl X402BatchSettlement {
             BatchPayload::Voucher {
                 channel_id,
                 voucher,
-            } => self.process_voucher(&channel_id, voucher).await,
+            } => {
+                self.process_voucher(&channel_id, voucher, per_request)
+                    .await
+            }
             BatchPayload::Refund {
                 channel_id,
                 voucher,
@@ -337,8 +340,18 @@ impl X402BatchSettlement {
         config: crate::protocol::schemes::batch_settlement::BatchChannelConfig,
         transaction: String,
         voucher: Option<BatchVoucher>,
-        _per_request: u64,
+        per_request: u64,
     ) -> Result<BatchOutcome, Error> {
+        // The first voucher (if any) pays for the request being served; reject
+        // an underpriced one before opening the channel on-chain.
+        if let Some(v) = &voucher {
+            let charged = v.cumulative()?;
+            if charged < per_request {
+                return Err(Error::Other(format!(
+                    "first voucher charge {charged} is below the required {per_request}"
+                )));
+            }
+        }
         let program_id = self.program_id()?;
         let expected_mint = self.mint()?;
         let expected_payee = Pubkey::from_str(&self.config.recipient)
@@ -363,10 +376,13 @@ impl X402BatchSettlement {
             &program_id,
         );
         let mut tx = decode_transaction(&transaction)?;
+        // In `batch-settlement` the client signs vouchers, so the open's
+        // authorized-signer account is the channel's `authorized_signer`
+        // (the payer by default) — not the operator as in `upto`.
         validate_open_instruction(
             &tx,
             &program_id,
-            &self.operator,
+            &authorized_signer,
             &payer,
             &expected_payee,
             &expected_mint,
@@ -409,6 +425,26 @@ impl X402BatchSettlement {
         }
         if pc::from_address(&channel.payer) != payer {
             return Err(Error::Other("channel payer mismatch".into()));
+        }
+        // Bind the economically-relevant channel terms to what we advertised, so
+        // a client can't open an under-funded channel, a different forced-close
+        // window, or splits that redirect proceeds away from the payee.
+        if channel.deposit < per_request {
+            return Err(Error::Other(format!(
+                "channel deposit {} is below one request's price {per_request}",
+                channel.deposit
+            )));
+        }
+        if channel.grace_period != self.config.grace_period_seconds {
+            return Err(Error::Other(format!(
+                "channel grace_period {} does not match advertised {}",
+                channel.grace_period, self.config.grace_period_seconds
+            )));
+        }
+        if channel.distribution_hash != pc::distribution_hash(&self.distributions()?) {
+            return Err(Error::Other(
+                "channel distribution does not match advertised splits".into(),
+            ));
         }
 
         let channel_b58 = pc::pubkey_string(&channel_id);
@@ -464,6 +500,7 @@ impl X402BatchSettlement {
         &self,
         channel_id: &str,
         voucher: BatchVoucher,
+        per_request: u64,
     ) -> Result<BatchOutcome, Error> {
         let prev = self
             .store
@@ -472,6 +509,17 @@ impl X402BatchSettlement {
             .map_err(|e| Error::Other(format!("store error: {e}")))?
             .map(|s| s.cumulative)
             .unwrap_or(0);
+        // The voucher must pay at least the advertised price for this request.
+        // Checked before `accept` so an underpriced voucher — or an idempotent
+        // replay of the latest voucher (delta 0), which would otherwise serve
+        // the route again for free — is rejected without advancing the
+        // watermark.
+        if voucher.cumulative()?.saturating_sub(prev) < per_request {
+            return Err(Error::Other(format!(
+                "voucher charge {} is below the required {per_request}",
+                voucher.cumulative()?.saturating_sub(prev)
+            )));
+        }
         let new_cumulative = self.accept(channel_id, &voucher).await?;
         let charged = new_cumulative.saturating_sub(prev);
         let deposit = self
@@ -861,6 +909,67 @@ mod tests {
             pending_deliveries: vec![],
             committed_deliveries: vec![],
         }
+    }
+
+    // A steady-state voucher whose delta is below the advertised price must be
+    // rejected — and must not advance the watermark.
+    #[tokio::test]
+    async fn underpriced_voucher_is_rejected_without_advancing() {
+        let owner = memory_signer(4);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+
+        let store = Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+
+        // Route priced at 100; voucher only advances by 1.
+        let voucher = sign_voucher(&owner, &channel, 1, FAR_FUTURE).await.unwrap();
+        let result = handler(store.clone())
+            .process_voucher(&channel_b58, voucher, 100)
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            0,
+            "watermark must not advance for a rejected voucher"
+        );
+    }
+
+    // Replaying the latest voucher (delta 0) must not grant another free serve.
+    #[tokio::test]
+    async fn replayed_voucher_is_rejected() {
+        let owner = memory_signer(5);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+
+        let store = Arc::new(MemoryChannelStore::new());
+        // Watermark already at 100 (a prior voucher was accepted).
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 100),
+            )
+            .await
+            .unwrap();
+
+        let replay = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let result = handler(store)
+            .process_voucher(&channel_b58, replay, 100)
+            .await;
+        assert!(result.is_err());
     }
 
     // A refund with no voucher carries no proof of ownership and must be
