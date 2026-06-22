@@ -161,7 +161,7 @@ class SessionChallengeOptions:
 def _parse_session_u64(value: str, name: str) -> int:
     """Parse a non-negative decimal string into a u64, naming the field on
     error."""
-    if not (value.isascii() and value.isdigit()):
+    if not isinstance(value, str) or not (value.isascii() and value.isdigit()):
         raise ValueError(f"{name} is not an unsigned integer string: {value}")
     parsed = int(value, 10)
     if parsed > _U64_MAX:
@@ -636,12 +636,12 @@ class Session:
     async def _close_on_idle(self, channel_id: str) -> None:
         """Idle-close watchdog handler: close the channel and settle on-chain.
 
-        Settlement only runs when a signer and RPC are configured; a transient
-        failure is swallowed (logged) so it cannot crash the timer, and the
-        channel stays re-drivable with ``settledSignature`` unset.
+        The close state-flip always runs so the idle timeout takes effect even
+        without a signer/RPC (e.g. the playground); only the on-chain settle in
+        ``_settle_channel`` is gated on the signer/RPC pair. A transient failure
+        is swallowed (logged) so it cannot crash the timer, and the channel stays
+        re-drivable with ``settledSignature`` unset.
         """
-        if self._signer is None or self._rpc is None:
-            return None
         try:
             await self._handle_close(ClosePayload(channel_id=channel_id, voucher=None))
         except Exception:

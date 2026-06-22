@@ -609,6 +609,19 @@ async def test_session_top_up_hardening() -> None:
         )
 
 
+async def test_session_top_up_non_string_new_deposit_rejected() -> None:
+    """A JSON-number newDeposit must surface as PaymentError, not an uncaught
+    AttributeError (int has no .isascii). The method-layer u64 parser now guards
+    isinstance(str) like the routes-layer one."""
+    session = _new_test_session()
+    _, channel_id = await _open_trusted_channel(session, 1_000)
+    with pytest.raises(PaymentError, match="unsigned integer string"):
+        await _verify_session_action(
+            session,
+            SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit=500_000, signature="sig")),  # type: ignore[arg-type]
+        )
+
+
 async def test_session_top_up_verifies_signature_on_chain() -> None:
     """Mirrors TestSessionTopUpVerifiesSignatureOnChain."""
     fake = _FakeRpc()
@@ -751,6 +764,22 @@ async def test_session_close_settled_double_close_rejected() -> None:
 
     with pytest.raises(PaymentError, match="close already requested"):
         await _verify_session_action(session, SessionAction.close_action(ClosePayload(channel_id=channel_id)))
+
+
+async def test_session_idle_close_flips_state_without_signer_or_rpc() -> None:
+    """The idle-close watchdog must flip close_requested_at even when no signer/
+    RPC is configured (e.g. the playground); only the on-chain settle is gated.
+    Previously it early-returned and the idle timeout never took effect."""
+    session = _new_test_session()  # no signer, rpc=None
+    _, channel_id = await _open_trusted_channel(session, 1_000)
+
+    await session._close_on_idle(channel_id)  # pyright: ignore[reportPrivateUsage]
+
+    state = await _get_channel(session, channel_id)
+    assert state is not None
+    assert state.close_requested_at is not None
+    assert not state.finalized
+    assert state.settled_signature is None
 
 
 # ── method-layer open guards ──

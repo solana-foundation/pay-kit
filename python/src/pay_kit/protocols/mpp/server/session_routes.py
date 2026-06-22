@@ -191,7 +191,15 @@ def session_routes(core: SessionServer, touch: TouchFn | None = None) -> Session
         voucher_raw = body.get("voucher")
         if voucher_raw is None:
             return _error(400, "voucher required")
-        voucher = SignedVoucher.from_dict(voucher_raw)
+        # A non-dict voucher makes SignedVoucher.from_dict raise AttributeError
+        # (not ValueError), and a non-numeric expiresAt/nonce raises ValueError;
+        # both must surface as 400, matching Go's strict json.Decode.
+        if not isinstance(voucher_raw, dict):
+            return _error(400, "invalid request body")
+        try:
+            voucher = SignedVoucher.from_dict(voucher_raw)
+        except (ValueError, TypeError):
+            return _error(400, "invalid request body")
         try:
             receipt = await core.process_commit(CommitPayload(delivery_id=delivery_id, voucher=voucher))
         except ValueError as exc:
