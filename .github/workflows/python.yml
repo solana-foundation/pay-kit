@@ -123,6 +123,14 @@ jobs:
         env:
           MPP_CONFORMANCE_LANGUAGES: python
         run: pnpm exec vitest run test/conformance.test.ts
+      - name: Focused Python session harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: session
+          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_CLIENTS: python-session
+          MPP_HARNESS_SERVERS: python
+        run: pnpm exec vitest run test/e2e.test.ts
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

@@ -64,16 +64,24 @@ from pay_kit import (  # noqa: E402
     Signer,
     Stablecoin,
 )
-from pay_kit.errors import InvalidProofError  # noqa: E402
-from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
 from pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization  # noqa: E402
 from pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
-from pay_kit.protocols.mpp.server.charge import ChargeOptions  # noqa: E402
-from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
-from pay_kit.protocols.mpp.server.charge import Mpp  # noqa: E402
 from pay_kit._paycore.store import MemoryStore  # noqa: E402
+from pay_kit.errors import InvalidProofError  # noqa: E402
+from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
+from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from pay_kit.protocols.mpp.server import (  # noqa: E402
+    SessionChallengeOptions,
+    SessionOptions,
+    new_session,
+    session_routes,
+)
+from pay_kit.protocols.mpp.server.charge import (  # noqa: E402
+    ChargeOptions,
+    Mpp,
+)
+from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
+from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
 
 
 def require_env(name: str) -> str:
@@ -120,7 +128,7 @@ def _base_units_to_human(base_units: str, decimals: int) -> str:
     units = int(base_units)
     sign = "-" if units < 0 else ""
     units = abs(units)
-    quotient, remainder = divmod(units, 10 ** decimals)
+    quotient, remainder = divmod(units, 10**decimals)
     fraction = f"{remainder:0{decimals}d}".rstrip("0")
     if not fraction:
         return f"{sign}{quotient}"
@@ -142,32 +150,32 @@ def _coin_for_mint(mint: str) -> Stablecoin:
         return Stablecoin.USDC
 
 
-def _detect_x402() -> bool:
+def _detect_protocol() -> str:
     """Decide which protocol this run exercises (mirror PHP detection)."""
     explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
-    if explicit == "x402":
-        return True
-    if explicit in ("mpp", "charge"):
-        return False
+    if explicit in ("x402", "mpp", "charge", "session"):
+        return "mpp" if explicit == "charge" else explicit
     x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
     mpp_set = bool(os.environ.get("MPP_HARNESS_RPC_URL"))
     if x402_set == mpp_set:
         print(
-            "set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, "
-            "or set PAY_KIT_HARNESS_PROTOCOL",
+            "set exactly one of X402_HARNESS_RPC_URL / MPP_HARNESS_RPC_URL, or set PAY_KIT_HARNESS_PROTOCOL",
             file=sys.stderr,
         )
         sys.exit(2)
-    return x402_set
+    return "x402" if x402_set else "mpp"
 
 
 class _Adapter:
     """Holds the built pay_kit adapter plus per-route gate amounts."""
 
     def __init__(self) -> None:
-        self.x402 = _detect_x402()
-        if self.x402:
+        self.protocol = _detect_protocol()
+        self.x402 = self.protocol == "x402"
+        if self.protocol == "x402":
             self._build_x402()
+        elif self.protocol == "session":
+            self._build_session()
         else:
             self._build_mpp()
 
@@ -179,13 +187,9 @@ class _Adapter:
         facilitator_json = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
         amount_units = optional_env("X402_HARNESS_AMOUNT", "1000")
         mint = optional_env("X402_HARNESS_MINT", "USDC")
-        network_raw = optional_env(
-            "X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
-        )
+        network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
         self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/protected")
-        self.settlement_header = optional_env(
-            "X402_HARNESS_SETTLEMENT_HEADER", "x-fixture-settlement"
-        ).lower()
+        self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-fixture-settlement").lower()
         self.coin = _coin_for_mint(mint)
 
         signer = Signer.json(facilitator_json)
@@ -215,9 +219,7 @@ class _Adapter:
         secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key")
         network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
         self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/paid")
-        self.settlement_header = optional_env(
-            "MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature"
-        ).lower()
+        self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
         realm = optional_env("MPP_HARNESS_REALM", "MPP Harness")
         self.splits = json.loads(optional_env("MPP_HARNESS_SPLITS", "[]"))
         if not isinstance(self.splits, list):
@@ -257,6 +259,39 @@ class _Adapter:
             replay_amount = os.environ.get("MPP_HARNESS_REPLAY_SOURCE_AMOUNT") or amount_units
             self.routes[replay_path] = _base_units_to_human(replay_amount, decimals)
         self.replay_path = replay_path
+
+    def _build_session(self) -> None:
+        self.rpc_url = require_env("MPP_HARNESS_RPC_URL")
+        pay_to = require_env("MPP_HARNESS_PAY_TO")
+        amount_units = require_env("MPP_HARNESS_AMOUNT")
+        secret = optional_env("MPP_HARNESS_SECRET_KEY", "mpp-harness-secret-key-with-32b-pad")
+        network_raw = optional_env("MPP_HARNESS_NETWORK", "localnet")
+        self.resource_path = optional_env("MPP_HARNESS_RESOURCE_PATH", "/session")
+        self.settlement_header = optional_env("MPP_HARNESS_SETTLEMENT_HEADER", "x-session-settlement-signature").lower()
+        fee_payer_raw = require_env("MPP_HARNESS_FEE_PAYER_SECRET_KEY")
+        signer = Signer.json(fee_payer_raw)
+        self.session_method = new_session(
+            SessionOptions(
+                operator=signer.pubkey(),
+                recipient=pay_to,
+                cap=int(amount_units),
+                currency=optional_env("MPP_HARNESS_SESSION_CURRENCY", "USDC"),
+                decimals=int(optional_env("MPP_HARNESS_DECIMALS", "6")),
+                network=network_raw,
+                secret_key=secret,
+                realm=optional_env("MPP_HARNESS_REALM", "MPP Harness"),
+                modes=["pull"],
+                pull_voucher_strategy="clientVoucher",
+                open_tx_submitter="client",
+                signer=signer,
+                rpc=None,
+            )
+        )
+        self.session_routes = session_routes(self.session_method.core(), touch=self.session_method._touch)
+        self.session_challenge = SessionChallengeOptions(cap=amount_units, description="Harness session")
+        decimals = int(optional_env("MPP_HARNESS_DECIMALS", "6"))
+        self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
+        self.replay_path = ""
 
     def charge_options(self) -> ChargeOptions:
         options = ChargeOptions(
@@ -317,6 +352,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
             return
 
         adapter = self.adapter
+        if adapter.protocol == "session" and self.path == adapter.resource_path:
+            self._handle_session(adapter)
+            return
         if self.path not in adapter.routes:
             self._send_json(404, {"error": "not_found"})
             return
@@ -327,6 +365,26 @@ class HarnessHandler(BaseHTTPRequestHandler):
             self._handle_x402(adapter, adapter.gate_for(self.path), request)
         else:
             self._handle_mpp(adapter, request)
+
+    def do_POST(self) -> None:  # noqa: N802
+        adapter = self.adapter
+        if adapter.protocol == "session":
+            if self.path == adapter.resource_path:
+                self._handle_session(adapter)
+                return
+            raw = self.rfile.read(int(self.headers.get("content-length", "0") or "0"))
+            if self.path == "/__402/session/deliveries":
+                response = asyncio.run(adapter.session_routes.deliveries("POST", raw or b"{}"))
+                self._send_json(response.status, response.body)
+                return
+            if self.path == "/__402/session/commit":
+                response = asyncio.run(adapter.session_routes.commit("POST", raw or b"{}"))
+                self._send_json(response.status, response.body)
+                return
+            if self.path == "/__402/session/close":
+                self._handle_session(adapter)
+                return
+        self._send_json(404, {"error": "not_found"})
 
     def _handle_x402(self, adapter: _Adapter, gate: Gate, request: dict[str, Any]) -> None:
         if not request["headers"].get("payment-signature"):
@@ -354,6 +412,19 @@ class HarnessHandler(BaseHTTPRequestHandler):
             {"ok": True, "paid": True, "protocol": "x402", "transaction": payment.transaction},
             extra_headers=headers,
         )
+
+    def _handle_session(self, adapter: _Adapter) -> None:
+        auth = self.headers.get("authorization", "")
+        result = asyncio.run(adapter.session_method.handle(auth or None, adapter.session_challenge))
+        if not result.ok:
+            self._send_json(result.status, result.body or {"error": "payment_required"}, extra_headers=result.headers)
+            return
+        receipt_header = result.headers.get("payment-receipt", "")
+        reference = parse_receipt(receipt_header).reference if receipt_header else ""
+        body = {"ok": True, "paid": True, "protocol": "session", "reference": reference}
+        if reference:
+            body["settledSignature"] = reference
+        self._send_json(200, body, extra_headers={**result.headers, adapter.settlement_header: reference})
 
     def _handle_mpp(self, adapter: _Adapter, request: dict[str, Any]) -> None:
         amount = adapter.routes[self.path]
@@ -384,9 +455,7 @@ class HarnessHandler(BaseHTTPRequestHandler):
                 fresh_rpc = SolanaRpc(adapter.rpc_url)
                 try:
                     async with adapter.handler.using_rpc(fresh_rpc):
-                        return await adapter.handler.verify_credential_with_expected(
-                            credential, expected
-                        )
+                        return await adapter.handler.verify_credential_with_expected(credential, expected)
                 finally:
                     await fresh_rpc.aclose()
 
@@ -475,7 +544,7 @@ def main() -> None:
         "implementation": "python",
         "role": "server",
         "port": port,
-        "capabilities": ["exact" if adapter.x402 else "charge"],
+        "capabilities": [adapter.protocol],
     }
     sys.stdout.write(json.dumps(ready) + "\n")
     sys.stdout.flush()

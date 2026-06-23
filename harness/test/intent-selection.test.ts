@@ -18,17 +18,16 @@ describe("harness intent selection", () => {
     expect(selectHarnessIntents("x402-exact")).toEqual(["x402-exact"]);
   });
 
-  it("accepts both intents at once", () => {
-    expect(selectHarnessIntents("charge,x402-exact")).toEqual([
-      "charge",
-      "x402-exact",
-    ]);
+  it("accepts session intent", () => {
+    expect(selectHarnessIntents("session")).toEqual(["session"]);
   });
 
-  it("rejects scenarios that are not implemented yet", () => {
-    expect(() => selectHarnessIntents("session")).toThrow(
-      /Unsupported MPP_HARNESS_INTENTS/,
-    );
+  it("accepts all intents at once", () => {
+    expect(selectHarnessIntents("charge,x402-exact,session")).toEqual([
+      "charge",
+      "x402-exact",
+      "session",
+    ]);
   });
 });
 
@@ -69,6 +68,12 @@ describe("harness scenario selection", () => {
       "x402-exact-cross-server-portability",
       "x402-exact-idempotent-resubmit",
     ]);
+  });
+
+  it("returns session scenarios when explicitly requested", () => {
+    expect(
+      selectHarnessScenarios("session", undefined).map((scenario) => scenario.id),
+    ).toEqual(["session-basic"]);
   });
 
   it("runs one requested scenario", () => {

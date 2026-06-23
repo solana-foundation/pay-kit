@@ -428,20 +428,25 @@ describe("mpp harness", () => {
             // literal in scenarioEnv goes to the adapter so the SDK's
             // resolver is exercised end-to-end.
             const onChainMint = onChainMintFor(scenario);
-            const initialBalance = await getPrimaryRecipientBalance(
-              surfnet,
-              scenario,
-              scenarioEnv.MPP_HARNESS_PAY_TO,
-              onChainMint,
-              scenarioTokenProgram,
-            );
-            const initialSplitBalances = await splitBalances(
-              surfnet,
-              scenario,
-              onChainMint,
-              scenarioTokenProgram,
-              true,
-            );
+            const assertsOnChainSettlement = scenario.intent !== "session";
+            const initialBalance = assertsOnChainSettlement
+              ? await getPrimaryRecipientBalance(
+                  surfnet,
+                  scenario,
+                  scenarioEnv.MPP_HARNESS_PAY_TO,
+                  onChainMint,
+                  scenarioTokenProgram,
+                )
+              : 0n;
+            const initialSplitBalances = assertsOnChainSettlement
+              ? await splitBalances(
+                  surfnet,
+                  scenario,
+                  onChainMint,
+                  scenarioTokenProgram,
+                  true,
+                )
+              : {};
 
             const server = await startServer(serverImplementation, scenarioEnv);
             runningServers.push(server);
@@ -453,23 +458,27 @@ describe("mpp harness", () => {
               scenarioEnv,
             );
 
-            const finalBalance = await getPrimaryRecipientBalance(
-              surfnet,
-              scenario,
-              scenarioEnv.MPP_HARNESS_PAY_TO,
-              onChainMint,
-              scenarioTokenProgram,
-            );
-            const finalSplitBalances = await splitBalances(
-              surfnet,
-              scenario,
-              onChainMint,
-              scenarioTokenProgram,
-              // For 402 scenarios the recipient ATA may never have
-              // been created on-chain; treat missing as zero so the
-              // delta assertion below still holds.
-              scenario.expectedStatus === 402,
-            );
+            const finalBalance = assertsOnChainSettlement
+              ? await getPrimaryRecipientBalance(
+                  surfnet,
+                  scenario,
+                  scenarioEnv.MPP_HARNESS_PAY_TO,
+                  onChainMint,
+                  scenarioTokenProgram,
+                )
+              : 0n;
+            const finalSplitBalances = assertsOnChainSettlement
+              ? await splitBalances(
+                  surfnet,
+                  scenario,
+                  onChainMint,
+                  scenarioTokenProgram,
+                  // For 402 scenarios the recipient ATA may never have
+                  // been created on-chain; treat missing as zero so the
+                  // delta assertion below still holds.
+                  scenario.expectedStatus === 402,
+                )
+              : {};
 
             expect(result.status, JSON.stringify(result, null, 2)).toBe(
               scenario.expectedStatus,
@@ -483,18 +492,20 @@ describe("mpp harness", () => {
               });
               expect(typeof result.settlement).toBe("string");
               expect(result.settlement).not.toHaveLength(0);
-              await expectSettledTransactionShape(
-                surfnet,
-                scenario,
-                scenarioEnv,
-                result.settlement,
-              );
-              expect(finalBalance - initialBalance).toBe(
-                primaryDelta(scenario),
-              );
-              expect(
-                splitDeltas(initialSplitBalances, finalSplitBalances),
-              ).toEqual(expectedSplitDeltas(scenario));
+              if (assertsOnChainSettlement) {
+                await expectSettledTransactionShape(
+                  surfnet,
+                  scenario,
+                  scenarioEnv,
+                  result.settlement,
+                );
+                expect(finalBalance - initialBalance).toBe(
+                  primaryDelta(scenario),
+                );
+                expect(
+                  splitDeltas(initialSplitBalances, finalSplitBalances),
+                ).toEqual(expectedSplitDeltas(scenario));
+              }
             } else {
               expect(result.ok, JSON.stringify(result, null, 2)).toBe(false);
               // Lamport balances are always accessible (unlike SPL token
@@ -748,6 +759,8 @@ function environmentForScenario(
     env.X402_HARNESS_PRICE = scenario.price;
     env.X402_HARNESS_RESOURCE_PATH = scenario.resourcePath;
     env.X402_HARNESS_SETTLEMENT_HEADER = scenario.settlementHeader;
+  } else if (scenario.intent === "session") {
+    env.PAY_KIT_HARNESS_PROTOCOL = "session";
   } else {
     env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
