@@ -146,7 +146,7 @@ enum SessionStream {
             else { continue }
             chunks += 1
             if let cost = obj["cost"] as? String, let value = UInt64(cost) {
-                total &+= value
+                total += value
             }
         }
         return (chunks, total)
