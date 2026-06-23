@@ -458,6 +458,21 @@ class Session:
                 code="recipient-mismatch",
             )
 
+    def _open_tx_expected(self, payload: OpenPayload) -> VerifyOpenTxExpected:
+        """Build the on-chain open verification facts for a transaction-carrying
+        open. Only the paths that attach a transaction call this, keeping the
+        ``program_id`` pubkey parse (and its failure surface) off the
+        trust-the-channel-id paths.
+        """
+        return VerifyOpenTxExpected(
+            authorized_signer=payload.authorized_signer,
+            currency=self._currency,
+            recipient=self._recipient,
+            network=self._network,
+            max_cap=self._core.config.max_cap,
+            program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+        )
+
     async def _handle_open(self, payload: OpenPayload) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
@@ -507,20 +522,16 @@ class Session:
         if mode == "push" and not has_transaction and not has_channel_id:
             raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
 
-        expected = VerifyOpenTxExpected(
-            authorized_signer=payload.authorized_signer,
-            currency=self._currency,
-            recipient=self._recipient,
-            network=self._network,
-            max_cap=self._core.config.max_cap,
-            program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-        )
         if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
             if self._signer is None or self._rpc is None:
                 raise PaymentError(
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
+            # Built lazily: only the transaction-carrying paths verify the open
+            # on-chain, so the on-chain expected facts (and the program_id pubkey
+            # parse) stay off the trust-the-channel-id paths.
+            expected = self._open_tx_expected(payload)
             try:
                 verified = await verify_open_tx(expected, payload, None)
                 if not payload.payer:
@@ -534,6 +545,7 @@ class Session:
             except Exception as exc:
                 raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
         elif has_transaction:
+            expected = self._open_tx_expected(payload)
             try:
                 verified = await verify_open_tx(expected, payload, self._rpc)
             except PaymentError:
@@ -554,9 +566,11 @@ class Session:
             )
         elif mode == "push" and self._rpc is not None:
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
-        # else: pull mode without a transaction. The channel id / token account
-        # and deposit are trusted as provided (mirrors the TS `else` branch); the
-        # server-broadcast path is skipped even when openTxSubmitter=server.
+        # else: no transaction is attached. Reachable by a pull open (the channel
+        # id / token account and deposit are trusted as provided, mirroring the TS
+        # `else` branch) or by a push open with a channel id and no RPC (trusted
+        # as previously broadcast). The server-broadcast path is skipped even when
+        # openTxSubmitter=server is configured.
 
         try:
             state = await self._core.process_open(payload)

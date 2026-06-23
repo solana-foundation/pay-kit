@@ -33,12 +33,18 @@ class _Blockhash:
 
 
 class _SettleRpc:
-    """Captures the broadcast settle transaction and returns a fixed signature."""
+    """Captures the broadcast settle transaction and returns a fixed signature.
+
+    ``status_queries`` records every call to ``get_signature_statuses`` so a test
+    can assert no on-chain confirmation was attempted on a trust path.
+    """
 
     def __init__(self) -> None:
         self.sent: list[bytes] = []
+        self.status_queries: list[list[str]] = []
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        self.status_queries.append(list(signatures))
         return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
 
     async def get_latest_blockhash(self, commitment: str = "confirmed") -> _Resp:
@@ -334,9 +340,83 @@ async def test_server_broadcast_open_skipped_for_pull_without_transaction() -> N
 
     # No on-chain open is broadcast for a no-transaction pull open.
     assert rpc.sent == []
+    # No on-chain confirmation is attempted on the trust path either.
+    assert rpc.status_queries == []
     # The channel is persisted under its session id (the token account).
     persisted = await session._core.store().get_channel(token_account)
     assert persisted is not None
     assert persisted.deposit == 1_000_000
     # The receipt reference is the channel id when no signature is recorded.
     assert reference == token_account
+
+
+@pytest.mark.asyncio
+async def test_open_tx_submitter_client_verifies_pull_transaction() -> None:
+    """A pull open with a transaction and ``openTxSubmitter=client`` takes the
+    client-broadcast verify branch (not the server-broadcast branch), recording
+    the verified payer/deposit from the attached transaction. Guards against a
+    regression that would misroute a transaction-carrying pull open."""
+    operator = Keypair.from_seed(bytes([14] * 32))
+    open_, payload = _server_open_payload(operator)
+    rpc = _SettleRpc()
+    session = new_session(
+        SessionOptions(
+            operator=str(operator.pubkey()),
+            recipient=str(operator.pubkey()),
+            cap=2_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            open_tx_submitter="client",
+            signer=LocalSigner.from_keypair(operator),
+            rpc=rpc,
+        )
+    )
+    payload.deposit = "1500000"
+
+    reference = await session._handle_open(payload)
+
+    # Client-broadcast verify: no server broadcast of the open.
+    assert rpc.sent == []
+    # The verified payer from the attached open transaction is propagated.
+    persisted = await session._core.store().get_channel(str(open_.channel_id))
+    assert persisted is not None
+    assert persisted.operator == str(open_.payer)
+    assert persisted.deposit == open_.deposit
+    # The receipt reference is the (pending) open signature the client supplied.
+    assert reference == payload.signature
+
+
+@pytest.mark.asyncio
+async def test_push_open_without_transaction_trusts_channel_id_without_rpc() -> None:
+    """A push open with a channel id and no RPC (and no signer) falls through to
+    the trust path: no on-chain confirmation is attempted and the channel is
+    persisted under the channel id. Mirrors the TS push-else branch when no RPC
+    is configured (the open signature is trusted as previously broadcast)."""
+    from pay_kit.protocols.mpp.intents.session import OpenPayload
+
+    recipient = str(Keypair.from_seed(bytes([15] * 32)).pubkey())
+    session = new_session(
+        SessionOptions(
+            operator=recipient,
+            recipient=recipient,
+            cap=1_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["push"],
+        )
+    )
+    channel_id = str(Keypair.from_seed(bytes([16] * 32)).pubkey())
+    payload = OpenPayload.push(channel_id, "500000", recipient, "open-sig")
+
+    reference = await session._handle_open(payload)
+
+    persisted = await session._core.store().get_channel(channel_id)
+    assert persisted is not None
+    assert persisted.deposit == 500_000
+    assert reference == "open-sig"
