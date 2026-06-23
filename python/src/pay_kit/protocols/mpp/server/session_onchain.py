@@ -17,8 +17,10 @@ provided.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -349,29 +351,70 @@ def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | No
     return verifier
 
 
-async def confirm_transaction_signature(rpc_client: RpcClient, signature: str, label: str) -> None:
-    """Check once via ``getSignatureStatuses`` that ``signature`` names a known,
-    successful transaction. ``label`` names the transaction in error messages
-    ("open", "top-up").
+async def confirm_transaction_signature(
+    rpc_client: RpcClient,
+    signature: str,
+    label: str,
+    *,
+    timeout_seconds: float = 30.0,
+    poll_interval_seconds: float = 1.0,
+) -> None:
+    """Poll ``getSignatureStatuses`` until ``signature`` reaches at least
+    ``confirmed`` commitment, or raise.
+
+    ``label`` names the transaction in error messages ("open", "top-up",
+    "settle"). A freshly broadcast signature commonly returns ``None`` from
+    ``getSignatureStatuses`` for hundreds of milliseconds to seconds, so the
+    first poll returns ``None`` and this helper retries until the transaction
+    lands, fails, or ``timeout_seconds`` elapses. This mirrors the TS
+    ``waitForSignatureConfirmation`` helper used by ``submitOpenTx`` and the
+    settle broadcast path; the single-shot predecessor raised spuriously on
+    just-broadcast transactions.
+
+    Raises ``transaction-failed`` when the signature lands with ``err`` set,
+    ``transaction-not-found`` when the poll times out before any status is
+    seen, and ``transaction-not-confirmed`` when a status is seen but the
+    poll times out before ``confirmed``/``finalized`` is reported.
     """
     try:
         Signature.from_string(signature)
     except Exception as exc:
         raise PaymentError(f"invalid {label} tx signature {signature!r}: {exc}", code="invalid-payload") from exc
 
-    try:
-        statuses = await rpc_client.get_signature_statuses([signature])
-    except Exception as exc:
-        raise PaymentError(f"RPC error verifying {label} tx: {exc}", code="transaction-not-found") from exc
+    deadline = time.monotonic() + timeout_seconds
+    saw_status = False
+    while True:
+        try:
+            statuses = await rpc_client.get_signature_statuses([signature])
+        except Exception as exc:
+            raise PaymentError(f"RPC error verifying {label} tx: {exc}", code="transaction-not-found") from exc
 
-    status = statuses[0] if statuses else None
-    if status is None:
-        raise PaymentError(
-            f"{label} tx {signature!r} not found; not yet confirmed or does not exist",
-            code="transaction-not-found",
-        )
-    if status.get("err") is not None:
-        raise PaymentError(f"{label} tx {signature!r} failed on-chain: {status['err']}", code="transaction-failed")
+        status = statuses[0] if statuses else None
+        if status is not None:
+            saw_status = True
+            if status.get("err") is not None:
+                raise PaymentError(
+                    f"{label} tx {signature!r} failed on-chain: {status['err']}", code="transaction-failed"
+                )
+            level = status.get("confirmationStatus")
+            # RPC endpoints that omit ``confirmationStatus`` only report a
+            # status once the transaction has landed; treat that as
+            # confirmed, mirroring the TS helper.
+            if level is None or level in ("confirmed", "finalized"):
+                return
+
+        now = time.monotonic()
+        if now >= deadline:
+            if saw_status:
+                raise PaymentError(
+                    f"{label} tx {signature!r} not confirmed within {timeout_seconds}s",
+                    code="transaction-not-confirmed",
+                )
+            raise PaymentError(
+                f"{label} tx {signature!r} not found; not yet confirmed or does not exist",
+                code="transaction-not-found",
+            )
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def settle_and_finalize_channel(
