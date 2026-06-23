@@ -97,7 +97,6 @@ jobs:
       - name: Run tests with coverage
         run: pnpm vitest run --coverage --config vitest.config.ci.ts
         env:
-          SURFPOOL_REPORT: "1"
           # Reliable RPC datasource for the embedded surfnet (see the Rust job).
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
 
@@ -176,7 +175,6 @@ jobs:
       - name: Run tests with coverage
         working-directory: rust
         env:
-          SURFPOOL_REPORT: "1"
           # Reliable RPC datasource for the embedded surfnet — without it the
           # surfpool integration tests clone from the public mainnet-beta RPC,
           # which rate-limits and crashes surfnet mid-test in CI.

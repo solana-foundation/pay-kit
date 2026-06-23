@@ -113,7 +113,7 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 |---|:---:|
 | `mpp/charge/pull` | pass |
 | `mpp/charge/push` | planned |
-| `mpp/session` | planned |
+| `mpp/session` | ✅ |
 | `mpp/subscription` | planned |
 
 ### x402

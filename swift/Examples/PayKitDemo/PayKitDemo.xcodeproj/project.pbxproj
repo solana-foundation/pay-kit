@@ -10,6 +10,8 @@
 		A1000010000000000000A001 /* PayKitDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A001 /* PayKitDemoApp.swift */; };
 		A1000010000000000000A002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A002 /* ContentView.swift */; };
 		A1000010000000000000A003 /* DemoSigner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A003 /* DemoSigner.swift */; };
+		A1000010000000000000A005 /* OpenAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020000000000000A005 /* OpenAPI.swift */; };
+		A1000011000000000000A006 /* SessionStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000021000000000000A006 /* SessionStream.swift */; };
 		A1000010000000000000A004 /* SolanaPayKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1000050000000000000A001 /* SolanaPayKit */; };
 /* End PBXBuildFile section */
 
@@ -18,6 +20,8 @@
 		A1000020000000000000A001 /* PayKitDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayKitDemoApp.swift; sourceTree = "<group>"; };
 		A1000020000000000000A002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000020000000000000A003 /* DemoSigner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSigner.swift; sourceTree = "<group>"; };
+		A1000020000000000000A005 /* OpenAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAPI.swift; sourceTree = "<group>"; };
+		A1000021000000000000A006 /* SessionStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStream.swift; sourceTree = "<group>"; };
 		A1000020000000000000A004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000020000000000000A010 /* SolanaPayKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = SolanaPayKit; path = ../../; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -49,6 +53,8 @@
 				A1000020000000000000A001 /* PayKitDemoApp.swift */,
 				A1000020000000000000A002 /* ContentView.swift */,
 				A1000020000000000000A003 /* DemoSigner.swift */,
+				A1000020000000000000A005 /* OpenAPI.swift */,
+				A1000021000000000000A006 /* SessionStream.swift */,
 				A1000020000000000000A004 /* Info.plist */,
 			);
 			path = PayKitDemo;
@@ -147,6 +153,8 @@
 				A1000010000000000000A001 /* PayKitDemoApp.swift in Sources */,
 				A1000010000000000000A002 /* ContentView.swift in Sources */,
 				A1000010000000000000A003 /* DemoSigner.swift in Sources */,
+				A1000010000000000000A005 /* OpenAPI.swift in Sources */,
+				A1000011000000000000A006 /* SessionStream.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

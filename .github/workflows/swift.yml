@@ -55,6 +55,11 @@ jobs:
       - name: Typecheck harness
         working-directory: harness
         run: pnpm typecheck
+      - name: Run Swift cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: swift
+        run: pnpm exec vitest run test/conformance.test.ts
       - name: Run Swift client harness smoke against TypeScript server
         working-directory: harness
         env:
