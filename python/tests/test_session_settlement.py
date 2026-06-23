@@ -420,3 +420,247 @@ async def test_push_open_without_transaction_trusts_channel_id_without_rpc() -> 
     assert persisted is not None
     assert persisted.deposit == 500_000
     assert reference == "open-sig"
+
+
+# --- B1: polling confirmation on just-broadcast settle -------------------------
+
+
+class _PollingSettleRpc(_SettleRpc):
+    """Returns ``None`` for the first ``n`` ``getSignatureStatuses`` calls on a
+    given signature, then returns confirmed. Mirrors the common Solana behaviour
+    where a freshly submitted signature is not yet visible to the RPC."""
+
+    def __init__(self, none_rounds: int = 2) -> None:
+        super().__init__()
+        self._none_left = none_rounds
+        self._bounced_sig: str | None = None
+
+    async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+        self.status_queries.append(list(signatures))
+        if self._none_left > 0 and signatures:
+            self._bounced_sig = signatures[0]
+            self._none_left -= 1
+            return [None for _ in signatures]
+        return [{"err": None, "confirmationStatus": "confirmed"} for _ in signatures]
+
+
+@pytest.mark.asyncio
+async def test_settle_polls_until_confirmed_when_status_initially_none() -> None:
+    """B1: a just-broadcast settle tx commonly returns ``None`` from
+    ``getSignatureStatuses`` for a few rounds before landing. The single-shot
+    predecessor raised spuriously; the polling confirm retries until
+    confirmed, finalizes, and records the signature.
+    """
+
+    operator = Keypair.from_seed(bytes([20] * 32))
+    auth = Keypair.from_seed(bytes([21] * 32))
+    channel = str(Keypair.from_seed(bytes([22] * 32)).pubkey())
+
+    rpc = _PollingSettleRpc(none_rounds=2)
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(auth.pubkey()),
+            deposit=1_000_000,
+            cumulative=500_000,
+            highest_voucher_signature=str(auth.sign_message(b"voucher")),
+            highest_voucher_expires_at=4_102_444_800,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    settled = await session._settle_channel(channel)
+
+    assert settled == _SENT_SIGNATURE
+    # The poll loop was entered: more than one status query for the same sig.
+    assert len(rpc.status_queries) >= 3
+    final = await session._core.store().get_channel(channel)
+    assert final is not None
+    assert final.finalized is True
+    assert final.settled_signature == _SENT_SIGNATURE
+    assert final.settling is False
+
+
+@pytest.mark.asyncio
+async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling() -> None:
+    """B1: when the poll times out before any status is seen the channel is NOT
+    finalized and the settle-in-progress guard is released so a retry can claim
+    again (S2)."""
+
+    class _StuckNoneRpc(_SettleRpc):
+        async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
+            self.status_queries.append(list(signatures))
+            return [None for _ in signatures]
+
+    operator = Keypair.from_seed(bytes([23] * 32))
+    channel = str(Keypair.from_seed(bytes([24] * 32)).pubkey())
+
+    rpc = _StuckNoneRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    import inspect
+
+    import pay_kit.protocols.mpp.server.session_onchain as onchain
+
+    confirm = onchain.confirm_transaction_signature
+    timeout_kw = "timeout_seconds"
+    params = inspect.signature(confirm).parameters
+    # The helper may accept timeout_seconds as a keyword-only arg; pass the
+    # smallest nonzero timeout plus a tiny poll interval so the test is fast.
+    kwargs: dict[str, float] = {}
+    if timeout_kw in params:
+        kwargs[timeout_kw] = 0.1
+    if "poll_interval_seconds" in params:
+        kwargs["poll_interval_seconds"] = 0.05
+    # Monkey-patch the module-level helper reference used by settle_and_finalize
+    # via the session_onchain module so the timeout applies.
+    original = onchain.confirm_transaction_signature
+
+    async def fast_confirm(rpc_client, signature, label, **kw):  # noqa: ANN001, ANN002, ANN003
+        kw.update(kwargs)
+        return await original(rpc_client, signature, label, **kw)
+
+    onchain.confirm_transaction_signature = fast_confirm  # type: ignore[assignment]
+    try:
+        with pytest.raises(PaymentError, match="not found"):
+            await session._settle_channel(channel)
+    finally:
+        onchain.confirm_transaction_signature = original  # type: ignore[assignment]
+
+    final = await session._core.store().get_channel(channel)
+    assert final is not None
+    assert final.finalized is False
+    assert final.settled_signature is None
+    assert final.settling is False
+
+
+# --- S2: double-settle concurrency guard ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_settle_claimed_once_does_not_double_broadcast() -> None:
+    """S2: a second ``_settle_channel`` call while the first is mid-flight (or
+    after the first finalized) must not broadcast a second settle tx. The
+    atomic ``settling`` claim serializes concurrent callers; a second caller
+    after finalize is short-circuited by the already-finalized check.
+    """
+
+    operator = Keypair.from_seed(bytes([25] * 32))
+    channel = str(Keypair.from_seed(bytes([26] * 32)).pubkey())
+
+    rpc = _SettleRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=100_000,
+            highest_voucher_signature=str(operator.sign_message(b"v")),
+            highest_voucher_expires_at=4_102_444_800,
+            operator=str(operator.pubkey()),
+        ),
+    )
+
+    first = await session._settle_channel(channel)
+    second = await session._settle_channel(channel)
+
+    assert first == _SENT_SIGNATURE
+    assert second == _SENT_SIGNATURE
+    assert len(rpc.sent) == 1
+    final = await session._core.store().get_channel(channel)
+    assert final is not None
+    assert final.finalized is True
+    assert final.settling is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_settle_in_progress_guard_blocks_second_caller() -> None:
+    """S2: a channel in ``settling=True`` state (claim taken mid-broadcast) is
+    seen as busy by a second caller, which returns ``None`` instead of
+    re-broadcasting."""
+
+    operator = Keypair.from_seed(bytes([28] * 32))
+    channel = str(Keypair.from_seed(bytes([29] * 32)).pubkey())
+
+    rpc = _SettleRpc()
+    session = _session(rpc, operator)
+    await _seed(
+        session,
+        ChannelState(
+            channel_id=channel,
+            authorized_signer=str(operator.pubkey()),
+            deposit=1_000_000,
+            cumulative=0,
+            operator=str(operator.pubkey()),
+            settling=True,
+        ),
+    )
+
+    result = await session._settle_channel(channel)
+    assert result is None
+    assert len(rpc.sent) == 0
+    state = await session._core.store().get_channel(channel)
+    assert state is not None
+    assert state.finalized is False
+    assert state.settling is True
+
+
+# --- S1: server-broadcast open replay does not re-broadcast -------------------
+
+
+@pytest.mark.asyncio
+async def test_server_broadcast_open_replay_does_not_re_broadcast() -> None:
+    """S1: a replayed server-broadcast open (same payload, channel already
+    persisted) must NOT call ``send_raw_transaction`` again. The store
+    idempotency pre-check short-circuits the broadcast; ``process_open`` is
+    still the final source of truth (the existing state is returned
+    unchanged, the voucher watermark is preserved)."""
+
+    operator = Keypair.from_seed(bytes([27] * 32))
+    rpc = _SettleRpc()
+    session = new_session(
+        SessionOptions(
+            operator=str(operator.pubkey()),
+            recipient=str(operator.pubkey()),
+            cap=2_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            open_tx_submitter="server",
+            signer=LocalSigner.from_keypair(operator),
+            rpc=rpc,
+        )
+    )
+    open_, payload = _server_open_payload(operator)
+    payload.deposit = "1500000"
+
+    first = await session._handle_open(payload)
+    assert first == _SENT_SIGNATURE
+    assert len(rpc.sent) == 1
+
+    replay = await session._handle_open(payload)
+
+    # No second broadcast on replay.
+    assert len(rpc.sent) == 1
+    # The replay returns the original signature (already recorded).
+    assert replay == _SENT_SIGNATURE
+    persisted = await session._core.store().get_channel(str(open_.channel_id))
+    assert persisted is not None
+    assert persisted.deposit == open_.deposit

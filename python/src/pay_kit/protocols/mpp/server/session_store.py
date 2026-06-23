@@ -155,6 +155,14 @@ class ChannelState:
     # state without a settlement round-trips cleanly.
     settled_signature: str | None = None
 
+    # Settling is an in-flight guard set atomically (under the per-channel
+    # store lock) before the settle broadcast starts, so a concurrent close
+    # retry or idle-watchdog fire cannot both pass the finalize check and
+    # broadcast duplicate settle transactions. Cleared by the finalize mutator
+    # (which sets ``finalized``), or by a failed settle path on its next retry.
+    # Not serialized: it is transient server state and round-trips as absent.
+    settling: bool = False
+
     # Operator is the client wallet pubkey (base58) for pull-mode sessions;
     # None for push sessions.
     operator: str | None = None

@@ -82,6 +82,20 @@ logger = logging.getLogger(__name__)
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _U64_MAX = (1 << 64) - 1
 
+
+class _AlreadyFinalized(Exception):
+    """Raised by the settle-claim mutator when the channel is already finalized."""
+
+    __slots__ = ("signature",)
+
+    def __init__(self, signature: str | None) -> None:
+        super().__init__("already finalized")
+        self.signature = signature
+
+
+class _AlreadySettling(Exception):
+    """Raised by the settle-claim mutator when another caller is mid-settle."""
+
 __all__ = [
     "OpenTxSubmitter",
     "SessionOptions",
@@ -528,22 +542,42 @@ class Session:
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
-            # Built lazily: only the transaction-carrying paths verify the open
-            # on-chain, so the on-chain expected facts (and the program_id pubkey
-            # parse) stay off the trust-the-channel-id paths.
-            expected = self._open_tx_expected(payload)
-            try:
-                verified = await verify_open_tx(expected, payload, None)
-                if not payload.payer:
-                    payload.payer = verified.payer
-                payload.deposit = str(verified.deposit)
-                payload.signature = await cosign_and_broadcast_open(
-                    payload, fee_payer=self._signer.keypair, rpc=self._rpc
-                )
-            except PaymentError:
-                raise
-            except Exception as exc:
-                raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
+            # Idempotent replay guard: the store check-and-insert is the final
+            # source of truth (process_open below), but a replayed open must
+            # NOT re-broadcast the (already-landed) open transaction. TS
+            # checks the store before submitOpenTx; we mirror that here so a
+            # replay short-circuits the broadcast instead of sending it
+            # again and then no-opping in process_open.
+            session_id = payload.session_id()
+            existing = await self._core.store().get_channel(session_id)
+            if existing is not None:
+                if existing.finalized:
+                    raise PaymentError(
+                        f"channel {session_id} is already finalized", code="invalid-payload"
+                    )
+                if existing.authorized_signer != payload.authorized_signer:
+                    raise PaymentError(
+                        f"channel {session_id} already exists with a different authorized signer",
+                        code="invalid-payload",
+                    )
+            else:
+                # Built lazily: only the transaction-carrying paths verify
+                # the open on-chain, so the on-chain expected facts (and the
+                # program_id pubkey parse) stay off the trust-the-channel-id
+                # paths.
+                expected = self._open_tx_expected(payload)
+                try:
+                    verified = await verify_open_tx(expected, payload, None)
+                    if not payload.payer:
+                        payload.payer = verified.payer
+                    payload.deposit = str(verified.deposit)
+                    payload.signature = await cosign_and_broadcast_open(
+                        payload, fee_payer=self._signer.keypair, rpc=self._rpc
+                    )
+                except PaymentError:
+                    raise
+                except Exception as exc:
+                    raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
         elif has_transaction:
             expected = self._open_tx_expected(payload)
             try:
@@ -721,17 +755,62 @@ class Session:
         """
         if self._signer is None or self._rpc is None:
             return None
+
+        from pay_kit.protocols.mpp.server.session_store import ChannelState
+
+        # Atomic settle-in-progress guard: claim the channel under the
+        # per-channel store lock so a concurrent close retry or idle-watchdog
+        # fire cannot both pass the finalize check and broadcast duplicate
+        # settle transactions. The winning caller flips ``settling`` to True
+        # and continues to the broadcast; losing callers see ``settling`` is
+        # already True and bail out (the winner will finalize, a loser may
+        # retry if the winner's broadcast fails).
+        claimed = False
+
+        def claim(current: ChannelState | None) -> ChannelState:
+            nonlocal claimed
+            if current is None:
+                raise ValueError(f"channel {channel_id} disappeared during settle-claim")
+            if current.finalized:
+                raise _AlreadyFinalized(current.settled_signature)
+            if current.settling:
+                raise _AlreadySettling()
+            nxt = current.clone()
+            nxt.settling = True
+            claimed = True
+            return nxt
+
+        settled_signature: str | None = None
+        try:
+            await self._core.store().update_channel(channel_id, claim)
+        except _AlreadyFinalized as exc:
+            return exc.signature
+        except _AlreadySettling:
+            return None
+
+        if not claimed:
+            return None
+
         state = await self._core.store().get_channel(channel_id)
         if state is None:
             return None
-        if state.finalized:
-            return state.settled_signature
 
-        signature = await settle_and_finalize_channel(
-            state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
-        )
+        try:
+            signature = await settle_and_finalize_channel(
+                state, merchant=self._signer.keypair, rpc=self._rpc, config=self._core.config
+            )
+        except Exception:
+            # Broadcast/confirm failed: release the settle-in-progress guard
+            # so a retry can claim again, re-raise for the caller.
+            def release(current: ChannelState | None) -> ChannelState:
+                if current is not None and current.settling and not current.finalized:
+                    nxt = current.clone()
+                    nxt.settling = False
+                    return nxt
+                return current  # type: ignore[return-value]
 
-        from pay_kit.protocols.mpp.server.session_store import ChannelState
+            await self._core.store().update_channel(channel_id, release)
+            raise
 
         def finalize(current: ChannelState | None) -> ChannelState:
             if current is None:
@@ -746,10 +825,12 @@ class Session:
             nxt = current.clone()
             nxt.finalized = True
             nxt.settled_signature = signature
+            nxt.settling = False
             return nxt
 
         await self._core.store().update_channel(channel_id, finalize)
-        return signature
+        settled_signature = signature
+        return settled_signature
 
     async def _close_on_idle(self, channel_id: str) -> None:
         """Idle-close watchdog handler: close the channel and settle on-chain.
