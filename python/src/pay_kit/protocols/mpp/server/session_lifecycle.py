@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 
-CloseOnIdle = Callable[[str], Awaitable[None]]
+CloseOnIdle = Callable[[str], Coroutine[None, None, None]]
 
 
 class SessionLifecycle:
@@ -61,7 +61,7 @@ class SessionLifecycle:
         """
         if self._close_delay <= 0:
             return
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with self._lock:
             if self._shutdown:
                 return
@@ -96,7 +96,8 @@ class SessionLifecycle:
             stopped = self._shutdown
         if stopped:
             return
-        asyncio.ensure_future(self._close_on_idle(channel_id))
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._close_on_idle(channel_id))
 
     def _cancel_locked(self, channel_id: str) -> None:
         """Stop and forget the timer for ``channel_id``. Callers hold ``_lock``."""
