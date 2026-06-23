@@ -21,9 +21,13 @@ deposit is raised. The on-chain check is wired through the
 On-chain settlement at close (settle_and_finalize + distribute, populating
 ``settledSignature``) runs when both a signer and an RPC client are configured;
 without them, close is a pure state-flip. The idle-close watchdog settles the
-same way. The server-broadcast open path (``openTxSubmitter=server``) also runs
-when a signer and RPC are configured: the server builds, funds, signs, and
-broadcasts the open from the payload facts.
+same way. The server-broadcast open path (``openTxSubmitter=server``) runs only
+when an open carries an attached transaction (push opens and clientVoucher pull
+opens whose deposit lives in an on-chain payment channel): the server completes
+the fee-payer signature and broadcasts the open. A pull open with no
+transaction skips the server-broadcast path and trusts the channel id / deposit
+even when ``openTxSubmitter=server`` is configured, mirroring the TS open
+dispatch.
 """
 
 from __future__ import annotations
@@ -458,17 +462,21 @@ class Session:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
 
-        Three submitter paths:
+        Three submitter paths, selected by transaction presence then submitter:
 
-        - ``openTxSubmitter=server``: the server builds, funds, signs, and
-          broadcasts the open from the payload facts (requires a signer + RPC),
-          then persists.
-        - client-broadcast carrying a ``transaction``: validate it against the
-          challenge (structural always; on-chain liveness when an RPC client is
-          configured) before persisting.
-        - client-broadcast without a transaction: the client asserts a
-          previously broadcast open; the open signature is confirmed on-chain
-          when an RPC is present, otherwise the channel facts are trusted.
+        - a ``transaction`` is attached with ``openTxSubmitter=server``: the
+          server completes the fee-payer signature and broadcasts the open
+          (requires a signer + RPC), then persists.
+        - a ``transaction`` is attached with ``openTxSubmitter=client``: it is
+          validated against the challenge (structural always; on-chain liveness
+          when an RPC client is configured) before persisting.
+        - no ``transaction`` is attached: the client asserts a previously
+          broadcast open (push) or a server-opened pull channel; the open
+          signature is confirmed on-chain when an RPC is present (push only),
+          otherwise the channel id / token account and deposit are trusted as
+          provided. The server-broadcast path is skipped even when
+          ``openTxSubmitter=server`` is configured, so a pull open with no
+          transaction is never hard-rejected for a missing transaction.
 
         The receipt reference is the open signature when one exists, else the
         channel id.
@@ -482,20 +490,37 @@ class Session:
                 code="invalid-config",
             )
 
-        if self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
+        # Empty strings count as missing.
+        has_transaction = payload.transaction is not None and payload.transaction != ""
+        has_channel_id = payload.channel_id is not None and payload.channel_id != ""
+
+        # A push open must carry a transaction or a channel id. A pull open may
+        # carry a transaction (a clientVoucher payment-channel open, server- or
+        # client-broadcast) or carry only the channel id / token account (a
+        # server-opened pull). This mirrors the TS open dispatch
+        # ``if (payload.transaction) { ... } else if (mode === 'push') { ... } else
+        # { ... }``: the server-broadcast path is entered only when a transaction
+        # is attached, so a pull open with no transaction falls through to the
+        # trust-the-channel-id path instead of being hard-rejected by
+        # verify_open_tx's transaction requirement (which would make every
+        # pull-mode open against an ``openTxSubmitter=server`` server fail).
+        if mode == "push" and not has_transaction and not has_channel_id:
+            raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
+
+        expected = VerifyOpenTxExpected(
+            authorized_signer=payload.authorized_signer,
+            currency=self._currency,
+            recipient=self._recipient,
+            network=self._network,
+            max_cap=self._core.config.max_cap,
+            program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+        )
+        if has_transaction and self._open_tx_submitter == OPEN_TX_SUBMITTER_SERVER:
             if self._signer is None or self._rpc is None:
                 raise PaymentError(
                     "openTxSubmitter=server requires a signer and an RPC client",
                     code="invalid-config",
                 )
-            expected = VerifyOpenTxExpected(
-                authorized_signer=payload.authorized_signer,
-                currency=self._currency,
-                recipient=self._recipient,
-                network=self._network,
-                max_cap=self._core.config.max_cap,
-                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-            )
             try:
                 verified = await verify_open_tx(expected, payload, None)
                 if not payload.payer:
@@ -508,26 +533,7 @@ class Session:
                 raise
             except Exception as exc:
                 raise PaymentError(f"server-broadcast open failed: {exc}", code="invalid-payload") from exc
-            try:
-                state = await self._core.process_open(payload)
-            except ValueError as exc:
-                raise PaymentError(str(exc), code="invalid-payload") from exc
-            self._touch(state.channel_id)
-            return payload.signature
-
-        # Empty strings count as missing.
-        has_transaction = payload.transaction is not None and payload.transaction != ""
-        has_channel_id = payload.channel_id is not None and payload.channel_id != ""
-
-        if has_transaction:
-            expected = VerifyOpenTxExpected(
-                authorized_signer=payload.authorized_signer,
-                currency=self._currency,
-                recipient=self._recipient,
-                network=self._network,
-                max_cap=self._core.config.max_cap,
-                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-            )
+        elif has_transaction:
             try:
                 verified = await verify_open_tx(expected, payload, self._rpc)
             except PaymentError:
@@ -541,8 +547,6 @@ class Session:
             if not payload.payer:
                 payload.payer = verified.payer
             payload.deposit = str(verified.deposit)
-        elif mode == "push" and not has_channel_id:
-            raise PaymentError("open payload missing transaction or channelId", code="invalid-payload")
         elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
             raise PaymentError(
                 "push open requires payer or transaction when settle-at-close is configured",
@@ -550,6 +554,9 @@ class Session:
             )
         elif mode == "push" and self._rpc is not None:
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
+        # else: pull mode without a transaction. The channel id / token account
+        # and deposit are trusted as provided (mirrors the TS `else` branch); the
+        # server-broadcast path is skipped even when openTxSubmitter=server.
 
         try:
             state = await self._core.process_open(payload)
