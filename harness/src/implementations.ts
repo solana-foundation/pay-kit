@@ -302,7 +302,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     // ``MPP_HARNESS_SERVERS=python X402_HARNESS_CLIENTS=rust-x402`` with
     // ``MPP_HARNESS_INTENTS=x402-exact`` (x402-exact), or the dedicated
     // focused-matrix CI jobs in .github/workflows/python.yml.
-    command: ["python3", "python-server/server.py"],
+    command: ["uv", "run", "--project", "../python", "python", "python-server/server.py"],
     enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
   },
