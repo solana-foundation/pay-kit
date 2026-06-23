@@ -284,3 +284,59 @@ async def test_server_open_requires_signer_and_rpc() -> None:
     _open, payload = _server_open_payload(operator)
     with pytest.raises(Exception, match="requires a signer"):
         await session._handle_open(payload)
+
+
+@pytest.mark.asyncio
+async def test_server_broadcast_open_skipped_for_pull_without_transaction() -> None:
+    """A pull open with no transaction must not enter the server-broadcast
+    block even when ``openTxSubmitter=server`` is configured.
+
+    The server-broadcast path is gated on a transaction being attached (it
+    requires one to co-sign and broadcast). A pull open carrying only the
+    channel id / token account and approved amount falls through to the
+    trust-the-channel-id path. Without this gate every pull open against a
+    server-broadcast server was hard-rejected by verify_open_tx's transaction
+    requirement, so the playground's ``modes=["pull"]`` +
+    ``openTxSubmitter="server"`` config could never establish a session for a
+    no-transaction client. Mirrors the TS ``else`` open branch.
+    """
+    from pay_kit.protocols.mpp.intents.session import OpenPayload
+
+    operator = Keypair.from_seed(bytes([12] * 32))
+    rpc = _SettleRpc()
+    session = new_session(
+        SessionOptions(
+            operator=str(operator.pubkey()),
+            recipient=str(operator.pubkey()),
+            cap=2_000_000,
+            currency="USDC",
+            decimals=6,
+            network="localnet",
+            secret_key="a" * 64,
+            modes=["pull"],
+            pull_voucher_strategy="clientVoucher",
+            open_tx_submitter="server",
+            signer=LocalSigner.from_keypair(operator),
+            rpc=rpc,
+        )
+    )
+    token_account = str(Keypair.from_seed(bytes([13] * 32)).pubkey())
+    payload = OpenPayload.pull(
+        token_account=token_account,
+        approved_amount="1000000",
+        owner=str(operator.pubkey()),
+        authorized_signer=str(operator.pubkey()),
+        signature="",
+    )
+    assert payload.transaction is None
+
+    reference = await session._handle_open(payload)
+
+    # No on-chain open is broadcast for a no-transaction pull open.
+    assert rpc.sent == []
+    # The channel is persisted under its session id (the token account).
+    persisted = await session._core.store().get_channel(token_account)
+    assert persisted is not None
+    assert persisted.deposit == 1_000_000
+    # The receipt reference is the channel id when no signature is recorded.
+    assert reference == token_account
