@@ -43,6 +43,10 @@ pub mod program;
 pub mod protocol;
 pub mod store;
 
+/// Batched on-chain settlement — packing always; the background worker under
+/// the `settlement` feature. Shared with x402 via `solana-pay-core`.
+pub use solana_pay_core::settlement;
+
 #[cfg(feature = "client")]
 pub mod client;
 

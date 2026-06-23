@@ -50,6 +50,33 @@ pub struct Split {
     pub bps: u16,
 }
 
+/// Who signs the channel's vouchers — the settlement authority model.
+///
+/// The simpler successor to the removed `multi_delegator` path. Both settle
+/// through the same batched worker; the difference is only who holds the
+/// channel's `authorized_signer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettlementAuthority {
+    /// Client's ephemeral key signs each voucher (classic MPP push). Default —
+    /// preserves existing behavior.
+    #[default]
+    ClientVoucher,
+    /// Operator is the channel `authorized_signer` and signs settlement (the
+    /// x402 `upto` model). Usage metered server-side; one settlement at close.
+    Delegated,
+}
+
+impl SettlementAuthority {
+    /// The channel `authorized_signer` to open with under this mode: the
+    /// operator (Delegated) or the client's own ephemeral key (ClientVoucher).
+    pub fn authorized_signer(self, operator: Pubkey, client: Pubkey) -> Pubkey {
+        match self {
+            Self::Delegated => operator,
+            Self::ClientVoucher => client,
+        }
+    }
+}
+
 /// Server configuration for the session intent.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -156,6 +183,42 @@ pub struct FinalizeParams {
 
     /// 32-byte distribution hash committed at channel open time.
     pub distribution_hash: [u8; 32],
+}
+
+impl FinalizeParams {
+    /// Build the on-chain settle+finalize instructions for this channel, signed
+    /// by `operator` (fee-payer + merchant authority). Shared by the settlement
+    /// worker and on-chain tests so the close path is constructed one way. A
+    /// voucher signature is included only when value was actually settled.
+    pub fn settle_instructions(
+        &self,
+        operator: &Pubkey,
+    ) -> Result<Vec<solana_instruction::Instruction>> {
+        let authorized_signer = self
+            .authorized_signer
+            .ok_or_else(|| Error::Other("finalize missing authorized_signer".to_string()))?;
+        let signature: Option<[u8; 64]> = match (&self.voucher_signature, self.settled) {
+            (Some(b58), settled) if settled > 0 => {
+                let bytes: [u8; 64] = bs58::decode(b58)
+                    .into_vec()
+                    .map_err(|e| Error::Other(format!("invalid voucher signature: {e}")))?
+                    .try_into()
+                    .map_err(|_| Error::Other("voucher signature is not 64 bytes".to_string()))?;
+                Some(bytes)
+            }
+            _ => None,
+        };
+        payment_channels::build_settle_and_finalize_instructions(
+            operator,
+            &self.channel_id,
+            &authorized_signer,
+            signature.as_ref(),
+            self.settled,
+            self.voucher_expires_at.unwrap_or(0),
+            &self.program_id,
+        )
+        .map_err(|e| Error::Other(format!("settle instructions: {e}")))
+    }
 }
 
 /// Request to reserve a metered delivery for client-side ack/commit.

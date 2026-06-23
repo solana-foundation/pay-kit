@@ -17,6 +17,7 @@
 
 pub mod payment_channels;
 pub mod session;
+pub mod settlement;
 pub mod store;
 pub mod units;
 pub mod voucher;

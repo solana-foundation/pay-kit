@@ -10,6 +10,8 @@ repository = "https://github.com/solana-foundation/pay-kit"
 default = ["server", "client"]
 server = ["dep:tokio"]
 client = ["dep:reqwest"]
+# Batched settlement worker, re-exported from solana-pay-core.
+settlement = ["solana-pay-core/worker"]
 axum = ["server", "dep:axum"]
 gcp_kms = ["solana-keychain/gcp_kms"]
 # Token-2022 confidential transfers: pulls in ZK proof generation

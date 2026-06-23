@@ -6,9 +6,20 @@ description = "Shared Solana primitives for the pay-kit crates (MPP + x402)"
 license = "MIT"
 repository = "https://github.com/solana-foundation/pay-kit"
 
+[features]
+# Background batched settlement worker (tokio actor): mpsc accumulator, size +
+# linger-timer flush, sign with the operator, broadcast, background confirm.
+# Shared by the mpp session and x402 settlement paths.
+worker = ["dep:tokio", "dep:solana-rpc-client", "dep:solana-signature", "dep:tracing", "dep:async-trait"]
+
 [dependencies]
 # Signing — solana-keychain with sdk-v3 (matches mpp/x402 pins)
 solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "d788028edbe02a94ef5eee7585d0230ad771296e", default-features = false, features = ["memory", "sdk-v3"] }
+
+# Force five8_core's `std` feature ON: it gates `impl Error for DecodeError`,
+# which solana-keypair/solana-signature rely on. Without it, building this crate
+# in isolation (not via whole-workspace feature unification) fails to compile.
+five8_core = { version = "=0.1.2", features = ["std"] }
 
 # Solana — atomic crates only
 solana-hash = { version = "3.1", default-features = false }
@@ -17,6 +28,13 @@ solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-transaction = { version = "3", default-features = false }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
+
+# Settlement worker (feature `worker`) — optional.
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"], optional = true }
+solana-rpc-client = { version = "4", default-features = false, optional = true }
+solana-signature = { version = "3", default-features = false, optional = true }
+tracing = { version = "0.1", optional = true }
+async-trait = { version = "0.1", optional = true }
 
 # Payment-channels program client (generated)
 payment_channels_client = { package = "payment-channels-client", path = "../programs/payment-channels" }
