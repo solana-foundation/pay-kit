@@ -17,8 +17,13 @@ use tokio::time::{sleep, Duration};
 const SURFPOOL_DATASOURCE_RPC_URL_ENV: &str = "SURFPOOL_DATASOURCE_RPC_URL";
 
 async fn start_surfnet() -> Option<Surfnet> {
-    let datasource_rpc_url = std::env::var(SURFPOOL_DATASOURCE_RPC_URL_ENV)
-        .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+    let datasource_rpc_url = match std::env::var(SURFPOOL_DATASOURCE_RPC_URL_ENV) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            eprintln!("skipping surfpool test: {SURFPOOL_DATASOURCE_RPC_URL_ENV} is not set");
+            return None;
+        }
+    };
 
     match Surfnet::builder()
         .remote_rpc_url(datasource_rpc_url)

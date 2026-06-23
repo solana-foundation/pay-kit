@@ -110,9 +110,15 @@ curl -i https://402.surfnet.dev/paid
 MPP_CLIENT_SECRET_KEY_HEX=<hex> ChargeClient https://402.surfnet.dev/paid
 ```
 
-`examples/AndroidDemo` is a full Seeker / Android demo app that gates one
-endpoint behind a wallet signature; its README walks through running it on a
-device or emulator.
+`examples/AndroidDemo` is a Jetpack Compose app that mirrors the iOS demo: on
+launch it fetches the playground's `/openapi.json`, renders the priced
+endpoints as a tappable collection, generates a local signer, tops it up over
+Surfpool cheatcodes, and consumes one over MPP. Its README walks through
+running it on an emulator.
+
+<div align="center">
+  <img alt="AndroidDemo app" width="320" src="https://github.com/solana-foundation/pay-kit/raw/main/kotlin/examples/AndroidDemo/docs/android-demo-screenshot.png">
+</div>
 
 ## x402
 
@@ -135,7 +141,7 @@ The Machine Payments Protocol charge intent. The client parses the
 |---|:---:|
 | `mpp/charge/pull` | ✅ |
 | `mpp/charge/push` | ✅ |
-| `mpp/session` | — |
+| `mpp/session` | ✅ |
 | `mpp/subscription` | — |
 
 ## Vocabulary

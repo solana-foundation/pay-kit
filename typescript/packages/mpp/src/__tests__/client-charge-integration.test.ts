@@ -23,6 +23,7 @@ import { TOKEN_PROGRAM } from '../constants.js';
 // SURFPOOL_DATASOURCE_RPC_URL secret (see .github/workflows/ci.yml); without it
 // surfnet clones from the public mainnet-beta RPC, which rate-limits and crashes
 // the embedded validator mid-test. Mirrors the Rust harness's start_surfnet().
+const HAS_DATASOURCE_RPC = Boolean(process.env.SURFPOOL_DATASOURCE_RPC_URL?.trim());
 const DATASOURCE_RPC_URL = process.env.SURFPOOL_DATASOURCE_RPC_URL ?? 'https://api.mainnet-beta.solana.com';
 
 // ── Helpers ──
@@ -304,37 +305,40 @@ describe('client charge integration (surfpool)', () => {
             expect(decoded.payload.transaction).toBeDefined();
         });
 
-        test('SPL token transfer — resolves tokenProgram from RPC when not specified', async () => {
-            // Start a surfnet with mainnet RPC fallback so the USDC mint account
-            // can be cloned and its owner (TOKEN_PROGRAM) resolved on-chain.
-            const remoteSurfnet = Surfnet.startWithConfig({
-                remoteRpcUrl: DATASOURCE_RPC_URL,
-            });
-            const remoteSigner = await createKeyPairSignerFromBytes(new Uint8Array(remoteSurfnet.payerSecretKey));
-            remoteSurfnet.fundSol(remoteSigner.address, 10_000_000_000);
+        test.runIf(HAS_DATASOURCE_RPC)(
+            'SPL token transfer — resolves tokenProgram from RPC when not specified',
+            async () => {
+                // Start a surfnet with mainnet RPC fallback so the USDC mint account
+                // can be cloned and its owner (TOKEN_PROGRAM) resolved on-chain.
+                const remoteSurfnet = Surfnet.startWithConfig({
+                    remoteRpcUrl: DATASOURCE_RPC_URL,
+                });
+                const remoteSigner = await createKeyPairSignerFromBytes(new Uint8Array(remoteSurfnet.payerSecretKey));
+                remoteSurfnet.fundSol(remoteSigner.address, 10_000_000_000);
 
-            // Use the real mainnet USDC mint address.
-            const USDC_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-            const remoteRecipient = Surfnet.newKeypair().publicKey;
-            remoteSurfnet.fundToken(remoteSigner.address, USDC_MAINNET, 10_000_000);
+                // Use the real mainnet USDC mint address.
+                const USDC_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+                const remoteRecipient = Surfnet.newKeypair().publicKey;
+                remoteSurfnet.fundToken(remoteSigner.address, USDC_MAINNET, 10_000_000);
 
-            const method = charge({ signer: remoteSigner, rpcUrl: remoteSurfnet.rpcUrl });
+                const method = charge({ signer: remoteSigner, rpcUrl: remoteSurfnet.rpcUrl });
 
-            const challenge = makeChallenge({
-                amount: '500000',
-                currency: USDC_MAINNET,
-                decimals: 6,
-                recipient: remoteRecipient,
-                // No tokenProgram — should resolve from on-chain mint account via RPC fallback.
-            });
+                const challenge = makeChallenge({
+                    amount: '500000',
+                    currency: USDC_MAINNET,
+                    decimals: 6,
+                    recipient: remoteRecipient,
+                    // No tokenProgram — should resolve from on-chain mint account via RPC fallback.
+                });
 
-            // Remove tokenProgram from methodDetails so resolveTokenProgram is invoked.
-            delete (challenge.request.methodDetails as any).tokenProgram;
+                // Remove tokenProgram from methodDetails so resolveTokenProgram is invoked.
+                delete (challenge.request.methodDetails as any).tokenProgram;
 
-            const credential = await method.createCredential({ challenge });
-            const decoded = decodeCredential(credential);
-            expect(decoded.payload.type).toBe('transaction');
-        });
+                const credential = await method.createCredential({ challenge });
+                const decoded = decodeCredential(credential);
+                expect(decoded.payload.type).toBe('transaction');
+            },
+        );
 
         test('SPL token transfer with splits', async () => {
             const splitRecipient = Surfnet.newKeypair().publicKey;
