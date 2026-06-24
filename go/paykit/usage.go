@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 )
@@ -154,6 +155,7 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 			}
 			verified, pmt, err := adapter.VerifyOpen(r.Context(), req)
 			if err != nil {
+				slog.Warn("paykit: usage verify_open failed", "error", err)
 				var perr *PaymentError
 				if !errors.As(err, &perr) {
 					perr = &PaymentError{Code: "invalid_proof", Err: err}
@@ -176,6 +178,43 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 			uw.finalizeSettlement(r.Context())
 		})
 	}
+}
+
+// paymentRequiredUsageBody is the typed JSON shape of the usage 402 response.
+type paymentRequiredUsageBody struct {
+	Error    string         `json:"error"`
+	Code     string         `json:"code,omitempty"`
+	Detail   string         `json:"detail,omitempty"`
+	Resource string         `json:"resource"`
+	Accepts  []AcceptsEntry `json:"accepts"`
+}
+
+// DefaultUsageErrorHandler renders the canonical usage 402 response.
+func DefaultUsageErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	var perr *PaymentError
+	if !errors.As(err, &perr) {
+		http.Error(w, "payment required", http.StatusPaymentRequired)
+		return
+	}
+	for k, v := range perr.headers {
+		w.Header().Set(k, v)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	status := perr.status
+	if status == 0 {
+		status = http.StatusPaymentRequired
+	}
+	w.WriteHeader(status)
+	body := paymentRequiredUsageBody{
+		Error:    "payment_required",
+		Resource: perr.resource,
+		Accepts:  perr.accepts,
+	}
+	if perr.Code != "" && perr.Code != "payment_required" {
+		body.Code = perr.Code
+		body.Detail = perr.Err.Error()
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // writeUsage402 assembles the usage-gate 402 challenge and dispatches to

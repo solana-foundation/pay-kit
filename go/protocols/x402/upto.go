@@ -573,9 +573,6 @@ func (u *X402Upto) fetchChannel(ctx context.Context, channelID solana.PublicKey)
 	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
 		return nil, fmt.Errorf("channel decode failed: %w", err)
 	}
-	if channel.Discriminator != uint8(pcgen.AccountDiscriminator_Channel) {
-		return nil, fmt.Errorf("channel decode failed: discriminator %d", channel.Discriminator)
-	}
 	return channel, nil
 }
 
