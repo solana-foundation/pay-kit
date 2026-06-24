@@ -263,7 +263,21 @@ Use MPP when:
 |---------------|--------|
 | `charge/pull` | ✅      |
 | `charge/push` | ✅      |
-| `session`     | —      |
+| `session`     | ✅      |
+
+`session` ships both sides. Client: `ActiveSession` voucher signing, the
+challenge-driven pull/clientVoucher payment-channel openers (fee payer =
+challenge operator, pending-server-signature placeholder), the metered
+`SessionConsumer`, and the SSE streaming helpers (`MeteredSseSession`,
+`MeteredSseStream`, `HttpCommitTransport`). Server: the session method
+(`new_session`) issuing challenges and verifying credentials/vouchers, the
+server-broadcast open path (`openTxSubmitter=server`, the operator co-signs and
+broadcasts the open), the reserve/commit metering side channel
+(`session_routes`), the shared channel store, the idle-close watchdog, and
+on-chain settle-at-close (when a signer and RPC are configured, a closed
+channel's `settledSignature` carries the real on-chain signature; without them
+the close is a state-flip and the signature stays `null`). Not yet ported:
+pull/operatedVoucher (multi-delegate) opens.
 
 The MPP server owns the full lifecycle: it issues signed challenges with a
 fresh `recentBlockhash`, parses and validates the `Authorization: Payment`

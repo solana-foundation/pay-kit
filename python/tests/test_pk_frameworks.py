@@ -127,6 +127,44 @@ def test_fastapi_payment_reexport():
     assert pk_fastapi.Payment is Payment
 
 
+def test_fastapi_install_bundles_cors_and_bare_dict_errors():
+    from fastapi import FastAPI, HTTPException
+    from starlette.testclient import TestClient
+
+    import pay_kit.fastapi as pk_fastapi
+
+    app = FastAPI()
+    pk_fastapi.install(app)
+
+    @app.get("/guard")
+    async def guard():
+        raise HTTPException(status_code=400, detail={"error": "bad"})
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/guard", headers={"Origin": "https://x.test"})
+    # Bare-dict HTTPException shape, not Starlette's {"detail": {...}} wrapper.
+    assert resp.json() == {"error": "bad"}
+    # CORS exposes the payment headers so a browser client can read them.
+    exposed = resp.headers.get("access-control-expose-headers", "").lower()
+    assert "www-authenticate" in exposed and "payment-receipt" in exposed
+
+
+def test_fastapi_install_renders_pay_kit_error():
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    import pay_kit.fastapi as pk_fastapi
+
+    app = FastAPI()
+    pk_fastapi.install(app)
+
+    @app.get("/imperative")
+    async def imperative():
+        raise ProtocolNotSupportedError("nope")
+
+    resp = TestClient(app, raise_server_exceptions=False).get("/imperative")
+    assert resp.status_code == 406
+
+
 # ---------------------------------------------------------------------------
 # Flask
 # ---------------------------------------------------------------------------

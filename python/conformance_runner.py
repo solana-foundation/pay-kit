@@ -46,6 +46,7 @@ from pay_kit.protocols.mpp.client.charge import build_charge_transaction
 from pay_kit.protocols.mpp.core import json as wire_json
 from pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from pay_kit.protocols.mpp.intents.session import VoucherData
 from pay_kit.protocols.mpp.server._verify import _verify_local_transaction_intent
 from pay_kit.protocols.x402.client.exact.payment import (
     _caip2_for_selection,
@@ -369,6 +370,23 @@ def _run_canonical_bytes(vector: dict[str, Any]) -> dict[str, Any]:
             hashlib.sha256,
         ).digest()
         exact["base64Url"] = base64url_encode(mac)
+
+    vp = inp.get("voucherPreimage")
+    if vp:
+        # The 48-byte session voucher preimage,
+        # channelId(32, base58) || cumulativeAmount LE u64 || expiresAt LE i64,
+        # computed by the production SDK packer (VoucherData.message_bytes ->
+        # _paymentchannels.voucher_message_bytes) so a byte mismatch is caught
+        # cross-SDK rather than behind a live channel. Mirrors the Go runner
+        # (paymentchannels.VoucherMessageBytes).
+        voucher = VoucherData(
+            channel_id=vp["channelId"],
+            cumulative=str(vp["cumulativeAmount"]),
+            expires_at=int(vp["expiresAt"]),
+        )
+        preimage = voucher.message_bytes()
+        exact["bytes"] = list(preimage)
+        exact["base64Url"] = base64url_encode(preimage)
 
     return exact
 

@@ -1,12 +1,13 @@
 import type { CanonicalErrorCode } from "./canonical-codes";
 import { chargeScenarios } from "./intents/charge";
+import { sessionScenarios } from "./intents/session";
 import { x402ExactScenarios } from "./intents/x402-exact";
 
 export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
-export type HarnessIntent = "charge" | "x402-exact";
+export type HarnessIntent = "charge" | "x402-exact" | "session";
 
 export type HarnessScenarioSplit = {
   recipientKey: string;
@@ -160,6 +161,7 @@ export { chargeCanonicalJsonVectors } from "./intents/charge";
 export const harnessScenarios: readonly HarnessScenario[] = [
   ...chargeScenarios,
   ...x402ExactScenarios,
+  ...sessionScenarios,
 ];
 
 export const harnessScenario: HarnessScenario = {

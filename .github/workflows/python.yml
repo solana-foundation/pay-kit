@@ -61,6 +61,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - uses: astral-sh/setup-uv@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v5
         with:
@@ -106,6 +107,30 @@ jobs:
       - name: Install harness
         working-directory: harness
         run: pnpm install --frozen-lockfile
+      # Sync the uv environment the conformance runner (runners/python.json:
+      # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
+      # vectors — including the frozen 48-byte session voucher preimage — run
+      # without a per-vector cold install.
+      - name: Sync Python uv environment
+        working-directory: python
+        run: uv sync --extra dev
+      # Cross-SDK conformance vectors for Python: charge, x402-exact, and the
+      # session voucher-preimage byte-vector (runners/python.json declares the
+      # session intent). Pins the Python session wire bytes against the frozen
+      # cross-SDK vector rather than only the charge path.
+      - name: Run Python cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: python
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Focused Python session harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: session
+          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_CLIENTS: python-session
+          MPP_HARNESS_SERVERS: python
+        run: pnpm exec vitest run test/e2e.test.ts
       - name: Focused TS-to-Python harness
         working-directory: harness
         env:

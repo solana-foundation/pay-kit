@@ -76,8 +76,14 @@ payment-channels-generate-go: codegen-install
 payment-channels-generate-ts: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:ts
 
-# Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript).
-payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts
+# Render the Python client from the vendored IDL. Wipes
+# `python/src/pay_kit/protocols/programs/paymentchannels/` and rewrites
+# it in place — see {{codegen_dir}}/generate-payment-channels-client-py.ts.
+payment-channels-generate-py: codegen-install
+    cd {{codegen_dir}} && pnpm run payment-channels:python
+
+# Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript, Python).
+payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts payment-channels-generate-py
 
 # ── TypeScript ──
 

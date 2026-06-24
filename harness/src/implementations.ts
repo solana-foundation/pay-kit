@@ -172,6 +172,14 @@ export const clientImplementations: ImplementationDefinition[] = [
     reportsAs: "python",
   },
   {
+    id: "python-session",
+    label: "Python pay_kit session client",
+    role: "client",
+    command: ["uv", "run", "--project", "../python", "python", "python-session-client/main.py"],
+    enabled: isEnabled("python-session", "MPP_HARNESS_CLIENTS", false),
+    intents: ["session"],
+  },
+  {
     id: "swift-x402",
     label: "Swift x402 exact client",
     role: "client",
@@ -302,9 +310,9 @@ export const serverImplementations: ImplementationDefinition[] = [
     // ``MPP_HARNESS_SERVERS=python X402_HARNESS_CLIENTS=rust-x402`` with
     // ``MPP_HARNESS_INTENTS=x402-exact`` (x402-exact), or the dedicated
     // focused-matrix CI jobs in .github/workflows/python.yml.
-    command: ["python3", "python-server/server.py"],
+    command: ["uv", "run", "--project", "../python", "python", "python-server/server.py"],
     enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
-    intents: ["charge", "x402-exact"],
+    intents: ["charge", "x402-exact", "session"],
   },
   {
     id: "go",

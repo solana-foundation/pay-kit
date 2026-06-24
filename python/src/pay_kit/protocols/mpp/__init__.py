@@ -25,7 +25,7 @@ from pay_kit._paycore.rpc import SolanaRpc
 from pay_kit._paycore.store import MemoryStore, Store
 from pay_kit.errors import InvalidProofError
 from pay_kit.payment import Payment
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from pay_kit.protocols.mpp.core.headers import format_receipt, format_www_authenticate, parse_authorization
 from pay_kit.protocols.mpp.intents.charge import ChargeRequest
 from pay_kit.protocols.mpp.server.charge import ChargeOptions, Mpp
 from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig
@@ -269,8 +269,11 @@ class MppAdapter:
         finally:
             await rpc.aclose()
 
+        # `payment-receipt` carries the canonical base64url-encoded MPP receipt
+        # (clients parse it for the settle signature / Broadcast + Settled steps);
+        # `x-payment-settlement-signature` is the raw tx signature for convenience.
         settlement_headers = {
-            "payment-receipt": receipt.reference,
+            "payment-receipt": format_receipt(receipt),
             "x-payment-settlement-signature": receipt.reference,
         }
         return Payment(
