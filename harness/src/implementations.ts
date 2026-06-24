@@ -207,6 +207,25 @@ export const clientImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("kotlin-x402", "X402_HARNESS_CLIENTS", false),
     intents: ["x402-exact"],
   },
+  {
+    id: "rust-x402-upto",
+    label: "Rust x402 upto client",
+    role: "client",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "solana-x402",
+      "--bin",
+      "harness_upto_client",
+    ],
+    enabled: isEnabled("rust-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "rust",
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
@@ -372,5 +391,24 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("ruby-x402-server", "X402_HARNESS_SERVERS", false),
     intents: ["x402-exact"],
     reportsAs: "ruby",
+  },
+  {
+    id: "rust-x402-upto",
+    label: "Rust x402 upto server",
+    role: "server",
+    command: [
+      "cargo",
+      "run",
+      "--quiet",
+      "--manifest-path",
+      "../rust/Cargo.toml",
+      "-p",
+      "solana-x402",
+      "--bin",
+      "harness_upto_server",
+    ],
+    enabled: isEnabled("rust-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "rust",
   },
 ];

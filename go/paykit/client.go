@@ -23,8 +23,9 @@ type Client struct {
 	// Adapters are set during New() via the package-level registration
 	// hooks each adapter registers in its init(). Tests can override
 	// them through ClientOption.
-	mppAdapter  Adapter
-	x402Adapter Adapter
+	mppAdapter   Adapter
+	x402Adapter  Adapter
+	usageAdapter UsageAdapter
 
 	// errorHandler renders the 402 (or other) response when a gate
 	// rejects a request. Defaults to DefaultErrorHandler; override with
@@ -123,6 +124,10 @@ func (c *Client) MppAdapter() Adapter { return c.mppAdapter }
 // Config.Accept).
 func (c *Client) X402Adapter() Adapter { return c.x402Adapter }
 
+// UsageAdapter returns the configured usage (upto) adapter, or nil when
+// usage gates are not available.
+func (c *Client) UsageAdapter() UsageAdapter { return c.usageAdapter }
+
 // New resolves zero-value defaults, runs the boot preflight when
 // enabled, and returns a Client wired against the resolved config.
 func New(cfg Config) (*Client, error) {
@@ -201,6 +206,16 @@ func New(cfg Config) (*Client, error) {
 		if err := runPreflight(cfg); err != nil {
 			return nil, err
 		}
+	}
+	// Wire the usage (upto) adapter when x402 is accepted and a builder
+	// is registered. The x402 package registers it in init(); nil means
+	// usage gates are not available (x402 not compiled in).
+	if containsProtocol(cfg.Accept, X402) && registeredUsageBuilder != nil {
+		usageAdapter, err := registeredUsageBuilder(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("paykit: usage adapter: %w", err)
+		}
+		c.usageAdapter = usageAdapter
 	}
 	return c, nil
 }

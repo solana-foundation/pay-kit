@@ -161,5 +161,31 @@ func registerX402(mux *http.ServeMux, a *app) error {
 		})
 	})))
 
+	// Usage-gated route: the client opens a payment channel depositing
+	// the authorized ceiling; the handler meters the response and the
+	// gate settles the actual amount after it returns.
+	usageGate := paykit.Gate{
+		Amount: paykit.MustParseUSD("1.00"),
+		Name:   "x402Usage",
+		Desc:   "Usage-metered endpoint",
+		Kind:   paykit.GateUsage,
+	}
+	mux.Handle("GET /x402/usage", client.RequireUsage(usageGate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		charge, ok := paykit.ChargeFrom(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no charge meter"})
+			return
+		}
+		// In a real app the handler measures actual usage (tokens, bytes,
+		// compute cycles). Here we charge a fixed demo amount.
+		charge.Charge(50_000) // 0.05 USDC
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       true,
+			"source":   "x402-upto",
+			"maxUnits": charge.MaxBaseUnits(),
+			"charged":  charge.SettledBaseUnits(),
+		})
+	})))
+
 	return nil
 }

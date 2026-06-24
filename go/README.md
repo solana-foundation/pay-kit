@@ -95,13 +95,26 @@ The sibling `protocols/mpp/client` does the same for MPP
 ## x402
 
 The exact-amount scheme, settled locally against the operator signer or
-delegated to a facilitator. Both client and server ship.
+delegated to a facilitator. Both client and server ship. The
+usage-based `upto` scheme (payment-channel profile) ships server-side
+via `paykit.RequireUsage`.
 
 | Intent | Client | Server |
 |---|:---:|:---:|
 | `x402/exact` | ✅ | ✅ |
-| `x402/upto` | — | — |
+| `x402/upto` | — | ✅ |
 | `x402/batch-settlement` | — | — |
+
+`upto` charges for actual usage up to a ceiling: the client opens a
+payment channel depositing the authorized maximum, the server
+broadcasts the open (co-signing as fee payer), the handler runs and
+determines the actual metered amount, then the server settles with a
+single operator voucher and refunds the remainder. It requires an
+operator signer (the operator signs the settlement voucher) and is
+gated with `client.RequireUsage(gate)` rather than `client.Require(gate)`.
+Inside the handler, `paykit.ChargeFrom(r.Context())` returns a `*Charge`
+meter; call `charge.Charge(baseUnits)` to report the actual amount
+consumed. The gate settles after the handler returns.
 
 ## MPP
 
