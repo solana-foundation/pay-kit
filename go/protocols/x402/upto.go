@@ -580,7 +580,9 @@ func (u *X402Upto) recentBlockhash() (string, error) {
 	if u.cfg.RecentBlockhashProvider != nil {
 		return u.cfg.RecentBlockhashProvider()
 	}
-	out, err := u.rpc.GetLatestBlockhash(context.Background(), rpc.CommitmentConfirmed)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return "", err
 	}

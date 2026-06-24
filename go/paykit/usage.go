@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // VerifiedUsageOpen is an opaque, protocol-specific verified channel open
@@ -167,15 +168,25 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 			meter := NewCharge(maxBaseUnits)
 			ctx := context.WithValue(r.Context(), ctxKey{}, pmt)
 			ctx = context.WithValue(ctx, chargeKey{}, meter)
+			// Settlement must complete even if the client disconnects after
+			// VerifyOpen (the channel is already open on-chain; abandoning
+			// settlement would leave the deposit locked without payment).
+			// Use a detached context with a timeout so the request context
+			// cancellation does not abort settlement, but the RPC still has
+			// a deadline.
+			settleCtx, settleCancel := context.WithTimeout(context.Background(), 120*time.Second)
 			uw := &usageSettlementWriter{
 				ResponseWriter: w,
 				adapter:        adapter,
 				verified:       verified,
 				meter:          meter,
 				payment:        pmt,
-				ctx:            ctx,
+				ctx:            settleCtx,
 			}
-			defer uw.finalizeSettlement(ctx)
+			defer func() {
+				settleCancel()
+				uw.finalizeSettlement(settleCtx)
+			}()
 			next.ServeHTTP(uw, r.WithContext(ctx))
 		})
 	}
