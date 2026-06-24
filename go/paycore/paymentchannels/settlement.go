@@ -30,15 +30,11 @@ func Ed25519ProgramPubkey() solana.PublicKey {
 	return ed25519ProgramPubkey
 }
 
-// TreasuryOwner returns the treasury owner used by the current
-// payment-channels program deployment: 32 bytes of repeated 0xBE 0xEF.
+// TreasuryOwner returns the treasury owner baked into the deployed
+// (mainnet-build) payment-channels program; distribute checks the treasury ATA
+// against ATA(TreasuryOwner, mint, token_program).
 func TreasuryOwner() solana.PublicKey {
-	var key solana.PublicKey
-	for i := 0; i < len(key); i += 2 {
-		key[i] = 0xBE
-		key[i+1] = 0xEF
-	}
-	return key
+	return solana.MustPublicKeyFromBase58("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
 }
 
 // BuildEd25519VerifyInstruction builds an Ed25519 precompile instruction

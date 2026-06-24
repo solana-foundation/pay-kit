@@ -431,9 +431,10 @@ def build_ed25519_verify_instruction(authorized_signer: Pubkey, signature: bytes
 
 
 def treasury_owner() -> Pubkey:
-    """Treasury owner of the current payment-channels deployment: 32 bytes of
-    repeated ``0xBE 0xEF``. Mirrors the Rust/Go ``TreasuryOwner``."""
-    return Pubkey.from_bytes(bytes([0xBE, 0xEF] * 16))
+    """Treasury owner baked into the deployed (mainnet-build) payment-channels
+    program; the treasury ATA is ATA(treasury_owner, mint, token_program).
+    Mirrors the Rust/Go ``TreasuryOwner``."""
+    return Pubkey.from_string("Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP")
 
 
 def build_settle_and_finalize_instructions(

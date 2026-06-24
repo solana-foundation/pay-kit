@@ -27,6 +27,7 @@ from pay_kit.protocols.mpp._paymentchannels import (
     voucher_message_bytes,
 )
 
+
 def pk(byte: int) -> Pubkey:
     """A pubkey whose 32 bytes are all ``byte`` (mirrors the Rust test helper)."""
     return Pubkey.from_bytes(bytes([byte] * 32))

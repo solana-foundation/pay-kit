@@ -576,11 +576,10 @@ func TestSettlementInstructionsWithVoucher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settle.Data: %v", err)
 	}
-	if settleData[0] != 4 || settleData[len(settleData)-1] != 1 {
-		t.Fatalf("settle data disc/hasVoucher = %d/%d, want 4/1", settleData[0], settleData[len(settleData)-1])
-	}
-	if got := binary.LittleEndian.Uint64(settleData[33:41]); got != 500 {
-		t.Fatalf("settled cumulative = %d, want 500", got)
+	// The voucher (incl. cumulative=500) lives in the precompile, verified
+	// above; settle_and_finalize carries only [disc=4][hasVoucher=1].
+	if len(settleData) != 2 || settleData[0] != 4 || settleData[1] != 1 {
+		t.Fatalf("settle data = %v, want [4 1]", settleData)
 	}
 	if !instructions[1].Accounts()[0].PublicKey.Equals(merchant) {
 		t.Fatalf("settle merchant = %s, want %s", instructions[1].Accounts()[0].PublicKey, merchant)
