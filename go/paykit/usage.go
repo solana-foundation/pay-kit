@@ -173,9 +173,10 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 				verified:       verified,
 				meter:          meter,
 				payment:        pmt,
+				ctx:            ctx,
 			}
+			defer uw.finalizeSettlement(ctx)
 			next.ServeHTTP(uw, r.WithContext(ctx))
-			uw.finalizeSettlement(r.Context())
 		})
 	}
 }
@@ -266,6 +267,7 @@ type usageSettlementWriter struct {
 	verified   VerifiedUsageOpen
 	meter      *Charge
 	payment    *Payment
+	ctx        context.Context
 	settled    bool
 	settlement *UsageSettlement
 	settleErr  error
@@ -296,7 +298,7 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 
 func (w *usageSettlementWriter) WriteHeader(status int) {
 	if !w.wrote {
-		w.settle(context.Background())
+		w.settle(w.ctx)
 		if w.settleErr == nil && w.settlement != nil {
 			for k, v := range w.settlement.Headers {
 				w.Header().Set(k, v)
