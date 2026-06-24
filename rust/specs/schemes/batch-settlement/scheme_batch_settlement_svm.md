@@ -53,7 +53,7 @@ normative profile:
 ### 3.1 `payment-channel` (normative, v1)
 
 Backed by the on-chain payment-channels program (a `pay-kit`-controlled program;
-program id `GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc` on the current
+program id `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX` on the current
 deployment). The escrow **deposit is the ceiling**; the client signs cumulative
 vouchers off-chain; the operator settles the latest voucher per channel in
 batches and finalizes with a refund of the unused remainder.

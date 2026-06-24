@@ -6,9 +6,8 @@
 //
 // The instruction bytes and PDA derivations built here must stay
 // byte-identical across the language SDKs so the on-chain program accepts
-// them. In particular the production program id pinned here (GuoKrza...)
-// overrides the IDL placeholder baked into the generated package, which is
-// not deployed.
+// them. The production program id (CHNLxY...) is pinned here and matches the
+// generated package's default.
 package paymentchannels
 
 import (
@@ -23,11 +22,9 @@ import (
 )
 
 // ProgramID is the canonical payment-channels program id deployed to the
-// network. The codama-generated package defaults its ProgramID var to the IDL
-// placeholder "CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg", which is NOT the
-// production deployment; every PDA derivation and instruction built here uses
-// this value instead.
-const ProgramID = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+// network. It matches the codama-generated package's default; every PDA
+// derivation and instruction built here is pinned to this value.
+const ProgramID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
 // channelSeed is the channel PDA seed prefix.
 const channelSeed = "channel"
@@ -42,7 +39,7 @@ var programPubkey = solana.MustPublicKeyFromBase58(ProgramID)
 func init() {
 	// Pin the generated package's ProgramID to the production deployment so
 	// any path that reads generated.ProgramID (e.g. Instruction.ProgramID())
-	// observes GuoKrza... rather than the IDL placeholder.
+	// observes the deployed program id.
 	generated.SetProgramID(programPubkey)
 }
 

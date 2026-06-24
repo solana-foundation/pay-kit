@@ -11,11 +11,6 @@ import (
 )
 
 type DistributionEntry struct {
-	// Recipient is the raw 32-byte public key of the split recipient
-	// wallet; its associated token account for the channel mint receives
-	// this entry's share at distribution.
 	Recipient ag_solanago.PublicKey
-	// Bps is the recipient's share of the settled amount in basis points
-	// (1 bps = 0.01%).
-	Bps uint16
+	Bps       uint16
 }

@@ -11,9 +11,6 @@ import (
 )
 
 type ClosedChannel struct {
-	// Discriminator is the single-byte account tag stored at offset 0;
-	// AccountDiscriminator_ClosedChannel (1) marks a channel account that
-	// has been closed, distinguishing it from a live Channel.
 	Discriminator uint8
 }
 

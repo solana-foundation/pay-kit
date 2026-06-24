@@ -5,12 +5,10 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
-use crate::generated::types::VoucherArgs;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 pub struct SettleAndFinalizeArgs {
-    pub voucher: VoucherArgs,
     pub has_voucher: u8,
 }

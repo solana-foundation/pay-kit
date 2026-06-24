@@ -7,11 +7,5 @@
 package payment_channels
 
 type SettleAndFinalizeArgs struct {
-	// Voucher is the final voucher committed before the channel is
-	// finalized; its contents are only meaningful when HasVoucher is 1.
-	Voucher VoucherArgs
-	// HasVoucher is a Borsh bool flag: 1 settles Voucher (verified through
-	// a preceding Ed25519 precompile instruction referenced via the
-	// instructions sysvar) before finalizing, 0 finalizes without one.
 	HasVoucher uint8
 }

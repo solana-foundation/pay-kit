@@ -11,15 +11,7 @@ import (
 )
 
 type VoucherArgs struct {
-	// ChannelId is the raw 32-byte channel PDA the voucher settles against;
-	// it forms bytes 0..32 of the 48-byte Ed25519 signing preimage.
-	ChannelId ag_solanago.PublicKey
-	// CumulativeAmount is the total authorized over the channel lifetime in
-	// mint base units (a running total, not a per-voucher delta), encoded
-	// as a little-endian u64 at bytes 32..40 of the signing preimage.
+	ChannelId        ag_solanago.PublicKey
 	CumulativeAmount uint64
-	// ExpiresAt is the voucher expiry as a Unix timestamp in seconds,
-	// encoded as a little-endian i64 at bytes 40..48 of the signing
-	// preimage.
-	ExpiresAt int64
+	ExpiresAt        int64
 }

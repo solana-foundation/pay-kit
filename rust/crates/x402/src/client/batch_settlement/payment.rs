@@ -272,7 +272,7 @@ mod tests {
             max_timeout_seconds: 3600,
             extra: BatchExtra {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                channel_program: "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc".to_string(),
+                channel_program: "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX".to_string(),
                 grace_period_seconds: 900,
                 decimals: Some(6),
                 token_program: None,

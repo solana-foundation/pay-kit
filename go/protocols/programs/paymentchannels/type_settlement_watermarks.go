@@ -7,11 +7,6 @@
 package payment_channels
 
 type SettlementWatermarks struct {
-	// Settled is the cumulative amount committed by settled vouchers over
-	// the channel lifetime, in mint base units; it only ever increases.
-	Settled uint64
-	// PayoutWatermark is the cumulative amount already paid out to
-	// recipients over the channel lifetime, in mint base units; the unpaid
-	// remainder is Settled minus PayoutWatermark.
+	Settled         uint64
 	PayoutWatermark uint64
 }

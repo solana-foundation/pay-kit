@@ -5,7 +5,6 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
-use crate::generated::types::SettleArgs;
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
@@ -20,14 +19,13 @@ pub struct Settle {
 }
 
 impl Settle {
-    pub fn instruction(&self, args: SettleInstructionArgs) -> solana_instruction::Instruction {
-        self.instruction_with_remaining_accounts(args, &[])
+    pub fn instruction(&self) -> solana_instruction::Instruction {
+        self.instruction_with_remaining_accounts(&[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
-        args: SettleInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(2 + remaining_accounts.len());
@@ -37,9 +35,7 @@ impl Settle {
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let mut data = SettleInstructionData::new().try_to_vec().unwrap();
-        let mut args = args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = SettleInstructionData::new().try_to_vec().unwrap();
 
         solana_instruction::Instruction {
             program_id: crate::PAYMENT_CHANNELS_ID,
@@ -70,17 +66,6 @@ impl Default for SettleInstructionData {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-pub struct SettleInstructionArgs {
-    pub settle_args: SettleArgs,
-}
-
-impl SettleInstructionArgs {
-    pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
-        borsh::to_vec(self)
-    }
-}
-
 /// Instruction builder for `Settle`.
 ///
 /// ### Accounts:
@@ -91,7 +76,6 @@ impl SettleInstructionArgs {
 pub struct SettleBuilder {
     channel: Option<solana_address::Address>,
     instructions_sysvar: Option<solana_address::Address>,
-    settle_args: Option<SettleArgs>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
@@ -110,11 +94,6 @@ impl SettleBuilder {
         instructions_sysvar: solana_address::Address,
     ) -> &mut Self {
         self.instructions_sysvar = Some(instructions_sysvar);
-        self
-    }
-    #[inline(always)]
-    pub fn settle_args(&mut self, settle_args: SettleArgs) -> &mut Self {
-        self.settle_args = Some(settle_args);
         self
     }
     /// Add an additional account to the instruction.
@@ -140,11 +119,8 @@ impl SettleBuilder {
                 .instructions_sysvar
                 .expect("instructions_sysvar is not set"),
         };
-        let args = SettleInstructionArgs {
-            settle_args: self.settle_args.clone().expect("settle_args is not set"),
-        };
 
-        accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
+        accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
     }
 }
 
@@ -163,21 +139,17 @@ pub struct SettleCpi<'a, 'b> {
     pub channel: &'b solana_account_info::AccountInfo<'a>,
 
     pub instructions_sysvar: &'b solana_account_info::AccountInfo<'a>,
-    /// The arguments for the instruction.
-    pub __args: SettleInstructionArgs,
 }
 
 impl<'a, 'b> SettleCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
         accounts: SettleCpiAccounts<'a, 'b>,
-        args: SettleInstructionArgs,
     ) -> Self {
         Self {
             __program: program,
             channel: accounts.channel,
             instructions_sysvar: accounts.instructions_sysvar,
-            __args: args,
         }
     }
     #[inline(always)]
@@ -219,9 +191,7 @@ impl<'a, 'b> SettleCpi<'a, 'b> {
                 is_writable: remaining_account.2,
             })
         });
-        let mut data = SettleInstructionData::new().try_to_vec().unwrap();
-        let mut args = self.__args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = SettleInstructionData::new().try_to_vec().unwrap();
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::PAYMENT_CHANNELS_ID,
@@ -261,7 +231,6 @@ impl<'a, 'b> SettleCpiBuilder<'a, 'b> {
             __program: program,
             channel: None,
             instructions_sysvar: None,
-            settle_args: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
@@ -277,11 +246,6 @@ impl<'a, 'b> SettleCpiBuilder<'a, 'b> {
         instructions_sysvar: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.instructions_sysvar = Some(instructions_sysvar);
-        self
-    }
-    #[inline(always)]
-    pub fn settle_args(&mut self, settle_args: SettleArgs) -> &mut Self {
-        self.instruction.settle_args = Some(settle_args);
         self
     }
     /// Add an additional account to the instruction.
@@ -318,13 +282,6 @@ impl<'a, 'b> SettleCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let args = SettleInstructionArgs {
-            settle_args: self
-                .instruction
-                .settle_args
-                .clone()
-                .expect("settle_args is not set"),
-        };
         let instruction = SettleCpi {
             __program: self.instruction.__program,
 
@@ -334,7 +291,6 @@ impl<'a, 'b> SettleCpiBuilder<'a, 'b> {
                 .instruction
                 .instructions_sysvar
                 .expect("instructions_sysvar is not set"),
-            __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -348,7 +304,6 @@ struct SettleCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     channel: Option<&'b solana_account_info::AccountInfo<'a>>,
     instructions_sysvar: Option<&'b solana_account_info::AccountInfo<'a>>,
-    settle_args: Option<SettleArgs>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

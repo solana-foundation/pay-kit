@@ -7,8 +7,5 @@
 package payment_channels
 
 type TopUpArgs struct {
-	// Amount is the additional deposit transferred from the payer into the
-	// channel token account, in mint base units; a delta added to the
-	// channel's deposit total, not a cumulative figure.
 	Amount uint64
 }

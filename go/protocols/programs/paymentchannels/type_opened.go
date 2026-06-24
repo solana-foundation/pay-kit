@@ -11,8 +11,5 @@ import (
 )
 
 type Opened struct {
-	// Channel is the PDA of the channel account created by the open
-	// instruction, derived from ["channel", payer, payee, mint,
-	// authorizedSigner, salt as little-endian u64].
 	Channel ag_solanago.PublicKey
 }

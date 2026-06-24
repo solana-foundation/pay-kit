@@ -133,15 +133,16 @@ func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ix.Data: %v", err)
 	}
-	// [disc=4][channel 32][cumulative u64][expiresAt i64][hasVoucher=0] = 50 bytes.
-	if len(data) != 50 {
-		t.Fatalf("data length = %d, want 50", len(data))
+	// Voucher is read from the precompile, so settle_and_finalize carries only
+	// [disc=4][hasVoucher=0] = 2 bytes.
+	if len(data) != 2 {
+		t.Fatalf("data length = %d, want 2", len(data))
 	}
 	if data[0] != 4 {
 		t.Fatalf("discriminator = %d, want 4", data[0])
 	}
-	if data[49] != 0 {
-		t.Fatalf("hasVoucher = %d, want 0", data[49])
+	if data[1] != 0 {
+		t.Fatalf("hasVoucher = %d, want 0", data[1])
 	}
 }
 
@@ -195,14 +196,15 @@ func TestBuildSettleAndFinalizeWithVoucherPrependsPrecompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settle.Data: %v", err)
 	}
-	if settleData[len(settleData)-1] != 1 {
-		t.Fatalf("hasVoucher = %d, want 1", settleData[len(settleData)-1])
+	// Voucher lives in the precompile; settle_and_finalize is [disc=4][hasVoucher=1].
+	if len(settleData) != 2 {
+		t.Fatalf("settle data length = %d, want 2", len(settleData))
 	}
-	if got := binary.LittleEndian.Uint64(settleData[33:41]); got != 500 {
-		t.Fatalf("cumulativeAmount@33 = %d, want 500", got)
+	if settleData[0] != 4 {
+		t.Fatalf("discriminator = %d, want 4", settleData[0])
 	}
-	if got := int64(binary.LittleEndian.Uint64(settleData[41:49])); got != 4_102_444_800 {
-		t.Fatalf("expiresAt@41 = %d, want 4102444800", got)
+	if settleData[1] != 1 {
+		t.Fatalf("hasVoucher = %d, want 1", settleData[1])
 	}
 }
 

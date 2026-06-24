@@ -43,7 +43,7 @@ one and signals it back in the payload's `profile` field.
 ### 3.1 `payment-channel` (normative, v1)
 
 Backed by the on-chain payment-channels program (a `pay-kit`-controlled program;
-program id `GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc` on the current
+program id `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX` on the current
 deployment). The escrow **deposit is the ceiling**; a single signed voucher
 settles the actual amount; `finalize` closes the channel and refunds the unused
 remainder to the payer in the same transaction.

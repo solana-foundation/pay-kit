@@ -76,7 +76,7 @@ const (
 	VoucherWatermarkNotMonotonicError PaymentChannelsError = 0xEA
 	// VoucherOverDepositError - Voucher cumulative_amount exceeds channel deposit
 	VoucherOverDepositError PaymentChannelsError = 0xEB
-	// VoucherMessageMismatchError - Ed25519 message does not match Borsh voucher payload
+	// VoucherMessageMismatchError - Reserved (formerly: Ed25519 message does not match Borsh voucher payload)
 	VoucherMessageMismatchError PaymentChannelsError = 0xEC
 	// VoucherSignerMismatchError - Voucher signer does not match channel authorized_signer
 	VoucherSignerMismatchError PaymentChannelsError = 0xED
@@ -201,7 +201,7 @@ func (e PaymentChannelsError) Error() string {
 	case VoucherOverDepositError:
 		return "Voucher cumulative_amount exceeds channel deposit"
 	case VoucherMessageMismatchError:
-		return "Ed25519 message does not match Borsh voucher payload"
+		return "Reserved (formerly: Ed25519 message does not match Borsh voucher payload)"
 	case VoucherSignerMismatchError:
 		return "Voucher signer does not match channel authorized_signer"
 	case InvalidRecipientCountError:

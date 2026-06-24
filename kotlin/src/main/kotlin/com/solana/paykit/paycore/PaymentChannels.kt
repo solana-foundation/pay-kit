@@ -17,7 +17,7 @@ import java.util.Base64
  */
 object PaymentChannels {
     /** Canonical payment-channels program ID deployed to Surfnet. */
-    const val PROGRAM_ID = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+    const val PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
     /** Rent sysvar account. */
     const val RENT_SYSVAR_ID = "SysvarRent111111111111111111111111111111111"

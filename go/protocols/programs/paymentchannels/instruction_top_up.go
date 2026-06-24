@@ -24,10 +24,7 @@ type TopUp struct {
 	// [4] = [] Mint
 	// [5] = [] TokenProgram
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	// TopUpArgs holds the Borsh-encoded instruction arguments written after
-	// the topUp discriminator byte (3): the additional deposit amount in
-	// mint base units.
-	TopUpArgs TopUpArgs
+	TopUpArgs                    TopUpArgs
 }
 
 // NewTopUpInstructionBuilder creates a new `TopUp` instruction builder.

@@ -21,7 +21,7 @@ func pk(b byte) solana.PublicKey {
 }
 
 func TestProgramIDIsProduction(t *testing.T) {
-	if ProgramID != "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc" {
+	if ProgramID != "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX" {
 		t.Fatalf("unexpected program id: %s", ProgramID)
 	}
 	if ProgramPubkey().String() != ProgramID {
@@ -230,28 +230,28 @@ func TestFindChannelPDADeterministic(t *testing.T) {
 	}
 }
 
-func TestFindChannelPDAUsesGuoKrza(t *testing.T) {
+func TestFindChannelPDAUsesCanonicalProgramID(t *testing.T) {
 	got, _, err := FindChannelPDA(pk(1), pk(2), pk(3), pk(4), 99)
 	if err != nil {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
-	// Deriving against the IDL placeholder must produce a different PDA.
+	// Deriving against a different program id must produce a different PDA,
+	// proving FindChannelPDA binds to the canonical payment-channels program.
 	saltLE := make([]byte, 8)
 	binary.LittleEndian.PutUint64(saltLE, 99)
-	placeholder := solana.MustPublicKeyFromBase58("CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg")
 	other, _, err := solana.FindProgramAddress(
 		[][]byte{
 			[]byte("channel"),
 			pk(1).Bytes(), pk(2).Bytes(), pk(3).Bytes(), pk(4).Bytes(),
 			saltLE,
 		},
-		placeholder,
+		solana.SystemProgramID,
 	)
 	if err != nil {
-		t.Fatalf("placeholder derivation: %v", err)
+		t.Fatalf("other-program derivation: %v", err)
 	}
 	if got == other {
-		t.Fatalf("channel pda should differ from the IDL-placeholder derivation")
+		t.Fatalf("channel pda should differ when derived under a different program id")
 	}
 }
 

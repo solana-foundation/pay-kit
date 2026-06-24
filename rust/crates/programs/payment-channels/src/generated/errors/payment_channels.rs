@@ -103,8 +103,8 @@ pub enum PaymentChannelsError {
     /// 235 - Voucher cumulative_amount exceeds channel deposit
     #[error("Voucher cumulative_amount exceeds channel deposit")]
     VoucherOverDeposit = 0xEB,
-    /// 236 - Ed25519 message does not match Borsh voucher payload
-    #[error("Ed25519 message does not match Borsh voucher payload")]
+    /// 236 - Reserved (formerly: Ed25519 message does not match Borsh voucher payload)
+    #[error("Reserved (formerly: Ed25519 message does not match Borsh voucher payload)")]
     VoucherMessageMismatch = 0xEC,
     /// 237 - Voucher signer does not match channel authorized_signer
     #[error("Voucher signer does not match channel authorized_signer")]

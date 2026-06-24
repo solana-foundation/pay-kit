@@ -12,54 +12,21 @@ import (
 )
 
 type Channel struct {
-	// Discriminator is the single-byte account tag stored at offset 0;
-	// AccountDiscriminator_Channel (0) marks a live channel account.
-	Discriminator uint8
-	// Version is the channel account layout version byte, allowing the
-	// program to migrate the on-chain struct shape.
-	Version uint8
-	// Bump is the canonical PDA bump seed for the channel address derived
-	// from ["channel", payer, payee, mint, authorizedSigner, salt as
-	// little-endian u64].
-	Bump uint8
-	// Status is the channel lifecycle state as a ChannelStatus byte:
-	// 0 Open, 1 Finalized, 2 Closing.
-	Status uint8
-	// Salt is the caller-chosen u64 mixed little-endian into the channel PDA
-	// seeds, letting one payer/payee/mint/signer tuple open many channels.
-	Salt uint64
-	// Deposit is the total locked in the channel (open deposit plus topUps),
-	// in base units of Mint (e.g. 6 decimals for USDC).
-	Deposit uint64
-	// Settlement holds the cumulative settled and paid-out watermarks
-	// accrued over the channel lifetime.
-	Settlement SettlementWatermarks
-	// ClosureStartedAt is the Unix timestamp (seconds) when channel closure
-	// was requested, starting the grace period; zero while no closure is
-	// pending.
+	Discriminator    uint8
+	Version          uint8
+	Bump             uint8
+	Status           uint8
+	Salt             uint64
+	Deposit          uint64
+	Settlement       SettlementWatermarks
 	ClosureStartedAt int64
-	// PayerWithdrawnAt is the Unix timestamp (seconds) when the payer
-	// withdrew the unsettled remainder; zero until that withdrawal happens.
 	PayerWithdrawnAt int64
-	// GracePeriod is the close grace period in seconds: the window after
-	// closure starts during which outstanding vouchers can still be settled.
-	GracePeriod uint32
-	// DistributionHash is the 32-byte blake3 commitment, fixed at open, over
-	// the recipient split list (count as little-endian u32, then each
-	// recipient pubkey followed by its bps as little-endian u16); the
-	// distribute instruction must supply a list hashing to this value.
+	GracePeriod      uint32
 	DistributionHash [32]uint8
-	// Payer is the raw 32-byte public key of the wallet that funded the
-	// channel and is refunded the unsettled remainder.
-	Payer ag_solanago.PublicKey
-	// Payee is the raw 32-byte public key of the primary payment recipient.
-	Payee ag_solanago.PublicKey
-	// AuthorizedSigner is the public key whose Ed25519 signature over the
-	// 48-byte voucher preimage authorizes settlements against this channel.
+	Payer            ag_solanago.PublicKey
+	Payee            ag_solanago.PublicKey
 	AuthorizedSigner ag_solanago.PublicKey
-	// Mint is the SPL token mint locked in the channel; all channel amounts
-	// are denominated in this mint's base units.
-	Mint ag_solanago.PublicKey
+	Mint             ag_solanago.PublicKey
 }
 
 func (obj *Channel) MarshalWithEncoder(encoder *ag_binary.Encoder) error {

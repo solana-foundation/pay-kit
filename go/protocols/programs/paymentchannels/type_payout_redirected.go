@@ -11,19 +11,9 @@ import (
 )
 
 type PayoutRedirected struct {
-	// Channel is the PDA of the channel whose payout was redirected.
-	Channel ag_solanago.PublicKey
-	// Owner is the raw 32-byte public key of the wallet whose token account
-	// was the intended payout target but could not be paid.
-	Owner ag_solanago.PublicKey
-	// Amount is the redirected portion of the payout in mint base units
-	// (the amount of this transfer, not a cumulative total).
-	Amount uint64
-	// Beneficiary identifies who actually received the redirected funds
-	// instead: a split recipient, the payee, or the payer.
+	Channel     ag_solanago.PublicKey
+	Owner       ag_solanago.PublicKey
+	Amount      uint64
 	Beneficiary PayoutBeneficiary
-	// Reason is the RedirectReason explaining why the intended token
-	// account was skipped (unsupported extension, closed or malformed, not
-	// initialized, or reassigned authority).
-	Reason RedirectReason
+	Reason      RedirectReason
 }

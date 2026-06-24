@@ -10,7 +10,7 @@ import Foundation
 /// distribution hash) are intentionally omitted: this SDK is client-only, and
 /// the channel `open` passes its recipients inline rather than hashed.
 public enum PaymentChannels {
-    private static let canonicalProgramId = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+    private static let canonicalProgramId = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
     /// Canonical payment-channels program ID deployed to Surfnet.
     public static let programId: Pubkey = {

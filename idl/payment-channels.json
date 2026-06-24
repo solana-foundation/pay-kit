@@ -167,70 +167,6 @@
     "definedTypes": [
       {
         "kind": "definedTypeNode",
-        "name": "opened",
-        "type": {
-          "fields": [
-            {
-              "kind": "structFieldTypeNode",
-              "name": "channel",
-              "type": {
-                "kind": "publicKeyTypeNode"
-              }
-            }
-          ],
-          "kind": "structTypeNode"
-        }
-      },
-      {
-        "kind": "definedTypeNode",
-        "name": "payoutRedirected",
-        "type": {
-          "fields": [
-            {
-              "kind": "structFieldTypeNode",
-              "name": "channel",
-              "type": {
-                "kind": "publicKeyTypeNode"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
-              "name": "owner",
-              "type": {
-                "kind": "publicKeyTypeNode"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
-              "name": "amount",
-              "type": {
-                "endian": "le",
-                "format": "u64",
-                "kind": "numberTypeNode"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
-              "name": "beneficiary",
-              "type": {
-                "kind": "definedTypeLinkNode",
-                "name": "payoutBeneficiary"
-              }
-            },
-            {
-              "kind": "structFieldTypeNode",
-              "name": "reason",
-              "type": {
-                "kind": "definedTypeLinkNode",
-                "name": "redirectReason"
-              }
-            }
-          ],
-          "kind": "structTypeNode"
-        }
-      },
-      {
-        "kind": "definedTypeNode",
         "name": "distributeArgs",
         "type": {
           "fields": [
@@ -395,34 +331,9 @@
       },
       {
         "kind": "definedTypeNode",
-        "name": "settleArgs",
-        "type": {
-          "fields": [
-            {
-              "kind": "structFieldTypeNode",
-              "name": "voucher",
-              "type": {
-                "kind": "definedTypeLinkNode",
-                "name": "voucherArgs"
-              }
-            }
-          ],
-          "kind": "structTypeNode"
-        }
-      },
-      {
-        "kind": "definedTypeNode",
         "name": "settleAndFinalizeArgs",
         "type": {
           "fields": [
-            {
-              "kind": "structFieldTypeNode",
-              "name": "voucher",
-              "type": {
-                "kind": "definedTypeLinkNode",
-                "name": "voucherArgs"
-              }
-            },
             {
               "kind": "structFieldTypeNode",
               "name": "hasVoucher",
@@ -566,6 +477,70 @@
               "name": "closedChannel"
             }
           ]
+        }
+      },
+      {
+        "kind": "definedTypeNode",
+        "name": "opened",
+        "type": {
+          "fields": [
+            {
+              "kind": "structFieldTypeNode",
+              "name": "channel",
+              "type": {
+                "kind": "publicKeyTypeNode"
+              }
+            }
+          ],
+          "kind": "structTypeNode"
+        }
+      },
+      {
+        "kind": "definedTypeNode",
+        "name": "payoutRedirected",
+        "type": {
+          "fields": [
+            {
+              "kind": "structFieldTypeNode",
+              "name": "channel",
+              "type": {
+                "kind": "publicKeyTypeNode"
+              }
+            },
+            {
+              "kind": "structFieldTypeNode",
+              "name": "owner",
+              "type": {
+                "kind": "publicKeyTypeNode"
+              }
+            },
+            {
+              "kind": "structFieldTypeNode",
+              "name": "amount",
+              "type": {
+                "endian": "le",
+                "format": "u64",
+                "kind": "numberTypeNode"
+              }
+            },
+            {
+              "kind": "structFieldTypeNode",
+              "name": "beneficiary",
+              "type": {
+                "kind": "definedTypeLinkNode",
+                "name": "payoutBeneficiary"
+              }
+            },
+            {
+              "kind": "structFieldTypeNode",
+              "name": "reason",
+              "type": {
+                "kind": "definedTypeLinkNode",
+                "name": "redirectReason"
+              }
+            }
+          ],
+          "kind": "structTypeNode"
         }
       }
     ],
@@ -759,7 +734,7 @@
       {
         "code": 236,
         "kind": "errorNode",
-        "message": "Ed25519 message does not match Borsh voucher payload",
+        "message": "Reserved (formerly: Ed25519 message does not match Borsh voucher payload)",
         "name": "voucherMessageMismatch"
       },
       {
@@ -931,7 +906,154 @@
         "name": "distributeTransferQueueOverflow"
       }
     ],
-    "events": [],
+    "events": [
+      {
+        "data": {
+          "kind": "hiddenPrefixTypeNode",
+          "prefix": [
+            {
+              "kind": "constantValueNode",
+              "type": {
+                "kind": "fixedSizeTypeNode",
+                "size": 8,
+                "type": {
+                  "kind": "bytesTypeNode"
+                }
+              },
+              "value": {
+                "data": "a6ac61094d4cbd6d",
+                "encoding": "base16",
+                "kind": "bytesValueNode"
+              }
+            }
+          ],
+          "type": {
+            "fields": [
+              {
+                "kind": "structFieldTypeNode",
+                "name": "channel",
+                "type": {
+                  "kind": "publicKeyTypeNode"
+                }
+              }
+            ],
+            "kind": "structTypeNode"
+          }
+        },
+        "discriminators": [
+          {
+            "constant": {
+              "kind": "constantValueNode",
+              "type": {
+                "kind": "fixedSizeTypeNode",
+                "size": 8,
+                "type": {
+                  "kind": "bytesTypeNode"
+                }
+              },
+              "value": {
+                "data": "a6ac61094d4cbd6d",
+                "encoding": "base16",
+                "kind": "bytesValueNode"
+              }
+            },
+            "kind": "constantDiscriminatorNode",
+            "offset": 0
+          }
+        ],
+        "kind": "eventNode",
+        "name": "opened"
+      },
+      {
+        "data": {
+          "kind": "hiddenPrefixTypeNode",
+          "prefix": [
+            {
+              "kind": "constantValueNode",
+              "type": {
+                "kind": "fixedSizeTypeNode",
+                "size": 8,
+                "type": {
+                  "kind": "bytesTypeNode"
+                }
+              },
+              "value": {
+                "data": "d116b9d754a75450",
+                "encoding": "base16",
+                "kind": "bytesValueNode"
+              }
+            }
+          ],
+          "type": {
+            "fields": [
+              {
+                "kind": "structFieldTypeNode",
+                "name": "channel",
+                "type": {
+                  "kind": "publicKeyTypeNode"
+                }
+              },
+              {
+                "kind": "structFieldTypeNode",
+                "name": "owner",
+                "type": {
+                  "kind": "publicKeyTypeNode"
+                }
+              },
+              {
+                "kind": "structFieldTypeNode",
+                "name": "amount",
+                "type": {
+                  "endian": "le",
+                  "format": "u64",
+                  "kind": "numberTypeNode"
+                }
+              },
+              {
+                "kind": "structFieldTypeNode",
+                "name": "beneficiary",
+                "type": {
+                  "kind": "definedTypeLinkNode",
+                  "name": "payoutBeneficiary"
+                }
+              },
+              {
+                "kind": "structFieldTypeNode",
+                "name": "reason",
+                "type": {
+                  "kind": "definedTypeLinkNode",
+                  "name": "redirectReason"
+                }
+              }
+            ],
+            "kind": "structTypeNode"
+          }
+        },
+        "discriminators": [
+          {
+            "constant": {
+              "kind": "constantValueNode",
+              "type": {
+                "kind": "fixedSizeTypeNode",
+                "size": 8,
+                "type": {
+                  "kind": "bytesTypeNode"
+                }
+              },
+              "value": {
+                "data": "d116b9d754a75450",
+                "encoding": "base16",
+                "kind": "bytesValueNode"
+              }
+            },
+            "kind": "constantDiscriminatorNode",
+            "offset": 0
+          }
+        ],
+        "kind": "eventNode",
+        "name": "payoutRedirected"
+      }
+    ],
     "instructions": [
       {
         "accounts": [
@@ -1022,7 +1144,7 @@
           {
             "defaultValue": {
               "kind": "publicKeyValueNode",
-              "publicKey": "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+              "publicKey": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
             },
             "isSigner": false,
             "isWritable": false,
@@ -1092,14 +1214,6 @@
               "endian": "le",
               "format": "u8",
               "kind": "numberTypeNode"
-            }
-          },
-          {
-            "kind": "instructionArgumentNode",
-            "name": "settleArgs",
-            "type": {
-              "kind": "definedTypeLinkNode",
-              "name": "settleArgs"
             }
           }
         ],
@@ -1384,7 +1498,7 @@
           {
             "defaultValue": {
               "kind": "publicKeyValueNode",
-              "publicKey": "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+              "publicKey": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
             },
             "isSigner": false,
             "isWritable": false,
@@ -1567,7 +1681,7 @@
         ]
       }
     ],
-    "publicKey": "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc",
+    "publicKey": "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX",
     "version": "0.1.0"
   },
   "standard": "codama",

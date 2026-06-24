@@ -16,7 +16,7 @@ import (
 
 const ProgramName = "PaymentChannels"
 
-var ProgramID ag_solanago.PublicKey = ag_solanago.MustPublicKeyFromBase58("CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg")
+var ProgramID ag_solanago.PublicKey = ag_solanago.MustPublicKeyFromBase58("CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX")
 
 func SetProgramID(pubkey ag_solanago.PublicKey) {
 	ProgramID = pubkey
@@ -70,9 +70,6 @@ var (
 )
 
 type Instruction struct {
-	// BaseVariant carries the decoded instruction variant: TypeID holds the
-	// single-byte instruction discriminator and Impl the concrete
-	// per-instruction struct (Open, TopUp, Settle, ...).
 	ag_binary.BaseVariant
 }
 

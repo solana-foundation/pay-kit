@@ -20,11 +20,6 @@ type Settle struct {
 	// [0] = [WRITE] Channel
 	// [1] = [] InstructionsSysvar
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	// SettleArgs holds the Borsh-encoded instruction arguments written after
-	// the settle discriminator byte (2): the voucher whose Ed25519 signature
-	// is checked via a preceding precompile instruction referenced through
-	// the instructions sysvar.
-	SettleArgs SettleArgs
 }
 
 // NewSettleInstructionBuilder creates a new `Settle` instruction builder.
@@ -32,12 +27,6 @@ func NewSettleInstructionBuilder() *Settle {
 	nd := &Settle{}
 	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 2)
 	return nd
-}
-
-// SetSettleArgs sets the "settle_args" parameter.
-func (inst *Settle) SetSettleArgs(settleArgs SettleArgs) *Settle {
-	inst.SettleArgs = settleArgs
-	return inst
 }
 
 // SetChannelAccount sets the "channel" account.
@@ -108,12 +97,6 @@ func (inst *Settle) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 			return err
 		}
 	}
-	{
-		err := encoder.Encode(inst.SettleArgs)
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -121,12 +104,6 @@ func (inst *Settle) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
 	{
 		var tmp uint8
 		err := decoder.Decode(&tmp)
-		if err != nil {
-			return err
-		}
-	}
-	{
-		err := decoder.Decode(&inst.SettleArgs)
 		if err != nil {
 			return err
 		}

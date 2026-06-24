@@ -7,8 +7,5 @@
 package payment_channels
 
 type DistributeArgs struct {
-	// Recipients is the basis-point split list paid out at distribution,
-	// Borsh-encoded with a little-endian u32 length prefix; it must hash to
-	// the distribution hash committed in the channel account at open.
 	Recipients []DistributionEntry
 }

@@ -30,12 +30,11 @@ use payment_channels_client::generated::instructions::{
     SettleBuilder, TopUpBuilder,
 };
 use payment_channels_client::generated::types::{
-    DistributeArgs, DistributionEntry, OpenArgs, SettleAndFinalizeArgs, SettleArgs, TopUpArgs,
-    VoucherArgs,
+    DistributeArgs, DistributionEntry, OpenArgs, SettleAndFinalizeArgs, TopUpArgs, VoucherArgs,
 };
 
 /// Canonical payment-channels program ID deployed to Surfnet.
-pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc";
+pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
 
 /// Associated Token Account program ID.
 pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
@@ -333,18 +332,13 @@ pub fn build_settle_instructions(
     expires_at: i64,
     program_id: &Pubkey,
 ) -> Result<Vec<Instruction>> {
+    // The program reads the voucher from the ed25519 precompile instruction, so
+    // `settle` itself carries no in-data args beyond its discriminator.
     let message = voucher_message_bytes(channel, cumulative_amount, expires_at)?;
     let verify = build_ed25519_verify_instruction(authorized_signer, signature, &message);
     let mut settle = SettleBuilder::new()
         .channel(to_address(channel))
         .instructions_sysvar(to_address(&instructions_sysvar_id()))
-        .settle_args(SettleArgs {
-            voucher: VoucherArgs {
-                channel_id: to_address(channel),
-                cumulative_amount,
-                expires_at,
-            },
-        })
         .instruction();
     settle.program_id = to_address(program_id);
     Ok(vec![verify, settle])
@@ -375,14 +369,7 @@ pub fn build_settle_and_finalize_instructions(
         .merchant(to_address(merchant))
         .channel(to_address(channel))
         .instructions_sysvar(to_address(&instructions_sysvar_id()))
-        .settle_and_finalize_args(SettleAndFinalizeArgs {
-            voucher: VoucherArgs {
-                channel_id: to_address(channel),
-                cumulative_amount,
-                expires_at,
-            },
-            has_voucher,
-        })
+        .settle_and_finalize_args(SettleAndFinalizeArgs { has_voucher })
         .instruction();
     settle_and_finalize.program_id = to_address(program_id);
     instructions.push(settle_and_finalize);

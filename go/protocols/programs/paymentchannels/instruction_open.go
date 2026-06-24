@@ -31,10 +31,7 @@ type Open struct {
 	// [11] = [] EventAuthority
 	// [12] = [] SelfProgram
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	// OpenArgs holds the Borsh-encoded instruction arguments written after
-	// the open discriminator byte (1): PDA salt, initial deposit, close
-	// grace period, and the recipient split list committed at open.
-	OpenArgs OpenArgs
+	OpenArgs                     OpenArgs
 }
 
 // NewOpenInstructionBuilder creates a new `Open` instruction builder.

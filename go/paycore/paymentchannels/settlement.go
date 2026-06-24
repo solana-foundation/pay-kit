@@ -130,11 +130,6 @@ func BuildSettleAndFinalizeInstructions(params SettleAndFinalizeParams) ([]solan
 		SetChannelAccount(params.Channel).
 		SetInstructionsSysvarAccount(solana.SysVarInstructionsPubkey).
 		SetSettleAndFinalizeArgs(generated.SettleAndFinalizeArgs{
-			Voucher: generated.VoucherArgs{
-				ChannelId:        params.Channel,
-				CumulativeAmount: params.CumulativeAmount,
-				ExpiresAt:        params.ExpiresAt,
-			},
 			HasVoucher: hasVoucher,
 		})
 	if _, err := builder.ValidateAndBuild(); err != nil {

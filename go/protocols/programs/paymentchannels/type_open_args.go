@@ -7,17 +7,8 @@
 package payment_channels
 
 type OpenArgs struct {
-	// Salt is the caller-chosen u64 mixed little-endian into the channel
-	// PDA seeds, distinguishing channels that share payer, payee, mint, and
-	// authorized signer.
-	Salt uint64
-	// Deposit is the initial amount transferred from the payer into the
-	// channel token account, in mint base units.
-	Deposit uint64
-	// GracePeriod is the close grace period in seconds: the window after a
-	// close request during which outstanding vouchers can still be settled.
+	Salt        uint64
+	Deposit     uint64
 	GracePeriod uint32
-	// Recipients is the basis-point split list committed at open via the
-	// channel's distribution hash and enforced again at distribution.
-	Recipients []DistributionEntry
+	Recipients  []DistributionEntry
 }

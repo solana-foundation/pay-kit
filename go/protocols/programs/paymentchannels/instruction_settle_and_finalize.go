@@ -21,11 +21,7 @@ type SettleAndFinalize struct {
 	// [1] = [WRITE] Channel
 	// [2] = [] InstructionsSysvar
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
-	// SettleAndFinalizeArgs holds the Borsh-encoded instruction arguments
-	// written after the settleAndFinalize discriminator byte (4): the
-	// optional final voucher plus the hasVoucher flag selecting whether the
-	// Ed25519 precompile check applies.
-	SettleAndFinalizeArgs SettleAndFinalizeArgs
+	SettleAndFinalizeArgs        SettleAndFinalizeArgs
 }
 
 // NewSettleAndFinalizeInstructionBuilder creates a new `SettleAndFinalize` instruction builder.
