@@ -43,6 +43,15 @@ type Gate struct {
 	Kind GateKind
 }
 
+// normalize sets zero-value fields to their defaults. Called by
+// Validate before running validation checks so callers can construct
+// a Gate with only the fields that differ from zero.
+func (g *Gate) normalize() {
+	if g.Kind == "" {
+		g.Kind = GateFixed
+	}
+}
+
 // Total returns the customer-facing amount: Amount + sum(FeeOnTop).
 // Advertised in the 402 challenge as `maxAmountRequired` (x402) /
 // `amount` (MPP).
@@ -92,9 +101,7 @@ func (g *Gate) Validate() error {
 		return &GateError{Reason: "gate amount must be a typed Price (use paykit.MustParseUSD)"}
 	}
 	// Default kind to fixed.
-	if g.Kind == "" {
-		g.Kind = GateFixed
-	}
+	g.normalize()
 	// Usage gates are x402-only and cannot carry fees.
 	if g.Kind == GateUsage {
 		if g.HasFees() {

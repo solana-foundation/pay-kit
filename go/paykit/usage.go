@@ -173,7 +173,8 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 			// settlement would leave the deposit locked without payment).
 			// Use a detached context with a timeout so the request context
 			// cancellation does not abort settlement, but the RPC still has
-			// a deadline.
+			// a deadline. finalizeSettlement runs before settleCancel in
+			// the defer so the context is still live when settlement fires.
 			settleCtx, settleCancel := context.WithTimeout(context.Background(), 120*time.Second)
 			uw := &usageSettlementWriter{
 				ResponseWriter: w,
@@ -271,7 +272,8 @@ func gateTotalBaseUnits(gate *Gate) uint64 {
 // the handler completes. On the first WriteHeader/Write call, it settles
 // the metered amount via the usage adapter and merges the settlement
 // headers before forwarding to the underlying writer. If settlement fails,
-// it writes a 500 (the channel is already open; the resource was served).
+// the handler's status is forwarded unchanged; settlement headers are omitted
+// (the channel is already open and the resource has been served).
 type usageSettlementWriter struct {
 	http.ResponseWriter
 	adapter    UsageAdapter
