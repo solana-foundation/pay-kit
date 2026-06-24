@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use solana_instruction::Instruction;
-use solana_keychain::SolanaSigner;
 use solana_keychain::memory::MemorySigner;
+use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
@@ -50,7 +50,11 @@ pub async fn cheat(url: &str, method: &str, params: serde_json::Value) {
         .send()
         .await
         .expect("cheat send");
-    assert!(resp.status().is_success(), "cheat {method} http {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "cheat {method} http {}",
+        resp.status()
+    );
 }
 
 /// Fund `pk` with `lamports` SOL via `surfnet_setAccount`.
@@ -86,7 +90,12 @@ pub async fn open_one(url: String, signer: Arc<MemorySigner>, ix: Instruction) {
     let message = Message::new_with_blockhash(&[ix], Some(&payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
     let sig_bytes = signer.sign_message(&tx.message_data()).await.expect("sign");
-    let idx = tx.message.account_keys.iter().position(|k| k == &payer).unwrap();
+    let idx = tx
+        .message
+        .account_keys
+        .iter()
+        .position(|k| k == &payer)
+        .unwrap();
     tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
     let sig = rpc.send_transaction(&tx).await.expect("open submit");
     for _ in 0..60 {
@@ -119,7 +128,10 @@ pub async fn drive_settlement(
     let mut by_tx: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for task in tasks {
         let (id, result) = task.await.expect("join");
-        by_tx.entry(result.expect("settle ok")).or_default().push(id);
+        by_tx
+            .entry(result.expect("settle ok"))
+            .or_default()
+            .push(id);
     }
     by_tx
 }

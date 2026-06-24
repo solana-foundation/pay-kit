@@ -23,11 +23,11 @@ use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::Transaction;
 
 use solana_pay_core::payment_channels as pc;
-use solana_pay_core::settlement::packing::{
-    ChannelInstructions, DEFAULT_MAX_CHANNELS_PER_TX, pack,
-};
 use solana_pay_core::payment_channels::generated::accounts::Channel;
 use solana_pay_core::session::accept_voucher;
+use solana_pay_core::settlement::packing::{
+    pack, ChannelInstructions, DEFAULT_MAX_CHANNELS_PER_TX,
+};
 use solana_pay_core::store::{ChannelState, ChannelStore, MemoryChannelStore, StoreError};
 use solana_pay_core::voucher::verify_voucher_signature;
 

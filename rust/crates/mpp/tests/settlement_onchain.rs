@@ -18,9 +18,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use solana_instruction::Instruction;
 use solana_mpp::program::payment_channels as pc;
 use solana_mpp::settlement::testkit;
-use solana_mpp::settlement::worker::{RpcBroadcaster, SettlementConfig, spawn};
-use solana_mpp::solana_keychain::SolanaSigner;
+use solana_mpp::settlement::worker::{spawn, RpcBroadcaster, SettlementConfig};
 use solana_mpp::solana_keychain::memory::MemorySigner;
+use solana_mpp::solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_signature::Signature;
@@ -37,7 +37,10 @@ fn rpc_url() -> String {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 /// Fund a Delegated operator (authority + fee-payer + payee) and a payer, then
@@ -76,7 +79,11 @@ async fn open_channels(url: &str, count: u64) -> (Arc<MemorySigner>, Pubkey, Vec
         };
         channels.push(pc::derive_channel_addresses(&params).channel);
         let ix = pc::build_open_instruction(&params);
-        opens.push(tokio::spawn(testkit::open_one(url.to_string(), payer_signer.clone(), ix)));
+        opens.push(tokio::spawn(testkit::open_one(
+            url.to_string(),
+            payer_signer.clone(),
+            ix,
+        )));
     }
     for o in opens {
         o.await.unwrap();
@@ -99,7 +106,13 @@ async fn build_units(
         let msg = pc::voucher_message_bytes(channel, VOUCHER, expires_at).unwrap();
         let sig: [u8; 64] = operator_signer.sign_message(&msg).await.unwrap().into();
         let ixs = pc::build_settle_and_finalize_instructions(
-            operator, channel, operator, Some(&sig), VOUCHER, expires_at, &program_id,
+            operator,
+            channel,
+            operator,
+            Some(&sig),
+            VOUCHER,
+            expires_at,
+            &program_id,
         )
         .unwrap();
         units.push((id_of(i, channel), ixs));
@@ -113,7 +126,11 @@ async fn confirm(rpc: &RpcClient, sig: &str) {
     for _ in 0..20 {
         if let Ok(resp) = rpc.get_signature_statuses(&[parsed]).await {
             if let Some(Some(st)) = resp.value.into_iter().next() {
-                assert!(st.err.is_none(), "settlement tx {sig} failed on-chain: {:?}", st.err);
+                assert!(
+                    st.err.is_none(),
+                    "settlement tx {sig} failed on-chain: {:?}",
+                    st.err
+                );
                 return;
             }
         }
@@ -151,11 +168,20 @@ async fn channels_settle_on_chain_in_batches() {
     // Each channel is now Finalized. Channel layout: discriminator(0),
     // version(1), bump(2), status(3); ChannelStatus::Finalized == 1.
     for channel in &channels {
-        let acct = rpc.get_account(channel).await.expect("channel account still present");
+        let acct = rpc
+            .get_account(channel)
+            .await
+            .expect("channel account still present");
         assert!(acct.data.len() > 3, "channel {channel} data too short");
-        assert_eq!(acct.data[3], 1, "channel {channel} status should be Finalized (1)");
+        assert_eq!(
+            acct.data[3], 1,
+            "channel {channel} status should be Finalized (1)"
+        );
     }
-    eprintln!("✅ {CHANNELS} channels opened + settled on-chain in {} txs", by_tx.len());
+    eprintln!(
+        "✅ {CHANNELS} channels opened + settled on-chain in {} txs",
+        by_tx.len()
+    );
 }
 
 /// Smoke bench: open K real channels, then measure batched settlement
@@ -164,7 +190,11 @@ async fn channels_settle_on_chain_in_batches() {
 async fn settlement_throughput_smoke() {
     const K: u64 = 30; // ⌈30/3⌉ = 10 batched settle txs
     let url = rpc_url();
-    if RpcClient::new(url.clone()).get_latest_blockhash().await.is_err() {
+    if RpcClient::new(url.clone())
+        .get_latest_blockhash()
+        .await
+        .is_err()
+    {
         eprintln!("skipping: surfnet {url} unreachable");
         return;
     }
@@ -182,13 +212,27 @@ async fn settlement_throughput_smoke() {
 
     eprintln!("\n===== SETTLEMENT SMOKE BENCH (live surfnet) =====");
     eprintln!("channels        {K}");
-    eprintln!("open phase      {open_ms} ms  ({} ms/channel)", open_ms / K as u128);
+    eprintln!(
+        "open phase      {open_ms} ms  ({} ms/channel)",
+        open_ms / K as u128
+    );
     eprintln!("settle phase    {settle_ms} ms");
-    eprintln!("settle txs      {}  ({} channels/tx)", by_tx.len(), K as usize / by_tx.len());
-    eprintln!("throughput      ~{} channels/sec settled", (K as u128 * 1000) / settle_ms);
+    eprintln!(
+        "settle txs      {}  ({} channels/tx)",
+        by_tx.len(),
+        K as usize / by_tx.len()
+    );
+    eprintln!(
+        "throughput      ~{} channels/sec settled",
+        (K as u128 * 1000) / settle_ms
+    );
     eprintln!("=================================================\n");
 
-    assert_eq!(by_tx.len() as u64, K.div_ceil(3), "K channels should batch into ⌈K/3⌉ txs");
+    assert_eq!(
+        by_tx.len() as u64,
+        K.div_ceil(3),
+        "K channels should batch into ⌈K/3⌉ txs"
+    );
 }
 
 /// Packing run-loop demo: drives the worker, prints the batching decisions
@@ -200,7 +244,8 @@ async fn settlement_packing_runloop_demo() {
     const K: u64 = 7; // 3 (size) + 3 (size) + 1 (timer) → 3 txs
 
     #[cfg(feature = "otel")]
-    let endpoint = std::env::var("OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".into());
+    let endpoint =
+        std::env::var("OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".into());
     #[cfg(feature = "otel")]
     let _otel = solana_mpp::otel::init(solana_mpp::otel::OtelOptions {
         service_name: "pay-settlement-bench",
@@ -211,20 +256,30 @@ async fn settlement_packing_runloop_demo() {
     });
 
     let url = rpc_url();
-    if RpcClient::new(url.clone()).get_latest_blockhash().await.is_err() {
+    if RpcClient::new(url.clone())
+        .get_latest_blockhash()
+        .await
+        .is_err()
+    {
         eprintln!("skipping: surfnet {url} unreachable");
         return;
     }
 
     let (operator_signer, operator, channels) = open_channels(&url, K).await;
-    let units = build_units(&operator, &operator_signer, &channels, |i, _| format!("chan-{i}")).await;
+    let units = build_units(&operator, &operator_signer, &channels, |i, _| {
+        format!("chan-{i}")
+    })
+    .await;
 
     eprintln!("\n>>> submitting {K} channels to the worker (cap 3/tx, 350ms linger) <<<\n");
     let cfg = SettlementConfig::new(operator, operator_signer);
     let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
     let by_tx = testkit::drive_settlement(&handle, units).await;
 
-    eprintln!("\n===== PACKING REPORT ({K} channels → {} txs) =====", by_tx.len());
+    eprintln!(
+        "\n===== PACKING REPORT ({K} channels → {} txs) =====",
+        by_tx.len()
+    );
     for (i, (tx, ids)) in by_tx.iter().enumerate() {
         let mut ids = ids.clone();
         ids.sort();
@@ -234,7 +289,11 @@ async fn settlement_packing_runloop_demo() {
     eprintln!("==================================================\n");
 
     // ⌈7/3⌉ = 3 txs regardless of how the size/timer triggers split them.
-    assert_eq!(by_tx.len(), 3, "7 channels should pack into 3 txs (3 + 3 + 1)");
+    assert_eq!(
+        by_tx.len(),
+        3,
+        "7 channels should pack into 3 txs (3 + 3 + 1)"
+    );
 
     // `_otel` guard flushes the batch exporter on drop → query the collector
     // for service "pay-settlement-bench".

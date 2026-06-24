@@ -11,15 +11,15 @@
 use std::time::Duration;
 
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{global, KeyValue};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
-use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{RandomIdGenerator, Sampler, SdkTracerProvider};
-use opentelemetry_semantic_conventions::SCHEMA_URL;
+use opentelemetry_sdk::Resource;
 use opentelemetry_semantic_conventions::attribute::SERVICE_VERSION;
+use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -96,12 +96,19 @@ pub fn init(opts: OtelOptions<'_>) -> Guard {
                         .with_thread_names(true)
                         .with_filter(EnvFilter::new(opts.console_filter)),
                 )
-                .with(OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::new(opts.trace_filter)))
-                .with(MetricsLayer::new(meter_provider.clone()).with_filter(EnvFilter::new(opts.trace_filter)))
+                .with(
+                    OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::new(opts.trace_filter)),
+                )
+                .with(
+                    MetricsLayer::new(meter_provider.clone())
+                        .with_filter(EnvFilter::new(opts.trace_filter)),
+                )
                 .with(logs_layer)
                 .try_init();
             tracing::info!(endpoint = %base, service = %opts.service_name, "OTLP export enabled");
-            Guard { providers: Some((tracer_provider, meter_provider, logger_provider)) }
+            Guard {
+                providers: Some((tracer_provider, meter_provider, logger_provider)),
+            }
         }
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
             eprintln!("OTLP init failed ({e}); falling back to console logs");
@@ -119,7 +126,10 @@ fn resource(opts: &OtelOptions<'_>) -> Resource {
     Resource::builder()
         .with_service_name(opts.service_name.to_string())
         .with_schema_url(
-            [KeyValue::new(SERVICE_VERSION, opts.service_version.to_string())],
+            [KeyValue::new(
+                SERVICE_VERSION,
+                opts.service_version.to_string(),
+            )],
             SCHEMA_URL,
         )
         .build()
@@ -142,7 +152,9 @@ fn tracer_provider(endpoint: &str, resource: Resource) -> Result<SdkTracerProvid
         .build()
         .map_err(|e| format!("OTLP span exporter: {e}"))?;
     let provider = SdkTracerProvider::builder()
-        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(1.0))))
+        .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
+            1.0,
+        ))))
         .with_id_generator(RandomIdGenerator::default())
         .with_resource(resource)
         .with_batch_exporter(exporter)

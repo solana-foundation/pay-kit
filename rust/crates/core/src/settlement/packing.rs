@@ -127,7 +127,10 @@ mod tests {
                 .flat_map(|c| c.instructions.iter().cloned())
                 .collect();
             let size = tx_size(&flat, &operator);
-            eprintln!("channels={n:2}  tx_bytes={size:4}  fits={}", size <= MAX_TX_BYTES);
+            eprintln!(
+                "channels={n:2}  tx_bytes={size:4}  fits={}",
+                size <= MAX_TX_BYTES
+            );
             if size <= MAX_TX_BYTES {
                 max_fit = n as usize;
             }
@@ -145,9 +148,14 @@ mod tests {
         let batches = pack(channels.clone(), &operator, 1000);
         assert!(!batches.is_empty());
         for b in &batches {
-            let flat: Vec<Instruction> =
-                b.iter().flat_map(|c| c.instructions.iter().cloned()).collect();
-            assert!(tx_size(&flat, &operator) <= MAX_TX_BYTES, "batch exceeds packet size");
+            let flat: Vec<Instruction> = b
+                .iter()
+                .flat_map(|c| c.instructions.iter().cloned())
+                .collect();
+            assert!(
+                tx_size(&flat, &operator) <= MAX_TX_BYTES,
+                "batch exceeds packet size"
+            );
         }
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 10);
 
