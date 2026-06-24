@@ -184,8 +184,8 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 				ctx:            settleCtx,
 			}
 			defer func() {
-				settleCancel()
 				uw.finalizeSettlement(settleCtx)
+				settleCancel()
 			}()
 			next.ServeHTTP(uw, r.WithContext(ctx))
 		})
