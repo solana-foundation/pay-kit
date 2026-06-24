@@ -25,8 +25,6 @@ from . import redirectReason
 from .redirectReason import RedirectReasonJSON,RedirectReasonKind;
 from . import settleAndFinalizeArgs
 from .settleAndFinalizeArgs import SettleAndFinalizeArgsJSON,SettleAndFinalizeArgs;
-from . import settleArgs
-from .settleArgs import SettleArgsJSON,SettleArgs;
 from . import settlementWatermarks
 from .settlementWatermarks import SettlementWatermarksJSON,SettlementWatermarks;
 from . import topUpArgs

@@ -9,11 +9,10 @@ client under :mod:`pay_kit.protocols.programs.paymentchannels` (rendered from
 ``idl/payment-channels.json`` by ``skills/pay-sdk-implementation/codegen``).
 This module only adds what the IDL cannot express:
 
-- The production program id (``GuoKrza...``) overrides the IDL placeholder
-  (``CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg``), which is not the deployed
-  program; every PDA derivation and instruction built here uses ``GuoKrza...``.
-  The generated PDA helpers pin the placeholder and take no program id
-  parameter, so the event-authority derivation stays here.
+- The production program id (``CHNLxY...``) — matching the generated client's
+  default — is used for every PDA derivation and instruction built here.
+  The generated PDA helpers take no program id parameter, so the
+  event-authority derivation stays here.
 - The channel PDA is not declared in the IDL's ``pdas`` section, so its
   derivation is hand-written here.
 
@@ -81,11 +80,9 @@ ED25519_PROGRAM_ID = "Ed25519SigVerify111111111111111111111111111"
 #: preceding Ed25519 precompile by index.
 SYSVAR_INSTRUCTIONS = "Sysvar1nstructions1111111111111111111111111"
 
-# Canonical payment-channels program id deployed to the network. The IDL
-# placeholder ``CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg`` is NOT the
-# production deployment and must not be used for derivation or instruction
-# emission.
-PAYMENT_CHANNELS_PROGRAM_ID = "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+# Canonical payment-channels program id deployed to the network. Matches the
+# generated client's default; used for every PDA derivation and instruction.
+PAYMENT_CHANNELS_PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
 #: Parsed production program id used for derivation and instruction emission.
 PROGRAM_ID = Pubkey.from_string(PAYMENT_CHANNELS_PROGRAM_ID)
@@ -465,10 +462,9 @@ def build_settle_and_finalize_instructions(
 
     settle = SettleAndFinalize(
         {
-            "settleAndFinalizeArgs": SettleAndFinalizeArgs(
-                voucher=VoucherArgs(channelId=channel, cumulativeAmount=cumulative, expiresAt=expires_at),
-                hasVoucher=has_voucher,
-            )
+            # The program reads the voucher from the preceding ed25519 precompile;
+            # settle_and_finalize carries only the hasVoucher flag.
+            "settleAndFinalizeArgs": SettleAndFinalizeArgs(hasVoucher=has_voucher),
         },
         {
             "merchant": merchant,

@@ -9,45 +9,37 @@ import borsh_construct as borsh
 import typing
 from construct import Container
 from dataclasses import dataclass
-from . import voucherArgs
 
 class SettleAndFinalizeArgsJSON(typing.TypedDict):
-    voucher: voucherArgs.VoucherArgsJSON
     hasVoucher: int
 
 @dataclass
 class SettleAndFinalizeArgs:
     layout: typing.ClassVar = borsh.CStruct(
-        "voucher" /voucherArgs.VoucherArgs.layout,
         "hasVoucher" /borsh.U8,
         )
     #fields
-    voucher: voucherArgs.VoucherArgs
     hasVoucher: int
     
     @classmethod
     def from_decoded(cls, obj: Container) -> "SettleAndFinalizeArgs":
         return cls(
-        voucher=voucherArgs.VoucherArgs.from_decoded(obj["voucher"]),
         hasVoucher=obj["hasVoucher"],
         )
 
     def to_encodable(self) -> dict[str, typing.Any]:
         return {
-                "voucher": self.voucher.to_encodable(),
                 "hasVoucher": self.hasVoucher,
                 }
 
     def to_json(self) -> SettleAndFinalizeArgsJSON:
         return {
-                "voucher": self.voucher.to_json(),
                 "hasVoucher": self.hasVoucher,
                 }
 
     @classmethod
     def from_json(cls, obj: SettleAndFinalizeArgsJSON) -> "SettleAndFinalizeArgs":
         return cls(
-                voucher=voucherArgs.VoucherArgs.from_json(obj["voucher"]),
                 hasVoucher=obj["hasVoucher"],
         )
 

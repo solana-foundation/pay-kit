@@ -5,27 +5,16 @@
     @see https://github.com/codama-idl/codama
 '''
 
-import borsh_construct as borsh
 import typing
 from solders.instruction import AccountMeta, Instruction
 from solders.pubkey import Pubkey as SolPubkey
-from .. import types
 from ..program_id import PAYMENT_CHANNELS_PROGRAM_ADDRESS
-class SettleArgs(typing.TypedDict):
-    settleArgs:types.settleArgs.SettleArgs
-
-
-layout = borsh.CStruct(
-    "settleArgs" /types.settleArgs.SettleArgs.layout,
-    )
-
 
 class SettleAccounts(typing.TypedDict):
     channel:SolPubkey
     instructionsSysvar:SolPubkey
 
 def Settle(
-    args: SettleArgs,
     accounts: SettleAccounts,
     program_id: SolPubkey =  PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     remaining_accounts: typing.Optional[typing.List[AccountMeta]] = None,
@@ -39,9 +28,7 @@ def Settle(
     identifier = b"\x02"
 
 
-    encoded_args = layout.build({
-        "settleArgs":args["settleArgs"].to_encodable(),
-       })
+    encoded_args = b""
     data = identifier + encoded_args
     return Instruction(program_id,data,keys)
 

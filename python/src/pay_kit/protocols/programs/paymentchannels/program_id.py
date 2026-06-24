@@ -7,5 +7,5 @@
 
 from solders.pubkey import Pubkey
 
-PAYMENT_CHANNELS_PROGRAM_ADDRESS =Pubkey.from_string("CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg")
+PAYMENT_CHANNELS_PROGRAM_ADDRESS =Pubkey.from_string("CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX")
 

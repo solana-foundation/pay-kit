@@ -27,20 +27,14 @@ from pay_kit.protocols.mpp._paymentchannels import (
     voucher_message_bytes,
 )
 
-# IDL placeholder that the Rust/Go ports explicitly override; the production
-# program id MUST differ from this.
-_IDL_PLACEHOLDER = "CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg"
-
-
 def pk(byte: int) -> Pubkey:
     """A pubkey whose 32 bytes are all ``byte`` (mirrors the Rust test helper)."""
     return Pubkey.from_bytes(bytes([byte] * 32))
 
 
-def test_program_id_is_guokrza() -> None:
-    assert PAYMENT_CHANNELS_PROGRAM_ID == "GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc"
+def test_program_id_is_canonical() -> None:
+    assert PAYMENT_CHANNELS_PROGRAM_ID == "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
     assert str(PROGRAM_ID) == PAYMENT_CHANNELS_PROGRAM_ID
-    assert str(PROGRAM_ID) != _IDL_PLACEHOLDER
 
 
 def test_voucher_message_length_and_offsets() -> None:
@@ -210,7 +204,7 @@ def test_build_open_instruction_account_order_and_flags() -> None:
     assert str(accounts[10].pubkey) == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
     # 11 event_authority PDA.
     assert accounts[11].pubkey == event_authority
-    # 12 self/program == GuoKrza.
+    # 12 self/program == the payment-channels program id.
     assert accounts[12].pubkey == PROGRAM_ID
     # No account other than payer is a signer.
     assert [a.is_signer for a in accounts] == [True] + [False] * 12
