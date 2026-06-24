@@ -11,6 +11,21 @@ repository = "https://github.com/solana-foundation/pay-kit"
 # linger-timer flush, sign with the operator, broadcast, background confirm.
 # Shared by the mpp session and x402 settlement paths.
 worker = ["dep:tokio", "dep:solana-rpc-client", "dep:solana-signature", "dep:tracing", "dep:async-trait"]
+# Test/demo harness for the worker (open real channels, fund via cheatcodes,
+# drive + observe packing). Shared by the x402/mpp tests and the pay bench.
+testkit = ["worker", "dep:reqwest"]
+# Reusable OpenTelemetry init (console + OTLP traces/metrics). Shared by the
+# pay-kit crates and pay's binaries so everything lands in one collector.
+otel = [
+    "dep:tracing",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:opentelemetry-semantic-conventions",
+    "dep:tracing-opentelemetry",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
 # Signing — solana-keychain with sdk-v3 (matches mpp/x402 pins)
@@ -56,6 +71,19 @@ ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] 
 
 # Errors
 thiserror = "2"
+
+# Test/demo harness (feature `testkit`) — surfnet cheatcode HTTP.
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# OpenTelemetry (feature `otel`). Versions match the pay workspace so the
+# collector view is consistent across repos.
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["logs"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"], optional = true }
+opentelemetry-appender-tracing = { version = "0.31", optional = true }
+opentelemetry-semantic-conventions = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

@@ -137,7 +137,7 @@ pub fn spawn(cfg: SettlementConfig, broadcaster: Arc<dyn Broadcaster>) -> Settle
                         // Size trigger: seal full transactions eagerly.
                         while pending.len() >= cfg.max_channels_per_tx {
                             let batch = pending.drain(..cfg.max_channels_per_tx).collect();
-                            spawn_flush(batch, cfg.clone(), broadcaster.clone(), sem.clone());
+                            spawn_flush(batch, cfg.clone(), broadcaster.clone(), sem.clone(), "size");
                         }
                         if pending.is_empty() {
                             deadline = None;
@@ -145,14 +145,14 @@ pub fn spawn(cfg: SettlementConfig, broadcaster: Arc<dyn Broadcaster>) -> Settle
                     }
                     None => {
                         if !pending.is_empty() {
-                            spawn_flush(std::mem::take(&mut pending), cfg.clone(), broadcaster.clone(), sem.clone());
+                            spawn_flush(std::mem::take(&mut pending), cfg.clone(), broadcaster.clone(), sem.clone(), "drain");
                         }
                         break;
                     }
                 },
                 _ = timer => {
                     if !pending.is_empty() {
-                        spawn_flush(std::mem::take(&mut pending), cfg.clone(), broadcaster.clone(), sem.clone());
+                        spawn_flush(std::mem::take(&mut pending), cfg.clone(), broadcaster.clone(), sem.clone(), "timer");
                     }
                     deadline = None;
                 }
@@ -170,11 +170,12 @@ fn spawn_flush(
     cfg: Arc<SettlementConfig>,
     broadcaster: Arc<dyn Broadcaster>,
     sem: Arc<Semaphore>,
+    trigger: &'static str,
 ) {
     tokio::spawn(async move {
         let _permit = sem.acquire_owned().await;
         for group in regroup(units, &cfg.operator, cfg.max_channels_per_tx) {
-            settle_group(group, &cfg, broadcaster.clone()).await;
+            settle_group(group, &cfg, broadcaster.clone(), trigger).await;
         }
     });
 }
@@ -214,10 +215,13 @@ async fn settle_group(
     group: Vec<SettlementUnit>,
     cfg: &SettlementConfig,
     broadcaster: Arc<dyn Broadcaster>,
+    trigger: &'static str,
 ) {
     let started = Instant::now();
+    let ids: Vec<String> = group.iter().map(|u| u.channel_id.clone()).collect();
     let span = tracing::info_span!(
         "settlement_flush",
+        trigger,
         channels = group.len(),
         tx_sig = tracing::field::Empty,
         tx_bytes = tracing::field::Empty,
@@ -257,6 +261,9 @@ async fn settle_group(
                 monotonic_counter.pay_settlement_tx_total = 1_u64,
                 histogram.pay_settlement_batch_channels = group.len() as u64,
                 histogram.pay_settlement_latency_ms = started.elapsed().as_millis() as u64,
+                trigger,
+                channels = group.len(),
+                channel_ids = ?ids,
                 tx = %sig,
                 "settlement batch broadcast",
             );
@@ -264,7 +271,9 @@ async fn settle_group(
         Err(e) => {
             tracing::warn!(
                 monotonic_counter.pay_settlement_errors_total = 1_u64,
+                trigger,
                 channels = group.len(),
+                channel_ids = ?ids,
                 error = %e,
                 "settlement batch failed (store will reconcile)",
             );

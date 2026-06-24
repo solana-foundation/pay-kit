@@ -9,3 +9,8 @@ pub mod packing;
 
 #[cfg(feature = "worker")]
 pub mod worker;
+
+/// Test/demo harness (open real channels, fund via cheatcodes, drive + observe
+/// packing). Shared by the x402/mpp tests and the pay bench.
+#[cfg(feature = "testkit")]
+pub mod testkit;

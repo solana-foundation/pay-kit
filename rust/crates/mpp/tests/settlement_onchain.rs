@@ -1,36 +1,34 @@
-//! On-chain proof: open real payment channels and settle them through the
-//! shared settlement worker, batched, against a surfnet that has the
-//! payment-channels program + USDC deployed.
+//! On-chain proof + bench/demo for the shared settlement worker, driven through
+//! the reusable `solana_pay_core::settlement::testkit` harness against a surfnet
+//! that has the payment-channels program + USDC deployed.
 //!
-//! Run against the program-bearing surfnet:
+//! Run:
 //!   SURFNET_RPC=https://402.surfnet.dev:8899 \
-//!     cargo test -p solana-mpp --features settlement --test settlement_onchain -- --nocapture
+//!     cargo test -p solana-mpp --features "testkit otel" \
+//!       --test settlement_onchain -- --nocapture
 //!
 //! Skips (does not fail) when the surfnet is unreachable.
 
-#![cfg(feature = "settlement")]
+#![cfg(feature = "testkit")]
 
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use solana_instruction::Instruction;
 use solana_mpp::program::payment_channels as pc;
+use solana_mpp::settlement::testkit;
 use solana_mpp::settlement::worker::{RpcBroadcaster, SettlementConfig, spawn};
 use solana_mpp::solana_keychain::SolanaSigner;
 use solana_mpp::solana_keychain::memory::MemorySigner;
-use solana_message::Message;
 use solana_pubkey::Pubkey;
-use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_signature::Signature;
-use solana_transaction::Transaction;
-use surfpool_sdk::Keypair;
 
 const DEFAULT_RPC: &str = "https://402.surfnet.dev:8899";
 const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 
-const CHANNELS: u64 = 4; // ⌈4/3⌉ = 2 settle transactions ⇒ proves batching
 const DEPOSIT: u64 = 100_000; // 0.1 USDC base units
 const VOUCHER: u64 = 1_000; // 0.001 USDC settled per channel
 
@@ -42,90 +40,33 @@ fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
 }
 
-/// Fresh keypair as a `MemorySigner` (canonical solana pubkey).
-fn keypair() -> (MemorySigner, Pubkey) {
-    let kp = Keypair::new();
-    let signer = MemorySigner::from_bytes(&kp.to_bytes()).expect("signer");
-    let pk = signer.pubkey();
-    (signer, pk)
-}
-
-/// Call a surfnet cheatcode (raw JSON-RPC).
-async fn cheat(url: &str, method: &str, params: serde_json::Value) {
-    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
-    let resp = reqwest::Client::new()
-        .post(url)
-        .json(&body)
-        .send()
-        .await
-        .expect("cheat send");
-    assert!(resp.status().is_success(), "cheat {method} http {}", resp.status());
-}
-
-async fn fund_sol(url: &str, pk: &Pubkey, lamports: u64) {
-    cheat(
-        url,
-        "surfnet_setAccount",
-        serde_json::json!([pk.to_string(), {
-            "lamports": lamports, "data": "", "executable": false, "owner": SYSTEM_PROGRAM
-        }]),
-    )
-    .await;
-}
-
-async fn fund_usdc(url: &str, owner: &Pubkey, amount: u64) {
-    cheat(
-        url,
-        "surfnet_setTokenAccount",
-        serde_json::json!([owner.to_string(), USDC, { "amount": amount }, TOKEN_PROGRAM]),
-    )
-    .await;
-}
-
-/// Sign a single-instruction tx with `signer` (fee-payer) and send+confirm it.
-async fn send_signed(rpc: &RpcClient, signer: &MemorySigner, payer: &Pubkey, ix: solana_instruction::Instruction) -> Signature {
-    let blockhash = rpc.get_latest_blockhash().expect("blockhash");
-    let message = Message::new_with_blockhash(&[ix], Some(payer), &blockhash);
-    let mut tx = Transaction::new_unsigned(message);
-    let sig_bytes = signer.sign_message(&tx.message_data()).await.expect("sign");
-    let idx = tx.message.account_keys.iter().position(|k| k == payer).expect("payer key");
-    tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
-    rpc.send_and_confirm_transaction(&tx).expect("open tx confirm")
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn channels_settle_on_chain_in_batches() {
-    let url = rpc_url();
-    let rpc = RpcClient::new(url.clone());
-    if rpc.get_latest_blockhash().is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
-        return;
-    }
-
+/// Fund a Delegated operator (authority + fee-payer + payee) and a payer, then
+/// open `count` real channels concurrently. Returns the operator's signer +
+/// pubkey and the channel addresses.
+async fn open_channels(url: &str, count: u64) -> (Arc<MemorySigner>, Pubkey, Vec<Pubkey>) {
     let usdc = Pubkey::from_str(USDC).unwrap();
     let token_program = Pubkey::from_str(TOKEN_PROGRAM).unwrap();
     let program_id = pc::default_program_id();
 
-    // Operator: Delegated authority (channel authorized_signer) + fee-payer +
-    // settlement signer. Payer funds the deposits.
-    let (operator_signer, operator) = keypair();
-    let (payer_signer, payer) = keypair();
-    // Delegated/upto model: the operator is the payee + settlement authority
-    // (the `merchant` in settle_and_finalize must equal the channel's payee).
-    let payee = operator;
-    fund_sol(&url, &operator, 5_000_000_000).await;
-    fund_sol(&url, &payer, 5_000_000_000).await;
-    fund_usdc(&url, &payer, DEPOSIT * CHANNELS * 4).await;
-    let expires_at = now() + 3_600;
+    let (operator_signer, operator) = testkit::random_signer();
+    let (payer_signer, payer) = testkit::random_signer();
+    let operator_signer = Arc::new(operator_signer);
+    let payer_signer = Arc::new(payer_signer);
 
-    // ── Open K real channels ────────────────────────────────────────────────
+    testkit::fund_sol(url, &operator, 5_000_000_000).await;
+    testkit::fund_sol(url, &payer, 5_000_000_000).await;
+    testkit::fund_token(url, &payer, USDC, DEPOSIT * count * 4, TOKEN_PROGRAM).await;
+
     let mut channels = Vec::new();
-    for salt in 0..CHANNELS {
+    let mut opens = Vec::new();
+    for salt in 0..count {
+        // Delegated/upto model: operator is the payee + authorized_signer (the
+        // `merchant` in settle_and_finalize must equal the channel's payee).
         let params = pc::OpenChannelParams {
             payer,
-            payee,
+            payee: operator,
             mint: usdc,
-            authorized_signer: operator, // Delegated
+            authorized_signer: operator,
             salt,
             deposit: DEPOSIT,
             grace_period: 3_600,
@@ -133,69 +74,168 @@ async fn channels_settle_on_chain_in_batches() {
             token_program,
             program_id,
         };
-        let addrs = pc::derive_channel_addresses(&params);
+        channels.push(pc::derive_channel_addresses(&params).channel);
         let ix = pc::build_open_instruction(&params);
-        send_signed(&rpc, &payer_signer, &payer, ix).await;
-        channels.push(addrs.channel);
+        opens.push(tokio::spawn(testkit::open_one(url.to_string(), payer_signer.clone(), ix)));
     }
-    eprintln!("opened {} channels", channels.len());
+    for o in opens {
+        o.await.unwrap();
+    }
+    (operator_signer, operator, channels)
+}
 
-    // ── Operator signs one voucher per channel (Delegated) ──────────────────
-    let mut settle_units = Vec::new();
-    for channel in &channels {
+/// Operator signs one voucher per channel (Delegated) → settle units, keyed by
+/// `id_of(index, channel)` for the metrics/report labels.
+async fn build_units(
+    operator: &Pubkey,
+    operator_signer: &MemorySigner,
+    channels: &[Pubkey],
+    id_of: impl Fn(usize, &Pubkey) -> String,
+) -> Vec<(String, Vec<Instruction>)> {
+    let program_id = pc::default_program_id();
+    let expires_at = now() + 3_600;
+    let mut units = Vec::new();
+    for (i, channel) in channels.iter().enumerate() {
         let msg = pc::voucher_message_bytes(channel, VOUCHER, expires_at).unwrap();
         let sig: [u8; 64] = operator_signer.sign_message(&msg).await.unwrap().into();
         let ixs = pc::build_settle_and_finalize_instructions(
-            &operator, channel, &operator, Some(&sig), VOUCHER, expires_at, &program_id,
+            operator, channel, operator, Some(&sig), VOUCHER, expires_at, &program_id,
         )
         .unwrap();
-        settle_units.push((channel.to_string(), ixs));
+        units.push((id_of(i, channel), ixs));
     }
+    units
+}
 
-    // ── Settle them through the worker ──────────────────────────────────────
-    let cfg = SettlementConfig::new(operator, Arc::new(operator_signer));
-    let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
-
-    let mut tasks = Vec::new();
-    for (id, ixs) in settle_units {
-        let h = handle.clone();
-        tasks.push(tokio::spawn(async move { h.settle(id, ixs).await }));
-    }
-    let mut sigs = Vec::new();
-    for t in tasks {
-        sigs.push(t.await.unwrap().expect("settle ok"));
-    }
-
-    // ⌈4/3⌉ = 2 settlement transactions.
-    let mut distinct = sigs.clone();
-    distinct.sort();
-    distinct.dedup();
-    eprintln!("settlement txs: {distinct:?}");
-    assert_eq!(distinct.len(), 2, "4 channels should settle in 2 batched txs");
-
-    // Confirm each settlement tx executed on-chain (no program error).
-    for sig in &distinct {
-        let parsed = Signature::from_str(sig).unwrap();
-        let mut ok = false;
-        for _ in 0..20 {
-            if let Ok(resp) = rpc.get_signature_statuses(&[parsed]) {
-                if let Some(Some(st)) = resp.value.into_iter().next() {
-                    assert!(st.err.is_none(), "settlement tx {sig} failed on-chain: {:?}", st.err);
-                    ok = true;
-                    break;
-                }
+/// Assert a settlement signature executed on-chain without a program error.
+async fn confirm(rpc: &RpcClient, sig: &str) {
+    let parsed = Signature::from_str(sig).unwrap();
+    for _ in 0..20 {
+        if let Ok(resp) = rpc.get_signature_statuses(&[parsed]).await {
+            if let Some(Some(st)) = resp.value.into_iter().next() {
+                assert!(st.err.is_none(), "settlement tx {sig} failed on-chain: {:?}", st.err);
+                return;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        assert!(ok, "settlement tx {sig} never confirmed");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("settlement tx {sig} never confirmed");
+}
+
+/// Authoritative proof: open 4 real channels, settle through the worker, assert
+/// they batch into 2 txs and every channel finalizes on-chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channels_settle_on_chain_in_batches() {
+    const CHANNELS: u64 = 4; // ⌈4/3⌉ = 2 settle transactions ⇒ proves batching
+    let url = rpc_url();
+    let rpc = RpcClient::new(url.clone());
+    if rpc.get_latest_blockhash().await.is_err() {
+        eprintln!("skipping: surfnet {url} unreachable");
+        return;
     }
 
-    // Each channel is now Finalized on-chain. Channel layout: discriminator(0),
+    let (operator_signer, operator, channels) = open_channels(&url, CHANNELS).await;
+    eprintln!("opened {} channels", channels.len());
+    let units = build_units(&operator, &operator_signer, &channels, |_, c| c.to_string()).await;
+
+    let cfg = SettlementConfig::new(operator, operator_signer);
+    let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
+    let by_tx = testkit::drive_settlement(&handle, units).await;
+
+    eprintln!("settlement txs: {:?}", by_tx.keys().collect::<Vec<_>>());
+    assert_eq!(by_tx.len(), 2, "4 channels should settle in 2 batched txs");
+
+    for sig in by_tx.keys() {
+        confirm(&rpc, sig).await;
+    }
+    // Each channel is now Finalized. Channel layout: discriminator(0),
     // version(1), bump(2), status(3); ChannelStatus::Finalized == 1.
     for channel in &channels {
-        let acct = rpc.get_account(channel).expect("channel account still present");
+        let acct = rpc.get_account(channel).await.expect("channel account still present");
         assert!(acct.data.len() > 3, "channel {channel} data too short");
         assert_eq!(acct.data[3], 1, "channel {channel} status should be Finalized (1)");
     }
-    eprintln!("✅ {CHANNELS} channels opened + settled on-chain in {} txs", distinct.len());
+    eprintln!("✅ {CHANNELS} channels opened + settled on-chain in {} txs", by_tx.len());
+}
+
+/// Smoke bench: open K real channels, then measure batched settlement
+/// throughput through the worker against the live surfnet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_throughput_smoke() {
+    const K: u64 = 30; // ⌈30/3⌉ = 10 batched settle txs
+    let url = rpc_url();
+    if RpcClient::new(url.clone()).get_latest_blockhash().await.is_err() {
+        eprintln!("skipping: surfnet {url} unreachable");
+        return;
+    }
+
+    let t_open = Instant::now();
+    let (operator_signer, operator, channels) = open_channels(&url, K).await;
+    let open_ms = t_open.elapsed().as_millis();
+    let units = build_units(&operator, &operator_signer, &channels, |_, c| c.to_string()).await;
+
+    let cfg = SettlementConfig::new(operator, operator_signer);
+    let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
+    let t_settle = Instant::now();
+    let by_tx = testkit::drive_settlement(&handle, units).await;
+    let settle_ms = t_settle.elapsed().as_millis().max(1);
+
+    eprintln!("\n===== SETTLEMENT SMOKE BENCH (live surfnet) =====");
+    eprintln!("channels        {K}");
+    eprintln!("open phase      {open_ms} ms  ({} ms/channel)", open_ms / K as u128);
+    eprintln!("settle phase    {settle_ms} ms");
+    eprintln!("settle txs      {}  ({} channels/tx)", by_tx.len(), K as usize / by_tx.len());
+    eprintln!("throughput      ~{} channels/sec settled", (K as u128 * 1000) / settle_ms);
+    eprintln!("=================================================\n");
+
+    assert_eq!(by_tx.len() as u64, K.div_ceil(3), "K channels should batch into ⌈K/3⌉ txs");
+}
+
+/// Packing run-loop demo: drives the worker, prints the batching decisions
+/// (size-trigger vs 350ms-timer + channel_ids per tx) and a packing report, and
+/// (feature `otel`) exports the `settlement_flush` spans + metrics to the
+/// collector. K=7 → 3 + 3 + 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settlement_packing_runloop_demo() {
+    const K: u64 = 7; // 3 (size) + 3 (size) + 1 (timer) → 3 txs
+
+    #[cfg(feature = "otel")]
+    let endpoint = std::env::var("OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".into());
+    #[cfg(feature = "otel")]
+    let _otel = solana_mpp::otel::init(solana_mpp::otel::OtelOptions {
+        service_name: "pay-settlement-bench",
+        service_version: env!("CARGO_PKG_VERSION"),
+        otlp_endpoint: Some(endpoint.as_str()),
+        console_filter: "warn,solana_pay_core::settlement=info",
+        trace_filter: "warn,solana_pay_core::settlement=info",
+    });
+
+    let url = rpc_url();
+    if RpcClient::new(url.clone()).get_latest_blockhash().await.is_err() {
+        eprintln!("skipping: surfnet {url} unreachable");
+        return;
+    }
+
+    let (operator_signer, operator, channels) = open_channels(&url, K).await;
+    let units = build_units(&operator, &operator_signer, &channels, |i, _| format!("chan-{i}")).await;
+
+    eprintln!("\n>>> submitting {K} channels to the worker (cap 3/tx, 350ms linger) <<<\n");
+    let cfg = SettlementConfig::new(operator, operator_signer);
+    let handle = spawn(cfg, Arc::new(RpcBroadcaster::new(url.clone())));
+    let by_tx = testkit::drive_settlement(&handle, units).await;
+
+    eprintln!("\n===== PACKING REPORT ({K} channels → {} txs) =====", by_tx.len());
+    for (i, (tx, ids)) in by_tx.iter().enumerate() {
+        let mut ids = ids.clone();
+        ids.sort();
+        eprintln!("tx {}  [{} channels: {}]", i + 1, ids.len(), ids.join(", "));
+        eprintln!("      https://pay.sh/receipt/{tx}");
+    }
+    eprintln!("==================================================\n");
+
+    // ⌈7/3⌉ = 3 txs regardless of how the size/timer triggers split them.
+    assert_eq!(by_tx.len(), 3, "7 channels should pack into 3 txs (3 + 3 + 1)");
+
+    // `_otel` guard flushes the batch exporter on drop → query the collector
+    // for service "pay-settlement-bench".
 }

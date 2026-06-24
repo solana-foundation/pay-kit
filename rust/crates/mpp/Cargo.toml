@@ -12,6 +12,10 @@ server = ["dep:tokio"]
 client = ["dep:reqwest"]
 # Batched settlement worker, re-exported from solana-pay-core.
 settlement = ["solana-pay-core/worker"]
+# Settlement test/demo harness (open real channels, fund, drive + observe).
+testkit = ["settlement", "solana-pay-core/testkit"]
+# Reusable OpenTelemetry init (console + OTLP traces/metrics), re-exported.
+otel = ["solana-pay-core/otel"]
 axum = ["server", "dep:axum"]
 gcp_kms = ["solana-keychain/gcp_kms"]
 # Token-2022 confidential transfers: pulls in ZK proof generation

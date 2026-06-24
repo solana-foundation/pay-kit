@@ -97,3 +97,8 @@ pub use store::{
 // Re-export crates callers need to use with the charge builder.
 pub use solana_keychain;
 pub use solana_rpc_client;
+
+/// Reusable OpenTelemetry init (feature `otel`), shared with x402/pay so spans
+/// + metrics from every layer land in one collector.
+#[cfg(feature = "otel")]
+pub use solana_pay_core::otel;
