@@ -18,6 +18,11 @@ client = ["solana-mpp?/client", "solana-x402?/client"]
 # The unified axum gate dispatches both protocols, so it needs both servers.
 axum = ["mpp", "x402", "server", "solana-mpp?/axum", "dep:axum", "dep:tracing"]
 gcp_kms = ["solana-mpp?/gcp_kms"]
+# Passthroughs so umbrella consumers can enable the mpp sub-features they need.
+confidential = ["solana-mpp?/confidential"]
+settlement = ["solana-mpp?/settlement"]
+otel = ["solana-mpp?/otel"]
+testkit = ["solana-mpp?/testkit"]
 
 [dependencies]
 solana-mpp = { path = "../mpp", optional = true }
