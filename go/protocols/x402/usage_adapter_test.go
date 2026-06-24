@@ -186,7 +186,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 	ua.engine.SetRPCForTests(fakeRPC)
 
 	envelope := UptoSignatureEnvelope{
-		X402Version: x402Version, Scheme: uptoScheme,
+		X402Version: x402Version, Scheme: uptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 		Payload: UptoPayload{
 			Profile: profilePaymentChannel, From: payerKey.PublicKey().String(),
 			MaxAmount: "1000000", ExpiresAt: time.Now().Add(time.Hour).Unix(),

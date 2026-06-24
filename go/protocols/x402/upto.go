@@ -29,13 +29,20 @@ const (
 
 // UptoExtra is the extra object on an x402 upto payment requirement.
 type UptoExtra struct {
-	Profiles        []string `json:"profiles,omitempty"`
-	Decimals        *uint8   `json:"decimals,omitempty"`
-	TokenProgram    string   `json:"tokenProgram,omitempty"`
-	Facilitator     string   `json:"facilitator"`
-	ProgramID       string   `json:"programId,omitempty"`
-	RecentBlockhash string   `json:"recentBlockhash,omitempty"`
-	ValidAfter      *int64   `json:"validAfter,omitempty"`
+	Profiles        []string         `json:"profiles,omitempty"`
+	Decimals        *uint8           `json:"decimals,omitempty"`
+	TokenProgram    string           `json:"tokenProgram,omitempty"`
+	FeePayer        string           `json:"feePayer"`
+	ChannelProgram  string           `json:"channelProgram,omitempty"`
+	RecentBlockhash string           `json:"recentBlockhash,omitempty"`
+	ValidAfter      *int64           `json:"validAfter,omitempty"`
+	Splits          []UptoExtraSplit `json:"splits,omitempty"`
+}
+
+// UptoExtraSplit is a single split entry for the payment-channel profile.
+type UptoExtraSplit struct {
+	Recipient string `json:"recipient"`
+	BPS       uint16 `json:"bps"`
 }
 
 // UptoRequirements is the accepted object for the x402 upto scheme.
@@ -205,7 +212,7 @@ type UptoConfig struct {
 	Description             string
 	MaxTimeoutSeconds       uint64
 	TokenProgram            string
-	ProgramID               string
+	ChannelProgram          string
 	OperatorSigner          paykit.Signer
 	RecentBlockhashProvider func() (string, error)
 }
@@ -285,7 +292,7 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 	if err != nil {
 		return UptoRequirements{}, err
 	}
-	programID := u.cfg.ProgramID
+	programID := u.cfg.ChannelProgram
 	if programID == "" {
 		programID = paymentchannels.ProgramID
 	}
@@ -305,8 +312,8 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 			Profiles:     []string{profilePaymentChannel},
 			Decimals:     &decimals,
 			TokenProgram: tokenProgram,
-			Facilitator:  u.Operator(),
-			ProgramID:    programID,
+			FeePayer:       u.Operator(),
+			ChannelProgram: programID,
 		},
 	}, nil
 }
@@ -381,9 +388,17 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err := VerifyUptoPayload(payload, req, u.Operator(), time.Now().Unix()); err != nil {
 		return nil, err
 	}
-	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(req.Extra.ProgramID, paymentchannels.ProgramID))
+	// Phase 3 step 2: confirm network matches the advertised requirements.
+	if envelope.Network != req.Network {
+		return nil, fmt.Errorf("network mismatch: payload %q, expected %q", envelope.Network, req.Network)
+	}
+	// Phase 3 step 3: confirm feePayer in extra is this server's key.
+	if req.Extra.FeePayer != u.Operator() {
+		return nil, errors.New("extra.feePayer is not this server's key")
+	}
+	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(req.Extra.ChannelProgram, paymentchannels.ProgramID))
 	if err != nil {
-		return nil, fmt.Errorf("invalid programId: %w", err)
+		return nil, fmt.Errorf("invalid channelProgram: %w", err)
 	}
 	expectedMint, err := solana.PublicKeyFromBase58(req.Asset)
 	if err != nil {
@@ -468,6 +483,11 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	tokenProgram, err := solana.PublicKeyFromBase58(req.Extra.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
+	}
+	// Phase 3 step 6: simulate zero-amount settlement to verify the channel
+	// and program are in a state that allows settlement.
+	if err := u.simulateSettlement(ctx, programID, channelID, payer, expectedPayee, expectedMint, tokenProgram, payload.ExpiresAt); err != nil {
+		return nil, fmt.Errorf("settlement simulation failed: %w", err)
 	}
 	release = false
 	return &UptoVerifiedOpen{
@@ -590,6 +610,39 @@ func (u *X402Upto) recentBlockhash() (string, error) {
 		return "", errors.New("empty blockhash response")
 	}
 	return out.Value.Blockhash.String(), nil
+}
+
+// simulateSettlement builds and simulates a zero-amount settlement
+// transaction to verify the channel and program are in a state that
+// allows settlement (Phase 3 step 6 of the spec).
+func (u *X402Upto) simulateSettlement(ctx context.Context, programID, channelID, payer, payee, mint, tokenProgram solana.PublicKey, expiresAt int64) error {
+	instructions, err := paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
+		Merchant: u.operator, Channel: channelID, AuthorizedSigner: u.operator,
+		Signature: nil, CumulativeAmount: 0, ExpiresAt: expiresAt, ProgramID: programID,
+	})
+	if err != nil {
+		return err
+	}
+	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
+		Channel: channelID, Payer: payer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
+		Mint: mint, TokenProgram: tokenProgram, ProgramID: programID,
+	})
+	if err != nil {
+		return err
+	}
+	instructions = append(instructions, distribute)
+	bh, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
+	if err != nil {
+		return err
+	}
+	if bh == nil || bh.Value == nil {
+		return errors.New("empty blockhash for simulation")
+	}
+	tx, err := solana.NewTransaction(instructions, bh.Value.Blockhash, solana.TransactionPayer(u.operator))
+	if err != nil {
+		return err
+	}
+	return solanatx.SimulateTransaction(ctx, u.rpc, tx)
 }
 
 func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, payer, payee, mint, channelID solana.PublicKey) error {

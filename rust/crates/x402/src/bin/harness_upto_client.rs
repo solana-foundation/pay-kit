@@ -1,4 +1,8 @@
-use std::{collections::HashMap, env, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashMap,
+    env,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::json;
 use solana_keychain::memory::MemorySigner;
@@ -31,9 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let first_headers = response_headers(first_response.headers())?;
     let first_body = first_response.text().await?;
 
-    let requirements =
-        parse_upto_challenge(&first_headers, Some(&first_body))
-            .ok_or_else(|| "server did not return a supported x402 upto challenge".to_string())?;
+    let requirements = parse_upto_challenge(&first_headers, Some(&first_body))
+        .ok_or_else(|| "server did not return a supported x402 upto challenge".to_string())?;
 
     let _rpc = RpcClient::new(rpc_url);
     let expires_at = now_unix() + 3600;

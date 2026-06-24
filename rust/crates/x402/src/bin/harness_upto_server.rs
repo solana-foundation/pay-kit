@@ -1,5 +1,9 @@
 use std::{
-    env, io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}, sync::Arc, thread,
+    env,
+    io::{BufRead, BufReader, Write},
+    net::{TcpListener, TcpStream},
+    sync::Arc,
+    thread,
 };
 
 use serde_json::json;
@@ -63,17 +67,14 @@ fn read_state(
     runtime: Arc<tokio::runtime::Runtime>,
 ) -> Result<UptoHarnessState, Box<dyn std::error::Error + Send + Sync>> {
     let rpc_url = read_required_env("X402_HARNESS_RPC_URL")?;
-    let network = env::var("X402_HARNESS_NETWORK")
-        .unwrap_or_else(|_| "devnet".to_string());
+    let network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| "devnet".to_string());
     let mint = env::var("X402_HARNESS_MINT")
         .unwrap_or_else(|_| "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string());
     let pay_to = read_required_env("X402_HARNESS_PAY_TO")?;
     let operator_signer = Arc::new(read_memory_signer("X402_HARNESS_FACILITATOR_SECRET_KEY")?);
-    let price = normalize_price(
-        &env::var("X402_HARNESS_PRICE").unwrap_or_else(|_| "$0.10".to_string()),
-    )?;
-    let actual_amount = env::var("X402_HARNESS_ACTUAL_AMOUNT")
-        .unwrap_or_else(|_| "0".to_string());
+    let price =
+        normalize_price(&env::var("X402_HARNESS_PRICE").unwrap_or_else(|_| "$0.10".to_string()))?;
+    let actual_amount = env::var("X402_HARNESS_ACTUAL_AMOUNT").unwrap_or_else(|_| "0".to_string());
     let resource_path = env::var("X402_HARNESS_RESOURCE_PATH")
         .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string());
     let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
@@ -146,7 +147,10 @@ fn handle_connection(
                             &mut stream,
                             200,
                             &[
-                                (state.settlement_header.as_str(), settlement.transaction.as_str()),
+                                (
+                                    state.settlement_header.as_str(),
+                                    settlement.transaction.as_str(),
+                                ),
                                 (PAYMENT_RESPONSE_HEADER, payment_response.as_str()),
                             ],
                             &json!({
@@ -195,9 +199,13 @@ fn settle_upto_payment(
     payment_header: &str,
     max_amount: &str,
 ) -> Result<(UptoSettlementResponse, String), Box<dyn std::error::Error + Send + Sync>> {
-    let verified = state.runtime.block_on(state.upto.verify_open(payment_header, max_amount))?;
+    let verified = state
+        .runtime
+        .block_on(state.upto.verify_open(payment_header, max_amount))?;
     let actual: u64 = state.actual_amount.parse().unwrap_or(0);
-    let settlement = state.runtime.block_on(state.upto.settle_actual(&verified, actual))?;
+    let settlement = state
+        .runtime
+        .block_on(state.upto.settle_actual(&verified, actual))?;
     let (_, header_value) = state.upto.settlement_header(&settlement)?;
     Ok((settlement, header_value))
 }
