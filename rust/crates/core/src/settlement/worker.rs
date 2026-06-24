@@ -24,11 +24,13 @@ use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
+use solana_rpc_client::rpc_client::RpcClient;
 use solana_transaction::Transaction;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
+use tracing::Instrument;
 
-use super::packing::{DEFAULT_MAX_CHANNELS_PER_TX, MAX_TX_BYTES, tx_size};
+use super::packing::{tx_size, DEFAULT_MAX_CHANNELS_PER_TX, MAX_TX_BYTES};
 
 /// Settlement outcome returned to a submitter: the broadcast tx signature.
 pub type SettlementResult = Result<String, String>;
@@ -104,7 +106,8 @@ impl SettlementHandle {
             .send(unit)
             .await
             .map_err(|_| "settlement worker stopped".to_string())?;
-        rx.await.map_err(|_| "settlement reply dropped".to_string())?
+        rx.await
+            .map_err(|_| "settlement reply dropped".to_string())?
     }
 }
 
@@ -134,9 +137,12 @@ pub fn spawn(cfg: SettlementConfig, broadcaster: Arc<dyn Broadcaster>) -> Settle
                         if deadline.is_none() {
                             deadline = Some(Instant::now() + cfg.linger);
                         }
-                        // Size trigger: seal full transactions eagerly.
-                        while pending.len() >= cfg.max_channels_per_tx {
-                            let batch = pending.drain(..cfg.max_channels_per_tx).collect();
+                        // Size trigger: seal full transactions eagerly. Clamp to
+                        // >=1 so a misconfigured `max_channels_per_tx == 0` can't
+                        // spin draining nothing while spawning empty flushes.
+                        let max_per_tx = cfg.max_channels_per_tx.max(1);
+                        while pending.len() >= max_per_tx {
+                            let batch = pending.drain(..max_per_tx).collect();
                             spawn_flush(batch, cfg.clone(), broadcaster.clone(), sem.clone(), "size");
                         }
                         if pending.is_empty() {
@@ -173,7 +179,13 @@ fn spawn_flush(
     trigger: &'static str,
 ) {
     tokio::spawn(async move {
-        let _permit = sem.acquire_owned().await;
+        // The worker owns the semaphore and never closes it, so acquire cannot
+        // fail; make that explicit — an `Err` would otherwise silently proceed
+        // without a permit and bypass the `max_in_flight_tx` limit.
+        let _permit = sem
+            .acquire_owned()
+            .await
+            .expect("settlement semaphore is never closed");
         for group in regroup(units, &cfg.operator, cfg.max_channels_per_tx) {
             settle_group(group, &cfg, broadcaster.clone(), trigger).await;
         }
@@ -194,8 +206,10 @@ fn regroup(
         if !cur.is_empty() {
             let fits_count = cur.len() < cap;
             let fits_bytes = {
-                let mut ix: Vec<Instruction> =
-                    cur.iter().flat_map(|c| c.instructions.iter().cloned()).collect();
+                let mut ix: Vec<Instruction> = cur
+                    .iter()
+                    .flat_map(|c| c.instructions.iter().cloned())
+                    .collect();
                 ix.extend(u.instructions.iter().cloned());
                 tx_size(&ix, payer) <= MAX_TX_BYTES
             };
@@ -232,113 +246,120 @@ async fn settle_group(
             span.follows_from(id);
         }
     }
-    let _enter = span.enter();
 
-    let flat: Vec<Instruction> = group
-        .iter()
-        .flat_map(|u| u.instructions.iter().cloned())
-        .collect();
-    span.record("tx_bytes", tx_size(&flat, &cfg.operator));
+    // Instrument the whole body rather than holding an `Entered` guard across
+    // the `.await`s below: a held guard misattributes any work the executor
+    // runs on this thread after a yield. `Instrument` re-enters per poll.
+    async move {
+        let span = tracing::Span::current();
+        let flat: Vec<Instruction> = group
+            .iter()
+            .flat_map(|u| u.instructions.iter().cloned())
+            .collect();
+        span.record("tx_bytes", tx_size(&flat, &cfg.operator));
 
-    // Build + sign + broadcast.
-    let result: SettlementResult = async {
-        let blockhash = broadcaster.latest_blockhash().await?;
-        let message = Message::new_with_blockhash(&flat, Some(&cfg.operator), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
-        cfg.operator_signer
-            .sign_transaction(&mut tx)
-            .await
-            .map_err(|e| format!("settle signing failed: {e}"))?;
-        broadcaster.send(&tx).await
-    }
-    .await;
-
-    match &result {
-        Ok(sig) => {
-            span.record("tx_sig", sig.as_str());
-            span.record("latency_ms", started.elapsed().as_millis() as u64);
-            tracing::info!(
-                monotonic_counter.pay_settlement_tx_total = 1_u64,
-                histogram.pay_settlement_batch_channels = group.len() as u64,
-                histogram.pay_settlement_latency_ms = started.elapsed().as_millis() as u64,
-                trigger,
-                channels = group.len(),
-                channel_ids = ?ids,
-                tx = %sig,
-                "settlement batch broadcast",
-            );
+        // Build + sign + broadcast.
+        let result: SettlementResult = async {
+            let blockhash = broadcaster.latest_blockhash().await?;
+            let message = Message::new_with_blockhash(&flat, Some(&cfg.operator), &blockhash);
+            let mut tx = Transaction::new_unsigned(message);
+            cfg.operator_signer
+                .sign_transaction(&mut tx)
+                .await
+                .map_err(|e| format!("settle signing failed: {e}"))?;
+            broadcaster.send(&tx).await
         }
-        Err(e) => {
-            tracing::warn!(
-                monotonic_counter.pay_settlement_errors_total = 1_u64,
-                trigger,
-                channels = group.len(),
-                channel_ids = ?ids,
-                error = %e,
-                "settlement batch failed (store will reconcile)",
-            );
+        .await;
+
+        match &result {
+            Ok(sig) => {
+                span.record("tx_sig", sig.as_str());
+                span.record("latency_ms", started.elapsed().as_millis() as u64);
+                tracing::info!(
+                    monotonic_counter.pay_settlement_tx_total = 1_u64,
+                    histogram.pay_settlement_batch_channels = group.len() as u64,
+                    histogram.pay_settlement_latency_ms = started.elapsed().as_millis() as u64,
+                    trigger,
+                    channels = group.len(),
+                    channel_ids = ?ids,
+                    tx = %sig,
+                    "settlement batch broadcast",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    monotonic_counter.pay_settlement_errors_total = 1_u64,
+                    trigger,
+                    channels = group.len(),
+                    channel_ids = ?ids,
+                    error = %e,
+                    "settlement batch failed (store will reconcile)",
+                );
+            }
         }
-    }
 
-    // Reply to every channel in the group with the (shared) tx signature.
-    for u in group {
-        let _ = u.reply.send(result.clone());
-    }
+        // Reply to every channel in the group with the (shared) tx signature.
+        for u in group {
+            let _ = u.reply.send(result.clone());
+        }
 
-    // Background confirm (best-effort; store is the durable source of truth).
-    if let Ok(sig) = result {
-        let attempts = cfg.confirm_attempts;
-        tokio::spawn(async move {
-            for _ in 0..attempts {
-                match broadcaster.confirm(&sig).await {
-                    Ok(true) => {
-                        tracing::debug!(tx = %sig, "settlement confirmed");
-                        return;
-                    }
-                    Ok(false) => tokio::time::sleep(Duration::from_millis(400)).await,
-                    Err(e) => {
-                        tracing::debug!(tx = %sig, error = %e, "confirm poll error");
-                        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Background confirm (best-effort; store is the durable source of truth).
+        if let Ok(sig) = result {
+            let attempts = cfg.confirm_attempts;
+            tokio::spawn(async move {
+                for _ in 0..attempts {
+                    match broadcaster.confirm(&sig).await {
+                        Ok(true) => {
+                            tracing::debug!(tx = %sig, "settlement confirmed");
+                            return;
+                        }
+                        Ok(false) => tokio::time::sleep(Duration::from_millis(400)).await,
+                        Err(e) => {
+                            tracing::debug!(tx = %sig, error = %e, "confirm poll error");
+                            tokio::time::sleep(Duration::from_millis(400)).await;
+                        }
                     }
                 }
-            }
-            tracing::warn!(
-                monotonic_counter.pay_settlement_unconfirmed_total = 1_u64,
-                tx = %sig,
-                "settlement not confirmed in window",
-            );
-        });
+                tracing::warn!(
+                    monotonic_counter.pay_settlement_unconfirmed_total = 1_u64,
+                    tx = %sig,
+                    "settlement not confirmed in window",
+                );
+            });
+        }
     }
+    .instrument(span)
+    .await
 }
 
 /// Production broadcaster over a blocking `RpcClient` (calls run on
 /// `spawn_blocking` so they never stall the async runtime).
 pub struct RpcBroadcaster {
-    rpc_url: String,
+    rpc: Arc<RpcClient>,
 }
 
 impl RpcBroadcaster {
     pub fn new(rpc_url: impl Into<String>) -> Self {
-        Self { rpc_url: rpc_url.into() }
+        Self {
+            rpc: Arc::new(RpcClient::new(rpc_url.into())),
+        }
     }
 }
 
 #[async_trait]
 impl Broadcaster for RpcBroadcaster {
     async fn latest_blockhash(&self) -> Result<Hash, String> {
-        use solana_rpc_client::rpc_client::RpcClient;
-        let url = self.rpc_url.clone();
-        tokio::task::spawn_blocking(move || RpcClient::new(url).get_latest_blockhash())
+        let rpc = self.rpc.clone();
+        tokio::task::spawn_blocking(move || rpc.get_latest_blockhash())
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())
     }
 
     async fn send(&self, tx: &Transaction) -> Result<String, String> {
-        use solana_rpc_client::rpc_client::RpcClient;
-        let url = self.rpc_url.clone();
+        let rpc = self.rpc.clone();
         let tx = tx.clone();
-        tokio::task::spawn_blocking(move || RpcClient::new(url).send_transaction(&tx))
+        tokio::task::spawn_blocking(move || rpc.send_transaction(&tx))
             .await
             .map_err(|e| e.to_string())?
             .map(|s| s.to_string())
@@ -346,12 +367,11 @@ impl Broadcaster for RpcBroadcaster {
     }
 
     async fn confirm(&self, signature: &str) -> Result<bool, String> {
-        use solana_rpc_client::rpc_client::RpcClient;
         use solana_signature::Signature;
-        let url = self.rpc_url.clone();
+        let rpc = self.rpc.clone();
         let sig: Signature = signature.parse().map_err(|_| "bad signature".to_string())?;
         tokio::task::spawn_blocking(move || {
-            let statuses = RpcClient::new(url)
+            let statuses = rpc
                 .get_signature_statuses(&[sig])
                 .map_err(|e| e.to_string())?;
             Ok(statuses
@@ -412,7 +432,10 @@ mod tests {
             Ok(Hash::new_from_array([9u8; 32]))
         }
         async fn send(&self, tx: &Transaction) -> Result<String, String> {
-            self.sent.lock().unwrap().push(tx.message.instructions.len());
+            self.sent
+                .lock()
+                .unwrap()
+                .push(tx.message.instructions.len());
             let mut seq = self.seq.lock().unwrap();
             *seq += 1;
             Ok(format!("sig{seq}"))
@@ -454,7 +477,9 @@ mod tests {
         let mut tasks = Vec::new();
         for i in 0..3u64 {
             let h = h.clone();
-            tasks.push(tokio::spawn(async move { h.settle(format!("c{i}"), unit_instructions(i)).await }));
+            tasks.push(tokio::spawn(async move {
+                h.settle(format!("c{i}"), unit_instructions(i)).await
+            }));
         }
         for t in tasks {
             assert!(t.await.unwrap().is_ok());
@@ -469,7 +494,11 @@ mod tests {
         let (h, bc) = handle(10, 120); // cap high → only the timer flushes
         let r = h.settle("c0", unit_instructions(0)).await;
         assert!(r.is_ok());
-        assert_eq!(bc.sent.lock().unwrap().clone(), vec![1], "timer should flush the single channel");
+        assert_eq!(
+            bc.sent.lock().unwrap().clone(),
+            vec![1],
+            "timer should flush the single channel"
+        );
     }
 
     /// End-to-end (minus the program executing): drive the worker over K
@@ -495,10 +524,20 @@ mod tests {
             });
             let sig = [7u8; 64];
             let ixs = build_settle_and_finalize_instructions(
-                &operator, &channel, &operator, Some(&sig), 1_000, 9_999_999_999, &program_id,
+                &operator,
+                &channel,
+                &operator,
+                Some(&sig),
+                1_000,
+                9_999_999_999,
+                &program_id,
             )
             .unwrap();
-            assert_eq!(ixs.len(), 2, "settle+finalize with voucher = ed25519 + settle");
+            assert_eq!(
+                ixs.len(),
+                2,
+                "settle+finalize with voucher = ed25519 + settle"
+            );
             // Each channel's own tx must be packet-legal.
             assert!(tx_size(&ixs, &operator) <= MAX_TX_BYTES);
             channels.push((channel.to_string(), ixs));
@@ -520,11 +559,19 @@ mod tests {
         let mut distinct = sigs.clone();
         distinct.sort();
         distinct.dedup();
-        assert_eq!(distinct.len(), 3, "7 channels should batch into 3 transactions");
+        assert_eq!(
+            distinct.len(),
+            3,
+            "7 channels should batch into 3 transactions"
+        );
 
         // Instruction counts per tx: 2 per channel ⇒ [6, 6, 2].
         let mut sent = bc.sent.lock().unwrap().clone();
         sent.sort();
-        assert_eq!(sent, vec![2, 6, 6], "expected 3+3+1 channels per tx (2 ix each)");
+        assert_eq!(
+            sent,
+            vec![2, 6, 6],
+            "expected 3+3+1 channels per tx (2 ix each)"
+        );
     }
 }

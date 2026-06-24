@@ -197,24 +197,33 @@ impl FinalizeParams {
         let authorized_signer = self
             .authorized_signer
             .ok_or_else(|| Error::Other("finalize missing authorized_signer".to_string()))?;
-        let signature: Option<[u8; 64]> = match (&self.voucher_signature, self.settled) {
-            (Some(b58), settled) if settled > 0 => {
-                let bytes: [u8; 64] = bs58::decode(b58)
-                    .into_vec()
-                    .map_err(|e| Error::Other(format!("invalid voucher signature: {e}")))?
-                    .try_into()
-                    .map_err(|_| Error::Other("voucher signature is not 64 bytes".to_string()))?;
-                Some(bytes)
-            }
-            _ => None,
-        };
+        let (signature, expires_at): (Option<[u8; 64]>, i64) =
+            match (&self.voucher_signature, self.settled) {
+                (Some(b58), settled) if settled > 0 => {
+                    let bytes: [u8; 64] = bs58::decode(b58)
+                        .into_vec()
+                        .map_err(|e| Error::Other(format!("invalid voucher signature: {e}")))?
+                        .try_into()
+                        .map_err(|_| {
+                            Error::Other("voucher signature is not 64 bytes".to_string())
+                        })?;
+                    // The signed voucher message commits to its expiry, so a
+                    // missing one can't be defaulted to 0 — that builds bytes the
+                    // signature won't match, failing on-chain verification.
+                    let expires_at = self.voucher_expires_at.ok_or_else(|| {
+                        Error::Other("voucher signature present but expiry is missing".to_string())
+                    })?;
+                    (Some(bytes), expires_at)
+                }
+                _ => (None, 0),
+            };
         payment_channels::build_settle_and_finalize_instructions(
             operator,
             &self.channel_id,
             &authorized_signer,
             signature.as_ref(),
             self.settled,
-            self.voucher_expires_at.unwrap_or(0),
+            expires_at,
             &self.program_id,
         )
         .map_err(|e| Error::Other(format!("settle instructions: {e}")))
