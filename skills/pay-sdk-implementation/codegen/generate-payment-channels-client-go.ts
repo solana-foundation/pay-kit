@@ -2,7 +2,7 @@
  * Generate the pay-kit payment-channels Go client from the upstream
  * `Moonsong-Labs/solana-payment-channels` Codama IDL.
  *
- * Mirrors generate-payment-channels-client.ts (the Rust path) — both scripts
+ * Mirrors generate-payment-channels-client-rs.ts (the Rust path) — both scripts
  * vendor the IDL at `<repo-root>/idl/payment-channels.json` and render a client
  * into the matching SDK tree. This one targets the Go SDK via
  * `@codama/renderers-go`, which emits a flat Go package using

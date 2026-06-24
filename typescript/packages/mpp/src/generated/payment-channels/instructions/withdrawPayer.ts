@@ -25,27 +25,26 @@ import {
     type InstructionWithAccounts,
     type InstructionWithData,
     type ReadonlyAccount,
+    type ReadonlySignerAccount,
     type ReadonlyUint8Array,
     type TransactionSigner,
     type WritableAccount,
-    type WritableSignerAccount,
 } from '@solana/kit';
 import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/program-client-core';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/index.js';
-import { getTopUpArgsDecoder, getTopUpArgsEncoder, type TopUpArgs, type TopUpArgsArgs } from '../types/index.js';
 
-export const TOP_UP_DISCRIMINATOR = 3;
+export const WITHDRAW_PAYER_DISCRIMINATOR = 8;
 
-export function getTopUpDiscriminatorBytes(): ReadonlyUint8Array {
-    return getU8Encoder().encode(TOP_UP_DISCRIMINATOR);
+export function getWithdrawPayerDiscriminatorBytes(): ReadonlyUint8Array {
+    return getU8Encoder().encode(WITHDRAW_PAYER_DISCRIMINATOR);
 }
 
-export type TopUpInstruction<
+export type WithdrawPayerInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     TAccountPayer extends string | AccountMeta<string> = string,
     TAccountChannel extends string | AccountMeta<string> = string,
-    TAccountPayerTokenAccount extends string | AccountMeta<string> = string,
     TAccountChannelTokenAccount extends string | AccountMeta<string> = string,
+    TAccountPayerTokenAccount extends string | AccountMeta<string> = string,
     TAccountMint extends string | AccountMeta<string> = string,
     TAccountTokenProgram extends string | AccountMeta<string> = string,
     TRemainingAccounts extends readonly AccountMeta<string>[] = [],
@@ -54,90 +53,83 @@ export type TopUpInstruction<
     InstructionWithAccounts<
         [
             TAccountPayer extends string
-                ? WritableSignerAccount<TAccountPayer> & AccountSignerMeta<TAccountPayer>
+                ? ReadonlySignerAccount<TAccountPayer> & AccountSignerMeta<TAccountPayer>
                 : TAccountPayer,
             TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel,
-            TAccountPayerTokenAccount extends string
-                ? WritableAccount<TAccountPayerTokenAccount>
-                : TAccountPayerTokenAccount,
             TAccountChannelTokenAccount extends string
                 ? WritableAccount<TAccountChannelTokenAccount>
                 : TAccountChannelTokenAccount,
+            TAccountPayerTokenAccount extends string
+                ? WritableAccount<TAccountPayerTokenAccount>
+                : TAccountPayerTokenAccount,
             TAccountMint extends string ? ReadonlyAccount<TAccountMint> : TAccountMint,
             TAccountTokenProgram extends string ? ReadonlyAccount<TAccountTokenProgram> : TAccountTokenProgram,
             ...TRemainingAccounts,
         ]
     >;
 
-export type TopUpInstructionData = {
-    discriminator: number;
-    topUpArgs: TopUpArgs;
-};
+export type WithdrawPayerInstructionData = { discriminator: number };
 
-export type TopUpInstructionDataArgs = { topUpArgs: TopUpArgsArgs };
+export type WithdrawPayerInstructionDataArgs = {};
 
-export function getTopUpInstructionDataEncoder(): FixedSizeEncoder<TopUpInstructionDataArgs> {
-    return transformEncoder(
-        getStructEncoder([
-            ['discriminator', getU8Encoder()],
-            ['topUpArgs', getTopUpArgsEncoder()],
-        ]),
-        value => ({ ...value, discriminator: TOP_UP_DISCRIMINATOR }),
-    );
+export function getWithdrawPayerInstructionDataEncoder(): FixedSizeEncoder<WithdrawPayerInstructionDataArgs> {
+    return transformEncoder(getStructEncoder([['discriminator', getU8Encoder()]]), value => ({
+        ...value,
+        discriminator: WITHDRAW_PAYER_DISCRIMINATOR,
+    }));
 }
 
-export function getTopUpInstructionDataDecoder(): FixedSizeDecoder<TopUpInstructionData> {
-    return getStructDecoder([
-        ['discriminator', getU8Decoder()],
-        ['topUpArgs', getTopUpArgsDecoder()],
-    ]);
+export function getWithdrawPayerInstructionDataDecoder(): FixedSizeDecoder<WithdrawPayerInstructionData> {
+    return getStructDecoder([['discriminator', getU8Decoder()]]);
 }
 
-export function getTopUpInstructionDataCodec(): FixedSizeCodec<TopUpInstructionDataArgs, TopUpInstructionData> {
-    return combineCodec(getTopUpInstructionDataEncoder(), getTopUpInstructionDataDecoder());
+export function getWithdrawPayerInstructionDataCodec(): FixedSizeCodec<
+    WithdrawPayerInstructionDataArgs,
+    WithdrawPayerInstructionData
+> {
+    return combineCodec(getWithdrawPayerInstructionDataEncoder(), getWithdrawPayerInstructionDataDecoder());
 }
 
-export type TopUpInput<
+export type WithdrawPayerInput<
     TAccountPayer extends string = string,
     TAccountChannel extends string = string,
-    TAccountPayerTokenAccount extends string = string,
     TAccountChannelTokenAccount extends string = string,
+    TAccountPayerTokenAccount extends string = string,
     TAccountMint extends string = string,
     TAccountTokenProgram extends string = string,
 > = {
     payer: TransactionSigner<TAccountPayer>;
     channel: Address<TAccountChannel>;
-    payerTokenAccount: Address<TAccountPayerTokenAccount>;
     channelTokenAccount: Address<TAccountChannelTokenAccount>;
+    payerTokenAccount: Address<TAccountPayerTokenAccount>;
     mint: Address<TAccountMint>;
     tokenProgram: Address<TAccountTokenProgram>;
-    topUpArgs: TopUpInstructionDataArgs['topUpArgs'];
 };
 
-export function getTopUpInstruction<
+export function getWithdrawPayerInstruction<
     TAccountPayer extends string,
     TAccountChannel extends string,
-    TAccountPayerTokenAccount extends string,
     TAccountChannelTokenAccount extends string,
+    TAccountPayerTokenAccount extends string,
     TAccountMint extends string,
     TAccountTokenProgram extends string,
     TProgramAddress extends Address = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 >(
-    input: TopUpInput<
+    input: WithdrawPayerInput<
         TAccountPayer,
         TAccountChannel,
-        TAccountPayerTokenAccount,
         TAccountChannelTokenAccount,
+        TAccountPayerTokenAccount,
         TAccountMint,
         TAccountTokenProgram
     >,
     config?: { programAddress?: TProgramAddress },
-): TopUpInstruction<
+): WithdrawPayerInstruction<
     TProgramAddress,
     TAccountPayer,
     TAccountChannel,
-    TAccountPayerTokenAccount,
     TAccountChannelTokenAccount,
+    TAccountPayerTokenAccount,
     TAccountMint,
     TAccountTokenProgram
 > {
@@ -146,14 +138,14 @@ export function getTopUpInstruction<
 
     // Original accounts.
     const originalAccounts = {
-        payer: { value: input.payer ?? null, isWritable: true },
+        payer: { value: input.payer ?? null, isWritable: false },
         channel: { value: input.channel ?? null, isWritable: true },
-        payerTokenAccount: {
-            value: input.payerTokenAccount ?? null,
-            isWritable: true,
-        },
         channelTokenAccount: {
             value: input.channelTokenAccount ?? null,
+            isWritable: true,
+        },
+        payerTokenAccount: {
+            value: input.payerTokenAccount ?? null,
             isWritable: true,
         },
         mint: { value: input.mint ?? null, isWritable: false },
@@ -161,33 +153,30 @@ export function getTopUpInstruction<
     };
     const accounts = originalAccounts as Record<keyof typeof originalAccounts, ResolvedInstructionAccount>;
 
-    // Original args.
-    const args = { ...input };
-
     const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
     return Object.freeze({
         accounts: [
             getAccountMeta('payer', accounts.payer),
             getAccountMeta('channel', accounts.channel),
-            getAccountMeta('payerTokenAccount', accounts.payerTokenAccount),
             getAccountMeta('channelTokenAccount', accounts.channelTokenAccount),
+            getAccountMeta('payerTokenAccount', accounts.payerTokenAccount),
             getAccountMeta('mint', accounts.mint),
             getAccountMeta('tokenProgram', accounts.tokenProgram),
         ],
-        data: getTopUpInstructionDataEncoder().encode(args as TopUpInstructionDataArgs),
+        data: getWithdrawPayerInstructionDataEncoder().encode({}),
         programAddress,
-    } as TopUpInstruction<
+    } as WithdrawPayerInstruction<
         TProgramAddress,
         TAccountPayer,
         TAccountChannel,
-        TAccountPayerTokenAccount,
         TAccountChannelTokenAccount,
+        TAccountPayerTokenAccount,
         TAccountMint,
         TAccountTokenProgram
     >);
 }
 
-export type ParsedTopUpInstruction<
+export type ParsedWithdrawPayerInstruction<
     TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
     TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
@@ -195,19 +184,19 @@ export type ParsedTopUpInstruction<
     accounts: {
         payer: TAccountMetas[0];
         channel: TAccountMetas[1];
-        payerTokenAccount: TAccountMetas[2];
-        channelTokenAccount: TAccountMetas[3];
+        channelTokenAccount: TAccountMetas[2];
+        payerTokenAccount: TAccountMetas[3];
         mint: TAccountMetas[4];
         tokenProgram: TAccountMetas[5];
     };
-    data: TopUpInstructionData;
+    data: WithdrawPayerInstructionData;
 };
 
-export function parseTopUpInstruction<TProgram extends string, TAccountMetas extends readonly AccountMeta[]>(
+export function parseWithdrawPayerInstruction<TProgram extends string, TAccountMetas extends readonly AccountMeta[]>(
     instruction: Instruction<TProgram> &
         InstructionWithAccounts<TAccountMetas> &
         InstructionWithData<ReadonlyUint8Array>,
-): ParsedTopUpInstruction<TProgram, TAccountMetas> {
+): ParsedWithdrawPayerInstruction<TProgram, TAccountMetas> {
     if (instruction.accounts.length < 6) {
         throw new SolanaError(SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS, {
             actualAccountMetas: instruction.accounts.length,
@@ -225,11 +214,11 @@ export function parseTopUpInstruction<TProgram extends string, TAccountMetas ext
         accounts: {
             payer: getNextAccount(),
             channel: getNextAccount(),
-            payerTokenAccount: getNextAccount(),
             channelTokenAccount: getNextAccount(),
+            payerTokenAccount: getNextAccount(),
             mint: getNextAccount(),
             tokenProgram: getNextAccount(),
         },
-        data: getTopUpInstructionDataDecoder().decode(instruction.data),
+        data: getWithdrawPayerInstructionDataDecoder().decode(instruction.data),
     };
 }

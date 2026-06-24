@@ -38,7 +38,7 @@ import {
 import type { SessionOpener } from './SessionFetch.js';
 
 const U64_MAX = (1n << 64n) - 1n;
-const PAYMENT_CHANNELS_PROGRAM = 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc';
+const PAYMENT_CHANNELS_PROGRAM = 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX';
 const RENT_SYSVAR = 'SysvarRent111111111111111111111111111111111';
 const DEFAULT_GRACE_PERIOD_SECONDS = 900;
 

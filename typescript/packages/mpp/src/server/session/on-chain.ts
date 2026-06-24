@@ -72,7 +72,7 @@ export const ED25519_PROGRAM_ADDRESS =
  * matches the Rust mirror; callers can override per-call.
  */
 export const PAYMENT_CHANNELS_PROGRAM_ID =
-    'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc' as Address<'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc'>;
+    'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX' as Address<'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX'>;
 
 /** Canonical multi-delegator program ID. */
 export const MULTI_DELEGATOR_PROGRAM_ID =
@@ -255,14 +255,9 @@ export function buildSettleAndFinalizeInstructions(args: SettleAndFinalizeBuildA
             channel,
             instructionsSysvar: INSTRUCTIONS_SYSVAR_ADDRESS,
             merchant: args.merchantSigner,
-            settleAndFinalizeArgs: {
-                hasVoucher,
-                voucher: {
-                    channelId: channel,
-                    cumulativeAmount,
-                    expiresAt,
-                },
-            },
+            // The program reads the voucher from the ed25519 precompile; the
+            // settle_and_finalize args carry only the hasVoucher flag.
+            settleAndFinalizeArgs: { hasVoucher },
         },
         { programAddress: programId },
     );

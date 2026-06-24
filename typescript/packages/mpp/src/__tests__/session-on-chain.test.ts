@@ -173,8 +173,10 @@ describe('buildSettleAndFinalizeInstructions', () => {
         expect(ix.accounts[2]!.role).toBe(AccountRole.READONLY);
 
         // data = [disc=4][voucher(48 zero)][hasVoucher=0] => 50 bytes
+        // The voucher is read from the ed25519 precompile, so the data is just
+        // [disc=4][hasVoucher=0] => 2 bytes.
         const data = new Uint8Array(ix.data);
-        expect(data.byteLength).toBe(1 + 32 + 8 + 8 + 1);
+        expect(data.byteLength).toBe(2);
         expect(data[0]).toBe(4);
         expect(data[data.byteLength - 1]).toBe(0);
     });
@@ -202,11 +204,10 @@ describe('buildSettleAndFinalizeInstructions', () => {
         expect(precompile.programAddress).toBe(ED25519_PROGRAM_ADDRESS);
         const settle = out.instructions[1]!;
         const data = new Uint8Array(settle.data);
-        // hasVoucher = 1
+        // Voucher lives in the precompile; settle data is [disc=4][hasVoucher=1].
+        expect(data.byteLength).toBe(2);
+        expect(data[0]).toBe(4);
         expect(data[data.byteLength - 1]).toBe(1);
-        // cumulativeAmount at offset 1 + 32 = 33 (u64 LE) = 500
-        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-        expect(view.getBigUint64(33, true)).toBe(500n);
     });
 });
 
@@ -341,7 +342,7 @@ describe('verifyOpenTx', () => {
             authorizedSigner: authorizedSigner.address,
             deposit: 1_000_000n,
             gracePeriod: 900,
-            programAddress: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+            programAddress: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
             request,
             salt: 7n,
             signer: payer,
@@ -358,7 +359,7 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
-                programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
             openPayload: {
@@ -391,7 +392,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 500_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },
                 openPayload: {
@@ -420,7 +421,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payer.address, // wrong: payer instead of payee
                 },
                 openPayload: {
@@ -460,7 +461,7 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
-                programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
             openPayload: {
@@ -497,7 +498,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
-                    programId: 'GuoKrzaBiZnW5DvJ3yZVE7xHqbcBvaX9SH6P6Cn9gNvc',
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },
                 openPayload: {

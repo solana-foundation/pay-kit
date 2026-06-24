@@ -60,13 +60,24 @@ payment-channels-pull-idl:
 
 # Render the Rust client from the vendored IDL. Wipes
 # `rust/crates/programs/payment-channels/src/generated/` and rewrites
-# it in place — see {{codegen_dir}}/generate-payment-channels-client.ts.
+# it in place — see {{codegen_dir}}/generate-payment-channels-client-rs.ts.
 payment-channels-generate-rs: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:rust
     cd rust && cargo fmt -p payment-channels-client
 
-# Full refresh: pull IDL + regenerate Rust client.
-payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs
+# Render the Go client from the vendored IDL into
+# `go/protocols/programs/paymentchannels/` (see the matching codegen script).
+payment-channels-generate-go: codegen-install
+    cd {{codegen_dir}} && pnpm run payment-channels:go
+
+# Render the TypeScript client from the vendored IDL into
+# `typescript/packages/mpp/src/generated/payment-channels/` (see the matching
+# codegen script). Replaces the previously hand-vendored subset.
+payment-channels-generate-ts: codegen-install
+    cd {{codegen_dir}} && pnpm run payment-channels:ts
+
+# Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript).
+payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts
 
 # ── TypeScript ──
 
