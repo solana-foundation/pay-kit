@@ -1,0 +1,333 @@
+package client
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+
+	solana "github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
+	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
+	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
+)
+
+func TestRandomSalt(t *testing.T) {
+	s1, err := randomSalt()
+	if err != nil {
+		t.Fatalf("randomSalt: %v", err)
+	}
+	s2, err := randomSalt()
+	if err != nil {
+		t.Fatalf("randomSalt: %v", err)
+	}
+	if s1 == s2 {
+		t.Fatal("expected different salts")
+	}
+}
+
+func TestProfileSupported(t *testing.T) {
+	r := &x402.UptoRequirements{}
+	if profileSupported(r) {
+		t.Fatal("expected false for empty profiles")
+	}
+	r.Extra.Profiles = []string{"permit"}
+	if profileSupported(r) {
+		t.Fatal("expected false for non-matching profile")
+	}
+	r.Extra.Profiles = []string{x402.ProfilePaymentChannel}
+	if !profileSupported(r) {
+		t.Fatal("expected true for payment-channel profile")
+	}
+}
+
+func TestResolveChannelProgram(t *testing.T) {
+	pk := resolveChannelProgram("")
+	if !pk.Equals(paymentchannels.ProgramPubkey()) {
+		t.Fatal("expected default program")
+	}
+	pk = resolveChannelProgram(paymentchannels.ProgramID)
+	if !pk.Equals(paymentchannels.ProgramPubkey()) {
+		t.Fatal("expected parsed program")
+	}
+}
+
+func uptoRequirements(signer solana.PublicKey) *x402.UptoRequirements {
+	decimals := uint8(6)
+	return &x402.UptoRequirements{
+		Scheme:            x402.UptoScheme,
+		Network:           "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+		Amount:            "1000000",
+		Asset:             "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+		PayTo:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+		MaxTimeoutSeconds: 300,
+		Extra: x402.UptoExtra{
+			Profiles:        []string{x402.ProfilePaymentChannel},
+			Decimals:        &decimals,
+			TokenProgram:    paycore.TokenProgram,
+			FeePayer:        signer.String(),
+			ChannelProgram:  paymentchannels.ProgramID,
+			RecentBlockhash: "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h",
+		},
+	}
+}
+
+type testSigner struct{ priv solana.PrivateKey }
+
+func (s testSigner) PublicKey() solana.PublicKey { return s.priv.PublicKey() }
+func (s testSigner) Sign(msg []byte) (solana.Signature, error) {
+	return s.priv.Sign(msg)
+}
+
+func TestBuildUptoPayload(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	if payload.Profile != x402.ProfilePaymentChannel {
+		t.Fatalf("profile = %q", payload.Profile)
+	}
+	if payload.MaxAmount != "1000000" {
+		t.Fatalf("maxAmount = %q", payload.MaxAmount)
+	}
+	if payload.Nonce != "n-1" {
+		t.Fatalf("nonce = %q", payload.Nonce)
+	}
+	if payload.OpenTransaction == "" {
+		t.Fatal("openTransaction is empty")
+	}
+}
+
+func TestBuildUptoPayloadRejectsUnsupportedProfile(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.Profiles = []string{"permit"}
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil || !strings.Contains(err.Error(), "payment-channel") {
+		t.Fatalf("expected profile error, got %v", err)
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadAmount(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Amount = "abc"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad amount")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadPayTo(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.PayTo = "not-a-pubkey"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad payTo")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadAsset(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Asset = "not-a-pubkey"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad asset")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadFeePayer(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.FeePayer = "not-a-pubkey"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad feePayer")
+	}
+}
+
+func TestBuildUptoPayloadRejectsMissingRecentBlockhash(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.RecentBlockhash = ""
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for missing blockhash")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadRecentBlockhash(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.RecentBlockhash = "invalid"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad blockhash")
+	}
+}
+
+func TestBuildUptoPayloadDefaultsTokenProgram(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.TokenProgram = "" // trigger default
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	if payload.OpenTransaction == "" {
+		t.Fatal("openTransaction is empty")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadTokenProgram(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.TokenProgram = "invalid"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad token program")
+	}
+}
+
+func TestEncodeUptoHeader(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	encoded, err := EncodeUptoHeader(req, payload)
+	if err != nil {
+		t.Fatalf("EncodeUptoHeader: %v", err)
+	}
+	if encoded == "" {
+		t.Fatal("empty encoded header")
+	}
+}
+
+func TestBuildUptoHeader(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	encoded, err := BuildUptoHeader(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoHeader: %v", err)
+	}
+	if encoded == "" {
+		t.Fatal("empty encoded header")
+	}
+}
+
+func TestParseUptoChallengeFromHeader(t *testing.T) {
+	env := x402.UptoRequiredEnvelope{
+		X402Version: 2,
+		Resource:    &x402.ResourceRef{Type: "", URL: ""},
+		Accepts: []x402.UptoRequirements{
+			{
+				Scheme:            x402.UptoScheme,
+				Network:           "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+				Amount:            "1000000",
+				Asset:             "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+				PayTo:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+				MaxTimeoutSeconds: 300,
+			},
+		},
+	}
+	raw, _ := json.Marshal(env)
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	h := http.Header{}
+	h.Set("payment-required", encoded)
+	parsed, ok := ParseUptoChallenge(h, nil)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if parsed == nil {
+		t.Fatal("expected non-nil")
+	}
+	if parsed.Amount != "1000000" {
+		t.Fatalf("amount = %q", parsed.Amount)
+	}
+}
+
+func TestParseUptoChallengeFromBody(t *testing.T) {
+	header := http.Header{}
+	parsed, ok := ParseUptoChallenge(header, []byte(`{"x402Version":2,"resource":{"type":"","url":""},"accepts":[{"protocol":"x402","scheme":"upto","amount":"1000000"}]}`))
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if parsed == nil {
+		t.Fatal("expected non-nil")
+	}
+	if parsed.Amount != "1000000" {
+		t.Fatalf("amount = %q", parsed.Amount)
+	}
+	if parsed.Scheme != x402.UptoScheme {
+		t.Fatalf("scheme = %q", parsed.Scheme)
+	}
+}
+
+func TestParseUptoChallengeNoMatch(t *testing.T) {
+	header := http.Header{}
+	parsed, ok := ParseUptoChallenge(header, []byte(`{"x402Version":2,"resource":{"type":"","url":""},"accepts":[{"scheme":"exact","amount":"1000000"}]}`))
+	if ok {
+		t.Fatal("expected not ok for exact scheme")
+	}
+	if parsed != nil {
+		t.Fatal("expected nil")
+	}
+}
+
+func TestParseUptoChallengeInvalidBase64(t *testing.T) {
+	h := http.Header{}
+	h.Set("payment-required", "!!!invalid-base64")
+	parsed, ok := ParseUptoChallenge(h, nil)
+	if ok {
+		t.Fatal("expected not ok")
+	}
+	if parsed != nil {
+		t.Fatal("expected nil")
+	}
+}
+
+func TestParseUptoChallengeEmpty(t *testing.T) {
+	parsed, ok := ParseUptoChallenge(http.Header{}, nil)
+	if ok {
+		t.Fatal("expected not ok")
+	}
+	if parsed != nil {
+		t.Fatal("expected nil")
+	}
+}
+
+func TestParseUptoChallengeValidAfter(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	va := int64(1000)
+	req.Extra.ValidAfter = &va
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	if payload.ValidAfter != 1000 {
+		t.Fatalf("validAfter = %d", payload.ValidAfter)
+	}
+}
