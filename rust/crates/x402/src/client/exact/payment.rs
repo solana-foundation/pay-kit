@@ -261,6 +261,48 @@ pub fn parse_x402_challenge_with_selection(
     None
 }
 
+/// Parse *every* advertised x402 payment requirement, without applying client
+/// selection.
+///
+/// [`parse_x402_challenge_with_selection`] returns a single best-fit offer; this
+/// returns the whole `accepts` list so a caller can rank offers itself — for
+/// example a cross-protocol token-preference selector that weighs x402 accepts
+/// against MPP charge challenges. Offers are returned in server order.
+pub fn parse_x402_accepts(
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Vec<PaymentRequirements> {
+    if let Some(header) = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(PAYMENT_REQUIRED_HEADER))
+    {
+        if let Ok(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header.1)
+        {
+            if let Ok(envelope) = serde_json::from_slice::<PaymentRequiredEnvelope>(&decoded) {
+                return envelope.with_resource_on_accepts().accepts;
+            }
+        }
+    }
+
+    if let Some(header) = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(X402_V1_PAYMENT_REQUIRED_HEADER))
+    {
+        if let Ok(req) = serde_json::from_str::<PaymentRequirements>(&header.1) {
+            return vec![req];
+        }
+    }
+
+    if let Some(body) = body {
+        if let Ok(envelope) = serde_json::from_str::<PaymentRequiredEnvelope>(body) {
+            return envelope.with_resource_on_accepts().accepts;
+        }
+    }
+
+    Vec::new()
+}
+
 fn parse_payment_required_header(
     header: &str,
     selection: &ChallengeSelection<'_>,

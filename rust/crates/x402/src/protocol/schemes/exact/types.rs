@@ -64,18 +64,12 @@ pub mod programs {
 }
 
 /// Well-known stablecoin mint addresses.
+/// Canonical stablecoin mint addresses.
+///
+/// Re-exported from [`solana_pay_core::mints`] — the single source of truth
+/// shared with `solana-mpp`. Don't add literals here; add them in core.
 pub mod mints {
-    pub const USDC_MAINNET: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-    pub const USDC_DEVNET: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
-    pub const USDC_TESTNET: &str = USDC_DEVNET;
-    pub const USDT_MAINNET: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-    pub const USDG_MAINNET: &str = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH";
-    pub const USDG_DEVNET: &str = "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7";
-    pub const USDG_TESTNET: &str = USDG_DEVNET;
-    pub const PYUSD_MAINNET: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
-    pub const PYUSD_DEVNET: &str = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM";
-    pub const PYUSD_TESTNET: &str = PYUSD_DEVNET;
-    pub const CASH_MAINNET: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
+    pub use solana_pay_core::mints::*;
 }
 
 /// True if `currency` (symbol or mint address) represents native SOL.
