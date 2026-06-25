@@ -187,7 +187,7 @@ Supported in TypeScript:
 | `charge/pull`  | ✅      | ✅      |
 | `charge/push`  | ✅      | ✅      |
 | `session`      | ✅      | ✅      |
-| `subscription` | —      | —      |
+| `subscription` | ✅      | ✅      |
 
 For `charge/pull` the server owns the full lifecycle: it issues signed
 challenges with a fresh `recentBlockhash`, validates the
@@ -202,23 +202,22 @@ consumes the signature through the replay store.
 ## x402
 
 [x402](https://x402.org) revives HTTP `402 Payment Required` as a
-client-server payment handshake with a single-recipient `exact` scheme.
-The packaged TypeScript surface does not ship it yet:
-`configure({ accept: ['x402'] })` throws `ProtocolNotSupportedError`.
+client-server payment handshake. The TypeScript surface ships all three
+SVM schemes via [`@x402/svm`](external/x402) (client + server +
+facilitator each):
 
-| Intent             | Status |
-|--------------------|--------|
-| `exact`            | harness reference only |
-| `upto`             | —      |
-| `batch-settlement` | —      |
+| Scheme             | Client | Server |
+|--------------------|:------:|:------:|
+| `exact`            | ✅      | ✅      |
+| `upto`             | ✅      | ✅      |
+| `batch-settlement` | ✅      | ✅      |
 
-A TypeScript x402 `exact` reference (client and server) lives in the
-harness at
-[`harness/src/fixtures/typescript/`](../harness/src/fixtures/typescript)
-and passes the cross-language conformance suite; it is not packaged as
-a pay-kit protocol adapter yet. The protocol seam is already in
-place — an x402 adapter plugs in without touching gates, pricing, or
-the request verbs.
+pay-kit wires `exact` and `upto` straight into gates —
+`configure({ accept: ['x402'] })` mounts the `exact` adapter for
+fixed-price gates and the in-process `upto` facilitator for usage gates.
+`batch-settlement` ships in `@x402/svm` but is not yet exposed as a
+pay-kit gate adapter. All three are exercised client- and server-side by
+the cross-language conformance suite in the harness.
 
 ## Client
 
