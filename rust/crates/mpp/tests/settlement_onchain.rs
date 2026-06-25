@@ -139,6 +139,130 @@ async fn confirm(rpc: &RpcClient, sig: &str) {
     panic!("settlement tx {sig} never confirmed");
 }
 
+/// Parity guard against on-chain-constant drift (program id, distribution hash
+/// algorithm/preimage). Opens a real channel **with non-empty splits** and
+/// asserts pay-kit's `distribution_hash` equals the hash the program committed
+/// on-chain at `open` (it uses `sol_sha256` over the same preimage).
+///
+/// This is the test that would have caught the blake3→sha256 drift: the program
+/// computes its own commitment, so a `distribute` E2E stays self-consistent and
+/// never exercises pay-kit's hash — only asserting pay-kit's value **equals the
+/// account's** value catches it. The unit golden vector guards the value off
+/// chain; this proves the on-chain program agrees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn distribution_hash_matches_on_chain_commitment() {
+    let url = rpc_url();
+    let rpc = RpcClient::new(url.clone());
+    if rpc.get_latest_blockhash().await.is_err() {
+        eprintln!("skipping: surfnet {url} unreachable");
+        return;
+    }
+
+    let usdc = Pubkey::from_str(USDC).unwrap();
+    let token_program = Pubkey::from_str(TOKEN_PROGRAM).unwrap();
+    let program_id = pc::default_program_id();
+
+    let (payer_signer, payer) = testkit::random_signer();
+    let (_, operator) = testkit::random_signer();
+    let payer_signer = Arc::new(payer_signer);
+    testkit::fund_sol(&url, &payer, 5_000_000_000).await;
+    testkit::fund_token(&url, &payer, USDC, DEPOSIT * 4, TOKEN_PROGRAM).await;
+
+    // Non-empty splits so the committed hash is non-trivial.
+    let (_, r1) = testkit::random_signer();
+    let (_, r2) = testkit::random_signer();
+    let recipients = vec![
+        pc::Distribution {
+            recipient: r1,
+            bps: 7_000,
+        },
+        pc::Distribution {
+            recipient: r2,
+            bps: 2_000,
+        },
+    ];
+
+    let params = pc::OpenChannelParams {
+        payer,
+        payee: operator,
+        mint: usdc,
+        authorized_signer: operator,
+        salt: 0,
+        deposit: DEPOSIT,
+        grace_period: 3_600,
+        recipients: recipients.clone(),
+        token_program,
+        program_id,
+    };
+    let channel = pc::derive_channel_addresses(&params).channel;
+    testkit::open_one(
+        url.clone(),
+        payer_signer,
+        pc::build_open_instruction(&params),
+    )
+    .await;
+
+    let data = rpc
+        .get_account(&channel)
+        .await
+        .expect("channel present")
+        .data;
+    let on_chain =
+        pc::generated::accounts::Channel::from_bytes(&data).expect("decode channel account");
+    assert_eq!(
+        on_chain.distribution_hash,
+        pc::distribution_hash(&recipients),
+        "pay-kit distribution_hash drifted from the program's on-chain commitment"
+    );
+    eprintln!("✅ distribution_hash matches the on-chain commitment");
+}
+
+/// Negative: an expired voucher must be rejected by the program (`VoucherExpired`
+/// = 233 = 0xE9), not settled — proving the on-chain expiry check is enforced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_voucher_is_rejected_on_chain() {
+    let url = rpc_url();
+    let rpc = RpcClient::new(url.clone());
+    if rpc.get_latest_blockhash().await.is_err() {
+        eprintln!("skipping: surfnet {url} unreachable");
+        return;
+    }
+
+    let (operator_signer, operator, channels) = open_channels(&url, 1).await;
+    let channel = channels[0];
+    let program_id = pc::default_program_id();
+    let expires_at = now() - 3_600; // already expired
+    let msg = pc::voucher_message_bytes(&channel, VOUCHER, expires_at).unwrap();
+    let sig: [u8; 64] = operator_signer.sign_message(&msg).await.unwrap().into();
+    let ixs = pc::build_settle_and_finalize_instructions(
+        &operator,
+        &channel,
+        &operator,
+        Some(&sig),
+        VOUCHER,
+        expires_at,
+        &program_id,
+    )
+    .unwrap();
+
+    let err = testkit::try_send(url.clone(), operator_signer.clone(), ixs)
+        .await
+        .expect_err("an expired voucher must not settle");
+    // VoucherExpired = 233 = 0xE9.
+    assert!(
+        err.contains("0xe9") || err.to_lowercase().contains("custom program error"),
+        "expected VoucherExpired (0xe9), got: {err}"
+    );
+
+    // The channel must stay unsettled: status Open (0), not Finalized (1).
+    let acct = rpc.get_account(&channel).await.expect("channel present");
+    assert_eq!(
+        acct.data[3], 0,
+        "channel must remain Open after a rejected settle"
+    );
+    eprintln!("✅ expired voucher rejected on-chain; channel stayed Open");
+}
+
 /// Authoritative proof: open 4 real channels, settle through the worker, assert
 /// they batch into 2 txs and every channel finalizes on-chain.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

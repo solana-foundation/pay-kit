@@ -44,6 +44,7 @@ import { getDistributeInstruction } from '../../generated/payment-channels/instr
 import { getSettleAndFinalizeInstruction } from '../../generated/payment-channels/instructions/settleAndFinalize.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
+import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
 import type { OpenPayload, SignedVoucher } from '../../shared/session-types.js';
 import { coSignBase64Transaction } from '../../utils/transactions.js';
 
@@ -66,13 +67,11 @@ export const ED25519_PROGRAM_ADDRESS =
     'Ed25519SigVerify111111111111111111111111111' as Address<'Ed25519SigVerify111111111111111111111111111'>;
 
 /**
- * Canonical payment-channels program ID. The Rust crate uses the Surfnet
- * deployment id; the vendored Codama tree bakes in the upstream
- * canonical id. We default to the Surfnet id here so server behavior
- * matches the Rust mirror; callers can override per-call.
+ * Canonical payment-channels program ID, re-exported from the generated client
+ * so there's a single source of truth that updates on IDL regeneration.
+ * Callers can override per-call.
  */
-export const PAYMENT_CHANNELS_PROGRAM_ID =
-    'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX' as Address<'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX'>;
+export const PAYMENT_CHANNELS_PROGRAM_ID = PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
 /** Canonical multi-delegator program ID. */
 export const MULTI_DELEGATOR_PROGRAM_ID =

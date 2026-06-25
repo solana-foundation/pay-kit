@@ -56,6 +56,7 @@ pub struct Split {
 /// through the same batched worker; the difference is only who holds the
 /// channel's `authorized_signer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SettlementAuthority {
     /// Client's ephemeral key signs each voucher (classic MPP push). Default —
     /// preserves existing behavior.

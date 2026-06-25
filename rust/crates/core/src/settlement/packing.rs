@@ -38,6 +38,30 @@ pub fn tx_size(instructions: &[Instruction], payer: &Pubkey) -> usize {
     msg.serialize().len() + sigs * 64 + sig_prefix
 }
 
+/// The shared batch-boundary rule for greedy packing: whether appending a
+/// channel whose flattened instructions are `next` to a current batch holding
+/// `cur_count` channels (flattened to `cur`) would overflow the per-tx channel
+/// cap or the [`MAX_TX_BYTES`] byte limit.
+///
+/// Used by both [`pack`] and the worker's `regroup` so the packing rule lives
+/// in one place. Note: it rebuilds and serializes the candidate message on each
+/// call, so a greedy packer built on it is O(n²) in instruction bytes — fine
+/// for realistic batch sizes (a handful of channels), not for large fan-in.
+pub fn would_overflow_tx(
+    cur: &[Instruction],
+    cur_count: usize,
+    next: &[Instruction],
+    payer: &Pubkey,
+    max_per_tx: usize,
+) -> bool {
+    if cur_count >= max_per_tx.max(1) {
+        return true;
+    }
+    let mut probe: Vec<Instruction> = cur.to_vec();
+    probe.extend_from_slice(next);
+    tx_size(&probe, payer) > MAX_TX_BYTES
+}
+
 /// Greedily group channels into legacy-tx-sized batches. Each returned batch's
 /// flattened instructions serialize to `<= MAX_TX_BYTES` and hold at most
 /// `max_per_tx` channels. A single channel that alone exceeds the limit is
@@ -48,22 +72,16 @@ pub fn pack(
     payer: &Pubkey,
     max_per_tx: usize,
 ) -> Vec<Vec<ChannelInstructions>> {
-    let cap = max_per_tx.max(1);
     let mut out: Vec<Vec<ChannelInstructions>> = Vec::new();
     let mut cur: Vec<ChannelInstructions> = Vec::new();
 
     for ch in channels {
         if !cur.is_empty() {
-            let fits_count = cur.len() < cap;
-            let fits_bytes = {
-                let mut probe: Vec<Instruction> = cur
-                    .iter()
-                    .flat_map(|c| c.instructions.iter().cloned())
-                    .collect();
-                probe.extend(ch.instructions.iter().cloned());
-                tx_size(&probe, payer) <= MAX_TX_BYTES
-            };
-            if !fits_count || !fits_bytes {
+            let cur_ix: Vec<Instruction> = cur
+                .iter()
+                .flat_map(|c| c.instructions.iter().cloned())
+                .collect();
+            if would_overflow_tx(&cur_ix, cur.len(), &ch.instructions, payer, max_per_tx) {
                 out.push(std::mem::take(&mut cur));
             }
         }

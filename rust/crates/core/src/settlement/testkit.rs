@@ -110,6 +110,39 @@ pub async fn open_one(url: String, signer: Arc<MemorySigner>, ix: Instruction) {
     panic!("open not confirmed");
 }
 
+/// Build + sign + send `ixs` as one legacy tx (fee-paid by `signer`), returning
+/// the raw RPC result. Unlike [`open_one`], it surfaces the error instead of
+/// asserting success — for negative tests that expect an on-chain program error.
+pub async fn try_send(
+    url: String,
+    signer: Arc<MemorySigner>,
+    ixs: Vec<Instruction>,
+) -> Result<String, String> {
+    let rpc = RpcClient::new(url);
+    let payer = signer.pubkey();
+    let blockhash = rpc
+        .get_latest_blockhash()
+        .await
+        .map_err(|e| e.to_string())?;
+    let message = Message::new_with_blockhash(&ixs, Some(&payer), &blockhash);
+    let mut tx = Transaction::new_unsigned(message);
+    let sig_bytes = signer
+        .sign_message(&tx.message_data())
+        .await
+        .map_err(|e| e.to_string())?;
+    let idx = tx
+        .message
+        .account_keys
+        .iter()
+        .position(|k| k == &payer)
+        .unwrap();
+    tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
+    rpc.send_transaction(&tx)
+        .await
+        .map(|s| s.to_string())
+        .map_err(|e| e.to_string())
+}
+
 /// Submit each `(channel_id, instructions)` to the worker concurrently; return
 /// the resulting **txid → channel_ids** grouping (the observed packing). Panics
 /// if any settle fails — the caller wants a clean demo/bench signal.

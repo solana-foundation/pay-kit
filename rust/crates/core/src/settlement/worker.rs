@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
-use super::packing::{tx_size, DEFAULT_MAX_CHANNELS_PER_TX, MAX_TX_BYTES};
+use super::packing::{tx_size, would_overflow_tx, DEFAULT_MAX_CHANNELS_PER_TX};
 
 /// Settlement outcome returned to a submitter: the broadcast tx signature.
 pub type SettlementResult = Result<String, String>;
@@ -45,14 +45,27 @@ pub struct SettlementUnit {
     pub reply: oneshot::Sender<SettlementResult>,
 }
 
+/// Outcome of a confirmation poll for a previously-sent signature.
+#[derive(Debug, Clone)]
+pub enum ConfirmOutcome {
+    /// Landed and succeeded on-chain.
+    Confirmed,
+    /// Not yet observed (still propagating / not finalized) — keep polling.
+    Pending,
+    /// Landed but failed on-chain (permanent) — stop polling. Carries the error.
+    Failed(String),
+}
+
 /// Broadcast surface — abstracted for testing and reuse.
 #[async_trait]
 pub trait Broadcaster: Send + Sync {
     async fn latest_blockhash(&self) -> Result<Hash, String>;
     /// Broadcast a signed tx; return its signature (no confirmation wait).
     async fn send(&self, tx: &Transaction) -> Result<String, String>;
-    /// Best-effort confirmation check for a previously-sent signature.
-    async fn confirm(&self, signature: &str) -> Result<bool, String>;
+    /// Poll confirmation for a previously-sent signature. `Err` is a transient
+    /// RPC error (caller may retry); `Ok` distinguishes confirmed / pending /
+    /// permanent on-chain failure so the caller can stop polling a dead tx.
+    async fn confirm(&self, signature: &str) -> Result<ConfirmOutcome, String>;
 }
 
 pub struct SettlementConfig {
@@ -179,41 +192,39 @@ fn spawn_flush(
     trigger: &'static str,
 ) {
     tokio::spawn(async move {
-        // The worker owns the semaphore and never closes it, so acquire cannot
-        // fail; make that explicit — an `Err` would otherwise silently proceed
-        // without a permit and bypass the `max_in_flight_tx` limit.
-        let _permit = sem
-            .acquire_owned()
-            .await
-            .expect("settlement semaphore is never closed");
         for group in regroup(units, &cfg.operator, cfg.max_channels_per_tx) {
+            // One permit per settle transaction (not per flush, which may
+            // regroup into several): bounds concurrent in-flight settle txs
+            // across all flushes to `max_in_flight_tx`. The worker owns the
+            // semaphore and never closes it, so acquire cannot fail — an `Err`
+            // would otherwise bypass the limit, so make that explicit.
+            let _permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("settlement semaphore is never closed");
             settle_group(group, &cfg, broadcaster.clone(), trigger).await;
         }
     });
 }
 
-/// Greedy byte+count packing over units (mirrors [`super::packing::pack`] but
-/// keeps the per-unit reply channels).
+/// Greedy byte+count packing over units. Same boundary rule as
+/// [`super::packing::pack`] (via [`super::packing::would_overflow_tx`]) but
+/// keeps the per-unit reply channels.
 fn regroup(
     units: Vec<SettlementUnit>,
     payer: &Pubkey,
     max_per_tx: usize,
 ) -> Vec<Vec<SettlementUnit>> {
-    let cap = max_per_tx.max(1);
     let mut out: Vec<Vec<SettlementUnit>> = Vec::new();
     let mut cur: Vec<SettlementUnit> = Vec::new();
     for u in units {
         if !cur.is_empty() {
-            let fits_count = cur.len() < cap;
-            let fits_bytes = {
-                let mut ix: Vec<Instruction> = cur
-                    .iter()
-                    .flat_map(|c| c.instructions.iter().cloned())
-                    .collect();
-                ix.extend(u.instructions.iter().cloned());
-                tx_size(&ix, payer) <= MAX_TX_BYTES
-            };
-            if !fits_count || !fits_bytes {
+            let cur_ix: Vec<Instruction> = cur
+                .iter()
+                .flat_map(|c| c.instructions.iter().cloned())
+                .collect();
+            if would_overflow_tx(&cur_ix, cur.len(), &u.instructions, payer, max_per_tx) {
                 out.push(std::mem::take(&mut cur));
             }
         }
@@ -309,11 +320,24 @@ async fn settle_group(
             tokio::spawn(async move {
                 for _ in 0..attempts {
                     match broadcaster.confirm(&sig).await {
-                        Ok(true) => {
+                        Ok(ConfirmOutcome::Confirmed) => {
                             tracing::debug!(tx = %sig, "settlement confirmed");
                             return;
                         }
-                        Ok(false) => tokio::time::sleep(Duration::from_millis(400)).await,
+                        Ok(ConfirmOutcome::Pending) => {
+                            tokio::time::sleep(Duration::from_millis(400)).await
+                        }
+                        // Permanent on-chain failure: don't spin the full retry
+                        // window — log and let the store reconcile.
+                        Ok(ConfirmOutcome::Failed(err)) => {
+                            tracing::warn!(
+                                monotonic_counter.pay_settlement_failed_total = 1_u64,
+                                tx = %sig,
+                                error = %err,
+                                "settlement failed on-chain (store will reconcile)",
+                            );
+                            return;
+                        }
                         Err(e) => {
                             tracing::debug!(tx = %sig, error = %e, "confirm poll error");
                             tokio::time::sleep(Duration::from_millis(400)).await;
@@ -366,7 +390,7 @@ impl Broadcaster for RpcBroadcaster {
             .map_err(|e| e.to_string())
     }
 
-    async fn confirm(&self, signature: &str) -> Result<bool, String> {
+    async fn confirm(&self, signature: &str) -> Result<ConfirmOutcome, String> {
         use solana_signature::Signature;
         let rpc = self.rpc.clone();
         let sig: Signature = signature.parse().map_err(|_| "bad signature".to_string())?;
@@ -374,13 +398,13 @@ impl Broadcaster for RpcBroadcaster {
             let statuses = rpc
                 .get_signature_statuses(&[sig])
                 .map_err(|e| e.to_string())?;
-            Ok(statuses
-                .value
-                .into_iter()
-                .next()
-                .flatten()
-                .map(|s| s.err.is_none())
-                .unwrap_or(false))
+            Ok(match statuses.value.into_iter().next().flatten() {
+                Some(s) => match s.err {
+                    Some(e) => ConfirmOutcome::Failed(format!("{e:?}")),
+                    None => ConfirmOutcome::Confirmed,
+                },
+                None => ConfirmOutcome::Pending,
+            })
         })
         .await
         .map_err(|e| e.to_string())?
@@ -440,8 +464,8 @@ mod tests {
             *seq += 1;
             Ok(format!("sig{seq}"))
         }
-        async fn confirm(&self, _sig: &str) -> Result<bool, String> {
-            Ok(true)
+        async fn confirm(&self, _sig: &str) -> Result<ConfirmOutcome, String> {
+            Ok(ConfirmOutcome::Confirmed)
         }
     }
 

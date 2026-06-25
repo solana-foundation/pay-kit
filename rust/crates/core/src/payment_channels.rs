@@ -208,14 +208,19 @@ pub fn derive_channel_addresses(params: &OpenChannelParams) -> ChannelAddresses 
     }
 }
 
+/// SHA-256 of the distribution preimage `count(u32 LE) ‖ [recipient(32) ‖
+/// bps(u16 LE)]…`, byte-for-byte matching what the on-chain program commits at
+/// `open` (it uses `sol_sha256` over the same layout). MUST stay sha256: the
+/// program rejects a mismatched commitment with `InvalidDistributionHash`.
 pub fn distribution_hash(recipients: &[Distribution]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&(recipients.len() as u32).to_le_bytes());
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update((recipients.len() as u32).to_le_bytes());
     for recipient in recipients {
         hasher.update(recipient.recipient.as_ref());
-        hasher.update(&recipient.bps.to_le_bytes());
+        hasher.update(recipient.bps.to_le_bytes());
     }
-    *hasher.finalize().as_bytes()
+    hasher.finalize().into()
 }
 
 pub fn voucher_message_bytes(
@@ -508,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn distribution_hash_matches_program_preimage_shape() {
+    fn distribution_hash_matches_program_sha256_golden() {
         let recipients = vec![
             Distribution {
                 recipient: pk(1),
@@ -520,17 +525,16 @@ mod tests {
             },
         ];
 
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&2u32.to_le_bytes());
-        hasher.update(pk(1).as_ref());
-        hasher.update(&7_500u16.to_le_bytes());
-        hasher.update(pk(2).as_ref());
-        hasher.update(&2_500u16.to_le_bytes());
-
-        assert_eq!(
-            distribution_hash(&recipients),
-            *hasher.finalize().as_bytes()
-        );
+        // Golden vector pinned as a literal (NOT re-derived in-test, so it would
+        // catch a hash-algorithm or preimage drift): SHA-256 of
+        // `count=2 (u32 LE) ‖ pk(1) ‖ 7500 (u16 LE) ‖ pk(2) ‖ 2500 (u16 LE)`,
+        // the exact bytes the on-chain program commits via `sol_sha256`.
+        let expected: [u8; 32] = [
+            0x54, 0xc8, 0x97, 0x55, 0x87, 0x75, 0x0e, 0x88, 0x21, 0xe9, 0x3f, 0x5d, 0x4a, 0xf6,
+            0x07, 0xd2, 0x0d, 0x55, 0xa5, 0x8b, 0xa1, 0xb9, 0xa4, 0xb4, 0x9f, 0x72, 0xa5, 0x42,
+            0xed, 0x87, 0x4a, 0x3f,
+        ];
+        assert_eq!(distribution_hash(&recipients), expected);
     }
 
     #[test]

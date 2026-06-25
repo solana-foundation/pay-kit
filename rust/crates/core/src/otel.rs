@@ -38,25 +38,33 @@ pub struct OtelOptions<'a> {
     pub trace_filter: &'a str,
 }
 
-/// Holds the OTLP providers alive for the process; flushes them on drop.
+/// Holds the OTLP providers alive for the process; flushes them on drop. Each
+/// is independent — a provider whose endpoint failed to initialize is simply
+/// `None`, so the others still export.
 #[derive(Default)]
 pub struct Guard {
-    providers: Option<(SdkTracerProvider, SdkMeterProvider, SdkLoggerProvider)>,
+    tracer: Option<SdkTracerProvider>,
+    meter: Option<SdkMeterProvider>,
+    logger: Option<SdkLoggerProvider>,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Some((tracer, meter, logger)) = &self.providers {
+        if let Some(tracer) = &self.tracer {
             let _ = tracer.force_flush();
-            let _ = logger.force_flush();
             if let Err(e) = tracer.shutdown() {
                 eprintln!("OTLP trace shutdown failed: {e:?}");
             }
-            if let Err(e) = meter.shutdown() {
-                eprintln!("OTLP metric shutdown failed: {e:?}");
-            }
+        }
+        if let Some(logger) = &self.logger {
+            let _ = logger.force_flush();
             if let Err(e) = logger.shutdown() {
                 eprintln!("OTLP log shutdown failed: {e:?}");
+            }
+        }
+        if let Some(meter) = &self.meter {
+            if let Err(e) = meter.shutdown() {
+                eprintln!("OTLP metric shutdown failed: {e:?}");
             }
         }
     }
@@ -78,47 +86,58 @@ pub fn init(opts: OtelOptions<'_>) -> Guard {
     };
 
     let base = normalize_base(sidecar);
-    match (
-        tracer_provider(&format!("{base}/v1/traces"), resource(&opts)),
-        meter_provider(&format!("{base}/v1/metrics"), resource(&opts)),
-        logger_provider(&format!("{base}/v1/logs"), resource(&opts)),
-    ) {
-        (Ok(tracer_provider), Ok(meter_provider), Ok(logger_provider)) => {
-            let tracer = tracer_provider.tracer(opts.service_name.to_string());
-            // Bridge `tracing` events → OTel logs (→ Loki), correlated to the
-            // active span's trace_id.
-            let logs_layer = OpenTelemetryTracingBridge::new(&logger_provider)
-                .with_filter(EnvFilter::new(opts.trace_filter));
-            let _ = tracing_subscriber::registry()
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_target(false)
-                        .with_thread_names(true)
-                        .with_filter(EnvFilter::new(opts.console_filter)),
-                )
-                .with(
-                    OpenTelemetryLayer::new(tracer).with_filter(EnvFilter::new(opts.trace_filter)),
-                )
-                .with(
-                    MetricsLayer::new(meter_provider.clone())
-                        .with_filter(EnvFilter::new(opts.trace_filter)),
-                )
-                .with(logs_layer)
-                .try_init();
-            tracing::info!(endpoint = %base, service = %opts.service_name, "OTLP export enabled");
-            Guard {
-                providers: Some((tracer_provider, meter_provider, logger_provider)),
-            }
-        }
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-            eprintln!("OTLP init failed ({e}); falling back to console logs");
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::new(opts.console_filter))
+
+    // Initialize each signal independently: a collector endpoint being down for
+    // one (e.g. metrics) must not silence the others. A failed provider is left
+    // `None` and its layer omitted; the console layer is always installed.
+    let tracer_provider = tracer_provider(&format!("{base}/v1/traces"), resource(&opts))
+        .inspect_err(|e| eprintln!("OTLP trace init failed ({e}); traces disabled"))
+        .ok();
+    let meter_provider = meter_provider(&format!("{base}/v1/metrics"), resource(&opts))
+        .inspect_err(|e| eprintln!("OTLP metric init failed ({e}); metrics disabled"))
+        .ok();
+    let logger_provider = logger_provider(&format!("{base}/v1/logs"), resource(&opts))
+        .inspect_err(|e| eprintln!("OTLP log init failed ({e}); OTLP logs disabled"))
+        .ok();
+
+    let trace_layer = tracer_provider.as_ref().map(|tp| {
+        OpenTelemetryLayer::new(tp.tracer(opts.service_name.to_string()))
+            .with_filter(EnvFilter::new(opts.trace_filter))
+    });
+    let metrics_layer = meter_provider
+        .as_ref()
+        .map(|mp| MetricsLayer::new(mp.clone()).with_filter(EnvFilter::new(opts.trace_filter)));
+    // Bridge `tracing` events → OTel logs (→ Loki), correlated to the active
+    // span's trace_id.
+    let logs_layer = logger_provider.as_ref().map(|lp| {
+        OpenTelemetryTracingBridge::new(lp).with_filter(EnvFilter::new(opts.trace_filter))
+    });
+
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
                 .with_target(false)
                 .with_thread_names(true)
-                .try_init();
-            Guard::default()
-        }
+                .with_filter(EnvFilter::new(opts.console_filter)),
+        )
+        .with(trace_layer)
+        .with(metrics_layer)
+        .with(logs_layer)
+        .try_init();
+
+    tracing::info!(
+        endpoint = %base,
+        service = %opts.service_name,
+        traces = tracer_provider.is_some(),
+        metrics = meter_provider.is_some(),
+        logs = logger_provider.is_some(),
+        "OTLP export configured",
+    );
+
+    Guard {
+        tracer: tracer_provider,
+        meter: meter_provider,
+        logger: logger_provider,
     }
 }
 
