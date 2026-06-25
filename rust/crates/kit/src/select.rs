@@ -22,7 +22,7 @@ use crate::mpp::{
     parse_www_authenticate_all, resolve_stablecoin_mint, ChargeRequest, PaymentChallenge,
 };
 use crate::x402::client::exact::parse_x402_accepts;
-use crate::x402::exact::PaymentRequirements;
+use crate::x402::exact::{cluster_for_caip2_network, PaymentRequirements};
 
 /// A token the caller is willing to spend, with the balance currently available.
 ///
@@ -419,17 +419,23 @@ fn mpp_candidate(challenge: &PaymentChallenge, order: usize) -> Option<Candidate
 }
 
 /// Normalize one x402 accept to a [`Candidate`]. Returns `None` for
-/// SOL-denominated or unparseable requirements.
+/// SOL-denominated, unparseable, or non-Solana requirements.
 fn x402_candidate(requirement: &PaymentRequirements, order: usize) -> Option<Candidate> {
     if requirement.currency.eq_ignore_ascii_case("SOL") {
         return None;
     }
-    let network = normalize_network(
+    // Resolve the canonical CAIP-2 `network` (e.g. "solana:EtWT…" for devnet)
+    // — or an explicit `cluster` — to a cluster slug. A plain substring scan
+    // would miss CAIP-2 genesis-hash ids and mislabel them mainnet, so go
+    // through `cluster_for_caip2_network`, which also handles the short forms.
+    // `None` means the offer isn't on a recognized Solana network → skip it.
+    let cluster = cluster_for_caip2_network(&requirement.network).or_else(|| {
         requirement
             .cluster
             .as_deref()
-            .unwrap_or(&requirement.network),
-    );
+            .and_then(cluster_for_caip2_network)
+    })?;
+    let network = normalize_network(cluster);
     let mint = resolve_mint(&requirement.currency, &network)?;
     let amount = requirement.amount.parse::<u64>().ok()?;
     Some(Candidate {
@@ -647,5 +653,36 @@ mod tests {
         let selected =
             select_payment(&headers, Some(&body), &funded, &OrderingStrategy::MppFirst).unwrap();
         assert_eq!(selected.protocol(), "mpp");
+    }
+
+    // Regression: an x402 offer that carries a canonical CAIP-2 devnet network
+    // id and *no* human `cluster` field must be recognized as devnet (not
+    // silently mislabeled mainnet and dropped). Uses the real devnet genesis
+    // hash so the deserializer copies it into `cluster`.
+    #[test]
+    fn caip2_devnet_network_without_cluster_is_recognized() {
+        // solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1 == devnet (x402 SOLANA_DEVNET).
+        let body = serde_json::json!({
+            "x402Version": 1,
+            "accepts": [{
+                "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+                "recipient": RECIPIENT,
+                "amount": "1000",
+                "currency": "USDC",
+                "decimals": 6,
+                "resource": "https://example.com/r",
+            }],
+        })
+        .to_string();
+        let funded = vec![AcceptableToken {
+            mint: mints::USDC_DEVNET.to_string(),
+            network: "devnet".to_string(),
+            available: 1_000_000,
+        }];
+
+        let selected = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+            .expect("CAIP-2 devnet offer should be fundable with devnet USDC");
+        assert_eq!(selected.protocol(), "x402");
+        assert_eq!(selected.mint(), mints::USDC_DEVNET);
     }
 }
