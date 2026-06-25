@@ -96,7 +96,7 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 		"accepts":     accepts,
 	}
 	if ext := a.advertisedExtensions(); ext != nil {
-		envelope["extensions"] = json.RawMessage(ext)
+		envelope["extensions"] = ext
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {

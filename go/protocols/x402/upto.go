@@ -269,7 +269,7 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if cfg.OperatorSigner == nil {
 		return nil, errors.New("operator signer is required")
 	}
-	operator, err := solana.PublicKeyFromBase58(string(cfg.OperatorSigner.Pubkey()))
+	operator, err := solana.PublicKeyFromBase58(cfg.OperatorSigner.Pubkey())
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
@@ -727,7 +727,7 @@ func signPaykitTransaction(ctx context.Context, tx *solana.Transaction, signer u
 	if len(sigBytes) != 64 {
 		return fmt.Errorf("signature length %d, want 64", len(sigBytes))
 	}
-	pubkey, err := solana.PublicKeyFromBase58(string(signer.Pubkey()))
+	pubkey, err := solana.PublicKeyFromBase58(signer.Pubkey())
 	if err != nil {
 		return err
 	}

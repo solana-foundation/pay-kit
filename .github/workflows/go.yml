@@ -27,6 +27,8 @@ jobs:
             github.com/solana-foundation/pay-kit/go/paycore/signer \
             github.com/solana-foundation/pay-kit/go/paycore/paymentchannels \
             github.com/solana-foundation/pay-kit/go/paykit \
+            github.com/solana-foundation/pay-kit/go/paykit/adapters/x402 \
+            github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp \
             github.com/solana-foundation/pay-kit/go/protocols/mpp \
             github.com/solana-foundation/pay-kit/go/protocols/mpp/core \
             github.com/solana-foundation/pay-kit/go/protocols/mpp/wire \
