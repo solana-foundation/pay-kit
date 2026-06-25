@@ -229,7 +229,7 @@ impl X402BatchSettlement {
                 grace_period_seconds: self.config.grace_period_seconds,
                 decimals: Some(self.config.decimals),
                 token_program: Some(pc::pubkey_string(&self.token_program()?)),
-                facilitator: self.operator(),
+                fee_payer: self.operator(),
                 recent_blockhash: None,
                 suggested_deposit: None,
                 minimum_deposit: None,

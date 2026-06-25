@@ -54,7 +54,7 @@ pub struct BatchExtra {
     pub token_program: Option<String>,
 
     /// Operator key that co-signs/sponsors `open` + submits settlement (base58).
-    pub facilitator: String,
+    pub fee_payer: String,
 
     /// Server-prefetched recent blockhash for building `open`/`topUp`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,7 +282,7 @@ mod tests {
                 grace_period_seconds: 900,
                 decimals: Some(6),
                 token_program: None,
-                facilitator: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
                 recent_blockhash: None,
                 suggested_deposit: Some("500000".to_string()),
                 minimum_deposit: Some("100000".to_string()),

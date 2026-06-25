@@ -71,7 +71,7 @@ pub fn verify_upto_payload(
 
     // The meaningful binding: the client must have authorized *this* operator as
     // the channel's voucher signer. (We don't re-check `requirements.extra
-    // .facilitator` — it is always built server-side as `self.operator()`, so the
+    // .fee_payer` — it is always built server-side as `self.operator()`, so the
     // comparison can never fail; the authorized_signer check is what matters.)
     if payload.authorized_signer != operator {
         return Err(Error::Other(
@@ -110,8 +110,8 @@ mod tests {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
                 decimals: Some(6),
                 token_program: None,
-                facilitator: OPERATOR.to_string(),
-                program_id: None,
+                fee_payer: OPERATOR.to_string(),
+                channel_program: None,
                 recent_blockhash: None,
                 valid_after: None,
             },

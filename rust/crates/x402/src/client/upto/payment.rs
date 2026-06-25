@@ -47,9 +47,9 @@ pub async fn build_upto_payload(
         .map_err(|e| Error::Other(format!("invalid payTo: {e}")))?;
     let mint = Pubkey::from_str(&requirements.asset)
         .map_err(|e| Error::Other(format!("invalid asset mint: {e}")))?;
-    let operator = Pubkey::from_str(&requirements.extra.facilitator)
-        .map_err(|e| Error::Other(format!("invalid facilitator: {e}")))?;
-    let program_id = match &requirements.extra.program_id {
+    let operator = Pubkey::from_str(&requirements.extra.fee_payer)
+        .map_err(|e| Error::Other(format!("invalid feePayer: {e}")))?;
+    let program_id = match &requirements.extra.channel_program {
         Some(value) => {
             Pubkey::from_str(value).map_err(|e| Error::Other(format!("invalid programId: {e}")))?
         }
@@ -174,8 +174,8 @@ mod tests {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
                 decimals: Some(6),
                 token_program: None,
-                facilitator: OPERATOR.to_string(),
-                program_id: None,
+                fee_payer: OPERATOR.to_string(),
+                channel_program: None,
                 recent_blockhash: Some(Hash::default().to_string()),
                 valid_after: None,
             },
@@ -225,7 +225,7 @@ mod tests {
 
         let parsed = parse_upto_challenge(&headers, None).unwrap();
         assert_eq!(parsed.amount, "1000000");
-        assert_eq!(parsed.extra.facilitator, OPERATOR);
+        assert_eq!(parsed.extra.fee_payer, OPERATOR);
     }
 
     #[test]

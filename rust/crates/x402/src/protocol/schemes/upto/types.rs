@@ -39,11 +39,11 @@ pub struct UptoExtra {
     pub token_program: Option<String>,
 
     /// Base58 operator/facilitator key authorized to settle.
-    pub facilitator: String,
+    pub fee_payer: String,
 
     /// Channel program id; defaults to the canonical deployment when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub program_id: Option<String>,
+    pub channel_program: Option<String>,
 
     /// Server-prefetched recent blockhash for building the open transaction.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,8 +229,8 @@ mod tests {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
                 decimals: Some(6),
                 token_program: None,
-                facilitator: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
-                program_id: None,
+                fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                channel_program: None,
                 recent_blockhash: None,
                 valid_after: None,
             },
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(json["amount"], "1000000");
         assert_eq!(json["maxTimeoutSeconds"], 300);
         assert_eq!(json["extra"]["profiles"][0], "payment-channel");
-        assert_eq!(json["extra"]["facilitator"], req.extra.facilitator);
+        assert_eq!(json["extra"]["feePayer"], req.extra.fee_payer);
 
         let back: UptoRequirements = serde_json::from_value(json).unwrap();
         assert_eq!(back.max_amount().unwrap(), 1_000_000);
