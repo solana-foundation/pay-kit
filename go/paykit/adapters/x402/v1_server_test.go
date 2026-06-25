@@ -9,6 +9,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
 // Plain legacy SVM network slugs used to construct v1 credentials in these
@@ -27,13 +28,13 @@ func v1Credential(t *testing.T, v2Sig, network string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var v2 Credential
+	var v2 proto.Credential
 	if err := json.Unmarshal(raw, &v2); err != nil {
 		t.Fatal(err)
 	}
-	v1 := Credential{
-		X402Version: x402VersionLegacy,
-		Scheme:      exactScheme,
+	v1 := proto.Credential{
+		X402Version: proto.X402VersionLegacy,
+		Scheme:      proto.ExactScheme,
 		Network:     network,
 		Payload:     v2.Payload,
 	}
@@ -58,21 +59,21 @@ func TestVerifyAndSettleV1HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected v1 settle to succeed, got %v", err)
 	}
-	if pmt.SettlementHeaders[paymentResponseHeaderLegacy] == "" {
+	if pmt.SettlementHeaders[proto.PaymentResponseHeaderLegacy] == "" {
 		t.Error("v1 settle must emit the legacy x-payment-response header")
 	}
-	if pmt.SettlementHeaders[paymentResponseHeader] != "" {
+	if pmt.SettlementHeaders[proto.PaymentResponseHeader] != "" {
 		t.Error("v1 settle must not emit the canonical payment-response header")
 	}
-	if pmt.SettlementHeaders[settlementHeader] != sampleSig {
+	if pmt.SettlementHeaders[proto.SettlementHeader] != sampleSig {
 		t.Error("settlement signature header missing")
 	}
 	// The decoded v1 settlement body carries success + payer + network.
-	body, err := base64.StdEncoding.DecodeString(pmt.SettlementHeaders[paymentResponseHeaderLegacy])
+	body, err := base64.StdEncoding.DecodeString(pmt.SettlementHeaders[proto.PaymentResponseHeaderLegacy])
 	if err != nil {
 		t.Fatal(err)
 	}
-	var resp SettlementResponse
+	var resp proto.SettlementResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestVerifyAndSettleV1PrefersV2Header(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected v2 header to win and settle, got %v", err)
 	}
-	if pmt.SettlementHeaders[paymentResponseHeader] == "" {
+	if pmt.SettlementHeaders[proto.PaymentResponseHeader] == "" {
 		t.Error("v2 settle must emit the canonical payment-response header")
 	}
 }
@@ -107,9 +108,9 @@ func TestVerifyAndSettleV1RejectsWrongScheme(t *testing.T) {
 	a, gate, v2Sig := settleFixture(t, fake)
 
 	raw, _ := base64.StdEncoding.DecodeString(v2Sig)
-	var v2 Credential
+	var v2 proto.Credential
 	_ = json.Unmarshal(raw, &v2)
-	bad := Credential{X402Version: x402VersionLegacy, Scheme: "not-exact", Network: legacyNetworkDevnet, Payload: v2.Payload}
+	bad := proto.Credential{X402Version: proto.X402VersionLegacy, Scheme: "not-exact", Network: legacyNetworkDevnet, Payload: v2.Payload}
 	badJSON, _ := json.Marshal(bad)
 
 	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{
@@ -148,7 +149,7 @@ func TestVerifyAndSettleStillRejectsUnknownVersion(t *testing.T) {
 	}
 	// A v1-shaped envelope (top-level scheme/network) carrying an unknown
 	// version must still be rejected: dual-accept does not widen the gate.
-	bad := Credential{X402Version: 9, Scheme: exactScheme, Network: legacyNetworkDevnet}
+	bad := proto.Credential{X402Version: 9, Scheme: proto.ExactScheme, Network: legacyNetworkDevnet}
 	badJSON, _ := json.Marshal(bad)
 	g := paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{
@@ -172,13 +173,13 @@ func TestVerifyLegacyBindingDirect(t *testing.T) {
 	adapter := a.(*Adapter)
 	g := &paykit.Gate{Amount: paykit.MustParseUSD("0.10")}
 
-	if err := adapter.verifyLegacyBinding(g, &Credential{Scheme: exactScheme, Network: legacyNetworkDevnet}); err != nil {
+	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: proto.ExactScheme, Network: legacyNetworkDevnet}); err != nil {
 		t.Errorf("devnet slug against localnet route should bind: %v", err)
 	}
-	if err := adapter.verifyLegacyBinding(g, &Credential{Scheme: "bad", Network: legacyNetworkDevnet}); err == nil {
+	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: "bad", Network: legacyNetworkDevnet}); err == nil {
 		t.Error("non-exact scheme must be rejected")
 	}
-	if err := adapter.verifyLegacyBinding(g, &Credential{Scheme: exactScheme, Network: legacyNetworkMainnet}); err == nil {
+	if err := adapter.verifyLegacyBinding(g, &proto.Credential{Scheme: proto.ExactScheme, Network: legacyNetworkMainnet}); err == nil {
 		t.Error("mainnet slug against devnet route must be rejected")
 	}
 }

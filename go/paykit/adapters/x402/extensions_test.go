@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -22,7 +23,7 @@ func TestAdvertisedExtensions(t *testing.T) {
 		if len(raw) == 0 {
 			t.Fatal("expected an advertisement")
 		}
-		var ext PaymentExtensions
+		var ext proto.PaymentExtensions
 		if err := json.Unmarshal(raw, &ext); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
@@ -44,11 +45,11 @@ func TestRawAccepted(t *testing.T) {
 }
 
 func TestVerifyError(t *testing.T) {
-	withMsg := verifyFail("invalid_exact_svm_payload_compute_limit", "compute unit limit exceeds cap")
+	withMsg := proto.VerifyFail("invalid_exact_svm_payload_compute_limit", "compute unit limit exceeds cap")
 	if got := withMsg.Error(); got != "x402: compute unit limit exceeds cap" {
 		t.Fatalf("with message = %q", got)
 	}
-	codeOnly := &verifyError{Code: "charge_request_mismatch"}
+	codeOnly := &proto.VerifyError{Code: "charge_request_mismatch"}
 	if got := codeOnly.Error(); got != "x402: charge_request_mismatch" {
 		t.Fatalf("code-only = %q", got)
 	}
@@ -56,9 +57,9 @@ func TestVerifyError(t *testing.T) {
 
 func TestPaymentExtensionsMarshalJSON(t *testing.T) {
 	t.Run("payment-identifier under kebab key", func(t *testing.T) {
-		ext := PaymentExtensions{
-			PaymentIdentifier: &PaymentIdentifierExtension{
-				Info: PaymentIdentifierInfo{Required: boolPtr(true)},
+		ext := proto.PaymentExtensions{
+			PaymentIdentifier: &proto.PaymentIdentifierExtension{
+				Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)},
 			},
 		}
 		raw, err := json.Marshal(ext)
@@ -69,20 +70,20 @@ func TestPaymentExtensionsMarshalJSON(t *testing.T) {
 		if err := json.Unmarshal(raw, &back); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if _, ok := back[PaymentIdentifierKey]; !ok {
-			t.Fatalf("expected kebab key %q, got %s", PaymentIdentifierKey, raw)
+		if _, ok := back[proto.PaymentIdentifierKey]; !ok {
+			t.Fatalf("expected kebab key %q, got %s", proto.PaymentIdentifierKey, raw)
 		}
 		if _, ok := back["paymentIdentifier"]; ok {
 			t.Fatalf("camelCase key must not appear: %s", raw)
 		}
 		// required-only serializes with no id key (skip_serializing_if None).
-		if got := string(back[PaymentIdentifierKey]); got != `{"info":{"required":true}}` {
+		if got := string(back[proto.PaymentIdentifierKey]); got != `{"info":{"required":true}}` {
 			t.Fatalf("required-only shape = %s", got)
 		}
 	})
 
 	t.Run("unknown extensions preserved verbatim", func(t *testing.T) {
-		ext := PaymentExtensions{
+		ext := proto.PaymentExtensions{
 			Other: map[string]json.RawMessage{
 				"future-extension": json.RawMessage(`{"hello":"world"}`),
 			},
@@ -103,7 +104,7 @@ func TestPaymentExtensionsMarshalJSON(t *testing.T) {
 
 func TestPaymentExtensionsUnmarshalJSON(t *testing.T) {
 	in := json.RawMessage(`{"payment-identifier":{"info":{"required":true,"id":"pay_0123456789abcdef"}},"future-extension":{"x":1}}`)
-	var ext PaymentExtensions
+	var ext proto.PaymentExtensions
 	if err := json.Unmarshal(in, &ext); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -116,19 +117,19 @@ func TestPaymentExtensionsUnmarshalJSON(t *testing.T) {
 	if got := string(ext.Other["future-extension"]); got != `{"x":1}` {
 		t.Fatalf("unknown extension verbatim = %s", got)
 	}
-	if _, ok := ext.Other[PaymentIdentifierKey]; ok {
+	if _, ok := ext.Other[proto.PaymentIdentifierKey]; ok {
 		t.Fatal("payment-identifier leaked into Other")
 	}
 
 	t.Run("malformed object errors", func(t *testing.T) {
-		var bad PaymentExtensions
+		var bad proto.PaymentExtensions
 		if err := json.Unmarshal([]byte(`not-an-object`), &bad); err == nil {
 			t.Fatal("expected error for non-object")
 		}
 	})
 
 	t.Run("malformed payment-identifier errors", func(t *testing.T) {
-		var bad PaymentExtensions
+		var bad proto.PaymentExtensions
 		if err := json.Unmarshal([]byte(`{"payment-identifier":[]}`), &bad); err == nil {
 			t.Fatal("expected error for non-object payment-identifier")
 		}
@@ -136,17 +137,17 @@ func TestPaymentExtensionsUnmarshalJSON(t *testing.T) {
 }
 
 func TestPaymentExtensionsIsEmpty(t *testing.T) {
-	var nilExt *PaymentExtensions
+	var nilExt *proto.PaymentExtensions
 	if !nilExt.IsEmpty() {
 		t.Fatal("nil must be empty")
 	}
-	if !(&PaymentExtensions{}).IsEmpty() {
+	if !(&proto.PaymentExtensions{}).IsEmpty() {
 		t.Fatal("zero value must be empty")
 	}
-	if (&PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{}}).IsEmpty() {
+	if (&proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{}}).IsEmpty() {
 		t.Fatal("with payment-identifier must not be empty")
 	}
-	if (&PaymentExtensions{Other: map[string]json.RawMessage{"k": json.RawMessage("1")}}).IsEmpty() {
+	if (&proto.PaymentExtensions{Other: map[string]json.RawMessage{"k": json.RawMessage("1")}}).IsEmpty() {
 		t.Fatal("with unknown extension must not be empty")
 	}
 }
@@ -154,14 +155,14 @@ func TestPaymentExtensionsIsEmpty(t *testing.T) {
 func TestRequiresPaymentIdentifier(t *testing.T) {
 	cases := []struct {
 		name string
-		ext  *PaymentExtensions
+		ext  *proto.PaymentExtensions
 		want bool
 	}{
 		{"nil", nil, false},
-		{"no payment-identifier", &PaymentExtensions{}, false},
-		{"required nil", &PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{}}, false},
-		{"required false", &PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{Required: boolPtr(false)}}}, false},
-		{"required true", &PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{Required: boolPtr(true)}}}, true},
+		{"no payment-identifier", &proto.PaymentExtensions{}, false},
+		{"required nil", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{}}, false},
+		{"required false", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(false)}}}, false},
+		{"required true", &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)}}}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,14 +174,14 @@ func TestRequiresPaymentIdentifier(t *testing.T) {
 }
 
 func TestPaymentIdentifierID(t *testing.T) {
-	var nilExt *PaymentExtensions
+	var nilExt *proto.PaymentExtensions
 	if nilExt.PaymentIdentifierID() != "" {
 		t.Fatal("nil id must be empty")
 	}
-	if (&PaymentExtensions{}).PaymentIdentifierID() != "" {
+	if (&proto.PaymentExtensions{}).PaymentIdentifierID() != "" {
 		t.Fatal("absent id must be empty")
 	}
-	ext := &PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{Id: "pay_0123456789abcdef"}}}
+	ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Id: "pay_0123456789abcdef"}}}
 	if ext.PaymentIdentifierID() != "pay_0123456789abcdef" {
 		t.Fatalf("id = %q", ext.PaymentIdentifierID())
 	}
@@ -188,14 +189,14 @@ func TestPaymentIdentifierID(t *testing.T) {
 
 func TestWithPaymentIdentifierID(t *testing.T) {
 	t.Run("creates entry when server advertised none", func(t *testing.T) {
-		ext := &PaymentExtensions{}
+		ext := &proto.PaymentExtensions{}
 		ext.WithPaymentIdentifierID("pay_0123456789abcdef")
 		if ext.PaymentIdentifierID() != "pay_0123456789abcdef" {
 			t.Fatalf("id = %q", ext.PaymentIdentifierID())
 		}
 	})
 	t.Run("preserves server required when filling id", func(t *testing.T) {
-		ext := &PaymentExtensions{PaymentIdentifier: &PaymentIdentifierExtension{Info: PaymentIdentifierInfo{Required: boolPtr(true)}}}
+		ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Required: boolPtr(true)}}}
 		ext.WithPaymentIdentifierID("pay_0123456789abcdef")
 		if !ext.RequiresPaymentIdentifier() {
 			t.Fatal("required flag dropped")
@@ -207,19 +208,19 @@ func TestWithPaymentIdentifierID(t *testing.T) {
 }
 
 func TestKeys(t *testing.T) {
-	var nilExt *PaymentExtensions
+	var nilExt *proto.PaymentExtensions
 	if nilExt.Keys() != nil {
 		t.Fatal("nil keys must be nil")
 	}
-	ext := &PaymentExtensions{
-		PaymentIdentifier: &PaymentIdentifierExtension{},
+	ext := &proto.PaymentExtensions{
+		PaymentIdentifier: &proto.PaymentIdentifierExtension{},
 		Other: map[string]json.RawMessage{
 			"zeta-extension": json.RawMessage("1"),
 			"alpha-ext":      json.RawMessage("2"),
 		},
 	}
 	keys := ext.Keys()
-	want := []string{"alpha-ext", PaymentIdentifierKey, "zeta-extension"}
+	want := []string{"alpha-ext", proto.PaymentIdentifierKey, "zeta-extension"}
 	if len(keys) != len(want) {
 		t.Fatalf("keys = %v", keys)
 	}
@@ -233,7 +234,7 @@ func TestKeys(t *testing.T) {
 func TestEchoExtensions(t *testing.T) {
 	t.Run("nil when none advertised", func(t *testing.T) {
 		for _, in := range []json.RawMessage{nil, json.RawMessage(""), json.RawMessage("null")} {
-			got, err := EchoExtensions(in)
+			got, err := proto.EchoExtensions(in)
 			if err != nil {
 				t.Fatalf("echo(%q): %v", in, err)
 			}
@@ -244,7 +245,7 @@ func TestEchoExtensions(t *testing.T) {
 	})
 	t.Run("preserves unknown verbatim and surfaces payment-identifier", func(t *testing.T) {
 		in := json.RawMessage(`{"payment-identifier":{"info":{"required":true}},"future-extension":{"keep":true}}`)
-		got, err := EchoExtensions(in)
+		got, err := proto.EchoExtensions(in)
 		if err != nil {
 			t.Fatalf("echo: %v", err)
 		}
@@ -256,7 +257,7 @@ func TestEchoExtensions(t *testing.T) {
 		}
 	})
 	t.Run("error on malformed inbound", func(t *testing.T) {
-		if _, err := EchoExtensions(json.RawMessage(`{`)); err == nil {
+		if _, err := proto.EchoExtensions(json.RawMessage(`{`)); err == nil {
 			t.Fatal("expected error")
 		}
 	})
@@ -275,8 +276,8 @@ func TestIsValidPaymentIdentifierID(t *testing.T) {
 		{"", false},                // empty
 	}
 	for _, c := range cases {
-		if got := IsValidPaymentIdentifierID(c.id); got != c.want {
-			t.Fatalf("IsValidPaymentIdentifierID(%q) = %v want %v", c.id, got, c.want)
+		if got := proto.IsValidPaymentIdentifierID(c.id); got != c.want {
+			t.Fatalf("proto.IsValidPaymentIdentifierID(%q) = %v want %v", c.id, got, c.want)
 		}
 	}
 	// 128 chars is the max bound; 129 must be rejected.
@@ -284,29 +285,29 @@ func TestIsValidPaymentIdentifierID(t *testing.T) {
 	for i := range long {
 		long[i] = 'a'
 	}
-	if IsValidPaymentIdentifierID(string(long[:128])) != true {
+	if proto.IsValidPaymentIdentifierID(string(long[:128])) != true {
 		t.Fatal("128-char id must be valid")
 	}
-	if IsValidPaymentIdentifierID(string(long)) != false {
+	if proto.IsValidPaymentIdentifierID(string(long)) != false {
 		t.Fatal("129-char id must be invalid")
 	}
 }
 
 func TestGeneratePaymentIdentifierID(t *testing.T) {
-	id := GeneratePaymentIdentifierID()
+	id := proto.GeneratePaymentIdentifierID()
 	if len(id) != 36 { // "pay_" + 32 hex
 		t.Fatalf("len = %d (%q)", len(id), id)
 	}
 	if id[:4] != "pay_" {
 		t.Fatalf("missing pay_ prefix: %q", id)
 	}
-	if !IsValidPaymentIdentifierID(id) {
+	if !proto.IsValidPaymentIdentifierID(id) {
 		t.Fatalf("generated id violates spec pattern: %q", id)
 	}
 	// Distinct across calls (idempotency keys must be unique per request).
 	seen := map[string]bool{}
 	for i := 0; i < 64; i++ {
-		g := GeneratePaymentIdentifierID()
+		g := proto.GeneratePaymentIdentifierID()
 		if seen[g] {
 			t.Fatalf("collision: %q", g)
 		}

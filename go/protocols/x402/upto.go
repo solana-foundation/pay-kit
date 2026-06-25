@@ -14,17 +14,28 @@ import (
 	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
+	"github.com/shopspring/decimal"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
-	"github.com/solana-foundation/pay-kit/go/paykit"
 	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
+type uptoNetwork interface {
+	DefaultRPCURL() string
+	MintsLabel() string
+	CAIP2() string
+}
+
+type uptoSigner interface {
+	Pubkey() string
+	Sign(ctx context.Context, msg []byte) ([]byte, error)
+}
+
 const (
-	uptoScheme                       = "upto"
-	profilePaymentChannel            = "payment-channel"
-	uptoErrorSettlementExceedsAmount = "invalid_upto_svm_payload_settlement_exceeds_amount"
+	UptoScheme                       = "upto"
+	ProfilePaymentChannel            = "payment-channel"
+	UptoErrorSettlementExceedsAmount = "invalid_upto_svm_payload_settlement_exceeds_amount"
 )
 
 // UptoExtra is the extra object on an x402 upto payment requirement.
@@ -136,7 +147,7 @@ type UptoSettlementResponse struct {
 
 // VerifyUptoPayload validates the payload against the route-pinned requirement.
 func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, operator string, now int64) error {
-	if payload.Profile != profilePaymentChannel {
+	if payload.Profile != ProfilePaymentChannel {
 		return fmt.Errorf("invalid payload type: %s", payload.Profile)
 	}
 	advertised := false
@@ -182,7 +193,7 @@ func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, opera
 // AssertSettlementWithinCeiling enforces actual <= max at settlement.
 func AssertSettlementWithinCeiling(actual, max uint64) error {
 	if actual > max {
-		return errors.New(uptoErrorSettlementExceedsAmount)
+		return errors.New(UptoErrorSettlementExceedsAmount)
 	}
 	return nil
 }
@@ -206,14 +217,14 @@ type UptoConfig struct {
 	Recipient               string
 	Currency                string
 	Decimals                uint8
-	Network                 paykit.Network
+	Network                 uptoNetwork
 	RPCURL                  string
 	Resource                string
 	Description             string
 	MaxTimeoutSeconds       uint64
 	TokenProgram            string
 	ChannelProgram          string
-	OperatorSigner          paykit.Signer
+	OperatorSigner          uptoSigner
 	RecentBlockhashProvider func() (string, error)
 }
 
@@ -250,10 +261,10 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 		cfg.Currency = "USDC"
 	}
 	if cfg.Decimals == 0 {
-		cfg.Decimals = stablecoinDecimals
+		cfg.Decimals = StablecoinDecimals
 	}
 	if cfg.MaxTimeoutSeconds == 0 {
-		cfg.MaxTimeoutSeconds = defaultMaxTimeoutSeconds
+		cfg.MaxTimeoutSeconds = DefaultMaxTimeoutSeconds
 	}
 	if cfg.OperatorSigner == nil {
 		return nil, errors.New("operator signer is required")
@@ -302,14 +313,14 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 	}
 	decimals := u.cfg.Decimals
 	return UptoRequirements{
-		Scheme:            uptoScheme,
+		Scheme:            UptoScheme,
 		Network:           u.cfg.Network.CAIP2(),
 		Amount:            baseUnits,
 		Asset:             mint,
 		PayTo:             u.cfg.Recipient,
 		MaxTimeoutSeconds: u.cfg.MaxTimeoutSeconds,
 		Extra: UptoExtra{
-			Profiles:       []string{profilePaymentChannel},
+			Profiles:       []string{ProfilePaymentChannel},
 			Decimals:       &decimals,
 			TokenProgram:   tokenProgram,
 			FeePayer:       u.Operator(),
@@ -333,7 +344,7 @@ func (u *X402Upto) Upto(maxAmount string) (UptoRequiredEnvelope, error) {
 	if u.cfg.Resource != "" {
 		resource = &ResourceRef{Type: "http", URL: u.cfg.Resource}
 	}
-	return UptoRequiredEnvelope{X402Version: x402Version, Resource: resource, Accepts: []UptoRequirements{req}}, nil
+	return UptoRequiredEnvelope{X402Version: X402Version, Resource: resource, Accepts: []UptoRequirements{req}}, nil
 }
 
 // PaymentRequiredHeader returns the PAYMENT-REQUIRED header value.
@@ -346,7 +357,7 @@ func (u *X402Upto) PaymentRequiredHeader(maxAmount string) (string, string, erro
 	if err != nil {
 		return "", "", err
 	}
-	return paymentRequiredHeader, base64.StdEncoding.EncodeToString(raw), nil
+	return PaymentRequiredHeader, base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // SettlementHeader returns the PAYMENT-RESPONSE header value.
@@ -355,7 +366,7 @@ func (u *X402Upto) SettlementHeader(settlement UptoSettlementResponse) (string, 
 	if err != nil {
 		return "", "", err
 	}
-	return paymentResponseHeader, base64.StdEncoding.EncodeToString(raw), nil
+	return PaymentResponseHeader, base64.StdEncoding.EncodeToString(raw), nil
 }
 
 // ParseUptoPaymentSignature decodes a PAYMENT-SIGNATURE header.
@@ -368,7 +379,7 @@ func ParseUptoPaymentSignature(header string) (UptoSignatureEnvelope, error) {
 	if err := json.Unmarshal(decoded, &envelope); err != nil {
 		return UptoSignatureEnvelope{}, fmt.Errorf("invalid 402 response: %w", err)
 	}
-	if envelope.Scheme != uptoScheme {
+	if envelope.Scheme != UptoScheme {
 		return UptoSignatureEnvelope{}, fmt.Errorf("invalid payload type: %s", envelope.Scheme)
 	}
 	return envelope, nil
@@ -704,7 +715,7 @@ func signerIsRequired(tx *solana.Transaction, key solana.PublicKey) bool {
 	return false
 }
 
-func signPaykitTransaction(ctx context.Context, tx *solana.Transaction, signer paykit.Signer) error {
+func signPaykitTransaction(ctx context.Context, tx *solana.Transaction, signer uptoSigner) error {
 	message, err := tx.Message.MarshalBinary()
 	if err != nil {
 		return err
@@ -736,15 +747,13 @@ func signPaykitTransaction(ctx context.Context, tx *solana.Transaction, signer p
 }
 
 func parseDecimalUnits(amount string, decimals uint8) (string, error) {
-	price, err := paykit.ParseUSD(amount)
+	d, err := decimal.NewFromString(amount)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid amount %q: %w", amount, err)
 	}
-	return price.Amount().Shift(int32(decimals)).Truncate(0).String(), nil
+	return d.Shift(int32(decimals)).Truncate(0).String(), nil
 }
 
-func emptyDistributionHash() []byte {
-	// blake3(0u32.to_le_bytes()) — the distribution hash for zero recipients,
-	// matching Rust solana_pay_core::payment_channels::distribution_hash(&[]).
-	return []byte{236, 43, 208, 59, 248, 107, 147, 95, 163, 77, 113, 173, 126, 187, 4, 159, 31, 16, 248, 125, 52, 62, 82, 21, 17, 216, 249, 230, 98, 86, 32, 205}
-}
+func emptyDistributionHash() []byte { return EmptyDistributionHash[:] }
+
+var EmptyDistributionHash = [32]byte{236, 43, 208, 59, 248, 107, 147, 95, 163, 77, 113, 173, 126, 187, 4, 159, 31, 16, 248, 125, 52, 62, 82, 21, 17, 216, 249, 230, 98, 86, 32, 205}

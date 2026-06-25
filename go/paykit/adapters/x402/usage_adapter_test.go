@@ -1,21 +1,91 @@
 package x402
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
+
+// uptoTestRPC wraps testutil.FakeRPC with channel account data for the
+// upto end-to-end test.
+type uptoTestRPC struct {
+	*testutil.FakeRPC
+	mu       sync.Mutex
+	channels map[string][]byte
+}
+
+func newUptoTestRPC() *uptoTestRPC {
+	return &uptoTestRPC{
+		FakeRPC:  testutil.NewFakeRPC(),
+		channels: map[string][]byte{},
+	}
+}
+
+func (r *uptoTestRPC) addChannel(account solana.PublicKey, channel *pcgen.Channel) {
+	buf := new(bytes.Buffer)
+	enc := bin.NewBorshEncoder(buf)
+	if err := channel.MarshalWithEncoder(enc); err != nil {
+		panic(err)
+	}
+	r.mu.Lock()
+	r.channels[account.String()] = buf.Bytes()
+	r.mu.Unlock()
+}
+
+func (r *uptoTestRPC) GetAccountInfoWithOpts(ctx context.Context, account solana.PublicKey, opts *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	r.mu.Lock()
+	data, ok := r.channels[account.String()]
+	r.mu.Unlock()
+	if ok {
+		return &rpc.GetAccountInfoResult{
+			Value: &rpc.Account{
+				Owner: paymentchannels.ProgramPubkey(),
+				Data:  rpc.DataBytesOrJSONFromBytes(data),
+			},
+		}, nil
+	}
+	return r.FakeRPC.GetAccountInfoWithOpts(ctx, account, opts)
+}
+
+type testSigner struct {
+	priv solana.PrivateKey
+}
+
+func (s testSigner) Pubkey() paykit.Address { return paykit.Address(s.priv.PublicKey().String()) }
+
+func (s testSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
+	sig, err := s.priv.Sign(msg)
+	if err != nil {
+		return nil, err
+	}
+	return sig[:], nil
+}
+
+func (s testSigner) IsDemo() bool { return false }
+
+type testPayerSigner struct{ priv solana.PrivateKey }
+
+func (s testPayerSigner) PublicKey() solana.PublicKey { return s.priv.PublicKey() }
+
+func (s testPayerSigner) Sign(msg []byte) (solana.Signature, error) {
+	return s.priv.Sign(msg)
+}
 
 func TestNewUsageAdapter(t *testing.T) {
 	signer := testutil.NewPrivateKey()
@@ -23,7 +93,7 @@ func TestNewUsageAdapter(t *testing.T) {
 		Network:     paykit.SolanaLocalnet,
 		RPCURL:      "http://localhost:8899",
 		Accept:      []paykit.Protocol{paykit.X402},
-		Operator:    paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator:    paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 		Stablecoins: []paykit.Stablecoin{paykit.USDC},
 	}
 	adapter, err := NewUsageAdapter(cfg)
@@ -48,7 +118,7 @@ func TestUsageAdapterDetectUsage(t *testing.T) {
 	cfg := paykit.Config{
 		Network:  paykit.SolanaLocalnet,
 		RPCURL:   "http://localhost:8899",
-		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	req := &paykit.AdapterRequest{PaymentSig: "abc"}
@@ -70,7 +140,7 @@ func TestUsageAdapterChallengeHeaders(t *testing.T) {
 	cfg := paykit.Config{
 		Network:                 paykit.SolanaLocalnet,
 		RPCURL:                  "http://localhost:8899",
-		Operator:                paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator:                paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	}
 	adapter, _ := NewUsageAdapter(cfg)
@@ -89,7 +159,7 @@ func TestUsageAdapterAcceptsEntry(t *testing.T) {
 	cfg := paykit.Config{
 		Network:  paykit.SolanaLocalnet,
 		RPCURL:   "http://localhost:8899",
-		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}
@@ -109,12 +179,39 @@ func TestUsageAdapterAcceptsEntry(t *testing.T) {
 	}
 }
 
+func TestUptoChannelBorshRoundtrip(t *testing.T) {
+	ch := &pcgen.Channel{
+		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+		Version:          0,
+		Bump:             0,
+		Status:           uint8(pcgen.ChannelStatus_Open),
+		Salt:             7,
+		Deposit:          1_000_000,
+		GracePeriod:      900,
+		DistributionHash: proto.EmptyDistributionHash,
+	}
+	buf := new(bytes.Buffer)
+	enc := bin.NewBorshEncoder(buf)
+	if err := ch.MarshalWithEncoder(enc); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	dec := bin.NewBorshDecoder(buf.Bytes())
+	var decoded pcgen.Channel
+	if err := decoded.UnmarshalWithDecoder(dec); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(decoded.DistributionHash[:], proto.EmptyDistributionHash[:]) {
+		t.Fatalf("DistributionHash mismatch after roundtrip: got %x", decoded.DistributionHash[:])
+	}
+	t.Logf("encoded %d bytes, decoded DistributionHash = %x", buf.Len(), decoded.DistributionHash[:])
+}
+
 func TestUsageAdapterVerifyOpenEmptyHeader(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	cfg := paykit.Config{
 		Network:  paykit.SolanaLocalnet,
 		RPCURL:   "http://localhost:8899",
-		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}
@@ -133,7 +230,7 @@ func TestUsageAdapterSettleActualWrongType(t *testing.T) {
 	cfg := paykit.Config{
 		Network:  paykit.SolanaLocalnet,
 		RPCURL:   "http://localhost:8899",
-		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: signerSigner{signer}},
+		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 	}
 	adapter, _ := NewUsageAdapter(cfg)
 	_, err := adapter.SettleActual(context.Background(), "wrong-type", 100)
@@ -148,53 +245,84 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 	payee := operatorKey.PublicKey()
 	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
 	salt := uint64(7)
-	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
+	channel, _, err := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
+	if err != nil {
+		t.Fatalf("FindChannelPDA: %v", err)
+	}
 	params := paymentchannels.OpenChannelParams{
 		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
-	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
-	solanatx.SignTransaction(tx, payerSigner{payerKey})
-	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	openIx, err := paymentchannels.BuildOpenInstruction(params)
+	if err != nil {
+		t.Fatalf("BuildOpenInstruction: %v", err)
+	}
+	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
+	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(payerKey.PublicKey()))
+	if err != nil {
+		t.Fatalf("NewTransaction: %v", err)
+	}
+	if err := solanatx.SignTransaction(tx, testPayerSigner{payerKey}); err != nil {
+		t.Fatalf("SignTransaction: %v", err)
+	}
+	txBase64, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("EncodeTransactionBase64: %v", err)
+	}
 
 	fakeRPC := newUptoTestRPC()
-	distHash := emptyDistributionHash()
-	var distHashArr [32]byte
-	copy(distHashArr[:], distHash)
 	fakeRPC.addChannel(channel, &pcgen.Channel{
-		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
-		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
-		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+		Version:          0,
+		Bump:             0,
+		Status:           uint8(pcgen.ChannelStatus_Open),
+		Salt:             salt,
+		Deposit:          1_000_000,
+		GracePeriod:      900,
+		DistributionHash: proto.EmptyDistributionHash,
+		Payer:            payerKey.PublicKey(),
+		Payee:            payee,
+		AuthorizedSigner: operatorKey.PublicKey(),
+		Mint:             mint,
 	})
 
 	cfg := paykit.Config{
 		Network:                 paykit.SolanaLocalnet,
 		RPCURL:                  "http://localhost:8899",
 		Accept:                  []paykit.Protocol{paykit.X402},
-		Operator:                paykit.Operator{Recipient: paykit.Address(payee.String()), Signer: signerSigner{operatorKey}},
+		Operator:                paykit.Operator{Recipient: paykit.Address(payee.String()), Signer: testSigner{operatorKey}},
 		Stablecoins:             []paykit.Stablecoin{paykit.USDC},
-		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+		RecentBlockhashProvider: func() (string, error) { return blockhash.String(), nil },
 	}
 	adapter, err := NewUsageAdapter(cfg)
 	if err != nil {
 		t.Fatalf("NewUsageAdapter: %v", err)
 	}
-	// Inject the fake RPC by reaching into the engine.
 	ua := adapter.(*usageAdapter)
 	ua.engine.SetRPCForTests(fakeRPC)
 
-	envelope := UptoSignatureEnvelope{
-		X402Version: x402Version, Scheme: uptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-		Payload: UptoPayload{
-			Profile: profilePaymentChannel, From: payerKey.PublicKey().String(),
-			MaxAmount: "1000000", ExpiresAt: time.Now().Add(time.Hour).Unix(),
-			ChannelID: channel.String(), Deposit: "1000000",
-			AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
+	envelope := proto.UptoSignatureEnvelope{
+		X402Version: proto.X402Version,
+		Scheme:      proto.UptoScheme,
+		Network:     "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+		Payload: proto.UptoPayload{
+			Profile:          proto.ProfilePaymentChannel,
+			From:             payerKey.PublicKey().String(),
+			MaxAmount:        "1000000",
+			ExpiresAt:        time.Now().Add(time.Hour).Unix(),
+			ValidAfter:       0,
+			Nonce:            "n-1",
+			ChannelID:        channel.String(),
+			Deposit:          "1000000",
+			AuthorizedSigner: operatorKey.PublicKey().String(),
+			OpenTransaction:  txBase64,
 		},
 	}
-	raw, _ := json.Marshal(envelope)
+	raw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 	header := base64.StdEncoding.EncodeToString(raw)
 
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"}

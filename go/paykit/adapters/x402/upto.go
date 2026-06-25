@@ -6,22 +6,24 @@ import (
 	"errors"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
-// usageAdapter bridges the x402 upto engine to the paykit.UsageAdapter
-// interface, translating between paykit-level types (Gate, AdapterRequest)
-// and the x402-level types (UptoRequirements, UptoPayload, etc.). It is
-// constructed from a paykit.Config and registered via paykit.RegisterUsageAdapter
-// in the package init().
+type uptoSignerWrapper struct {
+	signer paykit.Signer
+}
+
+func (w uptoSignerWrapper) Pubkey() string { return string(w.signer.Pubkey()) }
+
+func (w uptoSignerWrapper) Sign(ctx context.Context, msg []byte) ([]byte, error) {
+	return w.signer.Sign(ctx, msg)
+}
+
 type usageAdapter struct {
-	engine *X402Upto
+	engine *proto.X402Upto
 	cfg    paykit.Config
 }
 
-// NewUsageAdapter builds a paykit.UsageAdapter from the resolved config.
-// It constructs an X402Upto engine with the operator signer, recipient,
-// network, and currency from the paykit config. Returns nil (no error)
-// when x402 is not accepted, so the caller can skip wiring.
 func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 	if cfg.Operator.Signer == nil {
 		return nil, errors.New("usage adapter requires an operator signer")
@@ -30,17 +32,17 @@ func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 	if len(cfg.Stablecoins) > 0 {
 		coin = string(cfg.Stablecoins[0])
 	}
-	uptoCfg := UptoConfig{
+	uptoCfg := proto.UptoConfig{
 		Recipient:               string(cfg.Operator.Recipient),
 		Currency:                coin,
-		Decimals:                stablecoinDecimals,
+		Decimals:                proto.StablecoinDecimals,
 		Network:                 cfg.Network,
 		RPCURL:                  cfg.RPCURL,
-		MaxTimeoutSeconds:       defaultMaxTimeoutSeconds,
-		OperatorSigner:          cfg.Operator.Signer,
+		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
+		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
 		RecentBlockhashProvider: cfg.RecentBlockhashProvider,
 	}
-	engine, err := NewX402Upto(uptoCfg)
+	engine, err := proto.NewX402Upto(uptoCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +93,7 @@ func (u *usageAdapter) VerifyOpen(ctx context.Context, req *paykit.AdapterReques
 }
 
 func (u *usageAdapter) SettleActual(ctx context.Context, verified paykit.VerifiedUsageOpen, actual uint64) (*paykit.UsageSettlement, error) {
-	open, ok := verified.(*UptoVerifiedOpen)
+	open, ok := verified.(*proto.UptoVerifiedOpen)
 	if !ok || open == nil {
 		return nil, errors.New("invalid verified open type")
 	}
@@ -104,8 +106,8 @@ func (u *usageAdapter) SettleActual(ctx context.Context, verified paykit.Verifie
 		return nil, err
 	}
 	headers := map[string]string{
-		headerName:       headerValue,
-		settlementHeader: settlement.Transaction,
+		headerName:             headerValue,
+		proto.SettlementHeader: settlement.Transaction,
 	}
 	return &paykit.UsageSettlement{
 		Transaction: settlement.Transaction,
@@ -113,14 +115,12 @@ func (u *usageAdapter) SettleActual(ctx context.Context, verified paykit.Verifie
 	}, nil
 }
 
-// uptoAcceptsEntry wraps UptoRequirements to satisfy paykit.AcceptsEntry.
 type uptoAcceptsEntry struct {
-	req UptoRequirements
+	req proto.UptoRequirements
 }
 
 func (e uptoAcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.X402 }
 
-// MarshalJSON renders the upto requirements as the accepts[] entry shape.
 func (e uptoAcceptsEntry) MarshalJSON() ([]byte, error) {
 	type wireEntry struct {
 		Protocol          string          `json:"protocol"`
@@ -148,8 +148,6 @@ func (e uptoAcceptsEntry) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// gateAmount returns the gate's total as a human-decimal string for the
-// upto engine (which converts to base units internally).
 func gateAmount(gate *paykit.Gate) string {
 	return gate.Total().Amount().String()
 }

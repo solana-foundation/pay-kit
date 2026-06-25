@@ -1,8 +1,3 @@
-// Package mpp wires the legacy server.Mpp charge handler into the
-// paykit umbrella adapter contract. The adapter holds a per-(payTo,
-// coin) cache of server.Mpp instances so the same Client can serve
-// multiple gates with different recipients without rebuilding the
-// charge handler per request.
 package mpp
 
 import (
@@ -19,11 +14,6 @@ import (
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
 )
 
-// signerBridge adapts a paykit.Signer (Sign(ctx, []byte) ([]byte,
-// error)) to the solanatx.Signer the legacy server.Mpp expects
-// (PublicKey() + Sign([]byte) (solana.Signature, error)). It signs via
-// paykit.Signer.Sign, so KMS / HSM signers that never export their key
-// work without leaking secret material — no SecretKey() escape hatch.
 type signerBridge struct {
 	signer paykit.Signer
 }
@@ -46,20 +36,12 @@ func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
 	return sig, nil
 }
 
-// Adapter is the paykit.Adapter implementation for MPP charge intent.
-// Holds the resolved paykit.Config and a per-(payTo,coin) cache of
-// server.Mpp instances.
 type Adapter struct {
 	cfg       paykit.Config
-	servers   sync.Map   // key: "<payTo>|<coin>" -> *server.Mpp
-	serversMu sync.Mutex // serializes server.New on cache miss
+	servers   sync.Map
+	serversMu sync.Mutex
 }
 
-// New constructs a paykit.Adapter using the resolved config. Registered
-// via the package init() below so paykit.New picks it up automatically
-// when callers import the package as a blank import:
-//
-//	import _ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
 func New(cfg paykit.Config) (paykit.Adapter, error) {
 	if len(cfg.MPP.ChallengeBindingSecret) == 0 {
 		return nil, fmt.Errorf("protocols/mpp: MPP.ChallengeBindingSecret is required")
@@ -69,9 +51,6 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 
 func (a *Adapter) Protocol() paykit.Protocol { return paykit.MPP }
 
-// AcceptsEntry is the typed JSON shape MPP emits into the 402
-// body's `accepts[]` array. Mirrors Ruby's PayKit::Protocols::MPP
-// accepts_entry hash and PHP's Adapter::acceptsEntry array.
 type AcceptsEntry struct {
 	Protocol string  `json:"protocol"`
 	Scheme   string  `json:"scheme"`
@@ -83,13 +62,11 @@ type AcceptsEntry struct {
 	Splits   []Split `json:"splits,omitempty"`
 }
 
-// Split is one fee-recipient entry inside [AcceptsEntry.Splits].
 type Split struct {
 	Recipient string `json:"recipient"`
 	Amount    string `json:"amount"`
 }
 
-// AcceptsProtocol satisfies [paykit.AcceptsEntry].
 func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.MPP }
 
 func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
@@ -148,9 +125,6 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
-	// Rebuild the expected ChargeRequest from the gate so the
-	// credential's pinned fields are verified against the route's
-	// declared amount / recipient.
 	challenge, err := srv.ChargeWithOptions(context.Background(), a.amountString(req.Gate), a.chargeOptions(req.Gate))
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_proof", Err: err, Gate: req.Gate}
@@ -178,13 +152,6 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	}, nil
 }
 
-// serverFor returns a cached *server.Mpp instance for the gate's
-// (payTo, coin) tuple, building it on first miss. The build is
-// serialized per Adapter by serversMu so concurrent first requests for
-// the same key share ONE *server.Mpp — and therefore one replay store.
-// A check-then-act Load/Store race would otherwise spawn duplicate
-// servers with independent in-memory replay stores, letting the same
-// signature settle twice in parallel.
 func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	coin := a.settlementCoin(gate)
 	payTo := a.payTo(gate)
@@ -194,8 +161,6 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	}
 	a.serversMu.Lock()
 	defer a.serversMu.Unlock()
-	// Re-check under the lock: another goroutine may have built it while
-	// we waited.
 	if v, ok := a.servers.Load(key); ok {
 		return v.(*server.Mpp), nil
 	}
@@ -210,7 +175,7 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 		Network:        a.cfg.Network.MintsLabel(),
 		Realm:          a.cfg.MPP.Realm,
 		RPCURL:         a.cfg.RPCURL,
-		Decimals:       uint8(decimalsFor(coin)), //nolint:gosec
+		Decimals:       uint8(decimalsFor(coin)),
 		FeePayerSigner: feePayer,
 	})
 	if err != nil {
@@ -269,9 +234,6 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 		Description: gate.Desc,
 		FeePayer:    a.cfg.Operator.FeePayer,
 	}
-	// Thread the configured challenge lifetime into the per-charge
-	// expiry. server.ChargeWithOptions falls back to 5 minutes when
-	// Expires is "", so a zero MPPConfig.ExpiresIn keeps that default.
 	if a.cfg.MPP.ExpiresIn > 0 {
 		opts.Expires = core.Seconds(uint64(a.cfg.MPP.ExpiresIn.Seconds()))
 	}
@@ -291,9 +253,6 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 }
 
 func decimalsFor(coin string) int {
-	// Mirrors the canonical mint table; all six-decimal stablecoins
-	// share the same number, but PYUSD / USDG / CASH on Token-2022
-	// still return 6 today.
 	_ = paycore.ResolveMint
 	return 6
 }

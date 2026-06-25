@@ -16,6 +16,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
 func errorsAs(err error, target any) bool { return errors.As(err, target) }
@@ -28,7 +29,7 @@ type fixture struct {
 	computeLimit solana.CompiledInstruction
 	computePrice solana.CompiledInstruction
 	transfer     solana.CompiledInstruction
-	req          transferRequirements
+	req          proto.TransferRequirements
 }
 
 func newFixture(t *testing.T) fixture {
@@ -39,7 +40,7 @@ func newFixture(t *testing.T) fixture {
 	payTo := solana.NewWallet().PublicKey()
 	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
 	tokenProgram := solana.MustPublicKeyFromBase58(paycore.TokenProgram)
-	computeBudget := solana.MustPublicKeyFromBase58(computeBudgetProgram)
+	computeBudget := solana.MustPublicKeyFromBase58(proto.ComputeBudgetProgram)
 
 	dest, err := solanatx.FindAssociatedTokenAddressWithProgram(payTo, mint, tokenProgram)
 	if err != nil {
@@ -75,12 +76,12 @@ func newFixture(t *testing.T) fixture {
 			Accounts:       []uint16{1, 2, 3, 4},
 			Data:           transferData,
 		},
-		req: transferRequirements{
-			payTo:        payTo,
-			mint:         mint,
-			tokenProgram: tokenProgram,
-			amount:       amount,
-			feePayer:     feePayer,
+		req: proto.TransferRequirements{
+			PayTo:        payTo,
+			Mint:         mint,
+			TokenProgram: tokenProgram,
+			Amount:       amount,
+			FeePayer:     feePayer,
 		},
 	}
 }
@@ -95,7 +96,7 @@ func (f fixture) tx(extra ...solana.CompiledInstruction) *solana.Transaction {
 
 func TestVerifyAcceptsValidTransaction(t *testing.T) {
 	f := newFixture(t)
-	if err := verifyExactTransaction(f.tx(), f.req); err != nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err != nil {
 		t.Fatalf("expected valid tx to pass, got %v", err)
 	}
 }
@@ -105,7 +106,7 @@ func TestVerifyAcceptsTrailingMemo(t *testing.T) {
 	memoKeyIdx := uint16(len(f.keys))
 	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
 	memo := solana.CompiledInstruction{ProgramIDIndex: memoKeyIdx, Data: []byte("/paid")}
-	if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
+	if err := proto.VerifyExactTransaction(f.tx(memo), f.req); err != nil {
 		t.Fatalf("expected memo-trailing tx to pass, got %v", err)
 	}
 }
@@ -116,10 +117,10 @@ func TestVerifyAcceptsTrailingMemo(t *testing.T) {
 func TestVerifyAcceptsTrailingLighthouse(t *testing.T) {
 	f := newFixture(t)
 	lhIdx := uint16(len(f.keys))
-	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(lighthouseProgram))
+	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(proto.LighthouseProgram))
 	lh := solana.CompiledInstruction{ProgramIDIndex: lhIdx, Data: []byte{0x01}}
 	// Two Lighthouse instructions (Solflare-style) must also pass.
-	if err := verifyExactTransaction(f.tx(lh, lh), f.req); err != nil {
+	if err := proto.VerifyExactTransaction(f.tx(lh, lh), f.req); err != nil {
 		t.Fatalf("expected trailing Lighthouse instructions to pass, got %v", err)
 	}
 }
@@ -132,7 +133,7 @@ func TestVerifyRejectsTrailingATACreate(t *testing.T) {
 	ataIdx := uint16(len(f.keys))
 	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.AssociatedTokenProgram))
 	ata := solana.CompiledInstruction{ProgramIDIndex: ataIdx, Data: []byte{1}}
-	if err := verifyExactTransaction(f.tx(ata), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(ata), f.req); err == nil {
 		t.Error("expected rejection for trailing ATA-create instruction")
 	}
 }
@@ -148,26 +149,26 @@ func TestVerifyEnforcesExpectedMemoMatch(t *testing.T) {
 
 	t.Run("matching memo passes", func(t *testing.T) {
 		f := newFixture(t)
-		f.req.expectedMemo = "pi_invoice_42"
+		f.req.ExpectedMemo = "pi_invoice_42"
 		memo := mkMemo(t, &f, "pi_invoice_42")
-		if err := verifyExactTransaction(f.tx(memo), f.req); err != nil {
+		if err := proto.VerifyExactTransaction(f.tx(memo), f.req); err != nil {
 			t.Fatalf("expected matching memo to pass, got %v", err)
 		}
 	})
 
 	t.Run("wrong memo rejected", func(t *testing.T) {
 		f := newFixture(t)
-		f.req.expectedMemo = "pi_invoice_42"
+		f.req.ExpectedMemo = "pi_invoice_42"
 		memo := mkMemo(t, &f, "different")
-		if err := verifyExactTransaction(f.tx(memo), f.req); err == nil {
+		if err := proto.VerifyExactTransaction(f.tx(memo), f.req); err == nil {
 			t.Error("expected rejection for memo not matching extra.memo")
 		}
 	})
 
 	t.Run("missing memo rejected", func(t *testing.T) {
 		f := newFixture(t)
-		f.req.expectedMemo = "pi_invoice_42"
-		if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+		f.req.ExpectedMemo = "pi_invoice_42"
+		if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 			t.Error("expected rejection when extra.memo set but no memo present")
 		}
 	})
@@ -179,7 +180,7 @@ func TestVerifyRejectsTooFewInstructions(t *testing.T) {
 		Message:    solana.Message{AccountKeys: f.keys, Instructions: []solana.CompiledInstruction{f.computeLimit, f.computePrice}},
 		Signatures: []solana.Signature{{}},
 	}
-	if err := verifyExactTransaction(tx, f.req); err == nil {
+	if err := proto.VerifyExactTransaction(tx, f.req); err == nil {
 		t.Error("expected rejection for <3 instructions")
 	}
 }
@@ -190,7 +191,7 @@ func TestVerifyRejectsTooManyInstructions(t *testing.T) {
 	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.MemoProgram))
 	memo := solana.CompiledInstruction{ProgramIDIndex: memoKeyIdx, Data: []byte("x")}
 	// 3 base + 4 memo = 7 instructions, over the cap of 6.
-	if err := verifyExactTransaction(f.tx(memo, memo, memo, memo), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(memo, memo, memo, memo), f.req); err == nil {
 		t.Error("expected rejection for >6 instructions")
 	}
 }
@@ -198,15 +199,15 @@ func TestVerifyRejectsTooManyInstructions(t *testing.T) {
 func TestVerifyRejectsBadComputeLimit(t *testing.T) {
 	f := newFixture(t)
 	f.computeLimit.Data = []byte{99, 0, 0, 0, 0} // wrong discriminator
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for bad compute-limit instruction")
 	}
 }
 
 func TestVerifyRejectsComputePriceOverCap(t *testing.T) {
 	f := newFixture(t)
-	binary.LittleEndian.PutUint64(f.computePrice.Data[1:], maxComputeUnitPriceMicroLamports+1)
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	binary.LittleEndian.PutUint64(f.computePrice.Data[1:], proto.MaxComputeUnitPriceMicroLamports+1)
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for compute price over cap")
 	}
 }
@@ -214,7 +215,7 @@ func TestVerifyRejectsComputePriceOverCap(t *testing.T) {
 func TestVerifyRejectsWrongAmount(t *testing.T) {
 	f := newFixture(t)
 	binary.LittleEndian.PutUint64(f.transfer.Data[1:9], 999)
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for amount mismatch")
 	}
 }
@@ -222,7 +223,7 @@ func TestVerifyRejectsWrongAmount(t *testing.T) {
 func TestVerifyRejectsWrongMint(t *testing.T) {
 	f := newFixture(t)
 	f.keys[2] = solana.MustPublicKeyFromBase58(paycore.USDTMainnetMint)
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for mint mismatch")
 	}
 }
@@ -230,15 +231,15 @@ func TestVerifyRejectsWrongMint(t *testing.T) {
 func TestVerifyRejectsWrongDestination(t *testing.T) {
 	f := newFixture(t)
 	f.keys[3] = solana.NewWallet().PublicKey() // not the payTo ATA
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for recipient ATA mismatch")
 	}
 }
 
 func TestVerifyRejectsFeePayerAsAuthority(t *testing.T) {
 	f := newFixture(t)
-	f.keys[4] = f.req.feePayer // fee-payer moving the funds
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	f.keys[4] = f.req.FeePayer // fee-payer moving the funds
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when fee-payer is the transfer authority")
 	}
 }
@@ -246,7 +247,7 @@ func TestVerifyRejectsFeePayerAsAuthority(t *testing.T) {
 func TestVerifyRejectsNonTransferThirdInstruction(t *testing.T) {
 	f := newFixture(t)
 	f.transfer.Data[0] = 7 // not transferChecked (discriminator 12)
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[2] is not transferChecked")
 	}
 }
@@ -256,7 +257,7 @@ func TestVerifyRejectsUnknownTrailingProgram(t *testing.T) {
 	sysIdx := uint16(len(f.keys))
 	f.keys = append(f.keys, solana.MustPublicKeyFromBase58(paycore.SystemProgram))
 	rogue := solana.CompiledInstruction{ProgramIDIndex: sysIdx, Data: []byte{0}}
-	if err := verifyExactTransaction(f.tx(rogue), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(rogue), f.req); err == nil {
 		t.Error("expected rejection for unknown trailing instruction program")
 	}
 }
@@ -264,7 +265,7 @@ func TestVerifyRejectsUnknownTrailingProgram(t *testing.T) {
 func TestVerifyRejectsAccountIndexOutOfRange(t *testing.T) {
 	f := newFixture(t)
 	f.transfer.Accounts = []uint16{1, 2, 3, 99} // authority index past key list
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for out-of-range account index")
 	}
 }
@@ -318,7 +319,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	computeBudget := solana.MustPublicKeyFromBase58(computeBudgetProgram)
+	computeBudget := solana.MustPublicKeyFromBase58(proto.ComputeBudgetProgram)
 
 	keys := solana.PublicKeySlice{opPub, source, mint, dest, authority, computeBudget, tokenProgram}
 	const amount = uint64(1000)
@@ -344,7 +345,7 @@ func settleFixture(t *testing.T, fake *fakeRPC) (*Adapter, *paykit.Gate, string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := Credential{X402Version: x402Version, Payload: CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
 	credJSON, err := json.Marshal(cred)
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +376,7 @@ func TestVerifyAndSettleHappyPath(t *testing.T) {
 	if pmt.Protocol != paykit.X402 || pmt.Transaction != sampleSig {
 		t.Errorf("payment: %+v", pmt)
 	}
-	if pmt.SettlementHeaders[settlementHeader] != sampleSig {
+	if pmt.SettlementHeaders[proto.SettlementHeader] != sampleSig {
 		t.Error("settlement header missing")
 	}
 }
@@ -449,7 +450,7 @@ func TestVerifyAndSettleRejectsTransactionThatDoesNotPayGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cred := Credential{X402Version: x402Version, Payload: CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
 	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
 	_, err = a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
@@ -515,7 +516,7 @@ func TestVerifyAndSettleRejectsUndecodableTransaction(t *testing.T) {
 		signer: op,
 		rpc:    &fakeRPC{},
 	}
-	cred := Credential{X402Version: x402Version, Payload: CredentialPayload{Transaction: base64.StdEncoding.EncodeToString([]byte("not-a-tx"))}}
+	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString([]byte("not-a-tx"))}}
 	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
 	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
@@ -535,7 +536,7 @@ func TestVerifyAndSettleRejectsBadOperatorRecipient(t *testing.T) {
 	}
 	f := newFixture(t)
 	wire, _ := f.tx().MarshalBinary()
-	cred := Credential{X402Version: x402Version, Payload: CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
+	cred := proto.Credential{X402Version: proto.X402Version, Payload: proto.CredentialPayload{Transaction: base64.StdEncoding.EncodeToString(wire)}}
 	credJSON, _ := json.Marshal(cred)
 	gate := paykit.Gate{Amount: paykit.MustParseUSD("0.001")}
 	_, err := a.VerifyAndSettle(&paykit.AdapterRequest{Gate: &gate, PaymentSig: base64.StdEncoding.EncodeToString(credJSON)})
@@ -548,7 +549,7 @@ func TestVerifyAndSettleRejectsBadOperatorRecipient(t *testing.T) {
 func TestVerifyRejectsComputePriceWrongLength(t *testing.T) {
 	f := newFixture(t)
 	f.computePrice.Data = []byte{3, 0, 0} // discriminator ok, length wrong
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for wrong-length compute price data")
 	}
 }
@@ -556,7 +557,7 @@ func TestVerifyRejectsComputePriceWrongLength(t *testing.T) {
 func TestVerifyRejectsTransferTooFewAccounts(t *testing.T) {
 	f := newFixture(t)
 	f.transfer.Accounts = []uint16{1, 2, 3} // need >= 4
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection for transferChecked with <4 accounts")
 	}
 }
@@ -564,7 +565,7 @@ func TestVerifyRejectsTransferTooFewAccounts(t *testing.T) {
 func TestVerifyRejectsNonTokenTransferProgram(t *testing.T) {
 	f := newFixture(t)
 	f.keys[6] = solana.MustPublicKeyFromBase58(paycore.SystemProgram) // ix[2] program now System
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[2] program is not an SPL token program")
 	}
 }
@@ -572,7 +573,7 @@ func TestVerifyRejectsNonTokenTransferProgram(t *testing.T) {
 func TestVerifyRejectsComputeLimitWrongProgram(t *testing.T) {
 	f := newFixture(t)
 	f.keys[5] = solana.MustPublicKeyFromBase58(paycore.SystemProgram) // compute ixs now point at System
-	if err := verifyExactTransaction(f.tx(), f.req); err == nil {
+	if err := proto.VerifyExactTransaction(f.tx(), f.req); err == nil {
 		t.Error("expected rejection when ix[0] program is not ComputeBudget")
 	}
 }
