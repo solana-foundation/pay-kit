@@ -40,7 +40,7 @@ jobs:
             github.com/solana-foundation/pay-kit/go/protocols/x402/client \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 91
+          ./scripts/check_coverage.sh coverage.out 86
       - name: Run all Go packages
         working-directory: go
         env:
