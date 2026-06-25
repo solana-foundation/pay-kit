@@ -12,13 +12,15 @@ import (
 	"strconv"
 
 	solana "github.com/gagliardetto/solana-go"
-	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
-const defaultGracePeriodSeconds = 900
+const (
+	defaultGracePeriodSeconds = 900
+	tokenProgramID            = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+)
 
 func randomSalt() (uint64, error) {
 	max := new(big.Int).Lsh(big.NewInt(1), 64)
@@ -36,39 +38,6 @@ func profileSupported(requirements *x402.UptoRequirements) bool {
 		}
 	}
 	return false
-}
-
-func resolveMint(asset string) (solana.PublicKey, error) {
-	mint, err := solana.PublicKeyFromBase58(asset)
-	if err == nil {
-		return mint, nil
-	}
-	labels := []string{"mainnet-beta", "devnet", "localnet"}
-	for _, label := range labels {
-		resolved := paycore.ResolveMint(asset, label)
-		if resolved != "" {
-			return solana.PublicKeyFromBase58(resolved)
-		}
-	}
-	return solana.PublicKey{}, fmt.Errorf("x402 client: cannot resolve mint %q", asset)
-}
-
-func resolveTokenProgram(tokenProgramStr string, mint solana.PublicKey) solana.PublicKey {
-	if tokenProgramStr != "" {
-		if pk, err := solana.PublicKeyFromBase58(tokenProgramStr); err == nil {
-			return pk
-		}
-	}
-	labels := []string{"mainnet-beta", "devnet", "localnet"}
-	for _, label := range labels {
-		tp := paycore.DefaultTokenProgramForCurrency(mint.String(), label)
-		if tp != "" {
-			if pk, err := solana.PublicKeyFromBase58(tp); err == nil {
-				return pk
-			}
-		}
-	}
-	return solana.TokenProgramID
 }
 
 func resolveChannelProgram(channelProgramStr string) solana.PublicKey {
@@ -98,16 +67,24 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid payTo %q: %w", requirements.PayTo, err)
 	}
-	mint, err := resolveMint(requirements.Asset)
+	mint, err := solana.PublicKeyFromBase58(requirements.Asset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("x402 client: invalid asset mint %q: %w", requirements.Asset, err)
 	}
 	operator, err := solana.PublicKeyFromBase58(requirements.Extra.FeePayer)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid feePayer %q: %w", requirements.Extra.FeePayer, err)
 	}
 	programID := resolveChannelProgram(requirements.Extra.ChannelProgram)
-	tokenProgram := resolveTokenProgram(requirements.Extra.TokenProgram, mint)
+	var tokenProgram solana.PublicKey
+	if requirements.Extra.TokenProgram != "" {
+		tokenProgram, err = solana.PublicKeyFromBase58(requirements.Extra.TokenProgram)
+		if err != nil {
+			return nil, fmt.Errorf("x402 client: invalid tokenProgram %q: %w", requirements.Extra.TokenProgram, err)
+		}
+	} else {
+		tokenProgram = solana.MustPublicKeyFromBase58(tokenProgramID)
+	}
 
 	blockhashStr := requirements.Extra.RecentBlockhash
 	if blockhashStr == "" {
@@ -208,32 +185,22 @@ func BuildUptoHeader(
 }
 
 func ParseUptoChallenge(h http.Header, body []byte) (*x402.UptoRequirements, bool) {
-	var raw string
-	if v := h.Get(paymentRequiredHeader); v != "" {
-		raw = v
-	} else if v := h.Get(paymentRequiredHeaderLegacy); v != "" {
-		raw = v
-	} else if len(body) > 0 {
-		raw = string(body)
-	} else {
-		return nil, false
-	}
-
 	var envelope x402.UptoRequiredEnvelope
-	if h.Get(paymentRequiredHeader) != "" || h.Get(paymentRequiredHeaderLegacy) != "" {
-		decoded, err := base64.StdEncoding.DecodeString(raw)
+	if v := h.Get(paymentRequiredHeader); v != "" {
+		decoded, err := base64.StdEncoding.DecodeString(v)
 		if err != nil {
 			return nil, false
 		}
 		if err := json.Unmarshal(decoded, &envelope); err != nil {
 			return nil, false
 		}
-	} else {
-		if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
+	} else if len(body) > 0 {
+		if err := json.Unmarshal(body, &envelope); err != nil {
 			return nil, false
 		}
+	} else {
+		return nil, false
 	}
-
 	for _, req := range envelope.Accepts {
 		if req.Scheme == x402.UptoScheme {
 			return &req, true
