@@ -309,9 +309,9 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 		PayTo:             u.cfg.Recipient,
 		MaxTimeoutSeconds: u.cfg.MaxTimeoutSeconds,
 		Extra: UptoExtra{
-			Profiles:     []string{profilePaymentChannel},
-			Decimals:     &decimals,
-			TokenProgram: tokenProgram,
+			Profiles:       []string{profilePaymentChannel},
+			Decimals:       &decimals,
+			TokenProgram:   tokenProgram,
 			FeePayer:       u.Operator(),
 			ChannelProgram: programID,
 		},

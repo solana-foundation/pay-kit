@@ -31,9 +31,9 @@ func uptoRequirements() UptoRequirements {
 		PayTo:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		MaxTimeoutSeconds: 300,
 		Extra: UptoExtra{
-			Profiles:     []string{profilePaymentChannel},
-			Decimals:     &decimals,
-			TokenProgram: paycore.TokenProgram,
+			Profiles:       []string{profilePaymentChannel},
+			Decimals:       &decimals,
+			TokenProgram:   paycore.TokenProgram,
 			FeePayer:       "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
 			ChannelProgram: paymentchannels.ProgramID,
 		},
