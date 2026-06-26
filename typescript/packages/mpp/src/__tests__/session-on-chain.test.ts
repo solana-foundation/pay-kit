@@ -10,8 +10,11 @@ import {
     createKeyPairSignerFromPrivateKeyBytes,
     generateKeyPairSigner,
     getBase64Codec,
+    getCompiledTransactionMessageDecoder,
+    getCompiledTransactionMessageEncoder,
     getSignatureFromTransaction,
     getTransactionDecoder,
+    getTransactionEncoder,
     type KeyPairSigner,
     type Signature,
 } from '@solana/kit';
@@ -386,6 +389,40 @@ describe('verifyOpenTx', () => {
         expect(result.salt).toBe(7n);
     });
 
+    test('rejects an open transaction that uses address-lookup tables', async () => {
+        const [payer, , payee, authorizedSigner] = await loadFixedSigners();
+        const { open } = await buildClientOpen(payer, payee, authorizedSigner);
+        // Re-encode the open tx with a non-empty addressTableLookups entry so
+        // the verifier sees a v0 message that resolves accounts via an ALT.
+        const altTransaction = injectAddressTableLookup(open.transaction);
+        await expect(
+            verifyOpenTx({
+                expected: {
+                    authorizedSigner: authorizedSigner.address,
+                    currency: USDC.mainnet!,
+                    maxCap: 5_000_000n,
+                    network: 'localnet',
+                    operator: payer.address,
+                    programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
+                    recipient: payee.address,
+                },
+                openPayload: {
+                    authorizedSigner: authorizedSigner.address,
+                    channelId: open.channelId,
+                    deposit: open.deposit,
+                    gracePeriod: open.gracePeriod,
+                    mint: open.mint,
+                    mode: 'pull',
+                    payee: open.payee,
+                    payer: open.payer,
+                    salt: open.salt,
+                    signature: '1'.repeat(88),
+                    transaction: altTransaction,
+                },
+            }),
+        ).rejects.toThrow(/address-lookup tables are not permitted/);
+    });
+
     test('rejects open whose deposit exceeds maxCap', async () => {
         const [payer, , payee, authorizedSigner] = await loadFixedSigners();
         const { open } = await buildClientOpen(payer, payee, authorizedSigner);
@@ -533,6 +570,34 @@ describe('verifyOpenTx', () => {
 function extractTxSignature(transactionBase64: string): Signature {
     const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     return getSignatureFromTransaction(tx);
+}
+
+/**
+ * Re-encode a base64 transaction with a synthetic, non-empty
+ * `addressTableLookups` entry so `verifyOpenTx` exercises its ALT guard.
+ * The lookup itself need not resolve to real accounts — the guard fires on
+ * a non-empty lookup list, before any account resolution.
+ */
+function injectAddressTableLookup(transactionBase64: string): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(tx.messageBytes) as Record<string, unknown>;
+    const lookupTableAddress = '11111111111111111111111111111111';
+    const withAlt = {
+        ...message,
+        // Force a v0 message and attach one lookup that pulls in a writable
+        // and a readonly index from a (fake) table.
+        version: 0,
+        addressTableLookups: [
+            {
+                lookupTableAddress: address(lookupTableAddress),
+                readonlyIndexes: [1],
+                writableIndexes: [0],
+            },
+        ],
+    };
+    const messageBytes = new Uint8Array(getCompiledTransactionMessageEncoder().encode(withAlt as never));
+    const rebuilt = getTransactionEncoder().encode({ ...tx, messageBytes } as never);
+    return getBase64Codec().decode(new Uint8Array(rebuilt));
 }
 
 /** Minimal base58 encoder for fixed-byte signatures used in tests. */

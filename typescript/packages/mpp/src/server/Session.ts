@@ -109,6 +109,7 @@ export function session(parameters: session.Parameters) {
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
+        settlementWindowSeconds,
     } = parameters;
 
     if (cap <= 0n) {
@@ -269,6 +270,7 @@ export function session(parameters: session.Parameters) {
                         lifecycle: lifecycleRef.value,
                         minVoucherDelta,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'commit':
@@ -578,6 +580,8 @@ interface HandleVoucherArgs {
     readonly lifecycle: Lifecycle | undefined;
     readonly minVoucherDelta: bigint | undefined;
     readonly payload: { readonly action: 'voucher'; readonly voucher: SignedVoucher };
+    /** Forced-close grace period a non-zero voucher expiry must outlast. */
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
@@ -591,6 +595,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
     const preflight = await verifyVoucherForChannel({
         deposit: existing.deposit,
         minVoucherDelta: args.minVoucherDelta,
+        settlementWindow: args.settlementWindow,
         signed,
         state: existing,
     });
@@ -603,6 +608,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
         const result = await verifyVoucherForChannel({
             deposit: current.deposit,
             minVoucherDelta: args.minVoucherDelta,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
@@ -1234,6 +1240,17 @@ export declare namespace session {
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
+        /**
+         * Settlement window in seconds — the forced-close grace period a
+         * non-zero voucher `expiresAt` must outlast. When set, a voucher
+         * whose `expiresAt` falls within `now + settlementWindowSeconds`
+         * is rejected (`expires-within-settlement-window`) so the merchant
+         * can still land an async settle_and_finalize before it expires.
+         * A voucher with `expiresAt == 0` never expires and is unaffected.
+         * Defaults to 0 (window check disabled). Typically set to the
+         * channel `gracePeriod`.
+         */
+        readonly settlementWindowSeconds?: bigint;
         /** Merchant signer for settle_and_finalize + distribute IXs. */
         readonly signer?: TransactionPartialSigner;
         /** Optional basis-point splits distributed at close. Max 8. */
