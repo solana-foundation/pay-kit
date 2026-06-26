@@ -343,14 +343,19 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         gracePeriod=params.grace_period,
         recipients=[DistributionEntry(recipient=entry.recipient, bps=entry.bps) for entry in params.recipients],
     )
-    # rentPayer defaults to the payer (its own rent payer / fee payer) when the
-    # caller does not pin it to a distinct operator.
-    rent_payer = params.rent_payer if params.rent_payer is not None else params.payer
+    # rentPayer is the operator / fee payer that funds the channel rent. It is
+    # required: server-side verify_open_tx rejects an open whose rentPayer is
+    # not the operator, so there is no valid silent fallback to params.payer.
+    if params.rent_payer is None:
+        raise ValueError(
+            "OpenChannelParams.rent_payer is required to build the open instruction "
+            "(the operator / fee payer that funds the channel rent)"
+        )
     return Open(
         {"openArgs": args},
         {
             "payer": params.payer,
-            "rentPayer": rent_payer,
+            "rentPayer": params.rent_payer,
             "payee": params.payee,
             "mint": params.mint,
             "authorizedSigner": params.authorized_signer,
@@ -508,9 +513,10 @@ def build_distribute_instruction(
     builders).
 
     ``rent_payer`` is the operator recorded at open; it reclaims the channel
-    PDA + escrow ATA rent at finalize (writable, not a signer). ``None``
-    defaults to ``payer``.
+    PDA + escrow ATA rent at finalize (writable, not a signer). It is required.
     """
+    if rent_payer is None:
+        raise ValueError("rent_payer is required (the operator recorded at open)")
     owner = treasury if treasury is not None else treasury_owner()
     channel_token, _ = find_associated_token_address(channel, mint, token_program)
     payer_token, _ = find_associated_token_address(payer, mint, token_program)
@@ -530,7 +536,7 @@ def build_distribute_instruction(
         {
             "channel": channel,
             "payer": payer,
-            "rentPayer": rent_payer if rent_payer is not None else payer,
+            "rentPayer": rent_payer,
             "channelTokenAccount": channel_token,
             "payerTokenAccount": payer_token,
             "payeeTokenAccount": payee_token,

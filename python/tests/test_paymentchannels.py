@@ -147,6 +147,7 @@ def _open_params() -> OpenChannelParams:
         grace_period=3600,
         recipients=[Distribution(pk(5), 7_500), Distribution(pk(6), 2_500)],
         token_program=pk(7),
+        rent_payer=pk(8),
     )
 
 
@@ -189,8 +190,8 @@ def test_build_open_instruction_account_order_and_flags() -> None:
     assert accounts[0].pubkey == params.payer
     assert accounts[0].is_signer is True
     assert accounts[0].is_writable is True
-    # 1 rentPayer: signer + writable; defaults to payer when not pinned.
-    assert accounts[1].pubkey == params.payer
+    # 1 rentPayer: signer + writable; the operator / fee payer pinned by the caller.
+    assert accounts[1].pubkey == params.rent_payer
     assert accounts[1].is_signer is True
     assert accounts[1].is_writable is True
     # 2 payee, 3 mint, 4 authorized_signer: read-only.

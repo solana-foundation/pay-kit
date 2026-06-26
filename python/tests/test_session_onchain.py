@@ -136,6 +136,7 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=payer.pubkey(),
         )
     )
     fixture = OpenTxFixture(
@@ -267,6 +268,7 @@ async def test_verify_open_tx_rejects_zero_deposit() -> None:
             deposit=0,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
     _, fixture.payload = _sign_and_attach(fixture, ix, v0=False)
@@ -329,6 +331,7 @@ async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
     # Swap the channel account (slot 5, after the rentPayer +1 shift) for an
