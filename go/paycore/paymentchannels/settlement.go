@@ -180,6 +180,9 @@ type DistributeParams struct {
 // followed by one writable recipient token account per split.
 func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
+	if params.RentPayer.IsZero() {
+		return nil, fmt.Errorf("rent_payer is required (the operator recorded as the channel rent_payer at open)")
+	}
 	treasury := params.Treasury
 	if treasury.IsZero() {
 		treasury = TreasuryOwner()

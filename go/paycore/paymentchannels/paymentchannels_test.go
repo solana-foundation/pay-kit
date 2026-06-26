@@ -94,6 +94,7 @@ func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
 
 	params := OpenChannelParams{
 		Payer:            payer,
+		RentPayer:        pk(7),
 		Payee:            payee,
 		Mint:             mint,
 		AuthorizedSigner: signer,

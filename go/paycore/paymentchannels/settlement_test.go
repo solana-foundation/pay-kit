@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -219,10 +220,11 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	splitRecipient := solana.MustPublicKeyFromBase58("HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD")
 
 	ix, err := BuildDistributeInstruction(DistributeParams{
-		Channel: channel,
-		Payer:   payer,
-		Payee:   payee,
-		Mint:    mint,
+		Channel:   channel,
+		Payer:     payer,
+		RentPayer: fixedKey(0x02),
+		Payee:     payee,
+		Mint:      mint,
 		Recipients: []Distribution{
 			{Recipient: splitRecipient, Bps: 1000},
 			{Recipient: splitRecipient, Bps: 250},
@@ -286,6 +288,7 @@ func TestBuildDistributeZeroSplits(t *testing.T) {
 	ix, err := BuildDistributeInstruction(DistributeParams{
 		Channel:      solana.MustPublicKeyFromBase58(zeroChannelID),
 		Payer:        fixedKey(0x01),
+		RentPayer:    fixedKey(0x02),
 		Payee:        fixedKey(0x03),
 		Mint:         solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		TokenProgram: solana.TokenProgramID,
@@ -317,6 +320,7 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 	ix, err := BuildDistributeInstruction(DistributeParams{
 		Channel:      channel,
 		Payer:        fixedKey(0x01),
+		RentPayer:    fixedKey(0x02),
 		Payee:        payee,
 		Mint:         mint,
 		TokenProgram: token2022,
@@ -358,6 +362,7 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 
 	ix, err := BuildOpenInstruction(OpenChannelParams{
 		Payer:            fixedKey(0x01),
+		RentPayer:        fixedKey(0x02),
 		Payee:            fixedKey(0x03),
 		Mint:             solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		AuthorizedSigner: fixedKey(0x04),
@@ -378,5 +383,40 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 	}
 	if got := hex.EncodeToString(data); got != goldenDataHex {
 		t.Fatalf("open instruction data mismatch\n got: %s\nwant: %s", got, goldenDataHex)
+	}
+}
+
+// ── rent-payer required guard ──
+
+// TestBuildersRejectZeroRentPayer locks the requirement that a caller must
+// pin the rent payer: the zero pubkey (the Go default, == system program)
+// would otherwise be placed into the required signer slot and pass local
+// validation while failing on-chain. Both builders must reject it up front.
+func TestBuildersRejectZeroRentPayer(t *testing.T) {
+	mint := solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+
+	_, err := BuildOpenInstruction(OpenChannelParams{
+		Payer:            fixedKey(0x01),
+		Payee:            fixedKey(0x03),
+		Mint:             mint,
+		AuthorizedSigner: fixedKey(0x04),
+		Salt:             1,
+		Deposit:          10,
+		GracePeriod:      900,
+		TokenProgram:     solana.TokenProgramID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rent_payer is required") {
+		t.Fatalf("BuildOpenInstruction with zero rent payer: got %v, want rent_payer-required error", err)
+	}
+
+	_, err = BuildDistributeInstruction(DistributeParams{
+		Channel:      solana.MustPublicKeyFromBase58(zeroChannelID),
+		Payer:        fixedKey(0x01),
+		Payee:        fixedKey(0x03),
+		Mint:         mint,
+		TokenProgram: solana.TokenProgramID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rent_payer is required") {
+		t.Fatalf("BuildDistributeInstruction with zero rent payer: got %v, want rent_payer-required error", err)
 	}
 }

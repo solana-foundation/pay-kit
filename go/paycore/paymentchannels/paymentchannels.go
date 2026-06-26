@@ -212,6 +212,9 @@ func FindEventAuthorityPDAForProgram(programID solana.PublicKey) (solana.PublicK
 // program id.
 func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
+	if params.RentPayer.IsZero() {
+		return nil, fmt.Errorf("rent_payer is required (the operator / fee payer that funds the channel rent)")
+	}
 	channel, _, err := FindChannelPDAForProgram(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt, programID)
 	if err != nil {
 		return nil, err
