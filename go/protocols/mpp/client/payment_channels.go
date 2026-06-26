@@ -288,15 +288,17 @@ type BuildOpenPaymentChannelTransactionParams struct {
 // assembles the legacy open transaction with the operator as fee payer,
 // partially signed by the payer, base64-encoded for OpenPayload.Transaction.
 func BuildOpenPaymentChannelTransaction(params BuildOpenPaymentChannelTransactionParams) (PaymentChannelOpenTransaction, error) {
-	var feePayer solana.PublicKey
+	operator, err := parseSessionPubkey(params.Request.Operator, "operator")
+	if err != nil {
+		return PaymentChannelOpenTransaction{}, err
+	}
+	feePayer := operator
 	if params.FeePayer != nil {
 		feePayer = *params.FeePayer
-	} else {
-		var err error
-		feePayer, err = parseSessionPubkey(params.Request.Operator, "operator")
-		if err != nil {
-			return PaymentChannelOpenTransaction{}, err
-		}
+	}
+	if !feePayer.Equals(operator) {
+		return PaymentChannelOpenTransaction{}, fmt.Errorf(
+			"FeePayer must equal the challenge operator: the gasless server records rentPayer == operator and rejects any other fee payer")
 	}
 	open, err := DerivePaymentChannelOpen(
 		params.Request, params.Signer.PublicKey(), params.AuthorizedSigner, params.Options)

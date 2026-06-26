@@ -361,9 +361,12 @@ impl X402Upto {
                 "channel authorized_signer is not the operator".to_string(),
             ));
         }
-        if channel.deposit < max {
+        if channel.deposit != max {
             return Err(Error::Other(format!(
-                "on-chain deposit {} below authorized maximum {max}",
+                "on-chain deposit {} != authorized maximum {max}: the deposit is the \
+                 enforced ceiling and `topUp` can raise an open channel's deposit, so it \
+                 must equal the authorized amount exactly — `>=` would leave the x402 \
+                 ceiling advisory rather than enforced",
                 channel.deposit
             )));
         }

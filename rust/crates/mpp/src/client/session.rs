@@ -497,10 +497,19 @@ pub struct BuildOpenPaymentChannelTransactionParams<'a> {
 pub async fn build_open_payment_channel_transaction(
     params: BuildOpenPaymentChannelTransactionParams<'_>,
 ) -> Result<PaymentChannelOpenTransaction> {
-    let fee_payer = params
-        .fee_payer
-        .map(Ok)
-        .unwrap_or_else(|| parse_pubkey(&params.request.operator, "operator"))?;
+    let operator = parse_pubkey(&params.request.operator, "operator")?;
+    let fee_payer = params.fee_payer.unwrap_or(operator);
+    // The fee payer becomes the channel `rentPayer`, and the gasless server's
+    // open verification requires `rentPayer == operator`. A caller-supplied fee
+    // payer that differs from the operator would build an open the server
+    // rejects, so reject it here rather than emit a self-incompatible open.
+    if fee_payer != operator {
+        return Err(Error::Other(
+            "fee_payer must equal the challenge operator: the gasless server records \
+             rentPayer == operator and rejects any other fee payer"
+                .to_string(),
+        ));
+    }
     let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
         request: params.request,
         payer: params.signer.pubkey(),
@@ -1182,19 +1191,19 @@ mod open_tests {
     }
 
     #[tokio::test]
-    async fn build_open_payment_channel_transaction_uses_explicit_fee_payer() {
+    async fn build_open_payment_channel_transaction_uses_operator_fee_payer() {
         let operator = Pubkey::new_unique();
-        let explicit_fee_payer = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let request = test_request(operator, recipient);
         let payer_signer = make_signer(15);
 
+        // An explicit fee payer is allowed only when it equals the operator.
         let built =
             build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
                 request: &request,
                 signer: payer_signer.as_ref(),
                 authorized_signer: make_signer(16).pubkey(),
-                fee_payer: Some(explicit_fee_payer),
+                fee_payer: Some(operator),
                 recent_blockhash: Hash::new_unique(),
                 options: PaymentChannelOpenOptions {
                     salt: Some(123),
@@ -1205,7 +1214,31 @@ mod open_tests {
             .unwrap();
         let tx = decode_transaction(&built.transaction);
 
-        assert_eq!(tx.message.account_keys[0], explicit_fee_payer);
+        assert_eq!(tx.message.account_keys[0], operator);
+    }
+
+    #[tokio::test]
+    async fn build_open_payment_channel_transaction_rejects_non_operator_fee_payer() {
+        let operator = Pubkey::new_unique();
+        let non_operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let request = test_request(operator, recipient);
+        let payer_signer = make_signer(15);
+
+        let err =
+            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+                request: &request,
+                signer: payer_signer.as_ref(),
+                authorized_signer: make_signer(16).pubkey(),
+                fee_payer: Some(non_operator),
+                recent_blockhash: Hash::new_unique(),
+                options: PaymentChannelOpenOptions::default(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("fee_payer must equal the challenge operator"));
     }
 
     #[tokio::test]

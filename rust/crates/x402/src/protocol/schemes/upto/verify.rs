@@ -50,9 +50,11 @@ pub fn verify_upto_payload(
     }
 
     let deposit = payload.deposit()?;
-    if deposit < max {
+    if deposit != max {
         return Err(Error::Other(format!(
-            "channel deposit {deposit} is below the authorized maximum {max}"
+            "channel deposit {deposit} != authorized maximum {max}: the deposit is the \
+             enforced ceiling and `topUp` can raise it, so it must equal the authorized \
+             amount exactly, not merely cover it"
         )));
     }
 
@@ -163,6 +165,15 @@ mod tests {
     fn rejects_deposit_below_ceiling() {
         let mut p = payload();
         p.deposit = "500000".to_string();
+        assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
+    }
+
+    #[test]
+    fn rejects_deposit_above_ceiling() {
+        // `deposit == maxAmount` is required: a larger deposit would let the
+        // operator settle above the authorized ceiling on-chain.
+        let mut p = payload();
+        p.deposit = "2000000".to_string();
         assert!(verify_upto_payload(&p, &requirements(), OPERATOR, 1000).is_err());
     }
 
