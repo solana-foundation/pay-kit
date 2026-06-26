@@ -328,12 +328,19 @@ pub struct PaymentChannelOpen {
 }
 
 impl PaymentChannelOpen {
-    pub fn open_channel_params(&self) -> OpenChannelParams {
-        OpenChannelParams {
+    /// Derive this open's channel PDA.
+    ///
+    /// `rentPayer` is intentionally absent: it is not a channel-PDA seed (see
+    /// `find_channel_pda`), and exposing a full `OpenChannelParams` here would
+    /// let an external caller pass it to `build_open_instruction` and produce an
+    /// open whose `rentPayer` is the channel payer instead of the operator /
+    /// fee payer. The real `rentPayer` pin (== fee payer) happens inside
+    /// `build_open_payment_channel_tx`.
+    pub fn channel_address(&self) -> Pubkey {
+        derive_channel_addresses(&OpenChannelParams {
             payer: self.payer,
-            // rentPayer does not affect channel-PDA derivation (the only use of
-            // these params here); the real rentPayer pin (== fee payer) happens in
-            // `build_open_payment_channel_tx`.
+            // Not a PDA seed; fixed to `payer` only so the derivation type can be
+            // reused. Never surfaced to instruction building.
             rent_payer: self.payer,
             payee: self.payee,
             mint: self.mint,
@@ -344,7 +351,8 @@ impl PaymentChannelOpen {
             recipients: self.recipients.clone(),
             token_program: self.token_program,
             program_id: self.program_id,
-        }
+        })
+        .channel
     }
 
     pub fn open_payload(&self, mode: SessionMode, signature: impl Into<String>) -> OpenPayload {
@@ -1015,10 +1023,7 @@ mod open_tests {
             open.token_program,
             Pubkey::from_str(programs::TOKEN_PROGRAM).expect("valid token program")
         );
-        assert_eq!(
-            open.channel_id,
-            derive_channel_addresses(&open.open_channel_params()).channel
-        );
+        assert_eq!(open.channel_id, open.channel_address());
     }
 
     #[test]

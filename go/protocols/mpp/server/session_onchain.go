@@ -52,10 +52,11 @@ type VerifyOpenTxExpected struct {
 	// Network is the Solana network used for mint resolution.
 	Network string
 
-	// Operator is the operator / fee-payer pubkey (base58). The open
-	// instruction's rentPayer account (slot 1) must equal it: rentPayer is
-	// pinned to the operator that co-signs open as fee payer. Empty skips the
-	// check (e.g. legacy callers that do not pin it).
+	// Operator is the expected rentPayer: the operator / fee-payer pubkey
+	// (base58) that funds the channel rent and co-signs open as fee payer
+	// while gasless. It is REQUIRED. The open instruction's rentPayer account
+	// (slot 1) must equal it; the rentPayer slot is a security boundary that
+	// callers must always prove, so an empty Operator is rejected.
 	Operator string
 
 	// ProgramID optionally overrides the payment-channels program id; nil
@@ -100,6 +101,9 @@ type VerifyOpenTxResult struct {
 // If rpcClient is non-nil, that bound signature is additionally confirmed
 // on-chain; nil skips the liveness check (structural validation only).
 func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, rpcClient solanatx.RPCClient) (VerifyOpenTxResult, error) {
+	if expected.Operator == "" {
+		return VerifyOpenTxResult{}, fmt.Errorf("verify open: expected operator (rentPayer) is required")
+	}
 	if payload.Transaction == nil || *payload.Transaction == "" {
 		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.transaction is required for push-mode open verification")
 	}
@@ -197,9 +201,10 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	if authorizedSigner.String() != expected.AuthorizedSigner {
 		return VerifyOpenTxResult{}, fmt.Errorf("open authorizedSigner %s != expected %s", authorizedSigner, expected.AuthorizedSigner)
 	}
-	// rentPayer (slot 1) is pinned to the operator / fee payer; an empty
-	// expected operator skips the check (legacy callers that do not pin it).
-	if expected.Operator != "" && rentPayer.String() != expected.Operator {
+	// rentPayer (slot 1) is pinned to the operator / fee payer. The rentPayer
+	// slot is a security boundary, so this check is mandatory (an empty
+	// expected operator is rejected above).
+	if rentPayer.String() != expected.Operator {
 		return VerifyOpenTxResult{}, fmt.Errorf("open rentPayer %s != expected operator %s", rentPayer, expected.Operator)
 	}
 

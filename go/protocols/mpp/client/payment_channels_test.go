@@ -65,6 +65,14 @@ func TestDerivePaymentChannelOpenUsesChallengeDefaultsAndSplits(t *testing.T) {
 	if !open.AuthorizedSigner.Equals(authorizedSigner) {
 		t.Fatalf("authorizedSigner = %s", open.AuthorizedSigner)
 	}
+	// RentPayer is the challenge operator (the gasless fee payer) and must not
+	// be conflated with the authorizedSigner.
+	if !open.RentPayer.Equals(operator) {
+		t.Fatalf("rentPayer = %s, want challenge operator %s", open.RentPayer, operator)
+	}
+	if !open.OpenChannelParams().RentPayer.Equals(operator) {
+		t.Fatalf("OpenChannelParams().RentPayer = %s, want operator %s", open.OpenChannelParams().RentPayer, operator)
+	}
 	if open.Deposit != 1000 {
 		t.Fatalf("deposit = %d, want challenge cap 1000", open.Deposit)
 	}

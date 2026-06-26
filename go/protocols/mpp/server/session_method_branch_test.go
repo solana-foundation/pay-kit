@@ -564,6 +564,7 @@ func buildRawOpenPayload(t *testing.T, accounts []*solana.AccountMeta, data []by
 		Currency:         "USDC",
 		MaxCap:           5_000_000,
 		Network:          "localnet",
+		Operator:         payer.PublicKey().String(),
 		Recipient:        payer.PublicKey().String(),
 	}
 	return payload, expected
@@ -603,6 +604,7 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 	// Point the expectations at the instruction's actual payee/mint/signer so
 	// the data-length check is what fails. Account order after the rentPayer
 	// (+1) shift: 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, ...
+	shortExpected.Operator = accounts[1].PublicKey.String()
 	shortExpected.Recipient = accounts[2].PublicKey.String()
 	shortExpected.Mint = accounts[3].PublicKey.String()
 	shortExpected.AuthorizedSigner = accounts[4].PublicKey.String()

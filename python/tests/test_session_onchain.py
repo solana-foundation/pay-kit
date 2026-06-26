@@ -156,6 +156,9 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
         max_cap=5_000_000,
         network="localnet",
         recipient=str(payee),
+        # operator is the expected rentPayer (required); the fixture pins
+        # rentPayer to its own payer.
+        operator=str(payer.pubkey()),
     )
     return fixture
 
@@ -242,6 +245,23 @@ async def test_verify_open_tx_rejects_wrong_authorized_signer() -> None:
     fixture = build_open_tx_fixture(v0=False)
     expected = replace(fixture.expected, authorized_signer=str(_kp(99).pubkey()))
     with pytest.raises(PaymentError, match="authorizedSigner"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_requires_operator() -> None:
+    """rentPayer is a security boundary: an empty/None expected operator must
+    raise ValueError rather than skipping the slot-1 rentPayer check."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator="")
+    with pytest.raises(ValueError, match="operator .*is required"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_wrong_operator() -> None:
+    """The open's slot-1 rentPayer must equal the expected operator."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator=str(_kp(99).pubkey()))
+    with pytest.raises(PaymentError, match="rentPayer"):
         await verify_open_tx(expected, fixture.payload, None)
 
 

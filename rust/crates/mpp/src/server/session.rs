@@ -363,8 +363,12 @@ impl<S: ChannelStore> SessionServer<S> {
             .unwrap_or_else(payment_channels::default_program_id);
         let expected_payee = parse_pubkey_field(&self.config.recipient, "recipient")?;
         let expected_mint = expected_payment_channel_mint(&self.config)?;
-        // rentPayer is pinned to the operator (the server's fee-payer key).
-        let operator = parse_pubkey_field(&self.config.operator, "operator")?;
+        // The configured operator IS the expected rentPayer (slot 1): the
+        // operator / fee-payer pubkey that funds the channel PDA + escrow-ATA
+        // rent while gasless. It is a security boundary, so it is REQUIRED — a
+        // missing/empty operator must hard-fail rather than silently skip the
+        // rentPayer pin. rentPayer is pinned to it below (slot-1 == operator).
+        let operator = parse_required_operator(&self.config.operator)?;
 
         if payee != expected_payee {
             return Err(Error::Other(
@@ -1122,6 +1126,21 @@ fn parse_pubkey_field(value: &str, field: &str) -> Result<Pubkey> {
     parse_pubkey(value).map_err(|e| Error::Other(format!("invalid payment-channel {field}: {e}")))
 }
 
+/// Parse the configured operator pubkey, which is the expected `rentPayer`
+/// (slot 1) of the open: the operator / fee payer that funds the channel rent
+/// while gasless. The rentPayer slot is a security boundary, so the operator is
+/// REQUIRED — an empty/missing value hard-fails rather than letting the
+/// rentPayer pin be skipped.
+fn parse_required_operator(operator: &str) -> Result<Pubkey> {
+    if operator.trim().is_empty() {
+        return Err(Error::Other(
+            "payment-channel open requires a configured operator (the expected rentPayer)"
+                .to_string(),
+        ));
+    }
+    parse_pubkey_field(operator, "operator")
+}
+
 fn expected_payment_channel_mint(config: &SessionConfig) -> Result<Pubkey> {
     let mint = resolve_stablecoin_mint(&config.currency, Some(config.network.as_str()))
         .ok_or_else(|| Error::Other("payment-channel sessions require an SPL token".to_string()))?;
@@ -1467,6 +1486,21 @@ mod tests {
             .payment_channel_open_params(&wrong_channel)
             .unwrap_err();
         assert!(err.to_string().contains("channelId does not match"));
+
+        // FIX C: the operator (expected rentPayer / slot 1) is REQUIRED. An
+        // empty operator must hard-fail rather than silently skipping the
+        // rentPayer pin.
+        let no_operator_server = SessionServer::new(
+            SessionConfig {
+                operator: String::new(),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let err = no_operator_server
+            .payment_channel_open_params(&payload)
+            .unwrap_err();
+        assert!(err.to_string().contains("requires a configured operator"));
     }
 
     #[test]

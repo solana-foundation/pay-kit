@@ -273,10 +273,10 @@ export interface DistributeBuildArgs {
     readonly programId?: Address | undefined;
     /**
      * Operator recorded as `rentPayer` at open; it reclaims the channel PDA +
-     * escrow ATA rent at finalize (writable, not a signer). Defaults to the
-     * channel `payer` when omitted.
+     * escrow ATA rent at finalize (writable, not a signer). Required — it must
+     * match the rentPayer the channel stored, so there is no payer fallback.
      */
-    readonly rentPayer?: string | undefined;
+    readonly rentPayer: string;
     readonly splits: readonly { readonly bps: number; readonly recipient: string }[];
     readonly tokenProgram: string;
 }
@@ -398,11 +398,12 @@ export interface VerifyOpenTxExpected {
     readonly mint?: string | undefined;
     readonly network?: string | undefined;
     /**
-     * Operator / fee-payer pubkey (base58). The open instruction's `rentPayer`
-     * account (slot 1) must equal it: `rentPayer` is pinned to the operator
-     * that co-signs open as fee payer. Omitted/empty skips the check.
+     * Operator / fee-payer pubkey (base58) = the expected `rentPayer`. The open
+     * instruction's `rentPayer` account (slot 1) must equal it (it is pinned to
+     * the operator that co-signs open as fee payer while gasless). Required: the
+     * rentPayer slot is a security boundary and is always checked.
      */
-    readonly operator?: string | undefined;
+    readonly operator: string;
     /** Optional override for the payment-channels program id. */
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
@@ -555,7 +556,10 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
             `verifyOpenTx: authorizedSigner ${authorizedSignerAddr} != expected ${expected.authorizedSigner}`,
         );
     }
-    if (expected.operator && rentPayerAddr !== expected.operator) {
+    if (!expected.operator) {
+        throw new Error('verifyOpenTx: expected.operator (the channel rentPayer) is required');
+    }
+    if (rentPayerAddr !== expected.operator) {
         throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
     }
 
@@ -736,9 +740,9 @@ export interface SubmitSettleAndDistributeArgs {
     readonly programId?: Address | undefined;
     /**
      * Operator recorded as `rentPayer` at open; it reclaims the channel/escrow
-     * rent at finalize. Defaults to `payer` when omitted.
+     * rent at finalize. Required (no payer fallback).
      */
-    readonly rentPayer?: string | undefined;
+    readonly rentPayer: string;
     readonly rpc: {
         sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
     };

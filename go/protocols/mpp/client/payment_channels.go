@@ -52,6 +52,12 @@ type PaymentChannelOpen struct {
 	// authorize the channel's cumulative vouchers.
 	AuthorizedSigner solana.PublicKey
 
+	// RentPayer is the operator / fee payer that funds the channel rent and
+	// co-signs the open as fee payer while gasless. It is derived from the
+	// challenge operator and is NOT a channel-PDA seed, so it never affects
+	// the derived ChannelID.
+	RentPayer solana.PublicKey
+
 	// Salt is the random u64 that makes the channel PDA unique per open.
 	Salt uint64
 
@@ -82,6 +88,7 @@ func (o PaymentChannelOpen) OpenChannelParams() paymentchannels.OpenChannelParam
 		Payee:            o.Payee,
 		Mint:             o.Mint,
 		AuthorizedSigner: o.AuthorizedSigner,
+		RentPayer:        o.RentPayer,
 		Salt:             o.Salt,
 		Deposit:          o.Deposit,
 		GracePeriod:      o.GracePeriod,
@@ -171,6 +178,10 @@ func DerivePaymentChannelOpen(
 	if err != nil {
 		return PaymentChannelOpen{}, err
 	}
+	rentPayer, err := parseSessionPubkey(request.Operator, "operator")
+	if err != nil {
+		return PaymentChannelOpen{}, err
+	}
 
 	deposit := uint64(0)
 	if options.Deposit != nil {
@@ -239,6 +250,7 @@ func DerivePaymentChannelOpen(
 		Payee:            payee,
 		Mint:             mint,
 		AuthorizedSigner: authorizedSigner,
+		RentPayer:        rentPayer,
 		Salt:             salt,
 		Deposit:          deposit,
 		GracePeriod:      gracePeriod,
@@ -454,7 +466,10 @@ func buildOpenPaymentChannelTx(
 	recentBlockhash solana.Hash,
 ) (PaymentChannelOpenTransaction, error) {
 	openParams := open.OpenChannelParams()
-	// rentPayer is pinned to the operator / fee payer already in scope.
+	// OpenChannelParams already sets RentPayer to the challenge operator. Pin
+	// it to the actual fee payer in scope so a caller-supplied FeePayer that
+	// funds rent (and co-signs as fee payer) stays the recorded rentPayer;
+	// when feePayer is the operator this is a no-op.
 	openParams.RentPayer = feePayer
 	ix, err := paymentchannels.BuildOpenInstruction(openParams)
 	if err != nil {

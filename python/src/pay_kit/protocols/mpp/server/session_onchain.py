@@ -108,8 +108,11 @@ class VerifyOpenTxExpected:
     network: str
     max_cap: int = 0
     mint: str = ""
-    # operator / fee-payer pubkey (base58). The open instruction's rentPayer
-    # account (slot 1) must equal it. Empty skips the check.
+    # operator / fee-payer pubkey (base58) — the expected rentPayer (the
+    # operator while gasless). REQUIRED: the open instruction's rentPayer
+    # account (slot 1) must equal it. rentPayer is a security boundary, so
+    # verify_open_tx rejects an empty/None operator rather than skipping the
+    # slot-1 check.
     operator: str = ""
     program_id: Pubkey | None = None
 
@@ -180,15 +183,26 @@ async def verify_open_tx(
     Both legacy and v0 transaction encodings are accepted. The embedded open
     instruction must target the configured payment-channels program, the payee
     must equal the challenge recipient, the mint must match the challenge
-    currency/network, the authorizedSigner must match the payload, the deposit
-    must be positive and within the cap, and the channel account must equal the
-    PDA re-derived from the instruction's own seeds.
+    currency/network, the authorizedSigner (slot 4) must match the payload, the
+    rentPayer (slot 1) must equal the expected operator, the deposit must be
+    positive and within the cap, and the channel account must equal the PDA
+    re-derived from the instruction's own seeds.
+
+    ``expected.operator`` is the expected rentPayer (the operator while
+    gasless) and is REQUIRED: rentPayer is a security boundary, so an empty/None
+    operator raises ``ValueError`` rather than letting a standalone verifier
+    accept an open without proving the slot-1 rentPayer.
 
     When the payload carries a non-placeholder signature, it must equal the
     transaction's own fee-payer signature. If ``rpc_client`` is non-None, that
     bound signature is additionally confirmed on-chain; ``None`` skips the
     liveness check (structural validation only).
+
+    Raises:
+        ValueError: if ``expected.operator`` is empty/None.
     """
+    if not expected.operator:
+        raise ValueError("operator (expected rentPayer) is required to verify an open transaction")
     if not payload.transaction:
         raise PaymentError(
             "openPayload.transaction is required for push-mode open verification",
@@ -269,7 +283,7 @@ async def verify_open_tx(
             f"open authorizedSigner {authorized_signer} != expected {expected.authorized_signer}",
             code="invalid-payload",
         )
-    if expected.operator and str(rent_payer) != expected.operator:
+    if str(rent_payer) != expected.operator:
         raise PaymentError(
             f"open rentPayer {rent_payer} != expected operator {expected.operator}",
             code="invalid-payload",
