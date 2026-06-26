@@ -80,6 +80,11 @@ type VerifyOpenTxResult struct {
 	// GracePeriod is the close grace period in seconds.
 	GracePeriod uint32
 
+	// Payer is the channel payer (open account 0, base58): the deposit funder
+	// and the distribute refund destination (the program enforces it equals
+	// channel.payer).
+	Payer string
+
 	// Salt is the channel-derivation salt.
 	Salt uint64
 }
@@ -247,6 +252,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		ChannelID:   channel.String(),
 		Deposit:     deposit,
 		GracePeriod: gracePeriod,
+		Payer:       payer.String(),
 		Salt:        salt,
 	}, nil
 }
@@ -258,7 +264,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 // carries only a confirmation signature, rpcClient is required and the
 // signature is confirmed on-chain via getSignatureStatuses.
 func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) SessionTxVerifier[intents.OpenPayload] {
-	return func(ctx context.Context, payload *intents.OpenPayload) error {
+	return func(ctx context.Context, payload *intents.OpenPayload) (string, error) {
 		if payload.Transaction != nil && *payload.Transaction != "" {
 			expected := VerifyOpenTxExpected{
 				AuthorizedSigner: payload.AuthorizedSigner,
@@ -269,13 +275,13 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 				ProgramID:        config.ProgramID,
 				Recipient:        config.Recipient,
 			}
-			_, err := VerifyOpenTx(ctx, expected, payload, rpcClient)
-			return err
+			result, err := VerifyOpenTx(ctx, expected, payload, rpcClient)
+			return result.Payer, err
 		}
 		if rpcClient == nil {
-			return fmt.Errorf("open verification requires a transaction or an RPC client")
+			return "", fmt.Errorf("open verification requires a transaction or an RPC client")
 		}
-		return confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open")
+		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open")
 	}
 }
 
@@ -289,8 +295,10 @@ func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.
 	if rpcClient == nil {
 		return nil
 	}
-	return func(ctx context.Context, payload *intents.TopUpPayload) error {
-		return confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
+	return func(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
+		// A top-up carries only a signature, not an open transaction, so it
+		// never establishes the channel payer.
+		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
 	}
 }
 
@@ -311,14 +319,15 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 	if state == nil {
 		return nil, fmt.Errorf("channel %s not found", channelID)
 	}
-	return s.settlementInstructionsForState(*state, channelID, merchant, "")
+	return s.settlementInstructionsForState(*state, channelID, merchant)
 }
 
 // settlementInstructionsForState derives the settlement instruction sequence
-// for an already-read channel snapshot. payerFallback, when non-empty, is
-// used as the distribute payer when the channel never recorded an operator;
-// empty keeps the strict unknown-payer error.
-func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey, payerFallback string) ([]solana.Instruction, error) {
+// for an already-read channel snapshot. The distribute payer is the channel
+// payer recorded as state.Operator at open (the program pins it to
+// channel.payer); when the channel never recorded a payer this returns the
+// strict unknown-payer error rather than refunding any other account.
+func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey) ([]solana.Instruction, error) {
 	channel, err := solana.PublicKeyFromBase58(channelID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid channel id %q: %w", channelID, err)
@@ -373,7 +382,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
 	}
-	payerAddress := payerFallback
+	payerAddress := ""
 	if state.Operator != nil {
 		payerAddress = *state.Operator
 	}

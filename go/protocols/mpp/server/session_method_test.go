@@ -98,6 +98,11 @@ func openTrustedChannel(t *testing.T, session *Session, deposit uint64) (testVou
 func openSessionChannel(t *testing.T, session *Session, channelID string, deposit uint64, authorizedSigner, signature string) core.Receipt {
 	t.Helper()
 	payload := intents.OpenPayloadPush(channelID, fmt.Sprintf("%d", deposit), authorizedSigner, signature)
+	// Record a channel payer (the distribute refund destination, which the
+	// program pins to channel.payer) so the bare push open can later settle;
+	// without it the settle path now refuses rather than refunding the merchant.
+	payer := solana.NewWallet().PublicKey().String()
+	payload.Payer = &payer
 	receipt, err := verifySessionAction(t, session, intents.NewOpenAction(payload))
 	if err != nil {
 		t.Fatalf("open: %v", err)

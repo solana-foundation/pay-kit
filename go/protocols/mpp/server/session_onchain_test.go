@@ -448,8 +448,21 @@ func TestNewOpenTxVerifierWithoutTransactionRequiresRPC(t *testing.T) {
 	verifier := NewOpenTxVerifier(config, nil)
 	payload := fixture.payload
 	payload.Transaction = nil
-	if err := verifier(context.Background(), &payload); err == nil || !strings.Contains(err.Error(), "RPC client") {
+	if _, err := verifier(context.Background(), &payload); err == nil || !strings.Contains(err.Error(), "RPC client") {
 		t.Fatalf("err = %v, want rpc-required rejection", err)
+	}
+}
+
+func TestNewOpenTxVerifierReturnsChannelPayerForTransaction(t *testing.T) {
+	fixture := buildOpenTxFixture(t, false)
+	config := openSessionConfig(fixture)
+	verifier := NewOpenTxVerifier(config, nil)
+	payer, err := verifier(context.Background(), &fixture.payload)
+	if err != nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	if payer != fixture.payer.PublicKey().String() {
+		t.Fatalf("verifier payer = %q, want %q", payer, fixture.payer.PublicKey())
 	}
 }
 
@@ -459,7 +472,7 @@ func TestNewOpenTxVerifierWithoutTransactionConfirmsSignature(t *testing.T) {
 	verifier := NewOpenTxVerifier(config, testutil.NewFakeRPC())
 	payload := fixture.payload
 	payload.Transaction = nil
-	if err := verifier(context.Background(), &payload); err != nil {
+	if _, err := verifier(context.Background(), &payload); err != nil {
 		t.Fatalf("verifier with confirmed signature: %v", err)
 	}
 }
@@ -480,7 +493,7 @@ func TestNewTopUpTxVerifierConfirmsSignature(t *testing.T) {
 	}
 	verifier := NewTopUpTxVerifier(testutil.NewFakeRPC())
 	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
-	if err := verifier(context.Background(), payload); err != nil {
+	if _, err := verifier(context.Background(), payload); err != nil {
 		t.Fatalf("verifier with confirmed signature: %v", err)
 	}
 }
@@ -495,16 +508,16 @@ func TestNewTopUpTxVerifierSurfacesFailureAndNotFound(t *testing.T) {
 	fakeRPC.Statuses[signature.String()] = &rpc.SignatureStatusesResult{Err: "InstructionError"}
 	verifier := NewTopUpTxVerifier(fakeRPC)
 	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
-	if err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "top-up") {
+	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "top-up") {
 		t.Fatalf("err = %v, want top-up failure rejection", err)
 	}
 
 	fakeRPC.Statuses[signature.String()] = nil
-	if err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want not-found rejection", err)
 	}
 
-	if err := verifier(context.Background(), &intents.TopUpPayload{Signature: "not-base58!"}); err == nil || !strings.Contains(err.Error(), "invalid top-up tx signature") {
+	if _, err := verifier(context.Background(), &intents.TopUpPayload{Signature: "not-base58!"}); err == nil || !strings.Contains(err.Error(), "invalid top-up tx signature") {
 		t.Fatalf("err = %v, want invalid-signature rejection", err)
 	}
 }
