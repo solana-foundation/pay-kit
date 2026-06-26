@@ -40,6 +40,9 @@ pub enum PaymentChannelsError {
     /// 9 - Not enough accounts were provided
     #[error("Not enough accounts were provided")]
     NotEnoughAccountKeys = 0x9,
+    /// 10 - Account does not match channel rent_payer
+    #[error("Account does not match channel rent_payer")]
+    InvalidChannelRentPayer = 0xA,
     /// 50 - Channel account does not match derived PDA
     #[error("Channel account does not match derived PDA")]
     ChannelAccountMismatch = 0x32,

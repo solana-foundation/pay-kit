@@ -14,7 +14,9 @@ default = ["mpp", "x402"]
 mpp = ["dep:solana-mpp"]
 x402 = ["dep:solana-x402"]
 server = ["solana-mpp?/server", "solana-x402?/server"]
-client = ["solana-mpp?/client", "solana-x402?/client"]
+# Client-side selection (kit::select) needs serde_json to decode MPP method
+# details; pull it in here so subset builds without `client` don't pay for it.
+client = ["solana-mpp?/client", "solana-x402?/client", "dep:serde_json"]
 # The unified axum gate dispatches both protocols, so it needs both servers.
 axum = ["mpp", "x402", "server", "solana-mpp?/axum", "dep:axum", "dep:tracing"]
 gcp_kms = ["solana-mpp?/gcp_kms"]
@@ -29,6 +31,7 @@ solana-mpp = { path = "../mpp", optional = true }
 solana-x402 = { path = "../x402", optional = true }
 axum = { version = "0.8", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -98,6 +98,11 @@ func openTrustedChannel(t *testing.T, session *Session, deposit uint64) (testVou
 func openSessionChannel(t *testing.T, session *Session, channelID string, deposit uint64, authorizedSigner, signature string) core.Receipt {
 	t.Helper()
 	payload := intents.OpenPayloadPush(channelID, fmt.Sprintf("%d", deposit), authorizedSigner, signature)
+	// Record a channel payer (the distribute refund destination, which the
+	// program pins to channel.payer) so the bare push open can later settle;
+	// without it the settle path now refuses rather than refunding the merchant.
+	payer := solana.NewWallet().PublicKey().String()
+	payload.Payer = &payer
 	receipt, err := verifySessionAction(t, session, intents.NewOpenAction(payload))
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -1095,7 +1100,8 @@ func TestSessionOpenVerifiesAttachedTransaction(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
-		o.Operator = fixture.payee.String()
+		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
+		o.Operator = fixture.payer.PublicKey().String()
 		o.Network = "localnet"
 	})
 
@@ -1130,6 +1136,8 @@ func TestSessionServerSubmitterBroadcastsOnceAndReplaysWithoutRebroadcast(t *tes
 	fake := testutil.NewFakeRPC()
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
+		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
+		o.Operator = fixture.payer.PublicKey().String()
 		o.OpenTxSubmitter = OpenTxSubmitterServer
 		o.RPC = fake
 	})
@@ -1206,7 +1214,10 @@ func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) o
 	// Rebuild the open transaction with the operator as fee payer; only the
 	// channel payer partial-signs, leaving the fee-payer slot zeroed.
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
-		Payer:            fixture.payer.PublicKey(),
+		Payer: fixture.payer.PublicKey(),
+		// rentPayer is pinned to the operator / fee payer that completes and
+		// broadcasts this open server-side.
+		RentPayer:        operator.PublicKey(),
 		Payee:            fixture.payee,
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorized,
@@ -1235,6 +1246,8 @@ func buildServerCompletedOpenFixture(t *testing.T, operator solana.PrivateKey) o
 	payload.Transaction = &encoded
 	fixture.payload = payload
 	fixture.expected.Recipient = fixture.payee.String()
+	// rentPayer (slot 1) is pinned to the operator that completes/broadcasts.
+	fixture.expected.Operator = operator.PublicKey().String()
 	return fixture
 }
 

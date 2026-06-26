@@ -41,8 +41,8 @@
         "@solana/kit": "^6.5.0",
         "@solana/mpp": "workspace:^",
         "@types/node": "^25.5.0",
-        "@x402/core": "file:../../.x402-vendor/x402-core-2.15.0.tgz",
-        "@x402/svm": "file:../../.x402-vendor/x402-svm-2.15.0.tgz",
+        "@x402/core": "file:../../.x402-vendor/x402-core-2.16.0.tgz",
+        "@x402/svm": "file:../../.x402-vendor/x402-svm-2.16.0.tgz",
         "mppx": "^0.5.5",
         "tsup": "^8.5.0"
     }

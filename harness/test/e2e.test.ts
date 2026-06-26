@@ -1074,36 +1074,45 @@ function expectPaymentChannelSettlement(
     expect(
       message.instructions,
       "x402-upto zero-actual settlement instruction count",
-    ).toHaveLength(1);
-    const [settle] = message.instructions;
-    expect(accountAt(message, settle.programAddressIndex)).toBe(
-      PAYMENT_CHANNEL_PROGRAM,
-    );
-    expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
-    expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(0);
-    return;
+    ).toHaveLength(4);
+  } else {
+    expect(
+      message.instructions,
+      "x402-upto settlement instruction count",
+    ).toHaveLength(5);
   }
 
-  expect(
-    message.instructions,
-    "x402-upto settlement instruction count",
-  ).toHaveLength(5);
-
-  const [verify, settle, createPayee, createTreasury, distribute] =
-    message.instructions;
-  expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
-  expect(verify.data[0], "Ed25519 signature count").toBe(1);
-  expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
-  expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
-  expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
-    primaryDelta(scenario),
-  );
+  let settle: (typeof message.instructions)[number];
+  let createPayee: (typeof message.instructions)[number];
+  let createTreasury: (typeof message.instructions)[number];
+  let distribute: (typeof message.instructions)[number];
+  if (actual === 0n) {
+    [settle, createPayee, createTreasury, distribute] = message.instructions;
+  } else {
+    const [verify, nonZeroSettle, nonZeroCreatePayee, nonZeroCreateTreasury, nonZeroDistribute] =
+      message.instructions;
+    expect(accountAt(message, verify.programAddressIndex)).toBe(
+      ED25519_PROGRAM,
+    );
+    expect(verify.data[0], "Ed25519 signature count").toBe(1);
+    expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
+    expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
+    expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
+      primaryDelta(scenario),
+    );
+    settle = nonZeroSettle;
+    createPayee = nonZeroCreatePayee;
+    createTreasury = nonZeroCreateTreasury;
+    distribute = nonZeroDistribute;
+  }
 
   expect(accountAt(message, settle.programAddressIndex)).toBe(
     PAYMENT_CHANNEL_PROGRAM,
   );
   expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
-  expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(1);
+  expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(
+    actual === 0n ? 0 : 1,
+  );
 
   const mint = onChainMintFor(scenario);
   if (!mint) {
@@ -1139,23 +1148,23 @@ function expectPaymentChannelSettlement(
   );
   expect(distribute.data[0], "distribute discriminator").toBe(7);
   expect(distribute.accountIndices, "distribute account count").toHaveLength(
-    10,
+    11,
   );
   expect(accountAt(message, settle.accountIndices[1]), "settled channel").toBe(
     accountAt(message, distribute.accountIndices[0]),
   );
-  expect(accountAt(message, distribute.accountIndices[4]), "payee ATA").toBe(
+  expect(accountAt(message, distribute.accountIndices[5]), "payee ATA").toBe(
     payeeAta,
   );
-  expect(accountAt(message, distribute.accountIndices[5]), "treasury ATA").toBe(
+  expect(accountAt(message, distribute.accountIndices[6]), "treasury ATA").toBe(
     treasuryAta,
   );
-  expect(accountAt(message, distribute.accountIndices[6]), "mint").toBe(mint);
+  expect(accountAt(message, distribute.accountIndices[7]), "mint").toBe(mint);
   expect(
-    accountAt(message, distribute.accountIndices[7]),
+    accountAt(message, distribute.accountIndices[8]),
     "token program",
   ).toBe(tokenProgram);
-  expect(accountAt(message, distribute.accountIndices[9]), "self program").toBe(
+  expect(accountAt(message, distribute.accountIndices[10]), "self program").toBe(
     PAYMENT_CHANNEL_PROGRAM,
   );
 }

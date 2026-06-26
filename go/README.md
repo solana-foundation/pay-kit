@@ -97,12 +97,14 @@ The sibling `protocols/mpp/client` does the same for MPP
 The exact-amount scheme, settled locally against the operator signer or
 delegated to a facilitator. Both client and server ship. The
 usage-based `upto` scheme (payment-channel profile) ships server-side
-via `paykit.RequireUsage`.
+via `paykit.RequireUsage` and client-side through the protocol helper
+used by the harness. The generic `x402client.NewClient` transport is
+still exact-only.
 
 | Intent | Client | Server |
 |---|:---:|:---:|
 | `x402/exact` | ✅ | ✅ |
-| `x402/upto` | — | ✅ |
+| `x402/upto` | ✅ | ✅ |
 | `x402/batch-settlement` | — | — |
 
 `upto` charges for actual usage up to a ceiling: the client opens a
@@ -272,8 +274,9 @@ The CI Go job runs the SDK packages with `-coverprofile` and enforces a
 
 The Go SDK plugs into the cross-SDK harness as a server
 (`harness/go-server`, both protocols) and as clients
-(`harness/go-client` drives MPP charge, and its x402 mode — registered
-as `go-x402` — drives the x402-exact client). Focused harness commands:
+(`harness/go-client` drives MPP charge, `go-x402` drives x402-exact,
+and `go-x402-upto` drives the x402-upto protocol helper). Focused
+harness commands:
 
 ```bash
 cd harness
@@ -284,6 +287,9 @@ MPP_HARNESS_CLIENTS=go         MPP_HARNESS_SERVERS=rust pnpm test
 MPP_HARNESS_SERVERS=go MPP_HARNESS_INTENTS=x402-exact \
   MPP_HARNESS_SCENARIOS=x402-exact-basic \
   X402_HARNESS_CLIENTS=go-x402 X402_HARNESS_SERVERS=go pnpm test
+# x402 upto: go client -> go server
+MPP_HARNESS_INTENTS=x402-upto MPP_HARNESS_SCENARIOS=x402-upto-basic \
+  X402_HARNESS_CLIENTS=go-x402-upto X402_HARNESS_SERVERS=go-x402-upto pnpm test
 ```
 
 ## Spec

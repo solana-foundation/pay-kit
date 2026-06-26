@@ -218,6 +218,8 @@ func TestSessionOpenSurfacesStoreFailures(t *testing.T) {
 	store := &failingGetStore{ChannelStore: NewMemoryChannelStore(), getErr: errors.New("store offline")}
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
+		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
+		o.Operator = fixture.payer.PublicKey().String()
 		o.OpenTxSubmitter = OpenTxSubmitterServer
 		o.RPC = fake
 		o.Store = store
@@ -234,6 +236,8 @@ func TestSessionServerSubmitterSurfacesBroadcastFailure(t *testing.T) {
 	fake.SendErr = errors.New("blockhash not found")
 	session := newTestSession(t, func(o *SessionOptions) {
 		o.Recipient = fixture.payee.String()
+		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
+		o.Operator = fixture.payer.PublicKey().String()
 		o.OpenTxSubmitter = OpenTxSubmitterServer
 		o.RPC = fake
 	})
@@ -560,6 +564,7 @@ func buildRawOpenPayload(t *testing.T, accounts []*solana.AccountMeta, data []by
 		Currency:         "USDC",
 		MaxCap:           5_000_000,
 		Network:          "localnet",
+		Operator:         payer.PublicKey().String(),
 		Recipient:        payer.PublicKey().String(),
 	}
 	return payload, expected
@@ -597,10 +602,12 @@ func TestVerifyOpenTxMalformedInstructions(t *testing.T) {
 	}
 	shortData, shortExpected := buildRawOpenPayload(t, accounts, []byte{openInstructionDiscriminator, 1, 2, 3})
 	// Point the expectations at the instruction's actual payee/mint/signer so
-	// the data-length check is what fails.
-	shortExpected.Recipient = accounts[1].PublicKey.String()
-	shortExpected.Mint = accounts[2].PublicKey.String()
-	shortExpected.AuthorizedSigner = accounts[3].PublicKey.String()
+	// the data-length check is what fails. Account order after the rentPayer
+	// (+1) shift: 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, ...
+	shortExpected.Operator = accounts[1].PublicKey.String()
+	shortExpected.Recipient = accounts[2].PublicKey.String()
+	shortExpected.Mint = accounts[3].PublicKey.String()
+	shortExpected.AuthorizedSigner = accounts[4].PublicKey.String()
 	if _, err := VerifyOpenTx(ctx, shortExpected, &shortData, nil); err == nil ||
 		!strings.Contains(err.Error(), "data too short") {
 		t.Fatalf("short data = %v", err)

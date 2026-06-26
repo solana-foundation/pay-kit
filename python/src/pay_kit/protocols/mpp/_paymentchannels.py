@@ -120,6 +120,12 @@ class OpenChannelParams:
 
     Attributes:
         payer: The account funding the channel and signing the open.
+        rent_payer: The operator / fee payer that funds the channel PDA +
+            escrow ATA rent at open (and reclaims it at finalize); a SIGNER on
+            the open instruction. It is always the same key used as the
+            transaction fee payer, so a single operator signature covers both
+            roles. Not a wire/payload field. ``None`` defaults to ``payer``
+            (the payer is its own rent payer / fee payer).
         payee: The counterparty the channel pays out to.
         mint: The SPL token mint the channel is denominated in.
         authorized_signer: The key authorized to sign vouchers that redeem
@@ -147,6 +153,7 @@ class OpenChannelParams:
     recipients: list[Distribution] = field(default_factory=list)
     token_program: Pubkey = field(default_factory=lambda: Pubkey.from_string(TOKEN_PROGRAM))
     program_id: Pubkey = field(default_factory=lambda: PROGRAM_ID)
+    rent_payer: Pubkey | None = None
 
 
 @dataclass
@@ -336,10 +343,19 @@ def build_open_instruction(params: OpenChannelParams) -> Instruction:
         gracePeriod=params.grace_period,
         recipients=[DistributionEntry(recipient=entry.recipient, bps=entry.bps) for entry in params.recipients],
     )
+    # rentPayer is the operator / fee payer that funds the channel rent. It is
+    # required: server-side verify_open_tx rejects an open whose rentPayer is
+    # not the operator, so there is no valid silent fallback to params.payer.
+    if params.rent_payer is None:
+        raise ValueError(
+            "OpenChannelParams.rent_payer is required to build the open instruction "
+            "(the operator / fee payer that funds the channel rent)"
+        )
     return Open(
         {"openArgs": args},
         {
             "payer": params.payer,
+            "rentPayer": params.rent_payer,
             "payee": params.payee,
             "mint": params.mint,
             "authorizedSigner": params.authorized_signer,
@@ -488,13 +504,19 @@ def build_distribute_instruction(
     token_program: Pubkey,
     program_id: Pubkey = PROGRAM_ID,
     treasury: Pubkey | None = None,
+    rent_payer: Pubkey | None = None,
 ) -> Instruction:
     """Build the distribute instruction that pays out a settled channel.
 
     Derives the channel / payer / payee / treasury ATAs and one ATA per split
     recipient (appended as writable remaining accounts, mirroring the Rust/Go
     builders).
+
+    ``rent_payer`` is the operator recorded at open; it reclaims the channel
+    PDA + escrow ATA rent at finalize (writable, not a signer). It is required.
     """
+    if rent_payer is None:
+        raise ValueError("rent_payer is required (the operator recorded at open)")
     owner = treasury if treasury is not None else treasury_owner()
     channel_token, _ = find_associated_token_address(channel, mint, token_program)
     payer_token, _ = find_associated_token_address(payer, mint, token_program)
@@ -514,6 +536,7 @@ def build_distribute_instruction(
         {
             "channel": channel,
             "payer": payer,
+            "rentPayer": rent_payer,
             "channelTokenAccount": channel_token,
             "payerTokenAccount": payer_token,
             "payeeTokenAccount": payee_token,

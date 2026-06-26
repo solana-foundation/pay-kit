@@ -267,12 +267,12 @@ func TestProcessOpenReplayOnFinalizedChannelRejected(t *testing.T) {
 func TestProcessOpenInvokesVerifyOpenTxSeamForPush(t *testing.T) {
 	verified := 0
 	config := sessionTestConfig()
-	config.VerifyOpenTx = func(_ context.Context, payload *intents.OpenPayload) error {
+	config.VerifyOpenTx = func(_ context.Context, payload *intents.OpenPayload) (string, error) {
 		verified++
 		if payload.Signature != "dummy_tx_sig" {
 			t.Fatalf("verifier got signature %q", payload.Signature)
 		}
-		return nil
+		return "", nil
 	}
 	server := newSessionTestServer(config)
 	if _, err := server.ProcessOpen(context.Background(), sessionOpenPayload("chan1", 1_000, "signer1")); err != nil {
@@ -286,7 +286,7 @@ func TestProcessOpenInvokesVerifyOpenTxSeamForPush(t *testing.T) {
 func TestProcessOpenVerifyOpenTxErrorRejectsWithoutPersisting(t *testing.T) {
 	wantErr := errors.New("tx not found")
 	config := sessionTestConfig()
-	config.VerifyOpenTx = func(context.Context, *intents.OpenPayload) error { return wantErr }
+	config.VerifyOpenTx = func(context.Context, *intents.OpenPayload) (string, error) { return "", wantErr }
 	server := newSessionTestServer(config)
 
 	_, err := server.ProcessOpen(context.Background(), sessionOpenPayload("chan1", 1_000, "signer1"))
@@ -307,9 +307,9 @@ func TestProcessOpenSkipsVerifyOpenTxForPull(t *testing.T) {
 	config := sessionTestConfig()
 	config.Modes = []intents.SessionMode{intents.SessionModePull}
 	config.PullVoucherStrategy = &strategy
-	config.VerifyOpenTx = func(context.Context, *intents.OpenPayload) error {
+	config.VerifyOpenTx = func(context.Context, *intents.OpenPayload) (string, error) {
 		t.Fatal("VerifyOpenTx must not run for pull opens")
-		return nil
+		return "", nil
 	}
 	server := newSessionTestServer(config)
 
@@ -507,11 +507,11 @@ func TestProcessTopUpRejectsWhenFinalizedOrClosePending(t *testing.T) {
 func TestProcessTopUpInvokesVerifyTopUpTxSeam(t *testing.T) {
 	wantErr := errors.New("topup tx unknown")
 	config := sessionTestConfig()
-	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload) error {
+	config.VerifyTopUpTx = func(_ context.Context, payload *intents.TopUpPayload) (string, error) {
 		if payload.Signature != "topup_sig" {
 			t.Fatalf("verifier got signature %q", payload.Signature)
 		}
-		return wantErr
+		return "", wantErr
 	}
 	server := newSessionTestServer(config)
 	_, channelID := openTestChannel(t, server, 1_000_000)

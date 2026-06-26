@@ -234,12 +234,47 @@ pub fn parse_x402_challenge_with_selection(
     body: Option<&str>,
     selection: &ChallengeSelection<'_>,
 ) -> Option<PaymentRequirements> {
+    let envelope = payment_required_envelope(headers, body)?;
+    select_requirement(envelope.accepts, selection)
+}
+
+/// Parse *every* advertised x402 payment requirement, without applying client
+/// selection.
+///
+/// [`parse_x402_challenge_with_selection`] returns a single best-fit offer; this
+/// returns the whole `accepts` list so a caller can rank offers itself — for
+/// example a cross-protocol token-preference selector that weighs x402 accepts
+/// against MPP charge challenges. Offers are returned in server order.
+pub fn parse_x402_accepts(
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Vec<PaymentRequirements> {
+    payment_required_envelope(headers, body)
+        .map(|envelope| envelope.accepts)
+        .unwrap_or_default()
+}
+
+/// Extract the `PaymentRequired` envelope from a 402 response.
+///
+/// Checks, in order: the base64-encoded `PAYMENT-REQUIRED` header, the legacy
+/// single-requirement `X402_V1_PAYMENT_REQUIRED_HEADER` (wrapped as a
+/// one-element envelope so callers see a uniform shape), then the response
+/// body. Shared by [`parse_x402_challenge_with_selection`] and
+/// [`parse_x402_accepts`] so the header-scanning logic lives in one place.
+fn payment_required_envelope(
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Option<PaymentRequiredEnvelope> {
     if let Some(header) = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(PAYMENT_REQUIRED_HEADER))
     {
-        if let Some(req) = parse_payment_required_header(&header.1, selection) {
-            return Some(req);
+        if let Ok(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header.1)
+        {
+            if let Ok(envelope) = serde_json::from_slice::<PaymentRequiredEnvelope>(&decoded) {
+                return Some(envelope.with_resource_on_accepts());
+            }
         }
     }
 
@@ -247,42 +282,24 @@ pub fn parse_x402_challenge_with_selection(
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(X402_V1_PAYMENT_REQUIRED_HEADER))
     {
-        if let Ok(req) = serde_json::from_str::<PaymentRequirements>(&header.1) {
-            return Some(req);
+        if let Ok(requirement) = serde_json::from_str::<PaymentRequirements>(&header.1) {
+            return Some(PaymentRequiredEnvelope {
+                x402_version: X402_VERSION_V1,
+                resource: None,
+                accepts: vec![requirement],
+                error: None,
+                extensions: None,
+            });
         }
     }
 
     if let Some(body) = body {
-        if let Some(req) = parse_accepts_body(body, selection) {
-            return Some(req);
+        if let Ok(envelope) = serde_json::from_str::<PaymentRequiredEnvelope>(body) {
+            return Some(envelope.with_resource_on_accepts());
         }
     }
 
     None
-}
-
-fn parse_payment_required_header(
-    header: &str,
-    selection: &ChallengeSelection<'_>,
-) -> Option<PaymentRequirements> {
-    let decoded =
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, header).ok()?;
-    let envelope: PaymentRequiredEnvelope =
-        serde_json::from_slice::<PaymentRequiredEnvelope>(&decoded)
-            .ok()?
-            .with_resource_on_accepts();
-    select_requirement(envelope.accepts, selection)
-}
-
-/// Parse the x402-express body `{ "accepts": [...] }` into `PaymentRequirements`.
-fn parse_accepts_body(
-    body: &str,
-    selection: &ChallengeSelection<'_>,
-) -> Option<PaymentRequirements> {
-    let envelope: PaymentRequiredEnvelope = serde_json::from_str::<PaymentRequiredEnvelope>(body)
-        .ok()?
-        .with_resource_on_accepts();
-    select_requirement(envelope.accepts, selection)
 }
 
 fn select_requirement(
@@ -629,7 +646,9 @@ mod tests {
         })
         .to_string();
 
-        let req = parse_accepts_body(&body, &ChallengeSelection::default()).unwrap();
+        let req =
+            parse_x402_challenge_with_selection(&[], Some(&body), &ChallengeSelection::default())
+                .unwrap();
         assert_eq!(req.amount, "1000");
         assert_eq!(
             req.recipient,
@@ -650,7 +669,12 @@ mod tests {
     #[test]
     fn parse_x402_express_body_no_solana() {
         let body = r#"{ "accepts": [{ "network": "foo:bar" }] }"#;
-        assert!(parse_accepts_body(body, &ChallengeSelection::default()).is_none());
+        assert!(parse_x402_challenge_with_selection(
+            &[],
+            Some(body),
+            &ChallengeSelection::default()
+        )
+        .is_none());
     }
 
     // ── Client-side selection ──────────────────────────────────────────────
@@ -922,7 +946,12 @@ mod tests {
 
     #[test]
     fn parse_invalid_returns_none() {
-        assert!(parse_accepts_body("not json", &ChallengeSelection::default()).is_none());
+        assert!(parse_x402_challenge_with_selection(
+            &[],
+            Some("not json"),
+            &ChallengeSelection::default()
+        )
+        .is_none());
         assert!(parse_x402_challenge(&[], None).is_none());
         assert!(parse_x402_challenge(&[], Some("garbage")).is_none());
     }

@@ -147,6 +147,7 @@ def _open_params() -> OpenChannelParams:
         grace_period=3600,
         recipients=[Distribution(pk(5), 7_500), Distribution(pk(6), 2_500)],
         token_program=pk(7),
+        rent_payer=pk(8),
     )
 
 
@@ -154,7 +155,7 @@ def test_build_open_instruction_program_id_and_account_count() -> None:
     ix = build_open_instruction(_open_params())
     assert ix.program_id == PROGRAM_ID
     assert str(ix.program_id) == PAYMENT_CHANNELS_PROGRAM_ID
-    assert len(ix.accounts) == 13
+    assert len(ix.accounts) == 14
 
 
 def test_build_open_instruction_rejects_out_of_range_fields() -> None:
@@ -181,34 +182,42 @@ def test_build_open_instruction_account_order_and_flags() -> None:
     channel_ata, _ = find_associated_token_address(channel, params.mint, params.token_program)
     event_authority, _ = find_event_authority_pda()
 
+    # Account order after the rentPayer (+1) shift: 0 payer, 1 rentPayer,
+    # 2 payee, 3 mint, 4 authorized_signer, 5 channel, 6 payer ATA,
+    # 7 channel ATA, 8 token_program, 9 system_program, 10 rent,
+    # 11 associated_token_program, 12 event_authority, 13 self/program.
     # 0 payer: signer + writable.
     assert accounts[0].pubkey == params.payer
     assert accounts[0].is_signer is True
     assert accounts[0].is_writable is True
-    # 1 payee, 2 mint, 3 authorized_signer: read-only.
-    assert accounts[1].pubkey == params.payee
-    assert accounts[2].pubkey == params.mint
-    assert accounts[3].pubkey == params.authorized_signer
-    # 4 channel PDA: writable.
-    assert accounts[4].pubkey == channel
-    assert accounts[4].is_writable is True
-    assert accounts[4].is_signer is False
-    # 5 payer ATA, 6 channel ATA: writable.
-    assert accounts[5].pubkey == payer_ata
+    # 1 rentPayer: signer + writable; the operator / fee payer pinned by the caller.
+    assert accounts[1].pubkey == params.rent_payer
+    assert accounts[1].is_signer is True
+    assert accounts[1].is_writable is True
+    # 2 payee, 3 mint, 4 authorized_signer: read-only.
+    assert accounts[2].pubkey == params.payee
+    assert accounts[3].pubkey == params.mint
+    assert accounts[4].pubkey == params.authorized_signer
+    # 5 channel PDA: writable.
+    assert accounts[5].pubkey == channel
     assert accounts[5].is_writable is True
-    assert accounts[6].pubkey == channel_ata
+    assert accounts[5].is_signer is False
+    # 6 payer ATA, 7 channel ATA: writable.
+    assert accounts[6].pubkey == payer_ata
     assert accounts[6].is_writable is True
-    # 7 token_program, 8 system_program, 9 rent, 10 associated_token_program.
-    assert accounts[7].pubkey == params.token_program
-    assert str(accounts[8].pubkey) == "11111111111111111111111111111111"
-    assert str(accounts[9].pubkey) == "SysvarRent111111111111111111111111111111111"
-    assert str(accounts[10].pubkey) == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-    # 11 event_authority PDA.
-    assert accounts[11].pubkey == event_authority
-    # 12 self/program == the payment-channels program id.
-    assert accounts[12].pubkey == PROGRAM_ID
-    # No account other than payer is a signer.
-    assert [a.is_signer for a in accounts] == [True] + [False] * 12
+    assert accounts[7].pubkey == channel_ata
+    assert accounts[7].is_writable is True
+    # 8 token_program, 9 system_program, 10 rent, 11 associated_token_program.
+    assert accounts[8].pubkey == params.token_program
+    assert str(accounts[9].pubkey) == "11111111111111111111111111111111"
+    assert str(accounts[10].pubkey) == "SysvarRent111111111111111111111111111111111"
+    assert str(accounts[11].pubkey) == "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    # 12 event_authority PDA.
+    assert accounts[12].pubkey == event_authority
+    # 13 self/program == the payment-channels program id.
+    assert accounts[13].pubkey == PROGRAM_ID
+    # Open signer mask: payer and rentPayer are signers, nothing else.
+    assert [a.is_signer for a in accounts] == [True, True] + [False] * 12
 
 
 def test_build_open_instruction_data_layout_roundtrip() -> None:

@@ -65,8 +65,11 @@ async fn open_channels(url: &str, count: u64) -> (Arc<MemorySigner>, Pubkey, Vec
     for salt in 0..count {
         // Delegated/upto model: operator is the payee + authorized_signer (the
         // `merchant` in settle_and_finalize must equal the channel's payee).
+        // testkit::open_one fee-pays + signs with `payer`, so rentPayer (a
+        // signer) is pinned to `payer` here.
         let params = pc::OpenChannelParams {
             payer,
+            rent_payer: payer,
             payee: operator,
             mint: usdc,
             authorized_signer: operator,
@@ -182,8 +185,11 @@ async fn distribution_hash_matches_on_chain_commitment() {
         },
     ];
 
+    // In this single-signer test harness the fee payer / submitter is `payer`
+    // itself (see testkit::open_one), so rentPayer is pinned to `payer`.
     let params = pc::OpenChannelParams {
         payer,
+        rent_payer: payer,
         payee: operator,
         mint: usdc,
         authorized_signer: operator,

@@ -84,6 +84,7 @@ pub struct UptoConfig {
 pub struct VerifiedUptoOpen {
     pub channel_id: Pubkey,
     pub payer: Pubkey,
+    pub rent_payer: Pubkey,
     pub mint: Pubkey,
     pub token_program: Pubkey,
     pub program_id: Pubkey,
@@ -136,16 +137,10 @@ impl X402Upto {
         if config.recipient.is_empty() {
             return Err(Error::Other("recipient is required".into()));
         }
-        let recipient = Pubkey::from_str(&config.recipient)
+        Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
 
         let operator = config.operator_signer.pubkey();
-        if recipient != operator {
-            return Err(Error::Other(
-                "x402 upto requires recipient/payTo to equal the operator signer pubkey"
-                    .to_string(),
-            ));
-        }
         let rpc_url = config
             .rpc_url
             .clone()
@@ -381,9 +376,17 @@ impl X402Upto {
                 "channel authorized_signer is not the operator".to_string(),
             ));
         }
+        if pc::from_address(&channel.rent_payer) != self.operator {
+            return Err(Error::Other(
+                "channel rent_payer is not the operator".to_string(),
+            ));
+        }
         if channel.deposit != max {
             return Err(Error::Other(format!(
-                "on-chain deposit {} must equal authorized maximum {max}",
+                "on-chain deposit {} != authorized maximum {max}: the deposit is the \
+                 enforced ceiling and `topUp` can raise an open channel's deposit, so it \
+                 must equal the authorized amount exactly — `>=` would leave the x402 \
+                 ceiling advisory rather than enforced",
                 channel.deposit
             )));
         }
@@ -401,6 +404,7 @@ impl X402Upto {
         Ok(VerifiedUptoOpen {
             channel_id,
             payer,
+            rent_payer: pc::from_address(&channel.rent_payer),
             mint: expected_mint,
             token_program,
             program_id,
@@ -413,8 +417,7 @@ impl X402Upto {
     }
 
     /// Settle the actual metered amount (`actual ≤ max`) against a verified
-    /// open: `settle_and_finalize`, plus ATA setup and `distribute` when the
-    /// actual amount is non-zero.
+    /// open: `settle_and_finalize`, ATA setup, and `distribute`.
     pub async fn settle_actual(
         &self,
         open: &VerifiedUptoOpen,
@@ -422,7 +425,7 @@ impl X402Upto {
     ) -> Result<UptoSettlementResponse, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
-        let instructions = if actual == 0 {
+        let mut instructions = if actual == 0 {
             pc::build_settle_and_finalize_instructions(
                 &self.operator,
                 &open.channel_id,
@@ -442,7 +445,7 @@ impl X402Upto {
                 .await
                 .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
                 .into();
-            let mut instructions = pc::build_settle_and_finalize_instructions(
+            pc::build_settle_and_finalize_instructions(
                 &self.operator,
                 &open.channel_id,
                 &self.operator,
@@ -450,34 +453,34 @@ impl X402Upto {
                 actual,
                 open.expires_at,
                 &open.program_id,
-            )?;
-
-            let payee = Pubkey::from_str(&self.config.recipient)
-                .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
-            instructions.push(pc::build_create_associated_token_account_instruction(
-                &self.operator,
-                &payee,
-                &open.mint,
-                &open.token_program,
-            ));
-            instructions.push(pc::build_create_associated_token_account_instruction(
-                &self.operator,
-                &pc::treasury_owner(),
-                &open.mint,
-                &open.token_program,
-            ));
-            instructions.push(pc::build_distribute_instruction(
-                &open.channel_id,
-                &open.payer,
-                &payee,
-                &pc::treasury_owner(),
-                &open.mint,
-                &[],
-                &open.token_program,
-                &open.program_id,
-            ));
-            instructions
+            )?
         };
+
+        let payee = Pubkey::from_str(&self.config.recipient)
+            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+        instructions.push(pc::build_create_associated_token_account_instruction(
+            &self.operator,
+            &payee,
+            &open.mint,
+            &open.token_program,
+        ));
+        instructions.push(pc::build_create_associated_token_account_instruction(
+            &self.operator,
+            &pc::treasury_owner(),
+            &open.mint,
+            &open.token_program,
+        ));
+        instructions.push(pc::build_distribute_instruction(
+            &open.channel_id,
+            &open.payer,
+            &open.rent_payer,
+            &payee,
+            &pc::treasury_owner(),
+            &open.mint,
+            &[],
+            &open.token_program,
+            &open.program_id,
+        ));
 
         let blockhash = self
             .rpc
@@ -526,15 +529,16 @@ impl X402Upto {
         let program_id = self.program_id()?;
         validate_open_instruction(
             tx,
-            &OpenInstructionExpectation {
-                program_id: &program_id,
-                operator: &self.operator,
-                payer,
-                payee,
-                mint,
-                token_program,
-                channel_id,
-            },
+            &program_id,
+            // upto is gasless + delegated: the operator funds the rent and signs
+            // the voucher, so it is both the rentPayer and the authorized_signer.
+            &self.operator,
+            &self.operator,
+            payer,
+            payee,
+            mint,
+            token_program,
+            channel_id,
         )
     }
 
@@ -606,19 +610,20 @@ fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> R
 
 /// Assert `tx` is exactly the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
-pub(crate) struct OpenInstructionExpectation<'a> {
-    pub(crate) program_id: &'a Pubkey,
-    pub(crate) operator: &'a Pubkey,
-    pub(crate) payer: &'a Pubkey,
-    pub(crate) payee: &'a Pubkey,
-    pub(crate) mint: &'a Pubkey,
-    pub(crate) token_program: &'a Pubkey,
-    pub(crate) channel_id: &'a Pubkey,
-}
-
+// Each account slot is an independent expected key (rentPayer vs
+// authorized_signer are distinct roles), so they are passed individually
+// rather than bundled. The arity is inherent to the open account layout.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_open_instruction(
     tx: &VersionedTransaction,
-    expected: &OpenInstructionExpectation<'_>,
+    program_id: &Pubkey,
+    rent_payer: &Pubkey,
+    authorized_signer: &Pubkey,
+    payer: &Pubkey,
+    payee: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+    channel_id: &Pubkey,
 ) -> Result<(), Error> {
     let keys = tx.message.static_account_keys();
     let instructions = tx.message.instructions();
@@ -632,7 +637,7 @@ pub(crate) fn validate_open_instruction(
     let prog = keys
         .get(ix.program_id_index as usize)
         .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))?;
-    if prog != expected.program_id {
+    if prog != program_id {
         return Err(Error::Other(
             "open transaction targets an unexpected program".to_string(),
         ));
@@ -642,7 +647,14 @@ pub(crate) fn validate_open_instruction(
             "open transaction is not a channel-open instruction".to_string(),
         ));
     }
-    // Account order from `build_open_instruction`.
+    // Account order from `build_open_instruction`:
+    // [payer, rentPayer, payee, mint, authorized_signer, channel, ...].
+    // rentPayer (slot 1) is whoever funds the channel PDA + escrow-ATA rent and
+    // co-signs as fee payer; authorized_signer (slot 4) is the voucher signer.
+    // These are independent roles (mirrors the mpp-session `verifyOpenTx`): in
+    // gasless `upto` both are the operator, in gasless `batch` rentPayer is the
+    // operator while authorized_signer is the payer, so each slot is checked
+    // against its own expected key rather than a single conflated one.
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -661,34 +673,30 @@ pub(crate) fn validate_open_instruction(
             ))),
         }
     };
-    expect(0, expected.payer, "payer")?;
-    expect(1, expected.payee, "payee")?;
-    expect(2, expected.mint, "mint")?;
-    expect(3, expected.operator, "authorized_signer")?;
-    expect(4, expected.channel_id, "channel")?;
-    let (payer_token, _) =
-        pc::find_associated_token_address(expected.payer, expected.mint, expected.token_program);
-    let (channel_token, _) = pc::find_associated_token_address(
-        expected.channel_id,
-        expected.mint,
-        expected.token_program,
-    );
-    expect(5, &payer_token, "payer_token_account")?;
-    expect(6, &channel_token, "channel_token_account")?;
-    expect(7, expected.token_program, "token_program")?;
-    expect(8, &pc::system_program_id(), "system_program")?;
-    expect(9, &pc::rent_sysvar_id(), "rent_sysvar")?;
+    expect(0, payer, "payer")?;
+    expect(1, rent_payer, "rent_payer")?;
+    expect(2, payee, "payee")?;
+    expect(3, mint, "mint")?;
+    expect(4, authorized_signer, "authorized_signer")?;
+    expect(5, channel_id, "channel")?;
+    let (payer_token, _) = pc::find_associated_token_address(payer, mint, token_program);
+    let (channel_token, _) = pc::find_associated_token_address(channel_id, mint, token_program);
+    expect(6, &payer_token, "payer_token_account")?;
+    expect(7, &channel_token, "channel_token_account")?;
+    expect(8, token_program, "token_program")?;
+    expect(9, &pc::system_program_id(), "system_program")?;
+    expect(10, &pc::rent_sysvar_id(), "rent_sysvar")?;
     expect(
-        10,
+        11,
         &pc::associated_token_program_id(),
         "associated_token_program",
     )?;
     expect(
-        11,
-        &pc::find_event_authority_pda(expected.program_id).0,
+        12,
+        &pc::find_event_authority_pda(program_id).0,
         "event_authority",
     )?;
-    expect(12, expected.program_id, "self_program")?;
+    expect(13, program_id, "self_program")?;
     Ok(())
 }
 
@@ -737,6 +745,8 @@ mod tests {
     ) -> OpenChannelParams {
         OpenChannelParams {
             payer,
+            // rentPayer is pinned to the operator (the fee payer that co-signs open).
+            rent_payer: operator,
             payee,
             mint,
             authorized_signer: operator,
@@ -776,17 +786,73 @@ mod tests {
 
         assert!(validate_open_instruction(
             &tx,
-            &OpenInstructionExpectation {
-                program_id: &pc::default_program_id(),
-                operator: &operator,
-                payer: &payer,
-                payee: &payee,
-                mint: &mint,
-                token_program: &token_program(),
-                channel_id: &channel,
-            },
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn validates_distinct_rent_payer_and_authorized_signer() {
+        // Gasless batch / client-voucher (matrix combo 2): the operator funds
+        // the rent (rentPayer) while the payer signs vouchers (authorized_signer)
+        // — two distinct keys. The old conflated validator rejected this open.
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = OpenChannelParams {
+            payer,
+            rent_payer: operator,
+            payee,
+            mint,
+            authorized_signer: payer,
+            salt: 7,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![],
+            token_program: token_program(),
+            program_id: pc::default_program_id(),
+        };
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+
+        // Correct expectations (rentPayer = operator, authorized_signer = payer).
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &payer,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
+        )
+        .is_ok());
+
+        // Swapping the two expected keys must fail — proves the slots are
+        // validated independently rather than against one conflated key.
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &payer,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
+        )
+        .is_err());
     }
 
     #[test]
@@ -806,15 +872,14 @@ mod tests {
         let channel = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &tx,
-            &OpenInstructionExpectation {
-                program_id: &pc::default_program_id(),
-                operator: &operator,
-                payer: &payer,
-                payee: &payee,
-                mint: &mint,
-                token_program: &token_program(),
-                channel_id: &channel,
-            },
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
         )
         .is_err());
     }
@@ -840,15 +905,14 @@ mod tests {
         let two = unsigned_tx(&[open.clone(), extra]);
         assert!(validate_open_instruction(
             &two,
-            &OpenInstructionExpectation {
-                program_id: &pc::default_program_id(),
-                operator: &operator,
-                payer: &payer,
-                payee: &payee,
-                mint: &mint,
-                token_program: &token_program(),
-                channel_id: &channel,
-            },
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
         )
         .is_err());
 
@@ -857,15 +921,14 @@ mod tests {
         let wrong_payee = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &one,
-            &OpenInstructionExpectation {
-                program_id: &pc::default_program_id(),
-                operator: &operator,
-                payer: &payer,
-                payee: &wrong_payee,
-                mint: &mint,
-                token_program: &token_program(),
-                channel_id: &channel,
-            },
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &wrong_payee,
+            &mint,
+            &token_program(),
+            &channel,
         )
         .is_err());
     }
@@ -886,15 +949,14 @@ mod tests {
 
         assert!(validate_open_instruction(
             &tx,
-            &OpenInstructionExpectation {
-                program_id: &pc::default_program_id(),
-                operator: &operator,
-                payer: &payer,
-                payee: &payee,
-                mint: &mint,
-                token_program: &wrong_token_program,
-                channel_id: &channel,
-            },
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &wrong_token_program,
+            &channel,
         )
         .is_err());
     }
@@ -912,10 +974,10 @@ mod tests {
     }
 
     #[test]
-    fn new_rejects_recipient_different_from_operator() {
+    fn new_accepts_recipient_different_from_operator() {
         let operator = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
-        let result = X402Upto::new(UptoConfig {
+        let engine = X402Upto::new(UptoConfig {
             recipient: pc::pubkey_string(&recipient),
             currency: "USDC".to_string(),
             decimals: 6,
@@ -927,14 +989,13 @@ mod tests {
             token_program: None,
             program_id: None,
             operator_signer: std::sync::Arc::new(TestSigner(operator)),
-        });
-        let err = match result {
-            Ok(_) => panic!("expected recipient/operator mismatch"),
-            Err(err) => err,
-        };
-        assert!(err
-            .to_string()
-            .contains("recipient/payTo to equal the operator signer"));
+        })
+        .expect("distinct recipient should be accepted");
+        let req = engine
+            .upto_requirements("1.00")
+            .expect("requirements should build");
+        assert_eq!(req.pay_to, pc::pubkey_string(&recipient));
+        assert_eq!(req.extra.fee_payer, pc::pubkey_string(&operator));
     }
 
     #[tokio::test]

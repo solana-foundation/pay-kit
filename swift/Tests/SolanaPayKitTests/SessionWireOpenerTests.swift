@@ -192,4 +192,52 @@ struct SessionOpenerTests {
             )
         }
     }
+
+    /// The hand-rolled `open` instruction must place `rentPayer` (operator /
+    /// fee payer) right after `payer` as a second writable signer, shifting
+    /// every later account by +1 (14 accounts total). The on-chain open-tx
+    /// verifier reads `payer=0, rentPayer=1, payee=2, mint=3,
+    /// authorizedSigner=4, channel=5, ...` and asserts `accounts[1] == operator`.
+    @Test
+    func openInstructionThreadsRentPayerAfterPayer() throws {
+        let payer = try Pubkey(bytes: try MemorySigner(secretKey: Data(repeating: 1, count: 32)).publicKey)
+        let rentPayer = try Pubkey(base58: operatorAddress)
+        let payee = try Pubkey(base58: recipient)
+        let mint = try Pubkey(base58: Mints.usdcMainnet)
+        let authorizedSigner = try Pubkey(bytes: try MemorySigner(secretKey: Data(repeating: 2, count: 32)).publicKey)
+        let tokenProgram = try Pubkey(base58: Mints.tokenProgram)
+
+        let params = PaymentChannels.OpenChannelParams(
+            payer: payer,
+            rentPayer: rentPayer,
+            payee: payee,
+            mint: mint,
+            authorizedSigner: authorizedSigner,
+            salt: 7,
+            deposit: 1_000_000,
+            gracePeriod: PaymentChannels.defaultGracePeriodSeconds,
+            recipients: [],
+            tokenProgram: tokenProgram,
+            programId: PaymentChannels.programId
+        )
+        let ix = try PaymentChannels.buildOpenInstruction(params)
+
+        // open account count 13 -> 14.
+        #expect(ix.accounts.count == 14)
+
+        // payer = index 0: writable signer.
+        #expect(ix.accounts[0].pubkey == payer)
+        #expect(ix.accounts[0].isSigner && ix.accounts[0].isWritable)
+
+        // rentPayer = index 1: writable signer (the operator), right after payer.
+        #expect(ix.accounts[1].pubkey == rentPayer)
+        #expect(ix.accounts[1].isSigner && ix.accounts[1].isWritable)
+
+        // Everything after payer shifted by +1.
+        #expect(ix.accounts[2].pubkey == payee)
+        #expect(ix.accounts[3].pubkey == mint)
+        #expect(ix.accounts[4].pubkey == authorizedSigner)
+        // channel PDA at index 5 is writable, non-signer.
+        #expect(ix.accounts[5].isWritable && !ix.accounts[5].isSigner)
+    }
 }

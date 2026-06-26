@@ -157,6 +157,7 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
@@ -252,6 +253,7 @@ export function session(parameters: session.Parameters) {
                         modes: effectiveModes,
                         network,
                         openTxSubmitter,
+                        operator,
                         payerSigner: paymentChannelPayerSigner,
                         payload: cred.payload,
                         programId: resolvedProgramId,
@@ -297,6 +299,7 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         payload: cred.payload,
                         programId: resolvedProgramId,
                         recipient,
@@ -393,6 +396,8 @@ interface HandleOpenArgs {
     readonly modes: SessionMode[];
     readonly network: string;
     readonly openTxSubmitter: 'client' | 'server';
+    /** Operator / fee-payer pubkey (base58); pins the open `rentPayer`. */
+    readonly operator: string;
     readonly payerSigner: TransactionPartialSigner | undefined;
     readonly payload: OpenPayload & { readonly action: 'open' };
     readonly programId: Address;
@@ -415,6 +420,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     let channelId: string;
     let deposit: bigint;
     let signature: string | undefined;
+    // Channel payer (the deposit funder / distribute refund destination),
+    // captured from the verified open when a transaction is present.
+    let channelPayer: string | undefined;
 
     if (mode === 'push' && !payload.transaction && !payload.channelId) {
         throw new Error('open payload missing transaction or channelId');
@@ -432,6 +440,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             maxCap: args.cap,
             mint: args.mint,
             network: args.network,
+            operator: args.operator,
             programId: args.programId.toString(),
             recipient: args.recipient,
         };
@@ -445,6 +454,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             if (existing) {
                 channelId = preVerified.channelId;
                 deposit = preVerified.deposit;
+                channelPayer = preVerified.payer;
                 signature = payload.signature;
             } else {
                 const submitted = await submitOpenTx({
@@ -455,6 +465,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 });
                 channelId = submitted.channelId;
                 deposit = submitted.deposit;
+                channelPayer = submitted.payer;
                 signature = submitted.signature as unknown as string;
             }
         } else {
@@ -465,6 +476,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             });
             channelId = verified.channelId;
             deposit = verified.deposit;
+            channelPayer = verified.payer;
             signature = payload.signature;
         }
     } else if (mode === 'push') {
@@ -523,7 +535,11 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         highestVoucherExpiresAt: undefined,
         highestVoucherSignature: undefined,
         nextDeliverySequence: 0n,
-        operator: payload.owner ?? payload.payer,
+        // Prefer the payer read from the verified open transaction (account 0,
+        // what the channel actually records) over the client-supplied payload
+        // fields, which could be stale/wrong. Fall back to the payload only for
+        // opens with no transaction to verify (bare push assertion / pull).
+        operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
     };
 
@@ -710,6 +726,8 @@ interface HandleCloseArgs {
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly payload: {
         readonly action: 'close';
         readonly channelId: string;
@@ -783,6 +801,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             merchantSigner: args.merchantSigner,
             mint: args.mint,
             network: args.network,
+            operator: args.operator,
             programId: args.programId,
             recipient: args.recipient,
             rpc: args.rpc,
@@ -963,6 +982,8 @@ interface CloseAndSettleArgs {
     readonly merchantSigner: TransactionPartialSigner;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike;
@@ -982,6 +1003,16 @@ interface CloseAndSettleArgs {
 async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSettleAndDistributeResult | undefined> {
     const state = await args.store.getChannel(args.channelId);
     if (!state) return undefined;
+
+    // The distribute refund goes to the channel payer (the program enforces
+    // `payer == channel.payer`). It is recorded as `state.operator` at open.
+    // Never fall back to the recipient: refunding the merchant would derive the
+    // wrong refund token account and the settlement would fail on-chain.
+    if (!state.operator) {
+        throw new Error(
+            `cannot settle channel ${args.channelId}: the channel payer (refund destination) was not recorded at open`,
+        );
+    }
 
     let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
     if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
@@ -1010,8 +1041,13 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         mint: args.mint,
         network: args.network,
         payee: args.recipient,
-        payer: state.operator ?? args.recipient,
+        payer: state.operator,
+
         programId: args.programId,
+        // rentPayer reclaims the channel/escrow rent at finalize; it is the
+        // operator recorded as the channel rentPayer at open (the fee payer),
+        // not the refund payer carried in state.operator.
+        rentPayer: args.operator,
         rpc: args.rpc as unknown as {
             sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
         },

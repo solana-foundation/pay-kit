@@ -39,6 +39,12 @@ object PaymentChannels {
     /** Inputs to the channel `open` instruction. */
     data class OpenChannelParams(
         val payer: PublicKey,
+        /**
+         * The rent payer / operator (transaction fee payer). Funds the channel
+         * PDA + escrow-ATA rent at open and reclaims it at finalize; pinned to
+         * the operator pubkey that co-signs the open as fee payer.
+         */
+        val rentPayer: PublicKey,
         val payee: PublicKey,
         val mint: PublicKey,
         val authorizedSigner: PublicKey,
@@ -114,6 +120,8 @@ object PaymentChannels {
         // Account order matches the codama-generated `Open` builder exactly.
         val accounts = listOf(
             AccountMeta.writable(params.payer.toBase58(), signer = true),
+            // rentPayer (operator / fee payer): SIGNER + WRITABLE, right after payer.
+            AccountMeta.writable(params.rentPayer.toBase58(), signer = true),
             AccountMeta.readOnly(params.payee.toBase58()),
             AccountMeta.readOnly(params.mint.toBase58()),
             AccountMeta.readOnly(params.authorizedSigner.toBase58()),
@@ -164,7 +172,7 @@ object PaymentChannels {
     ): OpenTransaction {
         val payerPubkey = PublicKey(payer.publicKeyBytes)
         val params = OpenChannelParams(
-            payer = payerPubkey, payee = payee, mint = mint, authorizedSigner = authorizedSigner,
+            payer = payerPubkey, rentPayer = feePayer, payee = payee, mint = mint, authorizedSigner = authorizedSigner,
             salt = salt, deposit = deposit, gracePeriod = gracePeriod, recipients = recipients,
             tokenProgram = tokenProgram, programId = programId,
         )

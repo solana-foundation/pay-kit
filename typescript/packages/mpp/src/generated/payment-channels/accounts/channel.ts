@@ -61,6 +61,7 @@ export type Channel = {
     payee: Address;
     authorizedSigner: Address;
     mint: Address;
+    rentPayer: Address;
 };
 
 export type ChannelArgs = {
@@ -79,6 +80,7 @@ export type ChannelArgs = {
     payee: Address;
     authorizedSigner: Address;
     mint: Address;
+    rentPayer: Address;
 };
 
 /** Gets the encoder for {@link ChannelArgs} account data. */
@@ -99,6 +101,7 @@ export function getChannelEncoder(): FixedSizeEncoder<ChannelArgs> {
         ['payee', getAddressEncoder()],
         ['authorizedSigner', getAddressEncoder()],
         ['mint', getAddressEncoder()],
+        ['rentPayer', getAddressEncoder()],
     ]);
 }
 
@@ -120,6 +123,7 @@ export function getChannelDecoder(): FixedSizeDecoder<Channel> {
         ['payee', getAddressDecoder()],
         ['authorizedSigner', getAddressDecoder()],
         ['mint', getAddressDecoder()],
+        ['rentPayer', getAddressDecoder()],
     ]);
 }
 

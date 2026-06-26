@@ -95,8 +95,9 @@ func (s testSigner) Sign(msg []byte) (solana.Signature, error) {
 
 func TestBuildUptoPayload(t *testing.T) {
 	priv := testutil.NewPrivateKey()
+	operator := testutil.NewPrivateKey().PublicKey()
 	signer := testSigner{priv}
-	req := uptoRequirements(priv.PublicKey())
+	req := uptoRequirements(operator)
 	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err != nil {
 		t.Fatalf("BuildUptoPayload: %v", err)
@@ -112,6 +113,32 @@ func TestBuildUptoPayload(t *testing.T) {
 	}
 	if payload.OpenTransaction == "" {
 		t.Fatal("openTransaction is empty")
+	}
+	if payload.From != priv.PublicKey().String() {
+		t.Fatalf("from = %s, want payer %s", payload.From, priv.PublicKey())
+	}
+	if payload.AuthorizedSigner != operator.String() {
+		t.Fatalf("authorizedSigner = %s, want operator %s", payload.AuthorizedSigner, operator)
+	}
+	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
+	if err != nil {
+		t.Fatalf("DecodeTransactionBase64: %v", err)
+	}
+	if !tx.Message.AccountKeys[0].Equals(operator) {
+		t.Fatalf("fee payer = %s, want operator %s", tx.Message.AccountKeys[0], operator)
+	}
+	openIx := tx.Message.Instructions[0]
+	payerFromOpen := tx.Message.AccountKeys[openIx.Accounts[0]]
+	rentPayerFromOpen := tx.Message.AccountKeys[openIx.Accounts[1]]
+	authorizedSignerFromOpen := tx.Message.AccountKeys[openIx.Accounts[4]]
+	if !payerFromOpen.Equals(priv.PublicKey()) {
+		t.Fatalf("open payer = %s, want %s", payerFromOpen, priv.PublicKey())
+	}
+	if !rentPayerFromOpen.Equals(operator) {
+		t.Fatalf("open rent_payer = %s, want operator %s", rentPayerFromOpen, operator)
+	}
+	if !authorizedSignerFromOpen.Equals(operator) {
+		t.Fatalf("open authorized_signer = %s, want operator %s", authorizedSignerFromOpen, operator)
 	}
 }
 
@@ -132,7 +159,7 @@ func TestBuildUptoPayloadUsesChannelProgramForChannelID(t *testing.T) {
 	}
 	channelFromPayload := solana.MustPublicKeyFromBase58(payload.ChannelID)
 	openIx := tx.Message.Instructions[0]
-	channelFromOpen := tx.Message.AccountKeys[openIx.Accounts[4]]
+	channelFromOpen := tx.Message.AccountKeys[openIx.Accounts[5]]
 	if !channelFromOpen.Equals(channelFromPayload) {
 		t.Fatalf("open channel account = %s, payload channelId = %s", channelFromOpen, channelFromPayload)
 	}

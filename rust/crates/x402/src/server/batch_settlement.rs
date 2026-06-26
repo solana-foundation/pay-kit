@@ -43,7 +43,6 @@ use crate::protocol::schemes::exact::{
 };
 use crate::server::upto::{
     cosign_operator_fee_payer, decode_transaction, validate_open_instruction,
-    OpenInstructionExpectation,
 };
 use crate::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
@@ -381,15 +380,18 @@ impl X402BatchSettlement {
         // (the payer by default) — not the operator as in `upto`.
         validate_open_instruction(
             &tx,
-            &OpenInstructionExpectation {
-                program_id: &program_id,
-                operator: &authorized_signer,
-                payer: &payer,
-                payee: &expected_payee,
-                mint: &expected_mint,
-                token_program: &token_program,
-                channel_id: &channel_id,
-            },
+            &program_id,
+            // Gasless: the operator funds the rent and co-signs as fee payer, so
+            // the rentPayer is the operator. The authorized_signer is the
+            // channel's voucher signer (the payer in batch client mode), checked
+            // independently — see the two-key rationale in `validate_open_instruction`.
+            &self.operator,
+            &authorized_signer,
+            &payer,
+            &expected_payee,
+            &expected_mint,
+            &token_program,
+            &channel_id,
         )?;
         cosign_operator_fee_payer(
             self.config.operator_signer.as_ref(),
@@ -763,6 +765,8 @@ impl X402BatchSettlement {
         let ix = pc::build_distribute_instruction(
             &channel,
             &payer,
+            // rentPayer is pinned to the operator (the fee payer).
+            &self.operator,
             &payee,
             &pc::treasury_owner(),
             &self.mint()?,

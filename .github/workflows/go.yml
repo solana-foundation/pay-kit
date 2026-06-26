@@ -121,8 +121,8 @@ jobs:
       - name: Checkout payment channels program
         uses: actions/checkout@v5
         with:
-          repository: solana-foundation/payment-channels
-          ref: ef149467b457cad60249503794654f80c0f22ae4
+          repository: Moonsong-Labs/solana-payment-channels
+          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
           path: _payment-channels
           fetch-depth: 1
       - name: Install Anza CLI

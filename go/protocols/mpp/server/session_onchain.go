@@ -52,6 +52,13 @@ type VerifyOpenTxExpected struct {
 	// Network is the Solana network used for mint resolution.
 	Network string
 
+	// Operator is the expected rentPayer: the operator / fee-payer pubkey
+	// (base58) that funds the channel rent and co-signs open as fee payer
+	// while gasless. It is REQUIRED. The open instruction's rentPayer account
+	// (slot 1) must equal it; the rentPayer slot is a security boundary that
+	// callers must always prove, so an empty Operator is rejected.
+	Operator string
+
 	// ProgramID optionally overrides the payment-channels program id; nil
 	// defaults to the canonical program.
 	ProgramID *solana.PublicKey
@@ -72,6 +79,11 @@ type VerifyOpenTxResult struct {
 
 	// GracePeriod is the close grace period in seconds.
 	GracePeriod uint32
+
+	// Payer is the channel payer (open account 0, base58): the deposit funder
+	// and the distribute refund destination (the program enforces it equals
+	// channel.payer).
+	Payer string
 
 	// Salt is the channel-derivation salt.
 	Salt uint64
@@ -94,6 +106,9 @@ type VerifyOpenTxResult struct {
 // If rpcClient is non-nil, that bound signature is additionally confirmed
 // on-chain; nil skips the liveness check (structural validation only).
 func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *intents.OpenPayload, rpcClient solanatx.RPCClient) (VerifyOpenTxResult, error) {
+	if expected.Operator == "" {
+		return VerifyOpenTxResult{}, fmt.Errorf("verify open: expected operator (rentPayer) is required")
+	}
 	if payload.Transaction == nil || *payload.Transaction == "" {
 		return VerifyOpenTxResult{}, fmt.Errorf("openPayload.transaction is required for push-mode open verification")
 	}
@@ -151,28 +166,33 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 
 	// Open instruction account layout (matches the generated client):
-	// 0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
-	// 5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, ...
-	if len(openIx.Accounts) < 7 {
+	// 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
+	// 6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, ...
+	// rentPayer (slot 1) is pinned to the operator / fee payer.
+	if len(openIx.Accounts) < 8 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open instruction has too few accounts (%d)", len(openIx.Accounts))
 	}
 	payer, err := accountAt(openIx.Accounts, 0, "payer")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	payee, err := accountAt(openIx.Accounts, 1, "payee")
+	rentPayer, err := accountAt(openIx.Accounts, 1, "rentPayer")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	mint, err := accountAt(openIx.Accounts, 2, "mint")
+	payee, err := accountAt(openIx.Accounts, 2, "payee")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	authorizedSigner, err := accountAt(openIx.Accounts, 3, "authorizedSigner")
+	mint, err := accountAt(openIx.Accounts, 3, "mint")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	channel, err := accountAt(openIx.Accounts, 4, "channel")
+	authorizedSigner, err := accountAt(openIx.Accounts, 4, "authorizedSigner")
+	if err != nil {
+		return VerifyOpenTxResult{}, err
+	}
+	channel, err := accountAt(openIx.Accounts, 5, "channel")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
@@ -185,6 +205,12 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 	if authorizedSigner.String() != expected.AuthorizedSigner {
 		return VerifyOpenTxResult{}, fmt.Errorf("open authorizedSigner %s != expected %s", authorizedSigner, expected.AuthorizedSigner)
+	}
+	// rentPayer (slot 1) is pinned to the operator / fee payer. The rentPayer
+	// slot is a security boundary, so this check is mandatory (an empty
+	// expected operator is rejected above).
+	if rentPayer.String() != expected.Operator {
+		return VerifyOpenTxResult{}, fmt.Errorf("open rentPayer %s != expected operator %s", rentPayer, expected.Operator)
 	}
 
 	// Instruction data: [discriminator u8][salt u64][deposit u64][grace u32][recipients].
@@ -226,6 +252,7 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 		ChannelID:   channel.String(),
 		Deposit:     deposit,
 		GracePeriod: gracePeriod,
+		Payer:       payer.String(),
 		Salt:        salt,
 	}, nil
 }
@@ -237,23 +264,24 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 // carries only a confirmation signature, rpcClient is required and the
 // signature is confirmed on-chain via getSignatureStatuses.
 func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) SessionTxVerifier[intents.OpenPayload] {
-	return func(ctx context.Context, payload *intents.OpenPayload) error {
+	return func(ctx context.Context, payload *intents.OpenPayload) (string, error) {
 		if payload.Transaction != nil && *payload.Transaction != "" {
 			expected := VerifyOpenTxExpected{
 				AuthorizedSigner: payload.AuthorizedSigner,
 				Currency:         config.Currency,
 				MaxCap:           config.MaxCap,
 				Network:          config.Network,
+				Operator:         config.Operator,
 				ProgramID:        config.ProgramID,
 				Recipient:        config.Recipient,
 			}
-			_, err := VerifyOpenTx(ctx, expected, payload, rpcClient)
-			return err
+			result, err := VerifyOpenTx(ctx, expected, payload, rpcClient)
+			return result.Payer, err
 		}
 		if rpcClient == nil {
-			return fmt.Errorf("open verification requires a transaction or an RPC client")
+			return "", fmt.Errorf("open verification requires a transaction or an RPC client")
 		}
-		return confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open")
+		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "open")
 	}
 }
 
@@ -267,8 +295,10 @@ func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.
 	if rpcClient == nil {
 		return nil
 	}
-	return func(ctx context.Context, payload *intents.TopUpPayload) error {
-		return confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
+	return func(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
+		// A top-up carries only a signature, not an open transaction, so it
+		// never establishes the channel payer.
+		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
 	}
 }
 
@@ -289,14 +319,15 @@ func (s *SessionServer) SettlementInstructions(ctx context.Context, channelID st
 	if state == nil {
 		return nil, fmt.Errorf("channel %s not found", channelID)
 	}
-	return s.settlementInstructionsForState(*state, channelID, merchant, "")
+	return s.settlementInstructionsForState(*state, channelID, merchant)
 }
 
 // settlementInstructionsForState derives the settlement instruction sequence
-// for an already-read channel snapshot. payerFallback, when non-empty, is
-// used as the distribute payer when the channel never recorded an operator;
-// empty keeps the strict unknown-payer error.
-func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey, payerFallback string) ([]solana.Instruction, error) {
+// for an already-read channel snapshot. The distribute payer is the channel
+// payer recorded as state.Operator at open (the program pins it to
+// channel.payer); when the channel never recorded a payer this returns the
+// strict unknown-payer error rather than refunding any other account.
+func (s *SessionServer) settlementInstructionsForState(state ChannelState, channelID string, merchant solana.PublicKey) ([]solana.Instruction, error) {
 	channel, err := solana.PublicKeyFromBase58(channelID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid channel id %q: %w", channelID, err)
@@ -351,7 +382,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
 	}
-	payerAddress := payerFallback
+	payerAddress := ""
 	if state.Operator != nil {
 		payerAddress = *state.Operator
 	}
@@ -366,6 +397,12 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient %q: %w", s.config.Recipient, err)
 	}
+	// rentPayer reclaims the channel/escrow rent at finalize; it is the
+	// operator recorded as rentPayer at open.
+	rentPayer, err := solana.PublicKeyFromBase58(s.config.Operator)
+	if err != nil {
+		return nil, fmt.Errorf("invalid operator %q: %w", s.config.Operator, err)
+	}
 
 	recipients := make([]paymentchannels.Distribution, 0, len(s.config.Splits))
 	for _, split := range s.config.Splits {
@@ -378,6 +415,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
 		Channel:      channel,
 		Payer:        payer,
+		RentPayer:    rentPayer,
 		Payee:        payee,
 		Treasury:     paymentchannels.TreasuryOwner(),
 		Mint:         mint,

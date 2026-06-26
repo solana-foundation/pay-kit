@@ -202,6 +202,7 @@ func AssertSettlementWithinCeiling(actual, max uint64) error {
 type UptoVerifiedOpen struct {
 	ChannelID    solana.PublicKey
 	Payer        solana.PublicKey
+	RentPayer    solana.PublicKey
 	Mint         solana.PublicKey
 	TokenProgram solana.PublicKey
 	ProgramID    solana.PublicKey
@@ -283,12 +284,8 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
-	recipient, err := solana.PublicKeyFromBase58(cfg.Recipient)
-	if err != nil {
+	if _, err := solana.PublicKeyFromBase58(cfg.Recipient); err != nil {
 		return nil, fmt.Errorf("invalid recipient pubkey: %w", err)
-	}
-	if !recipient.Equals(operator) {
-		return nil, errors.New("x402 upto requires recipient/payTo to equal the operator signer pubkey")
 	}
 	rpcURL := cfg.RPCURL
 	if rpcURL == "" {
@@ -466,7 +463,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid transaction: %w", err)
 	}
-	if err := validateUptoOpenInstruction(tx, programID, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID); err != nil {
+	if err := validateUptoOpenInstruction(tx, programID, u.operator, u.operator, payer, expectedPayee, expectedMint, tokenProgram, channelID); err != nil {
 		return nil, err
 	}
 	if !transactionFeePayerIs(tx, u.operator) {
@@ -504,6 +501,9 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if !channel.AuthorizedSigner.Equals(u.operator) {
 		return nil, errors.New("channel authorized_signer is not the operator")
 	}
+	if !channel.RentPayer.Equals(u.operator) {
+		return nil, errors.New("channel rent_payer is not the operator")
+	}
 	if channel.Deposit != max {
 		return nil, fmt.Errorf("on-chain deposit %d must equal authorized maximum %d", channel.Deposit, max)
 	}
@@ -512,7 +512,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	}
 	release = false
 	return &UptoVerifiedOpen{
-		ChannelID: channelID, Payer: payer, Mint: expectedMint, TokenProgram: tokenProgram,
+		ChannelID: channelID, Payer: payer, RentPayer: channel.RentPayer, Mint: expectedMint, TokenProgram: tokenProgram,
 		ProgramID: programID, Deposit: channel.Deposit, MaxAmount: max, ExpiresAt: payload.ExpiresAt,
 		Network: req.Network, guard: guard,
 	}, nil
@@ -527,11 +527,9 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if err := AssertSettlementWithinCeiling(actual, open.MaxAmount); err != nil {
 		return UptoSettlementResponse{}, err
 	}
-	var (
-		instructions []solana.Instruction
-		err          error
-	)
+	var instructions []solana.Instruction
 	if actual == 0 {
+		var err error
 		instructions, err = paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
 			Merchant: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
 			Signature: nil, CumulativeAmount: 0, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
@@ -560,27 +558,27 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		if err != nil {
 			return UptoSettlementResponse{}, err
 		}
-		payee, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
-		if err != nil {
-			return UptoSettlementResponse{}, fmt.Errorf("invalid recipient: %w", err)
-		}
-		distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
-			Channel: open.ChannelID, Payer: open.Payer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
-			Mint: open.Mint, TokenProgram: open.TokenProgram, ProgramID: open.ProgramID,
-		})
-		if err != nil {
-			return UptoSettlementResponse{}, err
-		}
-		createPayeeATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, payee, open.Mint, open.TokenProgram)
-		if err != nil {
-			return UptoSettlementResponse{}, fmt.Errorf("build payee ATA create: %w", err)
-		}
-		createTreasuryATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, paymentchannels.TreasuryOwner(), open.Mint, open.TokenProgram)
-		if err != nil {
-			return UptoSettlementResponse{}, fmt.Errorf("build treasury ATA create: %w", err)
-		}
-		instructions = append(instructions, createPayeeATA, createTreasuryATA, distribute)
 	}
+	payee, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("invalid recipient: %w", err)
+	}
+	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
+		Channel: open.ChannelID, Payer: open.Payer, RentPayer: open.RentPayer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
+		Mint: open.Mint, TokenProgram: open.TokenProgram, ProgramID: open.ProgramID,
+	})
+	if err != nil {
+		return UptoSettlementResponse{}, err
+	}
+	createPayeeATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, payee, open.Mint, open.TokenProgram)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("build payee ATA create: %w", err)
+	}
+	createTreasuryATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, paymentchannels.TreasuryOwner(), open.Mint, open.TokenProgram)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("build treasury ATA create: %w", err)
+	}
+	instructions = append(instructions, createPayeeATA, createTreasuryATA, distribute)
 	blockhash, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("blockhash fetch failed: %w", err)
@@ -651,7 +649,7 @@ func (u *X402Upto) recentBlockhash() (string, error) {
 	return out.Value.Blockhash.String(), nil
 }
 
-func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, payer, payee, mint, tokenProgram, channelID solana.PublicKey) error {
+func validateUptoOpenInstruction(tx *solana.Transaction, programID, rentPayer, authorizedSigner, payer, payee, mint, tokenProgram, channelID solana.PublicKey) error {
 	keys := tx.Message.AccountKeys
 	instructions := tx.Message.Instructions
 	if len(instructions) != 1 {
@@ -686,16 +684,19 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, pa
 	if err := expect(0, payer, "payer"); err != nil {
 		return err
 	}
-	if err := expect(1, payee, "payee"); err != nil {
+	if err := expect(1, rentPayer, "rent_payer"); err != nil {
 		return err
 	}
-	if err := expect(2, mint, "mint"); err != nil {
+	if err := expect(2, payee, "payee"); err != nil {
 		return err
 	}
-	if err := expect(3, operator, "authorized_signer"); err != nil {
+	if err := expect(3, mint, "mint"); err != nil {
 		return err
 	}
-	if err := expect(4, channelID, "channel"); err != nil {
+	if err := expect(4, authorizedSigner, "authorized_signer"); err != nil {
+		return err
+	}
+	if err := expect(5, channelID, "channel"); err != nil {
 		return err
 	}
 	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(payer, mint, tokenProgram)
@@ -706,32 +707,32 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, pa
 	if err != nil {
 		return fmt.Errorf("derive channel token account: %w", err)
 	}
-	if err := expect(5, payerToken, "payer_token_account"); err != nil {
+	if err := expect(6, payerToken, "payer_token_account"); err != nil {
 		return err
 	}
-	if err := expect(6, channelToken, "channel_token_account"); err != nil {
+	if err := expect(7, channelToken, "channel_token_account"); err != nil {
 		return err
 	}
-	if err := expect(7, tokenProgram, "token_program"); err != nil {
+	if err := expect(8, tokenProgram, "token_program"); err != nil {
 		return err
 	}
-	if err := expect(8, solana.SystemProgramID, "system_program"); err != nil {
+	if err := expect(9, solana.SystemProgramID, "system_program"); err != nil {
 		return err
 	}
-	if err := expect(9, solana.SysVarRentPubkey, "rent_sysvar"); err != nil {
+	if err := expect(10, solana.SysVarRentPubkey, "rent_sysvar"); err != nil {
 		return err
 	}
-	if err := expect(10, solana.SPLAssociatedTokenAccountProgramID, "associated_token_program"); err != nil {
+	if err := expect(11, solana.SPLAssociatedTokenAccountProgramID, "associated_token_program"); err != nil {
 		return err
 	}
 	eventAuthority, _, err := paymentchannels.FindEventAuthorityPDAForProgram(programID)
 	if err != nil {
 		return err
 	}
-	if err := expect(11, eventAuthority, "event_authority"); err != nil {
+	if err := expect(12, eventAuthority, "event_authority"); err != nil {
 		return err
 	}
-	if err := expect(12, programID, "self_program"); err != nil {
+	if err := expect(13, programID, "self_program"); err != nil {
 		return err
 	}
 	return nil

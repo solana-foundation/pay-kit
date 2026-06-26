@@ -391,7 +391,7 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	operator := testutil.NewPrivateKey().PublicKey()
 	params := paymentchannels.OpenChannelParams{
-		Payer: payer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Payer: payer, RentPayer: operator, Payee: payee, Mint: mint, AuthorizedSigner: operator,
 		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -407,9 +407,35 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.TokenProgramID, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
 	if err != nil {
 		t.Fatalf("expected valid open to pass, got %v", err)
+	}
+}
+
+func TestValidateUptoOpenInstructionRejectsWrongRentPayer(t *testing.T) {
+	payer := testutil.NewPrivateKey().PublicKey()
+	payee := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	operator := testutil.NewPrivateKey().PublicKey()
+	wrongRentPayer := testutil.NewPrivateKey().PublicKey()
+	params := paymentchannels.OpenChannelParams{
+		Payer: payer, RentPayer: wrongRentPayer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7)
+	ix, err := paymentchannels.BuildOpenInstruction(params)
+	if err != nil {
+		t.Fatalf("BuildOpenInstruction: %v", err)
+	}
+	tx, err := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(wrongRentPayer))
+	if err != nil {
+		t.Fatalf("NewTransaction: %v", err)
+	}
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
+	if err == nil || !strings.Contains(err.Error(), "rent_payer mismatch") {
+		t.Fatalf("expected rent_payer mismatch, got %v", err)
 	}
 }
 
@@ -421,7 +447,7 @@ func TestValidateUptoOpenInstructionRejectsForeignProgram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, solana.TokenProgramID, operator)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, operator, solana.TokenProgramID, operator)
 	if err == nil || !strings.Contains(err.Error(), "unexpected program") {
 		t.Fatalf("expected foreign program rejection, got %v", err)
 	}
@@ -433,7 +459,7 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	operator := testutil.NewPrivateKey().PublicKey()
 	params := paymentchannels.OpenChannelParams{
-		Payer: payer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Payer: payer, RentPayer: operator, Payee: payee, Mint: mint, AuthorizedSigner: operator,
 		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -444,7 +470,7 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.TokenProgramID, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.TokenProgramID, channel)
 	if err == nil || !strings.Contains(err.Error(), "exactly one instruction") {
 		t.Fatalf("expected extra instruction rejection, got %v", err)
 	}
@@ -456,7 +482,7 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	operator := testutil.NewPrivateKey().PublicKey()
 	params := paymentchannels.OpenChannelParams{
-		Payer: payer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Payer: payer, RentPayer: operator, Payee: payee, Mint: mint, AuthorizedSigner: operator,
 		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -464,7 +490,7 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	wrongPayee := testutil.NewPrivateKey().PublicKey()
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, wrongPayee, mint, solana.TokenProgramID, channel)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, wrongPayee, mint, solana.TokenProgramID, channel)
 	if err == nil || !strings.Contains(err.Error(), "payee mismatch") {
 		t.Fatalf("expected payee mismatch, got %v", err)
 	}
@@ -476,7 +502,7 @@ func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
 	mint := testutil.NewPrivateKey().PublicKey()
 	operator := testutil.NewPrivateKey().PublicKey()
 	params := paymentchannels.OpenChannelParams{
-		Payer: payer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Payer: payer, RentPayer: operator, Payee: payee, Mint: mint, AuthorizedSigner: operator,
 		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -484,7 +510,7 @@ func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.Token2022ProgramID, channel)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, payer, payee, mint, solana.Token2022ProgramID, channel)
 	if err == nil || (!strings.Contains(err.Error(), "payer_token_account mismatch") && !strings.Contains(err.Error(), "token_program mismatch")) {
 		t.Fatalf("expected token program binding rejection, got %v", err)
 	}
@@ -572,7 +598,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -613,6 +639,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 		Payer:            payerKey.PublicKey(),
 		Payee:            payee,
 		AuthorizedSigner: operatorKey.PublicKey(),
+		RentPayer:        operatorKey.PublicKey(),
 		Mint:             mint,
 	}
 	fakeRPC.addChannel(channel, channelAccount)
@@ -715,7 +742,7 @@ func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	})
@@ -770,7 +797,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -787,7 +814,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr2,
 		Payer: payerKey.PublicKey(), Payee: payee,
-		AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
 	})
 
 	engine, _ := NewX402Upto(UptoConfig{
@@ -862,16 +889,26 @@ func TestNewX402UptoRejectsInvalidRecipient(t *testing.T) {
 	}
 }
 
-func TestNewX402UptoRejectsRecipientDifferentFromOperator(t *testing.T) {
+func TestNewX402UptoAcceptsRecipientDifferentFromOperator(t *testing.T) {
 	signer := testutil.NewPrivateKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
-	_, err := NewX402Upto(UptoConfig{
+	engine, err := NewX402Upto(UptoConfig{
 		Recipient:      recipient.String(),
 		OperatorSigner: signerSigner{signer},
 		Network:        paykit.SolanaLocalnet,
 	})
-	if err == nil || !strings.Contains(err.Error(), "recipient/payTo to equal the operator signer") {
-		t.Fatalf("expected recipient/operator mismatch, got %v", err)
+	if err != nil {
+		t.Fatalf("NewX402Upto with distinct recipient: %v", err)
+	}
+	req, err := engine.UptoRequirements("1.00")
+	if err != nil {
+		t.Fatalf("UptoRequirements: %v", err)
+	}
+	if req.PayTo != recipient.String() {
+		t.Fatalf("payTo = %s, want %s", req.PayTo, recipient)
+	}
+	if req.Extra.FeePayer != signer.PublicKey().String() {
+		t.Fatalf("feePayer = %s, want %s", req.Extra.FeePayer, signer.PublicKey())
 	}
 }
 
@@ -1047,7 +1084,7 @@ func TestValidateUptoOpenInstructionRejectsNonOpenDiscriminator(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
 	evil := solana.NewInstruction(paymentchannels.ProgramPubkey(), solana.AccountMetaSlice{}, []byte{99})
 	tx, _ := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, solana.TokenProgramID, payer)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, payer, solana.TokenProgramID, payer)
 	if err == nil || !strings.Contains(err.Error(), "not a channel-open") {
 		t.Fatalf("expected non-open discriminator rejection, got %v", err)
 	}
@@ -1096,7 +1133,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1111,7 +1148,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Finalized),
 		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
-		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
 	})
 	engine, _ := NewX402Upto(UptoConfig{
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
@@ -1141,7 +1178,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1156,7 +1193,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
-		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: wrongMint,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: wrongMint,
 	})
 	engine, _ := NewX402Upto(UptoConfig{
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
@@ -1185,7 +1222,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1200,7 +1237,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
-		Payer: testutil.NewPrivateKey().PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		Payer: testutil.NewPrivateKey().PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
 	})
 	engine, _ := NewX402Upto(UptoConfig{
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
@@ -1220,6 +1257,50 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	}
 }
 
+// TestUptoVerifyOpenRejectsWrongRentPayer exercises the on-chain rent-payer binding.
+func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
+	operatorKey := testutil.NewPrivateKey()
+	payerKey := testutil.NewPrivateKey()
+	payee := operatorKey.PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	salt := uint64(7)
+	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
+	params := paymentchannels.OpenChannelParams{
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	openIx, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
+	solanatx.SignTransaction(tx, payerSigner{payerKey})
+	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	distHash := emptyDistributionHash()
+	var distHashArr [32]byte
+	copy(distHashArr[:], distHash)
+	fakeRPC := newUptoTestRPC()
+	fakeRPC.addChannel(channel, &pcgen.Channel{
+		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
+		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: testutil.NewPrivateKey().PublicKey(), Mint: mint,
+	})
+	engine, _ := NewX402Upto(UptoConfig{
+		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
+		OperatorSigner:          signerSigner{operatorKey},
+		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+	})
+	engine.SetRPCForTests(fakeRPC)
+	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
+		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
+		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
+	}}
+	raw, _ := json.Marshal(env)
+	_, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
+	if err == nil || !strings.Contains(err.Error(), "rent_payer is not the operator") {
+		t.Fatalf("expected rent_payer mismatch, got %v", err)
+	}
+}
+
 // TestUptoVerifyOpenRejectsDepositBelowMax exercises the on-chain deposit binding.
 func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()
@@ -1229,7 +1310,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1244,7 +1325,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 500_000, DistributionHash: distHashArr,
-		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
 	})
 	engine, _ := NewX402Upto(UptoConfig{
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
@@ -1273,7 +1354,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1308,7 +1389,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	salt := uint64(7)
 	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -1323,7 +1404,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	fakeRPC.addChannel(channel, &pcgen.Channel{
 		Discriminator: uint8(pcgen.AccountDiscriminator_Channel), Status: uint8(pcgen.ChannelStatus_Open),
 		Salt: salt, Deposit: 1_000_000, DistributionHash: distHashArr,
-		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), Mint: mint,
+		Payer: payerKey.PublicKey(), Payee: payee, AuthorizedSigner: operatorKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Mint: mint,
 	})
 	engine, _ := NewX402Upto(UptoConfig{
 		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
@@ -1355,14 +1436,25 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 		t.Fatalf("sent transactions = %d, want 2 (open + settlement)", len(fakeRPC.Sent))
 	}
 	settlementTx := fakeRPC.Sent[1]
-	if len(settlementTx.Message.Instructions) != 1 {
-		t.Fatalf("zero settlement instructions = %d, want 1 (settle_and_finalize only)", len(settlementTx.Message.Instructions))
+	if len(settlementTx.Message.Instructions) != 4 {
+		t.Fatalf("zero settlement instructions = %d, want 4", len(settlementTx.Message.Instructions))
 	}
 	if got := settlementTx.Message.Instructions[0].Data[0]; got != 4 {
 		t.Fatalf("zero settlement discriminator = %d, want settle_and_finalize(4)", got)
 	}
 	if got := settlementTx.Message.Instructions[0].Data[1]; got != 0 {
 		t.Fatalf("zero settlement hasVoucher = %d, want 0", got)
+	}
+	for _, idx := range []int{1, 2} {
+		if program := settlementTx.Message.AccountKeys[settlementTx.Message.Instructions[idx].ProgramIDIndex]; !program.Equals(solana.SPLAssociatedTokenAccountProgramID) {
+			t.Fatalf("instruction %d program = %s, want ATA program", idx, program)
+		}
+		if got := settlementTx.Message.Instructions[idx].Data[0]; got != 1 {
+			t.Fatalf("instruction %d discriminator = %d, want create idempotent ATA(1)", idx, got)
+		}
+	}
+	if got := settlementTx.Message.Instructions[3].Data[0]; got != 7 {
+		t.Fatalf("zero settlement distribute discriminator = %d, want distribute(7)", got)
 	}
 }
 

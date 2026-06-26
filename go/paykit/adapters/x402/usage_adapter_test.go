@@ -279,7 +279,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	params := paymentchannels.OpenChannelParams{
-		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Payer: payerKey.PublicKey(), RentPayer: operatorKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
 		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
@@ -313,6 +313,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		Payer:            payerKey.PublicKey(),
 		Payee:            payee,
 		AuthorizedSigner: operatorKey.PublicKey(),
+		RentPayer:        operatorKey.PublicKey(),
 		Mint:             mint,
 	})
 

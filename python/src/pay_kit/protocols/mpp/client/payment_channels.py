@@ -324,8 +324,14 @@ def build_open_payment_channel_transaction(
     is intentionally left empty: the payer partial-signs only its own slot and
     the server completes the fee-payer signature before broadcasting.
     """
+    operator = _parse_pubkey(request.operator, "operator")
     if fee_payer is None:
-        fee_payer = _parse_pubkey(request.operator, "operator")
+        fee_payer = operator
+    elif fee_payer != operator:
+        raise ValueError(
+            "fee_payer must equal the challenge operator: the gasless server "
+            "records rentPayer == operator and rejects any other fee payer"
+        )
     open_ = derive_payment_channel_open(
         request,
         _signer_pubkey(signer),
@@ -401,7 +407,10 @@ def _build_open_payment_channel_tx(
     filled in, serialized as standard-alphabet base64 with padding.
     """
     blockhash = recent_blockhash if isinstance(recent_blockhash, Hash) else Hash.from_string(recent_blockhash)
-    ix = build_open_instruction(open_.open_channel_params())
+    open_params = open_.open_channel_params()
+    # rentPayer is pinned to the operator / fee payer already in scope.
+    open_params.rent_payer = fee_payer
+    ix = build_open_instruction(open_params)
     message = Message.new_with_blockhash([ix], fee_payer, blockhash)
     message_bytes = bytes(message)
 

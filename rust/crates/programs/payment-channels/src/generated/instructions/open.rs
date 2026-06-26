@@ -16,6 +16,8 @@ pub const OPEN_DISCRIMINATOR: u8 = 1;
 pub struct Open {
     pub payer: solana_address::Address,
 
+    pub rent_payer: solana_address::Address,
+
     pub payee: solana_address::Address,
 
     pub mint: solana_address::Address,
@@ -52,8 +54,9 @@ impl Open {
         args: OpenInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(13 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(14 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.payer, true));
+        accounts.push(solana_instruction::AccountMeta::new(self.rent_payer, true));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.payee, false,
         ));
@@ -146,21 +149,23 @@ impl OpenInstructionArgs {
 /// ### Accounts:
 ///
 ///   0. `[writable, signer]` payer
-///   1. `[]` payee
-///   2. `[]` mint
-///   3. `[]` authorized_signer
-///   4. `[writable]` channel
-///   5. `[writable]` payer_token_account
-///   6. `[writable]` channel_token_account
-///   7. `[]` token_program
-///   8. `[optional]` system_program (default to `11111111111111111111111111111111`)
-///   9. `[]` rent
-///   10. `[]` associated_token_program
-///   11. `[]` event_authority
-///   12. `[optional]` self_program (default to `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX`)
+///   1. `[writable, signer]` rent_payer
+///   2. `[]` payee
+///   3. `[]` mint
+///   4. `[]` authorized_signer
+///   5. `[writable]` channel
+///   6. `[writable]` payer_token_account
+///   7. `[writable]` channel_token_account
+///   8. `[]` token_program
+///   9. `[optional]` system_program (default to `11111111111111111111111111111111`)
+///   10. `[]` rent
+///   11. `[]` associated_token_program
+///   12. `[]` event_authority
+///   13. `[optional]` self_program (default to `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX`)
 #[derive(Clone, Debug, Default)]
 pub struct OpenBuilder {
     payer: Option<solana_address::Address>,
+    rent_payer: Option<solana_address::Address>,
     payee: Option<solana_address::Address>,
     mint: Option<solana_address::Address>,
     authorized_signer: Option<solana_address::Address>,
@@ -184,6 +189,11 @@ impl OpenBuilder {
     #[inline(always)]
     pub fn payer(&mut self, payer: solana_address::Address) -> &mut Self {
         self.payer = Some(payer);
+        self
+    }
+    #[inline(always)]
+    pub fn rent_payer(&mut self, rent_payer: solana_address::Address) -> &mut Self {
+        self.rent_payer = Some(rent_payer);
         self
     }
     #[inline(always)]
@@ -281,6 +291,7 @@ impl OpenBuilder {
     pub fn instruction(&self) -> solana_instruction::Instruction {
         let accounts = Open {
             payer: self.payer.expect("payer is not set"),
+            rent_payer: self.rent_payer.expect("rent_payer is not set"),
             payee: self.payee.expect("payee is not set"),
             mint: self.mint.expect("mint is not set"),
             authorized_signer: self
@@ -318,6 +329,8 @@ impl OpenBuilder {
 pub struct OpenCpiAccounts<'a, 'b> {
     pub payer: &'b solana_account_info::AccountInfo<'a>,
 
+    pub rent_payer: &'b solana_account_info::AccountInfo<'a>,
+
     pub payee: &'b solana_account_info::AccountInfo<'a>,
 
     pub mint: &'b solana_account_info::AccountInfo<'a>,
@@ -349,6 +362,8 @@ pub struct OpenCpi<'a, 'b> {
     pub __program: &'b solana_account_info::AccountInfo<'a>,
 
     pub payer: &'b solana_account_info::AccountInfo<'a>,
+
+    pub rent_payer: &'b solana_account_info::AccountInfo<'a>,
 
     pub payee: &'b solana_account_info::AccountInfo<'a>,
 
@@ -386,6 +401,7 @@ impl<'a, 'b> OpenCpi<'a, 'b> {
         Self {
             __program: program,
             payer: accounts.payer,
+            rent_payer: accounts.rent_payer,
             payee: accounts.payee,
             mint: accounts.mint,
             authorized_signer: accounts.authorized_signer,
@@ -424,8 +440,12 @@ impl<'a, 'b> OpenCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(13 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(14 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(*self.payer.key, true));
+        accounts.push(solana_instruction::AccountMeta::new(
+            *self.rent_payer.key,
+            true,
+        ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.payee.key,
             false,
@@ -490,9 +510,10 @@ impl<'a, 'b> OpenCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(14 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(15 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.payer.clone());
+        account_infos.push(self.rent_payer.clone());
         account_infos.push(self.payee.clone());
         account_infos.push(self.mint.clone());
         account_infos.push(self.authorized_signer.clone());
@@ -522,18 +543,19 @@ impl<'a, 'b> OpenCpi<'a, 'b> {
 /// ### Accounts:
 ///
 ///   0. `[writable, signer]` payer
-///   1. `[]` payee
-///   2. `[]` mint
-///   3. `[]` authorized_signer
-///   4. `[writable]` channel
-///   5. `[writable]` payer_token_account
-///   6. `[writable]` channel_token_account
-///   7. `[]` token_program
-///   8. `[]` system_program
-///   9. `[]` rent
-///   10. `[]` associated_token_program
-///   11. `[]` event_authority
-///   12. `[]` self_program
+///   1. `[writable, signer]` rent_payer
+///   2. `[]` payee
+///   3. `[]` mint
+///   4. `[]` authorized_signer
+///   5. `[writable]` channel
+///   6. `[writable]` payer_token_account
+///   7. `[writable]` channel_token_account
+///   8. `[]` token_program
+///   9. `[]` system_program
+///   10. `[]` rent
+///   11. `[]` associated_token_program
+///   12. `[]` event_authority
+///   13. `[]` self_program
 #[derive(Clone, Debug)]
 pub struct OpenCpiBuilder<'a, 'b> {
     instruction: Box<OpenCpiBuilderInstruction<'a, 'b>>,
@@ -544,6 +566,7 @@ impl<'a, 'b> OpenCpiBuilder<'a, 'b> {
         let instruction = Box::new(OpenCpiBuilderInstruction {
             __program: program,
             payer: None,
+            rent_payer: None,
             payee: None,
             mint: None,
             authorized_signer: None,
@@ -564,6 +587,14 @@ impl<'a, 'b> OpenCpiBuilder<'a, 'b> {
     #[inline(always)]
     pub fn payer(&mut self, payer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.payer = Some(payer);
+        self
+    }
+    #[inline(always)]
+    pub fn rent_payer(
+        &mut self,
+        rent_payer: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.rent_payer = Some(rent_payer);
         self
     }
     #[inline(always)]
@@ -701,6 +732,8 @@ impl<'a, 'b> OpenCpiBuilder<'a, 'b> {
 
             payer: self.instruction.payer.expect("payer is not set"),
 
+            rent_payer: self.instruction.rent_payer.expect("rent_payer is not set"),
+
             payee: self.instruction.payee.expect("payee is not set"),
 
             mint: self.instruction.mint.expect("mint is not set"),
@@ -761,6 +794,7 @@ impl<'a, 'b> OpenCpiBuilder<'a, 'b> {
 struct OpenCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     payer: Option<&'b solana_account_info::AccountInfo<'a>>,
+    rent_payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     payee: Option<&'b solana_account_info::AccountInfo<'a>>,
     mint: Option<&'b solana_account_info::AccountInfo<'a>>,
     authorized_signer: Option<&'b solana_account_info::AccountInfo<'a>>,

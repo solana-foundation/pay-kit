@@ -110,6 +110,7 @@ func BuildUptoPayload(
 	}
 	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            signer.PublicKey(),
+		RentPayer:        operator,
 		Payee:            payee,
 		Mint:             mint,
 		AuthorizedSigner: operator,
