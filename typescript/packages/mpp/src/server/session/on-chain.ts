@@ -296,8 +296,15 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
     const payer = address(args.payerAddr ?? args.channelState.payer);
     const payee = address(args.channelState.payee);
     // rentPayer reclaims the channel/escrow rent at finalize; it is the
-    // operator recorded as rentPayer at open. Defaults to the channel payer.
-    const rentPayer = address(args.rentPayer ?? args.payerAddr ?? args.channelState.payer);
+    // operator recorded as the channel rentPayer at open. It must match the
+    // rentPayer the channel stored, so it is required: a payer fallback would
+    // build an instruction the on-chain rentPayer check rejects.
+    if (!args.rentPayer) {
+        throw new Error(
+            'buildDistributeInstruction: rentPayer is required (the operator recorded as the channel rentPayer at open)',
+        );
+    }
+    const rentPayer = address(args.rentPayer);
 
     const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: channel, tokenProgram });
     const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: payer, tokenProgram });

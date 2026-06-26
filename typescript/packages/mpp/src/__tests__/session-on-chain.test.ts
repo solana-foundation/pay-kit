@@ -238,12 +238,13 @@ describe('buildTopUpInstruction', () => {
 
 describe('buildDistributeInstruction', () => {
     test('appends one writable recipient ATA per split', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const splitRecipient = address('HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD');
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [
                 { bps: 1000, recipient: splitRecipient },
                 { bps: 250, recipient: splitRecipient },
@@ -267,11 +268,12 @@ describe('buildDistributeInstruction', () => {
     });
 
     test('zero-split distribute has only 11 fixed accounts', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [],
             tokenProgram: TOKEN_PROGRAM,
         });

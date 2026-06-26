@@ -1022,10 +1022,13 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         network: args.network,
         payee: args.recipient,
         payer: state.operator ?? args.recipient,
-        // rentPayer reclaims the channel/escrow rent at finalize; it is the
-        // operator recorded as rentPayer at open.
-        rentPayer: state.operator ?? args.operator,
+        
+        
         programId: args.programId,
+        // rentPayer reclaims the channel/escrow rent at finalize; it is the
+        // operator recorded as the channel rentPayer at open (the fee payer),
+        // not the refund payer carried in state.operator.
+        rentPayer: args.operator,
         rpc: args.rpc as unknown as {
             sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
         },
