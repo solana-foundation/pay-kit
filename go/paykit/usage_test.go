@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestChargeDefaultsToZero(t *testing.T) {
@@ -76,7 +77,7 @@ type stubUsageAdapter struct {
 	verified         VerifiedUsageOpen
 	settledActual    uint64
 	settleCalls      int
-	onSettle         func(actual uint64)
+	onSettle         func(ctx context.Context, actual uint64)
 }
 
 type releaseTrackingOpen struct {
@@ -101,14 +102,14 @@ func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (Verifie
 	pmt := &Payment{Protocol: X402, SettlementHeaders: map[string]string{}}
 	return s.verified, pmt, nil
 }
-func (s *stubUsageAdapter) SettleActual(_ context.Context, verified VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
+func (s *stubUsageAdapter) SettleActual(ctx context.Context, verified VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
 	s.settleCalls++
 	s.settledActual = actual
 	if releaser, ok := verified.(interface{ Release() }); ok {
 		releaser.Release()
 	}
 	if s.onSettle != nil {
-		s.onSettle(actual)
+		s.onSettle(ctx, actual)
 	}
 	if s.settleErr != nil {
 		return nil, s.settleErr
@@ -223,7 +224,7 @@ func TestRequireUsageSettlesOnlyAfterHandlerReturns(t *testing.T) {
 	handlerReturned := false
 	adapter := &stubUsageAdapter{
 		detect: true,
-		onSettle: func(uint64) {
+		onSettle: func(context.Context, uint64) {
 			if !handlerReturned {
 				t.Error("settlement ran before handler returned")
 			}
@@ -255,6 +256,55 @@ func TestRequireUsageSettlesOnlyAfterHandlerReturns(t *testing.T) {
 	}
 	if adapter.settledActual != 400_000 {
 		t.Fatalf("settled actual = %d, want 400000", adapter.settledActual)
+	}
+}
+
+func TestRequireUsageStartsSettlementTimeoutAfterHandlerReturns(t *testing.T) {
+	previousTimeout := usageSettlementTimeout
+	usageSettlementTimeout = 40 * time.Millisecond
+	defer func() { usageSettlementTimeout = previousTimeout }()
+
+	var remaining time.Duration
+	adapter := &stubUsageAdapter{
+		detect: true,
+		onSettle: func(ctx context.Context, _ uint64) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Error("settlement context has no deadline")
+				return
+			}
+			remaining = time.Until(deadline)
+		},
+	}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+		errorHandler: DefaultErrorHandler,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(25 * time.Millisecond)
+		c, ok := ChargeFrom(r.Context())
+		if !ok || c == nil {
+			t.Fatal("expected Charge in context")
+		}
+		c.Charge(300_000)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if remaining < 30*time.Millisecond {
+		t.Fatalf("settlement timeout started before handler returned: remaining %s", remaining)
 	}
 }
 

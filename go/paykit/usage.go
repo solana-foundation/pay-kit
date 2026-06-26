@@ -107,6 +107,11 @@ type UsageBuilder func(cfg Config) (UsageAdapter, error)
 
 var registeredUsageBuilder UsageBuilder
 
+// usageSettlementTimeout bounds the detached settlement RPC window after the
+// handler returns. Tests override it to prove handler runtime does not consume
+// this budget.
+var usageSettlementTimeout = 120 * time.Second
+
 // RegisterUsageAdapter is called from a protocol package's init() to plug
 // its usage adapter into the umbrella. The x402 package calls this to
 // register the upto engine.
@@ -175,14 +180,6 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 			meter := NewCharge(maxBaseUnits)
 			ctx := context.WithValue(r.Context(), ctxKey{}, pmt)
 			ctx = context.WithValue(ctx, chargeKey{}, meter)
-			// Settlement must complete even if the client disconnects after
-			// VerifyOpen (the channel is already open on-chain; abandoning
-			// settlement would leave the deposit locked without payment).
-			// Use a detached context with a timeout so the request context
-			// cancellation does not abort settlement, but the RPC still has
-			// a deadline. finalizeSettlement runs before settleCancel in
-			// the defer so the context is still live when settlement fires.
-			settleCtx, settleCancel := context.WithTimeout(context.Background(), 120*time.Second)
 			uw := &usageSettlementWriter{
 				ResponseWriter: w,
 				adapter:        adapter,
@@ -207,8 +204,14 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 				},
 			}
 			defer func() {
+				// Settlement must complete even if the client disconnects after
+				// VerifyOpen (the channel is already open on-chain; abandoning
+				// settlement would leave the deposit locked without payment).
+				// Start the detached timeout after the handler returns so long
+				// usage handlers do not consume the settlement RPC budget.
+				settleCtx, settleCancel := context.WithTimeout(context.Background(), usageSettlementTimeout)
+				defer settleCancel()
 				uw.finalizeSettlement(settleCtx)
-				settleCancel()
 			}()
 			next.ServeHTTP(uw, r.WithContext(ctx))
 		})
