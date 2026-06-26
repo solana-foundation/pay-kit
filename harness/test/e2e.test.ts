@@ -1040,6 +1040,21 @@ function expectPaymentChannelSettlement(
   scenario: HarnessScenario,
   scenarioEnv: Record<string, string>,
 ): void {
+  const actual = primaryDelta(scenario);
+  if (actual === 0n) {
+    expect(
+      message.instructions,
+      "x402-upto zero-actual settlement instruction count",
+    ).toHaveLength(1);
+    const [settle] = message.instructions;
+    expect(accountAt(message, settle.programAddressIndex)).toBe(
+      PAYMENT_CHANNEL_PROGRAM,
+    );
+    expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
+    expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(0);
+    return;
+  }
+
   expect(
     message.instructions,
     "x402-upto settlement instruction count",
@@ -1058,7 +1073,8 @@ function expectPaymentChannelSettlement(
   expect(accountAt(message, settle.programAddressIndex)).toBe(
     PAYMENT_CHANNEL_PROGRAM,
   );
-  expect(settle.data[0], "settle discriminator").toBe(2);
+  expect(settle.data[0], "settle_and_finalize discriminator").toBe(4);
+  expect(settle.data[1], "settle_and_finalize hasVoucher").toBe(1);
 
   const mint = onChainMintFor(scenario);
   if (!mint) {

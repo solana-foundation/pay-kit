@@ -28,8 +28,8 @@ type Client struct {
 	usageAdapter UsageAdapter
 
 	// errorHandler renders the 402 (or other) response when a gate
-	// rejects a request. Defaults to DefaultErrorHandler; override with
-	// SetErrorHandler.
+	// rejects a request. nil means each gate family uses its own
+	// default; override with SetErrorHandler.
 	errorHandler ErrorHandler
 }
 
@@ -40,12 +40,10 @@ type Client struct {
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 // SetErrorHandler replaces the response writer used on a rejected
-// request. A nil handler restores [DefaultErrorHandler]. Not safe to
-// call concurrently with in-flight requests; set it at startup.
+// request. A nil handler restores the default behavior for each gate
+// family. Not safe to call concurrently with in-flight requests; set it
+// at startup.
 func (c *Client) SetErrorHandler(h ErrorHandler) {
-	if h == nil {
-		h = DefaultErrorHandler
-	}
 	c.errorHandler = h
 }
 
@@ -185,7 +183,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.MPP.ChallengeBindingSecret = secret
 	}
 
-	c := &Client{Config: cfg, errorHandler: DefaultErrorHandler}
+	c := &Client{Config: cfg}
 	for _, s := range cfg.Accept {
 		b, ok := registeredBuilders[s]
 		if !ok {

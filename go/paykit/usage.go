@@ -323,11 +323,6 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 		w.settleErr = errors.New("usage Charge must be called before the handler returns")
 		return
 	}
-	if actual == 0 {
-		w.releaseVerifiedOpen()
-		w.settleErr = errors.New("usage Charge amount must be greater than zero")
-		return
-	}
 	result, err := w.adapter.SettleActual(ctx, w.verified, actual)
 	if err != nil {
 		w.settleErr = err

@@ -39,8 +39,8 @@ function missingEnvs(): string[] {
   );
 }
 
-const happyPath = harnessScenarios.find(
-  (scenario) => scenario.id === "x402-upto-basic",
+const uptoScenarios = harnessScenarios.filter(
+  (scenario) => scenario.intent === "x402-upto",
 );
 
 const uptoClients = clientImplementations.filter(
@@ -73,9 +73,9 @@ describe("x402 upto intent — cross-language matrix", () => {
     return;
   }
 
-  if (!happyPath) {
-    it("has happy-path scenario x402-upto-basic in registry", () => {
-      throw new Error("x402-upto-basic scenario not found in harnessScenarios");
+  if (uptoScenarios.length === 0) {
+    it("has x402-upto scenarios in registry", () => {
+      throw new Error("x402-upto scenarios not found in harnessScenarios");
     });
     return;
   }
@@ -87,34 +87,36 @@ describe("x402 upto intent — cross-language matrix", () => {
 
   for (const server of uptoServers) {
     for (const client of uptoClients) {
-      it(`${client.id} client <-> ${server.id} server: happy path`, async () => {
-        const env = {
-          X402_HARNESS_NETWORK: happyPath.network,
-          X402_HARNESS_PRICE: happyPath.price,
-          X402_HARNESS_RESOURCE_PATH: happyPath.resourcePath,
-          X402_HARNESS_SETTLEMENT_HEADER: happyPath.settlementHeader,
-          X402_HARNESS_ACTUAL_AMOUNT: happyPath.actualAmount ?? "0",
-          PAY_KIT_HARNESS_PROTOCOL: "x402-upto",
-        } satisfies Record<string, string>;
+      for (const scenario of uptoScenarios) {
+        it(`${client.id} client <-> ${server.id} server: ${scenario.id}`, async () => {
+          const env = {
+            X402_HARNESS_NETWORK: scenario.network,
+            X402_HARNESS_PRICE: scenario.price,
+            X402_HARNESS_RESOURCE_PATH: scenario.resourcePath,
+            X402_HARNESS_SETTLEMENT_HEADER: scenario.settlementHeader,
+            X402_HARNESS_ACTUAL_AMOUNT: scenario.actualAmount ?? "0",
+            PAY_KIT_HARNESS_PROTOCOL: "x402-upto",
+          } satisfies Record<string, string>;
 
-        const running = await startServer(server, env);
-        runningServers.push(running);
+          const running = await startServer(server, env);
+          runningServers.push(running);
 
-        try {
-          const targetUrl = `http://127.0.0.1:${running.ready.port}${happyPath.resourcePath}`;
-          const result = await runClient(client, targetUrl, {
-            X402_HARNESS_TARGET_URL: targetUrl,
-            ...env,
-          });
+          try {
+            const targetUrl = `http://127.0.0.1:${running.ready.port}${scenario.resourcePath}`;
+            const result = await runClient(client, targetUrl, {
+              X402_HARNESS_TARGET_URL: targetUrl,
+              ...env,
+            });
 
-          expect(result.status).toBe(happyPath.expectedStatus);
-          expect(result.ok).toBe(true);
-          expect(result.settlement).toBeTruthy();
-        } finally {
-          await stopServer(running);
-          runningServers.splice(runningServers.indexOf(running), 1);
-        }
-      }, 180_000);
+            expect(result.status).toBe(scenario.expectedStatus);
+            expect(result.ok).toBe(true);
+            expect(result.settlement).toBeTruthy();
+          } finally {
+            await stopServer(running);
+            runningServers.splice(runningServers.indexOf(running), 1);
+          }
+        }, 180_000);
+      }
     }
   }
 });

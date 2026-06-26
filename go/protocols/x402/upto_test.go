@@ -84,8 +84,17 @@ func TestVerifyUptoPayloadRejectsDepositBelowCeiling(t *testing.T) {
 	p := uptoPayload()
 	p.Deposit = "500000"
 	err := VerifyUptoPayload(p, uptoRequirements(), "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
-	if err == nil || !strings.Contains(err.Error(), "below the authorized maximum") {
+	if err == nil || !strings.Contains(err.Error(), "must equal the authorized maximum") {
 		t.Fatalf("expected deposit below ceiling, got %v", err)
+	}
+}
+
+func TestVerifyUptoPayloadRejectsDepositAboveCeiling(t *testing.T) {
+	p := uptoPayload()
+	p.Deposit = "1000001"
+	err := VerifyUptoPayload(p, uptoRequirements(), "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
+	if err == nil || !strings.Contains(err.Error(), "must equal the authorized maximum") {
+		t.Fatalf("expected deposit above ceiling, got %v", err)
 	}
 }
 
@@ -128,6 +137,9 @@ func TestVerifyUptoPayloadRejectsUnadvertisedProfile(t *testing.T) {
 }
 
 func TestAssertSettlementWithinCeiling(t *testing.T) {
+	if err := AssertSettlementWithinCeiling(0, 1000000); err != nil {
+		t.Fatalf("expected zero amount within ceiling to pass, got %v", err)
+	}
 	if err := AssertSettlementWithinCeiling(999999, 1000000); err != nil {
 		t.Fatalf("expected within ceiling to pass, got %v", err)
 	}
@@ -395,7 +407,7 @@ func TestValidateUptoOpenInstructionAcceptsWellFormed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.TokenProgramID, channel)
 	if err != nil {
 		t.Fatalf("expected valid open to pass, got %v", err)
 	}
@@ -409,7 +421,7 @@ func TestValidateUptoOpenInstructionRejectsForeignProgram(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, operator)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, operator, operator, operator, solana.TokenProgramID, operator)
 	if err == nil || !strings.Contains(err.Error(), "unexpected program") {
 		t.Fatalf("expected foreign program rejection, got %v", err)
 	}
@@ -432,7 +444,7 @@ func TestValidateUptoOpenInstructionRejectsExtraInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
-	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, channel)
+	err = validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.TokenProgramID, channel)
 	if err == nil || !strings.Contains(err.Error(), "exactly one instruction") {
 		t.Fatalf("expected extra instruction rejection, got %v", err)
 	}
@@ -452,9 +464,29 @@ func TestValidateUptoOpenInstructionRejectsWrongPayee(t *testing.T) {
 	ix, _ := paymentchannels.BuildOpenInstruction(params)
 	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
 	wrongPayee := testutil.NewPrivateKey().PublicKey()
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, wrongPayee, mint, channel)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, wrongPayee, mint, solana.TokenProgramID, channel)
 	if err == nil || !strings.Contains(err.Error(), "payee mismatch") {
 		t.Fatalf("expected payee mismatch, got %v", err)
+	}
+}
+
+func TestValidateUptoOpenInstructionRejectsWrongTokenProgram(t *testing.T) {
+	payer := testutil.NewPrivateKey().PublicKey()
+	payee := testutil.NewPrivateKey().PublicKey()
+	mint := testutil.NewPrivateKey().PublicKey()
+	operator := testutil.NewPrivateKey().PublicKey()
+	params := paymentchannels.OpenChannelParams{
+		Payer: payer, Payee: payee, Mint: mint, AuthorizedSigner: operator,
+		Salt: 7, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	}
+	channel, _, _ := paymentchannels.FindChannelPDA(payer, payee, mint, operator, 7)
+	ix, _ := paymentchannels.BuildOpenInstruction(params)
+	tx, _ := solana.NewTransaction([]solana.Instruction{ix}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
+
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), operator, payer, payee, mint, solana.Token2022ProgramID, channel)
+	if err == nil || (!strings.Contains(err.Error(), "payer_token_account mismatch") && !strings.Contains(err.Error(), "token_program mismatch")) {
+		t.Fatalf("expected token program binding rejection, got %v", err)
 	}
 }
 
@@ -656,8 +688,11 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 	if len(settlementTx.Message.Instructions) != 5 {
 		t.Fatalf("settlement instructions = %d, want 5", len(settlementTx.Message.Instructions))
 	}
-	if got := settlementTx.Message.Instructions[1].Data[0]; got != 2 {
-		t.Fatalf("settlement instruction discriminator = %d, want settle(2)", got)
+	if got := settlementTx.Message.Instructions[1].Data[0]; got != 4 {
+		t.Fatalf("settlement instruction discriminator = %d, want settle_and_finalize(4)", got)
+	}
+	if got := settlementTx.Message.Instructions[1].Data[1]; got != 1 {
+		t.Fatalf("settle_and_finalize hasVoucher = %d, want 1", got)
 	}
 	for _, idx := range []int{2, 3} {
 		if program := settlementTx.Message.AccountKeys[settlementTx.Message.Instructions[idx].ProgramIDIndex]; !program.Equals(solana.SPLAssociatedTokenAccountProgramID) {
@@ -999,7 +1034,7 @@ func TestValidateUptoOpenInstructionRejectsNonOpenDiscriminator(t *testing.T) {
 	payer := testutil.NewPrivateKey().PublicKey()
 	evil := solana.NewInstruction(paymentchannels.ProgramPubkey(), solana.AccountMetaSlice{}, []byte{99})
 	tx, _ := solana.NewTransaction([]solana.Instruction{evil}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payer))
-	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, payer)
+	err := validateUptoOpenInstruction(tx, paymentchannels.ProgramPubkey(), payer, payer, payer, payer, solana.TokenProgramID, payer)
 	if err == nil || !strings.Contains(err.Error(), "not a channel-open") {
 		t.Fatalf("expected non-open discriminator rejection, got %v", err)
 	}
@@ -1173,7 +1208,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 }
 
 // TestUptoVerifyOpenRejectsDepositBelowMax exercises the on-chain deposit binding.
-func TestUptoVerifyOpenRejectsDepositBelowMax(t *testing.T) {
+func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()
 	payerKey := testutil.NewPrivateKey()
 	payee := operatorKey.PublicKey()
@@ -1211,8 +1246,8 @@ func TestUptoVerifyOpenRejectsDepositBelowMax(t *testing.T) {
 	}}
 	raw, _ := json.Marshal(env)
 	_, err := engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
-	if err == nil || !strings.Contains(err.Error(), "below authorized maximum") {
-		t.Fatalf("expected deposit below max, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "must equal authorized maximum") {
+		t.Fatalf("expected deposit mismatch, got %v", err)
 	}
 }
 
@@ -1252,7 +1287,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 	}
 }
 
-func TestUptoSettleActualRejectsZeroAmount(t *testing.T) {
+func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()
 	payerKey := testutil.NewPrivateKey()
 	payee := operatorKey.PublicKey()
@@ -1293,9 +1328,28 @@ func TestUptoSettleActualRejectsZeroAmount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyOpen: %v", err)
 	}
-	_, err = engine.SettleActual(context.Background(), verified, 0)
-	if err == nil || !strings.Contains(err.Error(), "must be greater than zero") {
-		t.Fatalf("expected zero-amount rejection, got %v", err)
+	settlement, err := engine.SettleActual(context.Background(), verified, 0)
+	if err != nil {
+		t.Fatalf("SettleActual zero amount: %v", err)
+	}
+	if settlement.Amount != "0" {
+		t.Fatalf("amount = %q, want 0", settlement.Amount)
+	}
+	if settlement.Transaction == "" {
+		t.Fatal("transaction is empty")
+	}
+	if len(fakeRPC.Sent) != 2 {
+		t.Fatalf("sent transactions = %d, want 2 (open + settlement)", len(fakeRPC.Sent))
+	}
+	settlementTx := fakeRPC.Sent[1]
+	if len(settlementTx.Message.Instructions) != 1 {
+		t.Fatalf("zero settlement instructions = %d, want 1 (settle_and_finalize only)", len(settlementTx.Message.Instructions))
+	}
+	if got := settlementTx.Message.Instructions[0].Data[0]; got != 4 {
+		t.Fatalf("zero settlement discriminator = %d, want settle_and_finalize(4)", got)
+	}
+	if got := settlementTx.Message.Instructions[0].Data[1]; got != 0 {
+		t.Fatalf("zero settlement hasVoucher = %d, want 0", got)
 	}
 }
 

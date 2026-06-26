@@ -9,7 +9,7 @@
 //!    channel state back to bind deposit/payee/mint/signer on-chain.
 //! 3. The route handler runs and determines the actual metered amount.
 //! 4. [`X402Upto::settle_actual`] signs a single operator voucher for the actual
-//!    amount and submits `settle` + ATA setup + `distribute`, refunding
+//!    amount and submits `settle_and_finalize` + ATA setup + `distribute`, refunding
 //!    `deposit − actual` to the payer.
 
 use std::collections::HashSet;
@@ -300,6 +300,7 @@ impl X402Upto {
 
         let program_id = self.program_id()?;
         let expected_mint = self.mint()?;
+        let token_program = self.token_program()?;
         let expected_payee = Pubkey::from_str(&self.config.recipient)
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
         let channel_id = Pubkey::from_str(&payload.channel_id)
@@ -334,7 +335,14 @@ impl X402Upto {
         // sign the expected channel-open instruction — never an arbitrary
         // operator-authorized instruction (e.g. a SystemProgram transfer that
         // drains the operator). Validate before co-signing/broadcasting.
-        self.validate_open_transaction(&tx, &payer, &expected_payee, &expected_mint, &channel_id)?;
+        self.validate_open_transaction(
+            &tx,
+            &payer,
+            &expected_payee,
+            &expected_mint,
+            &token_program,
+            &channel_id,
+        )?;
         self.cosign_fee_payer(&mut tx).await?;
         self.rpc
             .send_and_confirm_transaction(&tx)
@@ -367,9 +375,9 @@ impl X402Upto {
                 "channel authorized_signer is not the operator".to_string(),
             ));
         }
-        if channel.deposit < max {
+        if channel.deposit != max {
             return Err(Error::Other(format!(
-                "on-chain deposit {} below authorized maximum {max}",
+                "on-chain deposit {} must equal authorized maximum {max}",
                 channel.deposit
             )));
         }
@@ -388,7 +396,7 @@ impl X402Upto {
             channel_id,
             payer,
             mint: expected_mint,
-            token_program: self.token_program()?,
+            token_program,
             program_id,
             deposit: channel.deposit,
             max_amount: max,
@@ -398,9 +406,9 @@ impl X402Upto {
         })
     }
 
-    /// Settle the actual metered amount (`0 < actual ≤ max`) against a verified
-    /// open: operator-signed voucher, `settle` + ATA setup + `distribute`,
-    /// refunding the remainder.
+    /// Settle the actual metered amount (`actual ≤ max`) against a verified
+    /// open: `settle_and_finalize`, plus ATA setup and `distribute` when the
+    /// actual amount is non-zero.
     pub async fn settle_actual(
         &self,
         open: &VerifiedUptoOpen,
@@ -408,52 +416,62 @@ impl X402Upto {
     ) -> Result<UptoSettlementResponse, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
-        if actual == 0 {
-            return Err(Error::Other(
-                "x402 upto settlement amount must be greater than zero".to_string(),
-            ));
-        }
-        let voucher_bytes = pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
-        let sig_bytes: [u8; 64] = self
-            .config
-            .operator_signer
-            .sign_message(&voucher_bytes)
-            .await
-            .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
-            .into();
-        let mut instructions = pc::build_settle_instructions(
-            &open.channel_id,
-            &self.operator,
-            &sig_bytes,
-            actual,
-            open.expires_at,
-            &open.program_id,
-        )?;
+        let instructions = if actual == 0 {
+            pc::build_settle_and_finalize_instructions(
+                &self.operator,
+                &open.channel_id,
+                &self.operator,
+                None,
+                0,
+                open.expires_at,
+                &open.program_id,
+            )?
+        } else {
+            let voucher_bytes =
+                pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
+            let sig_bytes: [u8; 64] = self
+                .config
+                .operator_signer
+                .sign_message(&voucher_bytes)
+                .await
+                .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
+                .into();
+            let mut instructions = pc::build_settle_and_finalize_instructions(
+                &self.operator,
+                &open.channel_id,
+                &self.operator,
+                Some(&sig_bytes),
+                actual,
+                open.expires_at,
+                &open.program_id,
+            )?;
 
-        let payee = Pubkey::from_str(&self.config.recipient)
-            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.operator,
-            &payee,
-            &open.mint,
-            &open.token_program,
-        ));
-        instructions.push(pc::build_create_associated_token_account_instruction(
-            &self.operator,
-            &pc::treasury_owner(),
-            &open.mint,
-            &open.token_program,
-        ));
-        instructions.push(pc::build_distribute_instruction(
-            &open.channel_id,
-            &open.payer,
-            &payee,
-            &pc::treasury_owner(),
-            &open.mint,
-            &[],
-            &open.token_program,
-            &open.program_id,
-        ));
+            let payee = Pubkey::from_str(&self.config.recipient)
+                .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+            instructions.push(pc::build_create_associated_token_account_instruction(
+                &self.operator,
+                &payee,
+                &open.mint,
+                &open.token_program,
+            ));
+            instructions.push(pc::build_create_associated_token_account_instruction(
+                &self.operator,
+                &pc::treasury_owner(),
+                &open.mint,
+                &open.token_program,
+            ));
+            instructions.push(pc::build_distribute_instruction(
+                &open.channel_id,
+                &open.payer,
+                &payee,
+                &pc::treasury_owner(),
+                &open.mint,
+                &[],
+                &open.token_program,
+                &open.program_id,
+            ));
+            instructions
+        };
 
         let blockhash = self
             .rpc
@@ -496,16 +514,21 @@ impl X402Upto {
         payer: &Pubkey,
         payee: &Pubkey,
         mint: &Pubkey,
+        token_program: &Pubkey,
         channel_id: &Pubkey,
     ) -> Result<(), Error> {
+        let program_id = self.program_id()?;
         validate_open_instruction(
             tx,
-            &self.program_id()?,
-            &self.operator,
-            payer,
-            payee,
-            mint,
-            channel_id,
+            &OpenInstructionExpectation {
+                program_id: &program_id,
+                operator: &self.operator,
+                payer,
+                payee,
+                mint,
+                token_program,
+                channel_id,
+            },
         )
     }
 
@@ -577,14 +600,19 @@ fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> R
 
 /// Assert `tx` is exactly the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
+pub(crate) struct OpenInstructionExpectation<'a> {
+    pub(crate) program_id: &'a Pubkey,
+    pub(crate) operator: &'a Pubkey,
+    pub(crate) payer: &'a Pubkey,
+    pub(crate) payee: &'a Pubkey,
+    pub(crate) mint: &'a Pubkey,
+    pub(crate) token_program: &'a Pubkey,
+    pub(crate) channel_id: &'a Pubkey,
+}
+
 pub(crate) fn validate_open_instruction(
     tx: &VersionedTransaction,
-    program_id: &Pubkey,
-    operator: &Pubkey,
-    payer: &Pubkey,
-    payee: &Pubkey,
-    mint: &Pubkey,
-    channel_id: &Pubkey,
+    expected: &OpenInstructionExpectation<'_>,
 ) -> Result<(), Error> {
     let keys = tx.message.static_account_keys();
     let instructions = tx.message.instructions();
@@ -598,7 +626,7 @@ pub(crate) fn validate_open_instruction(
     let prog = keys
         .get(ix.program_id_index as usize)
         .ok_or_else(|| Error::Other("open instruction program id out of range".to_string()))?;
-    if prog != program_id {
+    if prog != expected.program_id {
         return Err(Error::Other(
             "open transaction targets an unexpected program".to_string(),
         ));
@@ -608,8 +636,7 @@ pub(crate) fn validate_open_instruction(
             "open transaction is not a channel-open instruction".to_string(),
         ));
     }
-    // Account order from `build_open_instruction`:
-    // [payer, payee, mint, authorized_signer, channel, ...].
+    // Account order from `build_open_instruction`.
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -628,11 +655,34 @@ pub(crate) fn validate_open_instruction(
             ))),
         }
     };
-    expect(0, payer, "payer")?;
-    expect(1, payee, "payee")?;
-    expect(2, mint, "mint")?;
-    expect(3, operator, "authorized_signer")?;
-    expect(4, channel_id, "channel")?;
+    expect(0, expected.payer, "payer")?;
+    expect(1, expected.payee, "payee")?;
+    expect(2, expected.mint, "mint")?;
+    expect(3, expected.operator, "authorized_signer")?;
+    expect(4, expected.channel_id, "channel")?;
+    let (payer_token, _) =
+        pc::find_associated_token_address(expected.payer, expected.mint, expected.token_program);
+    let (channel_token, _) = pc::find_associated_token_address(
+        expected.channel_id,
+        expected.mint,
+        expected.token_program,
+    );
+    expect(5, &payer_token, "payer_token_account")?;
+    expect(6, &channel_token, "channel_token_account")?;
+    expect(7, expected.token_program, "token_program")?;
+    expect(8, &pc::system_program_id(), "system_program")?;
+    expect(9, &pc::rent_sysvar_id(), "rent_sysvar")?;
+    expect(
+        10,
+        &pc::associated_token_program_id(),
+        "associated_token_program",
+    )?;
+    expect(
+        11,
+        &pc::find_event_authority_pda(expected.program_id).0,
+        "event_authority",
+    )?;
+    expect(12, expected.program_id, "self_program")?;
     Ok(())
 }
 
@@ -720,12 +770,15 @@ mod tests {
 
         assert!(validate_open_instruction(
             &tx,
-            &pc::default_program_id(),
-            &operator,
-            &payer,
-            &payee,
-            &mint,
-            &channel,
+            &OpenInstructionExpectation {
+                program_id: &pc::default_program_id(),
+                operator: &operator,
+                payer: &payer,
+                payee: &payee,
+                mint: &mint,
+                token_program: &token_program(),
+                channel_id: &channel,
+            },
         )
         .is_ok());
     }
@@ -741,14 +794,21 @@ mod tests {
             data: vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], // transfer-ish
         };
         let tx = unsigned_tx(&[evil]);
+        let payer = Pubkey::new_unique();
+        let payee = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &tx,
-            &pc::default_program_id(),
-            &operator,
-            &Pubkey::new_unique(),
-            &Pubkey::new_unique(),
-            &Pubkey::new_unique(),
-            &Pubkey::new_unique(),
+            &OpenInstructionExpectation {
+                program_id: &pc::default_program_id(),
+                operator: &operator,
+                payer: &payer,
+                payee: &payee,
+                mint: &mint,
+                token_program: &token_program(),
+                channel_id: &channel,
+            },
         )
         .is_err());
     }
@@ -774,25 +834,61 @@ mod tests {
         let two = unsigned_tx(&[open.clone(), extra]);
         assert!(validate_open_instruction(
             &two,
-            &pc::default_program_id(),
-            &operator,
-            &payer,
-            &payee,
-            &mint,
-            &channel,
+            &OpenInstructionExpectation {
+                program_id: &pc::default_program_id(),
+                operator: &operator,
+                payer: &payer,
+                payee: &payee,
+                mint: &mint,
+                token_program: &token_program(),
+                channel_id: &channel,
+            },
         )
         .is_err());
 
         // Right shape, wrong expected payee.
         let one = unsigned_tx(&[open]);
+        let wrong_payee = Pubkey::new_unique();
         assert!(validate_open_instruction(
             &one,
-            &pc::default_program_id(),
-            &operator,
-            &payer,
-            &Pubkey::new_unique(),
-            &mint,
-            &channel,
+            &OpenInstructionExpectation {
+                program_id: &pc::default_program_id(),
+                operator: &operator,
+                payer: &payer,
+                payee: &wrong_payee,
+                mint: &mint,
+                token_program: &token_program(),
+                channel_id: &channel,
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_token_program_binding() {
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+        let wrong_token_program =
+            Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap();
+
+        assert!(validate_open_instruction(
+            &tx,
+            &OpenInstructionExpectation {
+                program_id: &pc::default_program_id(),
+                operator: &operator,
+                payer: &payer,
+                payee: &payee,
+                mint: &mint,
+                token_program: &wrong_token_program,
+                channel_id: &channel,
+            },
         )
         .is_err());
     }

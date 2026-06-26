@@ -168,7 +168,7 @@ jobs:
           # rejection, sum-equals-amount, and the two L6 fault-matrix
           # codes (wrong_network / charge_request_mismatch); plus the
           # x402 exact scheme.
-          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic,x402-upto-basic
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic,x402-upto-basic,x402-upto-zero-actual
           X402_HARNESS_CLIENTS: rust-x402,go-x402,rust-x402-upto,go-x402-upto
           # Pin x402-exact to the main Go server and x402-upto to the Go/Rust
           # payment-channel servers under test.

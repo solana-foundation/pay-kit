@@ -289,7 +289,7 @@ func TestRequireUsageRequiresChargeBeforeResponse(t *testing.T) {
 	}
 }
 
-func TestRequireUsageRejectsZeroChargeBeforeResponse(t *testing.T) {
+func TestRequireUsageSettlesZeroChargeBeforeResponse(t *testing.T) {
 	verified := &releaseTrackingOpen{}
 	adapter := &stubUsageAdapter{detect: true, verified: verified}
 	client := &Client{
@@ -308,20 +308,20 @@ func TestRequireUsageRejectsZeroChargeBeforeResponse(t *testing.T) {
 	req.Header.Set("Payment-Signature", "abc")
 	h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusPaymentRequired {
-		t.Fatalf("status = %d, want 402", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if adapter.settleCalls != 0 {
-		t.Fatalf("settle calls = %d, want 0", adapter.settleCalls)
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
 	}
-	if verified.releases != 1 {
-		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	if adapter.settledActual != 0 {
+		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
 	}
-	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
-		t.Fatalf("protected body leaked after zero Charge: %s", rr.Body.String())
+	if verified.releases != 0 {
+		t.Fatalf("verified open releases = %d, want adapter-owned release", verified.releases)
 	}
-	if !strings.Contains(rr.Body.String(), `"code":"settlement_failed"`) {
-		t.Fatalf("expected settlement_failed code in body, got %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body was not flushed after zero Charge: %s", rr.Body.String())
 	}
 }
 

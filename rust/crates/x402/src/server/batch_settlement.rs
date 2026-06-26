@@ -43,6 +43,7 @@ use crate::protocol::schemes::exact::{
 };
 use crate::server::upto::{
     cosign_operator_fee_payer, decode_transaction, validate_open_instruction,
+    OpenInstructionExpectation,
 };
 use crate::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
@@ -352,6 +353,7 @@ impl X402BatchSettlement {
         }
         let program_id = self.program_id()?;
         let expected_mint = self.mint()?;
+        let token_program = self.token_program()?;
         let expected_payee = Pubkey::from_str(&self.config.recipient)
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
         let payer = Pubkey::from_str(&config.payer)
@@ -379,12 +381,15 @@ impl X402BatchSettlement {
         // (the payer by default) — not the operator as in `upto`.
         validate_open_instruction(
             &tx,
-            &program_id,
-            &authorized_signer,
-            &payer,
-            &expected_payee,
-            &expected_mint,
-            &channel_id,
+            &OpenInstructionExpectation {
+                program_id: &program_id,
+                operator: &authorized_signer,
+                payer: &payer,
+                payee: &expected_payee,
+                mint: &expected_mint,
+                token_program: &token_program,
+                channel_id: &channel_id,
+            },
         )?;
         cosign_operator_fee_payer(
             self.config.operator_signer.as_ref(),
