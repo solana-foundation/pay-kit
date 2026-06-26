@@ -443,6 +443,12 @@ export interface VerifyOpenTxResult {
     readonly deposit: bigint;
     /** Close grace period in seconds. */
     readonly gracePeriod: number;
+    /**
+     * Channel payer (open account 0, base58): the deposit funder and the
+     * distribute refund destination (the program enforces it equals
+     * `channel.payer`).
+     */
+    readonly payer: string;
     /** Channel-derivation salt. */
     readonly salt: bigint;
 }
@@ -611,7 +617,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         }
     }
 
-    return { channelId: channelAddr, deposit, gracePeriod, salt };
+    return { channelId: channelAddr, deposit, gracePeriod, payer: payerAddr, salt };
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */

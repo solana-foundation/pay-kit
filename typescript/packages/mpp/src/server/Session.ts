@@ -420,6 +420,9 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
     let channelId: string;
     let deposit: bigint;
     let signature: string | undefined;
+    // Channel payer (the deposit funder / distribute refund destination),
+    // captured from the verified open when a transaction is present.
+    let channelPayer: string | undefined;
 
     if (mode === 'push' && !payload.transaction && !payload.channelId) {
         throw new Error('open payload missing transaction or channelId');
@@ -451,6 +454,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             if (existing) {
                 channelId = preVerified.channelId;
                 deposit = preVerified.deposit;
+                channelPayer = preVerified.payer;
                 signature = payload.signature;
             } else {
                 const submitted = await submitOpenTx({
@@ -461,6 +465,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
                 });
                 channelId = submitted.channelId;
                 deposit = submitted.deposit;
+                channelPayer = submitted.payer;
                 signature = submitted.signature as unknown as string;
             }
         } else {
@@ -471,6 +476,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             });
             channelId = verified.channelId;
             deposit = verified.deposit;
+            channelPayer = verified.payer;
             signature = payload.signature;
         }
     } else if (mode === 'push') {
@@ -529,7 +535,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         highestVoucherExpiresAt: undefined,
         highestVoucherSignature: undefined,
         nextDeliverySequence: 0n,
-        operator: payload.owner ?? payload.payer,
+        operator: payload.owner ?? payload.payer ?? channelPayer,
         pendingDeliveries: [],
     };
 
@@ -994,6 +1000,16 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
     const state = await args.store.getChannel(args.channelId);
     if (!state) return undefined;
 
+    // The distribute refund goes to the channel payer (the program enforces
+    // `payer == channel.payer`). It is recorded as `state.operator` at open.
+    // Never fall back to the recipient: refunding the merchant would derive the
+    // wrong refund token account and the settlement would fail on-chain.
+    if (!state.operator) {
+        throw new Error(
+            `cannot settle channel ${args.channelId}: the channel payer (refund destination) was not recorded at open`,
+        );
+    }
+
     let voucher: { authorizedSigner: string; signed: SignedVoucher } | undefined;
     if (state.highestVoucherSignature && state.highestVoucherExpiresAt !== undefined && state.cumulative > 0n) {
         voucher = {
@@ -1021,7 +1037,7 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         mint: args.mint,
         network: args.network,
         payee: args.recipient,
-        payer: state.operator ?? args.recipient,
+        payer: state.operator,
 
         programId: args.programId,
         // rentPayer reclaims the channel/escrow rent at finalize; it is the
