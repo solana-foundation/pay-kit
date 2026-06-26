@@ -363,6 +363,8 @@ impl<S: ChannelStore> SessionServer<S> {
             .unwrap_or_else(payment_channels::default_program_id);
         let expected_payee = parse_pubkey_field(&self.config.recipient, "recipient")?;
         let expected_mint = expected_payment_channel_mint(&self.config)?;
+        // rentPayer is pinned to the operator (the server's fee-payer key).
+        let operator = parse_pubkey_field(&self.config.operator, "operator")?;
 
         if payee != expected_payee {
             return Err(Error::Other(
@@ -386,6 +388,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .collect();
         let params = payment_channels::OpenChannelParams {
             payer,
+            rent_payer: operator,
             payee,
             mint,
             authorized_signer,
@@ -413,6 +416,7 @@ impl<S: ChannelStore> SessionServer<S> {
         &self,
         payload: &OpenPayload,
     ) -> Result<solana_instruction::Instruction> {
+        // rentPayer is pinned to the operator inside `payment_channel_open_params`.
         let params = self.payment_channel_open_params(payload)?;
         Ok(payment_channels::build_open_instruction(&params))
     }
@@ -1360,6 +1364,8 @@ mod tests {
         );
         let expected = payment_channels::OpenChannelParams {
             payer,
+            // rentPayer is pinned to the operator (config operator == RECIPIENT).
+            rent_payer: recipient,
             payee: recipient,
             mint,
             authorized_signer,
@@ -1486,6 +1492,8 @@ mod tests {
         );
         let expected = payment_channels::OpenChannelParams {
             payer,
+            // rentPayer is pinned to the operator (config operator == RECIPIENT == payee).
+            rent_payer: payee,
             payee,
             mint,
             authorized_signer,

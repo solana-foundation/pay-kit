@@ -436,6 +436,8 @@ impl X402Upto {
         instructions.push(pc::build_distribute_instruction(
             &open.channel_id,
             &open.payer,
+            // rentPayer is pinned to the operator (the fee payer).
+            &self.operator,
             &Pubkey::from_str(&self.config.recipient)
                 .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?,
             &pc::treasury_owner(),
@@ -594,7 +596,9 @@ pub(crate) fn validate_open_instruction(
         ));
     }
     // Account order from `build_open_instruction`:
-    // [payer, payee, mint, authorized_signer, channel, ...].
+    // [payer, rentPayer, payee, mint, authorized_signer, channel, ...].
+    // rentPayer is the operator (it funds the channel PDA + escrow-ATA rent and
+    // co-signs as fee payer), so accounts[1] must equal the operator.
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -614,10 +618,11 @@ pub(crate) fn validate_open_instruction(
         }
     };
     expect(0, payer, "payer")?;
-    expect(1, payee, "payee")?;
-    expect(2, mint, "mint")?;
-    expect(3, operator, "authorized_signer")?;
-    expect(4, channel_id, "channel")?;
+    expect(1, operator, "rent_payer")?;
+    expect(2, payee, "payee")?;
+    expect(3, mint, "mint")?;
+    expect(4, operator, "authorized_signer")?;
+    expect(5, channel_id, "channel")?;
     Ok(())
 }
 
@@ -640,6 +645,8 @@ mod tests {
     ) -> OpenChannelParams {
         OpenChannelParams {
             payer,
+            // rentPayer is pinned to the operator (the fee payer that co-signs open).
+            rent_payer: operator,
             payee,
             mint,
             authorized_signer: operator,

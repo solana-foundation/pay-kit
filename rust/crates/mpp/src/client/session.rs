@@ -331,6 +331,10 @@ impl PaymentChannelOpen {
     pub fn open_channel_params(&self) -> OpenChannelParams {
         OpenChannelParams {
             payer: self.payer,
+            // rentPayer does not affect channel-PDA derivation (the only use of
+            // these params here); the real rentPayer pin (== fee payer) happens in
+            // `build_open_payment_channel_tx`.
+            rent_payer: self.payer,
             payee: self.payee,
             mint: self.mint,
             authorized_signer: self.authorized_signer,
@@ -442,6 +446,10 @@ pub fn derive_payment_channel_open(
     let salt = params.options.salt.unwrap_or_else(random_salt);
     let open_params = OpenChannelParams {
         payer: params.payer,
+        // rentPayer does not affect channel-PDA derivation (the only use here);
+        // the real rentPayer pin (== fee payer) happens in
+        // `build_open_payment_channel_tx`.
+        rent_payer: params.payer,
         payee,
         mint,
         authorized_signer: params.authorized_signer,

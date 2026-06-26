@@ -758,6 +758,8 @@ impl X402BatchSettlement {
         let ix = pc::build_distribute_instruction(
             &channel,
             &payer,
+            // rentPayer is pinned to the operator (the fee payer).
+            &self.operator,
             &payee,
             &pc::treasury_owner(),
             &self.mint()?,
