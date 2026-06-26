@@ -101,9 +101,12 @@ func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (Verifie
 	pmt := &Payment{Protocol: X402, SettlementHeaders: map[string]string{}}
 	return s.verified, pmt, nil
 }
-func (s *stubUsageAdapter) SettleActual(_ context.Context, _ VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
+func (s *stubUsageAdapter) SettleActual(_ context.Context, verified VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
 	s.settleCalls++
 	s.settledActual = actual
+	if releaser, ok := verified.(interface{ Release() }); ok {
+		releaser.Release()
+	}
 	if s.onSettle != nil {
 		s.onSettle(actual)
 	}
@@ -275,8 +278,11 @@ func TestRequireUsageRequiresChargeBeforeResponse(t *testing.T) {
 	if rr.Code != http.StatusPaymentRequired {
 		t.Fatalf("status = %d, want 402", rr.Code)
 	}
-	if adapter.settleCalls != 0 {
-		t.Fatalf("settle calls = %d, want 0", adapter.settleCalls)
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 0 {
+		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
 	}
 	if verified.releases != 1 {
 		t.Fatalf("verified open releases = %d, want 1", verified.releases)
@@ -289,7 +295,7 @@ func TestRequireUsageRequiresChargeBeforeResponse(t *testing.T) {
 	}
 }
 
-func TestRequireUsageSettlesZeroChargeBeforeResponse(t *testing.T) {
+func TestRequireUsageRejectsZeroChargeBeforeResponse(t *testing.T) {
 	verified := &releaseTrackingOpen{}
 	adapter := &stubUsageAdapter{detect: true, verified: verified}
 	client := &Client{
@@ -308,8 +314,8 @@ func TestRequireUsageSettlesZeroChargeBeforeResponse(t *testing.T) {
 	req.Header.Set("Payment-Signature", "abc")
 	h.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
 	}
 	if adapter.settleCalls != 1 {
 		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
@@ -317,11 +323,14 @@ func TestRequireUsageSettlesZeroChargeBeforeResponse(t *testing.T) {
 	if adapter.settledActual != 0 {
 		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
 	}
-	if verified.releases != 0 {
-		t.Fatalf("verified open releases = %d, want adapter-owned release", verified.releases)
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
 	}
-	if !strings.Contains(rr.Body.String(), `{"ok":true}`) {
-		t.Fatalf("protected body was not flushed after zero Charge: %s", rr.Body.String())
+	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body leaked after zero Charge: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"settlement_failed"`) {
+		t.Fatalf("expected settlement_failed code in body, got %s", rr.Body.String())
 	}
 }
 

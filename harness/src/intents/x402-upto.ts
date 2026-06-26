@@ -33,5 +33,10 @@ export const x402UptoScenarios: readonly HarnessScenario[] = [
     resourcePath: "/usage",
     settlementHeader: "x-payment-settlement-signature",
     expectedStatus: 200,
+    // Protocol-level zero settlement is valid and should close the channel
+    // with a refund. PayKit's public usage middleware intentionally treats
+    // Charge(0) as fail-closed, so keep this scenario on the low-level Rust
+    // x402 server while Go covers the same transaction shape in engine tests.
+    serverIds: ["rust-x402-upto"],
   },
 ];

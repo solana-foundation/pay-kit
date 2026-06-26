@@ -319,8 +319,11 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 	w.settled = true
 	actual, charged := w.meter.settledBaseUnits()
 	if !charged {
-		w.releaseVerifiedOpen()
-		w.settleErr = errors.New("usage Charge must be called before the handler returns")
+		w.settleErr = w.settleZeroAndFailClosed(ctx, "usage Charge must be called before the handler returns")
+		return
+	}
+	if actual == 0 {
+		w.settleErr = w.settleZeroAndFailClosed(ctx, "usage Charge must be greater than zero")
 		return
 	}
 	result, err := w.adapter.SettleActual(ctx, w.verified, actual)
@@ -340,13 +343,11 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 	}
 }
 
-func (w *usageSettlementWriter) releaseVerifiedOpen() {
-	type verifiedOpenReleaser interface {
-		Release()
+func (w *usageSettlementWriter) settleZeroAndFailClosed(ctx context.Context, message string) error {
+	if _, err := w.adapter.SettleActual(ctx, w.verified, 0); err != nil {
+		return err
 	}
-	if releaser, ok := w.verified.(verifiedOpenReleaser); ok {
-		releaser.Release()
-	}
+	return errors.New(message)
 }
 
 func (w *usageSettlementWriter) WriteHeader(status int) {

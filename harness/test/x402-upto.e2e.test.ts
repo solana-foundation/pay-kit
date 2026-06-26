@@ -85,9 +85,16 @@ describe("x402 upto intent — cross-language matrix", () => {
     expect(uptoServers.map((server) => server.id)).not.toHaveLength(0);
   });
 
-  for (const server of uptoServers) {
-    for (const client of uptoClients) {
-      for (const scenario of uptoScenarios) {
+  for (const scenario of uptoScenarios) {
+    const scenarioServers = uptoServers.filter(
+      (server) => !scenario.serverIds || scenario.serverIds.includes(server.id),
+    );
+    const scenarioClients = uptoClients.filter(
+      (client) => !scenario.clientIds || scenario.clientIds.includes(client.id),
+    );
+
+    for (const server of scenarioServers) {
+      for (const client of scenarioClients) {
         it(`${client.id} client <-> ${server.id} server: ${scenario.id}`, async () => {
           const env = {
             X402_HARNESS_NETWORK: scenario.network,

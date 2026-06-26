@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/client"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
@@ -36,6 +38,15 @@ func surfpoolRPCURL() string {
 		return url
 	}
 	return "https://402.surfnet.dev:8899"
+}
+
+// The public hosted sandbox can lag the repo's generated payment-channels ABI.
+// Keep explicit MPP_HARNESS_RPC_URL runs strict; only skip the default hosted
+// endpoint on the known ABI-drift signature.
+func hostedPaymentChannelsABIDrift(body string) bool {
+	return os.Getenv("MPP_HARNESS_RPC_URL") == "" &&
+		strings.Contains(body, "NotEnoughAccountKeys") &&
+		strings.Contains(body, paymentchannels.ProgramID)
 }
 
 // requireSurfpool skips the test explicitly when the sandbox is unreachable.
@@ -195,6 +206,9 @@ func TestSessionServerE2ESurfpool(t *testing.T) {
 	}
 	response, body = authedGet(t, streamURL, openAuthorization)
 	if response.StatusCode != http.StatusOK {
+		if hostedPaymentChannelsABIDrift(body) {
+			t.Skipf("hosted Surfpool payment-channels program ABI is behind the repo generated client: %s", body)
+		}
 		t.Fatalf("open failed: %d %s", response.StatusCode, body)
 	}
 	channelID := opener.Session.ChannelIDString()

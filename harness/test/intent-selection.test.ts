@@ -92,7 +92,7 @@ describe("harness scenario selection", () => {
       selectHarnessScenarios("x402-upto", undefined).map(
         (scenario) => scenario.id,
       ),
-    ).toEqual(["x402-upto-basic"]);
+    ).toEqual(["x402-upto-basic", "x402-upto-zero-actual"]);
   });
 
   it("runs one requested scenario", () => {
