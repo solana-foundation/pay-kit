@@ -24,7 +24,7 @@ use solana_transaction::Transaction;
 
 use solana_pay_core::payment_channels as pc;
 use solana_pay_core::payment_channels::generated::accounts::Channel;
-use solana_pay_core::session::accept_voucher;
+use solana_pay_core::session::{accept_voucher, VoucherAcceptance};
 use solana_pay_core::settlement::packing::{
     pack, ChannelInstructions, DEFAULT_MAX_CHANNELS_PER_TX,
 };
@@ -474,9 +474,11 @@ impl X402BatchSettlement {
             .await
             .map_err(|e| Error::Other(format!("store error: {e}")))?;
 
-        // Accept the first voucher (if any) off-chain.
+        // Accept the first voucher (if any) off-chain. The channel was just
+        // created at cumulative 0, so the first voucher is always a fresh charge
+        // (never a replay) — surface the charged amount.
         let charged = if let Some(v) = voucher {
-            Some(self.accept(&channel_b58, &v).await?)
+            Some(self.accept(&channel_b58, &v).await?.charged)
         } else {
             None
         };
@@ -523,8 +525,13 @@ impl X402BatchSettlement {
                 voucher.cumulative()?.saturating_sub(prev)
             )));
         }
-        let new_cumulative = self.accept(channel_id, &voucher).await?;
-        let charged = new_cumulative.saturating_sub(prev);
+        let acceptance = self.accept(channel_id, &voucher).await?;
+        let charged = acceptance.charged;
+        // An idempotent replay (charged == 0) is NOT a fresh paid serve: the
+        // route was already paid for on the original voucher. The price check
+        // above rejects replays whenever `per_request > 0`; this guards the
+        // `per_request == 0` edge so a replay can never re-serve for free.
+        let serve = !acceptance.replay;
         let deposit = self
             .store
             .get_channel(channel_id)
@@ -534,7 +541,7 @@ impl X402BatchSettlement {
             .map(|s| s.deposit)
             .unwrap_or(0);
         Ok(BatchOutcome {
-            serve: true,
+            serve,
             response: BatchSettlementResponse {
                 success: true,
                 error_reason: None,
@@ -549,7 +556,18 @@ impl X402BatchSettlement {
     }
 
     /// Accept a voucher off-chain via the shared core acceptance logic.
-    async fn accept(&self, channel_id: &str, voucher: &BatchVoucher) -> Result<u64, Error> {
+    ///
+    /// Returns the full [`VoucherAcceptance`] so callers can distinguish a fresh
+    /// charge from an idempotent replay (`charged == 0`, `replay == true`) and
+    /// never grant a fresh paid serve for a replay. The settlement window is the
+    /// configured forced-close grace period: a non-zero voucher expiry must
+    /// outlast it so the voucher can still settle on-chain after the async
+    /// forced-close delay.
+    async fn accept(
+        &self,
+        channel_id: &str,
+        voucher: &BatchVoucher,
+    ) -> Result<VoucherAcceptance, Error> {
         let cumulative = voucher.cumulative()?;
         accept_voucher(
             self.store.as_ref(),
@@ -559,6 +577,7 @@ impl X402BatchSettlement {
             &voucher.signature,
             now_unix(),
             self.config.min_voucher_delta,
+            self.config.grace_period_seconds as i64,
         )
         .await
         .map_err(Into::into)
@@ -600,6 +619,7 @@ impl X402BatchSettlement {
                 &voucher.signature,
                 &state.authorized_signer,
                 now_unix(),
+                self.config.grace_period_seconds as i64,
             )?;
         }
 
@@ -981,6 +1001,53 @@ mod tests {
             .process_voucher(&channel_b58, replay, 100)
             .await;
         assert!(result.is_err());
+    }
+
+    // Even for a free route (per_request == 0) — where the price check cannot
+    // reject a delta-0 replay — an exact idempotent replay of the latest voucher
+    // must NOT be treated as a fresh paid serve (`serve == false`, charged 0).
+    #[tokio::test]
+    async fn idempotent_replay_is_accepted_but_not_served() {
+        let owner = memory_signer(6);
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+
+        let store = Arc::new(MemoryChannelStore::new());
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+        let h = handler(store.clone());
+
+        // First voucher: a fresh charge on a free route → served.
+        let v1 = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let first = h
+            .process_voucher(&channel_b58, v1.clone(), 0)
+            .await
+            .unwrap();
+        assert!(first.serve, "fresh charge must be served");
+        assert_eq!(first.response.charged_amount.as_deref(), Some("100"));
+
+        // Exact replay (same cumulative + same signature): accepted as a no-op
+        // but not served, and it must not charge again or advance the watermark.
+        let replay = h.process_voucher(&channel_b58, v1, 0).await.unwrap();
+        assert!(!replay.serve, "idempotent replay must not be a fresh serve");
+        assert_eq!(replay.response.charged_amount.as_deref(), Some("0"));
+        assert_eq!(
+            store
+                .get_channel(&channel_b58)
+                .await
+                .unwrap()
+                .unwrap()
+                .cumulative,
+            100,
+            "replay must not advance the watermark"
+        );
     }
 
     // A refund with no voucher carries no proof of ownership and must be

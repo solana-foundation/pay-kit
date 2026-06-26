@@ -13,8 +13,11 @@ use super::types::{BatchVoucher, PROFILE_PAYMENT_CHANNEL};
 /// the `signer` it names, and it is not expired. `now` is current Unix seconds.
 ///
 /// This is a cheap pre-filter; the authoritative binding (`signer ==
-/// channel.authorized_signer`) is enforced by
-/// [`solana_pay_core::session::accept_voucher`] against stored channel state.
+/// channel.authorized_signer`) and the settlement-window expiry check (a
+/// non-zero expiry must outlast the channel's forced-close grace period) are
+/// enforced by [`solana_pay_core::session::accept_voucher`] against stored
+/// channel state. This pre-filter only requires the voucher be unexpired
+/// (settlement window `0`), since the channel grace period is not in scope here.
 pub fn verify_batch_voucher(voucher: &BatchVoucher, now: i64) -> Result<(), Error> {
     let cumulative = voucher.cumulative()?;
     solana_pay_core::voucher::verify_voucher_signature(
@@ -24,6 +27,7 @@ pub fn verify_batch_voucher(voucher: &BatchVoucher, now: i64) -> Result<(), Erro
         &voucher.signature,
         &voucher.signer,
         now,
+        0,
     )
     .map_err(Into::into)
 }

@@ -584,6 +584,22 @@ pub(crate) fn validate_open_instruction(
     mint: &Pubkey,
     channel_id: &Pubkey,
 ) -> Result<(), Error> {
+    // Reject v0 transactions that pull accounts from address lookup tables.
+    // This validator (and the fee-payer co-sign) resolves every account via
+    // `static_account_keys()`; an `open` needs only static accounts, so a
+    // non-empty ALT lookup could smuggle in accounts the guards below cannot
+    // see — and the operator would blindly co-sign. Mirrors the mpp charge-tx
+    // verifier's `reject_address_lookup_tables`.
+    if tx
+        .message
+        .address_table_lookups()
+        .is_some_and(|lookups| !lookups.is_empty())
+    {
+        return Err(Error::Other(
+            "open transaction must not use address lookup tables".to_string(),
+        ));
+    }
+
     let keys = tx.message.static_account_keys();
     let instructions = tx.message.instructions();
     if instructions.len() != 1 {
@@ -839,5 +855,58 @@ mod tests {
             bps: 10_000,
         }]);
         assert!(validate_empty_recipient_distribution_hash(&non_empty).is_err());
+    }
+
+    // FIX #7: an `open` needs only static accounts, so a v0 transaction that
+    // pulls accounts from an address lookup table must be rejected before the
+    // operator co-signs as fee payer — otherwise it could smuggle in accounts
+    // the static-key guards above cannot inspect.
+    #[test]
+    fn rejects_open_with_address_lookup_tables() {
+        use solana_message::{v0, VersionedMessage};
+
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+
+        // Build an otherwise-valid open, then wrap it in a v0 message carrying a
+        // non-empty address-table lookup.
+        let legacy = Message::new(&[build_open_instruction(&params)], Some(&payer));
+        let v0_msg = v0::Message {
+            header: legacy.header,
+            account_keys: legacy.account_keys,
+            recent_blockhash: legacy.recent_blockhash,
+            instructions: legacy.instructions,
+            address_table_lookups: vec![v0::MessageAddressTableLookup {
+                account_key: Pubkey::new_unique(),
+                writable_indexes: vec![0],
+                readonly_indexes: vec![],
+            }],
+        };
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default(); v0_msg.header.num_required_signatures as usize],
+            message: VersionedMessage::V0(v0_msg),
+        };
+
+        let err = validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &channel,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("address lookup tables"),
+            "expected ALT rejection, got: {err}"
+        );
     }
 }
