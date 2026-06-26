@@ -453,7 +453,10 @@ func buildOpenPaymentChannelTx(
 	feePayer solana.PublicKey,
 	recentBlockhash solana.Hash,
 ) (PaymentChannelOpenTransaction, error) {
-	ix, err := paymentchannels.BuildOpenInstruction(open.OpenChannelParams())
+	openParams := open.OpenChannelParams()
+	// rentPayer is pinned to the operator / fee payer already in scope.
+	openParams.RentPayer = feePayer
+	ix, err := paymentchannels.BuildOpenInstruction(openParams)
 	if err != nil {
 		return PaymentChannelOpenTransaction{}, err
 	}

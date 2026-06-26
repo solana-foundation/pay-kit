@@ -57,7 +57,10 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 		t.Fatalf("FindChannelPDA: %v", err)
 	}
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
-		Payer:            payer.PublicKey(),
+		Payer: payer.PublicKey(),
+		// In this single-signer fixture the fee payer / submitter is `payer`,
+		// so rentPayer (slot 1) is pinned to it.
+		RentPayer:        payer.PublicKey(),
 		Payee:            payee,
 		Mint:             mint,
 		AuthorizedSigner: authorized,
@@ -83,6 +86,7 @@ func buildOpenTxFixture(t *testing.T, v0 bool) openTxFixture {
 		Currency:         "USDC",
 		MaxCap:           5_000_000,
 		Network:          "localnet",
+		Operator:         payer.PublicKey().String(),
 		Recipient:        payee.String(),
 	}
 	return fixture
@@ -234,6 +238,7 @@ func TestVerifyOpenTxRejectsZeroDeposit(t *testing.T) {
 	// not embed the deposit, so only the deposit check can reject it.
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            fixture.payer.PublicKey(),
+		RentPayer:        fixture.payer.PublicKey(),
 		Payee:            fixture.payee,
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorized,
@@ -305,6 +310,7 @@ func TestVerifyOpenTxRejectsChannelPDAMismatch(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	ix, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
 		Payer:            fixture.payer.PublicKey(),
+		RentPayer:        fixture.payer.PublicKey(),
 		Payee:            fixture.payee,
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorized,
@@ -316,17 +322,18 @@ func TestVerifyOpenTxRejectsChannelPDAMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
-	// Swap the channel account (slot 4) for an unrelated key while keeping
-	// the instruction data intact: the re-derived PDA must catch it.
+	// Swap the channel account (slot 5, after the rentPayer +1 shift) for an
+	// unrelated key while keeping the instruction data intact: the re-derived
+	// PDA must catch it.
 	data, err := ix.Data()
 	if err != nil {
 		t.Fatalf("ix.Data: %v", err)
 	}
 	accounts := make(solana.AccountMetaSlice, len(ix.Accounts()))
 	copy(accounts, ix.Accounts())
-	tampered := *accounts[4]
+	tampered := *accounts[5]
 	tampered.PublicKey = testutil.NewPrivateKey().PublicKey()
-	accounts[4] = &tampered
+	accounts[5] = &tampered
 	forged := solana.NewInstruction(ix.ProgramID(), accounts, data)
 
 	_, fixture.payload = signAndAttachOpenTx(t, &fixture, forged, false)
@@ -397,7 +404,8 @@ func TestIsPlaceholderSignature(t *testing.T) {
 // the fixture's open transaction.
 func openSessionConfig(fixture openTxFixture) SessionConfig {
 	return SessionConfig{
-		Operator:  fixture.payee.String(),
+		// The fixture pins rentPayer (the operator/fee payer) to its own payer.
+		Operator:  fixture.payer.PublicKey().String(),
 		Recipient: fixture.payee.String(),
 		MaxCap:    5_000_000,
 		Currency:  "USDC",
@@ -593,16 +601,19 @@ func TestSettlementInstructionsWithVoucher(t *testing.T) {
 	if distributeData[0] != 7 {
 		t.Fatalf("distribute discriminator = %d, want 7", distributeData[0])
 	}
-	if got := len(instructions[2].Accounts()); got != 11 {
-		t.Fatalf("distribute accounts = %d, want 11 (10 fixed + 1 split ATA)", got)
+	// Distribute fixed head after the rentPayer (+1) shift: 0 channel, 1 payer,
+	// 2 rentPayer, 3 channelTokenAccount, 4 payerTokenAccount, 5 payeeToken,
+	// 6 treasuryToken, 7 mint, 8 tokenProgram, 9 eventAuthority, 10 selfProgram.
+	if got := len(instructions[2].Accounts()); got != 12 {
+		t.Fatalf("distribute accounts = %d, want 12 (11 fixed + 1 split ATA)", got)
 	}
 	payerATA, _, err := solana.FindAssociatedTokenAddressWithProgram(
 		payer, solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint), solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("derive payer ATA: %v", err)
 	}
-	if !instructions[2].Accounts()[3].PublicKey.Equals(payerATA) {
-		t.Fatalf("distribute payer token account = %s, want %s", instructions[2].Accounts()[3].PublicKey, payerATA)
+	if !instructions[2].Accounts()[4].PublicKey.Equals(payerATA) {
+		t.Fatalf("distribute payer token account = %s, want %s", instructions[2].Accounts()[4].PublicKey, payerATA)
 	}
 }
 
@@ -662,10 +673,11 @@ func TestSettlementInstructionsResolvesToken2022FromCurrency(t *testing.T) {
 	}
 	distribute := instructions[len(instructions)-1]
 	accounts := distribute.Accounts()
-	if got := accounts[6].PublicKey.String(); got != paycore.PYUSDMainnetMint {
+	// After the rentPayer (+1) shift: mint is slot 7, tokenProgram slot 8.
+	if got := accounts[7].PublicKey.String(); got != paycore.PYUSDMainnetMint {
 		t.Fatalf("distribute mint = %s, want PYUSD mainnet mint", got)
 	}
-	if got := accounts[7].PublicKey.String(); got != paycore.Token2022Program {
+	if got := accounts[8].PublicKey.String(); got != paycore.Token2022Program {
 		t.Fatalf("distribute token program = %s, want Token-2022", got)
 	}
 }

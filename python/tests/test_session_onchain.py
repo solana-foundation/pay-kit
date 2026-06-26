@@ -331,11 +331,12 @@ async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
         )
     )
-    # Swap the channel account (slot 4) for an unrelated key while keeping the
-    # instruction data intact: the re-derived PDA must catch it.
+    # Swap the channel account (slot 5, after the rentPayer +1 shift) for an
+    # unrelated key while keeping the instruction data intact: the re-derived
+    # PDA must catch it.
     accounts = list(ix.accounts)
-    tampered = accounts[4]
-    accounts[4] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
+    tampered = accounts[5]
+    accounts[5] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
     forged = Instruction(ix.program_id, ix.data, accounts)
     _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
     with pytest.raises(PaymentError, match="PDA"):
@@ -405,6 +406,7 @@ class _OpenConfig:
     network: str
     recipient: str
     max_cap: int
+    operator: str = ""
     program_id: Pubkey | None = None
 
 
@@ -414,6 +416,8 @@ def _open_session_config(fixture: OpenTxFixture) -> _OpenConfig:
         network="localnet",
         recipient=str(fixture.payee),
         max_cap=5_000_000,
+        # The fixture pins rentPayer (the operator/fee payer) to its own payer.
+        operator=str(fixture.payer.pubkey()),
     )
 
 

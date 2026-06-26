@@ -271,6 +271,12 @@ export interface DistributeBuildArgs {
     readonly mint: string;
     readonly payerAddr?: string | undefined;
     readonly programId?: Address | undefined;
+    /**
+     * Operator recorded as `rentPayer` at open; it reclaims the channel PDA +
+     * escrow ATA rent at finalize (writable, not a signer). Defaults to the
+     * channel `payer` when omitted.
+     */
+    readonly rentPayer?: string | undefined;
     readonly splits: readonly { readonly bps: number; readonly recipient: string }[];
     readonly tokenProgram: string;
 }
@@ -289,6 +295,9 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
     const channel = address(args.channelState.channelId);
     const payer = address(args.payerAddr ?? args.channelState.payer);
     const payee = address(args.channelState.payee);
+    // rentPayer reclaims the channel/escrow rent at finalize; it is the
+    // operator recorded as rentPayer at open. Defaults to the channel payer.
+    const rentPayer = address(args.rentPayer ?? args.payerAddr ?? args.channelState.payer);
 
     const [channelTokenAccount] = await findAssociatedTokenPda({ mint, owner: channel, tokenProgram });
     const [payerTokenAccount] = await findAssociatedTokenPda({ mint, owner: payer, tokenProgram });
@@ -318,6 +327,7 @@ export async function buildDistributeInstruction(args: DistributeBuildArgs): Pro
             payer,
             payerTokenAccount,
             recipientTokenAccounts,
+            rentPayer,
             selfProgram: programId,
             tokenProgram,
             treasuryTokenAccount,
@@ -380,6 +390,12 @@ export interface VerifyOpenTxExpected {
     /** Optional override for the SPL mint (otherwise resolved from currency/network). */
     readonly mint?: string | undefined;
     readonly network?: string | undefined;
+    /**
+     * Operator / fee-payer pubkey (base58). The open instruction's `rentPayer`
+     * account (slot 1) must equal it: `rentPayer` is pinned to the operator
+     * that co-signs open as fee payer. Omitted/empty skips the check.
+     */
+    readonly operator?: string | undefined;
     /** Optional override for the payment-channels program id. */
     readonly programId?: string | undefined;
     /** Primary recipient (challenge `recipient`). */
@@ -499,11 +515,13 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error('verifyOpenTx: no payment-channels open instruction found');
     }
 
-    // open instruction account layout (matches vendored open.ts):
-    //   0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
-    //   5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, …
+    // open instruction account layout (matches vendored open.ts) after the
+    // rentPayer (+1) shift:
+    //   0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
+    //   6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, …
+    // rentPayer (slot 1) is pinned to the operator / fee payer.
     const indices = openIx.accountIndices;
-    if (indices.length < 7) {
+    if (indices.length < 8) {
         throw new Error(`verifyOpenTx: open instruction has too few accounts (${indices.length})`);
     }
     const accountAt = (slot: number, label: string): string => {
@@ -513,10 +531,11 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         return addr;
     };
     const payerAddr = accountAt(0, 'payer');
-    const payeeAddr = accountAt(1, 'payee');
-    const mintAddr = accountAt(2, 'mint');
-    const authorizedSignerAddr = accountAt(3, 'authorizedSigner');
-    const channelAddr = accountAt(4, 'channel');
+    const rentPayerAddr = accountAt(1, 'rentPayer');
+    const payeeAddr = accountAt(2, 'payee');
+    const mintAddr = accountAt(3, 'mint');
+    const authorizedSignerAddr = accountAt(4, 'authorizedSigner');
+    const channelAddr = accountAt(5, 'channel');
 
     if (payeeAddr !== expected.recipient) {
         throw new Error(`verifyOpenTx: payee ${payeeAddr} != expected recipient ${expected.recipient}`);
@@ -528,6 +547,9 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         throw new Error(
             `verifyOpenTx: authorizedSigner ${authorizedSignerAddr} != expected ${expected.authorizedSigner}`,
         );
+    }
+    if (expected.operator && rentPayerAddr !== expected.operator) {
+        throw new Error(`verifyOpenTx: rentPayer ${rentPayerAddr} != expected operator ${expected.operator}`);
     }
 
     // ix data: [discriminator u8][salt u64][deposit u64][grace u32][recipients array]
@@ -705,6 +727,11 @@ export interface SubmitSettleAndDistributeArgs {
     readonly payee: string;
     readonly payer: string;
     readonly programId?: Address | undefined;
+    /**
+     * Operator recorded as `rentPayer` at open; it reclaims the channel/escrow
+     * rent at finalize. Defaults to `payer` when omitted.
+     */
+    readonly rentPayer?: string | undefined;
     readonly rpc: {
         sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };
     };
@@ -754,6 +781,7 @@ export async function submitSettleAndDistribute(
         mint: args.mint,
         payerAddr: args.payer,
         programId: args.programId,
+        rentPayer: args.rentPayer,
         splits: args.splits,
         tokenProgram,
     });

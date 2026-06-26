@@ -18,18 +18,19 @@ var OpenDiscriminator = 1
 // Open is the `Open` instruction.
 type Open struct {
 	// [0] = [WRITE, SIGNER] Payer
-	// [1] = [] Payee
-	// [2] = [] Mint
-	// [3] = [] AuthorizedSigner
-	// [4] = [WRITE] Channel
-	// [5] = [WRITE] PayerTokenAccount
-	// [6] = [WRITE] ChannelTokenAccount
-	// [7] = [] TokenProgram
-	// [8] = [] SystemProgram
-	// [9] = [] Rent
-	// [10] = [] AssociatedTokenProgram
-	// [11] = [] EventAuthority
-	// [12] = [] SelfProgram
+	// [1] = [WRITE, SIGNER] RentPayer
+	// [2] = [] Payee
+	// [3] = [] Mint
+	// [4] = [] AuthorizedSigner
+	// [5] = [WRITE] Channel
+	// [6] = [WRITE] PayerTokenAccount
+	// [7] = [WRITE] ChannelTokenAccount
+	// [8] = [] TokenProgram
+	// [9] = [] SystemProgram
+	// [10] = [] Rent
+	// [11] = [] AssociatedTokenProgram
+	// [12] = [] EventAuthority
+	// [13] = [] SelfProgram
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
 	OpenArgs                     OpenArgs
 }
@@ -37,7 +38,7 @@ type Open struct {
 // NewOpenInstructionBuilder creates a new `Open` instruction builder.
 func NewOpenInstructionBuilder() *Open {
 	nd := &Open{}
-	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 13)
+	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 14)
 	return nd
 }
 
@@ -58,136 +59,147 @@ func (inst *Open) GetPayerAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[0]
 }
 
+// SetRentPayerAccount sets the "rent_payer" account.
+func (inst *Open) SetRentPayerAccount(rentPayer ag_solanago.PublicKey) *Open {
+	inst.AccountMetaSlice[1] = ag_solanago.Meta(rentPayer).SIGNER().WRITE()
+	return inst
+}
+
+// GetRentPayerAccount gets the "rent_payer" account.
+func (inst *Open) GetRentPayerAccount() *ag_solanago.AccountMeta {
+	return inst.AccountMetaSlice[1]
+}
+
 // SetPayeeAccount sets the "payee" account.
 func (inst *Open) SetPayeeAccount(payee ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[1] = ag_solanago.Meta(payee)
+	inst.AccountMetaSlice[2] = ag_solanago.Meta(payee)
 	return inst
 }
 
 // GetPayeeAccount gets the "payee" account.
 func (inst *Open) GetPayeeAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[1]
+	return inst.AccountMetaSlice[2]
 }
 
 // SetMintAccount sets the "mint" account.
 func (inst *Open) SetMintAccount(mint ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[2] = ag_solanago.Meta(mint)
+	inst.AccountMetaSlice[3] = ag_solanago.Meta(mint)
 	return inst
 }
 
 // GetMintAccount gets the "mint" account.
 func (inst *Open) GetMintAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[2]
+	return inst.AccountMetaSlice[3]
 }
 
 // SetAuthorizedSignerAccount sets the "authorized_signer" account.
 func (inst *Open) SetAuthorizedSignerAccount(authorizedSigner ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[3] = ag_solanago.Meta(authorizedSigner)
+	inst.AccountMetaSlice[4] = ag_solanago.Meta(authorizedSigner)
 	return inst
 }
 
 // GetAuthorizedSignerAccount gets the "authorized_signer" account.
 func (inst *Open) GetAuthorizedSignerAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[3]
+	return inst.AccountMetaSlice[4]
 }
 
 // SetChannelAccount sets the "channel" account.
 func (inst *Open) SetChannelAccount(channel ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[4] = ag_solanago.Meta(channel).WRITE()
+	inst.AccountMetaSlice[5] = ag_solanago.Meta(channel).WRITE()
 	return inst
 }
 
 // GetChannelAccount gets the "channel" account.
 func (inst *Open) GetChannelAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[4]
+	return inst.AccountMetaSlice[5]
 }
 
 // SetPayerTokenAccountAccount sets the "payer_token_account" account.
 func (inst *Open) SetPayerTokenAccountAccount(payerTokenAccount ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[5] = ag_solanago.Meta(payerTokenAccount).WRITE()
+	inst.AccountMetaSlice[6] = ag_solanago.Meta(payerTokenAccount).WRITE()
 	return inst
 }
 
 // GetPayerTokenAccountAccount gets the "payer_token_account" account.
 func (inst *Open) GetPayerTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[5]
+	return inst.AccountMetaSlice[6]
 }
 
 // SetChannelTokenAccountAccount sets the "channel_token_account" account.
 func (inst *Open) SetChannelTokenAccountAccount(channelTokenAccount ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[6] = ag_solanago.Meta(channelTokenAccount).WRITE()
+	inst.AccountMetaSlice[7] = ag_solanago.Meta(channelTokenAccount).WRITE()
 	return inst
 }
 
 // GetChannelTokenAccountAccount gets the "channel_token_account" account.
 func (inst *Open) GetChannelTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[6]
+	return inst.AccountMetaSlice[7]
 }
 
 // SetTokenProgramAccount sets the "token_program" account.
 func (inst *Open) SetTokenProgramAccount(tokenProgram ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[7] = ag_solanago.Meta(tokenProgram)
+	inst.AccountMetaSlice[8] = ag_solanago.Meta(tokenProgram)
 	return inst
 }
 
 // GetTokenProgramAccount gets the "token_program" account.
 func (inst *Open) GetTokenProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[7]
+	return inst.AccountMetaSlice[8]
 }
 
 // SetSystemProgramAccount sets the "system_program" account.
 func (inst *Open) SetSystemProgramAccount(systemProgram ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[8] = ag_solanago.Meta(systemProgram)
+	inst.AccountMetaSlice[9] = ag_solanago.Meta(systemProgram)
 	return inst
 }
 
 // GetSystemProgramAccount gets the "system_program" account.
 func (inst *Open) GetSystemProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[8]
+	return inst.AccountMetaSlice[9]
 }
 
 // SetRentAccount sets the "rent" account.
 func (inst *Open) SetRentAccount(rent ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[9] = ag_solanago.Meta(rent)
+	inst.AccountMetaSlice[10] = ag_solanago.Meta(rent)
 	return inst
 }
 
 // GetRentAccount gets the "rent" account.
 func (inst *Open) GetRentAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[9]
+	return inst.AccountMetaSlice[10]
 }
 
 // SetAssociatedTokenProgramAccount sets the "associated_token_program" account.
 func (inst *Open) SetAssociatedTokenProgramAccount(associatedTokenProgram ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[10] = ag_solanago.Meta(associatedTokenProgram)
+	inst.AccountMetaSlice[11] = ag_solanago.Meta(associatedTokenProgram)
 	return inst
 }
 
 // GetAssociatedTokenProgramAccount gets the "associated_token_program" account.
 func (inst *Open) GetAssociatedTokenProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[10]
+	return inst.AccountMetaSlice[11]
 }
 
 // SetEventAuthorityAccount sets the "event_authority" account.
 func (inst *Open) SetEventAuthorityAccount(eventAuthority ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[11] = ag_solanago.Meta(eventAuthority)
+	inst.AccountMetaSlice[12] = ag_solanago.Meta(eventAuthority)
 	return inst
 }
 
 // GetEventAuthorityAccount gets the "event_authority" account.
 func (inst *Open) GetEventAuthorityAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[11]
+	return inst.AccountMetaSlice[12]
 }
 
 // SetSelfProgramAccount sets the "self_program" account.
 func (inst *Open) SetSelfProgramAccount(selfProgram ag_solanago.PublicKey) *Open {
-	inst.AccountMetaSlice[12] = ag_solanago.Meta(selfProgram)
+	inst.AccountMetaSlice[13] = ag_solanago.Meta(selfProgram)
 	return inst
 }
 
 // GetSelfProgramAccount gets the "self_program" account.
 func (inst *Open) GetSelfProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[12]
+	return inst.AccountMetaSlice[13]
 }
 
 func (inst Open) Build() *Instruction {
@@ -212,39 +224,42 @@ func (inst *Open) Validate() error {
 		return fmt.Errorf("accounts.Payer is not set")
 	}
 	if inst.AccountMetaSlice[1] == nil {
-		return fmt.Errorf("accounts.Payee is not set")
+		return fmt.Errorf("accounts.RentPayer is not set")
 	}
 	if inst.AccountMetaSlice[2] == nil {
-		return fmt.Errorf("accounts.Mint is not set")
+		return fmt.Errorf("accounts.Payee is not set")
 	}
 	if inst.AccountMetaSlice[3] == nil {
-		return fmt.Errorf("accounts.AuthorizedSigner is not set")
+		return fmt.Errorf("accounts.Mint is not set")
 	}
 	if inst.AccountMetaSlice[4] == nil {
-		return fmt.Errorf("accounts.Channel is not set")
+		return fmt.Errorf("accounts.AuthorizedSigner is not set")
 	}
 	if inst.AccountMetaSlice[5] == nil {
-		return fmt.Errorf("accounts.PayerTokenAccount is not set")
+		return fmt.Errorf("accounts.Channel is not set")
 	}
 	if inst.AccountMetaSlice[6] == nil {
-		return fmt.Errorf("accounts.ChannelTokenAccount is not set")
+		return fmt.Errorf("accounts.PayerTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[7] == nil {
-		return fmt.Errorf("accounts.TokenProgram is not set")
+		return fmt.Errorf("accounts.ChannelTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[8] == nil {
-		return fmt.Errorf("accounts.SystemProgram is not set")
+		return fmt.Errorf("accounts.TokenProgram is not set")
 	}
 	if inst.AccountMetaSlice[9] == nil {
-		return fmt.Errorf("accounts.Rent is not set")
+		return fmt.Errorf("accounts.SystemProgram is not set")
 	}
 	if inst.AccountMetaSlice[10] == nil {
-		return fmt.Errorf("accounts.AssociatedTokenProgram is not set")
+		return fmt.Errorf("accounts.Rent is not set")
 	}
 	if inst.AccountMetaSlice[11] == nil {
-		return fmt.Errorf("accounts.EventAuthority is not set")
+		return fmt.Errorf("accounts.AssociatedTokenProgram is not set")
 	}
 	if inst.AccountMetaSlice[12] == nil {
+		return fmt.Errorf("accounts.EventAuthority is not set")
+	}
+	if inst.AccountMetaSlice[13] == nil {
 		return fmt.Errorf("accounts.SelfProgram is not set")
 	}
 	return nil
@@ -255,10 +270,10 @@ func (inst *Open) GetAccounts() (out []*ag_solanago.AccountMeta) {
 }
 
 func (inst *Open) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
-	if len(accounts) < 13 {
-		return fmt.Errorf("not enough accounts: expected at least 13, got %d", len(accounts))
+	if len(accounts) < 14 {
+		return fmt.Errorf("not enough accounts: expected at least 14, got %d", len(accounts))
 	}
-	inst.AccountMetaSlice = accounts[:13]
+	inst.AccountMetaSlice = accounts[:14]
 	return nil
 }
 

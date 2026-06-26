@@ -251,11 +251,11 @@ describe('buildDistributeInstruction', () => {
             tokenProgram: TOKEN_PROGRAM,
         });
         expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
-        // 10 fixed + 2 recipient ATAs
-        expect(ix.accounts).toHaveLength(12);
+        // 11 fixed (after the rentPayer +1 shift) + 2 recipient ATAs
+        expect(ix.accounts).toHaveLength(13);
         // tail accounts must be writable
-        expect(ix.accounts[10]!.role).toBe(AccountRole.WRITABLE);
         expect(ix.accounts[11]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[12]!.role).toBe(AccountRole.WRITABLE);
 
         const data = new Uint8Array(ix.data);
         // [disc=7][recipients_count u32=2][(pubkey32 + bps u16) x 2]
@@ -266,7 +266,7 @@ describe('buildDistributeInstruction', () => {
         expect(view.getUint16(5 + 32 + 34, true)).toBe(250);
     });
 
-    test('zero-split distribute has only 10 fixed accounts', async () => {
+    test('zero-split distribute has only 11 fixed accounts', async () => {
         const [payer, , payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const ix = await buildDistributeInstruction({
@@ -275,7 +275,8 @@ describe('buildDistributeInstruction', () => {
             splits: [],
             tokenProgram: TOKEN_PROGRAM,
         });
-        expect(ix.accounts).toHaveLength(10);
+        // 11 fixed accounts after the rentPayer (+1) shift.
+        expect(ix.accounts).toHaveLength(11);
         const data = new Uint8Array(ix.data);
         const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
         expect(view.getUint32(1, true)).toBe(0);

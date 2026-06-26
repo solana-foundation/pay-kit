@@ -7,27 +7,27 @@
  */
 
 import {
-    assertAccountExists,
-    assertAccountsExist,
-    combineCodec,
-    decodeAccount,
-    fetchEncodedAccount,
-    fetchEncodedAccounts,
-    getStructDecoder,
-    getStructEncoder,
-    getU8Decoder,
-    getU8Encoder,
-    type Account,
-    type Address,
-    type EncodedAccount,
-    type FetchAccountConfig,
-    type FetchAccountsConfig,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-    type MaybeAccount,
-    type MaybeEncodedAccount,
-} from '@solana/kit';
+  assertAccountExists,
+  assertAccountsExist,
+  combineCodec,
+  decodeAccount,
+  fetchEncodedAccount,
+  fetchEncodedAccounts,
+  getStructDecoder,
+  getStructEncoder,
+  getU8Decoder,
+  getU8Encoder,
+  type Account,
+  type Address,
+  type EncodedAccount,
+  type FetchAccountConfig,
+  type FetchAccountsConfig,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+  type MaybeAccount,
+  type MaybeEncodedAccount,
+} from "@solana/kit";
 
 export type ClosedChannel = { discriminator: number };
 
@@ -35,65 +35,75 @@ export type ClosedChannelArgs = ClosedChannel;
 
 /** Gets the encoder for {@link ClosedChannelArgs} account data. */
 export function getClosedChannelEncoder(): FixedSizeEncoder<ClosedChannelArgs> {
-    return getStructEncoder([['discriminator', getU8Encoder()]]);
+  return getStructEncoder([["discriminator", getU8Encoder()]]);
 }
 
 /** Gets the decoder for {@link ClosedChannel} account data. */
 export function getClosedChannelDecoder(): FixedSizeDecoder<ClosedChannel> {
-    return getStructDecoder([['discriminator', getU8Decoder()]]);
+  return getStructDecoder([["discriminator", getU8Decoder()]]);
 }
 
 /** Gets the codec for {@link ClosedChannel} account data. */
-export function getClosedChannelCodec(): FixedSizeCodec<ClosedChannelArgs, ClosedChannel> {
-    return combineCodec(getClosedChannelEncoder(), getClosedChannelDecoder());
+export function getClosedChannelCodec(): FixedSizeCodec<
+  ClosedChannelArgs,
+  ClosedChannel
+> {
+  return combineCodec(getClosedChannelEncoder(), getClosedChannelDecoder());
 }
 
 export function decodeClosedChannel<TAddress extends string = string>(
-    encodedAccount: EncodedAccount<TAddress>,
+  encodedAccount: EncodedAccount<TAddress>,
 ): Account<ClosedChannel, TAddress>;
 export function decodeClosedChannel<TAddress extends string = string>(
-    encodedAccount: MaybeEncodedAccount<TAddress>,
+  encodedAccount: MaybeEncodedAccount<TAddress>,
 ): MaybeAccount<ClosedChannel, TAddress>;
 export function decodeClosedChannel<TAddress extends string = string>(
-    encodedAccount: EncodedAccount<TAddress> | MaybeEncodedAccount<TAddress>,
+  encodedAccount: EncodedAccount<TAddress> | MaybeEncodedAccount<TAddress>,
 ): Account<ClosedChannel, TAddress> | MaybeAccount<ClosedChannel, TAddress> {
-    return decodeAccount(encodedAccount as MaybeEncodedAccount<TAddress>, getClosedChannelDecoder());
+  return decodeAccount(
+    encodedAccount as MaybeEncodedAccount<TAddress>,
+    getClosedChannelDecoder(),
+  );
 }
 
 export async function fetchClosedChannel<TAddress extends string = string>(
-    rpc: Parameters<typeof fetchEncodedAccount>[0],
-    address: Address<TAddress>,
-    config?: FetchAccountConfig,
+  rpc: Parameters<typeof fetchEncodedAccount>[0],
+  address: Address<TAddress>,
+  config?: FetchAccountConfig,
 ): Promise<Account<ClosedChannel, TAddress>> {
-    const maybeAccount = await fetchMaybeClosedChannel(rpc, address, config);
-    assertAccountExists(maybeAccount);
-    return maybeAccount;
+  const maybeAccount = await fetchMaybeClosedChannel(rpc, address, config);
+  assertAccountExists(maybeAccount);
+  return maybeAccount;
 }
 
 export async function fetchMaybeClosedChannel<TAddress extends string = string>(
-    rpc: Parameters<typeof fetchEncodedAccount>[0],
-    address: Address<TAddress>,
-    config?: FetchAccountConfig,
+  rpc: Parameters<typeof fetchEncodedAccount>[0],
+  address: Address<TAddress>,
+  config?: FetchAccountConfig,
 ): Promise<MaybeAccount<ClosedChannel, TAddress>> {
-    const maybeAccount = await fetchEncodedAccount(rpc, address, config);
-    return decodeClosedChannel(maybeAccount);
+  const maybeAccount = await fetchEncodedAccount(rpc, address, config);
+  return decodeClosedChannel(maybeAccount);
 }
 
 export async function fetchAllClosedChannel(
-    rpc: Parameters<typeof fetchEncodedAccounts>[0],
-    addresses: Array<Address>,
-    config?: FetchAccountsConfig,
+  rpc: Parameters<typeof fetchEncodedAccounts>[0],
+  addresses: Array<Address>,
+  config?: FetchAccountsConfig,
 ): Promise<Account<ClosedChannel>[]> {
-    const maybeAccounts = await fetchAllMaybeClosedChannel(rpc, addresses, config);
-    assertAccountsExist(maybeAccounts);
-    return maybeAccounts;
+  const maybeAccounts = await fetchAllMaybeClosedChannel(
+    rpc,
+    addresses,
+    config,
+  );
+  assertAccountsExist(maybeAccounts);
+  return maybeAccounts;
 }
 
 export async function fetchAllMaybeClosedChannel(
-    rpc: Parameters<typeof fetchEncodedAccounts>[0],
-    addresses: Array<Address>,
-    config?: FetchAccountsConfig,
+  rpc: Parameters<typeof fetchEncodedAccounts>[0],
+  addresses: Array<Address>,
+  config?: FetchAccountsConfig,
 ): Promise<MaybeAccount<ClosedChannel>[]> {
-    const maybeAccounts = await fetchEncodedAccounts(rpc, addresses, config);
-    return maybeAccounts.map(maybeAccount => decodeClosedChannel(maybeAccount));
+  const maybeAccounts = await fetchEncodedAccounts(rpc, addresses, config);
+  return maybeAccounts.map((maybeAccount) => decodeClosedChannel(maybeAccount));
 }

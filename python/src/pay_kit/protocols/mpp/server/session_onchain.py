@@ -93,6 +93,7 @@ class OpenVerifierConfig(Protocol):
     network: str
     recipient: str
     max_cap: int
+    operator: str
     program_id: Pubkey | None
 
 
@@ -107,6 +108,9 @@ class VerifyOpenTxExpected:
     network: str
     max_cap: int = 0
     mint: str = ""
+    # operator / fee-payer pubkey (base58). The open instruction's rentPayer
+    # account (slot 1) must equal it. Empty skips the check.
+    operator: str = ""
     program_id: Pubkey | None = None
 
 
@@ -239,20 +243,22 @@ async def verify_open_tx(
     if open_ix is None:
         raise PaymentError("no payment-channels open instruction found", code="invalid-payload")
 
-    # Open instruction account layout:
-    # 0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
-    # 5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, ...
+    # Open instruction account layout after the rentPayer (+1) shift:
+    # 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
+    # 6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, ...
+    # rentPayer (slot 1) is pinned to the operator / fee payer.
     accounts = [int(i) for i in open_ix.accounts]
-    if len(accounts) < 7:
+    if len(accounts) < 8:
         raise PaymentError(
             f"open instruction has too few accounts ({len(accounts)})",
             code="invalid-payload",
         )
     payer = account_at(accounts, 0, "payer")
-    payee = account_at(accounts, 1, "payee")
-    mint = account_at(accounts, 2, "mint")
-    authorized_signer = account_at(accounts, 3, "authorizedSigner")
-    channel = account_at(accounts, 4, "channel")
+    rent_payer = account_at(accounts, 1, "rentPayer")
+    payee = account_at(accounts, 2, "payee")
+    mint = account_at(accounts, 3, "mint")
+    authorized_signer = account_at(accounts, 4, "authorizedSigner")
+    channel = account_at(accounts, 5, "channel")
 
     if str(payee) != expected.recipient:
         raise PaymentError(f"open payee {payee} != expected recipient {expected.recipient}", code="invalid-payload")
@@ -261,6 +267,11 @@ async def verify_open_tx(
     if str(authorized_signer) != expected.authorized_signer:
         raise PaymentError(
             f"open authorizedSigner {authorized_signer} != expected {expected.authorized_signer}",
+            code="invalid-payload",
+        )
+    if expected.operator and str(rent_payer) != expected.operator:
+        raise PaymentError(
+            f"open rentPayer {rent_payer} != expected operator {expected.operator}",
             code="invalid-payload",
         )
 
@@ -318,6 +329,7 @@ def new_open_tx_verifier(config: OpenVerifierConfig, rpc_client: RpcClient | Non
                 currency=config.currency,
                 max_cap=config.max_cap,
                 network=config.network,
+                operator=config.operator,
                 program_id=config.program_id,
                 recipient=config.recipient,
             )
@@ -480,6 +492,9 @@ async def settle_and_finalize_channel(
         recipients=[Distribution(recipient=Pubkey.from_string(s.recipient), bps=s.bps) for s in config.splits],
         token_program=Pubkey.from_string(default_token_program_for_currency(config.currency, config.network)),
         program_id=program_id,
+        # rentPayer reclaims the channel/escrow rent at finalize; it is the
+        # operator recorded as rentPayer at open.
+        rent_payer=Pubkey.from_string(config.operator) if config.operator else None,
     )
 
     blockhash = Hash.from_string((await rpc.get_latest_blockhash()).value.blockhash)

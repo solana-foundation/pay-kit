@@ -479,6 +479,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			Currency:         s.currency,
 			MaxCap:           s.cap,
 			Network:          s.network,
+			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
 		}

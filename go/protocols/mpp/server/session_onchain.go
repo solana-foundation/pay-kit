@@ -52,6 +52,12 @@ type VerifyOpenTxExpected struct {
 	// Network is the Solana network used for mint resolution.
 	Network string
 
+	// Operator is the operator / fee-payer pubkey (base58). The open
+	// instruction's rentPayer account (slot 1) must equal it: rentPayer is
+	// pinned to the operator that co-signs open as fee payer. Empty skips the
+	// check (e.g. legacy callers that do not pin it).
+	Operator string
+
 	// ProgramID optionally overrides the payment-channels program id; nil
 	// defaults to the canonical program.
 	ProgramID *solana.PublicKey
@@ -151,28 +157,33 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 
 	// Open instruction account layout (matches the generated client):
-	// 0 payer, 1 payee, 2 mint, 3 authorizedSigner, 4 channel,
-	// 5 payerTokenAccount, 6 channelTokenAccount, 7 tokenProgram, ...
-	if len(openIx.Accounts) < 7 {
+	// 0 payer, 1 rentPayer, 2 payee, 3 mint, 4 authorizedSigner, 5 channel,
+	// 6 payerTokenAccount, 7 channelTokenAccount, 8 tokenProgram, ...
+	// rentPayer (slot 1) is pinned to the operator / fee payer.
+	if len(openIx.Accounts) < 8 {
 		return VerifyOpenTxResult{}, fmt.Errorf("open instruction has too few accounts (%d)", len(openIx.Accounts))
 	}
 	payer, err := accountAt(openIx.Accounts, 0, "payer")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	payee, err := accountAt(openIx.Accounts, 1, "payee")
+	rentPayer, err := accountAt(openIx.Accounts, 1, "rentPayer")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	mint, err := accountAt(openIx.Accounts, 2, "mint")
+	payee, err := accountAt(openIx.Accounts, 2, "payee")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	authorizedSigner, err := accountAt(openIx.Accounts, 3, "authorizedSigner")
+	mint, err := accountAt(openIx.Accounts, 3, "mint")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
-	channel, err := accountAt(openIx.Accounts, 4, "channel")
+	authorizedSigner, err := accountAt(openIx.Accounts, 4, "authorizedSigner")
+	if err != nil {
+		return VerifyOpenTxResult{}, err
+	}
+	channel, err := accountAt(openIx.Accounts, 5, "channel")
 	if err != nil {
 		return VerifyOpenTxResult{}, err
 	}
@@ -185,6 +196,11 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	}
 	if authorizedSigner.String() != expected.AuthorizedSigner {
 		return VerifyOpenTxResult{}, fmt.Errorf("open authorizedSigner %s != expected %s", authorizedSigner, expected.AuthorizedSigner)
+	}
+	// rentPayer (slot 1) is pinned to the operator / fee payer; an empty
+	// expected operator skips the check (legacy callers that do not pin it).
+	if expected.Operator != "" && rentPayer.String() != expected.Operator {
+		return VerifyOpenTxResult{}, fmt.Errorf("open rentPayer %s != expected operator %s", rentPayer, expected.Operator)
 	}
 
 	// Instruction data: [discriminator u8][salt u64][deposit u64][grace u32][recipients].
@@ -244,6 +260,7 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 				Currency:         config.Currency,
 				MaxCap:           config.MaxCap,
 				Network:          config.Network,
+				Operator:         config.Operator,
 				ProgramID:        config.ProgramID,
 				Recipient:        config.Recipient,
 			}
@@ -366,6 +383,12 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	if err != nil {
 		return nil, fmt.Errorf("invalid recipient %q: %w", s.config.Recipient, err)
 	}
+	// rentPayer reclaims the channel/escrow rent at finalize; it is the
+	// operator recorded as rentPayer at open.
+	rentPayer, err := solana.PublicKeyFromBase58(s.config.Operator)
+	if err != nil {
+		return nil, fmt.Errorf("invalid operator %q: %w", s.config.Operator, err)
+	}
 
 	recipients := make([]paymentchannels.Distribution, 0, len(s.config.Splits))
 	for _, split := range s.config.Splits {
@@ -378,6 +401,7 @@ func (s *SessionServer) settlementInstructionsForState(state ChannelState, chann
 	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
 		Channel:      channel,
 		Payer:        payer,
+		RentPayer:    rentPayer,
 		Payee:        payee,
 		Treasury:     paymentchannels.TreasuryOwner(),
 		Mint:         mint,

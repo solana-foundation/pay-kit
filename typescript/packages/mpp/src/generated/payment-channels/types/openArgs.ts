@@ -7,58 +7,58 @@
  */
 
 import {
-    combineCodec,
-    getArrayDecoder,
-    getArrayEncoder,
-    getStructDecoder,
-    getStructEncoder,
-    getU32Decoder,
-    getU32Encoder,
-    getU64Decoder,
-    getU64Encoder,
-    type Codec,
-    type Decoder,
-    type Encoder,
-} from '@solana/kit';
+  combineCodec,
+  getArrayDecoder,
+  getArrayEncoder,
+  getStructDecoder,
+  getStructEncoder,
+  getU32Decoder,
+  getU32Encoder,
+  getU64Decoder,
+  getU64Encoder,
+  type Codec,
+  type Decoder,
+  type Encoder,
+} from "@solana/kit";
 import {
-    getDistributionEntryDecoder,
-    getDistributionEntryEncoder,
-    type DistributionEntry,
-    type DistributionEntryArgs,
-} from './index.js';
+  getDistributionEntryDecoder,
+  getDistributionEntryEncoder,
+  type DistributionEntry,
+  type DistributionEntryArgs,
+} from "./index.js";
 
 export type OpenArgs = {
-    salt: bigint;
-    deposit: bigint;
-    gracePeriod: number;
-    recipients: Array<DistributionEntry>;
+  salt: bigint;
+  deposit: bigint;
+  gracePeriod: number;
+  recipients: Array<DistributionEntry>;
 };
 
 export type OpenArgsArgs = {
-    salt: number | bigint;
-    deposit: number | bigint;
-    gracePeriod: number;
-    recipients: Array<DistributionEntryArgs>;
+  salt: number | bigint;
+  deposit: number | bigint;
+  gracePeriod: number;
+  recipients: Array<DistributionEntryArgs>;
 };
 
 export function getOpenArgsEncoder(): Encoder<OpenArgsArgs> {
-    return getStructEncoder([
-        ['salt', getU64Encoder()],
-        ['deposit', getU64Encoder()],
-        ['gracePeriod', getU32Encoder()],
-        ['recipients', getArrayEncoder(getDistributionEntryEncoder())],
-    ]);
+  return getStructEncoder([
+    ["salt", getU64Encoder()],
+    ["deposit", getU64Encoder()],
+    ["gracePeriod", getU32Encoder()],
+    ["recipients", getArrayEncoder(getDistributionEntryEncoder())],
+  ]);
 }
 
 export function getOpenArgsDecoder(): Decoder<OpenArgs> {
-    return getStructDecoder([
-        ['salt', getU64Decoder()],
-        ['deposit', getU64Decoder()],
-        ['gracePeriod', getU32Decoder()],
-        ['recipients', getArrayDecoder(getDistributionEntryDecoder())],
-    ]);
+  return getStructDecoder([
+    ["salt", getU64Decoder()],
+    ["deposit", getU64Decoder()],
+    ["gracePeriod", getU32Decoder()],
+    ["recipients", getArrayDecoder(getDistributionEntryDecoder())],
+  ]);
 }
 
 export function getOpenArgsCodec(): Codec<OpenArgsArgs, OpenArgs> {
-    return combineCodec(getOpenArgsEncoder(), getOpenArgsDecoder());
+  return combineCodec(getOpenArgsEncoder(), getOpenArgsDecoder());
 }

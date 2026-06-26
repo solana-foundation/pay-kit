@@ -157,6 +157,7 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
@@ -252,6 +253,7 @@ export function session(parameters: session.Parameters) {
                         modes: effectiveModes,
                         network,
                         openTxSubmitter,
+                        operator,
                         payerSigner: paymentChannelPayerSigner,
                         payload: cred.payload,
                         programId: resolvedProgramId,
@@ -297,6 +299,7 @@ export function session(parameters: session.Parameters) {
                         merchantSigner: signer,
                         mint: resolvedMint,
                         network,
+                        operator,
                         payload: cred.payload,
                         programId: resolvedProgramId,
                         recipient,
@@ -393,6 +396,8 @@ interface HandleOpenArgs {
     readonly modes: SessionMode[];
     readonly network: string;
     readonly openTxSubmitter: 'client' | 'server';
+    /** Operator / fee-payer pubkey (base58); pins the open `rentPayer`. */
+    readonly operator: string;
     readonly payerSigner: TransactionPartialSigner | undefined;
     readonly payload: OpenPayload & { readonly action: 'open' };
     readonly programId: Address;
@@ -432,6 +437,7 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
             maxCap: args.cap,
             mint: args.mint,
             network: args.network,
+            operator: args.operator,
             programId: args.programId.toString(),
             recipient: args.recipient,
         };
@@ -710,6 +716,8 @@ interface HandleCloseArgs {
     readonly merchantSigner: TransactionPartialSigner | undefined;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly payload: {
         readonly action: 'close';
         readonly channelId: string;
@@ -783,6 +791,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             merchantSigner: args.merchantSigner,
             mint: args.mint,
             network: args.network,
+            operator: args.operator,
             programId: args.programId,
             recipient: args.recipient,
             rpc: args.rpc,
@@ -963,6 +972,8 @@ interface CloseAndSettleArgs {
     readonly merchantSigner: TransactionPartialSigner;
     readonly mint: string;
     readonly network: string;
+    /** Operator recorded as the channel `rentPayer` at open. */
+    readonly operator: string;
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike;
@@ -1011,6 +1022,9 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         network: args.network,
         payee: args.recipient,
         payer: state.operator ?? args.recipient,
+        // rentPayer reclaims the channel/escrow rent at finalize; it is the
+        // operator recorded as rentPayer at open.
+        rentPayer: state.operator ?? args.operator,
         programId: args.programId,
         rpc: args.rpc as unknown as {
             sendTransaction: (wire: string, config?: unknown) => { send: () => Promise<Signature> };

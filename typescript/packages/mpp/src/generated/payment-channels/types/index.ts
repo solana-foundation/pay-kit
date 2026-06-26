@@ -6,16 +6,16 @@
  * @see https://github.com/codama-idl/codama
  */
 
-export * from './accountDiscriminator.js';
-export * from './channelStatus.js';
-export * from './distributeArgs.js';
-export * from './distributionEntry.js';
-export * from './openArgs.js';
-export * from './opened.js';
-export * from './payoutBeneficiary.js';
-export * from './payoutRedirected.js';
-export * from './redirectReason.js';
-export * from './settleAndFinalizeArgs.js';
-export * from './settlementWatermarks.js';
-export * from './topUpArgs.js';
-export * from './voucherArgs.js';
+export * from "./accountDiscriminator.js";
+export * from "./channelStatus.js";
+export * from "./distributeArgs.js";
+export * from "./distributionEntry.js";
+export * from "./openArgs.js";
+export * from "./opened.js";
+export * from "./payoutBeneficiary.js";
+export * from "./payoutRedirected.js";
+export * from "./redirectReason.js";
+export * from "./settleAndFinalizeArgs.js";
+export * from "./settlementWatermarks.js";
+export * from "./topUpArgs.js";
+export * from "./voucherArgs.js";

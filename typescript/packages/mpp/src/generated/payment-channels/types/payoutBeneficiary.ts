@@ -7,30 +7,36 @@
  */
 
 import {
-    combineCodec,
-    getEnumDecoder,
-    getEnumEncoder,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getEnumDecoder,
+  getEnumEncoder,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 
 export enum PayoutBeneficiary {
-    Recipient,
-    Payee,
-    Payer,
+  Recipient,
+  Payee,
+  Payer,
 }
 
 export type PayoutBeneficiaryArgs = PayoutBeneficiary;
 
 export function getPayoutBeneficiaryEncoder(): FixedSizeEncoder<PayoutBeneficiaryArgs> {
-    return getEnumEncoder(PayoutBeneficiary);
+  return getEnumEncoder(PayoutBeneficiary);
 }
 
 export function getPayoutBeneficiaryDecoder(): FixedSizeDecoder<PayoutBeneficiary> {
-    return getEnumDecoder(PayoutBeneficiary);
+  return getEnumDecoder(PayoutBeneficiary);
 }
 
-export function getPayoutBeneficiaryCodec(): FixedSizeCodec<PayoutBeneficiaryArgs, PayoutBeneficiary> {
-    return combineCodec(getPayoutBeneficiaryEncoder(), getPayoutBeneficiaryDecoder());
+export function getPayoutBeneficiaryCodec(): FixedSizeCodec<
+  PayoutBeneficiaryArgs,
+  PayoutBeneficiary
+> {
+  return combineCodec(
+    getPayoutBeneficiaryEncoder(),
+    getPayoutBeneficiaryDecoder(),
+  );
 }

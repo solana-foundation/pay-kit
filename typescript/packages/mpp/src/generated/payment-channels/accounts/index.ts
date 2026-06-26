@@ -6,5 +6,5 @@
  * @see https://github.com/codama-idl/codama
  */
 
-export * from './channel.js';
-export * from './closedChannel.js';
+export * from "./channel.js";
+export * from "./closedChannel.js";

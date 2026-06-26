@@ -7,37 +7,43 @@
  */
 
 import {
-    combineCodec,
-    getStructDecoder,
-    getStructEncoder,
-    getU64Decoder,
-    getU64Encoder,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getStructDecoder,
+  getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 
 export type SettlementWatermarks = { settled: bigint; payoutWatermark: bigint };
 
 export type SettlementWatermarksArgs = {
-    settled: number | bigint;
-    payoutWatermark: number | bigint;
+  settled: number | bigint;
+  payoutWatermark: number | bigint;
 };
 
 export function getSettlementWatermarksEncoder(): FixedSizeEncoder<SettlementWatermarksArgs> {
-    return getStructEncoder([
-        ['settled', getU64Encoder()],
-        ['payoutWatermark', getU64Encoder()],
-    ]);
+  return getStructEncoder([
+    ["settled", getU64Encoder()],
+    ["payoutWatermark", getU64Encoder()],
+  ]);
 }
 
 export function getSettlementWatermarksDecoder(): FixedSizeDecoder<SettlementWatermarks> {
-    return getStructDecoder([
-        ['settled', getU64Decoder()],
-        ['payoutWatermark', getU64Decoder()],
-    ]);
+  return getStructDecoder([
+    ["settled", getU64Decoder()],
+    ["payoutWatermark", getU64Decoder()],
+  ]);
 }
 
-export function getSettlementWatermarksCodec(): FixedSizeCodec<SettlementWatermarksArgs, SettlementWatermarks> {
-    return combineCodec(getSettlementWatermarksEncoder(), getSettlementWatermarksDecoder());
+export function getSettlementWatermarksCodec(): FixedSizeCodec<
+  SettlementWatermarksArgs,
+  SettlementWatermarks
+> {
+  return combineCodec(
+    getSettlementWatermarksEncoder(),
+    getSettlementWatermarksDecoder(),
+  );
 }

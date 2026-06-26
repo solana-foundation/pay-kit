@@ -19,14 +19,15 @@ var DistributeDiscriminator = 7
 type Distribute struct {
 	// [0] = [WRITE] Channel
 	// [1] = [WRITE] Payer
-	// [2] = [WRITE] ChannelTokenAccount
-	// [3] = [WRITE] PayerTokenAccount
-	// [4] = [WRITE] PayeeTokenAccount
-	// [5] = [WRITE] TreasuryTokenAccount
-	// [6] = [] Mint
-	// [7] = [] TokenProgram
-	// [8] = [] EventAuthority
-	// [9] = [] SelfProgram
+	// [2] = [WRITE] RentPayer
+	// [3] = [WRITE] ChannelTokenAccount
+	// [4] = [WRITE] PayerTokenAccount
+	// [5] = [WRITE] PayeeTokenAccount
+	// [6] = [WRITE] TreasuryTokenAccount
+	// [7] = [] Mint
+	// [8] = [] TokenProgram
+	// [9] = [] EventAuthority
+	// [10] = [] SelfProgram
 	ag_solanago.AccountMetaSlice `bin:"-" borsh_skip:"true"`
 	DistributeArgs               DistributeArgs
 }
@@ -34,7 +35,7 @@ type Distribute struct {
 // NewDistributeInstructionBuilder creates a new `Distribute` instruction builder.
 func NewDistributeInstructionBuilder() *Distribute {
 	nd := &Distribute{}
-	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 10)
+	nd.AccountMetaSlice = make(ag_solanago.AccountMetaSlice, 11)
 	return nd
 }
 
@@ -66,92 +67,103 @@ func (inst *Distribute) GetPayerAccount() *ag_solanago.AccountMeta {
 	return inst.AccountMetaSlice[1]
 }
 
+// SetRentPayerAccount sets the "rent_payer" account.
+func (inst *Distribute) SetRentPayerAccount(rentPayer ag_solanago.PublicKey) *Distribute {
+	inst.AccountMetaSlice[2] = ag_solanago.Meta(rentPayer).WRITE()
+	return inst
+}
+
+// GetRentPayerAccount gets the "rent_payer" account.
+func (inst *Distribute) GetRentPayerAccount() *ag_solanago.AccountMeta {
+	return inst.AccountMetaSlice[2]
+}
+
 // SetChannelTokenAccountAccount sets the "channel_token_account" account.
 func (inst *Distribute) SetChannelTokenAccountAccount(channelTokenAccount ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[2] = ag_solanago.Meta(channelTokenAccount).WRITE()
+	inst.AccountMetaSlice[3] = ag_solanago.Meta(channelTokenAccount).WRITE()
 	return inst
 }
 
 // GetChannelTokenAccountAccount gets the "channel_token_account" account.
 func (inst *Distribute) GetChannelTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[2]
+	return inst.AccountMetaSlice[3]
 }
 
 // SetPayerTokenAccountAccount sets the "payer_token_account" account.
 func (inst *Distribute) SetPayerTokenAccountAccount(payerTokenAccount ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[3] = ag_solanago.Meta(payerTokenAccount).WRITE()
+	inst.AccountMetaSlice[4] = ag_solanago.Meta(payerTokenAccount).WRITE()
 	return inst
 }
 
 // GetPayerTokenAccountAccount gets the "payer_token_account" account.
 func (inst *Distribute) GetPayerTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[3]
+	return inst.AccountMetaSlice[4]
 }
 
 // SetPayeeTokenAccountAccount sets the "payee_token_account" account.
 func (inst *Distribute) SetPayeeTokenAccountAccount(payeeTokenAccount ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[4] = ag_solanago.Meta(payeeTokenAccount).WRITE()
+	inst.AccountMetaSlice[5] = ag_solanago.Meta(payeeTokenAccount).WRITE()
 	return inst
 }
 
 // GetPayeeTokenAccountAccount gets the "payee_token_account" account.
 func (inst *Distribute) GetPayeeTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[4]
+	return inst.AccountMetaSlice[5]
 }
 
 // SetTreasuryTokenAccountAccount sets the "treasury_token_account" account.
 func (inst *Distribute) SetTreasuryTokenAccountAccount(treasuryTokenAccount ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[5] = ag_solanago.Meta(treasuryTokenAccount).WRITE()
+	inst.AccountMetaSlice[6] = ag_solanago.Meta(treasuryTokenAccount).WRITE()
 	return inst
 }
 
 // GetTreasuryTokenAccountAccount gets the "treasury_token_account" account.
 func (inst *Distribute) GetTreasuryTokenAccountAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[5]
+	return inst.AccountMetaSlice[6]
 }
 
 // SetMintAccount sets the "mint" account.
 func (inst *Distribute) SetMintAccount(mint ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[6] = ag_solanago.Meta(mint)
+	inst.AccountMetaSlice[7] = ag_solanago.Meta(mint)
 	return inst
 }
 
 // GetMintAccount gets the "mint" account.
 func (inst *Distribute) GetMintAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[6]
+	return inst.AccountMetaSlice[7]
 }
 
 // SetTokenProgramAccount sets the "token_program" account.
 func (inst *Distribute) SetTokenProgramAccount(tokenProgram ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[7] = ag_solanago.Meta(tokenProgram)
+	inst.AccountMetaSlice[8] = ag_solanago.Meta(tokenProgram)
 	return inst
 }
 
 // GetTokenProgramAccount gets the "token_program" account.
 func (inst *Distribute) GetTokenProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[7]
+	return inst.AccountMetaSlice[8]
 }
 
 // SetEventAuthorityAccount sets the "event_authority" account.
 func (inst *Distribute) SetEventAuthorityAccount(eventAuthority ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[8] = ag_solanago.Meta(eventAuthority)
+	inst.AccountMetaSlice[9] = ag_solanago.Meta(eventAuthority)
 	return inst
 }
 
 // GetEventAuthorityAccount gets the "event_authority" account.
 func (inst *Distribute) GetEventAuthorityAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[8]
+	return inst.AccountMetaSlice[9]
 }
 
 // SetSelfProgramAccount sets the "self_program" account.
 func (inst *Distribute) SetSelfProgramAccount(selfProgram ag_solanago.PublicKey) *Distribute {
-	inst.AccountMetaSlice[9] = ag_solanago.Meta(selfProgram)
+	inst.AccountMetaSlice[10] = ag_solanago.Meta(selfProgram)
 	return inst
 }
 
 // GetSelfProgramAccount gets the "self_program" account.
 func (inst *Distribute) GetSelfProgramAccount() *ag_solanago.AccountMeta {
-	return inst.AccountMetaSlice[9]
+	return inst.AccountMetaSlice[10]
 }
 
 func (inst Distribute) Build() *Instruction {
@@ -179,27 +191,30 @@ func (inst *Distribute) Validate() error {
 		return fmt.Errorf("accounts.Payer is not set")
 	}
 	if inst.AccountMetaSlice[2] == nil {
-		return fmt.Errorf("accounts.ChannelTokenAccount is not set")
+		return fmt.Errorf("accounts.RentPayer is not set")
 	}
 	if inst.AccountMetaSlice[3] == nil {
-		return fmt.Errorf("accounts.PayerTokenAccount is not set")
+		return fmt.Errorf("accounts.ChannelTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[4] == nil {
-		return fmt.Errorf("accounts.PayeeTokenAccount is not set")
+		return fmt.Errorf("accounts.PayerTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[5] == nil {
-		return fmt.Errorf("accounts.TreasuryTokenAccount is not set")
+		return fmt.Errorf("accounts.PayeeTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[6] == nil {
-		return fmt.Errorf("accounts.Mint is not set")
+		return fmt.Errorf("accounts.TreasuryTokenAccount is not set")
 	}
 	if inst.AccountMetaSlice[7] == nil {
-		return fmt.Errorf("accounts.TokenProgram is not set")
+		return fmt.Errorf("accounts.Mint is not set")
 	}
 	if inst.AccountMetaSlice[8] == nil {
-		return fmt.Errorf("accounts.EventAuthority is not set")
+		return fmt.Errorf("accounts.TokenProgram is not set")
 	}
 	if inst.AccountMetaSlice[9] == nil {
+		return fmt.Errorf("accounts.EventAuthority is not set")
+	}
+	if inst.AccountMetaSlice[10] == nil {
 		return fmt.Errorf("accounts.SelfProgram is not set")
 	}
 	return nil
@@ -210,10 +225,10 @@ func (inst *Distribute) GetAccounts() (out []*ag_solanago.AccountMeta) {
 }
 
 func (inst *Distribute) SetAccounts(accounts []*ag_solanago.AccountMeta) error {
-	if len(accounts) < 10 {
-		return fmt.Errorf("not enough accounts: expected at least 10, got %d", len(accounts))
+	if len(accounts) < 11 {
+		return fmt.Errorf("not enough accounts: expected at least 11, got %d", len(accounts))
 	}
-	inst.AccountMetaSlice = accounts[:10]
+	inst.AccountMetaSlice = accounts[:11]
 	return nil
 }
 

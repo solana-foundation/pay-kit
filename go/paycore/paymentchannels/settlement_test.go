@@ -237,14 +237,17 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	}
 
 	accounts := ix.Accounts()
-	if len(accounts) != 12 {
-		t.Fatalf("accounts = %d, want 12 (10 fixed + 2 recipient ATAs)", len(accounts))
+	// Distribute fixed head after the rentPayer (+1) shift: 0 channel, 1 payer,
+	// 2 rentPayer, 3 channelTokenAccount, 4 payerTokenAccount, 5 payeeToken,
+	// 6 treasuryToken, 7 mint, 8 tokenProgram, 9 eventAuthority, 10 selfProgram.
+	if len(accounts) != 13 {
+		t.Fatalf("accounts = %d, want 13 (11 fixed + 2 recipient ATAs)", len(accounts))
 	}
 	recipientATA, _, err := solana.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, tokenProgram)
 	if err != nil {
 		t.Fatalf("derive recipient ATA: %v", err)
 	}
-	for slot := 10; slot < 12; slot++ {
+	for slot := 11; slot < 13; slot++ {
 		if !accounts[slot].PublicKey.Equals(recipientATA) {
 			t.Fatalf("tail account %d = %s, want recipient ATA %s", slot, accounts[slot].PublicKey, recipientATA)
 		}
@@ -256,8 +259,8 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive treasury ATA: %v", err)
 	}
-	if !accounts[5].PublicKey.Equals(treasuryATA) {
-		t.Fatalf("treasury token account = %s, want %s", accounts[5].PublicKey, treasuryATA)
+	if !accounts[6].PublicKey.Equals(treasuryATA) {
+		t.Fatalf("treasury token account = %s, want %s", accounts[6].PublicKey, treasuryATA)
 	}
 
 	data, err := ix.Data()
@@ -290,8 +293,8 @@ func TestBuildDistributeZeroSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDistributeInstruction: %v", err)
 	}
-	if len(ix.Accounts()) != 10 {
-		t.Fatalf("accounts = %d, want 10 fixed accounts only", len(ix.Accounts()))
+	if len(ix.Accounts()) != 11 {
+		t.Fatalf("accounts = %d, want 11 fixed accounts only", len(ix.Accounts()))
 	}
 	data, err := ix.Data()
 	if err != nil {
@@ -322,21 +325,23 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 		t.Fatalf("BuildDistributeInstruction: %v", err)
 	}
 	accounts := ix.Accounts()
-	if !accounts[7].PublicKey.Equals(token2022) {
-		t.Fatalf("token program account = %s, want Token-2022", accounts[7].PublicKey)
+	// After the rentPayer (+1) shift: payeeTokenAccount is slot 5, mint slot 7,
+	// tokenProgram slot 8.
+	if !accounts[8].PublicKey.Equals(token2022) {
+		t.Fatalf("token program account = %s, want Token-2022", accounts[8].PublicKey)
 	}
 	want2022, _, err := solana.FindAssociatedTokenAddressWithProgram(payee, mint, token2022)
 	if err != nil {
 		t.Fatalf("derive token-2022 ATA: %v", err)
 	}
-	if !accounts[4].PublicKey.Equals(want2022) {
-		t.Fatalf("payee token account = %s, want token-2022 ATA %s", accounts[4].PublicKey, want2022)
+	if !accounts[5].PublicKey.Equals(want2022) {
+		t.Fatalf("payee token account = %s, want token-2022 ATA %s", accounts[5].PublicKey, want2022)
 	}
 	wantLegacy, _, err := solana.FindAssociatedTokenAddressWithProgram(payee, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("derive legacy ATA: %v", err)
 	}
-	if accounts[4].PublicKey.Equals(wantLegacy) {
+	if accounts[5].PublicKey.Equals(wantLegacy) {
 		t.Fatal("payee token account was derived with the legacy token program")
 	}
 }

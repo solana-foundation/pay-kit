@@ -7,28 +7,28 @@
  */
 
 import {
-    combineCodec,
-    getStructDecoder,
-    getStructEncoder,
-    getU64Decoder,
-    getU64Encoder,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getStructDecoder,
+  getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 
 export type TopUpArgs = { amount: bigint };
 
 export type TopUpArgsArgs = { amount: number | bigint };
 
 export function getTopUpArgsEncoder(): FixedSizeEncoder<TopUpArgsArgs> {
-    return getStructEncoder([['amount', getU64Encoder()]]);
+  return getStructEncoder([["amount", getU64Encoder()]]);
 }
 
 export function getTopUpArgsDecoder(): FixedSizeDecoder<TopUpArgs> {
-    return getStructDecoder([['amount', getU64Decoder()]]);
+  return getStructDecoder([["amount", getU64Decoder()]]);
 }
 
 export function getTopUpArgsCodec(): FixedSizeCodec<TopUpArgsArgs, TopUpArgs> {
-    return combineCodec(getTopUpArgsEncoder(), getTopUpArgsDecoder());
+  return combineCodec(getTopUpArgsEncoder(), getTopUpArgsDecoder());
 }

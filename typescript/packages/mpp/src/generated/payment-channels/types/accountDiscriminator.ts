@@ -7,29 +7,35 @@
  */
 
 import {
-    combineCodec,
-    getEnumDecoder,
-    getEnumEncoder,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getEnumDecoder,
+  getEnumEncoder,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 
 export enum AccountDiscriminator {
-    Channel,
-    ClosedChannel,
+  Channel,
+  ClosedChannel,
 }
 
 export type AccountDiscriminatorArgs = AccountDiscriminator;
 
 export function getAccountDiscriminatorEncoder(): FixedSizeEncoder<AccountDiscriminatorArgs> {
-    return getEnumEncoder(AccountDiscriminator);
+  return getEnumEncoder(AccountDiscriminator);
 }
 
 export function getAccountDiscriminatorDecoder(): FixedSizeDecoder<AccountDiscriminator> {
-    return getEnumDecoder(AccountDiscriminator);
+  return getEnumDecoder(AccountDiscriminator);
 }
 
-export function getAccountDiscriminatorCodec(): FixedSizeCodec<AccountDiscriminatorArgs, AccountDiscriminator> {
-    return combineCodec(getAccountDiscriminatorEncoder(), getAccountDiscriminatorDecoder());
+export function getAccountDiscriminatorCodec(): FixedSizeCodec<
+  AccountDiscriminatorArgs,
+  AccountDiscriminator
+> {
+  return combineCodec(
+    getAccountDiscriminatorEncoder(),
+    getAccountDiscriminatorDecoder(),
+  );
 }

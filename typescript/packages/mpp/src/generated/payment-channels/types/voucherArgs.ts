@@ -7,49 +7,52 @@
  */
 
 import {
-    combineCodec,
-    getAddressDecoder,
-    getAddressEncoder,
-    getI64Decoder,
-    getI64Encoder,
-    getStructDecoder,
-    getStructEncoder,
-    getU64Decoder,
-    getU64Encoder,
-    type Address,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getAddressDecoder,
+  getAddressEncoder,
+  getI64Decoder,
+  getI64Encoder,
+  getStructDecoder,
+  getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
+  type Address,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 
 export type VoucherArgs = {
-    channelId: Address;
-    cumulativeAmount: bigint;
-    expiresAt: bigint;
+  channelId: Address;
+  cumulativeAmount: bigint;
+  expiresAt: bigint;
 };
 
 export type VoucherArgsArgs = {
-    channelId: Address;
-    cumulativeAmount: number | bigint;
-    expiresAt: number | bigint;
+  channelId: Address;
+  cumulativeAmount: number | bigint;
+  expiresAt: number | bigint;
 };
 
 export function getVoucherArgsEncoder(): FixedSizeEncoder<VoucherArgsArgs> {
-    return getStructEncoder([
-        ['channelId', getAddressEncoder()],
-        ['cumulativeAmount', getU64Encoder()],
-        ['expiresAt', getI64Encoder()],
-    ]);
+  return getStructEncoder([
+    ["channelId", getAddressEncoder()],
+    ["cumulativeAmount", getU64Encoder()],
+    ["expiresAt", getI64Encoder()],
+  ]);
 }
 
 export function getVoucherArgsDecoder(): FixedSizeDecoder<VoucherArgs> {
-    return getStructDecoder([
-        ['channelId', getAddressDecoder()],
-        ['cumulativeAmount', getU64Decoder()],
-        ['expiresAt', getI64Decoder()],
-    ]);
+  return getStructDecoder([
+    ["channelId", getAddressDecoder()],
+    ["cumulativeAmount", getU64Decoder()],
+    ["expiresAt", getI64Decoder()],
+  ]);
 }
 
-export function getVoucherArgsCodec(): FixedSizeCodec<VoucherArgsArgs, VoucherArgs> {
-    return combineCodec(getVoucherArgsEncoder(), getVoucherArgsDecoder());
+export function getVoucherArgsCodec(): FixedSizeCodec<
+  VoucherArgsArgs,
+  VoucherArgs
+> {
+  return combineCodec(getVoucherArgsEncoder(), getVoucherArgsDecoder());
 }

@@ -73,6 +73,12 @@ type OpenChannelParams struct {
 	// Payer is the wallet funding the channel deposit; it signs the Open
 	// transaction and is a channel PDA seed.
 	Payer solana.PublicKey
+	// RentPayer is the operator / fee payer: it funds the channel PDA + escrow
+	// ATA rent at open (and reclaims it at finalize) and is a SIGNER on the
+	// open instruction. It is always the same key used as the transaction fee
+	// payer, so a single operator signature covers both roles. It is not a
+	// wire/payload field — callers pin it to the operator already in scope.
+	RentPayer solana.PublicKey
 	// Payee is the counterparty the channel pays out to; a channel PDA seed.
 	Payee solana.PublicKey
 	// Mint is the SPL token mint the channel escrows (e.g. USDC); a channel
@@ -233,6 +239,7 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 
 	builder := generated.NewOpenInstructionBuilder().
 		SetPayerAccount(params.Payer).
+		SetRentPayerAccount(params.RentPayer).
 		SetPayeeAccount(params.Payee).
 		SetMintAccount(params.Mint).
 		SetAuthorizedSignerAccount(params.AuthorizedSigner).

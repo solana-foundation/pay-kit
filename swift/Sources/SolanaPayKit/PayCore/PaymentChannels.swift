@@ -46,6 +46,10 @@ public enum PaymentChannels {
     /// Inputs to the channel `open` instruction.
     public struct OpenChannelParams: Sendable {
         public let payer: Pubkey
+        /// Operator / fee-payer that funds the channel PDA + escrow-ATA rent at
+        /// open (SIGNER + WRITABLE). Always the same key that co-signs `open` as
+        /// fee payer; never a separate wire field.
+        public let rentPayer: Pubkey
         public let payee: Pubkey
         public let mint: Pubkey
         public let authorizedSigner: Pubkey
@@ -58,6 +62,7 @@ public enum PaymentChannels {
 
         public init(
             payer: Pubkey,
+            rentPayer: Pubkey,
             payee: Pubkey,
             mint: Pubkey,
             authorizedSigner: Pubkey,
@@ -69,6 +74,7 @@ public enum PaymentChannels {
             programId: Pubkey
         ) {
             self.payer = payer
+            self.rentPayer = rentPayer
             self.payee = payee
             self.mint = mint
             self.authorizedSigner = authorizedSigner
@@ -154,8 +160,11 @@ public enum PaymentChannels {
         let eventAuthority = try findEventAuthorityPda(programId: params.programId)
 
         // Account order matches the codama-generated `Open` builder exactly.
+        // `rentPayer` (operator / fee payer) sits right after `payer` as a
+        // second writable signer; everything after it shifts by +1 (14 total).
         let accounts: [AccountMeta] = [
             .writableSigner(params.payer),
+            .writableSigner(params.rentPayer),
             .readonly(params.payee),
             .readonly(params.mint),
             .readonly(params.authorizedSigner),
@@ -205,6 +214,8 @@ public enum PaymentChannels {
         let payerPubkey = try Pubkey(bytes: payer.publicKey)
         let params = OpenChannelParams(
             payer: payerPubkey,
+            // rentPayer is always the operator / fee payer already in scope.
+            rentPayer: feePayer,
             payee: payee,
             mint: mint,
             authorizedSigner: authorizedSigner,

@@ -23,6 +23,7 @@ layout = borsh.CStruct(
 class DistributeAccounts(typing.TypedDict):
     channel:SolPubkey
     payer:SolPubkey
+    rentPayer:SolPubkey
     channelTokenAccount:SolPubkey
     payerTokenAccount:SolPubkey
     payeeTokenAccount:SolPubkey
@@ -41,6 +42,7 @@ def Distribute(
     keys: list[AccountMeta] = [
     AccountMeta(pubkey=accounts["channel"], is_signer=False, is_writable=True),
     AccountMeta(pubkey=accounts["payer"], is_signer=False, is_writable=True),
+    AccountMeta(pubkey=accounts["rentPayer"], is_signer=False, is_writable=True),
     AccountMeta(pubkey=accounts["channelTokenAccount"], is_signer=False, is_writable=True),
     AccountMeta(pubkey=accounts["payerTokenAccount"], is_signer=False, is_writable=True),
     AccountMeta(pubkey=accounts["payeeTokenAccount"], is_signer=False, is_writable=True),

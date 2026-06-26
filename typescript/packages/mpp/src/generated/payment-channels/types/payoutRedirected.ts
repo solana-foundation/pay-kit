@@ -7,65 +7,71 @@
  */
 
 import {
-    combineCodec,
-    getAddressDecoder,
-    getAddressEncoder,
-    getStructDecoder,
-    getStructEncoder,
-    getU64Decoder,
-    getU64Encoder,
-    type Address,
-    type FixedSizeCodec,
-    type FixedSizeDecoder,
-    type FixedSizeEncoder,
-} from '@solana/kit';
+  combineCodec,
+  getAddressDecoder,
+  getAddressEncoder,
+  getStructDecoder,
+  getStructEncoder,
+  getU64Decoder,
+  getU64Encoder,
+  type Address,
+  type FixedSizeCodec,
+  type FixedSizeDecoder,
+  type FixedSizeEncoder,
+} from "@solana/kit";
 import {
-    getPayoutBeneficiaryDecoder,
-    getPayoutBeneficiaryEncoder,
-    getRedirectReasonDecoder,
-    getRedirectReasonEncoder,
-    type PayoutBeneficiary,
-    type PayoutBeneficiaryArgs,
-    type RedirectReason,
-    type RedirectReasonArgs,
-} from './index.js';
+  getPayoutBeneficiaryDecoder,
+  getPayoutBeneficiaryEncoder,
+  getRedirectReasonDecoder,
+  getRedirectReasonEncoder,
+  type PayoutBeneficiary,
+  type PayoutBeneficiaryArgs,
+  type RedirectReason,
+  type RedirectReasonArgs,
+} from "./index.js";
 
 export type PayoutRedirected = {
-    channel: Address;
-    owner: Address;
-    amount: bigint;
-    beneficiary: PayoutBeneficiary;
-    reason: RedirectReason;
+  channel: Address;
+  owner: Address;
+  amount: bigint;
+  beneficiary: PayoutBeneficiary;
+  reason: RedirectReason;
 };
 
 export type PayoutRedirectedArgs = {
-    channel: Address;
-    owner: Address;
-    amount: number | bigint;
-    beneficiary: PayoutBeneficiaryArgs;
-    reason: RedirectReasonArgs;
+  channel: Address;
+  owner: Address;
+  amount: number | bigint;
+  beneficiary: PayoutBeneficiaryArgs;
+  reason: RedirectReasonArgs;
 };
 
 export function getPayoutRedirectedEncoder(): FixedSizeEncoder<PayoutRedirectedArgs> {
-    return getStructEncoder([
-        ['channel', getAddressEncoder()],
-        ['owner', getAddressEncoder()],
-        ['amount', getU64Encoder()],
-        ['beneficiary', getPayoutBeneficiaryEncoder()],
-        ['reason', getRedirectReasonEncoder()],
-    ]);
+  return getStructEncoder([
+    ["channel", getAddressEncoder()],
+    ["owner", getAddressEncoder()],
+    ["amount", getU64Encoder()],
+    ["beneficiary", getPayoutBeneficiaryEncoder()],
+    ["reason", getRedirectReasonEncoder()],
+  ]);
 }
 
 export function getPayoutRedirectedDecoder(): FixedSizeDecoder<PayoutRedirected> {
-    return getStructDecoder([
-        ['channel', getAddressDecoder()],
-        ['owner', getAddressDecoder()],
-        ['amount', getU64Decoder()],
-        ['beneficiary', getPayoutBeneficiaryDecoder()],
-        ['reason', getRedirectReasonDecoder()],
-    ]);
+  return getStructDecoder([
+    ["channel", getAddressDecoder()],
+    ["owner", getAddressDecoder()],
+    ["amount", getU64Decoder()],
+    ["beneficiary", getPayoutBeneficiaryDecoder()],
+    ["reason", getRedirectReasonDecoder()],
+  ]);
 }
 
-export function getPayoutRedirectedCodec(): FixedSizeCodec<PayoutRedirectedArgs, PayoutRedirected> {
-    return combineCodec(getPayoutRedirectedEncoder(), getPayoutRedirectedDecoder());
+export function getPayoutRedirectedCodec(): FixedSizeCodec<
+  PayoutRedirectedArgs,
+  PayoutRedirected
+> {
+  return combineCodec(
+    getPayoutRedirectedEncoder(),
+    getPayoutRedirectedDecoder(),
+  );
 }
