@@ -94,6 +94,7 @@ func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
 
 	params := OpenChannelParams{
 		Payer:            payer,
+		RentPayer:        pk(7),
 		Payee:            payee,
 		Mint:             mint,
 		AuthorizedSigner: signer,
@@ -111,8 +112,10 @@ func TestPerCallProgramIDOverridesDerivationAndInstruction(t *testing.T) {
 		t.Fatalf("open instruction program id = %s, want per-call override", ix.ProgramID())
 	}
 	accounts := ix.Accounts()
-	if !accounts[4].PublicKey.Equals(customPDA) {
-		t.Fatalf("open channel account = %s, want PDA derived against the per-call program", accounts[4].PublicKey)
+	// Account order after the rentPayer (+1) shift: 0 payer, 1 rentPayer,
+	// 2 payee, 3 mint, 4 authorizedSigner, 5 channel, ...
+	if !accounts[5].PublicKey.Equals(customPDA) {
+		t.Fatalf("open channel account = %s, want PDA derived against the per-call program", accounts[5].PublicKey)
 	}
 
 	topUp, err := BuildTopUpInstruction(TopUpParams{
@@ -286,6 +289,7 @@ func TestFindEventAuthorityPDA(t *testing.T) {
 func openParams() OpenChannelParams {
 	return OpenChannelParams{
 		Payer:            pk(1),
+		RentPayer:        pk(7),
 		Payee:            pk(2),
 		Mint:             pk(3),
 		AuthorizedSigner: pk(4),
@@ -312,8 +316,8 @@ func TestBuildOpenInstructionProgramIDAndAccounts(t *testing.T) {
 	}
 
 	metas := inst.Accounts()
-	if len(metas) != 13 {
-		t.Fatalf("expected 13 accounts, got %d", len(metas))
+	if len(metas) != 14 {
+		t.Fatalf("expected 14 accounts, got %d", len(metas))
 	}
 
 	channel, _, err := FindChannelPDA(params.Payer, params.Payee, params.Mint, params.AuthorizedSigner, params.Salt)
@@ -333,8 +337,12 @@ func TestBuildOpenInstructionProgramIDAndAccounts(t *testing.T) {
 		t.Fatalf("event-authority pda: %v", err)
 	}
 
+	// Account order after the rentPayer (+1) shift: 0 payer, 1 rentPayer,
+	// 2 payee, 3 mint, 4 authorizedSigner, 5 channel, 6 payerTokenAccount,
+	// 7 channelTokenAccount, 8 tokenProgram, ...
 	want := []solana.PublicKey{
 		params.Payer,
+		params.RentPayer,
 		params.Payee,
 		params.Mint,
 		params.AuthorizedSigner,
@@ -358,10 +366,13 @@ func TestBuildOpenInstructionProgramIDAndAccounts(t *testing.T) {
 	if !metas[0].IsSigner || !metas[0].IsWritable {
 		t.Fatalf("payer must be writable signer")
 	}
-	if !metas[4].IsWritable {
+	if !metas[1].IsSigner || !metas[1].IsWritable {
+		t.Fatalf("rentPayer must be writable signer")
+	}
+	if !metas[5].IsWritable {
 		t.Fatalf("channel must be writable")
 	}
-	if !metas[5].IsWritable || !metas[6].IsWritable {
+	if !metas[6].IsWritable || !metas[7].IsWritable {
 		t.Fatalf("token accounts must be writable")
 	}
 }

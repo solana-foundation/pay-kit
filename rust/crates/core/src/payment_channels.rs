@@ -75,6 +75,11 @@ pub struct Distribution {
 #[derive(Debug, Clone)]
 pub struct OpenChannelParams {
     pub payer: Pubkey,
+    /// Operator / fee payer that funds the channel PDA + escrow-ATA rent at open
+    /// (and reclaims it at finalize). Pinned to the same key that co-signs the
+    /// open as fee payer, so one operator signature covers both roles — there is
+    /// no separate wire field for it.
+    pub rent_payer: Pubkey,
     pub payee: Pubkey,
     pub mint: Pubkey,
     pub authorized_signer: Pubkey,
@@ -237,6 +242,13 @@ pub fn voucher_message_bytes(
         .map_err(|e| Error::Serialization(format!("voucher Borsh serialization failed: {e}")))
 }
 
+/// Builds the `open` instruction.
+///
+/// `params.rent_payer` is the operator / fee payer: it funds the channel PDA +
+/// escrow ATA rent at open (and reclaims it at finalize). It is always the same
+/// key used as the transaction fee payer, so a single operator signature covers
+/// both the fee-payer and `rentPayer` signer roles — there is no separate wire
+/// field for it.
 pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
     let addresses = derive_channel_addresses(params);
     let recipients = params
@@ -250,6 +262,7 @@ pub fn build_open_instruction(params: &OpenChannelParams) -> Instruction {
 
     let mut ix = OpenBuilder::new()
         .payer(to_address(&params.payer))
+        .rent_payer(to_address(&params.rent_payer))
         .payee(to_address(&params.payee))
         .mint(to_address(&params.mint))
         .authorized_signer(to_address(&params.authorized_signer))
@@ -409,6 +422,7 @@ pub fn build_finalize_instruction(channel: &Pubkey, program_id: &Pubkey) -> Inst
 pub fn build_distribute_instruction(
     channel: &Pubkey,
     payer: &Pubkey,
+    rent_payer: &Pubkey,
     payee: &Pubkey,
     treasury: &Pubkey,
     mint: &Pubkey,
@@ -439,6 +453,7 @@ pub fn build_distribute_instruction(
     let mut ix = DistributeBuilder::new()
         .channel(to_address(channel))
         .payer(to_address(payer))
+        .rent_payer(to_address(rent_payer))
         .channel_token_account(to_address(&channel_token_account))
         .payer_token_account(to_address(&payer_token_account))
         .payee_token_account(to_address(&payee_token_account))
@@ -475,6 +490,8 @@ pub async fn build_open_payment_channel_tx(
 ) -> Result<PaymentChannelOpenTransaction> {
     let params = OpenChannelParams {
         payer: signer.pubkey(),
+        // rentPayer is pinned to the operator / fee payer already in scope.
+        rent_payer: *fee_payer,
         payee: *payee,
         mint: *mint,
         authorized_signer: *authorized_signer,

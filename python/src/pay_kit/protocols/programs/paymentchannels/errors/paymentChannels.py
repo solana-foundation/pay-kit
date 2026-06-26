@@ -98,6 +98,15 @@ class NotEnoughAccountKeys(ProgramError):
     code = 9
     name = "NotEnoughAccountKeys"
     msg = ""
+class InvalidChannelRentPayer(ProgramError):
+    def __init__(self) -> None:
+        super().__init__(
+            10, ""
+        )
+
+    code = 10
+    name = "InvalidChannelRentPayer"
+    msg = ""
 class ChannelAccountMismatch(ProgramError):
     def __init__(self) -> None:
         super().__init__(
@@ -560,6 +569,7 @@ CustomError = typing.Union[
     InvalidChannelMint,
     InvalidEventAuthority,
     NotEnoughAccountKeys,
+    InvalidChannelRentPayer,
     ChannelAccountMismatch,
     InvalidChannelTokenAccount,
     InvalidChannelTokenExtensions,
@@ -622,6 +632,7 @@ CUSTOM_ERROR_MAP: dict[int, CustomError] = {
     7: InvalidChannelMint(),
     8: InvalidEventAuthority(),
     9: NotEnoughAccountKeys(),
+    10: InvalidChannelRentPayer(),
     50: ChannelAccountMismatch(),
     51: InvalidChannelTokenAccount(),
     52: InvalidChannelTokenExtensions(),

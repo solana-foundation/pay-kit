@@ -484,6 +484,7 @@ class Session:
             recipient=self._recipient,
             network=self._network,
             max_cap=self._core.config.max_cap,
+            operator=self._core.config.operator,
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
         )
 

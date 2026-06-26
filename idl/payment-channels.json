@@ -138,6 +138,13 @@
               "type": {
                 "kind": "publicKeyTypeNode"
               }
+            },
+            {
+              "kind": "structFieldTypeNode",
+              "name": "rentPayer",
+              "type": {
+                "kind": "publicKeyTypeNode"
+              }
             }
           ],
           "kind": "structTypeNode"
@@ -606,6 +613,12 @@
         "name": "notEnoughAccountKeys"
       },
       {
+        "code": 10,
+        "kind": "errorNode",
+        "message": "Account does not match channel rent_payer",
+        "name": "invalidChannelRentPayer"
+      },
+      {
         "code": 50,
         "kind": "errorNode",
         "message": "Channel account does not match derived PDA",
@@ -1064,6 +1077,12 @@
             "name": "payer"
           },
           {
+            "isSigner": true,
+            "isWritable": true,
+            "kind": "instructionAccountNode",
+            "name": "rentPayer"
+          },
+          {
             "isSigner": false,
             "isWritable": false,
             "kind": "instructionAccountNode",
@@ -1444,6 +1463,12 @@
             "isWritable": true,
             "kind": "instructionAccountNode",
             "name": "payer"
+          },
+          {
+            "isSigner": false,
+            "isWritable": true,
+            "kind": "instructionAccountNode",
+            "name": "rentPayer"
           },
           {
             "isSigner": false,

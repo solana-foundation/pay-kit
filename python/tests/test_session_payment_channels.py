@@ -235,18 +235,32 @@ def test_build_open_transaction_accepts_duck_typed_signer() -> None:
     assert tx.signatures[payer_index].verify(kp.pubkey(), bytes(tx.message))
 
 
-def test_build_open_transaction_uses_explicit_fee_payer() -> None:
-    explicit_fee_payer = _pk(6)
+def test_build_open_transaction_accepts_explicit_operator_fee_payer() -> None:
+    operator = _pk(1)
     built = build_open_payment_channel_transaction(
-        _request(_pk(1), _pk(2)),
+        _request(operator, _pk(2)),
         _kp(15),
         _pk(16),
         Hash.default(),
-        fee_payer=explicit_fee_payer,
+        fee_payer=operator,
         options=PaymentChannelOpenOptions(salt=123),
     )
     tx = _decode_tx(built.transaction)
-    assert list(tx.message.account_keys)[0] == explicit_fee_payer
+    assert list(tx.message.account_keys)[0] == operator
+
+
+def test_build_open_transaction_rejects_non_operator_fee_payer() -> None:
+    operator = _pk(1)
+    non_operator_fee_payer = _pk(6)
+    with pytest.raises(ValueError, match="fee_payer must equal the challenge operator"):
+        build_open_payment_channel_transaction(
+            _request(operator, _pk(2)),
+            _kp(15),
+            _pk(16),
+            Hash.default(),
+            fee_payer=non_operator_fee_payer,
+            options=PaymentChannelOpenOptions(salt=123),
+        )
 
 
 # -- session openers -----------------------------------------------------------

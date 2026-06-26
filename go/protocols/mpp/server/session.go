@@ -48,7 +48,14 @@ type Split struct {
 // the attached transaction, bind the payload signature to it, and confirm the
 // signature on-chain. This is the seam the on-chain layer plugs into; nil
 // skips verification.
-type SessionTxVerifier[P any] func(ctx context.Context, payload *P) error
+//
+// It returns the channel payer recorded by the verified transaction (open
+// account 0, base58): the deposit funder and the distribute refund
+// destination, which the program pins to channel.payer. The returned payer is
+// empty when the verifier cannot establish it (signature-only verification, or
+// a top-up that carries no open transaction); callers then fall back to the
+// payload's owner/payer fields.
+type SessionTxVerifier[P any] func(ctx context.Context, payload *P) (string, error)
 
 // SessionConfig is the server configuration for the session intent.
 type SessionConfig struct {
@@ -245,16 +252,22 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 	// On-chain verification seam (push mode only; pull-mode host integrations
 	// submit server-broadcast transactions or validate delegated-token state
 	// before invoking this lower-level store method).
+	var verifiedPayer string
 	if payload.Mode == intents.SessionModePush && s.config.VerifyOpenTx != nil {
-		if err := s.config.VerifyOpenTx(ctx, payload); err != nil {
+		var err error
+		verifiedPayer, err = s.config.VerifyOpenTx(ctx, payload)
+		if err != nil {
 			return ChannelState{}, fmt.Errorf("open tx verification failed: %w", err)
 		}
 	}
 
-	operator := payload.Owner
-	if operator == nil {
-		operator = payload.Payer
-	}
+	// The channel payer (the deposit funder / distribute refund destination,
+	// which the program pins to channel.payer) is recorded as Operator. Prefer
+	// the payer read from the verified open transaction (account 0, what the
+	// channel actually records) over the client-supplied payload fields, which
+	// could be stale/wrong. Fall back to the payload only for opens with no
+	// transaction to verify (bare push assertion / pull).
+	operator := operatorFromVerifiedOpen(verifiedPayer, payload.Owner, payload.Payer)
 	fresh := ChannelState{
 		ChannelID:        sessionID,
 		AuthorizedSigner: payload.AuthorizedSigner,
@@ -279,6 +292,20 @@ func (s *SessionServer) ProcessOpen(ctx context.Context, payload *intents.OpenPa
 		}
 		return fresh, nil
 	})
+}
+
+// operatorFromVerifiedOpen resolves the channel payer (recorded as Operator)
+// for an open, preferring the payer read from the verified open transaction
+// (authoritative: open account 0) over the client-supplied payload fields.
+// Returns nil only when none of the three is set.
+func operatorFromVerifiedOpen(verifiedPayer string, owner, payer *string) *string {
+	if verifiedPayer != "" {
+		return &verifiedPayer
+	}
+	if owner != nil {
+		return owner
+	}
+	return payer
 }
 
 // VerifyVoucher verifies a voucher, advances the watermark, and returns the
@@ -366,9 +393,10 @@ func (s *SessionServer) ProcessTopUp(ctx context.Context, payload *intents.TopUp
 		return ChannelState{}, fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
 	}
 
-	// On-chain verification seam (same shape as ProcessOpen).
+	// On-chain verification seam (same shape as ProcessOpen). A top-up never
+	// establishes the channel payer, so the returned payer is ignored.
 	if s.config.VerifyTopUpTx != nil {
-		if err := s.config.VerifyTopUpTx(ctx, payload); err != nil {
+		if _, err := s.config.VerifyTopUpTx(ctx, payload); err != nil {
 			return ChannelState{}, fmt.Errorf("top-up tx verification failed: %w", err)
 		}
 	}

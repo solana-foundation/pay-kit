@@ -22,6 +22,7 @@ layout = borsh.CStruct(
 
 class OpenAccounts(typing.TypedDict):
     payer:SolPubkey
+    rentPayer:SolPubkey
     payee:SolPubkey
     mint:SolPubkey
     authorizedSigner:SolPubkey
@@ -43,6 +44,7 @@ def Open(
 ) ->Instruction:
     keys: list[AccountMeta] = [
     AccountMeta(pubkey=accounts["payer"], is_signer=True, is_writable=True),
+    AccountMeta(pubkey=accounts["rentPayer"], is_signer=True, is_writable=True),
     AccountMeta(pubkey=accounts["payee"], is_signer=False, is_writable=False),
     AccountMeta(pubkey=accounts["mint"], is_signer=False, is_writable=False),
     AccountMeta(pubkey=accounts["authorizedSigner"], is_signer=False, is_writable=False),

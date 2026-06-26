@@ -147,6 +147,12 @@ type DistributeParams struct {
 	// Payer is the original channel payer, refunded the unsettled remainder.
 	Payer solana.PublicKey
 
+	// RentPayer is the operator / fee payer recorded at open: it reclaims the
+	// channel PDA + escrow ATA rent at finalize. It is writable (not a signer)
+	// on distribute and must be the operator already in scope (the channel's
+	// recorded rentPayer). Not a wire/payload field.
+	RentPayer solana.PublicKey
+
 	// Payee is the primary payment recipient.
 	Payee solana.PublicKey
 
@@ -174,6 +180,9 @@ type DistributeParams struct {
 // followed by one writable recipient token account per split.
 func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, error) {
 	programID := resolveProgram(params.ProgramID)
+	if params.RentPayer.IsZero() {
+		return nil, fmt.Errorf("rent_payer is required (the operator recorded as the channel rent_payer at open)")
+	}
 	treasury := params.Treasury
 	if treasury.IsZero() {
 		treasury = TreasuryOwner()
@@ -217,6 +226,7 @@ func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, er
 	builder := generated.NewDistributeInstructionBuilder().
 		SetChannelAccount(params.Channel).
 		SetPayerAccount(params.Payer).
+		SetRentPayerAccount(params.RentPayer).
 		SetChannelTokenAccountAccount(channelToken).
 		SetPayerTokenAccountAccount(payerToken).
 		SetPayeeTokenAccountAccount(payeeToken).

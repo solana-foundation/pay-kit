@@ -65,6 +65,14 @@ func TestDerivePaymentChannelOpenUsesChallengeDefaultsAndSplits(t *testing.T) {
 	if !open.AuthorizedSigner.Equals(authorizedSigner) {
 		t.Fatalf("authorizedSigner = %s", open.AuthorizedSigner)
 	}
+	// RentPayer is the challenge operator (the gasless fee payer) and must not
+	// be conflated with the authorizedSigner.
+	if !open.RentPayer.Equals(operator) {
+		t.Fatalf("rentPayer = %s, want challenge operator %s", open.RentPayer, operator)
+	}
+	if !open.OpenChannelParams().RentPayer.Equals(operator) {
+		t.Fatalf("OpenChannelParams().RentPayer = %s, want operator %s", open.OpenChannelParams().RentPayer, operator)
+	}
 	if open.Deposit != 1000 {
 		t.Fatalf("deposit = %d, want challenge cap 1000", open.Deposit)
 	}
@@ -278,31 +286,52 @@ func TestBuildOpenPaymentChannelTransactionPartiallySignsForOperatorBroadcast(t 
 	}
 }
 
-func TestBuildOpenPaymentChannelTransactionUsesExplicitFeePayerAndChallengeBlockhash(t *testing.T) {
+func TestBuildOpenPaymentChannelTransactionUsesOperatorFeePayerAndChallengeBlockhash(t *testing.T) {
 	operator := testutil.NewPrivateKey().PublicKey()
-	explicitFeePayer := testutil.NewPrivateKey().PublicKey()
 	recipient := testutil.NewPrivateKey().PublicKey()
 	request := testSessionRequest(operator, recipient)
 	challengeBlockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
 	request.RecentBlockhash = strptr(challengeBlockhash.String())
 	payerSigner := testutil.NewPrivateKey()
 
+	// FeePayer explicitly set to the operator must succeed (gasless: the server
+	// records rentPayer == operator).
 	built, err := BuildOpenPaymentChannelTransaction(BuildOpenPaymentChannelTransactionParams{
 		Request:          request,
 		Signer:           payerSigner,
 		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
-		FeePayer:         &explicitFeePayer,
+		FeePayer:         &operator,
 		Options:          PaymentChannelOpenOptions{Salt: u64ptr(123)},
 	})
 	if err != nil {
 		t.Fatalf("BuildOpenPaymentChannelTransaction: %v", err)
 	}
 	tx := decodeOpenTransaction(t, built.Transaction)
-	if !tx.Message.AccountKeys[0].Equals(explicitFeePayer) {
-		t.Fatalf("fee payer = %s, want explicit", tx.Message.AccountKeys[0])
+	if !tx.Message.AccountKeys[0].Equals(operator) {
+		t.Fatalf("fee payer = %s, want operator", tx.Message.AccountKeys[0])
 	}
 	if tx.Message.RecentBlockhash != challengeBlockhash {
 		t.Fatalf("recentBlockhash = %s, want challenge echo %s", tx.Message.RecentBlockhash, challengeBlockhash)
+	}
+}
+
+func TestBuildOpenPaymentChannelTransactionRejectsNonOperatorFeePayer(t *testing.T) {
+	operator := testutil.NewPrivateKey().PublicKey()
+	nonOperatorFeePayer := testutil.NewPrivateKey().PublicKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	request := testSessionRequest(operator, recipient)
+	challengeBlockhash := solana.HashFromBytes(testutil.NewPrivateKey().PublicKey().Bytes())
+	request.RecentBlockhash = strptr(challengeBlockhash.String())
+
+	_, err := BuildOpenPaymentChannelTransaction(BuildOpenPaymentChannelTransactionParams{
+		Request:          request,
+		Signer:           testutil.NewPrivateKey(),
+		AuthorizedSigner: testutil.NewPrivateKey().PublicKey(),
+		FeePayer:         &nonOperatorFeePayer,
+		Options:          PaymentChannelOpenOptions{Salt: u64ptr(123)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "FeePayer must equal the challenge operator") {
+		t.Fatalf("error = %v, want non-operator fee payer rejection", err)
 	}
 }
 

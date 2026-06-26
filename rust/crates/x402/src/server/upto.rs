@@ -361,9 +361,12 @@ impl X402Upto {
                 "channel authorized_signer is not the operator".to_string(),
             ));
         }
-        if channel.deposit < max {
+        if channel.deposit != max {
             return Err(Error::Other(format!(
-                "on-chain deposit {} below authorized maximum {max}",
+                "on-chain deposit {} != authorized maximum {max}: the deposit is the \
+                 enforced ceiling and `topUp` can raise an open channel's deposit, so it \
+                 must equal the authorized amount exactly — `>=` would leave the x402 \
+                 ceiling advisory rather than enforced",
                 channel.deposit
             )));
         }
@@ -436,6 +439,8 @@ impl X402Upto {
         instructions.push(pc::build_distribute_instruction(
             &open.channel_id,
             &open.payer,
+            // rentPayer is pinned to the operator (the fee payer).
+            &self.operator,
             &Pubkey::from_str(&self.config.recipient)
                 .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?,
             &pc::treasury_owner(),
@@ -491,6 +496,9 @@ impl X402Upto {
         validate_open_instruction(
             tx,
             &self.program_id()?,
+            // upto is gasless + delegated: the operator funds the rent and signs
+            // the voucher, so it is both the rentPayer and the authorized_signer.
+            &self.operator,
             &self.operator,
             payer,
             payee,
@@ -562,10 +570,15 @@ fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> R
 
 /// Assert `tx` is exactly the expected payment-channels `open` instruction so the
 /// operator can safely co-sign it as fee payer (see [`X402Upto::validate_open_transaction`]).
+// Each account slot is an independent expected key (rentPayer vs
+// authorized_signer are distinct roles), so they are passed individually
+// rather than bundled — the arity is inherent to the open account layout.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_open_instruction(
     tx: &VersionedTransaction,
     program_id: &Pubkey,
-    operator: &Pubkey,
+    rent_payer: &Pubkey,
+    authorized_signer: &Pubkey,
     payer: &Pubkey,
     payee: &Pubkey,
     mint: &Pubkey,
@@ -594,7 +607,13 @@ pub(crate) fn validate_open_instruction(
         ));
     }
     // Account order from `build_open_instruction`:
-    // [payer, payee, mint, authorized_signer, channel, ...].
+    // [payer, rentPayer, payee, mint, authorized_signer, channel, ...].
+    // rentPayer (slot 1) is whoever funds the channel PDA + escrow-ATA rent and
+    // co-signs as fee payer; authorized_signer (slot 4) is the voucher signer.
+    // These are independent roles (mirrors the mpp-session `verifyOpenTx`): in
+    // gasless `upto` both are the operator, in gasless `batch` rentPayer is the
+    // operator while authorized_signer is the payer — so each slot is checked
+    // against its own expected key rather than a single conflated one.
     let account_at = |pos: usize| -> Option<Pubkey> {
         ix.accounts
             .get(pos)
@@ -614,10 +633,11 @@ pub(crate) fn validate_open_instruction(
         }
     };
     expect(0, payer, "payer")?;
-    expect(1, payee, "payee")?;
-    expect(2, mint, "mint")?;
-    expect(3, operator, "authorized_signer")?;
-    expect(4, channel_id, "channel")?;
+    expect(1, rent_payer, "rent_payer")?;
+    expect(2, payee, "payee")?;
+    expect(3, mint, "mint")?;
+    expect(4, authorized_signer, "authorized_signer")?;
+    expect(5, channel_id, "channel")?;
     Ok(())
 }
 
@@ -640,6 +660,8 @@ mod tests {
     ) -> OpenChannelParams {
         OpenChannelParams {
             payer,
+            // rentPayer is pinned to the operator (the fee payer that co-signs open).
+            rent_payer: operator,
             payee,
             mint,
             authorized_signer: operator,
@@ -673,12 +695,68 @@ mod tests {
             &tx,
             &pc::default_program_id(),
             &operator,
+            &operator,
             &payer,
             &payee,
             &mint,
             &channel,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn validates_distinct_rent_payer_and_authorized_signer() {
+        // Gasless batch / client-voucher (matrix combo 2): the operator funds
+        // the rent (rentPayer) while the payer signs vouchers (authorized_signer)
+        // — two distinct keys. The old conflated validator rejected this open.
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = OpenChannelParams {
+            payer,
+            rent_payer: operator,
+            payee,
+            mint,
+            authorized_signer: payer,
+            salt: 7,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![],
+            token_program: token_program(),
+            program_id: pc::default_program_id(),
+        };
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+
+        // Correct expectations (rentPayer = operator, authorized_signer = payer).
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &payer,
+            &payer,
+            &payee,
+            &mint,
+            &channel,
+        )
+        .is_ok());
+
+        // Swapping the two expected keys must fail — proves the slots are
+        // validated independently rather than against one conflated key.
+        assert!(validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &payer,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &channel,
+        )
+        .is_err());
     }
 
     #[test]
@@ -695,6 +773,7 @@ mod tests {
         assert!(validate_open_instruction(
             &tx,
             &pc::default_program_id(),
+            &operator,
             &operator,
             &Pubkey::new_unique(),
             &Pubkey::new_unique(),
@@ -727,6 +806,7 @@ mod tests {
             &two,
             &pc::default_program_id(),
             &operator,
+            &operator,
             &payer,
             &payee,
             &mint,
@@ -739,6 +819,7 @@ mod tests {
         assert!(validate_open_instruction(
             &one,
             &pc::default_program_id(),
+            &operator,
             &operator,
             &payer,
             &Pubkey::new_unique(),

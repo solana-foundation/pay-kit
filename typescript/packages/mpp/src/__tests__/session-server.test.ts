@@ -1267,6 +1267,7 @@ describe('session() verify() close retry', () => {
                 channelId,
                 deposit: '1000',
                 mode: 'push',
+                payer: signer.address,
                 signature: 'open-sig',
             }),
             request: {} as never,
@@ -1296,6 +1297,52 @@ describe('session() verify() close retry', () => {
         await expect(
             method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
         ).rejects.toThrow(/finalized/);
+    });
+
+    test('close refuses to settle when the channel payer (refund destination) was not recorded', async () => {
+        const store = createMemorySessionStore();
+        const signer = await generateKeyPairSigner();
+        const merchant = await generateKeyPairSigner();
+        const channelId = '11111111111111111111111111111111';
+        const rpc = {
+            getLatestBlockhash: () => ({
+                send: async () => ({
+                    value: { blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N', lastValidBlockHeight: 0n },
+                }),
+            }),
+            getSignatureStatuses: (sigs: readonly string[]) => ({
+                send: async () => ({ value: sigs.map(() => ({ err: null })) }),
+            }),
+            sendTransaction: () => ({ send: async () => 'Sig' }),
+        };
+        const method = session({
+            cap: 1_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'devnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            rpc: rpc as never,
+            signer: merchant,
+            store,
+        });
+        // Push open with NO payer field → no refund destination recorded.
+        await method.verify({
+            credential: makeCred({
+                action: 'open',
+                authorizedSigner: signer.address,
+                channelId,
+                deposit: '1000',
+                mode: 'push',
+                signature: 'open-sig',
+            }),
+            request: {} as never,
+        });
+        // The settle must refuse rather than refund the merchant (args.recipient).
+        await expect(
+            method.verify({ credential: makeCred({ action: 'close', channelId }), request: {} as never }),
+        ).rejects.toThrow(/refund destination/);
     });
 });
 

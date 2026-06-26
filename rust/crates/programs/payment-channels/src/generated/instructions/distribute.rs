@@ -18,6 +18,8 @@ pub struct Distribute {
 
     pub payer: solana_address::Address,
 
+    pub rent_payer: solana_address::Address,
+
     pub channel_token_account: solana_address::Address,
 
     pub payer_token_account: solana_address::Address,
@@ -46,9 +48,10 @@ impl Distribute {
         args: DistributeInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(10 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(11 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.channel, false));
         accounts.push(solana_instruction::AccountMeta::new(self.payer, false));
+        accounts.push(solana_instruction::AccountMeta::new(self.rent_payer, false));
         accounts.push(solana_instruction::AccountMeta::new(
             self.channel_token_account,
             false,
@@ -131,18 +134,20 @@ impl DistributeInstructionArgs {
 ///
 ///   0. `[writable]` channel
 ///   1. `[writable]` payer
-///   2. `[writable]` channel_token_account
-///   3. `[writable]` payer_token_account
-///   4. `[writable]` payee_token_account
-///   5. `[writable]` treasury_token_account
-///   6. `[]` mint
-///   7. `[]` token_program
-///   8. `[]` event_authority
-///   9. `[optional]` self_program (default to `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX`)
+///   2. `[writable]` rent_payer
+///   3. `[writable]` channel_token_account
+///   4. `[writable]` payer_token_account
+///   5. `[writable]` payee_token_account
+///   6. `[writable]` treasury_token_account
+///   7. `[]` mint
+///   8. `[]` token_program
+///   9. `[]` event_authority
+///   10. `[optional]` self_program (default to `CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX`)
 #[derive(Clone, Debug, Default)]
 pub struct DistributeBuilder {
     channel: Option<solana_address::Address>,
     payer: Option<solana_address::Address>,
+    rent_payer: Option<solana_address::Address>,
     channel_token_account: Option<solana_address::Address>,
     payer_token_account: Option<solana_address::Address>,
     payee_token_account: Option<solana_address::Address>,
@@ -167,6 +172,11 @@ impl DistributeBuilder {
     #[inline(always)]
     pub fn payer(&mut self, payer: solana_address::Address) -> &mut Self {
         self.payer = Some(payer);
+        self
+    }
+    #[inline(always)]
+    pub fn rent_payer(&mut self, rent_payer: solana_address::Address) -> &mut Self {
+        self.rent_payer = Some(rent_payer);
         self
     }
     #[inline(always)]
@@ -247,6 +257,7 @@ impl DistributeBuilder {
         let accounts = Distribute {
             channel: self.channel.expect("channel is not set"),
             payer: self.payer.expect("payer is not set"),
+            rent_payer: self.rent_payer.expect("rent_payer is not set"),
             channel_token_account: self
                 .channel_token_account
                 .expect("channel_token_account is not set"),
@@ -283,6 +294,8 @@ pub struct DistributeCpiAccounts<'a, 'b> {
 
     pub payer: &'b solana_account_info::AccountInfo<'a>,
 
+    pub rent_payer: &'b solana_account_info::AccountInfo<'a>,
+
     pub channel_token_account: &'b solana_account_info::AccountInfo<'a>,
 
     pub payer_token_account: &'b solana_account_info::AccountInfo<'a>,
@@ -308,6 +321,8 @@ pub struct DistributeCpi<'a, 'b> {
     pub channel: &'b solana_account_info::AccountInfo<'a>,
 
     pub payer: &'b solana_account_info::AccountInfo<'a>,
+
+    pub rent_payer: &'b solana_account_info::AccountInfo<'a>,
 
     pub channel_token_account: &'b solana_account_info::AccountInfo<'a>,
 
@@ -338,6 +353,7 @@ impl<'a, 'b> DistributeCpi<'a, 'b> {
             __program: program,
             channel: accounts.channel,
             payer: accounts.payer,
+            rent_payer: accounts.rent_payer,
             channel_token_account: accounts.channel_token_account,
             payer_token_account: accounts.payer_token_account,
             payee_token_account: accounts.payee_token_account,
@@ -372,12 +388,16 @@ impl<'a, 'b> DistributeCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(10 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(11 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(
             *self.channel.key,
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new(*self.payer.key, false));
+        accounts.push(solana_instruction::AccountMeta::new(
+            *self.rent_payer.key,
+            false,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(
             *self.channel_token_account.key,
             false,
@@ -426,10 +446,11 @@ impl<'a, 'b> DistributeCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(11 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(12 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.channel.clone());
         account_infos.push(self.payer.clone());
+        account_infos.push(self.rent_payer.clone());
         account_infos.push(self.channel_token_account.clone());
         account_infos.push(self.payer_token_account.clone());
         account_infos.push(self.payee_token_account.clone());
@@ -456,14 +477,15 @@ impl<'a, 'b> DistributeCpi<'a, 'b> {
 ///
 ///   0. `[writable]` channel
 ///   1. `[writable]` payer
-///   2. `[writable]` channel_token_account
-///   3. `[writable]` payer_token_account
-///   4. `[writable]` payee_token_account
-///   5. `[writable]` treasury_token_account
-///   6. `[]` mint
-///   7. `[]` token_program
-///   8. `[]` event_authority
-///   9. `[]` self_program
+///   2. `[writable]` rent_payer
+///   3. `[writable]` channel_token_account
+///   4. `[writable]` payer_token_account
+///   5. `[writable]` payee_token_account
+///   6. `[writable]` treasury_token_account
+///   7. `[]` mint
+///   8. `[]` token_program
+///   9. `[]` event_authority
+///   10. `[]` self_program
 #[derive(Clone, Debug)]
 pub struct DistributeCpiBuilder<'a, 'b> {
     instruction: Box<DistributeCpiBuilderInstruction<'a, 'b>>,
@@ -475,6 +497,7 @@ impl<'a, 'b> DistributeCpiBuilder<'a, 'b> {
             __program: program,
             channel: None,
             payer: None,
+            rent_payer: None,
             channel_token_account: None,
             payer_token_account: None,
             payee_token_account: None,
@@ -496,6 +519,14 @@ impl<'a, 'b> DistributeCpiBuilder<'a, 'b> {
     #[inline(always)]
     pub fn payer(&mut self, payer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.payer = Some(payer);
+        self
+    }
+    #[inline(always)]
+    pub fn rent_payer(
+        &mut self,
+        rent_payer: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.rent_payer = Some(rent_payer);
         self
     }
     #[inline(always)]
@@ -612,6 +643,8 @@ impl<'a, 'b> DistributeCpiBuilder<'a, 'b> {
 
             payer: self.instruction.payer.expect("payer is not set"),
 
+            rent_payer: self.instruction.rent_payer.expect("rent_payer is not set"),
+
             channel_token_account: self
                 .instruction
                 .channel_token_account
@@ -662,6 +695,7 @@ struct DistributeCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     channel: Option<&'b solana_account_info::AccountInfo<'a>>,
     payer: Option<&'b solana_account_info::AccountInfo<'a>>,
+    rent_payer: Option<&'b solana_account_info::AccountInfo<'a>>,
     channel_token_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     payer_token_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     payee_token_account: Option<&'b solana_account_info::AccountInfo<'a>>,

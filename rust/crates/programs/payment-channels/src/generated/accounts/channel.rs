@@ -27,6 +27,7 @@ pub struct Channel {
     pub payee: Address,
     pub authorized_signer: Address,
     pub mint: Address,
+    pub rent_payer: Address,
 }
 
 impl Channel {

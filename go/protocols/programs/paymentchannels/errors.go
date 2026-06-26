@@ -34,6 +34,8 @@ const (
 	InvalidEventAuthorityError PaymentChannelsError = 0x8
 	// NotEnoughAccountKeysError - Not enough accounts were provided
 	NotEnoughAccountKeysError PaymentChannelsError = 0x9
+	// InvalidChannelRentPayerError - Account does not match channel rent_payer
+	InvalidChannelRentPayerError PaymentChannelsError = 0xA
 	// ChannelAccountMismatchError - Channel account does not match derived PDA
 	ChannelAccountMismatchError PaymentChannelsError = 0x32
 	// InvalidChannelTokenAccountError - Channel token account is not ATA(channel, mint, token_program)
@@ -158,6 +160,8 @@ func (e PaymentChannelsError) Error() string {
 		return "Invalid event authority"
 	case NotEnoughAccountKeysError:
 		return "Not enough accounts were provided"
+	case InvalidChannelRentPayerError:
+		return "Account does not match channel rent_payer"
 	case ChannelAccountMismatchError:
 		return "Channel account does not match derived PDA"
 	case InvalidChannelTokenAccountError:

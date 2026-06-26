@@ -238,12 +238,13 @@ describe('buildTopUpInstruction', () => {
 
 describe('buildDistributeInstruction', () => {
     test('appends one writable recipient ATA per split', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const splitRecipient = address('HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD');
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [
                 { bps: 1000, recipient: splitRecipient },
                 { bps: 250, recipient: splitRecipient },
@@ -251,11 +252,11 @@ describe('buildDistributeInstruction', () => {
             tokenProgram: TOKEN_PROGRAM,
         });
         expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
-        // 10 fixed + 2 recipient ATAs
-        expect(ix.accounts).toHaveLength(12);
+        // 11 fixed (after the rentPayer +1 shift) + 2 recipient ATAs
+        expect(ix.accounts).toHaveLength(13);
         // tail accounts must be writable
-        expect(ix.accounts[10]!.role).toBe(AccountRole.WRITABLE);
         expect(ix.accounts[11]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[12]!.role).toBe(AccountRole.WRITABLE);
 
         const data = new Uint8Array(ix.data);
         // [disc=7][recipients_count u32=2][(pubkey32 + bps u16) x 2]
@@ -266,16 +267,18 @@ describe('buildDistributeInstruction', () => {
         expect(view.getUint16(5 + 32 + 34, true)).toBe(250);
     });
 
-    test('zero-split distribute has only 10 fixed accounts', async () => {
-        const [payer, , payee] = await loadFixedSigners();
+    test('zero-split distribute has only 11 fixed accounts', async () => {
+        const [payer, operator, payee] = await loadFixedSigners();
         const channelId = '11111111111111111111111111111111';
         const ix = await buildDistributeInstruction({
             channelState: { channelId, payee: payee.address, payer: payer.address },
             mint: USDC.mainnet!,
+            rentPayer: operator.address,
             splits: [],
             tokenProgram: TOKEN_PROGRAM,
         });
-        expect(ix.accounts).toHaveLength(10);
+        // 11 fixed accounts after the rentPayer (+1) shift.
+        expect(ix.accounts).toHaveLength(11);
         const data = new Uint8Array(ix.data);
         const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
         expect(view.getUint32(1, true)).toBe(0);
@@ -359,6 +362,7 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
+                operator: payer.address,
                 programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
@@ -392,6 +396,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 500_000n,
                     network: 'localnet',
+                    operator: payer.address,
                     programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },
@@ -421,6 +426,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
+                    operator: payer.address,
                     programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payer.address, // wrong: payer instead of payee
                 },
@@ -461,6 +467,7 @@ describe('verifyOpenTx', () => {
                 currency: USDC.mainnet!,
                 maxCap: 5_000_000n,
                 network: 'localnet',
+                operator: payer.address,
                 programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                 recipient: payee.address,
             },
@@ -498,6 +505,7 @@ describe('verifyOpenTx', () => {
                     currency: USDC.mainnet!,
                     maxCap: 5_000_000n,
                     network: 'localnet',
+                    operator: payer.address,
                     programId: 'CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX',
                     recipient: payee.address,
                 },

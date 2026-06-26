@@ -136,6 +136,7 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=payer.pubkey(),
         )
     )
     fixture = OpenTxFixture(
@@ -155,6 +156,9 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
         max_cap=5_000_000,
         network="localnet",
         recipient=str(payee),
+        # operator is the expected rentPayer (required); the fixture pins
+        # rentPayer to its own payer.
+        operator=str(payer.pubkey()),
     )
     return fixture
 
@@ -244,6 +248,23 @@ async def test_verify_open_tx_rejects_wrong_authorized_signer() -> None:
         await verify_open_tx(expected, fixture.payload, None)
 
 
+async def test_verify_open_tx_requires_operator() -> None:
+    """rentPayer is a security boundary: an empty/None expected operator must
+    raise ValueError rather than skipping the slot-1 rentPayer check."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator="")
+    with pytest.raises(ValueError, match="operator .*is required"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_wrong_operator() -> None:
+    """The open's slot-1 rentPayer must equal the expected operator."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator=str(_kp(99).pubkey()))
+    with pytest.raises(PaymentError, match="rentPayer"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
 async def test_verify_open_tx_rejects_over_cap_deposit() -> None:
     """Mirrors TestVerifyOpenTxRejectsOverCapDeposit."""
     fixture = build_open_tx_fixture(v0=False)
@@ -267,6 +288,7 @@ async def test_verify_open_tx_rejects_zero_deposit() -> None:
             deposit=0,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
     _, fixture.payload = _sign_and_attach(fixture, ix, v0=False)
@@ -329,13 +351,15 @@ async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
-    # Swap the channel account (slot 4) for an unrelated key while keeping the
-    # instruction data intact: the re-derived PDA must catch it.
+    # Swap the channel account (slot 5, after the rentPayer +1 shift) for an
+    # unrelated key while keeping the instruction data intact: the re-derived
+    # PDA must catch it.
     accounts = list(ix.accounts)
-    tampered = accounts[4]
-    accounts[4] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
+    tampered = accounts[5]
+    accounts[5] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
     forged = Instruction(ix.program_id, ix.data, accounts)
     _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
     with pytest.raises(PaymentError, match="PDA"):
@@ -405,6 +429,7 @@ class _OpenConfig:
     network: str
     recipient: str
     max_cap: int
+    operator: str = ""
     program_id: Pubkey | None = None
 
 
@@ -414,6 +439,8 @@ def _open_session_config(fixture: OpenTxFixture) -> _OpenConfig:
         network="localnet",
         recipient=str(fixture.payee),
         max_cap=5_000_000,
+        # The fixture pins rentPayer (the operator/fee payer) to its own payer.
+        operator=str(fixture.payer.pubkey()),
     )
 
 

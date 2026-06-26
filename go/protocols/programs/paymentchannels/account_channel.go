@@ -27,6 +27,7 @@ type Channel struct {
 	Payee            ag_solanago.PublicKey
 	AuthorizedSigner ag_solanago.PublicKey
 	Mint             ag_solanago.PublicKey
+	RentPayer        ag_solanago.PublicKey
 }
 
 func (obj *Channel) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
@@ -116,6 +117,12 @@ func (obj *Channel) MarshalWithEncoder(encoder *ag_binary.Encoder) error {
 	}
 	{
 		err := encoder.Encode(obj.Mint)
+		if err != nil {
+			return err
+		}
+	}
+	{
+		err := encoder.Encode(obj.RentPayer)
 		if err != nil {
 			return err
 		}
@@ -210,6 +217,12 @@ func (obj *Channel) UnmarshalWithDecoder(decoder *ag_binary.Decoder) error {
 	}
 	{
 		err := decoder.Decode(&obj.Mint)
+		if err != nil {
+			return err
+		}
+	}
+	{
+		err := decoder.Decode(&obj.RentPayer)
 		if err != nil {
 			return err
 		}

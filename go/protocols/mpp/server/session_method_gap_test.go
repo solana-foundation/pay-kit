@@ -130,6 +130,40 @@ func TestCloseAndSettleSurfacesStoreWriteFailure(t *testing.T) {
 	}
 }
 
+// TestCloseAndSettleRefusesWhenPayerUnrecorded is the regression for the P1:
+// a channel that never recorded a payer must refuse to settle rather than
+// silently refunding the merchant (recipient). The program pins the distribute
+// payer to channel.payer, so refunding the recipient would derive the wrong
+// refund token account and fail on-chain.
+func TestCloseAndSettleRefusesWhenPayerUnrecorded(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	merchant := testutil.NewPrivateKey()
+	session := newTestSession(t, func(o *SessionOptions) {
+		o.RPC = fake
+		o.Signer = merchant
+	})
+	// Seed a close-pending channel with no Operator (no payer recorded), as a
+	// bare push open with neither owner nor payer would produce.
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey().String()
+	closeRequestedAt := uint64(1)
+	seedChannel(t, session.Core().Store(), ChannelState{
+		ChannelID:        channelID,
+		AuthorizedSigner: signer.Address(),
+		Deposit:          1_000,
+		CloseRequestedAt: &closeRequestedAt,
+	})
+
+	if _, err := session.closeAndSettleChannel(context.Background(), channelID); err == nil ||
+		!strings.Contains(err.Error(), "payer is unknown") {
+		t.Fatalf("settle without recorded payer = %v, want unknown-payer refusal", err)
+	}
+	// The merchant must never receive the refund: nothing was broadcast.
+	if len(fake.Sent) != 0 {
+		t.Fatalf("settlement broadcast %d transactions despite missing payer", len(fake.Sent))
+	}
+}
+
 func TestSettlementInstructionsInvalidMintCurrency(t *testing.T) {
 	config := sessionTestConfig()
 	// An unknown currency resolves to itself; a non-base58 value then fails
