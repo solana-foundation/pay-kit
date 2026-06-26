@@ -79,6 +79,10 @@ func (s testSigner) Sign(_ context.Context, msg []byte) ([]byte, error) {
 
 func (s testSigner) IsDemo() bool { return false }
 
+type wrongVerifiedUsageOpen struct{}
+
+func (wrongVerifiedUsageOpen) Release() {}
+
 type testPayerSigner struct{ priv solana.PrivateKey }
 
 func (s testPayerSigner) PublicKey() solana.PublicKey { return s.priv.PublicKey() }
@@ -258,7 +262,7 @@ func TestUsageAdapterSettleActualWrongType(t *testing.T) {
 		Operator: paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
 	}
 	adapter, _ := NewUsageAdapter(cfg)
-	_, err := adapter.SettleActual(context.Background(), "wrong-type", 100)
+	_, err := adapter.SettleActual(context.Background(), wrongVerifiedUsageOpen{}, 100)
 	if err == nil {
 		t.Fatal("expected error for wrong type")
 	}

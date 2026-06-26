@@ -13,9 +13,11 @@ import (
 )
 
 // VerifiedUsageOpen is an opaque, protocol-specific verified channel open
-// carried from VerifyOpen to SettleActual. The concrete type is the
-// protocol's internal verified-open handle (e.g. x402.UptoVerifiedOpen).
-type VerifiedUsageOpen interface{}
+// carried from VerifyOpen to SettleActual. Release must be idempotent; the
+// usage middleware calls it after settlement so protocol guards are not leaked.
+type VerifiedUsageOpen interface {
+	Release()
+}
 
 // UsageSettlement carries the settlement result of a usage-gated request.
 type UsageSettlement struct {
@@ -318,6 +320,9 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 		return
 	}
 	w.settled = true
+	if w.verified != nil {
+		defer w.verified.Release()
+	}
 	actual, charged := w.meter.settledBaseUnits()
 	if !charged {
 		w.settleErr = w.settleZeroAndFailClosed(ctx, "usage Charge must be called before the handler returns")

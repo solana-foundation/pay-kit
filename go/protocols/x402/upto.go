@@ -212,8 +212,9 @@ type UptoVerifiedOpen struct {
 	guard        *uptoInFlightGuard
 }
 
-// Release frees the in-flight reservation for a verified open that will not be
-// settled. SettleActual calls this automatically.
+// Release frees the in-flight reservation for a verified open. It is
+// idempotent because direct engine callers and PayKit middleware may both
+// release the same handle after settlement.
 func (o *UptoVerifiedOpen) Release() {
 	if o == nil {
 		return

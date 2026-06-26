@@ -105,9 +105,6 @@ func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (Verifie
 func (s *stubUsageAdapter) SettleActual(ctx context.Context, verified VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
 	s.settleCalls++
 	s.settledActual = actual
-	if releaser, ok := verified.(interface{ Release() }); ok {
-		releaser.Release()
-	}
 	if s.onSettle != nil {
 		s.onSettle(ctx, actual)
 	}
@@ -256,6 +253,44 @@ func TestRequireUsageSettlesOnlyAfterHandlerReturns(t *testing.T) {
 	}
 	if adapter.settledActual != 400_000 {
 		t.Fatalf("settled actual = %d, want 400000", adapter.settledActual)
+	}
+}
+
+func TestRequireUsageSettlesAndReleasesOnHandlerPanic(t *testing.T) {
+	verified := &releaseTrackingOpen{}
+	adapter := &stubUsageAdapter{detect: true, verified: verified}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("handler boom")
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	func() {
+		defer func() {
+			if recovered := recover(); recovered == nil {
+				t.Fatal("expected handler panic to propagate")
+			}
+		}()
+		h.ServeHTTP(rr, req)
+	}()
+
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 0 {
+		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
+	}
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	}
+	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body leaked after panic: %s", rr.Body.String())
 	}
 }
 
