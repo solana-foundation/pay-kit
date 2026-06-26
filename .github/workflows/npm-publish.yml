@@ -74,7 +74,12 @@ jobs:
       - name: Check if prerelease
         id: prerelease
         run: |
-          if [[ "${{ steps.version.outputs.version }}" == *"-"* ]]; then
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ "$VERSION" == *"-rc."* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "npm_tag=rc" >> $GITHUB_OUTPUT
+            echo "Release-candidate version detected, using 'rc' npm tag"
+          elif [[ "$VERSION" == *"-"* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
             echo "npm_tag=beta" >> $GITHUB_OUTPUT
             echo "Pre-release version detected, using 'beta' npm tag"
@@ -286,7 +291,12 @@ jobs:
       - name: Check if prerelease
         id: prerelease
         run: |
-          if [[ "${{ steps.version.outputs.version }}" == *"-"* ]]; then
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ "$VERSION" == *"-rc."* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+            echo "npm_tag=rc" >> $GITHUB_OUTPUT
+            echo "Release-candidate version detected, using 'rc' npm tag"
+          elif [[ "$VERSION" == *"-"* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
             echo "npm_tag=beta" >> $GITHUB_OUTPUT
             echo "Pre-release version detected, using 'beta' npm tag"
