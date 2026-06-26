@@ -282,8 +282,12 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
-	if _, err := solana.PublicKeyFromBase58(cfg.Recipient); err != nil {
+	recipient, err := solana.PublicKeyFromBase58(cfg.Recipient)
+	if err != nil {
 		return nil, fmt.Errorf("invalid recipient pubkey: %w", err)
+	}
+	if !recipient.Equals(operator) {
+		return nil, errors.New("x402 upto requires recipient/payTo to equal the operator signer pubkey")
 	}
 	rpcURL := cfg.RPCURL
 	if rpcURL == "" {

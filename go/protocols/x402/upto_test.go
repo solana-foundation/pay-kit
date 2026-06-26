@@ -862,6 +862,19 @@ func TestNewX402UptoRejectsInvalidRecipient(t *testing.T) {
 	}
 }
 
+func TestNewX402UptoRejectsRecipientDifferentFromOperator(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	recipient := testutil.NewPrivateKey().PublicKey()
+	_, err := NewX402Upto(UptoConfig{
+		Recipient:      recipient.String(),
+		OperatorSigner: signerSigner{signer},
+		Network:        paykit.SolanaLocalnet,
+	})
+	if err == nil || !strings.Contains(err.Error(), "recipient/payTo to equal the operator signer") {
+		t.Fatalf("expected recipient/operator mismatch, got %v", err)
+	}
+}
+
 func TestNewX402UptoRejectsNilSigner(t *testing.T) {
 	_, err := NewX402Upto(UptoConfig{Recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY", Network: paykit.SolanaLocalnet})
 	if err == nil || !strings.Contains(err.Error(), "operator signer is required") {

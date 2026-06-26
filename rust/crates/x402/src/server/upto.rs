@@ -136,10 +136,16 @@ impl X402Upto {
         if config.recipient.is_empty() {
             return Err(Error::Other("recipient is required".into()));
         }
-        Pubkey::from_str(&config.recipient)
+        let recipient = Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
 
         let operator = config.operator_signer.pubkey();
+        if recipient != operator {
+            return Err(Error::Other(
+                "x402 upto requires recipient/payTo to equal the operator signer pubkey"
+                    .to_string(),
+            ));
+        }
         let rpc_url = config
             .rpc_url
             .clone()
@@ -903,6 +909,32 @@ mod tests {
             bps: 10_000,
         }]);
         assert!(validate_empty_recipient_distribution_hash(&non_empty).is_err());
+    }
+
+    #[test]
+    fn new_rejects_recipient_different_from_operator() {
+        let operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let result = X402Upto::new(UptoConfig {
+            recipient: pc::pubkey_string(&recipient),
+            currency: "USDC".to_string(),
+            decimals: 6,
+            cluster: "localnet".to_string(),
+            rpc_url: Some("http://127.0.0.1:8899".to_string()),
+            resource: "/usage".to_string(),
+            description: None,
+            max_timeout_seconds: 300,
+            token_program: None,
+            program_id: None,
+            operator_signer: std::sync::Arc::new(TestSigner(operator)),
+        });
+        let err = match result {
+            Ok(_) => panic!("expected recipient/operator mismatch"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("recipient/payTo to equal the operator signer"));
     }
 
     #[tokio::test]

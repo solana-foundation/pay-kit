@@ -277,6 +277,7 @@ beforeAll(async () => {
 
   const client = Surfnet.newKeypair();
   const payTo = Surfnet.newKeypair();
+  const x402UptoPayTo = Surfnet.newKeypair();
   const platform = Surfnet.newKeypair();
 
   // Deploy every mint referenced by an active SPL scenario under the
@@ -337,6 +338,12 @@ beforeAll(async () => {
     );
     surfnet.fundToken(client.publicKey, mintPubkey, 1_000_000, programAddress);
     surfnet.fundToken(payTo.publicKey, mintPubkey, 1, programAddress);
+    surfnet.fundToken(
+      x402UptoPayTo.publicKey,
+      mintPubkey,
+      1,
+      programAddress,
+    );
   }
 
   splitRecipients = {
@@ -371,6 +378,9 @@ beforeAll(async () => {
   if (needsSolFunding) {
     surfnet.fundSol(client.publicKey, CLIENT_SOL_FUND_LAMPORTS);
   }
+  if (activeScenarios.some((scenario) => scenario.intent === "x402-upto")) {
+    surfnet.fundSol(x402UptoPayTo.publicKey, CLIENT_SOL_FUND_LAMPORTS);
+  }
 
   harnessEnv = {
     MPP_HARNESS_RPC_URL: surfnet.rpcUrl,
@@ -395,6 +405,10 @@ beforeAll(async () => {
     ),
     X402_HARNESS_FACILITATOR_SECRET_KEY: JSON.stringify(
       Array.from(surfnet.payerSecretKey),
+    ),
+    X402_HARNESS_UPTO_PAY_TO: x402UptoPayTo.publicKey,
+    X402_HARNESS_UPTO_FACILITATOR_SECRET_KEY: JSON.stringify(
+      Array.from(x402UptoPayTo.secretKey),
     ),
     PAYMENT_CHANNELS_PROGRAM_ID: PAYMENT_CHANNEL_PROGRAM,
   };
@@ -534,7 +548,7 @@ describe("mpp harness", () => {
               ? await getPrimaryRecipientBalance(
                   surfnet,
                   scenario,
-                  scenarioEnv.MPP_HARNESS_PAY_TO,
+                  primaryRecipientForScenario(scenario, scenarioEnv),
                   onChainMint,
                   scenarioTokenProgram,
                 )
@@ -563,7 +577,7 @@ describe("mpp harness", () => {
               ? await getPrimaryRecipientBalance(
                   surfnet,
                   scenario,
-                  scenarioEnv.MPP_HARNESS_PAY_TO,
+                  primaryRecipientForScenario(scenario, scenarioEnv),
                   onChainMint,
                   scenarioTokenProgram,
                 )
@@ -890,12 +904,27 @@ function environmentForScenario(
     env.X402_HARNESS_PRICE = scenario.price;
     env.X402_HARNESS_RESOURCE_PATH = scenario.resourcePath;
     env.X402_HARNESS_SETTLEMENT_HEADER = scenario.settlementHeader;
+    if (scenario.intent === "x402-upto") {
+      env.X402_HARNESS_PAY_TO = env.X402_HARNESS_UPTO_PAY_TO;
+      env.X402_HARNESS_FACILITATOR_SECRET_KEY =
+        env.X402_HARNESS_UPTO_FACILITATOR_SECRET_KEY;
+    }
   } else if (scenario.intent === "session") {
     env.PAY_KIT_HARNESS_PROTOCOL = "session";
   } else {
     env.PAY_KIT_HARNESS_PROTOCOL = "mpp";
   }
   return env;
+}
+
+function primaryRecipientForScenario(
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+): string {
+  if (scenario.intent === "x402-upto") {
+    return scenarioEnv.X402_HARNESS_PAY_TO;
+  }
+  return scenarioEnv.MPP_HARNESS_PAY_TO;
 }
 
 async function expectSettledTransactionShape(
@@ -1082,7 +1111,7 @@ function expectPaymentChannelSettlement(
   }
   const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
   const payeeAta = surfnet.getAta(
-    scenarioEnv.MPP_HARNESS_PAY_TO,
+    primaryRecipientForScenario(scenario, scenarioEnv),
     mint,
     tokenProgram,
   );
@@ -1094,7 +1123,7 @@ function expectPaymentChannelSettlement(
 
   expectIdempotentAtaCreationInstruction(message, createPayee, {
     ata: payeeAta,
-    owner: scenarioEnv.MPP_HARNESS_PAY_TO,
+    owner: primaryRecipientForScenario(scenario, scenarioEnv),
     mint,
     tokenProgram,
   });
