@@ -6,7 +6,7 @@ set shell := ["bash", "-uc"]
 subscriptions_repo     := "solana-foundation/subscriptions"
 subscriptions_ref      := "30a6f7cbd1c53862cc598d93cb771c2c86a10cbf"
 payment_channels_repo  := "Moonsong-Labs/solana-payment-channels"
-payment_channels_ref   := "8d1ef8453366ae1d552913c9fffa02016d1b0700"
+payment_channels_ref   := "d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea"
 
 default:
     @just --list
