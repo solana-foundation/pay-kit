@@ -380,6 +380,11 @@ impl X402BatchSettlement {
         validate_open_instruction(
             &tx,
             &program_id,
+            // Gasless: the operator funds the rent and co-signs as fee payer, so
+            // the rentPayer is the operator. The authorized_signer is the
+            // channel's voucher signer (the payer in batch client mode), checked
+            // independently — see the two-key rationale in `validate_open_instruction`.
+            &self.operator,
             &authorized_signer,
             &payer,
             &expected_payee,
