@@ -535,7 +535,11 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         highestVoucherExpiresAt: undefined,
         highestVoucherSignature: undefined,
         nextDeliverySequence: 0n,
-        operator: payload.owner ?? payload.payer ?? channelPayer,
+        // Prefer the payer read from the verified open transaction (account 0,
+        // what the channel actually records) over the client-supplied payload
+        // fields, which could be stale/wrong. Fall back to the payload only for
+        // opens with no transaction to verify (bare push assertion / pull).
+        operator: channelPayer ?? payload.owner ?? payload.payer,
         pendingDeliveries: [],
     };
 
