@@ -273,6 +273,199 @@ func TestVerifyVoucherForChannelInvalidCumulativeRejected(t *testing.T) {
 	}
 }
 
+// ── FIX #9: expiresAt == 0 means never-expires, and a non-zero expiry must
+// outlast the settlement window. ──
+
+func TestVerifyVoucherForChannelZeroExpiresAtNeverExpires(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	// expiresAt == 0 must be accepted regardless of the current clock,
+	// matching the on-chain settle guard (`expires_at != 0 && now >= ...`).
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, 0)
+	state := voucherTestState(signer.Address())
+
+	now := int64(10_000)
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000, NowSeconds: &now})
+	if result.Status != VoucherVerifyAccepted {
+		t.Fatalf("status = %s (%s: %s), want accepted for never-expires voucher", result.Status, result.Reason, result.Detail)
+	}
+	if result.NewExpiresAt != 0 {
+		t.Fatalf("newExpiresAt = %d, want 0 preserved", result.NewExpiresAt)
+	}
+}
+
+func TestVerifyVoucherForChannelZeroExpiresAtNeverExpiresWithSettlementWindow(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	// A never-expires voucher must be accepted even when a settlement window is
+	// configured: the window only constrains non-zero expiries.
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, 0)
+	state := voucherTestState(signer.Address())
+
+	now := int64(10_000)
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{
+		State:                   state,
+		Signed:                  voucher,
+		Deposit:                 1_000,
+		SettlementWindowSeconds: 900,
+		NowSeconds:              &now,
+	})
+	if result.Status != VoucherVerifyAccepted {
+		t.Fatalf("status = %s (%s: %s), want accepted for never-expires voucher", result.Status, result.Reason, result.Detail)
+	}
+}
+
+func TestVerifyVoucherForChannelZeroExpiresAtReplayNeverExpires(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	// A stored never-expires voucher must still replay as idempotent at any
+	// clock, not be rejected as expired.
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, 0)
+	state := voucherTestState(signer.Address())
+	state.Cumulative = 100
+	state.HighestVoucherSignature = &voucher.Signature
+
+	now := int64(10_000)
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000, NowSeconds: &now})
+	if result.Status != VoucherVerifyReplayed {
+		t.Fatalf("status = %s (%s: %s), want replayed for never-expires voucher", result.Status, result.Reason, result.Detail)
+	}
+}
+
+func TestVerifyVoucherForChannelExpiryOutsideSettlementWindowAccepted(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	now := int64(1_000)
+	// expiresAt is exactly now + window: the boundary is accepted (>=).
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, now+900)
+	state := voucherTestState(signer.Address())
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{
+		State:                   state,
+		Signed:                  voucher,
+		Deposit:                 1_000,
+		SettlementWindowSeconds: 900,
+		NowSeconds:              &now,
+	})
+	if result.Status != VoucherVerifyAccepted {
+		t.Fatalf("status = %s (%s: %s), want accepted at the window boundary", result.Status, result.Reason, result.Detail)
+	}
+}
+
+func TestVerifyVoucherForChannelExpiryInsideSettlementWindowRejected(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	now := int64(1_000)
+	// expiresAt is in the future but does not outlast the window: rejected so
+	// the async settle tx is not at risk of on-chain expiry after serving.
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, now+899)
+	state := voucherTestState(signer.Address())
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{
+		State:                   state,
+		Signed:                  voucher,
+		Deposit:                 1_000,
+		SettlementWindowSeconds: 900,
+		NowSeconds:              &now,
+	})
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectExpiryTooSoon {
+		t.Fatalf("result = %+v, want expiry-too-soon rejection", result)
+	}
+}
+
+func TestVerifyVoucherForChannelExpiryInsideSettlementWindowRejectedOnReplay(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	now := int64(1_000)
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, now+899)
+	state := voucherTestState(signer.Address())
+	state.Cumulative = 100
+	state.HighestVoucherSignature = &voucher.Signature
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{
+		State:                   state,
+		Signed:                  voucher,
+		Deposit:                 1_000,
+		SettlementWindowSeconds: 900,
+		NowSeconds:              &now,
+	})
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectExpiryTooSoon {
+		t.Fatalf("result = %+v, want expiry-too-soon rejection on replay", result)
+	}
+}
+
+func TestVerifyVoucherForChannelPastExpiryStillRejectedWithWindow(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	now := int64(1_000)
+	// A non-zero expiry already in the past is the plain expired case, not
+	// expiry-too-soon, even when a window is configured.
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, now-1)
+	state := voucherTestState(signer.Address())
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{
+		State:                   state,
+		Signed:                  voucher,
+		Deposit:                 1_000,
+		SettlementWindowSeconds: 900,
+		NowSeconds:              &now,
+	})
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectExpired {
+		t.Fatalf("result = %+v, want expired rejection (past expiry)", result)
+	}
+}
+
+// ── FIX #8: cumulative-as-nonce / replay semantics. ──
+
+func TestVerifyVoucherForChannelExactReplayChargesZero(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	// Same cumulative AND same signature as the stored highest voucher: an
+	// idempotent replay, not a fresh charge.
+	voucher := signer.SignVoucher(t, testVoucherChannelID, 100, farFuture())
+	state := voucherTestState(signer.Address())
+	state.Cumulative = 100
+	state.HighestVoucherSignature = &voucher.Signature
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: voucher, Deposit: 1_000})
+	if result.Status != VoucherVerifyReplayed {
+		t.Fatalf("status = %s, want replayed (charged 0)", result.Status)
+	}
+	if result.NewCumulative != 100 {
+		t.Fatalf("newCumulative = %d, want watermark unchanged at 100", result.NewCumulative)
+	}
+}
+
+func TestVerifyVoucherForChannelDifferentSignatureAtSameCumulativeRejected(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	stored := signer.SignVoucher(t, testVoucherChannelID, 100, farFuture())
+	// A correctly-signed second voucher at the SAME cumulative but a different
+	// signature must not be treated as a replay; it does not strictly exceed
+	// the watermark, so it is rejected as non-monotonic.
+	resigned := signer.SignVoucher(t, testVoucherChannelID, 100, farFuture()+1)
+	if resigned.Signature == stored.Signature {
+		t.Fatal("expected a distinct signature for the differing-expiry voucher")
+	}
+	state := voucherTestState(signer.Address())
+	state.Cumulative = 100
+	state.HighestVoucherSignature = &stored.Signature
+
+	result := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: resigned, Deposit: 1_000})
+	if result.Status != VoucherVerifyRejected || result.Reason != VoucherRejectCumulativeNotMonotonic {
+		t.Fatalf("result = %+v, want cumulative-not-monotonic rejection for a different signature at the same cumulative", result)
+	}
+}
+
+func TestVerifyVoucherForChannelStrictIncrementRequired(t *testing.T) {
+	signer := newTestVoucherSigner(t)
+	state := voucherTestState(signer.Address())
+	state.Cumulative = 100
+
+	// Equal to the watermark (no strict increase): rejected.
+	equal := signer.SignVoucher(t, testVoucherChannelID, 100, farFuture())
+	if r := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: equal, Deposit: 1_000}); r.Status != VoucherVerifyRejected || r.Reason != VoucherRejectCumulativeNotMonotonic {
+		t.Fatalf("equal cumulative result = %+v, want cumulative-not-monotonic rejection", r)
+	}
+
+	// One above the watermark: a strict increment is accepted.
+	higher := signer.SignVoucher(t, testVoucherChannelID, 101, farFuture())
+	if r := VerifyVoucherForChannel(VerifyVoucherArgs{State: state, Signed: higher, Deposit: 1_000}); r.Status != VoucherVerifyAccepted {
+		t.Fatalf("higher cumulative result = %+v, want accepted", r)
+	}
+}
+
 // Ordering checks: each earlier step must win over every later failure
 // present in the same voucher.
 

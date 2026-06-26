@@ -93,7 +93,10 @@ type VerifyOpenTxResult struct {
 // transaction against the session challenge.
 //
 // Both legacy and v0 transaction encodings are accepted (clients across the
-// language SDKs emit either). The embedded open
+// language SDKs emit either), but a v0 transaction that uses address lookup
+// tables is rejected: the account checks below read the static account keys,
+// so an ALT could hide the real accounts behind the fee-payer co-sign guard.
+// The embedded open
 // instruction must target the configured payment-channels program, the payee
 // must equal the challenge recipient, the mint must match the challenge
 // currency/network, the authorizedSigner must match the payload, the deposit
@@ -116,6 +119,17 @@ func VerifyOpenTx(ctx context.Context, expected VerifyOpenTxExpected, payload *i
 	tx, err := solanatx.DecodeTransactionBase64(*payload.Transaction)
 	if err != nil {
 		return VerifyOpenTxResult{}, fmt.Errorf("decode open transaction: %w", err)
+	}
+
+	// Reject v0 transactions that use address lookup tables. The fee-payer
+	// co-sign guard validates accounts (payee, rentPayer, mint,
+	// authorizedSigner, channel) from the STATIC account keys; a versioned
+	// transaction could resolve those slots through an ALT and hide the real
+	// accounts from this check. Static-key-only transactions keep the guard
+	// authoritative. Mirrors the charge-path guard in
+	// VerifyChargeTransactionPreBroadcast.
+	if len(tx.Message.AddressTableLookups) > 0 {
+		return VerifyOpenTxResult{}, fmt.Errorf("open transaction uses address lookup tables, which are not supported")
 	}
 
 	// Bind the claimed signature to this transaction before trusting it.

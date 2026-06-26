@@ -705,9 +705,10 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 				voucher.Data.Cumulative == strconv.FormatUint(current.Cumulative, 10)
 			if !replay {
 				verdict := VerifyVoucherForChannel(VerifyVoucherArgs{
-					State:   *current,
-					Signed:  voucher,
-					Deposit: current.Deposit,
+					State:                   *current,
+					Signed:                  voucher,
+					Deposit:                 current.Deposit,
+					SettlementWindowSeconds: s.core.config.SettlementWindowSeconds,
 				})
 				switch verdict.Status {
 				case VoucherVerifyRejected:

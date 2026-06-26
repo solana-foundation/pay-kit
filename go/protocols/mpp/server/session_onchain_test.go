@@ -170,6 +170,33 @@ func TestVerifyOpenTxAcceptsV0Encoding(t *testing.T) {
 	}
 }
 
+func TestVerifyOpenTxRejectsAddressLookupTables(t *testing.T) {
+	// FIX #7: a v0 open tx that uses address lookup tables must be rejected.
+	// The fee-payer co-sign guard validates accounts from the STATIC keys, so
+	// an ALT could hide the real payee/rentPayer/mint/authorizedSigner/channel
+	// behind the guard. Inject an ALT lookup into an otherwise-valid v0 tx and
+	// confirm it is rejected before any account check passes.
+	fixture := buildOpenTxFixture(t, true)
+	tx, err := solanatx.DecodeTransactionBase64(*fixture.payload.Transaction)
+	if err != nil {
+		t.Fatalf("decode v0 fixture: %v", err)
+	}
+	tx.Message.SetAddressTableLookups([]solana.MessageAddressTableLookup{{
+		AccountKey:      testutil.NewPrivateKey().PublicKey(),
+		WritableIndexes: solana.Uint8SliceAsNum{0},
+		ReadonlyIndexes: solana.Uint8SliceAsNum{1},
+	}})
+	encoded, err := solanatx.EncodeTransactionBase64(tx)
+	if err != nil {
+		t.Fatalf("re-encode tx with ALT: %v", err)
+	}
+	fixture.payload.Transaction = &encoded
+
+	if _, err := VerifyOpenTx(context.Background(), fixture.expected, &fixture.payload, nil); err == nil || !strings.Contains(err.Error(), "address lookup tables") {
+		t.Fatalf("err = %v, want address-lookup-table rejection", err)
+	}
+}
+
 func TestVerifyOpenTxHonorsExplicitMintAndProgramOverrides(t *testing.T) {
 	fixture := buildOpenTxFixture(t, false)
 	fixture.expected.Currency = "not-a-currency"

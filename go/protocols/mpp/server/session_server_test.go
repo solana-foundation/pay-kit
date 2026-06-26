@@ -398,6 +398,78 @@ func TestVerifyVoucherIdempotentReplayReturnsSameCumulative(t *testing.T) {
 	}
 }
 
+func TestVerifyVoucherDetailedReportsChargedAndReplay(t *testing.T) {
+	server := newSessionTestServer(sessionTestConfig())
+	signer, channelID := openTestChannel(t, server, 1_000_000)
+
+	// First voucher: a fresh charge of 100 (watermark 0 -> 100).
+	first := signer.SignVoucher(t, channelID, 100, farFuture())
+	acceptance, err := server.VerifyVoucherDetailed(context.Background(), &intents.VoucherPayload{Voucher: first})
+	if err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+	if acceptance.Replayed || acceptance.Cumulative != 100 || acceptance.Charged != 100 {
+		t.Fatalf("first acceptance = %+v, want {cumulative 100, charged 100, replayed false}", acceptance)
+	}
+
+	// Second, higher voucher: charges the delta only.
+	second := signer.SignVoucher(t, channelID, 250, farFuture())
+	acceptance, err = server.VerifyVoucherDetailed(context.Background(), &intents.VoucherPayload{Voucher: second})
+	if err != nil {
+		t.Fatalf("second submit: %v", err)
+	}
+	if acceptance.Replayed || acceptance.Cumulative != 250 || acceptance.Charged != 150 {
+		t.Fatalf("second acceptance = %+v, want {cumulative 250, charged 150, replayed false}", acceptance)
+	}
+
+	// Exact replay of the highest voucher: charged 0, flagged as a replay.
+	acceptance, err = server.VerifyVoucherDetailed(context.Background(), &intents.VoucherPayload{Voucher: second})
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !acceptance.Replayed || acceptance.Cumulative != 250 || acceptance.Charged != 0 {
+		t.Fatalf("replay acceptance = %+v, want {cumulative 250, charged 0, replayed true}", acceptance)
+	}
+}
+
+func TestVerifyVoucherDetailedRejectsDifferentSignatureAtSameCumulative(t *testing.T) {
+	server := newSessionTestServer(sessionTestConfig())
+	signer, channelID := openTestChannel(t, server, 1_000_000)
+
+	first := signer.SignVoucher(t, channelID, 100, farFuture())
+	if _, err := server.VerifyVoucherDetailed(context.Background(), &intents.VoucherPayload{Voucher: first}); err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+	// Same cumulative, different signature (different expiry): not a replay,
+	// rejected as non-monotonic rather than charged 0.
+	resigned := signer.SignVoucher(t, channelID, 100, farFuture()+60)
+	if resigned.Signature == first.Signature {
+		t.Fatal("expected a distinct signature for the differing-expiry voucher")
+	}
+	if _, err := server.VerifyVoucherDetailed(context.Background(), &intents.VoucherPayload{Voucher: resigned}); err == nil || !strings.Contains(err.Error(), "must exceed watermark") {
+		t.Fatalf("err = %v, want non-monotonic rejection for a different signature at the same cumulative", err)
+	}
+}
+
+func TestVerifyVoucherRejectsExpiryInsideSettlementWindow(t *testing.T) {
+	config := sessionTestConfig()
+	config.SettlementWindowSeconds = 3600
+	server := newSessionTestServer(config)
+	signer, channelID := openTestChannel(t, server, 1_000_000)
+
+	// Expiry is in the future but inside the settlement window: rejected.
+	tooSoon := signer.SignVoucher(t, channelID, 100, time.Now().Unix()+60)
+	if _, err := server.VerifyVoucher(context.Background(), &intents.VoucherPayload{Voucher: tooSoon}); err == nil || !strings.Contains(err.Error(), string(VoucherRejectExpiryTooSoon)) {
+		t.Fatalf("err = %v, want expiry-too-soon rejection", err)
+	}
+
+	// A never-expires voucher (expiresAt == 0) is accepted despite the window.
+	never := signer.SignVoucher(t, channelID, 100, 0)
+	if _, err := server.VerifyVoucher(context.Background(), &intents.VoucherPayload{Voucher: never}); err != nil {
+		t.Fatalf("never-expires voucher rejected: %v", err)
+	}
+}
+
 func TestVerifyVoucherRespectsMinVoucherDelta(t *testing.T) {
 	config := sessionTestConfig()
 	config.MinVoucherDelta = 100
