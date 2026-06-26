@@ -205,6 +205,70 @@ async def test_verify_open_tx_honors_explicit_mint_and_program_overrides() -> No
     assert result.channel_id == str(fixture.channel)
 
 
+async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
+    """A v0 open tx that resolves accounts through an address lookup table is
+    rejected: ``verify_open_tx`` validates the open instruction's accounts
+    against the static account keys and re-derives the channel PDA from them, so
+    an ALT could hide the real rentPayer / payee / mint behind indices the
+    verifier cannot see. The operator must never co-sign such a transaction.
+    """
+    from solders.address_lookup_table_account import (  # type: ignore[import-untyped]
+        AddressLookupTableAccount,
+    )
+
+    payer = _kp(1)
+    payee = _kp(2).pubkey()
+    authorized = _kp(3).pubkey()
+    mint = Pubkey.from_string(USDC_MAINNET_MINT)
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, PROGRAM_ID)
+    ix = build_open_instruction(
+        OpenChannelParams(
+            payer=payer.pubkey(),
+            payee=payee,
+            mint=mint,
+            authorized_signer=authorized,
+            salt=OPEN_FIXTURE_SALT,
+            deposit=OPEN_FIXTURE_DEPOSIT,
+            grace_period=OPEN_FIXTURE_GRACE,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=payer.pubkey(),
+        )
+    )
+    # Stuff some of the instruction's read-only accounts into a lookup table so
+    # ``MessageV0.try_compile`` emits a non-empty ``address_table_lookups`` list.
+    lookup_addresses = [meta.pubkey for meta in ix.accounts if not meta.is_signer]
+    alt = AddressLookupTableAccount(key=_kp(9).pubkey(), addresses=lookup_addresses)
+    blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
+    message_v0 = MessageV0.try_compile(payer.pubkey(), [ix], [alt], blockhash)
+    vtx = VersionedTransaction(message_v0, [payer])
+    # Confirm the fixture actually exercises an ALT before asserting rejection.
+    assert message_v0.address_table_lookups
+
+    encoded = base64.b64encode(bytes(vtx)).decode("ascii")
+    payload = OpenPayload.payment_channel(
+        str(channel),
+        str(OPEN_FIXTURE_DEPOSIT),
+        str(payer.pubkey()),
+        str(payee),
+        str(mint),
+        OPEN_FIXTURE_SALT,
+        OPEN_FIXTURE_GRACE,
+        str(authorized),
+        str(vtx.signatures[0]),
+    ).with_transaction(encoded)
+    expected = VerifyOpenTxExpected(
+        authorized_signer=str(authorized),
+        currency="USDC",
+        max_cap=5_000_000,
+        network="localnet",
+        recipient=str(payee),
+        operator=str(payer.pubkey()),
+    )
+
+    with pytest.raises(PaymentError, match="address lookup tables"):
+        await verify_open_tx(expected, payload, None)
+
+
 # -- verify_open_tx: failure modes --------------------------------------------
 
 

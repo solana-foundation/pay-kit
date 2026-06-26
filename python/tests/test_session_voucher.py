@@ -313,3 +313,202 @@ def test_verify_voucher_for_channel_ordering_signature_beats_expiry() -> None:
 
     result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
     assert result.reason == VoucherRejectReason.INVALID_SIGNATURE
+
+
+# -- Fix #9: expiry vs. async settlement --------------------------------------
+#
+# The on-chain settle (payment_channels helpers/voucher.rs) rejects only
+# ``expires_at != 0 && now >= expires_at``; ``expires_at == 0`` is never-expires
+# and must be ACCEPTED off-chain too. A non-zero expiry must additionally
+# outlast the settlement window so the voucher cannot expire on-chain after the
+# request is served but before the close settlement lands.
+
+
+def test_verify_voucher_for_channel_zero_expires_at_is_never_expires() -> None:
+    """expires_at == 0 means never-expires: it must be accepted, never rejected
+    as EXPIRED (mirrors the on-chain ``expires_at != 0`` guard)."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 0)
+    state = _voucher_test_state(signer.address())
+
+    # Even with a far-future clock, a zero expiry is accepted.
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=10_000_000_000)
+    )
+    assert result.status == VoucherVerifyStatus.ACCEPTED
+    assert result.new_expires_at == 0
+
+
+def test_verify_voucher_for_channel_zero_expires_at_replay_is_never_expires() -> None:
+    """A replay of a zero-expiry voucher is idempotent (REPLAYED), not EXPIRED."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 0)
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 100
+    state.highest_voucher_signature = voucher.signature
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=10_000_000_000)
+    )
+    assert result.status == VoucherVerifyStatus.REPLAYED
+    assert result.new_cumulative == 100
+
+
+def test_verify_voucher_for_channel_zero_expires_at_survives_settlement_window() -> None:
+    """A zero expiry outlasts any settlement window (never-expires)."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 0)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.ACCEPTED
+
+
+def test_verify_voucher_for_channel_nonzero_expires_at_must_outlast_settlement_window() -> None:
+    """A non-zero expiry in the future but inside the settlement window is
+    rejected: it could expire on-chain before the async close settlement."""
+    signer = _TestVoucherSigner(1)
+    # now=1000, window=900 -> need expires_at >= 1900. 1500 is in the future but
+    # does not outlast the window.
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_500)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT
+
+
+def test_verify_voucher_for_channel_nonzero_expires_at_outlasting_window_accepted() -> None:
+    """A non-zero expiry at/after now + settlement_window is accepted."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_900)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.ACCEPTED
+
+
+def test_verify_voucher_for_channel_expired_beats_settlement_window() -> None:
+    """An already-expired non-zero voucher reports EXPIRED, not
+    EXPIRES_BEFORE_SETTLEMENT (the ``<= now`` check runs first)."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 500)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.EXPIRED
+
+
+def test_verify_voucher_for_channel_settlement_window_zero_disables_outlast_check() -> None:
+    """With settlement_window == 0 only ``expires_at <= now`` rejects a non-zero
+    expiry; a near-future expiry is accepted (backward compatible)."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_001)
+    state = _voucher_test_state(signer.address())
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000, now_seconds=1_000)
+    )
+    assert result.status == VoucherVerifyStatus.ACCEPTED
+
+
+def test_verify_voucher_for_channel_nonzero_expires_at_window_applies_to_replay() -> None:
+    """The settlement-window outlast guard also applies on the replay path."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, 1_500)
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 100
+    state.highest_voucher_signature = voucher.signature
+
+    result = verify_voucher_for_channel(
+        VerifyVoucherArgs(
+            state=state, signed=voucher, deposit=1_000, now_seconds=1_000, settlement_window=900
+        )
+    )
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT
+
+
+# -- Fix #8: cumulative-as-nonce / replay -------------------------------------
+#
+# A new charge requires a STRICT cumulative increment; an exact replay (same
+# cumulative AND same signature) is an idempotent no-charge (REPLAYED), not a
+# fresh serve; a different/lower voucher is rejected.
+
+
+def test_verify_voucher_for_channel_strict_increment_advances() -> None:
+    """A strictly larger cumulative is a fresh ACCEPTED charge."""
+    signer = _TestVoucherSigner(1)
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 100
+    voucher = signer.sign_voucher(state.channel_id, 101, _far_future())
+
+    result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
+    assert result.status == VoucherVerifyStatus.ACCEPTED
+    assert result.new_cumulative == 101
+
+
+def test_verify_voucher_for_channel_exact_replay_is_zero_charge() -> None:
+    """An exact replay (same cumulative + same signature) is idempotent: REPLAYED
+    with the watermark unchanged, signalling a zero-charge no-op (not a fresh
+    serve). The caller distinguishes REPLAYED from ACCEPTED to avoid charging or
+    re-serving."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 250, _far_future())
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 250
+    state.highest_voucher_signature = voucher.signature
+
+    result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
+    assert result.status == VoucherVerifyStatus.REPLAYED
+    # Watermark is unchanged: nothing new is charged on a replay.
+    assert result.new_cumulative == state.cumulative == 250
+
+
+def test_verify_voucher_for_channel_same_cumulative_different_signature_rejected() -> None:
+    """Same cumulative as the watermark but a DIFFERENT signature is not an
+    idempotent replay; it fails the strict-increment check and is rejected as
+    non-monotonic (a forged/swapped voucher cannot pose as a replay)."""
+    signer = _TestVoucherSigner(1)
+    prior = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, _far_future())
+    # A second, distinct signature over the same cumulative (different expiry
+    # changes the signed bytes, so the signature differs).
+    other = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 100, _far_future() + 1)
+    assert other.signature != prior.signature
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 100
+    state.highest_voucher_signature = prior.signature
+
+    result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=other, deposit=1_000))
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.CUMULATIVE_NOT_MONOTONIC
+
+
+def test_verify_voucher_for_channel_lower_cumulative_rejected() -> None:
+    """A lower cumulative than the watermark is rejected as non-monotonic (no
+    refunds / rewinds through a stale voucher)."""
+    signer = _TestVoucherSigner(1)
+    voucher = signer.sign_voucher(TEST_VOUCHER_CHANNEL_ID, 99, _far_future())
+    state = _voucher_test_state(signer.address())
+    state.cumulative = 100
+
+    result = verify_voucher_for_channel(VerifyVoucherArgs(state=state, signed=voucher, deposit=1_000))
+    assert result.status == VoucherVerifyStatus.REJECTED
+    assert result.reason == VoucherRejectReason.CUMULATIVE_NOT_MONOTONIC

@@ -127,6 +127,16 @@ class SessionConfig:
     # minimum.
     min_voucher_delta: int = 0
 
+    # SettlementWindow is the forced-close grace period (seconds) the server
+    # must survive between accepting a voucher and landing the on-chain close
+    # settlement. A non-zero voucher expiry must outlast ``now +
+    # settlement_window`` or the voucher is rejected, so a voucher cannot expire
+    # on-chain after the request has been served but before settle lands. It
+    # should match the channel ``grace_period`` granted at open (the on-chain
+    # forced-close window). 0 disables the outlast check (backward compatible),
+    # leaving only the ``expires_at <= now`` rejection for non-zero expiries.
+    settlement_window: int = 0
+
     # Modes are the session modes this server accepts, advertised to clients in
     # the 402 challenge. An empty list or [push] means only the payment-channel
     # push mode is supported.
@@ -378,6 +388,7 @@ class SessionServer:
                 signed=voucher,
                 deposit=state.deposit,
                 min_voucher_delta=self._config.min_voucher_delta,
+                settlement_window=self._config.settlement_window,
             )
         )
         if result.status == VoucherVerifyStatus.REJECTED:

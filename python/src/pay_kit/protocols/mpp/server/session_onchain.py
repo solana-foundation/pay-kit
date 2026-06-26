@@ -142,10 +142,36 @@ def is_placeholder_signature(signature: str) -> bool:
     return signature.count("1") == len(signature)
 
 
+def _reject_address_lookup_tables(message: Any) -> None:
+    """Reject a v0 message that references address lookup tables (ALTs).
+
+    SECURITY: ``verify_open_tx`` validates the open instruction's accounts
+    against the message's STATIC ``account_keys`` (payer, rentPayer, payee, mint,
+    authorizedSigner, channel) and re-derives the channel PDA from them. A
+    versioned transaction may instead resolve some account indices through an
+    address lookup table, whose contents are NOT in the transaction and cannot be
+    seen here. An attacker could hide the real rentPayer / payee / mint behind an
+    ALT so the slot-based guards inspect the wrong (or out-of-range) keys, while
+    the operator co-signs as fee payer and broadcasts. Reject any ALT use up
+    front, mirroring the charge pre-broadcast verifier
+    (``server/_tx_decode.py`` / ``server/_verify.py``).
+    """
+    if getattr(message, "address_table_lookups", None):
+        raise PaymentError(
+            "v0 transactions with address lookup tables are not supported",
+            code="invalid-payload",
+        )
+
+
 def _decode_transaction(transaction_b64: str) -> tuple[list[str], list, list[str]]:
     """Decode a base64 (legacy or v0) transaction into ``(account_keys,
     instructions, signatures)`` as base58 strings / compiled-instruction
-    objects."""
+    objects.
+
+    A v0 transaction that references address lookup tables is rejected: the
+    open verifier only sees the static account keys, so an ALT could hide the
+    accounts it validates. See :func:`_reject_address_lookup_tables`.
+    """
     from solders.transaction import Transaction, VersionedTransaction
 
     from pay_kit._paycore.transaction import is_v0_wire_bytes
@@ -156,6 +182,7 @@ def _decode_transaction(transaction_b64: str) -> tuple[list[str], list, list[str
     if is_v0_wire_bytes(raw):
         vtx = VersionedTransaction.from_bytes(raw)
         message = vtx.message
+        _reject_address_lookup_tables(message)
         signatures = list(vtx.signatures)
     else:
         try:
@@ -165,6 +192,7 @@ def _decode_transaction(transaction_b64: str) -> tuple[list[str], list, list[str
         except Exception:
             vtx = VersionedTransaction.from_bytes(raw)
             message = vtx.message
+            _reject_address_lookup_tables(message)
             signatures = list(vtx.signatures)
     account_keys = [str(key) for key in message.account_keys]
     instructions = list(message.instructions)
@@ -211,6 +239,10 @@ async def verify_open_tx(
 
     try:
         account_keys, instructions, signatures = _decode_transaction(payload.transaction)
+    except PaymentError:
+        # Already a structured rejection (e.g. the address-lookup-table guard);
+        # surface it verbatim rather than wrapping it as a generic decode error.
+        raise
     except Exception as exc:
         raise PaymentError(f"decode open transaction: {exc}", code="invalid-payload") from exc
 
