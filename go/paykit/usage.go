@@ -189,7 +189,6 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 				verified:       verified,
 				meter:          meter,
 				payment:        pmt,
-				ctx:            settleCtx,
 				onSettleError: func(err error) {
 					handler := c.errorHandler
 					if handler == nil {
@@ -300,7 +299,6 @@ type usageSettlementWriter struct {
 	verified      VerifiedUsageOpen
 	meter         *Charge
 	payment       *Payment
-	ctx           context.Context
 	header        http.Header
 	body          bytes.Buffer
 	status        int
