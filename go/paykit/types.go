@@ -189,7 +189,7 @@ type X402Config struct {
 	// operator signer.
 	FacilitatorURL string
 	// Scheme is the x402 sub-scheme advertised in the 402 challenge.
-	// Defaults to "exact"; the only scheme this SDK implements today.
+	// Defaults to "exact"; set "upto" for usage-gated payment channels.
 	Scheme string
 	// Signer overrides Operator.Signer for x402 facilitator cosigning.
 	// Escape hatch only (DESIGN rule 3): leave nil to use the operator

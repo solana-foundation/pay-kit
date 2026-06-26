@@ -160,6 +160,7 @@ func mountX402Upto(mux *http.ServeMux, resourcePath string) {
 			FeePayer:  true,
 		},
 		X402: paykit.X402Config{
+			Scheme:         "upto",
 			ChannelProgram: os.Getenv("PAYMENT_CHANNELS_PROGRAM_ID"),
 		},
 		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402-upto")},

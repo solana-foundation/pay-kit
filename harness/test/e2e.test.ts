@@ -1141,7 +1141,7 @@ function expectPaymentChannelSettlement(
   expect(distribute.accountIndices, "distribute account count").toHaveLength(
     10,
   );
-  expect(accountAt(message, settle.accountIndices[0])).toBe(
+  expect(accountAt(message, settle.accountIndices[1]), "settled channel").toBe(
     accountAt(message, distribute.accountIndices[0]),
   );
   expect(accountAt(message, distribute.accountIndices[4]), "payee ATA").toBe(

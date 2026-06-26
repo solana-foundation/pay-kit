@@ -205,10 +205,10 @@ func New(cfg Config) (*Client, error) {
 			return nil, err
 		}
 	}
-	// Wire the usage (upto) adapter when x402 is accepted and a builder
-	// is registered. The x402 package registers it in init(); nil means
-	// usage gates are not available (x402 not compiled in).
-	if containsProtocol(cfg.Accept, X402) && registeredUsageBuilder != nil {
+	// Wire the usage (upto) adapter only for x402 upto configs. Exact x402
+	// still supports a recipient separate from the operator signer, while
+	// the payment-channel program requires upto recipient == operator.
+	if containsProtocol(cfg.Accept, X402) && cfg.X402.Scheme == "upto" && registeredUsageBuilder != nil {
 		usageAdapter, err := registeredUsageBuilder(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("paykit: usage adapter: %w", err)
