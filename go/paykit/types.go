@@ -202,6 +202,9 @@ type X402Config struct {
 	// (default) the challenge carries no `extensions` object; extensions
 	// default to absent on the wire.
 	RequirePaymentIdentifier bool
+	// ChannelProgram overrides the payment-channels program id advertised
+	// by x402 upto. Leave empty for the canonical mainnet deployment.
+	ChannelProgram string
 }
 
 // MPPConfig groups the MPP-charge-specific knobs.

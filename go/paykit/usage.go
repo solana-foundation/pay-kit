@@ -1,6 +1,7 @@
 package paykit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,9 +26,9 @@ type UsageSettlement struct {
 // Charge is the usage meter handed to a usage-gated handler. The handler
 // reports the actual amount consumed (token base units) via Charge; the
 // gate settles that amount — never above the authorized ceiling — after
-// the handler returns. If the handler never calls Charge, the settled
-// amount is 0. Mirrors the TypeScript Charge class and the Rust
-// paid_upto_* Charge extractor.
+// the handler returns. The handler must call Charge with a positive amount
+// before returning; otherwise RequireUsage withholds the protected response.
+// Mirrors the TypeScript Charge class and the Rust paid_upto_* Charge extractor.
 type Charge struct {
 	maxBaseUnits uint64
 	amount       uint64
@@ -62,6 +63,12 @@ func (c *Charge) SettledBaseUnits() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.amount
+}
+
+func (c *Charge) settledBaseUnits() (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.amount, c.set
 }
 
 // chargeKey is the context attachment key for the usage Charge meter.
@@ -183,6 +190,22 @@ func (c *Client) RequireUsageFunc(resolve GateFunc) func(http.Handler) http.Hand
 				meter:          meter,
 				payment:        pmt,
 				ctx:            settleCtx,
+				onSettleError: func(err error) {
+					handler := c.errorHandler
+					if handler == nil {
+						handler = DefaultUsageErrorHandler
+					}
+					perr := &PaymentError{Code: "settlement_failed", Err: err}
+					perr.Gate = &gate
+					perr.Protocols = []Protocol{X402}
+					perr.status = http.StatusPaymentRequired
+					perr.resource = r.URL.Path
+					if entry := adapter.UsageAcceptsEntry(&gate); entry != nil {
+						perr.accepts = []AcceptsEntry{entry}
+					}
+					perr.headers = adapter.UsageChallengeHeaders(&gate)
+					handler(w, r, perr)
+				},
 			}
 			defer func() {
 				uw.finalizeSettlement(settleCtx)
@@ -256,7 +279,7 @@ func (c *Client) writeUsage402(w http.ResponseWriter, r *http.Request, gate *Gat
 	perr.headers = headers
 	handler := c.errorHandler
 	if handler == nil {
-		handler = DefaultErrorHandler
+		handler = DefaultUsageErrorHandler
 	}
 	handler(w, r, perr)
 }
@@ -268,23 +291,25 @@ func gateTotalBaseUnits(gate *Gate) uint64 {
 	return scaled.Truncate(0).BigInt().Uint64()
 }
 
-// usageSettlementWriter wraps the ResponseWriter to defer settlement until
-// the handler completes. On the first WriteHeader/Write call, it settles
-// the metered amount via the usage adapter and merges the settlement
-// headers before forwarding to the underlying writer. If settlement fails,
-// the handler's status is forwarded unchanged; settlement headers are omitted
-// (the channel is already open and the resource has been served).
+// usageSettlementWriter buffers the handler response so settlement can run
+// after the handler has finished recording usage. If settlement fails, the
+// buffered protected response is withheld and the usage error handler writes 402.
 type usageSettlementWriter struct {
 	http.ResponseWriter
-	adapter    UsageAdapter
-	verified   VerifiedUsageOpen
-	meter      *Charge
-	payment    *Payment
-	ctx        context.Context
-	settled    bool
-	settlement *UsageSettlement
-	settleErr  error
-	wrote      bool
+	adapter       UsageAdapter
+	verified      VerifiedUsageOpen
+	meter         *Charge
+	payment       *Payment
+	ctx           context.Context
+	header        http.Header
+	body          bytes.Buffer
+	status        int
+	settled       bool
+	settlement    *UsageSettlement
+	settleErr     error
+	wrote         bool
+	flushed       bool
+	onSettleError func(error)
 }
 
 func (w *usageSettlementWriter) settle(ctx context.Context) {
@@ -292,7 +317,18 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 		return
 	}
 	w.settled = true
-	result, err := w.adapter.SettleActual(ctx, w.verified, w.meter.SettledBaseUnits())
+	actual, charged := w.meter.settledBaseUnits()
+	if !charged {
+		w.releaseVerifiedOpen()
+		w.settleErr = errors.New("usage Charge must be called before the handler returns")
+		return
+	}
+	if actual == 0 {
+		w.releaseVerifiedOpen()
+		w.settleErr = errors.New("usage Charge amount must be greater than zero")
+		return
+	}
+	result, err := w.adapter.SettleActual(ctx, w.verified, actual)
 	if err != nil {
 		w.settleErr = err
 		return
@@ -309,32 +345,92 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 	}
 }
 
-func (w *usageSettlementWriter) WriteHeader(status int) {
-	if !w.wrote {
-		w.settle(w.ctx)
-		if w.settleErr == nil && w.settlement != nil {
-			for k, v := range w.settlement.Headers {
-				w.Header().Set(k, v)
-			}
-		}
-		w.wrote = true
+func (w *usageSettlementWriter) releaseVerifiedOpen() {
+	type verifiedOpenReleaser interface {
+		Release()
 	}
-	w.ResponseWriter.WriteHeader(status)
+	if releaser, ok := w.verified.(verifiedOpenReleaser); ok {
+		releaser.Release()
+	}
+}
+
+func (w *usageSettlementWriter) WriteHeader(status int) {
+	if w.wrote {
+		return
+	}
+	w.status = status
+	w.wrote = true
 }
 
 func (w *usageSettlementWriter) Write(p []byte) (int, error) {
 	if !w.wrote {
-		w.WriteHeader(http.StatusOK)
+		w.status = http.StatusOK
+		w.wrote = true
 	}
-	return w.ResponseWriter.Write(p)
+	return w.body.Write(p)
 }
 
-// finalizeSettlement runs settlement if the handler never wrote a response
-// (e.g. it panicked or returned without writing). This ensures the channel
-// is always settled even on degenerate handler paths.
+func (w *usageSettlementWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+// finalizeSettlement settles after the handler returns, merges settlement
+// headers when available, and then flushes the buffered handler response.
 func (w *usageSettlementWriter) finalizeSettlement(ctx context.Context) {
 	if !w.settled {
 		w.settle(ctx)
+	}
+	if w.settleErr != nil {
+		w.writeSettlementError(w.settleErr)
+		return
+	}
+	if w.settleErr == nil && w.settlement != nil {
+		for k, v := range w.settlement.Headers {
+			w.Header().Set(k, v)
+		}
+	}
+	w.flush()
+}
+
+func (w *usageSettlementWriter) writeSettlementError(err error) {
+	if w.flushed {
+		return
+	}
+	w.flushed = true
+	if w.onSettleError != nil {
+		w.onSettleError(err)
+		return
+	}
+	http.Error(w.ResponseWriter, "payment settlement failed", http.StatusPaymentRequired)
+}
+
+func (w *usageSettlementWriter) flush() {
+	if w.flushed {
+		return
+	}
+	w.flushed = true
+
+	dst := w.ResponseWriter.Header()
+	for k, values := range w.header {
+		dst.Del(k)
+		for _, value := range values {
+			dst.Add(k, value)
+		}
+	}
+	if w.body.Len() > 0 && dst.Get("Content-Type") == "" {
+		dst.Set("Content-Type", http.DetectContentType(w.body.Bytes()))
+	}
+
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.ResponseWriter.WriteHeader(status)
+	if w.body.Len() > 0 {
+		_, _ = w.ResponseWriter.Write(w.body.Bytes())
 	}
 }
 

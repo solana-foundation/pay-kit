@@ -12,6 +12,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	x402 "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
 
@@ -45,13 +46,23 @@ func TestProfileSupported(t *testing.T) {
 }
 
 func TestResolveChannelProgram(t *testing.T) {
-	pk := resolveChannelProgram("")
+	pk, err := resolveChannelProgram("")
+	if err != nil {
+		t.Fatalf("resolveChannelProgram: %v", err)
+	}
 	if !pk.Equals(paymentchannels.ProgramPubkey()) {
 		t.Fatal("expected default program")
 	}
-	pk = resolveChannelProgram(paymentchannels.ProgramID)
+	pk, err = resolveChannelProgram(paymentchannels.ProgramID)
+	if err != nil {
+		t.Fatalf("resolveChannelProgram: %v", err)
+	}
 	if !pk.Equals(paymentchannels.ProgramPubkey()) {
 		t.Fatal("expected parsed program")
+	}
+	_, err = resolveChannelProgram("not-a-pubkey")
+	if err == nil {
+		t.Fatal("expected invalid channel program error")
 	}
 }
 
@@ -102,6 +113,61 @@ func TestBuildUptoPayload(t *testing.T) {
 	if payload.OpenTransaction == "" {
 		t.Fatal("openTransaction is empty")
 	}
+}
+
+func TestBuildUptoPayloadUsesChannelProgramForChannelID(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	customProgram := testutil.NewPrivateKey().PublicKey()
+	req.Extra.ChannelProgram = customProgram.String()
+
+	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err != nil {
+		t.Fatalf("BuildUptoPayload: %v", err)
+	}
+	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
+	if err != nil {
+		t.Fatalf("DecodeTransactionBase64: %v", err)
+	}
+	channelFromPayload := solana.MustPublicKeyFromBase58(payload.ChannelID)
+	openIx := tx.Message.Instructions[0]
+	channelFromOpen := tx.Message.AccountKeys[openIx.Accounts[4]]
+	if !channelFromOpen.Equals(channelFromPayload) {
+		t.Fatalf("open channel account = %s, payload channelId = %s", channelFromOpen, channelFromPayload)
+	}
+	want, _, err := paymentchannels.FindChannelPDAForProgram(
+		priv.PublicKey(),
+		solana.MustPublicKeyFromBase58(req.PayTo),
+		solana.MustPublicKeyFromBase58(req.Asset),
+		solana.MustPublicKeyFromBase58(req.Extra.FeePayer),
+		mustReadOpenSalt(t, tx),
+		customProgram,
+	)
+	if err != nil {
+		t.Fatalf("FindChannelPDAForProgram: %v", err)
+	}
+	if !channelFromPayload.Equals(want) {
+		t.Fatalf("payload channelId = %s, want custom-program PDA %s", channelFromPayload, want)
+	}
+}
+
+func mustReadOpenSalt(t *testing.T, tx *solana.Transaction) uint64 {
+	t.Helper()
+	if len(tx.Message.Instructions) != 1 {
+		t.Fatalf("instructions = %d, want 1", len(tx.Message.Instructions))
+	}
+	if len(tx.Message.Instructions[0].Data) < 9 {
+		t.Fatalf("open instruction data too short: %d", len(tx.Message.Instructions[0].Data))
+	}
+	return uint64(tx.Message.Instructions[0].Data[1]) |
+		uint64(tx.Message.Instructions[0].Data[2])<<8 |
+		uint64(tx.Message.Instructions[0].Data[3])<<16 |
+		uint64(tx.Message.Instructions[0].Data[4])<<24 |
+		uint64(tx.Message.Instructions[0].Data[5])<<32 |
+		uint64(tx.Message.Instructions[0].Data[6])<<40 |
+		uint64(tx.Message.Instructions[0].Data[7])<<48 |
+		uint64(tx.Message.Instructions[0].Data[8])<<56
 }
 
 func TestBuildUptoPayloadRejectsUnsupportedProfile(t *testing.T) {
@@ -203,6 +269,17 @@ func TestBuildUptoPayloadRejectsBadTokenProgram(t *testing.T) {
 	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err == nil {
 		t.Fatal("expected error for bad token program")
+	}
+}
+
+func TestBuildUptoPayloadRejectsBadChannelProgram(t *testing.T) {
+	priv := testutil.NewPrivateKey()
+	signer := testSigner{priv}
+	req := uptoRequirements(priv.PublicKey())
+	req.Extra.ChannelProgram = "invalid"
+	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
+	if err == nil {
+		t.Fatal("expected error for bad channel program")
 	}
 }
 

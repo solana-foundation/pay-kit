@@ -1,9 +1,8 @@
 package paymentchannels
 
-// Server-side settlement instruction builders for the push-mode session
-// close path: the Ed25519 signature-verification precompile, the
-// settle_and_finalize instruction that must immediately follow it, and the
-// distribute instruction bundled into the same transaction.
+// Server-side settlement instruction builders for the payment-channel close
+// paths: the Ed25519 signature-verification precompile, permissionless settle,
+// cooperative settle_and_finalize, and distribute.
 //
 // The instruction bytes built here must stay identical across the language
 // SDKs; the cross-language harness pins them.
@@ -68,6 +67,56 @@ func BuildEd25519VerifyInstruction(authorizedSigner solana.PublicKey, signature 
 	copy(data[messageDataOffset:], message)
 
 	return solana.NewInstruction(ed25519ProgramPubkey, solana.AccountMetaSlice{}, data), nil
+}
+
+// SettleParams carries the inputs required to build the permissionless settle
+// instruction sequence.
+type SettleParams struct {
+	// Channel is the payment-channel address being settled.
+	Channel solana.PublicKey
+
+	// AuthorizedSigner is the voucher signing key recorded at open.
+	AuthorizedSigner solana.PublicKey
+
+	// Signature is the Ed25519 signature of the voucher.
+	Signature [64]byte
+
+	// CumulativeAmount is the settled watermark committed on-chain.
+	CumulativeAmount uint64
+
+	// ExpiresAt is the expiry of the settled voucher (Unix seconds).
+	ExpiresAt int64
+
+	// ProgramID is the payment-channels program targeted by this settle. The
+	// zero value resolves to the package program id.
+	ProgramID solana.PublicKey
+}
+
+// BuildSettleInstructions builds the permissionless settle sequence: an
+// Ed25519 precompile instruction over the canonical voucher message followed
+// immediately by the settle instruction that reads it through the instructions
+// sysvar.
+func BuildSettleInstructions(params SettleParams) ([]solana.Instruction, error) {
+	programID := resolveProgram(params.ProgramID)
+	message, err := VoucherMessageBytes(params.Channel, params.CumulativeAmount, params.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	verify, err := BuildEd25519VerifyInstruction(params.AuthorizedSigner, params.Signature, message)
+	if err != nil {
+		return nil, err
+	}
+	builder := generated.NewSettleInstructionBuilder().
+		SetChannelAccount(params.Channel).
+		SetInstructionsSysvarAccount(solana.SysVarInstructionsPubkey)
+	if _, err := builder.ValidateAndBuild(); err != nil {
+		return nil, fmt.Errorf("build settle instruction: %w", err)
+	}
+	settle, err := materialize(builder, builder.GetAccounts(), programID)
+	if err != nil {
+		return nil, err
+	}
+	return []solana.Instruction{verify, settle}, nil
 }
 
 // SettleAndFinalizeParams carries the inputs required to build the

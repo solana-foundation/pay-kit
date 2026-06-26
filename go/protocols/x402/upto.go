@@ -212,6 +212,15 @@ type UptoVerifiedOpen struct {
 	guard        *uptoInFlightGuard
 }
 
+// Release frees the in-flight reservation for a verified open that will not be
+// settled. SettleActual calls this automatically.
+func (o *UptoVerifiedOpen) Release() {
+	if o == nil {
+		return
+	}
+	o.guard.release()
+}
+
 // UptoConfig configures the x402 upto server engine.
 type UptoConfig struct {
 	Recipient               string
@@ -451,10 +460,11 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err := validateUptoOpenInstruction(tx, programID, u.operator, payer, expectedPayee, expectedMint, channelID); err != nil {
 		return nil, err
 	}
-	if signerIsRequired(tx, u.operator) {
-		if err := signPaykitTransaction(ctx, tx, u.cfg.OperatorSigner); err != nil {
-			return nil, fmt.Errorf("fee payer signing failed: %w", err)
-		}
+	if !transactionFeePayerIs(tx, u.operator) {
+		return nil, errors.New("open transaction fee payer must be the advertised operator")
+	}
+	if err := signPaykitTransaction(ctx, tx, u.cfg.OperatorSigner); err != nil {
+		return nil, fmt.Errorf("fee payer signing failed: %w", err)
 	}
 	if len(tx.Signatures) == 0 || tx.Signatures[0].IsZero() {
 		return nil, errors.New("open transaction is missing the fee-payer signature")
@@ -495,11 +505,6 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid token program: %w", err)
 	}
-	// Phase 3 step 6: simulate zero-amount settlement to verify the channel
-	// and program are in a state that allows settlement.
-	if err := u.simulateSettlement(ctx, programID, channelID, payer, expectedPayee, expectedMint, tokenProgram, payload.ExpiresAt); err != nil {
-		return nil, fmt.Errorf("settlement simulation failed: %w", err)
-	}
 	release = false
 	return &UptoVerifiedOpen{
 		ChannelID: channelID, Payer: payer, Mint: expectedMint, TokenProgram: tokenProgram,
@@ -513,30 +518,29 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if open == nil {
 		return UptoSettlementResponse{}, errors.New("verified open is required")
 	}
-	defer open.guard.release()
+	defer open.Release()
 	if err := AssertSettlementWithinCeiling(actual, open.MaxAmount); err != nil {
 		return UptoSettlementResponse{}, err
 	}
-	var voucherSignature *[64]byte
-	if actual > 0 {
-		message, err := paymentchannels.VoucherMessageBytes(open.ChannelID, actual, open.ExpiresAt)
-		if err != nil {
-			return UptoSettlementResponse{}, err
-		}
-		sigBytes, err := u.cfg.OperatorSigner.Sign(ctx, message)
-		if err != nil {
-			return UptoSettlementResponse{}, fmt.Errorf("voucher signing failed: %w", err)
-		}
-		if len(sigBytes) != 64 {
-			return UptoSettlementResponse{}, fmt.Errorf("voucher signature length %d, want 64", len(sigBytes))
-		}
-		var fixed [64]byte
-		copy(fixed[:], sigBytes)
-		voucherSignature = &fixed
+	if actual == 0 {
+		return UptoSettlementResponse{}, errors.New("x402 upto settlement amount must be greater than zero")
 	}
-	instructions, err := paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
-		Merchant: u.operator, Channel: open.ChannelID, AuthorizedSigner: u.operator,
-		Signature: voucherSignature, CumulativeAmount: actual, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
+	message, err := paymentchannels.VoucherMessageBytes(open.ChannelID, actual, open.ExpiresAt)
+	if err != nil {
+		return UptoSettlementResponse{}, err
+	}
+	sigBytes, err := u.cfg.OperatorSigner.Sign(ctx, message)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("voucher signing failed: %w", err)
+	}
+	if len(sigBytes) != 64 {
+		return UptoSettlementResponse{}, fmt.Errorf("voucher signature length %d, want 64", len(sigBytes))
+	}
+	var voucherSignature [64]byte
+	copy(voucherSignature[:], sigBytes)
+	instructions, err := paymentchannels.BuildSettleInstructions(paymentchannels.SettleParams{
+		Channel: open.ChannelID, AuthorizedSigner: u.operator, Signature: voucherSignature,
+		CumulativeAmount: actual, ExpiresAt: open.ExpiresAt, ProgramID: open.ProgramID,
 	})
 	if err != nil {
 		return UptoSettlementResponse{}, err
@@ -552,7 +556,15 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 	if err != nil {
 		return UptoSettlementResponse{}, err
 	}
-	instructions = append(instructions, distribute)
+	createPayeeATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, payee, open.Mint, open.TokenProgram)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("build payee ATA create: %w", err)
+	}
+	createTreasuryATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, paymentchannels.TreasuryOwner(), open.Mint, open.TokenProgram)
+	if err != nil {
+		return UptoSettlementResponse{}, fmt.Errorf("build treasury ATA create: %w", err)
+	}
+	instructions = append(instructions, createPayeeATA, createTreasuryATA, distribute)
 	blockhash, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("blockhash fetch failed: %w", err)
@@ -623,39 +635,6 @@ func (u *X402Upto) recentBlockhash() (string, error) {
 	return out.Value.Blockhash.String(), nil
 }
 
-// simulateSettlement builds and simulates a zero-amount settlement
-// transaction to verify the channel and program are in a state that
-// allows settlement (Phase 3 step 6 of the spec).
-func (u *X402Upto) simulateSettlement(ctx context.Context, programID, channelID, payer, payee, mint, tokenProgram solana.PublicKey, expiresAt int64) error {
-	instructions, err := paymentchannels.BuildSettleAndFinalizeInstructions(paymentchannels.SettleAndFinalizeParams{
-		Merchant: u.operator, Channel: channelID, AuthorizedSigner: u.operator,
-		Signature: nil, CumulativeAmount: 0, ExpiresAt: expiresAt, ProgramID: programID,
-	})
-	if err != nil {
-		return err
-	}
-	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
-		Channel: channelID, Payer: payer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
-		Mint: mint, TokenProgram: tokenProgram, ProgramID: programID,
-	})
-	if err != nil {
-		return err
-	}
-	instructions = append(instructions, distribute)
-	bh, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
-	if err != nil {
-		return err
-	}
-	if bh == nil || bh.Value == nil {
-		return errors.New("empty blockhash for simulation")
-	}
-	tx, err := solana.NewTransaction(instructions, bh.Value.Blockhash, solana.TransactionPayer(u.operator))
-	if err != nil {
-		return err
-	}
-	return solanatx.SimulateTransaction(ctx, u.rpc, tx)
-}
-
 func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, payer, payee, mint, channelID solana.PublicKey) error {
 	keys := tx.Message.AccountKeys
 	instructions := tx.Message.Instructions
@@ -706,13 +685,8 @@ func validateUptoOpenInstruction(tx *solana.Transaction, programID, operator, pa
 	return nil
 }
 
-func signerIsRequired(tx *solana.Transaction, key solana.PublicKey) bool {
-	for _, signer := range tx.Message.Signers() {
-		if signer.Equals(key) {
-			return true
-		}
-	}
-	return false
+func transactionFeePayerIs(tx *solana.Transaction, key solana.PublicKey) bool {
+	return tx != nil && len(tx.Message.AccountKeys) > 0 && tx.Message.AccountKeys[0].Equals(key)
 }
 
 func signPaykitTransaction(ctx context.Context, tx *solana.Transaction, signer uptoSigner) error {
@@ -756,4 +730,4 @@ func parseDecimalUnits(amount string, decimals uint8) (string, error) {
 
 func emptyDistributionHash() []byte { return EmptyDistributionHash[:] }
 
-var EmptyDistributionHash = [32]byte{236, 43, 208, 59, 248, 107, 147, 95, 163, 77, 113, 173, 126, 187, 4, 159, 31, 16, 248, 125, 52, 62, 82, 21, 17, 216, 249, 230, 98, 86, 32, 205}
+var EmptyDistributionHash = [32]byte{223, 63, 97, 152, 4, 169, 47, 219, 64, 87, 25, 45, 196, 61, 215, 72, 234, 119, 138, 220, 82, 188, 73, 140, 232, 5, 36, 192, 20, 184, 17, 25}

@@ -1,7 +1,7 @@
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { Surfnet } from "surfpool-sdk";
+import { Surfnet } from "@solana/surfpool";
 
 const rpcPort = Number(process.env.SURFPOOL_PROXY_RPC_PORT ?? 8899);
 const wsPort = Number(process.env.SURFPOOL_PROXY_WS_PORT ?? 8900);

@@ -31,7 +31,11 @@ export function expectedReportedImplementation(
   return implementation.reportsAs ?? implementation.id;
 }
 
-function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolean {
+function isEnabled(
+  id: string,
+  envName: string,
+  defaultEnabled: boolean,
+): boolean {
   const selected = process.env[envName];
   if (!selected || selected.trim() === "") {
     return defaultEnabled;
@@ -39,7 +43,7 @@ function isEnabled(id: string, envName: string, defaultEnabled: boolean): boolea
 
   return selected
     .split(",")
-    .map(value => value.trim())
+    .map((value) => value.trim())
     .filter(Boolean)
     .includes(id);
 }
@@ -155,6 +159,15 @@ export const clientImplementations: ImplementationDefinition[] = [
     reportsAs: "go",
   },
   {
+    id: "go-x402-upto",
+    label: "Go x402 upto client",
+    role: "client",
+    command: ["sh", "-c", "cd go-client && go run ."],
+    enabled: isEnabled("go-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "go",
+  },
+  {
     id: "python-x402",
     label: "Python pay_kit x402 exact client",
     role: "client",
@@ -175,7 +188,14 @@ export const clientImplementations: ImplementationDefinition[] = [
     id: "python-session",
     label: "Python pay_kit session client",
     role: "client",
-    command: ["uv", "run", "--project", "../python", "python", "python-session-client/main.py"],
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-session-client/main.py",
+    ],
     enabled: isEnabled("python-session", "MPP_HARNESS_CLIENTS", false),
     intents: ["session"],
   },
@@ -305,7 +325,7 @@ export const serverImplementations: ImplementationDefinition[] = [
     command: [
       "sh",
       "-c",
-      "cd ../lua && eval \"$(luarocks --lua-version=5.1 --tree lua_modules path)\" && luajit ../harness/lua-server/server.lua",
+      'cd ../lua && eval "$(luarocks --lua-version=5.1 --tree lua_modules path)" && luajit ../harness/lua-server/server.lua',
     ],
     enabled: isEnabled("lua", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact"],
@@ -329,7 +349,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     // ``MPP_HARNESS_SERVERS=python X402_HARNESS_CLIENTS=rust-x402`` with
     // ``MPP_HARNESS_INTENTS=x402-exact`` (x402-exact), or the dedicated
     // focused-matrix CI jobs in .github/workflows/python.yml.
-    command: ["uv", "run", "--project", "../python", "python", "python-server/server.py"],
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-server/server.py",
+    ],
     enabled: isEnabled("python", "MPP_HARNESS_SERVERS", false),
     intents: ["charge", "x402-exact", "session"],
   },
@@ -410,5 +437,14 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("rust-x402-upto", "X402_HARNESS_SERVERS", false),
     intents: ["x402-upto"],
     reportsAs: "rust",
+  },
+  {
+    id: "go-x402-upto",
+    label: "Go PayKit x402 upto server",
+    role: "server",
+    command: ["sh", "-c", "cd go-server && ./paykit-server"],
+    enabled: isEnabled("go-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "go-paykit",
   },
 ];

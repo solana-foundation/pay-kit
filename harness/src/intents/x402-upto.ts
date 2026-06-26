@@ -16,9 +16,10 @@ export const x402UptoScenarios: readonly HarnessScenario[] = [
     network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
     price: "0.10",
     amount: "100000",
+    actualAmount: "50000",
     asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     resourcePath: "/usage",
-    settlementHeader: "x-fixture-settlement",
+    settlementHeader: "x-payment-settlement-signature",
     expectedStatus: 200,
   },
 ];

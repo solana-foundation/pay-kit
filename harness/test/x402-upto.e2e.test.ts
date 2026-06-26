@@ -35,19 +35,19 @@ const requiredEnvs = [
 
 function missingEnvs(): string[] {
   return requiredEnvs.filter(
-    name => !process.env[name] || process.env[name]?.trim() === "",
+    (name) => !process.env[name] || process.env[name]?.trim() === "",
   );
 }
 
 const happyPath = harnessScenarios.find(
-  scenario => scenario.id === "x402-upto-basic",
+  (scenario) => scenario.id === "x402-upto-basic",
 );
 
 const uptoClients = clientImplementations.filter(
-  impl => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-upto"),
+  (impl) => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-upto"),
 );
 const uptoServers = serverImplementations.filter(
-  impl => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-upto"),
+  (impl) => impl.enabled && (impl.intents ?? ["charge"]).includes("x402-upto"),
 );
 
 type RunningServer = Awaited<ReturnType<typeof startServer>>;
@@ -67,78 +67,54 @@ describe("x402 upto intent — cross-language matrix", () => {
 
   const missing = missingEnvs();
   if (missing.length > 0) {
-    it.skip(`missing required env vars: ${missing.join(", ")}`, () => {});
+    it(`has required env vars: ${missing.join(", ")}`, () => {
+      throw new Error(`missing required env vars: ${missing.join(", ")}`);
+    });
     return;
   }
 
   if (!happyPath) {
-    it.fails("happy-path scenario x402-upto-basic missing from registry", () => {
+    it("has happy-path scenario x402-upto-basic in registry", () => {
       throw new Error("x402-upto-basic scenario not found in harnessScenarios");
     });
     return;
   }
 
-  // Only adapters carrying a real signed channel-open transaction can
-  // settle end-to-end. Initially only the Rust spine pairs with itself.
-  const allowedPair = (clientId: string, serverId: string): boolean => {
-    if (clientId === "rust-x402-upto" && serverId === "rust-x402-upto")
-      return true;
-    return false;
-  };
-
-  const crossLanguageUnasserted: string[] = [];
+  it("has selected x402 upto clients and servers", () => {
+    expect(uptoClients.map((client) => client.id)).not.toHaveLength(0);
+    expect(uptoServers.map((server) => server.id)).not.toHaveLength(0);
+  });
 
   for (const server of uptoServers) {
     for (const client of uptoClients) {
-      if (!allowedPair(client.id, server.id)) {
-        crossLanguageUnasserted.push(`${client.id} -> ${server.id}`);
-        it.skip(
-          `${client.id} client <-> ${server.id} server: cross-language upto settlement NOT asserted (tracked follow-up)`,
-          () => {},
-        );
-        continue;
-      }
-      it(
-        `${client.id} client <-> ${server.id} server: happy path`,
-        async () => {
-          const env = {
-            X402_HARNESS_NETWORK: happyPath.network,
-            X402_HARNESS_PRICE: happyPath.price,
-            X402_HARNESS_RESOURCE_PATH: happyPath.resourcePath,
-            X402_HARNESS_SETTLEMENT_HEADER: happyPath.settlementHeader,
-            X402_HARNESS_ACTUAL_AMOUNT: "50000",
-          } satisfies Record<string, string>;
+      it(`${client.id} client <-> ${server.id} server: happy path`, async () => {
+        const env = {
+          X402_HARNESS_NETWORK: happyPath.network,
+          X402_HARNESS_PRICE: happyPath.price,
+          X402_HARNESS_RESOURCE_PATH: happyPath.resourcePath,
+          X402_HARNESS_SETTLEMENT_HEADER: happyPath.settlementHeader,
+          X402_HARNESS_ACTUAL_AMOUNT: happyPath.actualAmount ?? "0",
+          PAY_KIT_HARNESS_PROTOCOL: "x402-upto",
+        } satisfies Record<string, string>;
 
-          const running = await startServer(server, env);
-          runningServers.push(running);
+        const running = await startServer(server, env);
+        runningServers.push(running);
 
-          try {
-            const targetUrl = `http://127.0.0.1:${running.ready.port}${happyPath.resourcePath}`;
-            const result = await runClient(client, targetUrl, {
-              X402_HARNESS_TARGET_URL: targetUrl,
-              ...env,
-            });
+        try {
+          const targetUrl = `http://127.0.0.1:${running.ready.port}${happyPath.resourcePath}`;
+          const result = await runClient(client, targetUrl, {
+            X402_HARNESS_TARGET_URL: targetUrl,
+            ...env,
+          });
 
-            expect(result.status).toBe(happyPath.expectedStatus);
-            expect(result.ok).toBe(true);
-            expect(result.settlement).toBeTruthy();
-          } finally {
-            await stopServer(running);
-            runningServers.splice(runningServers.indexOf(running), 1);
-          }
-        },
-        180_000,
-      );
+          expect(result.status).toBe(happyPath.expectedStatus);
+          expect(result.ok).toBe(true);
+          expect(result.settlement).toBeTruthy();
+        } finally {
+          await stopServer(running);
+          runningServers.splice(runningServers.indexOf(running), 1);
+        }
+      }, 180_000);
     }
   }
-
-  it("cross-language x402 upto settlement gap is tracked", () => {
-    if (crossLanguageUnasserted.length > 0) {
-      console.warn(
-        `[x402-upto-matrix] cross-language settlement is NOT asserted for ` +
-          `${crossLanguageUnasserted.length} pair(s): ${crossLanguageUnasserted.join(", ")}.`,
-      );
-    }
-    expect(allowedPair("rust-x402-upto", "rust-x402-upto")).toBe(true);
-  });
 });

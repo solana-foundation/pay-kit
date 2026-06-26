@@ -40,13 +40,15 @@ func profileSupported(requirements *x402.UptoRequirements) bool {
 	return false
 }
 
-func resolveChannelProgram(channelProgramStr string) solana.PublicKey {
+func resolveChannelProgram(channelProgramStr string) (solana.PublicKey, error) {
 	if channelProgramStr != "" {
-		if pk, err := solana.PublicKeyFromBase58(channelProgramStr); err == nil {
-			return pk
+		pk, err := solana.PublicKeyFromBase58(channelProgramStr)
+		if err != nil {
+			return solana.PublicKey{}, fmt.Errorf("x402 client: invalid channelProgram %q: %w", channelProgramStr, err)
 		}
+		return pk, nil
 	}
-	return paymentchannels.ProgramPubkey()
+	return paymentchannels.ProgramPubkey(), nil
 }
 
 func BuildUptoPayload(
@@ -75,7 +77,10 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: invalid feePayer %q: %w", requirements.Extra.FeePayer, err)
 	}
-	programID := resolveChannelProgram(requirements.Extra.ChannelProgram)
+	programID, err := resolveChannelProgram(requirements.Extra.ChannelProgram)
+	if err != nil {
+		return nil, err
+	}
 	var tokenProgram solana.PublicKey
 	if requirements.Extra.TokenProgram != "" {
 		tokenProgram, err = solana.PublicKeyFromBase58(requirements.Extra.TokenProgram)
@@ -99,7 +104,7 @@ func BuildUptoPayload(
 	if err != nil {
 		return nil, err
 	}
-	channel, _, err := paymentchannels.FindChannelPDA(signer.PublicKey(), payee, mint, operator, salt)
+	channel, _, err := paymentchannels.FindChannelPDAForProgram(signer.PublicKey(), payee, mint, operator, salt, programID)
 	if err != nil {
 		return nil, fmt.Errorf("x402 client: find channel PDA: %w", err)
 	}

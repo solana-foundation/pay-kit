@@ -13,7 +13,7 @@ use solana_x402::{
 };
 
 const DEFAULT_NETWORK: &str = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const SETTLEMENT_HEADER: &str = "x-fixture-settlement";
+const DEFAULT_SETTLEMENT_HEADER: &str = "x-fixture-settlement";
 
 fn now_unix() -> i64 {
     SystemTime::now()
@@ -29,6 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _network = env::var("X402_HARNESS_NETWORK").unwrap_or_else(|_| DEFAULT_NETWORK.to_string());
     let signer = read_memory_signer("X402_HARNESS_CLIENT_SECRET_KEY")?;
     let actual_amount = env::var("X402_HARNESS_ACTUAL_AMOUNT").unwrap_or_else(|_| "0".to_string());
+    let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
+        .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
 
     let http = reqwest::Client::new();
     let first_response = http.get(&target_url).send().await?;
@@ -53,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let paid_headers = response_headers(paid_response.headers())?;
     let mut paid_headers = headers_to_map(paid_headers);
     paid_headers.insert(format!("{PAYMENT_SIGNATURE_HEADER}-sent"), payment_header);
-    let settlement = paid_headers.get(SETTLEMENT_HEADER).cloned();
+    let settlement = paid_headers.get(&settlement_header).cloned();
     let raw_body = paid_response.text().await?;
     let response_body = serde_json::from_str::<serde_json::Value>(&raw_body)
         .unwrap_or(serde_json::Value::String(raw_body));

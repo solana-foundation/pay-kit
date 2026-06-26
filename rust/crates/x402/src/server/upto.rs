@@ -9,7 +9,7 @@
 //!    channel state back to bind deposit/payee/mint/signer on-chain.
 //! 3. The route handler runs and determines the actual metered amount.
 //! 4. [`X402Upto::settle_actual`] signs a single operator voucher for the actual
-//!    amount and submits `settle_and_finalize` + `distribute`, refunding
+//!    amount and submits `settle` + ATA setup + `distribute`, refunding
 //!    `deposit − actual` to the payer.
 
 use std::collections::HashSet;
@@ -291,6 +291,12 @@ impl X402Upto {
         let payload = &envelope.payload;
 
         verify_upto_payload(payload, &requirements, &self.operator(), now_unix())?;
+        if envelope.network.as_deref() != Some(requirements.network.as_str()) {
+            return Err(Error::Other(format!(
+                "network mismatch: payload {:?}, expected {}",
+                envelope.network, requirements.network
+            )));
+        }
 
         let program_id = self.program_id()?;
         let expected_mint = self.mint()?;
@@ -392,9 +398,9 @@ impl X402Upto {
         })
     }
 
-    /// Settle the actual metered amount (`actual ≤ max`) against a verified
-    /// open: operator-signed voucher, `settle_and_finalize` + `distribute`,
-    /// refunding the remainder. `actual == 0` still finalizes (full refund).
+    /// Settle the actual metered amount (`0 < actual ≤ max`) against a verified
+    /// open: operator-signed voucher, `settle` + ATA setup + `distribute`,
+    /// refunding the remainder.
     pub async fn settle_actual(
         &self,
         open: &VerifiedUptoOpen,
@@ -402,42 +408,46 @@ impl X402Upto {
     ) -> Result<UptoSettlementResponse, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
-        let mut instructions = if actual == 0 {
-            pc::build_settle_and_finalize_instructions(
-                &self.operator,
-                &open.channel_id,
-                &self.operator,
-                None,
-                0,
-                open.expires_at,
-                &open.program_id,
-            )?
-        } else {
-            let voucher_bytes =
-                pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
-            let sig_bytes: [u8; 64] = self
-                .config
-                .operator_signer
-                .sign_message(&voucher_bytes)
-                .await
-                .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
-                .into();
-            pc::build_settle_and_finalize_instructions(
-                &self.operator,
-                &open.channel_id,
-                &self.operator,
-                Some(&sig_bytes),
-                actual,
-                open.expires_at,
-                &open.program_id,
-            )?
-        };
+        if actual == 0 {
+            return Err(Error::Other(
+                "x402 upto settlement amount must be greater than zero".to_string(),
+            ));
+        }
+        let voucher_bytes = pc::voucher_message_bytes(&open.channel_id, actual, open.expires_at)?;
+        let sig_bytes: [u8; 64] = self
+            .config
+            .operator_signer
+            .sign_message(&voucher_bytes)
+            .await
+            .map_err(|e| Error::Other(format!("voucher signing failed: {e}")))?
+            .into();
+        let mut instructions = pc::build_settle_instructions(
+            &open.channel_id,
+            &self.operator,
+            &sig_bytes,
+            actual,
+            open.expires_at,
+            &open.program_id,
+        )?;
 
+        let payee = Pubkey::from_str(&self.config.recipient)
+            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+        instructions.push(pc::build_create_associated_token_account_instruction(
+            &self.operator,
+            &payee,
+            &open.mint,
+            &open.token_program,
+        ));
+        instructions.push(pc::build_create_associated_token_account_instruction(
+            &self.operator,
+            &pc::treasury_owner(),
+            &open.mint,
+            &open.token_program,
+        ));
         instructions.push(pc::build_distribute_instruction(
             &open.channel_id,
             &open.payer,
-            &Pubkey::from_str(&self.config.recipient)
-                .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?,
+            &payee,
             &pc::treasury_owner(),
             &open.mint,
             &[],
@@ -521,6 +531,11 @@ pub(crate) async fn cosign_operator_fee_payer(
     tx: &mut VersionedTransaction,
 ) -> Result<(), Error> {
     let account_keys = tx.message.static_account_keys();
+    if account_keys.first() != Some(operator) {
+        return Err(Error::Other(
+            "open transaction fee payer must be the advertised operator".into(),
+        ));
+    }
     let idx = account_keys
         .iter()
         .position(|k| k == operator)
@@ -624,9 +639,35 @@ pub(crate) fn validate_open_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use solana_keychain::{SignTransactionResult, SignerError};
     use solana_pay_core::payment_channels::{
         build_open_instruction, derive_channel_addresses, OpenChannelParams,
     };
+
+    struct TestSigner(Pubkey);
+
+    #[async_trait]
+    impl SolanaSigner for TestSigner {
+        fn pubkey(&self) -> Pubkey {
+            self.0
+        }
+
+        async fn sign_transaction(
+            &self,
+            _tx: &mut Transaction,
+        ) -> Result<SignTransactionResult, SignerError> {
+            Err(SignerError::Other("unused".to_string()))
+        }
+
+        async fn sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+            Ok(Signature::from([7u8; 64]))
+        }
+
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
 
     fn token_program() -> Pubkey {
         Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap()
@@ -654,6 +695,14 @@ mod tests {
 
     fn unsigned_tx(instructions: &[solana_instruction::Instruction]) -> VersionedTransaction {
         let msg = Message::new(instructions, Some(&Pubkey::new_unique()));
+        VersionedTransaction::from(Transaction::new_unsigned(msg))
+    }
+
+    fn unsigned_tx_with_fee_payer(
+        instructions: &[solana_instruction::Instruction],
+        fee_payer: Pubkey,
+    ) -> VersionedTransaction {
+        let msg = Message::new(instructions, Some(&fee_payer));
         VersionedTransaction::from(Transaction::new_unsigned(msg))
     }
 
@@ -758,5 +807,42 @@ mod tests {
             bps: 10_000,
         }]);
         assert!(validate_empty_recipient_distribution_hash(&non_empty).is_err());
+    }
+
+    #[tokio::test]
+    async fn cosign_rejects_operator_when_not_fee_payer() {
+        let operator = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let ix = solana_instruction::Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![solana_instruction::AccountMeta::new_readonly(
+                operator, true,
+            )],
+            data: vec![],
+        };
+        let mut tx = unsigned_tx_with_fee_payer(&[ix], fee_payer);
+
+        let err = cosign_operator_fee_payer(&TestSigner(operator), &operator, &mut tx)
+            .await
+            .expect_err("operator signer must not be accepted outside fee-payer slot");
+        assert!(err
+            .to_string()
+            .contains("fee payer must be the advertised operator"));
+    }
+
+    #[tokio::test]
+    async fn cosign_accepts_operator_fee_payer() {
+        let operator = Pubkey::new_unique();
+        let ix = solana_instruction::Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![],
+            data: vec![],
+        };
+        let mut tx = unsigned_tx_with_fee_payer(&[ix], operator);
+
+        cosign_operator_fee_payer(&TestSigner(operator), &operator, &mut tx)
+            .await
+            .expect("operator fee-payer transaction should sign");
+        assert_eq!(tx.signatures[0], Signature::from([7u8; 64]));
     }
 }

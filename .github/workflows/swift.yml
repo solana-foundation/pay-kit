@@ -119,7 +119,7 @@ jobs:
         run: swift build --quiet
       # Drive the swift-x402 client against the rust-x402 server through
       # the shared surfpool + funded-keypair e2e matrix. The harness spins
-      # up surfpool via surfpool-sdk and emits the X402_HARNESS_* shadows
+      # up Surfnet via @solana/surfpool and emits the X402_HARNESS_* shadows
       # of the MPP fixtures, so the x402-exact-basic scenario settles a
       # real signed Solana transaction end-to-end. Mirrors the MPP
       # harness-swift job (build-only smoke replaced with real settle).

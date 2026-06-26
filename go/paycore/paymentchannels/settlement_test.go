@@ -94,6 +94,55 @@ func TestBuildEd25519VerifyInstructionRejectsOversizedMessage(t *testing.T) {
 	}
 }
 
+// ── settle ──
+
+func TestBuildSettleInstructionsWithVoucher(t *testing.T) {
+	authorizedSigner := fixedKey(0x04)
+	channel := solana.MustPublicKeyFromBase58(zeroChannelID)
+	var signature [64]byte
+	for i := range signature {
+		signature[i] = 0xAA
+	}
+
+	instructions, err := BuildSettleInstructions(SettleParams{
+		Channel:          channel,
+		AuthorizedSigner: authorizedSigner,
+		Signature:        signature,
+		CumulativeAmount: 500,
+		ExpiresAt:        4_102_444_800,
+	})
+	if err != nil {
+		t.Fatalf("BuildSettleInstructions: %v", err)
+	}
+	if len(instructions) != 2 {
+		t.Fatalf("instructions = %d, want 2 (precompile + settle)", len(instructions))
+	}
+	if !instructions[0].ProgramID().Equals(Ed25519ProgramPubkey()) {
+		t.Fatalf("instruction 0 program = %s, want Ed25519 precompile", instructions[0].ProgramID())
+	}
+	precompileData, err := instructions[0].Data()
+	if err != nil {
+		t.Fatalf("precompile.Data: %v", err)
+	}
+	wantMessage, err := VoucherMessageBytes(channel, 500, 4_102_444_800)
+	if err != nil {
+		t.Fatalf("VoucherMessageBytes: %v", err)
+	}
+	if !bytes.Equal(precompileData[112:160], wantMessage) {
+		t.Fatal("precompile message != canonical 48-byte voucher payload")
+	}
+	settleData, err := instructions[1].Data()
+	if err != nil {
+		t.Fatalf("settle.Data: %v", err)
+	}
+	if len(settleData) != 1 {
+		t.Fatalf("settle data length = %d, want 1", len(settleData))
+	}
+	if settleData[0] != 2 {
+		t.Fatalf("discriminator = %d, want 2", settleData[0])
+	}
+}
+
 // ── settle_and_finalize ──
 
 func TestBuildSettleAndFinalizeVoucherless(t *testing.T) {

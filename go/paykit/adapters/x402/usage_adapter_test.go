@@ -105,6 +105,31 @@ func TestNewUsageAdapter(t *testing.T) {
 	}
 }
 
+func TestUsageAdapterThreadsChannelProgramOverride(t *testing.T) {
+	signer := testutil.NewPrivateKey()
+	program := solana.NewWallet().PublicKey()
+	cfg := paykit.Config{
+		Network:     paykit.SolanaLocalnet,
+		RPCURL:      "http://localhost:8899",
+		Accept:      []paykit.Protocol{paykit.X402},
+		Operator:    paykit.Operator{Recipient: paykit.Address(signer.PublicKey().String()), Signer: testSigner{signer}},
+		Stablecoins: []paykit.Stablecoin{paykit.USDC},
+		X402:        paykit.X402Config{ChannelProgram: program.String()},
+	}
+	adapter, err := NewUsageAdapter(cfg)
+	if err != nil {
+		t.Fatalf("NewUsageAdapter: %v", err)
+	}
+	entry := adapter.UsageAcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("1.00"), Kind: paykit.GateUsage, Name: "test"})
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal accepts entry: %v", err)
+	}
+	if !strings.Contains(string(raw), `"channelProgram":"`+program.String()+`"`) {
+		t.Fatalf("channelProgram override missing from accepts entry: %s", raw)
+	}
+}
+
 func TestNewUsageAdapterRejectsNilSigner(t *testing.T) {
 	cfg := paykit.Config{Network: paykit.SolanaLocalnet, RPCURL: "http://localhost:8899"}
 	_, err := NewUsageAdapter(cfg)
@@ -259,7 +284,7 @@ func TestUsageAdapterVerifyOpenAndSettleEndToEnd(t *testing.T) {
 		t.Fatalf("BuildOpenInstruction: %v", err)
 	}
 	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
-	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(payerKey.PublicKey()))
+	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}

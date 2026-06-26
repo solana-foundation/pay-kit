@@ -34,6 +34,9 @@ export type HarnessScenario = {
   network: string;
   price: string;
   amount: string;
+  // Optional metered amount for usage (`x402-upto`) scenarios. When omitted,
+  // settlement assertions use `amount` as the final settled delta.
+  actualAmount?: string;
   // The literal value the harness sends to each adapter as
   // `MPP_HARNESS_MINT`. In `pubkey` mode (default) this is a 32+ char
   // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol

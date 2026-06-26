@@ -204,7 +204,7 @@ pub struct UptoSettlementResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payer: Option<String>,
 
-    /// Settle (or settle-and-finalize) signature; empty when the charge is `0`.
+    /// Settlement transaction signature.
     pub transaction: String,
 
     pub network: String,

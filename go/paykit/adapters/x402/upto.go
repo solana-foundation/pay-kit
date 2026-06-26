@@ -38,6 +38,7 @@ func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 		Decimals:                proto.StablecoinDecimals,
 		Network:                 cfg.Network,
 		RPCURL:                  cfg.RPCURL,
+		ChannelProgram:          cfg.X402.ChannelProgram,
 		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
 		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
 		RecentBlockhashProvider: cfg.RecentBlockhashProvider,

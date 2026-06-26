@@ -551,7 +551,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 
 	// Build the transaction with the open instruction.
 	blockhash := solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h")
-	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(payerKey.PublicKey()))
+	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, blockhash, solana.TransactionPayer(operatorKey.PublicKey()))
 	if err != nil {
 		t.Fatalf("NewTransaction: %v", err)
 	}
@@ -649,6 +649,82 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 	if settlement.Transaction == "" {
 		t.Fatal("transaction is empty")
 	}
+	if len(fakeRPC.Sent) != 2 {
+		t.Fatalf("sent transactions = %d, want 2 (open + settlement)", len(fakeRPC.Sent))
+	}
+	settlementTx := fakeRPC.Sent[1]
+	if len(settlementTx.Message.Instructions) != 5 {
+		t.Fatalf("settlement instructions = %d, want 5", len(settlementTx.Message.Instructions))
+	}
+	if got := settlementTx.Message.Instructions[1].Data[0]; got != 2 {
+		t.Fatalf("settlement instruction discriminator = %d, want settle(2)", got)
+	}
+	for _, idx := range []int{2, 3} {
+		if program := settlementTx.Message.AccountKeys[settlementTx.Message.Instructions[idx].ProgramIDIndex]; !program.Equals(solana.SPLAssociatedTokenAccountProgramID) {
+			t.Fatalf("instruction %d program = %s, want ATA program", idx, program)
+		}
+		if got := settlementTx.Message.Instructions[idx].Data[0]; got != 1 {
+			t.Fatalf("instruction %d discriminator = %d, want create idempotent ATA(1)", idx, got)
+		}
+	}
+	if got := settlementTx.Message.Instructions[4].Data[0]; got != 7 {
+		t.Fatalf("distribute instruction discriminator = %d, want distribute(7)", got)
+	}
+}
+
+func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
+	operatorKey := testutil.NewPrivateKey()
+	payerKey := testutil.NewPrivateKey()
+	payee := operatorKey.PublicKey()
+	mint := solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint)
+	salt := uint64(7)
+	channel, _, _ := paymentchannels.FindChannelPDA(payerKey.PublicKey(), payee, mint, operatorKey.PublicKey(), salt)
+	openIx, err := paymentchannels.BuildOpenInstruction(paymentchannels.OpenChannelParams{
+		Payer: payerKey.PublicKey(), Payee: payee, Mint: mint, AuthorizedSigner: operatorKey.PublicKey(),
+		Salt: salt, Deposit: 1_000_000, GracePeriod: 900,
+		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
+	})
+	if err != nil {
+		t.Fatalf("BuildOpenInstruction: %v", err)
+	}
+	tx, err := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	if err != nil {
+		t.Fatalf("NewTransaction: %v", err)
+	}
+	if err := solanatx.SignTransaction(tx, payerSigner{payerKey}); err != nil {
+		t.Fatalf("SignTransaction: %v", err)
+	}
+	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
+	fakeRPC := newUptoTestRPC()
+	engine, _ := NewX402Upto(UptoConfig{
+		Recipient: payee.String(), Currency: "USDC", Decimals: 6, Network: paykit.SolanaLocalnet,
+		OperatorSigner:          signerSigner{operatorKey},
+		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
+	})
+	engine.SetRPCForTests(fakeRPC)
+	envelope := UptoSignatureEnvelope{
+		X402Version: X402Version,
+		Scheme:      UptoScheme,
+		Network:     "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+		Payload: UptoPayload{
+			Profile:          ProfilePaymentChannel,
+			From:             payerKey.PublicKey().String(),
+			MaxAmount:        "1000000",
+			ExpiresAt:        time.Now().Add(time.Hour).Unix(),
+			ChannelID:        channel.String(),
+			Deposit:          "1000000",
+			AuthorizedSigner: operatorKey.PublicKey().String(),
+			OpenTransaction:  txBase64,
+		},
+	}
+	raw, _ := json.Marshal(envelope)
+	_, err = engine.VerifyOpen(context.Background(), base64.StdEncoding.EncodeToString(raw), "1.00")
+	if err == nil || !strings.Contains(err.Error(), "fee payer must be the advertised operator") {
+		t.Fatalf("expected fee payer rejection, got %v", err)
+	}
+	if len(fakeRPC.Sent) != 0 {
+		t.Fatalf("broadcasted rejected open transaction: %d sends", len(fakeRPC.Sent))
+	}
 }
 
 func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
@@ -664,7 +740,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 
@@ -710,7 +786,27 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		t.Fatalf("expected in-flight rejection, got %v", err)
 	}
 	// Release the guard by settling.
-	_, _ = engine.SettleActual(context.Background(), verified, 0)
+	_, _ = engine.SettleActual(context.Background(), verified, 1)
+}
+
+func TestUptoVerifiedOpenReleaseClearsInFlightGuard(t *testing.T) {
+	engine := &X402Upto{inFlight: map[string]struct{}{}}
+	channelID := testutil.NewPrivateKey().PublicKey()
+	key := channelID.String()
+	engine.inFlight[key] = struct{}{}
+	verified := &UptoVerifiedOpen{
+		ChannelID: channelID,
+		guard:     &uptoInFlightGuard{engine: engine, key: key},
+	}
+
+	verified.Release()
+	if _, ok := engine.inFlight[key]; ok {
+		t.Fatal("Release did not clear in-flight channel guard")
+	}
+	verified.Release()
+	if len(engine.inFlight) != 0 {
+		t.Fatalf("Release should be idempotent, in-flight entries = %d", len(engine.inFlight))
+	}
 }
 
 // ── Error path tests for coverage ──
@@ -957,7 +1053,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHash := emptyDistributionHash()
@@ -1002,7 +1098,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHash := emptyDistributionHash()
@@ -1046,7 +1142,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHash := emptyDistributionHash()
@@ -1090,7 +1186,7 @@ func TestUptoVerifyOpenRejectsDepositBelowMax(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHash := emptyDistributionHash()
@@ -1134,7 +1230,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	fakeRPC := newUptoTestRPC() // no channel account added
@@ -1156,8 +1252,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 	}
 }
 
-// TestUptoSettleActualZeroAmount exercises the actual=0 finalize-only path.
-func TestUptoSettleActualZeroAmount(t *testing.T) {
+func TestUptoSettleActualRejectsZeroAmount(t *testing.T) {
 	operatorKey := testutil.NewPrivateKey()
 	payerKey := testutil.NewPrivateKey()
 	payee := operatorKey.PublicKey()
@@ -1170,7 +1265,7 @@ func TestUptoSettleActualZeroAmount(t *testing.T) {
 		TokenProgram: solana.TokenProgramID, ProgramID: paymentchannels.ProgramPubkey(),
 	}
 	openIx, _ := paymentchannels.BuildOpenInstruction(params)
-	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(payerKey.PublicKey()))
+	tx, _ := solana.NewTransaction([]solana.Instruction{openIx}, solana.MustHashFromBase58("4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h"), solana.TransactionPayer(operatorKey.PublicKey()))
 	solanatx.SignTransaction(tx, payerSigner{payerKey})
 	txBase64, _ := solanatx.EncodeTransactionBase64(tx)
 	distHash := emptyDistributionHash()
@@ -1198,15 +1293,9 @@ func TestUptoSettleActualZeroAmount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyOpen: %v", err)
 	}
-	settlement, err := engine.SettleActual(context.Background(), verified, 0)
-	if err != nil {
-		t.Fatalf("SettleActual(0): %v", err)
-	}
-	if !settlement.Success {
-		t.Fatal("expected success")
-	}
-	if settlement.Amount != "0" {
-		t.Fatalf("amount = %q, want 0", settlement.Amount)
+	_, err = engine.SettleActual(context.Background(), verified, 0)
+	if err == nil || !strings.Contains(err.Error(), "must be greater than zero") {
+		t.Fatalf("expected zero-amount rejection, got %v", err)
 	}
 }
 

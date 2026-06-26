@@ -79,6 +79,7 @@ fn read_state(
         .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string());
     let settlement_header = env::var("X402_HARNESS_SETTLEMENT_HEADER")
         .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string());
+    let program_id = env::var("PAYMENT_CHANNELS_PROGRAM_ID").ok();
 
     let upto = X402Upto::new(UptoConfig {
         recipient: pay_to,
@@ -90,7 +91,7 @@ fn read_state(
         description: Some("Surfpool-backed usage endpoint".to_string()),
         max_timeout_seconds: 300,
         token_program: None,
-        program_id: None,
+        program_id,
         operator_signer,
     })?;
 
@@ -141,8 +142,7 @@ fn handle_connection(
                 headers.get(&PAYMENT_SIGNATURE_HEADER.to_ascii_lowercase())
             {
                 match settle_upto_payment(state, payment_header, &max_amount) {
-                    Ok((settlement, _settlement_header_value)) => {
-                        let payment_response = serde_json::to_string(&settlement)?;
+                    Ok((settlement, settlement_header_value)) => {
                         write_json_response(
                             &mut stream,
                             200,
@@ -151,7 +151,7 @@ fn handle_connection(
                                     state.settlement_header.as_str(),
                                     settlement.transaction.as_str(),
                                 ),
-                                (PAYMENT_RESPONSE_HEADER, payment_response.as_str()),
+                                (PAYMENT_RESPONSE_HEADER, settlement_header_value.as_str()),
                             ],
                             &json!({
                                 "ok": true,

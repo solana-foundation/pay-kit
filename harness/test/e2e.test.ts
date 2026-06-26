@@ -6,7 +6,7 @@ import {
   getCompiledTransactionMessageDecoder,
   getTransactionDecoder,
 } from "@solana/kit";
-import { Surfnet } from "surfpool-sdk";
+import { Surfnet } from "@solana/surfpool";
 import { HarnessScenario, selectHarnessScenarios } from "../src/contracts";
 import {
   clientImplementations,
@@ -25,10 +25,19 @@ const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const ASSOCIATED_TOKEN_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+const ED25519_PROGRAM = "Ed25519SigVerify111111111111111111111111111";
+const PAYMENT_CHANNEL_TREASURY_OWNER =
+  "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
+const DEFAULT_PAYMENT_CHANNEL_PROGRAM =
+  "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX";
+const PAYMENT_CHANNEL_PROGRAM =
+  process.env.PAYMENT_CHANNELS_PROGRAM_ID ?? DEFAULT_PAYMENT_CHANNEL_PROGRAM;
 const MINT_ACCOUNT_SIZE = 82;
 const SOL_NATIVE_DECIMALS = 9;
 const DEFAULT_SPL_DECIMALS = 6;
 const CLIENT_SOL_FUND_LAMPORTS = 5_000_000_000;
+const DEFAULT_SURFPOOL_DATASOURCE_RPC_URL =
+  "https://api.mainnet-beta.solana.com";
 
 function tokenProgramAddress(
   variant: "TOKEN_PROGRAM" | "TOKEN_2022_PROGRAM" | undefined,
@@ -155,6 +164,87 @@ function createSplMintAccountData(decimals: number): Uint8Array {
   return data;
 }
 
+function startSurfnetForScenarios(
+  scenarios: readonly HarnessScenario[],
+): Surfnet {
+  const needsPaymentChannels = scenarios.some(
+    (scenario) => scenario.intent === "x402-upto",
+  );
+  if (!needsPaymentChannels) {
+    return Surfnet.start();
+  }
+
+  const programSoPath = process.env.PAYMENT_CHANNELS_PROGRAM_SO?.trim();
+  if (programSoPath) {
+    const started = Surfnet.start();
+    started.deploy({
+      programId: PAYMENT_CHANNEL_PROGRAM,
+      soPath: programSoPath,
+    });
+    return started;
+  }
+
+  const started = Surfnet.startWithConfig({
+    offline: false,
+    remoteRpcUrl:
+      process.env.SURFPOOL_DATASOURCE_RPC_URL ??
+      DEFAULT_SURFPOOL_DATASOURCE_RPC_URL,
+  });
+  started.streamAccount(PAYMENT_CHANNEL_PROGRAM, {
+    includeOwnedAccounts: true,
+  });
+
+  return started;
+}
+
+async function rpcDebugRequest(
+  rpcUrl: string,
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  return response.json();
+}
+
+async function debugSurfnetTransactions(surfnet: Surfnet): Promise<unknown> {
+  const signatures = await rpcDebugRequest(
+    surfnet.rpcUrl,
+    "getSignaturesForAddress",
+    [PAYMENT_CHANNEL_PROGRAM, { limit: 8 }],
+  );
+  const signatureResult =
+    typeof signatures === "object" && signatures !== null
+      ? (signatures as { result?: unknown }).result
+      : undefined;
+  const signatureValues = Array.isArray(signatureResult)
+    ? signatureResult
+        .map((entry) =>
+          typeof entry === "object" && entry !== null && "signature" in entry
+            ? entry.signature
+            : undefined,
+        )
+        .filter(
+          (signature): signature is string => typeof signature === "string",
+        )
+    : [];
+  const transactions = await Promise.all(
+    signatureValues.map((signature) =>
+      rpcDebugRequest(surfnet.rpcUrl, "getTransaction", [
+        signature,
+        {
+          encoding: "json",
+          maxSupportedTransactionVersion: 0,
+        },
+      ]),
+    ),
+  );
+  return { signatures, transactions };
+}
+
 const socketSupport = await canBindLocalSocket();
 const activeScenarios = selectHarnessScenarios(
   process.env.MPP_HARNESS_INTENTS,
@@ -171,7 +261,7 @@ beforeAll(async () => {
     return;
   }
 
-  surfnet = Surfnet.start();
+  surfnet = startSurfnetForScenarios(activeScenarios);
   // Periodically drain the JS-side surfpool event queue. The Rust
   // server fixture broadcasts via this in-process surfpool RPC, and
   // each broadcast enqueues commit/log events on the JS side. Without
@@ -208,6 +298,12 @@ beforeAll(async () => {
     if (scenario.paymentMode === "push") {
       needsSolFunding = true;
     }
+    // x402-upto opens a payment-channel account. The operator pays the
+    // transaction fee, but the channel program debits rent and escrow ATA
+    // creation from the client payer account.
+    if (scenario.intent === "x402-upto") {
+      needsSolFunding = true;
+    }
     if (isSolNative(scenario)) {
       needsSolFunding = true;
       continue;
@@ -239,7 +335,7 @@ beforeAll(async () => {
       createSplMintAccountData(config.decimals),
       programAddress,
     );
-    surfnet.fundToken(client.publicKey, mintPubkey, 100_000, programAddress);
+    surfnet.fundToken(client.publicKey, mintPubkey, 1_000_000, programAddress);
     surfnet.fundToken(payTo.publicKey, mintPubkey, 1, programAddress);
   }
 
@@ -294,10 +390,13 @@ beforeAll(async () => {
     // can reuse the matrix's funded keypairs.
     X402_HARNESS_RPC_URL: surfnet.rpcUrl,
     X402_HARNESS_PAY_TO: payTo.publicKey,
-    X402_HARNESS_CLIENT_SECRET_KEY: JSON.stringify(Array.from(client.secretKey)),
+    X402_HARNESS_CLIENT_SECRET_KEY: JSON.stringify(
+      Array.from(client.secretKey),
+    ),
     X402_HARNESS_FACILITATOR_SECRET_KEY: JSON.stringify(
       Array.from(surfnet.payerSecretKey),
     ),
+    PAYMENT_CHANNELS_PROGRAM_ID: PAYMENT_CHANNEL_PROGRAM,
   };
 });
 
@@ -422,7 +521,9 @@ describe("mpp harness", () => {
             }
 
             const scenarioEnv = environmentForScenario(harnessEnv, scenario);
-            const scenarioTokenProgram = tokenProgramAddress(scenario.tokenProgram);
+            const scenarioTokenProgram = tokenProgramAddress(
+              scenario.tokenProgram,
+            );
             // On-chain mint pubkey (resolved expectedMint in symbol mode,
             // literal asset in pubkey mode, or null for SOL-native). The
             // literal in scenarioEnv goes to the adapter so the SDK's
@@ -479,6 +580,24 @@ describe("mpp harness", () => {
                   scenario.expectedStatus === 402,
                 )
               : {};
+
+            if (
+              result.status !== scenario.expectedStatus &&
+              process.env.PAY_KIT_DUMP_SURFNET_EVENTS === "1"
+            ) {
+              console.error(
+                JSON.stringify(
+                  {
+                    result,
+                    surfnetEvents: surfnet.drainEvents(),
+                    surfnetTransactions:
+                      await debugSurfnetTransactions(surfnet),
+                  },
+                  null,
+                  2,
+                ),
+              );
+            }
 
             expect(result.status, JSON.stringify(result, null, 2)).toBe(
               scenario.expectedStatus,
@@ -602,7 +721,9 @@ describe("mpp harness", () => {
           `${scenario.id}: ${clientImplementation.id} client, A=${aId} B=${bId}`,
           async () => {
             if (!surfnet || !harnessEnv) {
-              throw new Error("Surfpool harness environment was not initialized");
+              throw new Error(
+                "Surfpool harness environment was not initialized",
+              );
             }
             const envA = environmentForScenario(harnessEnv, scenario);
             const envB = {
@@ -623,9 +744,10 @@ describe("mpp harness", () => {
             const resultPayload = JSON.stringify(result, null, 2);
             const firstStatus = (result as unknown as { firstStatus?: number })
               .firstStatus;
-            expect(firstStatus, `first hop must succeed: ${resultPayload}`).toBe(
-              200,
-            );
+            expect(
+              firstStatus,
+              `first hop must succeed: ${resultPayload}`,
+            ).toBe(200);
             expect(result.status, resultPayload).toBe(scenario.expectedStatus);
             if (scenario.expectedCode) {
               const body = result.responseBody as { code?: string } | undefined;
@@ -676,7 +798,9 @@ describe("mpp harness", () => {
           `${scenario.id}: ${clientImplementation.id} client pays ${serverImplementation.id} server twice`,
           async () => {
             if (!surfnet || !harnessEnv) {
-              throw new Error("Surfpool harness environment was not initialized");
+              throw new Error(
+                "Surfpool harness environment was not initialized",
+              );
             }
             const env = environmentForScenario(harnessEnv, scenario);
             const server = await startServer(serverImplementation, env);
@@ -689,9 +813,10 @@ describe("mpp harness", () => {
             const resultPayload = JSON.stringify(result, null, 2);
             const firstStatus = (result as unknown as { firstStatus?: number })
               .firstStatus;
-            expect(firstStatus, `first pay must succeed: ${resultPayload}`).toBe(
-              200,
-            );
+            expect(
+              firstStatus,
+              `first pay must succeed: ${resultPayload}`,
+            ).toBe(200);
             expect(result.status, resultPayload).toBe(scenario.expectedStatus);
             if (scenario.expectedCode) {
               const body = result.responseBody as { code?: string } | undefined;
@@ -741,19 +866,25 @@ function environmentForScenario(
     ),
   };
   if (typeof scenario.clientComputeUnitLimit === "number") {
-    env.MPP_HARNESS_COMPUTE_UNIT_LIMIT = String(scenario.clientComputeUnitLimit);
+    env.MPP_HARNESS_COMPUTE_UNIT_LIMIT = String(
+      scenario.clientComputeUnitLimit,
+    );
   }
   if (typeof scenario.clientComputeUnitPrice === "string") {
     env.MPP_HARNESS_COMPUTE_UNIT_PRICE = scenario.clientComputeUnitPrice;
   }
-  if (scenario.intent === "x402-exact") {
+  if (scenario.intent === "x402-exact" || scenario.intent === "x402-upto") {
     // Adapters that auto-detect protocol by env namespace
     // (e.g. the Ruby adapter) prefer this explicit hint - the
     // matrix populates both MPP_HARNESS_* and X402_HARNESS_* shadows
     // from the same surfpool fixtures, so namespace probing alone
     // is ambiguous.
-    env.PAY_KIT_HARNESS_PROTOCOL = "x402";
+    env.PAY_KIT_HARNESS_PROTOCOL =
+      scenario.intent === "x402-upto" ? "x402-upto" : "x402";
     env.X402_HARNESS_AMOUNT = scenario.amount;
+    if (scenario.actualAmount) {
+      env.X402_HARNESS_ACTUAL_AMOUNT = scenario.actualAmount;
+    }
     env.X402_HARNESS_MINT = scenario.asset;
     env.X402_HARNESS_NETWORK = scenario.network;
     env.X402_HARNESS_PRICE = scenario.price;
@@ -774,7 +905,9 @@ async function expectSettledTransactionShape(
   settlement: unknown,
 ): Promise<void> {
   if (typeof settlement !== "string" || settlement.length === 0) {
-    throw new Error(`Scenario ${scenario.id} did not return a settlement signature`);
+    throw new Error(
+      `Scenario ${scenario.id} did not return a settlement signature`,
+    );
   }
 
   const transaction = await fetchTransactionBase64(
@@ -783,6 +916,11 @@ async function expectSettledTransactionShape(
   );
   const message = decodeTransactionMessage(transaction);
   expect(message.addressTableLookups ?? []).toHaveLength(0);
+
+  if (scenario.intent === "x402-upto") {
+    expectPaymentChannelSettlement(surfnet, message, scenario, scenarioEnv);
+    return;
+  }
 
   // G27. SOL-native scenarios expect a System Program transfer, not
   // SPL transferChecked. The system transfer discriminator is u32 LE
@@ -825,11 +963,7 @@ async function expectSettledTransactionShape(
 
   for (const split of scenario.splits ?? []) {
     const recipient = splitRecipients[split.recipientKey];
-    const destination = surfnet.getAta(
-      recipient,
-      onChainMint,
-      tokenProgram,
-    );
+    const destination = surfnet.getAta(recipient, onChainMint, tokenProgram);
     expectSplTransferChecked(
       message,
       {
@@ -900,6 +1034,87 @@ function expectSystemProgramTransfer(
   ).toBeDefined();
 }
 
+function expectPaymentChannelSettlement(
+  surfnet: Surfnet,
+  message: CompiledMessage,
+  scenario: HarnessScenario,
+  scenarioEnv: Record<string, string>,
+): void {
+  expect(
+    message.instructions,
+    "x402-upto settlement instruction count",
+  ).toHaveLength(5);
+
+  const [verify, settle, createPayee, createTreasury, distribute] =
+    message.instructions;
+  expect(accountAt(message, verify.programAddressIndex)).toBe(ED25519_PROGRAM);
+  expect(verify.data[0], "Ed25519 signature count").toBe(1);
+  expect(readU16Le(verify.data, 10), "voucher message offset").toBe(112);
+  expect(readU16Le(verify.data, 12), "voucher message length").toBe(48);
+  expect(readU64Le(verify.data, 112 + 32), "voucher cumulative amount").toBe(
+    primaryDelta(scenario),
+  );
+
+  expect(accountAt(message, settle.programAddressIndex)).toBe(
+    PAYMENT_CHANNEL_PROGRAM,
+  );
+  expect(settle.data[0], "settle discriminator").toBe(2);
+
+  const mint = onChainMintFor(scenario);
+  if (!mint) {
+    throw new Error(`x402-upto scenario ${scenario.id} has no SPL mint`);
+  }
+  const tokenProgram = tokenProgramAddress(scenario.tokenProgram);
+  const payeeAta = surfnet.getAta(
+    scenarioEnv.MPP_HARNESS_PAY_TO,
+    mint,
+    tokenProgram,
+  );
+  const treasuryAta = surfnet.getAta(
+    PAYMENT_CHANNEL_TREASURY_OWNER,
+    mint,
+    tokenProgram,
+  );
+
+  expectIdempotentAtaCreationInstruction(message, createPayee, {
+    ata: payeeAta,
+    owner: scenarioEnv.MPP_HARNESS_PAY_TO,
+    mint,
+    tokenProgram,
+  });
+  expectIdempotentAtaCreationInstruction(message, createTreasury, {
+    ata: treasuryAta,
+    owner: PAYMENT_CHANNEL_TREASURY_OWNER,
+    mint,
+    tokenProgram,
+  });
+
+  expect(accountAt(message, distribute.programAddressIndex)).toBe(
+    PAYMENT_CHANNEL_PROGRAM,
+  );
+  expect(distribute.data[0], "distribute discriminator").toBe(7);
+  expect(distribute.accountIndices, "distribute account count").toHaveLength(
+    10,
+  );
+  expect(accountAt(message, settle.accountIndices[0])).toBe(
+    accountAt(message, distribute.accountIndices[0]),
+  );
+  expect(accountAt(message, distribute.accountIndices[4]), "payee ATA").toBe(
+    payeeAta,
+  );
+  expect(accountAt(message, distribute.accountIndices[5]), "treasury ATA").toBe(
+    treasuryAta,
+  );
+  expect(accountAt(message, distribute.accountIndices[6]), "mint").toBe(mint);
+  expect(
+    accountAt(message, distribute.accountIndices[7]),
+    "token program",
+  ).toBe(tokenProgram);
+  expect(accountAt(message, distribute.accountIndices[9]), "self program").toBe(
+    PAYMENT_CHANNEL_PROGRAM,
+  );
+}
+
 async function fetchTransactionBase64(
   rpcUrl: string,
   signature: string,
@@ -937,7 +1152,9 @@ async function fetchTransactionBase64(
   expect(payload.result.meta?.err ?? null).toBeNull();
   const transaction = payload.result.transaction?.[0];
   if (!transaction) {
-    throw new Error(`getTransaction returned no base64 transaction for ${signature}`);
+    throw new Error(
+      `getTransaction returned no base64 transaction for ${signature}`,
+    );
   }
   return transaction;
 }
@@ -966,7 +1183,8 @@ function expectSplTransferChecked(
       return false;
     }
     if (
-      accountAt(message, instruction.programAddressIndex) !== expected.tokenProgram
+      accountAt(message, instruction.programAddressIndex) !==
+      expected.tokenProgram
     ) {
       return false;
     }
@@ -981,7 +1199,8 @@ function expectSplTransferChecked(
     const decimals = instruction.data[9];
     return (
       accountAt(message, instruction.accountIndices[1]) === expected.mint &&
-      accountAt(message, instruction.accountIndices[2]) === expected.destination &&
+      accountAt(message, instruction.accountIndices[2]) ===
+        expected.destination &&
       amount === expected.amount &&
       decimals === expected.decimals
     );
@@ -1004,7 +1223,10 @@ function expectIdempotentAtaCreation(
   },
 ): void {
   const match = message.instructions.find((instruction) => {
-    if (accountAt(message, instruction.programAddressIndex) !== ASSOCIATED_TOKEN_PROGRAM) {
+    if (
+      accountAt(message, instruction.programAddressIndex) !==
+      ASSOCIATED_TOKEN_PROGRAM
+    ) {
       return false;
     }
     if (instruction.data[0] !== 1) {
@@ -1015,7 +1237,8 @@ function expectIdempotentAtaCreation(
       accountAt(message, instruction.accountIndices[2]) === expected.owner &&
       accountAt(message, instruction.accountIndices[3]) === expected.mint &&
       accountAt(message, instruction.accountIndices[4]) === SYSTEM_PROGRAM &&
-      accountAt(message, instruction.accountIndices[5]) === expected.tokenProgram
+      accountAt(message, instruction.accountIndices[5]) ===
+        expected.tokenProgram
     );
   });
 
@@ -1023,6 +1246,39 @@ function expectIdempotentAtaCreation(
     match,
     `missing idempotent ATA creation ata=${expected.ata} owner=${expected.owner} mint=${expected.mint}`,
   ).toBeDefined();
+}
+
+function expectIdempotentAtaCreationInstruction(
+  message: CompiledMessage,
+  instruction: CompiledInstruction,
+  expected: {
+    ata: string;
+    owner: string;
+    mint: string;
+    tokenProgram: string;
+  },
+): void {
+  expect(accountAt(message, instruction.programAddressIndex)).toBe(
+    ASSOCIATED_TOKEN_PROGRAM,
+  );
+  expect(instruction.data[0], "create ATA discriminator").toBe(1);
+  expect(accountAt(message, instruction.accountIndices[1]), "created ATA").toBe(
+    expected.ata,
+  );
+  expect(accountAt(message, instruction.accountIndices[2]), "ATA owner").toBe(
+    expected.owner,
+  );
+  expect(accountAt(message, instruction.accountIndices[3]), "ATA mint").toBe(
+    expected.mint,
+  );
+  expect(
+    accountAt(message, instruction.accountIndices[4]),
+    "system program",
+  ).toBe(SYSTEM_PROGRAM);
+  expect(
+    accountAt(message, instruction.accountIndices[5]),
+    "token program",
+  ).toBe(expected.tokenProgram);
 }
 
 function expectTransferCheckedCount(
@@ -1051,7 +1307,10 @@ function expectMemo(message: CompiledMessage, memo: string): void {
   const encoder = new TextEncoder();
   const expected = encoder.encode(memo);
   const match = message.instructions.find((instruction) => {
-    if (accountAt(message, instruction.programAddressIndex) !== "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr") {
+    if (
+      accountAt(message, instruction.programAddressIndex) !==
+      "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+    ) {
       return false;
     }
     return bytesEqual(instruction.data, expected);
@@ -1067,6 +1326,11 @@ function accountAt(message: CompiledMessage, index: number): string {
 function readU64Le(bytes: Uint8Array, offset: number): bigint {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return view.getBigUint64(offset, true);
+}
+
+function readU16Le(bytes: Uint8Array, offset: number): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getUint16(offset, true);
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -1087,7 +1351,10 @@ async function splitBalances(
   for (const split of scenario.splits ?? []) {
     const recipient = splitRecipients[split.recipientKey];
     if (isSolNative(scenario)) {
-      balances[split.recipientKey] = await getLamportBalance(surfnet, recipient);
+      balances[split.recipientKey] = await getLamportBalance(
+        surfnet,
+        recipient,
+      );
       continue;
     }
     if (!mint) {
@@ -1107,6 +1374,9 @@ async function splitBalances(
 }
 
 function primaryDelta(scenario: HarnessScenario): bigint {
+  if (scenario.actualAmount) {
+    return BigInt(scenario.actualAmount);
+  }
   return (
     BigInt(scenario.amount) -
     (scenario.splits ?? []).reduce(

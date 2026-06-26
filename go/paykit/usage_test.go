@@ -74,6 +74,17 @@ type stubUsageAdapter struct {
 	settleErr        error
 	settleResult     *UsageSettlement
 	verified         VerifiedUsageOpen
+	settledActual    uint64
+	settleCalls      int
+	onSettle         func(actual uint64)
+}
+
+type releaseTrackingOpen struct {
+	releases int
+}
+
+func (o *releaseTrackingOpen) Release() {
+	o.releases++
 }
 
 type stubAcceptsEntry struct{}
@@ -90,7 +101,12 @@ func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (Verifie
 	pmt := &Payment{Protocol: X402, SettlementHeaders: map[string]string{}}
 	return s.verified, pmt, nil
 }
-func (s *stubUsageAdapter) SettleActual(context.Context, VerifiedUsageOpen, uint64) (*UsageSettlement, error) {
+func (s *stubUsageAdapter) SettleActual(_ context.Context, _ VerifiedUsageOpen, actual uint64) (*UsageSettlement, error) {
+	s.settleCalls++
+	s.settledActual = actual
+	if s.onSettle != nil {
+		s.onSettle(actual)
+	}
 	if s.settleErr != nil {
 		return nil, s.settleErr
 	}
@@ -156,6 +172,159 @@ func TestRequireUsageSettlesAfterHandler(t *testing.T) {
 	}
 }
 
+func TestRequireUsageSettlesAfterHandlerWritesFirst(t *testing.T) {
+	adapter := &stubUsageAdapter{
+		detect:       true,
+		settleResult: &UsageSettlement{Transaction: "sig123", Headers: map[string]string{"x-payment-response": "encoded", "x-payment-settlement-signature": "sig123"}},
+	}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+		errorHandler: DefaultErrorHandler,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":`))
+		c, ok := ChargeFrom(r.Context())
+		if !ok || c == nil {
+			t.Fatal("expected Charge in context")
+		}
+		c.Charge(300_000)
+		_, _ = w.Write([]byte(`true}`))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 300_000 {
+		t.Fatalf("settled actual = %d, want 300000", adapter.settledActual)
+	}
+	if rr.Header().Get("x-payment-settlement-signature") != "sig123" {
+		t.Fatalf("settlement header missing: %s", rr.Header().Get("x-payment-settlement-signature"))
+	}
+	if strings.TrimSpace(rr.Body.String()) != `{"ok":true}` {
+		t.Fatalf("body = %q, want JSON from handler", rr.Body.String())
+	}
+}
+
+func TestRequireUsageSettlesOnlyAfterHandlerReturns(t *testing.T) {
+	handlerReturned := false
+	adapter := &stubUsageAdapter{
+		detect: true,
+		onSettle: func(uint64) {
+			if !handlerReturned {
+				t.Error("settlement ran before handler returned")
+			}
+		},
+	}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+		errorHandler: DefaultErrorHandler,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { handlerReturned = true }()
+		c, ok := ChargeFrom(r.Context())
+		if !ok || c == nil {
+			t.Fatal("expected Charge in context")
+		}
+		c.Charge(400_000)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 400_000 {
+		t.Fatalf("settled actual = %d, want 400000", adapter.settledActual)
+	}
+}
+
+func TestRequireUsageRequiresChargeBeforeResponse(t *testing.T) {
+	verified := &releaseTrackingOpen{}
+	adapter := &stubUsageAdapter{detect: true, verified: verified}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if adapter.settleCalls != 0 {
+		t.Fatalf("settle calls = %d, want 0", adapter.settleCalls)
+	}
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	}
+	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body leaked when handler omitted Charge: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"settlement_failed"`) {
+		t.Fatalf("expected settlement_failed code in body, got %s", rr.Body.String())
+	}
+}
+
+func TestRequireUsageRejectsZeroChargeBeforeResponse(t *testing.T) {
+	verified := &releaseTrackingOpen{}
+	adapter := &stubUsageAdapter{detect: true, verified: verified}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := ChargeFrom(r.Context())
+		c.Charge(0)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if adapter.settleCalls != 0 {
+		t.Fatalf("settle calls = %d, want 0", adapter.settleCalls)
+	}
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	}
+	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body leaked after zero Charge: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"settlement_failed"`) {
+		t.Fatalf("expected settlement_failed code in body, got %s", rr.Body.String())
+	}
+}
+
 func TestRequireUsageRejectsNonUsageGate(t *testing.T) {
 	client := &Client{
 		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
@@ -198,6 +367,35 @@ func TestRequireUsageRejectsVerifyOpenError(t *testing.T) {
 	}
 }
 
+func TestRequireUsageDefaultErrorHandlerPreservesUsageCode(t *testing.T) {
+	client := &Client{
+		Config: Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: &stubUsageAdapter{
+			detect:           true,
+			verifyOpenErr:    &PaymentError{Code: "invalid_proof", Err: errors.New("bad signature")},
+			challengeHeaders: map[string]string{"payment-required": "abc"},
+			acceptsEntry:     stubAcceptsEntry{},
+		},
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called")
+	}))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "bad")
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"invalid_proof"`) {
+		t.Fatalf("expected invalid_proof code in body, got %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"detail":"bad signature"`) {
+		t.Fatalf("expected detail in body, got %s", rr.Body.String())
+	}
+}
+
 func TestRequireUsageHandlesSettleError(t *testing.T) {
 	client := &Client{
 		Config: Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
@@ -205,7 +403,6 @@ func TestRequireUsageHandlesSettleError(t *testing.T) {
 			detect:    true,
 			settleErr: errors.New("settlement broadcast failed"),
 		},
-		errorHandler: DefaultErrorHandler,
 	}
 	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
 	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -218,10 +415,14 @@ func TestRequireUsageHandlesSettleError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
 	req.Header.Set("Payment-Signature", "abc")
 	h.ServeHTTP(rr, req)
-	// Settlement failed but the handler already ran; the response still goes
-	// out (without settlement headers, but with the handler's body).
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (handler already wrote)", rr.Code)
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), `{"ok":true}`) {
+		t.Fatalf("protected body leaked after settlement failure: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"code":"settlement_failed"`) {
+		t.Fatalf("expected settlement_failed code in body, got %s", rr.Body.String())
 	}
 }
 

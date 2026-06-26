@@ -39,6 +39,9 @@ pub const PAYMENT_CHANNELS_PROGRAM_ID: &str = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBa
 /// Associated Token Account program ID.
 pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 
+/// System Program ID.
+pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+
 /// Default payment-channel close grace period, in seconds.
 pub const DEFAULT_GRACE_PERIOD_SECONDS: u32 = 900;
 
@@ -120,6 +123,10 @@ pub fn associated_token_program_id() -> Pubkey {
     Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM).expect("valid associated token program id")
 }
 
+pub fn system_program_id() -> Pubkey {
+    Pubkey::from_str(SYSTEM_PROGRAM).expect("valid system program id")
+}
+
 pub fn instructions_sysvar_id() -> Pubkey {
     Pubkey::from_str(INSTRUCTIONS_SYSVAR_ID).expect("valid instructions sysvar id")
 }
@@ -183,6 +190,27 @@ pub fn find_associated_token_address(
         &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
         &ata_program,
     )
+}
+
+pub fn build_create_associated_token_account_instruction(
+    payer: &Pubkey,
+    wallet: &Pubkey,
+    mint: &Pubkey,
+    token_program: &Pubkey,
+) -> Instruction {
+    let (ata, _) = find_associated_token_address(wallet, mint, token_program);
+    Instruction {
+        program_id: to_address(&associated_token_program_id()),
+        accounts: vec![
+            AccountMeta::new(to_address(payer), true),
+            AccountMeta::new(to_address(&ata), false),
+            AccountMeta::new_readonly(to_address(wallet), false),
+            AccountMeta::new_readonly(to_address(mint), false),
+            AccountMeta::new_readonly(to_address(&system_program_id()), false),
+            AccountMeta::new_readonly(to_address(token_program), false),
+        ],
+        data: vec![1],
+    }
 }
 
 pub fn derive_channel_addresses(params: &OpenChannelParams) -> ChannelAddresses {
