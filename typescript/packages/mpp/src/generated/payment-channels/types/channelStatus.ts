@@ -7,33 +7,30 @@
  */
 
 import {
-  combineCodec,
-  getEnumDecoder,
-  getEnumEncoder,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-} from "@solana/kit";
+    combineCodec,
+    getEnumDecoder,
+    getEnumEncoder,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+} from '@solana/kit';
 
 export enum ChannelStatus {
-  Open,
-  Finalized,
-  Closing,
+    Open,
+    Finalized,
+    Closing,
 }
 
 export type ChannelStatusArgs = ChannelStatus;
 
 export function getChannelStatusEncoder(): FixedSizeEncoder<ChannelStatusArgs> {
-  return getEnumEncoder(ChannelStatus);
+    return getEnumEncoder(ChannelStatus);
 }
 
 export function getChannelStatusDecoder(): FixedSizeDecoder<ChannelStatus> {
-  return getEnumDecoder(ChannelStatus);
+    return getEnumDecoder(ChannelStatus);
 }
 
-export function getChannelStatusCodec(): FixedSizeCodec<
-  ChannelStatusArgs,
-  ChannelStatus
-> {
-  return combineCodec(getChannelStatusEncoder(), getChannelStatusDecoder());
+export function getChannelStatusCodec(): FixedSizeCodec<ChannelStatusArgs, ChannelStatus> {
+    return combineCodec(getChannelStatusEncoder(), getChannelStatusDecoder());
 }

@@ -7,29 +7,29 @@
  */
 
 import {
-  combineCodec,
-  getAddressDecoder,
-  getAddressEncoder,
-  getStructDecoder,
-  getStructEncoder,
-  type Address,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-} from "@solana/kit";
+    combineCodec,
+    getAddressDecoder,
+    getAddressEncoder,
+    getStructDecoder,
+    getStructEncoder,
+    type Address,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+} from '@solana/kit';
 
 export type Opened = { channel: Address };
 
 export type OpenedArgs = Opened;
 
 export function getOpenedEncoder(): FixedSizeEncoder<OpenedArgs> {
-  return getStructEncoder([["channel", getAddressEncoder()]]);
+    return getStructEncoder([['channel', getAddressEncoder()]]);
 }
 
 export function getOpenedDecoder(): FixedSizeDecoder<Opened> {
-  return getStructDecoder([["channel", getAddressDecoder()]]);
+    return getStructDecoder([['channel', getAddressDecoder()]]);
 }
 
 export function getOpenedCodec(): FixedSizeCodec<OpenedArgs, Opened> {
-  return combineCodec(getOpenedEncoder(), getOpenedDecoder());
+    return combineCodec(getOpenedEncoder(), getOpenedDecoder());
 }

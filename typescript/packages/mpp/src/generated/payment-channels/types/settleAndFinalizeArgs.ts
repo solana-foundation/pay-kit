@@ -7,34 +7,28 @@
  */
 
 import {
-  combineCodec,
-  getStructDecoder,
-  getStructEncoder,
-  getU8Decoder,
-  getU8Encoder,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-} from "@solana/kit";
+    combineCodec,
+    getStructDecoder,
+    getStructEncoder,
+    getU8Decoder,
+    getU8Encoder,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+} from '@solana/kit';
 
 export type SettleAndFinalizeArgs = { hasVoucher: number };
 
 export type SettleAndFinalizeArgsArgs = SettleAndFinalizeArgs;
 
 export function getSettleAndFinalizeArgsEncoder(): FixedSizeEncoder<SettleAndFinalizeArgsArgs> {
-  return getStructEncoder([["hasVoucher", getU8Encoder()]]);
+    return getStructEncoder([['hasVoucher', getU8Encoder()]]);
 }
 
 export function getSettleAndFinalizeArgsDecoder(): FixedSizeDecoder<SettleAndFinalizeArgs> {
-  return getStructDecoder([["hasVoucher", getU8Decoder()]]);
+    return getStructDecoder([['hasVoucher', getU8Decoder()]]);
 }
 
-export function getSettleAndFinalizeArgsCodec(): FixedSizeCodec<
-  SettleAndFinalizeArgsArgs,
-  SettleAndFinalizeArgs
-> {
-  return combineCodec(
-    getSettleAndFinalizeArgsEncoder(),
-    getSettleAndFinalizeArgsDecoder(),
-  );
+export function getSettleAndFinalizeArgsCodec(): FixedSizeCodec<SettleAndFinalizeArgsArgs, SettleAndFinalizeArgs> {
+    return combineCodec(getSettleAndFinalizeArgsEncoder(), getSettleAndFinalizeArgsDecoder());
 }

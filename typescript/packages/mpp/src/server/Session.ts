@@ -1022,8 +1022,7 @@ async function closeAndSettleChannel(args: CloseAndSettleArgs): Promise<SubmitSe
         network: args.network,
         payee: args.recipient,
         payer: state.operator ?? args.recipient,
-        
-        
+
         programId: args.programId,
         // rentPayer reclaims the channel/escrow rent at finalize; it is the
         // operator recorded as the channel rentPayer at open (the fee payer),

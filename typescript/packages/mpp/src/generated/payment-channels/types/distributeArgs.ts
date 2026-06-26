@@ -7,41 +7,34 @@
  */
 
 import {
-  combineCodec,
-  getArrayDecoder,
-  getArrayEncoder,
-  getStructDecoder,
-  getStructEncoder,
-  type Codec,
-  type Decoder,
-  type Encoder,
-} from "@solana/kit";
+    combineCodec,
+    getArrayDecoder,
+    getArrayEncoder,
+    getStructDecoder,
+    getStructEncoder,
+    type Codec,
+    type Decoder,
+    type Encoder,
+} from '@solana/kit';
 import {
-  getDistributionEntryDecoder,
-  getDistributionEntryEncoder,
-  type DistributionEntry,
-  type DistributionEntryArgs,
-} from "./index.js";
+    getDistributionEntryDecoder,
+    getDistributionEntryEncoder,
+    type DistributionEntry,
+    type DistributionEntryArgs,
+} from './index.js';
 
 export type DistributeArgs = { recipients: Array<DistributionEntry> };
 
 export type DistributeArgsArgs = { recipients: Array<DistributionEntryArgs> };
 
 export function getDistributeArgsEncoder(): Encoder<DistributeArgsArgs> {
-  return getStructEncoder([
-    ["recipients", getArrayEncoder(getDistributionEntryEncoder())],
-  ]);
+    return getStructEncoder([['recipients', getArrayEncoder(getDistributionEntryEncoder())]]);
 }
 
 export function getDistributeArgsDecoder(): Decoder<DistributeArgs> {
-  return getStructDecoder([
-    ["recipients", getArrayDecoder(getDistributionEntryDecoder())],
-  ]);
+    return getStructDecoder([['recipients', getArrayDecoder(getDistributionEntryDecoder())]]);
 }
 
-export function getDistributeArgsCodec(): Codec<
-  DistributeArgsArgs,
-  DistributeArgs
-> {
-  return combineCodec(getDistributeArgsEncoder(), getDistributeArgsDecoder());
+export function getDistributeArgsCodec(): Codec<DistributeArgsArgs, DistributeArgs> {
+    return combineCodec(getDistributeArgsEncoder(), getDistributeArgsDecoder());
 }

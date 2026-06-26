@@ -7,219 +7,187 @@
  */
 
 import {
-  combineCodec,
-  getStructDecoder,
-  getStructEncoder,
-  getU8Decoder,
-  getU8Encoder,
-  SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,
-  SolanaError,
-  transformEncoder,
-  type AccountMeta,
-  type AccountSignerMeta,
-  type Address,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-  type Instruction,
-  type InstructionWithAccounts,
-  type InstructionWithData,
-  type ReadonlyAccount,
-  type ReadonlySignerAccount,
-  type ReadonlyUint8Array,
-  type TransactionSigner,
-  type WritableAccount,
-} from "@solana/kit";
+    combineCodec,
+    getStructDecoder,
+    getStructEncoder,
+    getU8Decoder,
+    getU8Encoder,
+    SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,
+    SolanaError,
+    transformEncoder,
+    type AccountMeta,
+    type AccountSignerMeta,
+    type Address,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+    type Instruction,
+    type InstructionWithAccounts,
+    type InstructionWithData,
+    type ReadonlyAccount,
+    type ReadonlySignerAccount,
+    type ReadonlyUint8Array,
+    type TransactionSigner,
+    type WritableAccount,
+} from '@solana/kit';
+import { getAccountMetaFactory, type ResolvedInstructionAccount } from '@solana/program-client-core';
+import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../programs/index.js';
 import {
-  getAccountMetaFactory,
-  type ResolvedInstructionAccount,
-} from "@solana/program-client-core";
-import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from "../programs/index.js";
-import {
-  getSettleAndFinalizeArgsDecoder,
-  getSettleAndFinalizeArgsEncoder,
-  type SettleAndFinalizeArgs,
-  type SettleAndFinalizeArgsArgs,
-} from "../types/index.js";
+    getSettleAndFinalizeArgsDecoder,
+    getSettleAndFinalizeArgsEncoder,
+    type SettleAndFinalizeArgs,
+    type SettleAndFinalizeArgsArgs,
+} from '../types/index.js';
 
 export const SETTLE_AND_FINALIZE_DISCRIMINATOR = 4;
 
 export function getSettleAndFinalizeDiscriminatorBytes(): ReadonlyUint8Array {
-  return getU8Encoder().encode(SETTLE_AND_FINALIZE_DISCRIMINATOR);
+    return getU8Encoder().encode(SETTLE_AND_FINALIZE_DISCRIMINATOR);
 }
 
 export type SettleAndFinalizeInstruction<
-  TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
-  TAccountMerchant extends string | AccountMeta<string> = string,
-  TAccountChannel extends string | AccountMeta<string> = string,
-  TAccountInstructionsSysvar extends string | AccountMeta<string> = string,
-  TRemainingAccounts extends readonly AccountMeta<string>[] = [],
+    TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+    TAccountMerchant extends string | AccountMeta<string> = string,
+    TAccountChannel extends string | AccountMeta<string> = string,
+    TAccountInstructionsSysvar extends string | AccountMeta<string> = string,
+    TRemainingAccounts extends readonly AccountMeta<string>[] = [],
 > = Instruction<TProgram> &
-  InstructionWithData<ReadonlyUint8Array> &
-  InstructionWithAccounts<
-    [
-      TAccountMerchant extends string
-        ? ReadonlySignerAccount<TAccountMerchant> &
-            AccountSignerMeta<TAccountMerchant>
-        : TAccountMerchant,
-      TAccountChannel extends string
-        ? WritableAccount<TAccountChannel>
-        : TAccountChannel,
-      TAccountInstructionsSysvar extends string
-        ? ReadonlyAccount<TAccountInstructionsSysvar>
-        : TAccountInstructionsSysvar,
-      ...TRemainingAccounts,
-    ]
-  >;
+    InstructionWithData<ReadonlyUint8Array> &
+    InstructionWithAccounts<
+        [
+            TAccountMerchant extends string
+                ? ReadonlySignerAccount<TAccountMerchant> & AccountSignerMeta<TAccountMerchant>
+                : TAccountMerchant,
+            TAccountChannel extends string ? WritableAccount<TAccountChannel> : TAccountChannel,
+            TAccountInstructionsSysvar extends string
+                ? ReadonlyAccount<TAccountInstructionsSysvar>
+                : TAccountInstructionsSysvar,
+            ...TRemainingAccounts,
+        ]
+    >;
 
 export type SettleAndFinalizeInstructionData = {
-  discriminator: number;
-  settleAndFinalizeArgs: SettleAndFinalizeArgs;
+    discriminator: number;
+    settleAndFinalizeArgs: SettleAndFinalizeArgs;
 };
 
 export type SettleAndFinalizeInstructionDataArgs = {
-  settleAndFinalizeArgs: SettleAndFinalizeArgsArgs;
+    settleAndFinalizeArgs: SettleAndFinalizeArgsArgs;
 };
 
 export function getSettleAndFinalizeInstructionDataEncoder(): FixedSizeEncoder<SettleAndFinalizeInstructionDataArgs> {
-  return transformEncoder(
-    getStructEncoder([
-      ["discriminator", getU8Encoder()],
-      ["settleAndFinalizeArgs", getSettleAndFinalizeArgsEncoder()],
-    ]),
-    (value) => ({ ...value, discriminator: SETTLE_AND_FINALIZE_DISCRIMINATOR }),
-  );
+    return transformEncoder(
+        getStructEncoder([
+            ['discriminator', getU8Encoder()],
+            ['settleAndFinalizeArgs', getSettleAndFinalizeArgsEncoder()],
+        ]),
+        value => ({ ...value, discriminator: SETTLE_AND_FINALIZE_DISCRIMINATOR }),
+    );
 }
 
 export function getSettleAndFinalizeInstructionDataDecoder(): FixedSizeDecoder<SettleAndFinalizeInstructionData> {
-  return getStructDecoder([
-    ["discriminator", getU8Decoder()],
-    ["settleAndFinalizeArgs", getSettleAndFinalizeArgsDecoder()],
-  ]);
+    return getStructDecoder([
+        ['discriminator', getU8Decoder()],
+        ['settleAndFinalizeArgs', getSettleAndFinalizeArgsDecoder()],
+    ]);
 }
 
 export function getSettleAndFinalizeInstructionDataCodec(): FixedSizeCodec<
-  SettleAndFinalizeInstructionDataArgs,
-  SettleAndFinalizeInstructionData
+    SettleAndFinalizeInstructionDataArgs,
+    SettleAndFinalizeInstructionData
 > {
-  return combineCodec(
-    getSettleAndFinalizeInstructionDataEncoder(),
-    getSettleAndFinalizeInstructionDataDecoder(),
-  );
+    return combineCodec(getSettleAndFinalizeInstructionDataEncoder(), getSettleAndFinalizeInstructionDataDecoder());
 }
 
 export type SettleAndFinalizeInput<
-  TAccountMerchant extends string = string,
-  TAccountChannel extends string = string,
-  TAccountInstructionsSysvar extends string = string,
+    TAccountMerchant extends string = string,
+    TAccountChannel extends string = string,
+    TAccountInstructionsSysvar extends string = string,
 > = {
-  merchant: TransactionSigner<TAccountMerchant>;
-  channel: Address<TAccountChannel>;
-  instructionsSysvar: Address<TAccountInstructionsSysvar>;
-  settleAndFinalizeArgs: SettleAndFinalizeInstructionDataArgs["settleAndFinalizeArgs"];
+    merchant: TransactionSigner<TAccountMerchant>;
+    channel: Address<TAccountChannel>;
+    instructionsSysvar: Address<TAccountInstructionsSysvar>;
+    settleAndFinalizeArgs: SettleAndFinalizeInstructionDataArgs['settleAndFinalizeArgs'];
 };
 
 export function getSettleAndFinalizeInstruction<
-  TAccountMerchant extends string,
-  TAccountChannel extends string,
-  TAccountInstructionsSysvar extends string,
-  TProgramAddress extends Address = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+    TAccountMerchant extends string,
+    TAccountChannel extends string,
+    TAccountInstructionsSysvar extends string,
+    TProgramAddress extends Address = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
 >(
-  input: SettleAndFinalizeInput<
-    TAccountMerchant,
-    TAccountChannel,
-    TAccountInstructionsSysvar
-  >,
-  config?: { programAddress?: TProgramAddress },
-): SettleAndFinalizeInstruction<
-  TProgramAddress,
-  TAccountMerchant,
-  TAccountChannel,
-  TAccountInstructionsSysvar
-> {
-  // Program address.
-  const programAddress =
-    config?.programAddress ?? PAYMENT_CHANNELS_PROGRAM_ADDRESS;
+    input: SettleAndFinalizeInput<TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar>,
+    config?: { programAddress?: TProgramAddress },
+): SettleAndFinalizeInstruction<TProgramAddress, TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar> {
+    // Program address.
+    const programAddress = config?.programAddress ?? PAYMENT_CHANNELS_PROGRAM_ADDRESS;
 
-  // Original accounts.
-  const originalAccounts = {
-    merchant: { value: input.merchant ?? null, isWritable: false },
-    channel: { value: input.channel ?? null, isWritable: true },
-    instructionsSysvar: {
-      value: input.instructionsSysvar ?? null,
-      isWritable: false,
-    },
-  };
-  const accounts = originalAccounts as Record<
-    keyof typeof originalAccounts,
-    ResolvedInstructionAccount
-  >;
+    // Original accounts.
+    const originalAccounts = {
+        merchant: { value: input.merchant ?? null, isWritable: false },
+        channel: { value: input.channel ?? null, isWritable: true },
+        instructionsSysvar: {
+            value: input.instructionsSysvar ?? null,
+            isWritable: false,
+        },
+    };
+    const accounts = originalAccounts as Record<keyof typeof originalAccounts, ResolvedInstructionAccount>;
 
-  // Original args.
-  const args = { ...input };
+    // Original args.
+    const args = { ...input };
 
-  const getAccountMeta = getAccountMetaFactory(programAddress, "programId");
-  return Object.freeze({
-    accounts: [
-      getAccountMeta("merchant", accounts.merchant),
-      getAccountMeta("channel", accounts.channel),
-      getAccountMeta("instructionsSysvar", accounts.instructionsSysvar),
-    ],
-    data: getSettleAndFinalizeInstructionDataEncoder().encode(
-      args as SettleAndFinalizeInstructionDataArgs,
-    ),
-    programAddress,
-  } as SettleAndFinalizeInstruction<
-    TProgramAddress,
-    TAccountMerchant,
-    TAccountChannel,
-    TAccountInstructionsSysvar
-  >);
+    const getAccountMeta = getAccountMetaFactory(programAddress, 'programId');
+    return Object.freeze({
+        accounts: [
+            getAccountMeta('merchant', accounts.merchant),
+            getAccountMeta('channel', accounts.channel),
+            getAccountMeta('instructionsSysvar', accounts.instructionsSysvar),
+        ],
+        data: getSettleAndFinalizeInstructionDataEncoder().encode(args as SettleAndFinalizeInstructionDataArgs),
+        programAddress,
+    } as SettleAndFinalizeInstruction<TProgramAddress, TAccountMerchant, TAccountChannel, TAccountInstructionsSysvar>);
 }
 
 export type ParsedSettleAndFinalizeInstruction<
-  TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
-  TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
+    TProgram extends string = typeof PAYMENT_CHANNELS_PROGRAM_ADDRESS,
+    TAccountMetas extends readonly AccountMeta[] = readonly AccountMeta[],
 > = {
-  programAddress: Address<TProgram>;
-  accounts: {
-    merchant: TAccountMetas[0];
-    channel: TAccountMetas[1];
-    instructionsSysvar: TAccountMetas[2];
-  };
-  data: SettleAndFinalizeInstructionData;
+    programAddress: Address<TProgram>;
+    accounts: {
+        merchant: TAccountMetas[0];
+        channel: TAccountMetas[1];
+        instructionsSysvar: TAccountMetas[2];
+    };
+    data: SettleAndFinalizeInstructionData;
 };
 
 export function parseSettleAndFinalizeInstruction<
-  TProgram extends string,
-  TAccountMetas extends readonly AccountMeta[],
+    TProgram extends string,
+    TAccountMetas extends readonly AccountMeta[],
 >(
-  instruction: Instruction<TProgram> &
-    InstructionWithAccounts<TAccountMetas> &
-    InstructionWithData<ReadonlyUint8Array>,
+    instruction: Instruction<TProgram> &
+        InstructionWithAccounts<TAccountMetas> &
+        InstructionWithData<ReadonlyUint8Array>,
 ): ParsedSettleAndFinalizeInstruction<TProgram, TAccountMetas> {
-  if (instruction.accounts.length < 3) {
-    throw new SolanaError(
-      SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,
-      {
-        actualAccountMetas: instruction.accounts.length,
-        expectedAccountMetas: 3,
-      },
-    );
-  }
-  let accountIndex = 0;
-  const getNextAccount = () => {
-    const accountMeta = (instruction.accounts as TAccountMetas)[accountIndex]!;
-    accountIndex += 1;
-    return accountMeta;
-  };
-  return {
-    programAddress: instruction.programAddress,
-    accounts: {
-      merchant: getNextAccount(),
-      channel: getNextAccount(),
-      instructionsSysvar: getNextAccount(),
-    },
-    data: getSettleAndFinalizeInstructionDataDecoder().decode(instruction.data),
-  };
+    if (instruction.accounts.length < 3) {
+        throw new SolanaError(SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS, {
+            actualAccountMetas: instruction.accounts.length,
+            expectedAccountMetas: 3,
+        });
+    }
+    let accountIndex = 0;
+    const getNextAccount = () => {
+        const accountMeta = (instruction.accounts as TAccountMetas)[accountIndex]!;
+        accountIndex += 1;
+        return accountMeta;
+    };
+    return {
+        programAddress: instruction.programAddress,
+        accounts: {
+            merchant: getNextAccount(),
+            channel: getNextAccount(),
+            instructionsSysvar: getNextAccount(),
+        },
+        data: getSettleAndFinalizeInstructionDataDecoder().decode(instruction.data),
+    };
 }

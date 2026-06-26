@@ -7,180 +7,177 @@
  */
 
 import {
-  assertAccountExists,
-  assertAccountsExist,
-  combineCodec,
-  decodeAccount,
-  fetchEncodedAccount,
-  fetchEncodedAccounts,
-  getAddressDecoder,
-  getAddressEncoder,
-  getArrayDecoder,
-  getArrayEncoder,
-  getI64Decoder,
-  getI64Encoder,
-  getStructDecoder,
-  getStructEncoder,
-  getU32Decoder,
-  getU32Encoder,
-  getU64Decoder,
-  getU64Encoder,
-  getU8Decoder,
-  getU8Encoder,
-  type Account,
-  type Address,
-  type EncodedAccount,
-  type FetchAccountConfig,
-  type FetchAccountsConfig,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-  type MaybeAccount,
-  type MaybeEncodedAccount,
-} from "@solana/kit";
+    assertAccountExists,
+    assertAccountsExist,
+    combineCodec,
+    decodeAccount,
+    fetchEncodedAccount,
+    fetchEncodedAccounts,
+    getAddressDecoder,
+    getAddressEncoder,
+    getArrayDecoder,
+    getArrayEncoder,
+    getI64Decoder,
+    getI64Encoder,
+    getStructDecoder,
+    getStructEncoder,
+    getU32Decoder,
+    getU32Encoder,
+    getU64Decoder,
+    getU64Encoder,
+    getU8Decoder,
+    getU8Encoder,
+    type Account,
+    type Address,
+    type EncodedAccount,
+    type FetchAccountConfig,
+    type FetchAccountsConfig,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+    type MaybeAccount,
+    type MaybeEncodedAccount,
+} from '@solana/kit';
 import {
-  getSettlementWatermarksDecoder,
-  getSettlementWatermarksEncoder,
-  type SettlementWatermarks,
-  type SettlementWatermarksArgs,
-} from "../types/index.js";
+    getSettlementWatermarksDecoder,
+    getSettlementWatermarksEncoder,
+    type SettlementWatermarks,
+    type SettlementWatermarksArgs,
+} from '../types/index.js';
 
 export type Channel = {
-  discriminator: number;
-  version: number;
-  bump: number;
-  status: number;
-  salt: bigint;
-  deposit: bigint;
-  settlement: SettlementWatermarks;
-  closureStartedAt: bigint;
-  payerWithdrawnAt: bigint;
-  gracePeriod: number;
-  distributionHash: Array<number>;
-  payer: Address;
-  payee: Address;
-  authorizedSigner: Address;
-  mint: Address;
-  rentPayer: Address;
+    discriminator: number;
+    version: number;
+    bump: number;
+    status: number;
+    salt: bigint;
+    deposit: bigint;
+    settlement: SettlementWatermarks;
+    closureStartedAt: bigint;
+    payerWithdrawnAt: bigint;
+    gracePeriod: number;
+    distributionHash: Array<number>;
+    payer: Address;
+    payee: Address;
+    authorizedSigner: Address;
+    mint: Address;
+    rentPayer: Address;
 };
 
 export type ChannelArgs = {
-  discriminator: number;
-  version: number;
-  bump: number;
-  status: number;
-  salt: number | bigint;
-  deposit: number | bigint;
-  settlement: SettlementWatermarksArgs;
-  closureStartedAt: number | bigint;
-  payerWithdrawnAt: number | bigint;
-  gracePeriod: number;
-  distributionHash: Array<number>;
-  payer: Address;
-  payee: Address;
-  authorizedSigner: Address;
-  mint: Address;
-  rentPayer: Address;
+    discriminator: number;
+    version: number;
+    bump: number;
+    status: number;
+    salt: number | bigint;
+    deposit: number | bigint;
+    settlement: SettlementWatermarksArgs;
+    closureStartedAt: number | bigint;
+    payerWithdrawnAt: number | bigint;
+    gracePeriod: number;
+    distributionHash: Array<number>;
+    payer: Address;
+    payee: Address;
+    authorizedSigner: Address;
+    mint: Address;
+    rentPayer: Address;
 };
 
 /** Gets the encoder for {@link ChannelArgs} account data. */
 export function getChannelEncoder(): FixedSizeEncoder<ChannelArgs> {
-  return getStructEncoder([
-    ["discriminator", getU8Encoder()],
-    ["version", getU8Encoder()],
-    ["bump", getU8Encoder()],
-    ["status", getU8Encoder()],
-    ["salt", getU64Encoder()],
-    ["deposit", getU64Encoder()],
-    ["settlement", getSettlementWatermarksEncoder()],
-    ["closureStartedAt", getI64Encoder()],
-    ["payerWithdrawnAt", getI64Encoder()],
-    ["gracePeriod", getU32Encoder()],
-    ["distributionHash", getArrayEncoder(getU8Encoder(), { size: 32 })],
-    ["payer", getAddressEncoder()],
-    ["payee", getAddressEncoder()],
-    ["authorizedSigner", getAddressEncoder()],
-    ["mint", getAddressEncoder()],
-    ["rentPayer", getAddressEncoder()],
-  ]);
+    return getStructEncoder([
+        ['discriminator', getU8Encoder()],
+        ['version', getU8Encoder()],
+        ['bump', getU8Encoder()],
+        ['status', getU8Encoder()],
+        ['salt', getU64Encoder()],
+        ['deposit', getU64Encoder()],
+        ['settlement', getSettlementWatermarksEncoder()],
+        ['closureStartedAt', getI64Encoder()],
+        ['payerWithdrawnAt', getI64Encoder()],
+        ['gracePeriod', getU32Encoder()],
+        ['distributionHash', getArrayEncoder(getU8Encoder(), { size: 32 })],
+        ['payer', getAddressEncoder()],
+        ['payee', getAddressEncoder()],
+        ['authorizedSigner', getAddressEncoder()],
+        ['mint', getAddressEncoder()],
+        ['rentPayer', getAddressEncoder()],
+    ]);
 }
 
 /** Gets the decoder for {@link Channel} account data. */
 export function getChannelDecoder(): FixedSizeDecoder<Channel> {
-  return getStructDecoder([
-    ["discriminator", getU8Decoder()],
-    ["version", getU8Decoder()],
-    ["bump", getU8Decoder()],
-    ["status", getU8Decoder()],
-    ["salt", getU64Decoder()],
-    ["deposit", getU64Decoder()],
-    ["settlement", getSettlementWatermarksDecoder()],
-    ["closureStartedAt", getI64Decoder()],
-    ["payerWithdrawnAt", getI64Decoder()],
-    ["gracePeriod", getU32Decoder()],
-    ["distributionHash", getArrayDecoder(getU8Decoder(), { size: 32 })],
-    ["payer", getAddressDecoder()],
-    ["payee", getAddressDecoder()],
-    ["authorizedSigner", getAddressDecoder()],
-    ["mint", getAddressDecoder()],
-    ["rentPayer", getAddressDecoder()],
-  ]);
+    return getStructDecoder([
+        ['discriminator', getU8Decoder()],
+        ['version', getU8Decoder()],
+        ['bump', getU8Decoder()],
+        ['status', getU8Decoder()],
+        ['salt', getU64Decoder()],
+        ['deposit', getU64Decoder()],
+        ['settlement', getSettlementWatermarksDecoder()],
+        ['closureStartedAt', getI64Decoder()],
+        ['payerWithdrawnAt', getI64Decoder()],
+        ['gracePeriod', getU32Decoder()],
+        ['distributionHash', getArrayDecoder(getU8Decoder(), { size: 32 })],
+        ['payer', getAddressDecoder()],
+        ['payee', getAddressDecoder()],
+        ['authorizedSigner', getAddressDecoder()],
+        ['mint', getAddressDecoder()],
+        ['rentPayer', getAddressDecoder()],
+    ]);
 }
 
 /** Gets the codec for {@link Channel} account data. */
 export function getChannelCodec(): FixedSizeCodec<ChannelArgs, Channel> {
-  return combineCodec(getChannelEncoder(), getChannelDecoder());
+    return combineCodec(getChannelEncoder(), getChannelDecoder());
 }
 
 export function decodeChannel<TAddress extends string = string>(
-  encodedAccount: EncodedAccount<TAddress>,
+    encodedAccount: EncodedAccount<TAddress>,
 ): Account<Channel, TAddress>;
 export function decodeChannel<TAddress extends string = string>(
-  encodedAccount: MaybeEncodedAccount<TAddress>,
+    encodedAccount: MaybeEncodedAccount<TAddress>,
 ): MaybeAccount<Channel, TAddress>;
 export function decodeChannel<TAddress extends string = string>(
-  encodedAccount: EncodedAccount<TAddress> | MaybeEncodedAccount<TAddress>,
+    encodedAccount: EncodedAccount<TAddress> | MaybeEncodedAccount<TAddress>,
 ): Account<Channel, TAddress> | MaybeAccount<Channel, TAddress> {
-  return decodeAccount(
-    encodedAccount as MaybeEncodedAccount<TAddress>,
-    getChannelDecoder(),
-  );
+    return decodeAccount(encodedAccount as MaybeEncodedAccount<TAddress>, getChannelDecoder());
 }
 
 export async function fetchChannel<TAddress extends string = string>(
-  rpc: Parameters<typeof fetchEncodedAccount>[0],
-  address: Address<TAddress>,
-  config?: FetchAccountConfig,
+    rpc: Parameters<typeof fetchEncodedAccount>[0],
+    address: Address<TAddress>,
+    config?: FetchAccountConfig,
 ): Promise<Account<Channel, TAddress>> {
-  const maybeAccount = await fetchMaybeChannel(rpc, address, config);
-  assertAccountExists(maybeAccount);
-  return maybeAccount;
+    const maybeAccount = await fetchMaybeChannel(rpc, address, config);
+    assertAccountExists(maybeAccount);
+    return maybeAccount;
 }
 
 export async function fetchMaybeChannel<TAddress extends string = string>(
-  rpc: Parameters<typeof fetchEncodedAccount>[0],
-  address: Address<TAddress>,
-  config?: FetchAccountConfig,
+    rpc: Parameters<typeof fetchEncodedAccount>[0],
+    address: Address<TAddress>,
+    config?: FetchAccountConfig,
 ): Promise<MaybeAccount<Channel, TAddress>> {
-  const maybeAccount = await fetchEncodedAccount(rpc, address, config);
-  return decodeChannel(maybeAccount);
+    const maybeAccount = await fetchEncodedAccount(rpc, address, config);
+    return decodeChannel(maybeAccount);
 }
 
 export async function fetchAllChannel(
-  rpc: Parameters<typeof fetchEncodedAccounts>[0],
-  addresses: Array<Address>,
-  config?: FetchAccountsConfig,
+    rpc: Parameters<typeof fetchEncodedAccounts>[0],
+    addresses: Array<Address>,
+    config?: FetchAccountsConfig,
 ): Promise<Account<Channel>[]> {
-  const maybeAccounts = await fetchAllMaybeChannel(rpc, addresses, config);
-  assertAccountsExist(maybeAccounts);
-  return maybeAccounts;
+    const maybeAccounts = await fetchAllMaybeChannel(rpc, addresses, config);
+    assertAccountsExist(maybeAccounts);
+    return maybeAccounts;
 }
 
 export async function fetchAllMaybeChannel(
-  rpc: Parameters<typeof fetchEncodedAccounts>[0],
-  addresses: Array<Address>,
-  config?: FetchAccountsConfig,
+    rpc: Parameters<typeof fetchEncodedAccounts>[0],
+    addresses: Array<Address>,
+    config?: FetchAccountsConfig,
 ): Promise<MaybeAccount<Channel>[]> {
-  const maybeAccounts = await fetchEncodedAccounts(rpc, addresses, config);
-  return maybeAccounts.map((maybeAccount) => decodeChannel(maybeAccount));
+    const maybeAccounts = await fetchEncodedAccounts(rpc, addresses, config);
+    return maybeAccounts.map(maybeAccount => decodeChannel(maybeAccount));
 }

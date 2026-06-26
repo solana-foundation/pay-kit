@@ -7,34 +7,31 @@
  */
 
 import {
-  combineCodec,
-  getEnumDecoder,
-  getEnumEncoder,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-} from "@solana/kit";
+    combineCodec,
+    getEnumDecoder,
+    getEnumEncoder,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+} from '@solana/kit';
 
 export enum RedirectReason {
-  UnsupportedExtension,
-  ClosedOrMalformed,
-  NotInitialized,
-  ReassignedAuthority,
+    UnsupportedExtension,
+    ClosedOrMalformed,
+    NotInitialized,
+    ReassignedAuthority,
 }
 
 export type RedirectReasonArgs = RedirectReason;
 
 export function getRedirectReasonEncoder(): FixedSizeEncoder<RedirectReasonArgs> {
-  return getEnumEncoder(RedirectReason);
+    return getEnumEncoder(RedirectReason);
 }
 
 export function getRedirectReasonDecoder(): FixedSizeDecoder<RedirectReason> {
-  return getEnumDecoder(RedirectReason);
+    return getEnumDecoder(RedirectReason);
 }
 
-export function getRedirectReasonCodec(): FixedSizeCodec<
-  RedirectReasonArgs,
-  RedirectReason
-> {
-  return combineCodec(getRedirectReasonEncoder(), getRedirectReasonDecoder());
+export function getRedirectReasonCodec(): FixedSizeCodec<RedirectReasonArgs, RedirectReason> {
+    return combineCodec(getRedirectReasonEncoder(), getRedirectReasonDecoder());
 }

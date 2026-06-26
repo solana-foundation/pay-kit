@@ -7,43 +7,37 @@
  */
 
 import {
-  combineCodec,
-  getAddressDecoder,
-  getAddressEncoder,
-  getStructDecoder,
-  getStructEncoder,
-  getU16Decoder,
-  getU16Encoder,
-  type Address,
-  type FixedSizeCodec,
-  type FixedSizeDecoder,
-  type FixedSizeEncoder,
-} from "@solana/kit";
+    combineCodec,
+    getAddressDecoder,
+    getAddressEncoder,
+    getStructDecoder,
+    getStructEncoder,
+    getU16Decoder,
+    getU16Encoder,
+    type Address,
+    type FixedSizeCodec,
+    type FixedSizeDecoder,
+    type FixedSizeEncoder,
+} from '@solana/kit';
 
 export type DistributionEntry = { recipient: Address; bps: number };
 
 export type DistributionEntryArgs = DistributionEntry;
 
 export function getDistributionEntryEncoder(): FixedSizeEncoder<DistributionEntryArgs> {
-  return getStructEncoder([
-    ["recipient", getAddressEncoder()],
-    ["bps", getU16Encoder()],
-  ]);
+    return getStructEncoder([
+        ['recipient', getAddressEncoder()],
+        ['bps', getU16Encoder()],
+    ]);
 }
 
 export function getDistributionEntryDecoder(): FixedSizeDecoder<DistributionEntry> {
-  return getStructDecoder([
-    ["recipient", getAddressDecoder()],
-    ["bps", getU16Decoder()],
-  ]);
+    return getStructDecoder([
+        ['recipient', getAddressDecoder()],
+        ['bps', getU16Decoder()],
+    ]);
 }
 
-export function getDistributionEntryCodec(): FixedSizeCodec<
-  DistributionEntryArgs,
-  DistributionEntry
-> {
-  return combineCodec(
-    getDistributionEntryEncoder(),
-    getDistributionEntryDecoder(),
-  );
+export function getDistributionEntryCodec(): FixedSizeCodec<DistributionEntryArgs, DistributionEntry> {
+    return combineCodec(getDistributionEntryEncoder(), getDistributionEntryDecoder());
 }
