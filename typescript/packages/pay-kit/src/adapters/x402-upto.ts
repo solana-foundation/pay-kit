@@ -277,7 +277,12 @@ type UptoPaymentChannelPayload = {
 
 function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
     const raw = payload.payload as Partial<UptoPaymentChannelPayload> | undefined;
-    if (!raw || typeof raw.channelId !== 'string' || typeof raw.from !== 'string' || typeof raw.expiresAt !== 'number') {
+    if (
+        !raw ||
+        typeof raw.channelId !== 'string' ||
+        typeof raw.from !== 'string' ||
+        typeof raw.expiresAt !== 'number'
+    ) {
         throw new InvalidProofError('invalid_upto_payload');
     }
     return { channelId: raw.channelId, expiresAt: raw.expiresAt, from: raw.from };
