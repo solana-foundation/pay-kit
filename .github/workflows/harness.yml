@@ -262,6 +262,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
+      # macOS can't reuse the Linux build job's cargo cache, so compile the Rust
+      # server adapter explicitly here (outside the harness's 120s adapter-output
+      # timeout) instead of letting the smoke's `cargo run` cold-compile it.
+      - name: Build Rust harness server
+        working-directory: rust
+        run: cargo build -p solana-mpp --bin harness_server
       - name: Build Swift harness client
         working-directory: harness/swift-client
         run: swift build
@@ -290,6 +296,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness-leg
+      # macOS can't reuse the Linux build job's cargo cache; compile the Rust
+      # x402 server adapter here (outside the 120s adapter-output timeout)
+      # instead of cold-compiling it inside the smoke's `cargo run`.
+      - name: Build Rust x402 harness server
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin harness_server
       - name: Build Swift x402 harness client
         working-directory: harness/swift-x402-client
         run: swift build --quiet
