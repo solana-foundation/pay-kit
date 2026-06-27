@@ -359,16 +359,21 @@ def _verify_voucher_signature_bytes(signed: SignedVoucher, authorized_signer: st
     return None
 
 
-def verify_session_voucher(signed: SignedVoucher, authorized_signer: str) -> str | None:
-    """Check expiry first (against the wall clock), then the Ed25519 signature.
+def verify_session_voucher(signed: SignedVoucher, authorized_signer: str, settlement_window: int = 0) -> str | None:
+    """Check expiry (including the settlement-window margin), then the signature.
 
     Used by the commit and close paths; the voucher handler orders the two
     checks itself. Returns ``None`` on success or a human-readable error string
     on failure.
 
-    Expiry mirrors the on-chain settle rule: ``expires_at == 0`` is
-    never-expires (accepted); a non-zero ``expires_at <= now`` has expired.
+    Expiry mirrors the on-chain settle rule and the voucher path's
+    :func:`_check_voucher_expiry`: ``expires_at == 0`` is never-expires; a
+    non-zero ``expires_at <= now`` has expired; and when ``settlement_window``
+    is positive, a voucher that does not outlast ``now + settlement_window`` is
+    rejected so a committed or closing voucher cannot expire before the async
+    settle transaction lands on-chain.
     """
-    if signed.data.expires_at != 0 and signed.data.expires_at <= int(time.time()):
-        return "voucher has expired"
+    rejection = _check_voucher_expiry(signed.data.expires_at, int(time.time()), settlement_window)
+    if rejection is not None:
+        return rejection.detail
     return _verify_voucher_signature_bytes(signed, authorized_signer)

@@ -904,10 +904,10 @@ async function reserveDelivery(store: SessionStore, args: ReserveDeliveryArgs): 
 
 interface CommitDeliveryArgs {
     readonly deliveryId: string;
-    readonly voucher: SignedVoucher;
     /** Reject a final-commit voucher expiring within `now + settlementWindow`
      * so a committed delivery can't expire before the async settle lands. */
     readonly settlementWindow: bigint | undefined;
+    readonly voucher: SignedVoucher;
 }
 
 async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Promise<CommitReceipt> {
