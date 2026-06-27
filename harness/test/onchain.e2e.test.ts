@@ -9,8 +9,9 @@
  * payment. (surfpool-sdk 1.2 could not run the program — "unsupported BPF
  * instruction" — which is a chief reason these regressions evaded local CI.)
  *
- * Network-gated: forking needs a mainnet RPC. Set HARNESS_ONCHAIN=1 to run;
- * HARNESS_FORK_RPC overrides the fork source (defaults to public mainnet).
+ * Network-gated: surfpool forks from a mainnet datasource RPC. Set
+ * HARNESS_ONCHAIN=1 to run; SURFPOOL_DATASOURCE_RPC_URL sets that datasource
+ * (same as the rest of the surfpool CI; defaults to public mainnet).
  */
 import { generateKeyPairSigner, type KeyPairSigner } from "@solana/kit";
 import { createPayKit, usage, usd } from "@solana/pay-kit";

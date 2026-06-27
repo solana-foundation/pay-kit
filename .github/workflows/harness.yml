@@ -404,6 +404,9 @@ jobs:
       - name: Run on-chain settlement suite
         working-directory: harness
         env:
-          # Override with a dedicated RPC secret if the public endpoint rate-limits.
-          HARNESS_FORK_RPC: ${{ secrets.HARNESS_FORK_RPC || 'https://api.mainnet-beta.solana.com' }}
+          # surfpool forks mainnet account state from this datasource RPC (the
+          # same secret the rest of the surfpool CI uses); the suite itself talks
+          # to the surfpool instance. The helper falls back to public mainnet when
+          # the secret is unavailable (e.g. fork PRs).
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm test:onchain

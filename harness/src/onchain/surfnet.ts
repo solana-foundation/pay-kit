@@ -19,8 +19,13 @@ export const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Treasury owner baked into the deployed program — `distribute` credits its ATA. */
 export const TREASURY_OWNER = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
 
-const DEFAULT_FORK_RPC =
-  process.env.HARNESS_FORK_RPC ?? "https://api.mainnet-beta.solana.com";
+// The datasource RPC surfpool forks/streams mainnet account state from — the
+// same SURFPOOL_DATASOURCE_RPC_URL the rest of the surfpool CI/tests use. The
+// test talks to the surfpool instance (surfnet.rpcUrl), NOT this RPC; surfpool
+// only reads from it to clone the program + mint state. Public mainnet is the
+// last-resort fallback for local runs without the env set.
+const DATASOURCE_RPC =
+  process.env.SURFPOOL_DATASOURCE_RPC_URL ?? "https://api.mainnet-beta.solana.com";
 
 export interface OnchainSurfnet {
   readonly rpcUrl: string;
@@ -52,12 +57,12 @@ async function getAccount(rpcUrl: string, pubkey: string): Promise<unknown> {
  * client/operator wallets via {@link OnchainSurfnet.fundSol}/`fundUsdc`.
  */
 export async function startOnchainSurfnet(opts?: {
-  forkRpc?: string;
+  datasourceRpc?: string;
   programs?: string[];
 }): Promise<OnchainSurfnet> {
-  const forkRpc = opts?.forkRpc ?? DEFAULT_FORK_RPC;
+  const datasourceRpc = opts?.datasourceRpc ?? DATASOURCE_RPC;
   const programs = opts?.programs ?? [PAYMENT_CHANNELS_PROGRAM, SUBSCRIPTIONS_PROGRAM];
-  const surfnet = Surfnet.startWithConfig({ remoteRpcUrl: forkRpc, offline: false });
+  const surfnet = Surfnet.startWithConfig({ remoteRpcUrl: datasourceRpc, offline: false });
   const rpcUrl = surfnet.rpcUrl;
 
   for (const p of programs) surfnet.streamAccount(p);
@@ -76,7 +81,7 @@ export async function startOnchainSurfnet(opts?: {
         surfnet.drainEvents();
         const v = (await getAccount(rpcUrl, programId)) as { executable?: boolean } | null;
         if (v?.executable) return;
-        if (Date.now() >= deadline) throw new Error(`program ${programId} not resolved from fork ${forkRpc}`);
+        if (Date.now() >= deadline) throw new Error(`program ${programId} not resolved from datasource ${datasourceRpc}`);
         await new Promise((r) => setTimeout(r, 500));
       }
     },

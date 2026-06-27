@@ -176,9 +176,10 @@ schemes against the same mainnet-fork bootstrap in `src/onchain/surfnet.ts`.
 - **The on-chain tier needs a program-capable validator.** It requires
   `@solana/surfpool` **≥ 1.4**; the embedded VM in `surfpool-sdk` 1.2 rejects the
   deployed program build with `unsupported BPF instruction`. It is also
-  **network-gated** — forking needs a mainnet RPC (`HARNESS_FORK_RPC`, default
-  public mainnet) — so it runs behind `HARNESS_ONCHAIN=1` and is not part of the
-  default cross-language CI run. It is isolated from the base typecheck/vitest
+  **network-gated** — surfpool forks from a mainnet datasource RPC
+  (`SURFPOOL_DATASOURCE_RPC_URL`, default public mainnet) — so it runs behind
+  `HARNESS_ONCHAIN=1` (its own `onchain` CI job supplies the datasource secret).
+  It is isolated from the base typecheck/vitest
   config (`tsconfig.onchain.json` / `vitest.onchain.config.ts`) because it
   imports `@solana/pay-kit`, a `file:` dep built separately from `@solana/mpp`.
 - **Treasury owner is pinned to the deployed (mainnet-build) program.** The
@@ -244,7 +245,7 @@ MPP_HARNESS_CLIENTS=typescript,rust MPP_HARNESS_SERVERS=rust pnpm test
 MPP_HARNESS_INTENTS=charge MPP_HARNESS_SCENARIOS=charge-basic,charge-split-ata pnpm test
 X402_HARNESS_MATRIX=1 pnpm test x402-exact.e2e.test.ts
 X402_HARNESS_CROSS_SERVER=1 pnpm test cross-server-scenarios.test.ts
-HARNESS_FORK_RPC=<mainnet-rpc> pnpm test:onchain
+SURFPOOL_DATASOURCE_RPC_URL=<mainnet-rpc> pnpm test:onchain
 ```
 
 ---
