@@ -609,7 +609,7 @@ func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.Comm
 	// Preflight outside the lock.
 	if committed := findCommitted(state.CommittedDeliveries, payload.DeliveryID); committed != nil {
 		if committed.Cumulative == newCumulative && committed.VoucherSignature == payload.Voucher.Signature {
-			if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner); err != nil {
+			if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 				return intents.CommitReceipt{}, err
 			}
 			return commitReceipt(payload.DeliveryID, channelID, committed.Amount, committed.Cumulative, intents.CommitStatusReplayed), nil
@@ -627,7 +627,7 @@ func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.Comm
 	if newCumulative <= state.Cumulative {
 		return intents.CommitReceipt{}, fmt.Errorf("commit cumulative %d must exceed watermark %d", newCumulative, state.Cumulative)
 	}
-	if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner); err != nil {
+	if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 		return intents.CommitReceipt{}, err
 	}
 
@@ -782,7 +782,7 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 				if cumulative > current.Deposit {
 					return ChannelState{}, fmt.Errorf("final voucher exceeds deposit")
 				}
-				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner); err != nil {
+				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 					return ChannelState{}, err
 				}
 				signature := voucher.Signature

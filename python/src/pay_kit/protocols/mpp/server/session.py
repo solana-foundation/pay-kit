@@ -563,7 +563,7 @@ class SessionServer:
         committed = _find_committed(state.committed_deliveries, payload.delivery_id)
         if committed is not None:
             if committed.cumulative == new_cumulative and committed.voucher_signature == payload.voucher.signature:
-                _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer))
+                _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window))
                 return _commit_receipt(
                     payload.delivery_id, channel_id, committed.amount, committed.cumulative, "replayed"
                 )
@@ -576,7 +576,7 @@ class SessionServer:
             raise ValueError(f"delivery {payload.delivery_id} has expired")
         if new_cumulative <= state.cumulative:
             raise ValueError(f"commit cumulative {new_cumulative} must exceed watermark {state.cumulative}")
-        _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer))
+        _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window))
 
         delivery_id = payload.delivery_id
         signature = payload.voucher.signature
@@ -682,7 +682,7 @@ class SessionServer:
                 else:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
-                    _raise_voucher_error(verify_session_voucher(voucher, current.authorized_signer))
+                    _raise_voucher_error(verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window))
                     nxt.cumulative = cumulative
                     nxt.highest_voucher_signature = voucher.signature
                     nxt.highest_voucher_expires_at = voucher.data.expires_at

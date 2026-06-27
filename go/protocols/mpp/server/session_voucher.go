@@ -285,16 +285,18 @@ func verifyVoucherSignatureBytes(signed intents.SignedVoucher, authorizedSigner 
 	return nil
 }
 
-// verifySessionVoucher checks expiry first (against the wall clock), then
-// the Ed25519 signature. Used by the commit and close paths; the voucher
-// handler orders the two checks itself.
+// verifySessionVoucher checks expiry (including the settlement-window margin)
+// first, then the Ed25519 signature. Used by the commit and close paths; the
+// voucher handler orders the two checks itself.
 //
 // An expiresAt of 0 NEVER expires (matching the on-chain settle guard and
-// VerifyVoucherForChannel); a non-zero expiresAt must be strictly in the
-// future.
-func verifySessionVoucher(signed intents.SignedVoucher, authorizedSigner string) error {
-	if signed.Data.ExpiresAt != 0 && signed.Data.ExpiresAt <= time.Now().Unix() {
-		return fmt.Errorf("voucher has expired")
+// VerifyVoucherForChannel). A non-zero expiresAt must be strictly in the future
+// AND, when settlementWindowSeconds > 0, outlast that window (now + window) so a
+// committed or closing voucher can't expire before the async settle lands
+// on-chain — the same guard VerifyVoucherForChannel applies on the voucher path.
+func verifySessionVoucher(signed intents.SignedVoucher, authorizedSigner string, settlementWindowSeconds int64) error {
+	if rejection := voucherExpiryRejection(signed.Data.ExpiresAt, time.Now().Unix(), settlementWindowSeconds); rejection != nil {
+		return fmt.Errorf("%s", rejection.Detail)
 	}
 	return verifyVoucherSignatureBytes(signed, authorizedSigner)
 }

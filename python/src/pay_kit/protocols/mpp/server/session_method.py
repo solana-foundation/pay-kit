@@ -728,7 +728,7 @@ class Session:
                 else:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
-                    err = verify_session_voucher(voucher, current.authorized_signer)
+                    err = verify_session_voucher(voucher, current.authorized_signer, self._core.config.settlement_window)
                     if err is not None:
                         raise ValueError(err)
                     nxt.cumulative = cumulative

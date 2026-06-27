@@ -279,6 +279,7 @@ export function session(parameters: session.Parameters) {
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'topUp':
@@ -306,6 +307,7 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        settlementWindow: settlementWindowSeconds,
                         splits,
                         store,
                         tokenProgram,
@@ -351,6 +353,7 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
             try {
                 const receipt = await commitDelivery(store, {
                     deliveryId: body.deliveryId,
+                    settlementWindow: parameters.settlementWindowSeconds,
                     voucher: body.voucher,
                 });
                 return Response.json(receipt, { status: 200 });
@@ -645,12 +648,14 @@ interface HandleCommitArgs {
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
     readonly payload: { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher };
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
 async function handleCommit(args: HandleCommitArgs): Promise<Receipt.Receipt> {
     const receipt = await commitDelivery(args.store, {
         deliveryId: args.payload.deliveryId,
+        settlementWindow: args.settlementWindow,
         voucher: args.payload.voucher,
     });
     args.lifecycle?.touch(receipt.sessionId);
@@ -742,6 +747,7 @@ interface HandleCloseArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly settlementWindow: bigint | undefined;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
     readonly tokenProgram: string;
@@ -776,6 +782,7 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
             }
             const verdict = await verifyVoucherForChannel({
                 deposit: current.deposit,
+                settlementWindow: args.settlementWindow,
                 signed,
                 state: current,
             });
@@ -898,6 +905,9 @@ async function reserveDelivery(store: SessionStore, args: ReserveDeliveryArgs): 
 interface CommitDeliveryArgs {
     readonly deliveryId: string;
     readonly voucher: SignedVoucher;
+    /** Reject a final-commit voucher expiring within `now + settlementWindow`
+     * so a committed delivery can't expire before the async settle lands. */
+    readonly settlementWindow: bigint | undefined;
 }
 
 async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Promise<CommitReceipt> {
@@ -942,6 +952,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
         // Verify signature on the voucher (matches Rust process_commit).
         const verdict = await verifyVoucherForChannel({
             deposit: current.deposit,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
