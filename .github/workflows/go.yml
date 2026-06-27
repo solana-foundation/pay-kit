@@ -87,41 +87,10 @@ jobs:
         with:
           go-version-file: go/go.mod
           cache-dependency-path: go/go.sum
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
+      - uses: ./.github/actions/setup-harness
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-go-harness-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-go-harness-
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust harness client
-        working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_client
-      - name: Build Rust x402 harness client
-        working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_client
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+          cargo-bins: "solana-mpp:harness_client solana-x402:harness_client"
+          cargo-cache-key: go
       - name: Build Go paykit harness server
         working-directory: harness/go-server
         run: go build -o paykit-server .

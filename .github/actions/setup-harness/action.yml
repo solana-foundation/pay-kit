@@ -1,0 +1,81 @@
+name: Setup PayKit harness
+description: >-
+  Shared setup for the cross-language PayKit harness jobs: pnpm + Node, build
+  @solana/mpp, (optionally) build the Rust harness adapter binaries, install the
+  harness, and typecheck it. Each language workflow adds only its own toolchain,
+  adapter build, and smoke run on top of this.
+
+inputs:
+  cargo-bins:
+    description: >-
+      Space-separated "pkg:bin[,bin...]" specs of Rust harness adapters to build,
+      e.g. "solana-mpp:harness_client solana-x402:harness_client" or
+      "solana-mpp:harness_client,harness_server". Empty (default) skips Rust
+      setup entirely (for languages that only test against the TypeScript spine).
+    required: false
+    default: ""
+  cargo-cache-key:
+    description: Language id used to namespace the cargo cache key.
+    required: false
+    default: harness
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v5
+      with:
+        package_json_file: package.json
+    - uses: actions/setup-node@v5
+      with:
+        node-version: 22
+        cache: pnpm
+        cache-dependency-path: typescript/pnpm-lock.yaml
+
+    - name: Install TypeScript workspace
+      working-directory: typescript
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Build @solana/mpp
+      working-directory: typescript
+      shell: bash
+      run: pnpm --filter @solana/mpp build
+
+    - name: Set up Rust toolchain
+      if: inputs.cargo-bins != ''
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo registry + target
+      if: inputs.cargo-bins != ''
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust/target
+        key: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-${{ hashFiles('rust/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-${{ inputs.cargo-cache-key }}-harness-
+    - name: Build Rust harness adapters
+      if: inputs.cargo-bins != ''
+      working-directory: rust
+      shell: bash
+      env:
+        CARGO_BINS: ${{ inputs.cargo-bins }}
+      run: |
+        set -euo pipefail
+        for spec in $CARGO_BINS; do
+          pkg="${spec%%:*}"
+          bins="${spec#*:}"
+          args=()
+          IFS=',' read -ra parts <<< "$bins"
+          for b in "${parts[@]}"; do args+=(--bin "$b"); done
+          echo "cargo build -p $pkg ${args[*]}"
+          cargo build -p "$pkg" "${args[@]}"
+        done
+
+    - name: Install harness
+      working-directory: harness
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Typecheck harness
+      working-directory: harness
+      shell: bash
+      run: pnpm typecheck
