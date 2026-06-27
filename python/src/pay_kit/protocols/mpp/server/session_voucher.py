@@ -11,7 +11,17 @@ exactly this order::
     parse u64 -> finalized -> close pending -> idempotent replay (same
     cumulative AND same signature, signature re-verified) -> cumulative >
     watermark strictly -> cumulative <= deposit -> delta >= min_voucher_delta ->
-    Ed25519 verify against the stored authorized_signer -> expires_at > now.
+    Ed25519 verify against the stored authorized_signer -> expiry.
+
+Expiry follows the on-chain program's ``settle_and_finalize`` rule
+(``payment_channels`` ``helpers/voucher.rs``): the program rejects a voucher
+only when ``expires_at != 0 && now >= expires_at``, so ``expires_at == 0`` means
+**never-expires** and is always accepted. Off-chain acceptance mirrors that, with
+one extra guard: because settlement is asynchronous (the server may co-sign and
+broadcast the close up to the channel's forced-close grace period later), a
+non-zero ``expires_at`` must also OUTLAST the settlement window — we reject when
+``expires_at < now + settlement_window`` so a voucher cannot expire on-chain
+after the server has already served the request but before the settle lands.
 """
 
 from __future__ import annotations
@@ -59,6 +69,11 @@ class VoucherRejectReason(StrEnum):
 
     #: The voucher expiry is not in the future.
     EXPIRED = "expired"
+
+    #: The non-zero voucher expiry is in the future but does not outlast the
+    #: settlement window, so it could expire on-chain before the asynchronous
+    #: close settlement lands.
+    EXPIRES_BEFORE_SETTLEMENT = "expires-before-settlement"
 
     #: The cumulative does not parse as a u64.
     INVALID_CUMULATIVE = "invalid-cumulative"
@@ -152,6 +167,14 @@ class VerifyVoucherArgs:
     #: the check.
     min_voucher_delta: int = 0
 
+    #: The settlement window in seconds: the channel forced-close grace period
+    #: the server must survive between accepting a voucher and landing the
+    #: on-chain close settlement. A non-zero voucher ``expires_at`` must outlast
+    #: ``now + settlement_window`` or it is rejected (see
+    #: :attr:`VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT`). Zero disables the
+    #: outlast check (only ``expires_at <= now`` rejects a non-zero expiry).
+    settlement_window: int = 0
+
     #: Overrides the clock (Unix seconds) for deterministic tests. ``None``
     #: defaults to the wall clock.
     now_seconds: int | None = None
@@ -200,8 +223,11 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
         err = _verify_voucher_signature_bytes(signed, state.authorized_signer)
         if err is not None:
             return _voucher_reject(VoucherRejectReason.INVALID_SIGNATURE, err)
-        if signed.data.expires_at <= _voucher_now(args.now_seconds):
-            return _voucher_reject(VoucherRejectReason.EXPIRED, "voucher has expired")
+        expiry_reject = _check_voucher_expiry(
+            signed.data.expires_at, _voucher_now(args.now_seconds), args.settlement_window
+        )
+        if expiry_reject is not None:
+            return expiry_reject
         return VoucherVerifyResult(status=VoucherVerifyStatus.REPLAYED, new_cumulative=new_cumulative)
 
     # 5. Must strictly exceed the watermark (non-replay case).
@@ -231,9 +257,14 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
     if err is not None:
         return _voucher_reject(VoucherRejectReason.INVALID_SIGNATURE, err)
 
-    # 9. Expiry. The caller may override now_seconds for deterministic tests.
-    if signed.data.expires_at <= _voucher_now(args.now_seconds):
-        return _voucher_reject(VoucherRejectReason.EXPIRED, "voucher has expired")
+    # 9. Expiry. ``expires_at == 0`` is never-expires (matches the on-chain
+    # settle); a non-zero expiry must be in the future AND outlast the settlement
+    # window. The caller may override now_seconds for deterministic tests.
+    expiry_reject = _check_voucher_expiry(
+        signed.data.expires_at, _voucher_now(args.now_seconds), args.settlement_window
+    )
+    if expiry_reject is not None:
+        return expiry_reject
 
     return VoucherVerifyResult(
         status=VoucherVerifyStatus.ACCEPTED,
@@ -246,6 +277,36 @@ def verify_voucher_for_channel(args: VerifyVoucherArgs) -> VoucherVerifyResult:
 def _voucher_reject(reason: VoucherRejectReason, detail: str) -> VoucherVerifyResult:
     """Build a rejected verdict."""
     return VoucherVerifyResult(status=VoucherVerifyStatus.REJECTED, reason=reason, detail=detail)
+
+
+def _check_voucher_expiry(expires_at: int, now: int, settlement_window: int) -> VoucherVerifyResult | None:
+    """Apply the on-chain-aligned voucher expiry policy.
+
+    Returns a rejected :class:`VoucherVerifyResult` when the voucher is expired
+    or expires before the settlement window, or ``None`` when the expiry is
+    acceptable.
+
+    Policy (mirrors ``payment_channels`` ``helpers/voucher.rs``):
+
+    - ``expires_at == 0`` is **never-expires** and is always accepted (the
+      on-chain settle only rejects ``expires_at != 0 && now >= expires_at``).
+    - A non-zero ``expires_at <= now`` is already expired -> ``EXPIRED``.
+    - A non-zero ``expires_at`` that is in the future but does not outlast
+      ``now + settlement_window`` could expire on-chain before the asynchronous
+      close settlement lands -> ``EXPIRES_BEFORE_SETTLEMENT``. ``settlement_window``
+      of 0 disables this guard.
+    """
+    if expires_at == 0:
+        return None
+    if expires_at <= now:
+        return _voucher_reject(VoucherRejectReason.EXPIRED, "voucher has expired")
+    if settlement_window > 0 and expires_at < now + settlement_window:
+        return _voucher_reject(
+            VoucherRejectReason.EXPIRES_BEFORE_SETTLEMENT,
+            f"voucher expires_at {expires_at} does not outlast the settlement window "
+            f"(now {now} + {settlement_window}s = {now + settlement_window})",
+        )
+    return None
 
 
 def _voucher_now(override: int | None) -> int:
@@ -298,13 +359,21 @@ def _verify_voucher_signature_bytes(signed: SignedVoucher, authorized_signer: st
     return None
 
 
-def verify_session_voucher(signed: SignedVoucher, authorized_signer: str) -> str | None:
-    """Check expiry first (against the wall clock), then the Ed25519 signature.
+def verify_session_voucher(signed: SignedVoucher, authorized_signer: str, settlement_window: int = 0) -> str | None:
+    """Check expiry (including the settlement-window margin), then the signature.
 
     Used by the commit and close paths; the voucher handler orders the two
     checks itself. Returns ``None`` on success or a human-readable error string
     on failure.
+
+    Expiry mirrors the on-chain settle rule and the voucher path's
+    :func:`_check_voucher_expiry`: ``expires_at == 0`` is never-expires; a
+    non-zero ``expires_at <= now`` has expired; and when ``settlement_window``
+    is positive, a voucher that does not outlast ``now + settlement_window`` is
+    rejected so a committed or closing voucher cannot expire before the async
+    settle transaction lands on-chain.
     """
-    if signed.data.expires_at <= int(time.time()):
-        return "voucher has expired"
+    rejection = _check_voucher_expiry(signed.data.expires_at, int(time.time()), settlement_window)
+    if rejection is not None:
+        return rejection.detail
     return _verify_voucher_signature_bytes(signed, authorized_signer)

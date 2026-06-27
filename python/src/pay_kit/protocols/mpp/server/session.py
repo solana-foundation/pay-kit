@@ -127,6 +127,16 @@ class SessionConfig:
     # minimum.
     min_voucher_delta: int = 0
 
+    # SettlementWindow is the forced-close grace period (seconds) the server
+    # must survive between accepting a voucher and landing the on-chain close
+    # settlement. A non-zero voucher expiry must outlast ``now +
+    # settlement_window`` or the voucher is rejected, so a voucher cannot expire
+    # on-chain after the request has been served but before settle lands. It
+    # should match the channel ``grace_period`` granted at open (the on-chain
+    # forced-close window). 0 disables the outlast check (backward compatible),
+    # leaving only the ``expires_at <= now`` rejection for non-zero expiries.
+    settlement_window: int = 0
+
     # Modes are the session modes this server accepts, advertised to clients in
     # the 402 challenge. An empty list or [push] means only the payment-channel
     # push mode is supported.
@@ -378,6 +388,7 @@ class SessionServer:
                 signed=voucher,
                 deposit=state.deposit,
                 min_voucher_delta=self._config.min_voucher_delta,
+                settlement_window=self._config.settlement_window,
             )
         )
         if result.status == VoucherVerifyStatus.REJECTED:
@@ -552,7 +563,9 @@ class SessionServer:
         committed = _find_committed(state.committed_deliveries, payload.delivery_id)
         if committed is not None:
             if committed.cumulative == new_cumulative and committed.voucher_signature == payload.voucher.signature:
-                _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer))
+                _raise_voucher_error(
+                    verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window)
+                )
                 return _commit_receipt(
                     payload.delivery_id, channel_id, committed.amount, committed.cumulative, "replayed"
                 )
@@ -565,7 +578,9 @@ class SessionServer:
             raise ValueError(f"delivery {payload.delivery_id} has expired")
         if new_cumulative <= state.cumulative:
             raise ValueError(f"commit cumulative {new_cumulative} must exceed watermark {state.cumulative}")
-        _raise_voucher_error(verify_session_voucher(payload.voucher, state.authorized_signer))
+        _raise_voucher_error(
+            verify_session_voucher(payload.voucher, state.authorized_signer, self._config.settlement_window)
+        )
 
         delivery_id = payload.delivery_id
         signature = payload.voucher.signature
@@ -666,12 +681,20 @@ class SessionServer:
                         raise ValueError(
                             f"final voucher cumulative {cumulative} must exceed watermark {current.cumulative}"
                         )
+                    # Recheck expiry/window even on idempotent replay so a close is
+                    # not recorded against a voucher that no longer outlasts the
+                    # settlement window (the async settle would then fail on-chain).
+                    _raise_voucher_error(
+                        verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
+                    )
                     if nxt.highest_voucher_expires_at is None:
                         nxt.highest_voucher_expires_at = voucher.data.expires_at
                 else:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
-                    _raise_voucher_error(verify_session_voucher(voucher, current.authorized_signer))
+                    _raise_voucher_error(
+                        verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
+                    )
                     nxt.cumulative = cumulative
                     nxt.highest_voucher_signature = voucher.signature
                     nxt.highest_voucher_expires_at = voucher.data.expires_at

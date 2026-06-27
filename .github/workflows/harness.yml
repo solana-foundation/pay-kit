@@ -1,0 +1,412 @@
+name: Harness
+
+# One shared build, then every language harness leg in parallel.
+#
+#          ┌─ ts      smoke
+#  build ──┼─ go      smoke
+# (mpp +   ├─ python  smoke
+#  all     ├─ ruby    smoke
+#  rust    ├─ lua     smoke
+#  bins    ├─ php     smoke
+#  once)   ├─ swift   smoke   (macOS)
+#          ├─ kotlin  smoke
+#          └─ …               ← legs reuse the build's mpp dist + cargo cache
+#
+# Each leg adds only its own toolchain + adapter build + smoke run; the
+# duplicated pnpm/node + build-mpp + build-rust + install + typecheck lives once
+# in the build job (see .github/actions/setup-harness and setup-harness-leg).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  build:
+    name: Build harness deps (once)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Builds @solana/mpp + all Rust harness adapter bins, warms the shared
+      # cargo cache (key suffix "shared"), installs + typechecks the harness.
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server"
+          cargo-cache-key: shared
+      - name: Upload @solana/mpp dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpp-dist
+          path: typescript/packages/mpp/dist
+          if-no-files-found: error
+
+  ts:
+    name: "Harness: TypeScript (Rust client/server)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Run Rust client harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
+        env:
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: typescript
+      - name: Run Rust server harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: rust
+
+  go:
+    name: "Harness: Go (mpp charge + x402 exact)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Build Go paykit harness server
+        working-directory: harness/go-server
+        run: go build -o paykit-server .
+      - name: Run Go PayKit harness matrix (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: go
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-symbol-usdc-localnet,charge-token2022-split-ata,charge-split-ata-idempotent,charge-compute-budget-over-cap,charge-splits-too-many,charge-splits-sum-equals-amount,charge-network-mismatch,charge-cross-route-replay,x402-exact-basic
+          X402_HARNESS_CLIENTS: rust-x402,go-x402
+          X402_HARNESS_SERVERS: go
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
+  python:
+    name: "Harness: Python"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: astral-sh/setup-uv@v5
+      - name: Install Python SDK
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Sync Python uv environment
+        working-directory: python
+        run: uv sync --extra dev
+      - name: Run Python cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: python
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Focused Python session harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: session
+          MPP_HARNESS_SCENARIOS: session-basic
+          MPP_HARNESS_CLIENTS: python-session
+          MPP_HARNESS_SERVERS: python
+        run: pnpm exec vitest run test/e2e.test.ts
+      - name: Focused TS-to-Python harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: python
+        run: pnpm exec vitest run test/e2e.test.ts
+      - name: Focused Rust-to-Python harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: python
+        run: pnpm exec vitest run test/e2e.test.ts
+      - name: Focused python-x402 -> rust/python x402 servers
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: x402-exact
+          MPP_HARNESS_SCENARIOS: x402-exact-basic
+          MPP_HARNESS_CLIENTS: python-x402
+          MPP_HARNESS_SERVERS: rust-x402,python
+          X402_HARNESS_CLIENTS: python-x402
+          X402_HARNESS_SERVERS: rust-x402,python
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+
+  ruby:
+    name: "Harness: Ruby PayKit server (dual protocol)"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Run harness smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: ruby,typescript
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          X402_HARNESS_CLIENTS: rust-x402
+          X402_HARNESS_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000
+
+  lua:
+    name: "Harness: Lua focused matrix"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit libluajit-5.1-dev luarocks libsodium-dev libssl-dev
+          luajit -v
+      - name: Cache rocks tree
+        id: cache-rocks
+        uses: actions/cache@v4
+        with:
+          path: lua/lua_modules
+          key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
+          restore-keys: ${{ runner.os }}-luarocks-v2-
+      - name: Install runtime rocks
+        if: steps.cache-rocks.outputs.cache-hit != 'true'
+        working-directory: lua
+        run: |
+          mkdir -p lua_modules
+          luarocks --lua-version=5.1 init --lua-versions 5.1 || true
+          luarocks --lua-version=5.1 install --tree lua_modules luasocket
+          luarocks --lua-version=5.1 install --tree lua_modules luasodium
+          luarocks --lua-version=5.1 install --tree lua_modules luasec OPENSSL_DIR=/usr
+          luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
+          luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
+      - uses: ./.github/actions/setup-harness-leg
+      - name: TS-to-Lua focused matrix
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: lua
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays lua server"
+      - name: Rust-to-Lua focused matrix
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: lua
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays lua server"
+      - name: Run PayKit harness smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: lua,typescript
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          X402_HARNESS_CLIENTS: rust-x402
+          X402_HARNESS_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "lua" --testTimeout 180000
+
+  php:
+    name: "Harness: PHP"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Install PHP harness dependencies
+        working-directory: php
+        run: composer install --no-interaction --no-progress
+      - name: Run PHP server harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: php
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay
+      - name: Run Rust client PHP server harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays php server"
+        env:
+          MPP_HARNESS_CLIENTS: rust
+          MPP_HARNESS_SERVERS: php
+          MPP_HARNESS_SCENARIOS: charge-basic,charge-split-ata
+      - name: Run PayKit harness smoke (mpp charge + x402 exact)
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: typescript
+          MPP_HARNESS_SERVERS: php,typescript
+          MPP_HARNESS_INTENTS: charge,x402-exact
+          X402_HARNESS_CLIENTS: rust-x402
+          X402_HARNESS_SERVERS: ""
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "php server" --testTimeout 180000
+
+  swift:
+    name: "Harness: Swift client to TypeScript + Rust servers"
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness-leg
+      # macOS can't reuse the Linux build job's cargo cache, so compile the Rust
+      # server adapter explicitly here (outside the harness's 120s adapter-output
+      # timeout) instead of letting the smoke's `cargo run` cold-compile it.
+      - name: Build Rust harness server
+        working-directory: rust
+        run: cargo build -p solana-mpp --bin harness_server
+      - name: Build Swift harness client
+        working-directory: harness/swift-client
+        run: swift build
+      - name: Run Swift cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: swift
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Run Swift client harness smoke against TypeScript server
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: swift
+          MPP_HARNESS_SERVERS: typescript
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays typescript server"
+      - name: Run Swift client harness smoke against Rust server
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: swift
+          MPP_HARNESS_SERVERS: rust
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift client pays rust server"
+
+  swift-x402:
+    name: "Harness: Swift x402 client to Rust x402 server"
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-harness-leg
+      # macOS can't reuse the Linux build job's cargo cache; compile the Rust
+      # x402 server adapter here (outside the 120s adapter-output timeout)
+      # instead of cold-compiling it inside the smoke's `cargo run`.
+      - name: Build Rust x402 harness server
+        working-directory: rust
+        run: cargo build -p solana-x402 --bin harness_server
+      - name: Build Swift x402 harness client
+        working-directory: harness/swift-x402-client
+        run: swift build --quiet
+      - name: Run Swift x402 client harness against Rust x402 server
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-exact
+          MPP_HARNESS_SCENARIOS: x402-exact-basic
+          X402_HARNESS_CLIENTS: swift-x402
+          X402_HARNESS_SERVERS: rust-x402
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "swift-x402 client pays rust-x402 server" --testTimeout 180000
+
+  kotlin:
+    name: "Harness: Kotlin client to TypeScript server"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Build the Kotlin conformance runner
+        working-directory: harness/kotlin-conformance
+        run: gradle installDist --no-daemon
+      - name: Run Kotlin cross-SDK conformance vectors
+        working-directory: harness
+        env:
+          MPP_CONFORMANCE_LANGUAGES: kotlin
+        run: pnpm exec vitest run test/conformance.test.ts
+      - name: Pre-warm Gradle for the Kotlin harness client
+        working-directory: harness/kotlin-client
+        run: gradle installDist --no-daemon
+      - name: Run Kotlin client harness smoke
+        working-directory: harness
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin client pays typescript server" --testTimeout 180000
+        env:
+          MPP_HARNESS_CLIENTS: kotlin
+          MPP_HARNESS_SERVERS: typescript
+
+  kotlin-x402:
+    name: "Harness: Kotlin x402 client to Rust x402 server"
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.5.1"
+      - uses: ./.github/actions/setup-harness-leg
+      - name: Pre-warm Gradle for the Kotlin x402 harness client
+        working-directory: harness/kotlin-x402-client
+        run: gradle installDist --no-daemon
+      - name: Run Kotlin x402 client to Rust x402 server harness
+        working-directory: harness
+        env:
+          MPP_HARNESS_CLIENTS: ""
+          MPP_HARNESS_SERVERS: ""
+          MPP_HARNESS_INTENTS: x402-exact
+          X402_HARNESS_CLIENTS: kotlin-x402
+          X402_HARNESS_SERVERS: rust-x402
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "kotlin-x402 client pays rust-x402 server" --testTimeout 180000
+
+  # Real on-chain settlement gate: forks mainnet (surfpool 1.4) and executes the
+  # deployed payment-channels program, so a green run proves settlement actually
+  # lands on-chain (the byte-shape harness above cannot). Needs @solana/pay-kit
+  # built (the on-chain suite imports it) and a mainnet RPC to fork from.
+  onchain:
+    name: "Harness: on-chain settlement (mainnet fork)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Build @solana/mpp + @solana/pay-kit
+        working-directory: typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @solana/mpp build
+          pnpm --filter @solana/pay-kit build
+      - name: Install harness
+        working-directory: harness
+        run: pnpm install --frozen-lockfile
+      - name: Run on-chain settlement suite
+        working-directory: harness
+        env:
+          # surfpool forks mainnet account state from this datasource RPC (the
+          # same secret the rest of the surfpool CI uses); the suite itself talks
+          # to the surfpool instance. The helper falls back to public mainnet when
+          # the secret is unavailable (e.g. fork PRs).
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm test:onchain

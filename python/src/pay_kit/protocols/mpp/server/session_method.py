@@ -96,6 +96,7 @@ class _AlreadyFinalized(Exception):
 class _AlreadySettling(Exception):
     """Raised by the settle-claim mutator when another caller is mid-settle."""
 
+
 __all__ = [
     "OpenTxSubmitter",
     "SessionOptions",
@@ -553,9 +554,7 @@ class Session:
             existing = await self._core.store().get_channel(session_id)
             if existing is not None:
                 if existing.finalized:
-                    raise PaymentError(
-                        f"channel {session_id} is already finalized", code="invalid-payload"
-                    )
+                    raise PaymentError(f"channel {session_id} is already finalized", code="invalid-payload")
                 if existing.authorized_signer != payload.authorized_signer:
                     raise PaymentError(
                         f"channel {session_id} already exists with a different authorized signer",
@@ -723,12 +722,22 @@ class Session:
                         raise ValueError(
                             f"final voucher cumulative {cumulative} must exceed watermark {current.cumulative}"
                         )
+                    # Recheck expiry/window even on idempotent replay so the HTTP
+                    # close path doesn't record close-pending against a voucher that
+                    # no longer outlasts the settlement window (mirrors process_close).
+                    err = verify_session_voucher(
+                        voucher, current.authorized_signer, self._core.config.settlement_window
+                    )
+                    if err is not None:
+                        raise ValueError(err)
                     if nxt.highest_voucher_expires_at is None:
                         nxt.highest_voucher_expires_at = voucher.data.expires_at
                 else:
                     if cumulative > current.deposit:
                         raise ValueError("final voucher exceeds deposit")
-                    err = verify_session_voucher(voucher, current.authorized_signer)
+                    err = verify_session_voucher(
+                        voucher, current.authorized_signer, self._core.config.settlement_window
+                    )
                     if err is not None:
                         raise ValueError(err)
                     nxt.cumulative = cumulative

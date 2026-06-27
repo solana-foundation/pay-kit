@@ -51,31 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: ruby
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+      - uses: ./.github/actions/setup-harness
       # Dual-protocol proof: one e2e run drives MPP charge scenarios
       # (typescript client) and x402 exact (rust-x402 client) against
       # the same ruby adapter binary. The harness's harnessEnv exposes

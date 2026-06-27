@@ -89,6 +89,15 @@ type SessionConfig struct {
 	// minimum.
 	MinVoucherDelta uint64
 
+	// SettlementWindowSeconds is the channel's forced-close grace period in
+	// seconds. When positive, a non-zero voucher expiry must outlast this
+	// window (expiresAt >= now + settlementWindowSeconds) so the async settle
+	// transaction cannot be rejected on-chain after the server has served. 0
+	// disables the extra margin (plain `expiresAt > now` only). A voucher
+	// expiresAt of 0 never expires regardless of this setting. Should match the
+	// grace period the open transaction locks into the channel.
+	SettlementWindowSeconds int64
+
 	// Modes are the session modes this server accepts, advertised to clients
 	// in the 402 challenge. An empty list or [push] means only the
 	// payment-channel push mode is supported.
@@ -308,39 +317,79 @@ func operatorFromVerifiedOpen(verifiedPayer string, owner, payer *string) *strin
 	return payer
 }
 
+// VoucherAcceptance is the detailed outcome of a voucher accepted by the
+// server. Replayed reports whether the voucher was an idempotent replay of the
+// already-stored highest voucher (same cumulative AND same signature): a replay
+// advanced the watermark by zero, so callers must NOT serve a fresh response
+// for it (charged 0). A non-replay acceptance advanced the watermark by
+// Charged base units.
+type VoucherAcceptance struct {
+	// Cumulative is the channel watermark after this voucher (base units).
+	Cumulative uint64
+
+	// Charged is the amount this voucher advanced the watermark by (base
+	// units). Zero for an idempotent replay.
+	Charged uint64
+
+	// Replayed is true when the voucher was an exact idempotent replay of the
+	// stored highest voucher (charged 0). Callers should treat it as a
+	// no-charge no-op rather than a fresh serve.
+	Replayed bool
+}
+
 // VerifyVoucher verifies a voucher, advances the watermark, and returns the
 // new cumulative.
 //
-// The full ordered check sequence runs as a preflight outside the store lock
-// (see VerifyVoucherForChannel), then the state-dependent checks are
-// re-applied inside the atomic mutator before the watermark is persisted.
+// An exact idempotent replay (same cumulative AND same signature) returns the
+// stored cumulative with a nil error; use VerifyVoucherDetailed to distinguish
+// a replay (charged 0) from a fresh charge.
 func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.VoucherPayload) (uint64, error) {
+	acceptance, err := s.VerifyVoucherDetailed(ctx, payload)
+	if err != nil {
+		return 0, err
+	}
+	return acceptance.Cumulative, nil
+}
+
+// VerifyVoucherDetailed verifies a voucher, advances the watermark, and returns
+// the detailed acceptance (cumulative, amount charged, and whether the voucher
+// was an idempotent replay).
+//
+// The full ordered check sequence runs as a preflight outside the store lock
+// (see VerifyVoucherForChannel), then the state-dependent checks are re-applied
+// inside the atomic mutator before the watermark is persisted. An exact replay
+// (same cumulative AND same signature) is reported as Replayed with Charged 0;
+// it is the cumulative-as-nonce contract that makes a re-submitted voucher a
+// no-charge no-op rather than a fresh serve.
+func (s *SessionServer) VerifyVoucherDetailed(ctx context.Context, payload *intents.VoucherPayload) (VoucherAcceptance, error) {
 	voucher := payload.Voucher
 	channelID := voucher.Data.ChannelID
 
 	state, err := s.store.GetChannel(ctx, channelID)
 	if err != nil {
-		return 0, err
+		return VoucherAcceptance{}, err
 	}
 	if state == nil {
-		return 0, fmt.Errorf("channel %s not found", channelID)
+		return VoucherAcceptance{}, fmt.Errorf("channel %s not found", channelID)
 	}
 
 	// Preflight outside the lock (expensive signature check happens before
 	// touching the store).
 	result := VerifyVoucherForChannel(VerifyVoucherArgs{
-		State:           *state,
-		Signed:          voucher,
-		Deposit:         state.Deposit,
-		MinVoucherDelta: s.config.MinVoucherDelta,
+		State:                   *state,
+		Signed:                  voucher,
+		Deposit:                 state.Deposit,
+		MinVoucherDelta:         s.config.MinVoucherDelta,
+		SettlementWindowSeconds: s.config.SettlementWindowSeconds,
 	})
 	switch result.Status {
 	case VoucherVerifyRejected:
 		// Surface the stable reject tag ahead of the detail
 		// ("<reason>: <detail>").
-		return 0, fmt.Errorf("%s: %s", result.Reason, result.Detail)
+		return VoucherAcceptance{}, fmt.Errorf("%s: %s", result.Reason, result.Detail)
 	case VoucherVerifyReplayed:
-		return result.NewCumulative, nil
+		// Exact replay: charged 0, watermark unchanged.
+		return VoucherAcceptance{Cumulative: result.NewCumulative, Charged: 0, Replayed: true}, nil
 	}
 
 	newCumulative := result.NewCumulative
@@ -348,11 +397,16 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 	newExpiresAt := result.NewExpiresAt
 
 	// Atomic read-modify-write: re-check everything state-dependent inside
-	// the mutator.
+	// the mutator. replayed captures a race where a concurrent writer landed
+	// this exact voucher first, so it collapses to a charged-0 replay.
+	replayed := false
+	previousCumulative := uint64(0)
 	newState, err := s.store.UpdateChannel(ctx, channelID, func(current *ChannelState) (ChannelState, error) {
+		replayed = false
 		if current == nil {
 			return ChannelState{}, fmt.Errorf("channel %s not found", channelID)
 		}
+		previousCumulative = current.Cumulative
 		if current.Finalized {
 			return ChannelState{}, fmt.Errorf("channel %s is already finalized", channelID)
 		}
@@ -363,6 +417,7 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 		if newCumulative == current.Cumulative &&
 			current.HighestVoucherSignature != nil &&
 			*current.HighestVoucherSignature == newSignature {
+			replayed = true
 			return *current, nil
 		}
 		// Concurrent watermark advancement check.
@@ -376,9 +431,16 @@ func (s *SessionServer) VerifyVoucher(ctx context.Context, payload *intents.Vouc
 		return next, nil
 	})
 	if err != nil {
-		return 0, err
+		return VoucherAcceptance{}, err
 	}
-	return newState.Cumulative, nil
+	if replayed {
+		return VoucherAcceptance{Cumulative: newState.Cumulative, Charged: 0, Replayed: true}, nil
+	}
+	return VoucherAcceptance{
+		Cumulative: newState.Cumulative,
+		Charged:    newState.Cumulative - previousCumulative,
+		Replayed:   false,
+	}, nil
 }
 
 // ProcessTopUp processes a topUp action: atomically raise the channel's
@@ -547,7 +609,7 @@ func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.Comm
 	// Preflight outside the lock.
 	if committed := findCommitted(state.CommittedDeliveries, payload.DeliveryID); committed != nil {
 		if committed.Cumulative == newCumulative && committed.VoucherSignature == payload.Voucher.Signature {
-			if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner); err != nil {
+			if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 				return intents.CommitReceipt{}, err
 			}
 			return commitReceipt(payload.DeliveryID, channelID, committed.Amount, committed.Cumulative, intents.CommitStatusReplayed), nil
@@ -565,7 +627,7 @@ func (s *SessionServer) ProcessCommit(ctx context.Context, payload *intents.Comm
 	if newCumulative <= state.Cumulative {
 		return intents.CommitReceipt{}, fmt.Errorf("commit cumulative %d must exceed watermark %d", newCumulative, state.Cumulative)
 	}
-	if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner); err != nil {
+	if err := verifySessionVoucher(payload.Voucher, state.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 		return intents.CommitReceipt{}, err
 	}
 
@@ -712,6 +774,12 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 					return ChannelState{}, fmt.Errorf(
 						"final voucher cumulative %d must exceed watermark %d", cumulative, current.Cumulative)
 				}
+				// Recheck expiry/window even on idempotent replay so a close is not
+				// recorded against a voucher that no longer outlasts the settlement
+				// window (the async settle would then be rejected on-chain).
+				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
+					return ChannelState{}, err
+				}
 				if next.HighestVoucherExpiresAt == nil {
 					expiresAt := voucher.Data.ExpiresAt
 					next.HighestVoucherExpiresAt = &expiresAt
@@ -720,7 +788,7 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 				if cumulative > current.Deposit {
 					return ChannelState{}, fmt.Errorf("final voucher exceeds deposit")
 				}
-				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner); err != nil {
+				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
 					return ChannelState{}, err
 				}
 				signature := voucher.Signature

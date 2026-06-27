@@ -70,7 +70,7 @@ pub struct UptoConfig {
     pub token_program: Option<String>,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
-    /// Operator signer — co-signs the open as fee payer and signs settlement
+    /// Operator signer - co-signs the open as fee payer and signs settlement
     /// vouchers + transactions. Its pubkey is the advertised facilitator.
     pub operator_signer: Arc<dyn SolanaSigner>,
 }
@@ -98,7 +98,7 @@ pub struct VerifiedUptoOpen {
 
 /// RAII guard removing a channel id from [`X402Upto`]'s in-flight set on drop,
 /// so a channel being processed can't be served concurrently (replay), and the
-/// slot is always freed — including on early-return errors or a handler panic.
+/// slot is always freed - including on early-return errors or a handler panic.
 #[derive(Debug)]
 struct InFlightGuard {
     set: Arc<Mutex<HashSet<Pubkey>>>,
@@ -185,7 +185,7 @@ impl X402Upto {
     /// Build the `upto` payment requirement for the given authorized maximum.
     ///
     /// `max_amount` is a human-decimal amount (e.g. `"0.10"`), converted to base
-    /// units using the configured decimals — same convention as the `exact`
+    /// units using the configured decimals - same convention as the `exact`
     /// scheme, so the gate passes one dollar string everywhere.
     ///
     /// Pure (no RPC): `extra.recent_blockhash` is left `None` and filled in by
@@ -312,7 +312,7 @@ impl X402Upto {
 
         // In-flight dedup: reject a concurrent request replaying the same
         // channel before its first settlement finalizes. The guard releases the
-        // slot on drop — including every early-return below and a handler panic.
+        // slot on drop - including every early-return below and a handler panic.
         let in_flight = {
             let mut set = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             if !set.insert(channel_id) {
@@ -333,7 +333,7 @@ impl X402Upto {
         })?;
         let mut tx = decode_transaction(open_tx_b64)?;
         // SECURITY: the operator co-signs as fee payer, so it must only ever
-        // sign the expected channel-open instruction — never an arbitrary
+        // sign the expected channel-open instruction - never an arbitrary
         // operator-authorized instruction (e.g. a SystemProgram transfer that
         // drains the operator). Validate before co-signing/broadcasting.
         self.validate_open_transaction(
@@ -385,7 +385,7 @@ impl X402Upto {
             return Err(Error::Other(format!(
                 "on-chain deposit {} != authorized maximum {max}: the deposit is the \
                  enforced ceiling and `topUp` can raise an open channel's deposit, so it \
-                 must equal the authorized amount exactly — `>=` would leave the x402 \
+                 must equal the authorized amount exactly - `>=` would leave the x402 \
                  ceiling advisory rather than enforced",
                 channel.deposit
             )));
@@ -625,6 +625,22 @@ pub(crate) fn validate_open_instruction(
     token_program: &Pubkey,
     channel_id: &Pubkey,
 ) -> Result<(), Error> {
+    // Reject v0 transactions that pull accounts from address lookup tables.
+    // This validator (and the fee-payer co-sign) resolves every account via
+    // `static_account_keys()`; an `open` needs only static accounts, so a
+    // non-empty ALT lookup could smuggle in accounts the guards below cannot
+    // see - and the operator would blindly co-sign. Mirrors the mpp charge-tx
+    // verifier's `reject_address_lookup_tables`.
+    if tx
+        .message
+        .address_table_lookups()
+        .is_some_and(|lookups| !lookups.is_empty())
+    {
+        return Err(Error::Other(
+            "open transaction must not use address lookup tables".to_string(),
+        ));
+    }
+
     let keys = tx.message.static_account_keys();
     let instructions = tx.message.instructions();
     if instructions.len() != 1 {
@@ -802,7 +818,7 @@ mod tests {
     fn validates_distinct_rent_payer_and_authorized_signer() {
         // Gasless batch / client-voucher (matrix combo 2): the operator funds
         // the rent (rentPayer) while the payer signs vouchers (authorized_signer)
-        // — two distinct keys. The old conflated validator rejected this open.
+        // - two distinct keys. The old conflated validator rejected this open.
         let (payer, payee, mint, operator) = (
             Pubkey::new_unique(),
             Pubkey::new_unique(),
@@ -839,7 +855,7 @@ mod tests {
         )
         .is_ok());
 
-        // Swapping the two expected keys must fail — proves the slots are
+        // Swapping the two expected keys must fail - proves the slots are
         // validated independently rather than against one conflated key.
         assert!(validate_open_instruction(
             &tx,
@@ -1033,5 +1049,59 @@ mod tests {
             .await
             .expect("operator fee-payer transaction should sign");
         assert_eq!(tx.signatures[0], Signature::from([7u8; 64]));
+    }
+
+    // FIX #7: an `open` needs only static accounts, so a v0 transaction that
+    // pulls accounts from an address lookup table must be rejected before the
+    // operator co-signs as fee payer - otherwise it could smuggle in accounts
+    // the static-key guards above cannot inspect.
+    #[test]
+    fn rejects_open_with_address_lookup_tables() {
+        use solana_message::{v0, VersionedMessage};
+
+        let (payer, payee, mint, operator) = (
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        );
+        let params = open_params(payer, payee, mint, operator);
+        let channel = derive_channel_addresses(&params).channel;
+
+        // Build an otherwise-valid open, then wrap it in a v0 message carrying a
+        // non-empty address-table lookup.
+        let legacy = Message::new(&[build_open_instruction(&params)], Some(&payer));
+        let v0_msg = v0::Message {
+            header: legacy.header,
+            account_keys: legacy.account_keys,
+            recent_blockhash: legacy.recent_blockhash,
+            instructions: legacy.instructions,
+            address_table_lookups: vec![v0::MessageAddressTableLookup {
+                account_key: Pubkey::new_unique(),
+                writable_indexes: vec![0],
+                readonly_indexes: vec![],
+            }],
+        };
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default(); v0_msg.header.num_required_signatures as usize],
+            message: VersionedMessage::V0(v0_msg),
+        };
+
+        let err = validate_open_instruction(
+            &tx,
+            &pc::default_program_id(),
+            &operator,
+            &operator,
+            &payer,
+            &payee,
+            &mint,
+            &token_program(),
+            &channel,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("address lookup tables"),
+            "expected ALT rejection, got: {err}"
+        );
     }
 }

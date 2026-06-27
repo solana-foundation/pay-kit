@@ -42,14 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -57,18 +49,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.5.1"
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+      - uses: ./.github/actions/setup-harness
       - name: Build the Kotlin conformance runner
         working-directory: harness/kotlin-conformance
         run: gradle installDist --no-daemon
@@ -93,14 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -108,21 +81,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.5.1"
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust x402 harness server
-        working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_server
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "solana-x402:harness_server"
+          cargo-cache-key: kotlin-x402
       # Pre-warm the Kotlin x402 client install so the harness adapter
       # (harness/src/implementations.ts → kotlin-x402) can launch the
       # script at build/install/.../bin/. The kotlin SDK is consumed via

@@ -482,6 +482,7 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     // The kit compiled-message decoder dispatches on the version prefix
     // byte, so legacy and v0 messages both decode to this shape.
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        addressTableLookups?: readonly unknown[] | undefined;
         instructions: readonly {
             accountIndices?: readonly number[];
             data?: Uint8Array | undefined;
@@ -489,6 +490,18 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
         }[];
         staticAccounts: readonly string[];
     };
+
+    // Reject address-lookup tables. The operator co-signs the open as fee
+    // payer, and every account this verifier inspects (payer, rentPayer,
+    // payee, mint, authorizedSigner, channel) must be a *static* account it
+    // can read directly — an ALT-resolved account is opaque here and would
+    // let a client smuggle a different account past the slot checks. Mirrors
+    // the x402 svm `verifyOpenTransaction` ALT guard.
+    if (message.addressTableLookups && message.addressTableLookups.length > 0) {
+        throw new Error(
+            'verifyOpenTx: address-lookup tables are not permitted in an open transaction — all accounts must be static',
+        );
+    }
 
     // Bind the claimed signature to this transaction (see doc comment).
     if (openPayload.signature && !isPlaceholderSignature(openPayload.signature)) {

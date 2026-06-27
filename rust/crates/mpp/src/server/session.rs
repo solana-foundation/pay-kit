@@ -39,6 +39,7 @@ use crate::protocol::intents::session::{
 };
 use crate::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 use crate::store::{ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError};
+use solana_pay_core::session::VoucherAcceptance;
 
 // ── Configuration ──
 
@@ -109,6 +110,12 @@ pub struct SessionConfig {
     /// Minimum voucher increment (base units). 0 = no minimum.
     pub min_voucher_delta: u64,
 
+    /// Forced-close grace period (seconds) used as the voucher settlement
+    /// window: a non-zero voucher expiry MUST outlast this window so the
+    /// operator can still redeem the voucher on-chain after the asynchronous
+    /// forced-close delay. Mirrors the channel's on-chain grace period.
+    pub grace_period_seconds: u32,
+
     /// Session modes this server accepts.
     ///
     /// Advertised to clients in the 402 challenge. An empty list or
@@ -140,6 +147,7 @@ impl Default for SessionConfig {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             rpc_url: None,
@@ -531,7 +539,9 @@ impl<S: ChannelStore> SessionServer<S> {
             .map_err(store_err)
     }
 
-    /// Verify a voucher, advance the watermark, and return the new cumulative.
+    /// Verify a voucher, advance the watermark, and return the acceptance
+    /// outcome (post-acceptance cumulative, the amount newly charged, and
+    /// whether this was an idempotent replay).
     ///
     /// Rejects vouchers that:
     /// - Belong to an unknown channel
@@ -541,8 +551,12 @@ impl<S: ChannelStore> SessionServer<S> {
     /// - Are below the minimum voucher delta
     /// - Are submitted after a close has been requested
     ///
+    /// An exact idempotent replay of the latest voucher is accepted as a
+    /// no-charge no-op: the returned [`VoucherAcceptance`] has `charged == 0`
+    /// and `replay == true` so callers do not treat it as a fresh paid serve.
+    ///
     /// Uses atomic read-modify-write to prevent double-spend under concurrent requests.
-    pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<u64> {
+    pub async fn verify_voucher(&self, payload: &VoucherPayload) -> Result<VoucherAcceptance> {
         let voucher = &payload.voucher;
         let new_cumulative: u64 = voucher
             .data
@@ -552,7 +566,10 @@ impl<S: ChannelStore> SessionServer<S> {
 
         // Wire-agnostic acceptance (signature + monotonicity + deposit cap +
         // min-delta + idempotent replay + atomic advance) lives in core so the
-        // x402 `batch-settlement` scheme shares it.
+        // x402 `batch-settlement` scheme shares it. The settlement window is the
+        // channel's forced-close grace period: a non-zero voucher expiry must
+        // outlast it so the operator can still redeem on-chain after the async
+        // forced-close delay.
         solana_pay_core::session::accept_voucher(
             &self.store,
             &voucher.data.channel_id,
@@ -561,6 +578,7 @@ impl<S: ChannelStore> SessionServer<S> {
             &voucher.signature,
             now_unix_secs(),
             self.config.min_voucher_delta,
+            self.config.grace_period_seconds as i64,
         )
         .await
         .map_err(Into::into)
@@ -760,7 +778,11 @@ impl<S: ChannelStore> SessionServer<S> {
             if committed.cumulative == new_cumulative
                 && committed.voucher_signature == payload.voucher.signature
             {
-                verify_signature(&payload.voucher, &state.authorized_signer)?;
+                verify_signature(
+                    &payload.voucher,
+                    &state.authorized_signer,
+                    self.config.grace_period_seconds as i64,
+                )?;
                 return Ok(CommitReceipt {
                     delivery_id: payload.delivery_id.clone(),
                     session_id: channel_id,
@@ -794,7 +816,11 @@ impl<S: ChannelStore> SessionServer<S> {
                 state.cumulative
             )));
         }
-        verify_signature(&payload.voucher, &state.authorized_signer)?;
+        verify_signature(
+            &payload.voucher,
+            &state.authorized_signer,
+            self.config.grace_period_seconds as i64,
+        )?;
 
         let delivery_id = payload.delivery_id.clone();
         let signature = payload.voucher.signature.clone();
@@ -908,6 +934,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .unwrap_or_default()
             .as_secs();
         let voucher_opt = payload.voucher.clone();
+        let settlement_window = self.config.grace_period_seconds as i64;
 
         self.store
             .update_channel(
@@ -938,6 +965,12 @@ impl<S: ChannelStore> SessionServer<S> {
                                 && state.highest_voucher_signature.as_deref()
                                     == Some(voucher.signature.as_str())
                             {
+                                // Recheck expiry/window even on idempotent replay: a close
+                                // must not be recorded against a voucher that no longer
+                                // outlasts the settlement window, or the async settle can be
+                                // rejected on-chain after close-pending is set.
+                                verify_signature(voucher, &state.authorized_signer, settlement_window)
+                                    .map_err(|e| StoreError::Internal(e.to_string()))?;
                                 (
                                     state.cumulative,
                                     state.highest_voucher_signature.clone(),
@@ -955,7 +988,7 @@ impl<S: ChannelStore> SessionServer<S> {
                                     "Final voucher exceeds deposit".to_string(),
                                 ));
                             }
-                            verify_signature(voucher, &state.authorized_signer)
+                            verify_signature(voucher, &state.authorized_signer, settlement_window)
                                 .map_err(|e| StoreError::Internal(e.to_string()))?;
                             (
                                 cumulative,
@@ -1159,7 +1192,15 @@ fn now_unix_secs() -> i64 {
 ///
 /// Delegates to [`solana_pay_core::voucher::verify_voucher_signature`] — the
 /// shared implementation also used by the x402 `batch-settlement` scheme.
-fn verify_signature(voucher: &SignedVoucher, authorized_signer: &str) -> Result<()> {
+///
+/// `settlement_window` is the channel's forced-close grace period (seconds): a
+/// non-zero voucher expiry must outlast it so the voucher can still settle
+/// on-chain after the async forced-close delay (`0` expiry = never expires).
+fn verify_signature(
+    voucher: &SignedVoucher,
+    authorized_signer: &str,
+    settlement_window: i64,
+) -> Result<()> {
     let cumulative: u64 = voucher
         .data
         .cumulative
@@ -1172,6 +1213,7 @@ fn verify_signature(voucher: &SignedVoucher, authorized_signer: &str) -> Result<
         &voucher.signature,
         authorized_signer,
         now_unix_secs(),
+        settlement_window,
     )
     .map_err(Into::into)
 }
@@ -1214,6 +1256,7 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: 0,
+                grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
                 rpc_url: None,
@@ -1234,6 +1277,7 @@ mod tests {
                 network: "localnet".to_string(),
                 program_id: None,
                 min_voucher_delta: min_delta,
+                grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
                 modes: vec![SessionMode::Push],
                 pull_voucher_strategy: None,
                 rpc_url: None,
@@ -1811,6 +1855,7 @@ mod tests {
             network: "mainnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             rpc_url: None,
@@ -1833,6 +1878,7 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 500,
+            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push],
             pull_voucher_strategy: None,
             rpc_url: None,
@@ -1861,6 +1907,7 @@ mod tests {
             network: "localnet".to_string(),
             program_id: None,
             min_voucher_delta: 0,
+            grace_period_seconds: payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
             modes: vec![SessionMode::Push, SessionMode::Pull],
             pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             rpc_url: None,
@@ -1907,7 +1954,10 @@ mod tests {
 
         let voucher = session.sign_increment(1_000_000).await.unwrap();
         let result = server.verify_voucher(&VoucherPayload { voucher }).await;
-        assert_eq!(result.unwrap(), 1_000_000);
+        let accepted = result.unwrap();
+        assert_eq!(accepted.cumulative, 1_000_000);
+        assert_eq!(accepted.charged, 1_000_000);
+        assert!(!accepted.replay);
     }
 
     #[cfg(feature = "client")]
@@ -1920,30 +1970,39 @@ mod tests {
             .await
             .unwrap();
 
-        // First voucher succeeds
+        // First voucher succeeds: a fresh charge, not a replay.
         let v1 = session.sign_increment(500_000).await.unwrap();
-        server
+        let first = server
             .verify_voucher(&VoucherPayload {
                 voucher: v1.clone(),
             })
             .await
             .unwrap();
+        assert_eq!(first.cumulative, 500_000);
+        assert_eq!(first.charged, 500_000);
+        assert!(!first.replay);
 
-        // Idempotent replay of exact same voucher (same cumulative + same signature) succeeds
+        // Idempotent replay of exact same voucher (same cumulative + same
+        // signature) succeeds as a no-charge no-op — never a fresh paid serve.
         let v1_replay = v1.clone();
-        let replay_result = server
+        let replay = server
             .verify_voucher(&VoucherPayload { voucher: v1_replay })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
-            replay_result.unwrap(),
-            500_000,
+            replay.cumulative, 500_000,
             "Idempotent replay should return same cumulative"
         );
+        assert_eq!(replay.charged, 0, "replay must not charge again");
+        assert!(replay.replay, "replay must be flagged");
 
-        // Next voucher with higher cumulative succeeds
+        // Next voucher with higher cumulative succeeds and charges the delta.
         let v2 = session.sign_increment(500_000).await.unwrap();
         let result = server.verify_voucher(&VoucherPayload { voucher: v2 }).await;
-        assert_eq!(result.unwrap(), 1_000_000);
+        let advanced = result.unwrap();
+        assert_eq!(advanced.cumulative, 1_000_000);
+        assert_eq!(advanced.charged, 500_000);
+        assert!(!advanced.replay);
     }
 
     #[tokio::test]

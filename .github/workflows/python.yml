@@ -62,51 +62,15 @@ jobs:
           python-version: "3.11"
           cache: pip
       - uses: astral-sh/setup-uv@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-python-harness-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-python-harness-
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
       - name: Install Python SDK
         working-directory: python
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      # Critical order: install + build the TypeScript workspace BEFORE
-      # installing the harness. harness has
-      # ``"@solana/mpp": "file:../typescript/packages/mpp"`` which
-      # pnpm copies into node_modules at install time. If the typescript
-      # package has no dist/ at that moment, the TS harness client crashes
-      # with ``Cannot find module '@solana/mpp/dist/client/index.js''`` on
-      # boot and the harness reports "Adapter exited before signaling
-      # readiness/result (code 1)". html-assets.gen.ts is committed in
-      # the repo so no separate build-html step is needed.
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust harness adapters
-        working-directory: rust
-        run: |
-          cargo build -p solana-mpp --bin harness_client --bin harness_server
-          cargo build -p solana-x402 --bin harness_client --bin harness_server
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server"
+          cargo-cache-key: python
       # Sync the uv environment the conformance runner (runners/python.json:
       # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
       # vectors — including the frozen 48-byte session voucher preimage — run

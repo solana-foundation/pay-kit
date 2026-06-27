@@ -705,9 +705,10 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 				voucher.Data.Cumulative == strconv.FormatUint(current.Cumulative, 10)
 			if !replay {
 				verdict := VerifyVoucherForChannel(VerifyVoucherArgs{
-					State:   *current,
-					Signed:  voucher,
-					Deposit: current.Deposit,
+					State:                   *current,
+					Signed:                  voucher,
+					Deposit:                 current.Deposit,
+					SettlementWindowSeconds: s.core.config.SettlementWindowSeconds,
 				})
 				switch verdict.Status {
 				case VoucherVerifyRejected:
@@ -721,6 +722,13 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 					expiresAt := verdict.NewExpiresAt
 					next.HighestVoucherSignature = &signature
 					next.HighestVoucherExpiresAt = &expiresAt
+				}
+			} else {
+				// Recheck expiry/window even on idempotent replay so the HTTP close
+				// path doesn't record close-pending against a voucher that no longer
+				// outlasts the settlement window (mirrors ProcessClose).
+				if err := verifySessionVoucher(voucher, current.AuthorizedSigner, s.core.config.SettlementWindowSeconds); err != nil {
+					return ChannelState{}, err
 				}
 			}
 		}

@@ -28,33 +28,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: ./.github/actions/setup-harness
         with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
+          cargo-bins: "solana-mpp:harness_server"
+          cargo-cache-key: swift
       - name: Build Swift harness client
         working-directory: harness/swift-client
         run: swift build
-      - name: Build Rust harness server
-        working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_server
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
       - name: Run Swift cross-SDK conformance vectors
         working-directory: harness
         env:
@@ -78,42 +58,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
+      - uses: ./.github/actions/setup-harness
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-swift-x402-harness-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-swift-x402-harness-
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
-      # Install + build the TypeScript workspace BEFORE installing the
-      # harness: harness depends on @solana/mpp through a file:
-      # link that pnpm copies at install time, and the surfpool fixtures
-      # import it on boot.
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust x402 harness server
-        working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_server
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
+          cargo-bins: "solana-x402:harness_server"
+          cargo-cache-key: swift-x402
       - name: Build Swift x402 harness client
         working-directory: harness/swift-x402-client
         run: swift build --quiet

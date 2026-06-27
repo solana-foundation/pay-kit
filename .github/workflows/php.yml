@@ -46,47 +46,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-php-harness-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-php-harness-
-      - uses: pnpm/action-setup@v5
-        with:
-          package_json_file: package.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: typescript/pnpm-lock.yaml
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
-      - name: Install TypeScript workspace
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-      - name: Build TypeScript package
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-      - name: Build Rust harness client
-        working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_client
-      - name: Build Rust x402 harness client
-        working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_client
-      - name: Install harness
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-harness
+        with:
+          cargo-bins: "solana-mpp:harness_client solana-x402:harness_client"
+          cargo-cache-key: php
       - name: Install PHP harness dependencies
         working-directory: php
         run: composer install --no-interaction --no-progress
-      - name: Typecheck harness
-        working-directory: harness
-        run: pnpm typecheck
       - name: Run PHP server harness smoke
         working-directory: harness
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays php server"

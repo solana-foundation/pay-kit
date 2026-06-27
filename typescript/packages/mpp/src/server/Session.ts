@@ -109,6 +109,7 @@ export function session(parameters: session.Parameters) {
         minVoucherDelta,
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
+        settlementWindowSeconds,
     } = parameters;
 
     if (cap <= 0n) {
@@ -269,6 +270,7 @@ export function session(parameters: session.Parameters) {
                         lifecycle: lifecycleRef.value,
                         minVoucherDelta,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'commit':
@@ -277,6 +279,7 @@ export function session(parameters: session.Parameters) {
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
                         payload: cred.payload,
+                        settlementWindow: settlementWindowSeconds,
                         store,
                     });
                 case 'topUp':
@@ -304,6 +307,7 @@ export function session(parameters: session.Parameters) {
                         programId: resolvedProgramId,
                         recipient,
                         rpc,
+                        settlementWindow: settlementWindowSeconds,
                         splits,
                         store,
                         tokenProgram,
@@ -349,6 +353,7 @@ session.routes = function routes(parameters: session.Parameters): session.Routes
             try {
                 const receipt = await commitDelivery(store, {
                     deliveryId: body.deliveryId,
+                    settlementWindow: parameters.settlementWindowSeconds,
                     voucher: body.voucher,
                 });
                 return Response.json(receipt, { status: 200 });
@@ -578,6 +583,8 @@ interface HandleVoucherArgs {
     readonly lifecycle: Lifecycle | undefined;
     readonly minVoucherDelta: bigint | undefined;
     readonly payload: { readonly action: 'voucher'; readonly voucher: SignedVoucher };
+    /** Forced-close grace period a non-zero voucher expiry must outlast. */
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
@@ -591,6 +598,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
     const preflight = await verifyVoucherForChannel({
         deposit: existing.deposit,
         minVoucherDelta: args.minVoucherDelta,
+        settlementWindow: args.settlementWindow,
         signed,
         state: existing,
     });
@@ -603,6 +611,7 @@ async function handleVoucher(args: HandleVoucherArgs): Promise<Receipt.Receipt> 
         const result = await verifyVoucherForChannel({
             deposit: current.deposit,
             minVoucherDelta: args.minVoucherDelta,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
@@ -639,12 +648,14 @@ interface HandleCommitArgs {
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
     readonly payload: { readonly action: 'commit'; readonly deliveryId: string; readonly voucher: SignedVoucher };
+    readonly settlementWindow: bigint | undefined;
     readonly store: SessionStore;
 }
 
 async function handleCommit(args: HandleCommitArgs): Promise<Receipt.Receipt> {
     const receipt = await commitDelivery(args.store, {
         deliveryId: args.payload.deliveryId,
+        settlementWindow: args.settlementWindow,
         voucher: args.payload.voucher,
     });
     args.lifecycle?.touch(receipt.sessionId);
@@ -736,6 +747,7 @@ interface HandleCloseArgs {
     readonly programId: Address;
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
+    readonly settlementWindow: bigint | undefined;
     readonly splits: readonly SessionSplit[] | undefined;
     readonly store: SessionStore;
     readonly tokenProgram: string;
@@ -760,24 +772,27 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
 
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
-            // Idempotent replay of the current highest voucher (same
-            // cumulative AND same signature) is accepted as-is.
-            if (
-                current.highestVoucherSignature === signed.signature &&
-                signed.data.cumulativeAmount === current.cumulative.toString()
-            ) {
-                return { ...current, closeRequestedAt: now };
-            }
+            // Route the final voucher (replay AND advancing) through the verifier
+            // so expiry + the settlement-window margin are enforced on both paths —
+            // an idempotent replay must not record close-pending against a voucher
+            // that no longer outlasts the window, or the async settle fails on-chain.
             const verdict = await verifyVoucherForChannel({
                 deposit: current.deposit,
+                settlementWindow: args.settlementWindow,
                 signed,
                 state: current,
             });
             if (verdict.status === 'rejected') {
-                // Mirrors Rust `process_close`: a non-replay final voucher
-                // at or below the watermark is a hard error — the close
-                // must abort rather than silently settle a stale amount.
+                // Mirrors Rust `process_close`: a final voucher that fails
+                // verification — a non-replay at/below the watermark, or an expiry
+                // that no longer outlasts the settlement window even on replay — is
+                // a hard error; the close aborts rather than settle a stale amount.
                 throw new Error(`${verdict.reason}: ${verdict.detail}`);
+            }
+            if (verdict.status === 'replayed') {
+                // Idempotent replay of the current highest voucher: watermark
+                // unchanged; signature + expiry/window already re-verified above.
+                return { ...current, closeRequestedAt: now };
             }
             if (verdict.status === 'accepted') {
                 return {
@@ -891,6 +906,9 @@ async function reserveDelivery(store: SessionStore, args: ReserveDeliveryArgs): 
 
 interface CommitDeliveryArgs {
     readonly deliveryId: string;
+    /** Reject a final-commit voucher expiring within `now + settlementWindow`
+     * so a committed delivery can't expire before the async settle lands. */
+    readonly settlementWindow: bigint | undefined;
     readonly voucher: SignedVoucher;
 }
 
@@ -936,6 +954,7 @@ async function commitDelivery(store: SessionStore, args: CommitDeliveryArgs): Pr
         // Verify signature on the voucher (matches Rust process_commit).
         const verdict = await verifyVoucherForChannel({
             deposit: current.deposit,
+            settlementWindow: args.settlementWindow,
             signed,
             state: current,
         });
@@ -1234,6 +1253,17 @@ export declare namespace session {
         readonly rpc?: RpcLike;
         /** RPC URL for blockhash prefetch. Defaults from `network`. */
         readonly rpcUrl?: string;
+        /**
+         * Settlement window in seconds — the forced-close grace period a
+         * non-zero voucher `expiresAt` must outlast. When set, a voucher
+         * whose `expiresAt` falls within `now + settlementWindowSeconds`
+         * is rejected (`expires-within-settlement-window`) so the merchant
+         * can still land an async settle_and_finalize before it expires.
+         * A voucher with `expiresAt == 0` never expires and is unaffected.
+         * Defaults to 0 (window check disabled). Typically set to the
+         * channel `gracePeriod`.
+         */
+        readonly settlementWindowSeconds?: bigint;
         /** Merchant signer for settle_and_finalize + distribute IXs. */
         readonly signer?: TransactionPartialSigner;
         /** Optional basis-point splits distributed at close. Max 8. */
