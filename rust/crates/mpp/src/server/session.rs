@@ -965,6 +965,12 @@ impl<S: ChannelStore> SessionServer<S> {
                                 && state.highest_voucher_signature.as_deref()
                                     == Some(voucher.signature.as_str())
                             {
+                                // Recheck expiry/window even on idempotent replay: a close
+                                // must not be recorded against a voucher that no longer
+                                // outlasts the settlement window, or the async settle can be
+                                // rejected on-chain after close-pending is set.
+                                verify_signature(voucher, &state.authorized_signer, settlement_window)
+                                    .map_err(|e| StoreError::Internal(e.to_string()))?;
                                 (
                                     state.cumulative,
                                     state.highest_voucher_signature.clone(),

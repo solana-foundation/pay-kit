@@ -6,6 +6,9 @@
 //! committed atomically against a [`ChannelStore`]. Both protocol crates map
 //! their own wire voucher type onto this.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use crate::store::{ChannelState, ChannelStore, StoreError};
 use crate::voucher::verify_voucher_signature;
 use crate::{Error, Result};
@@ -130,6 +133,13 @@ pub async fn accept_voucher(
 
     let prior_cumulative = state.cumulative;
     let sig = signature_b58.to_string();
+    // The authoritative replay decision is made under the store lock: if another
+    // writer landed this exact voucher first, the in-lock branch below treats it
+    // as a replay. Capturing it here (rather than comparing the pre-lock snapshot)
+    // ensures `charged`/`replay` are correct under concurrency, so x402 batch
+    // cannot serve the same paid request twice.
+    let replayed = Arc::new(AtomicBool::new(false));
+    let replayed_cl = Arc::clone(&replayed);
     let new_state = store
         .update_channel(
             channel_id,
@@ -149,6 +159,7 @@ pub async fn accept_voucher(
                 if new_cumulative == state.cumulative
                     && state.highest_voucher_signature.as_deref() == Some(&sig)
                 {
+                    replayed_cl.store(true, Ordering::SeqCst);
                     return Ok(state);
                 }
                 if new_cumulative <= state.cumulative {
@@ -156,6 +167,9 @@ pub async fn accept_voucher(
                         "Concurrent update: watermark advanced".to_string(),
                     ));
                 }
+                // Set on every committing run so a retried closure (e.g. a
+                // CAS-based store) reflects the final decision, not an earlier one.
+                replayed_cl.store(false, Ordering::SeqCst);
                 Ok(ChannelState {
                     cumulative: new_cumulative,
                     highest_voucher_signature: Some(sig),
@@ -167,10 +181,15 @@ pub async fn accept_voucher(
         .await
         .map_err(store_err)?;
 
+    let was_replay = replayed.load(Ordering::SeqCst);
     Ok(VoucherAcceptance {
         cumulative: new_state.cumulative,
-        charged: new_state.cumulative.saturating_sub(prior_cumulative),
-        replay: false,
+        charged: if was_replay {
+            0
+        } else {
+            new_state.cumulative.saturating_sub(prior_cumulative)
+        },
+        replay: was_replay,
     })
 }
 

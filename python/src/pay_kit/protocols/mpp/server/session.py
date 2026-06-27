@@ -681,6 +681,12 @@ class SessionServer:
                         raise ValueError(
                             f"final voucher cumulative {cumulative} must exceed watermark {current.cumulative}"
                         )
+                    # Recheck expiry/window even on idempotent replay so a close is
+                    # not recorded against a voucher that no longer outlasts the
+                    # settlement window (the async settle would then fail on-chain).
+                    _raise_voucher_error(
+                        verify_session_voucher(voucher, current.authorized_signer, self._config.settlement_window)
+                    )
                     if nxt.highest_voucher_expires_at is None:
                         nxt.highest_voucher_expires_at = voucher.data.expires_at
                 else:

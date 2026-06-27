@@ -772,14 +772,10 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
 
         if (args.payload.voucher) {
             const signed = normalizeSignedVoucher(args.payload.voucher);
-            // Idempotent replay of the current highest voucher (same
-            // cumulative AND same signature) is accepted as-is.
-            if (
-                current.highestVoucherSignature === signed.signature &&
-                signed.data.cumulativeAmount === current.cumulative.toString()
-            ) {
-                return { ...current, closeRequestedAt: now };
-            }
+            // Route the final voucher (replay AND advancing) through the verifier
+            // so expiry + the settlement-window margin are enforced on both paths —
+            // an idempotent replay must not record close-pending against a voucher
+            // that no longer outlasts the window, or the async settle fails on-chain.
             const verdict = await verifyVoucherForChannel({
                 deposit: current.deposit,
                 settlementWindow: args.settlementWindow,
@@ -787,10 +783,16 @@ async function handleClose(args: HandleCloseArgs): Promise<Receipt.Receipt> {
                 state: current,
             });
             if (verdict.status === 'rejected') {
-                // Mirrors Rust `process_close`: a non-replay final voucher
-                // at or below the watermark is a hard error — the close
-                // must abort rather than silently settle a stale amount.
+                // Mirrors Rust `process_close`: a final voucher that fails
+                // verification — a non-replay at/below the watermark, or an expiry
+                // that no longer outlasts the settlement window even on replay — is
+                // a hard error; the close aborts rather than settle a stale amount.
                 throw new Error(`${verdict.reason}: ${verdict.detail}`);
+            }
+            if (verdict.status === 'replayed') {
+                // Idempotent replay of the current highest voucher: watermark
+                // unchanged; signature + expiry/window already re-verified above.
+                return { ...current, closeRequestedAt: now };
             }
             if (verdict.status === 'accepted') {
                 return {

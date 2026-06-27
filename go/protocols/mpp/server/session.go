@@ -774,6 +774,12 @@ func (s *SessionServer) ProcessClose(ctx context.Context, payload *intents.Close
 					return ChannelState{}, fmt.Errorf(
 						"final voucher cumulative %d must exceed watermark %d", cumulative, current.Cumulative)
 				}
+				// Recheck expiry/window even on idempotent replay so a close is not
+				// recorded against a voucher that no longer outlasts the settlement
+				// window (the async settle would then be rejected on-chain).
+				if err := verifySessionVoucher(*voucher, current.AuthorizedSigner, s.config.SettlementWindowSeconds); err != nil {
+					return ChannelState{}, err
+				}
 				if next.HighestVoucherExpiresAt == nil {
 					expiresAt := voucher.Data.ExpiresAt
 					next.HighestVoucherExpiresAt = &expiresAt
