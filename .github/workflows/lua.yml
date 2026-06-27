@@ -125,43 +125,10 @@ jobs:
           luarocks --lua-version=5.1 install --tree lua_modules lua-resty-openssl
           luarocks --lua-version=5.1 install --tree lua_modules lua-cjson
 
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-harness
         with:
-          node-version: 22
-
-      - name: Install pnpm
-        run: npm install -g pnpm@10
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # Cache the cargo registry + target dir so the harness_client build below
-      # doesn't recompile the whole Solana dependency tree from scratch each run
-      # (the other harness workflows — go/php/python/ruby — all cache this).
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-rust-
-
-      - name: Install TypeScript SDK deps
-        working-directory: typescript
-        run: pnpm install --frozen-lockfile
-
-      - name: Build TypeScript SDK
-        working-directory: typescript
-        run: pnpm --filter @solana/mpp build
-
-      - name: Build Rust harness client
-        working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_client
-
-      - name: Install harness deps
-        working-directory: harness
-        run: pnpm install --frozen-lockfile
+          cargo-bins: "solana-mpp:harness_client"
+          cargo-cache-key: lua
 
       - name: TS-to-Lua focused matrix
         working-directory: harness
