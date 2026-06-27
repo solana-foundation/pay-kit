@@ -6,7 +6,7 @@ import {
   getCompiledTransactionMessageDecoder,
   getTransactionDecoder,
 } from "@solana/kit";
-import { Surfnet } from "surfpool-sdk";
+import { Surfnet } from "@solana/surfpool";
 import { HarnessScenario, selectHarnessScenarios } from "../src/contracts";
 import {
   clientImplementations,

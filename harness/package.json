@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:onchain": "HARNESS_ONCHAIN=1 vitest run test/onchain.e2e.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "pnpm": {
@@ -16,13 +17,16 @@
   "dependencies": {
     "@solana/kit": "^6.5.0",
     "@solana/mpp": "file:../typescript/packages/mpp",
-    "mppx": "^0.5.5",
-    "surfpool-sdk": "^1.2.0"
+    "@solana/pay-kit": "file:../typescript/packages/pay-kit",
+    "@solana/surfpool": "^1.4.0",
+    "mppx": "^0.5.5"
   },
   "devDependencies": {
     "@solana-program/token": "^0.11.0",
+    "@types/express": "^5.0.0",
     "@types/node": "^25.0.0",
     "ajv": "^8.17.1",
+    "express": "^4.21.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
