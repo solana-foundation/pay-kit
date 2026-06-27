@@ -723,6 +723,13 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 					next.HighestVoucherSignature = &signature
 					next.HighestVoucherExpiresAt = &expiresAt
 				}
+			} else {
+				// Recheck expiry/window even on idempotent replay so the HTTP close
+				// path doesn't record close-pending against a voucher that no longer
+				// outlasts the settlement window (mirrors ProcessClose).
+				if err := verifySessionVoucher(voucher, current.AuthorizedSigner, s.core.config.SettlementWindowSeconds); err != nil {
+					return ChannelState{}, err
+				}
 			}
 		}
 		next.CloseRequestedAt = &closeRequestedAt

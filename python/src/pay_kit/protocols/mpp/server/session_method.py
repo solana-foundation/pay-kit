@@ -722,6 +722,14 @@ class Session:
                         raise ValueError(
                             f"final voucher cumulative {cumulative} must exceed watermark {current.cumulative}"
                         )
+                    # Recheck expiry/window even on idempotent replay so the HTTP
+                    # close path doesn't record close-pending against a voucher that
+                    # no longer outlasts the settlement window (mirrors process_close).
+                    err = verify_session_voucher(
+                        voucher, current.authorized_signer, self._core.config.settlement_window
+                    )
+                    if err is not None:
+                        raise ValueError(err)
                     if nxt.highest_voucher_expires_at is None:
                         nxt.highest_voucher_expires_at = voucher.data.expires_at
                 else:
