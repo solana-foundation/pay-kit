@@ -11,5 +11,7 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  "//": "The on-chain suite imports @solana/pay-kit (a file: dep built separately) and only runs against a forked validator. Excluded from the base typecheck so the cross-language CI jobs (which build only @solana/mpp) stay green; typecheck it via tsconfig.onchain.json where pay-kit is built.",
+  "exclude": ["src/onchain", "test/onchain.e2e.test.ts"]
 }
