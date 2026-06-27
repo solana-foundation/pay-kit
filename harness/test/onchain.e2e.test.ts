@@ -21,7 +21,12 @@ import type { Server } from "node:http";
 import crypto from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { startOnchainSurfnet, PAYMENT_CHANNELS_PROGRAM, type OnchainSurfnet } from "../src/onchain/surfnet.js";
+import {
+  startOnchainSurfnet,
+  PAYMENT_CHANNELS_PROGRAM,
+  resolveDatasourceRpc,
+  type OnchainSurfnet,
+} from "../src/onchain/surfnet.js";
 
 const RUN = process.env.HARNESS_ONCHAIN === "1";
 const PRICE_PER_TOKEN = 100n;
@@ -30,6 +35,15 @@ let net: OnchainSurfnet;
 let operator: KeyPairSigner;
 let server: Server;
 let baseUrl: string;
+
+describe("on-chain datasource RPC config", () => {
+  it("falls back when the fork secret is unavailable", () => {
+    expect(resolveDatasourceRpc(undefined)).toBe("https://api.mainnet-beta.solana.com");
+    expect(resolveDatasourceRpc("")).toBe("https://api.mainnet-beta.solana.com");
+    expect(resolveDatasourceRpc("   ")).toBe("https://api.mainnet-beta.solana.com");
+    expect(resolveDatasourceRpc(" https://rpc.example.test ")).toBe("https://rpc.example.test");
+  });
+});
 
 async function startServer(): Promise<void> {
   const pay = await createPayKit({

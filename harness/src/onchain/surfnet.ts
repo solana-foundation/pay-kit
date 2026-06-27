@@ -24,8 +24,14 @@ export const TREASURY_OWNER = "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP";
 // test talks to the surfpool instance (surfnet.rpcUrl), NOT this RPC; surfpool
 // only reads from it to clone the program + mint state. Public mainnet is the
 // last-resort fallback for local runs without the env set.
-const DATASOURCE_RPC =
-  process.env.SURFPOOL_DATASOURCE_RPC_URL ?? "https://api.mainnet-beta.solana.com";
+const PUBLIC_MAINNET_RPC_URL = "https://api.mainnet-beta.solana.com";
+
+export function resolveDatasourceRpc(value?: string): string {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : PUBLIC_MAINNET_RPC_URL;
+}
+
+const DATASOURCE_RPC = resolveDatasourceRpc(process.env.SURFPOOL_DATASOURCE_RPC_URL);
 
 export interface OnchainSurfnet {
   readonly rpcUrl: string;
@@ -60,7 +66,8 @@ export async function startOnchainSurfnet(opts?: {
   datasourceRpc?: string;
   programs?: string[];
 }): Promise<OnchainSurfnet> {
-  const datasourceRpc = opts?.datasourceRpc ?? DATASOURCE_RPC;
+  const datasourceRpc =
+    opts?.datasourceRpc === undefined ? DATASOURCE_RPC : resolveDatasourceRpc(opts.datasourceRpc);
   const programs = opts?.programs ?? [PAYMENT_CHANNELS_PROGRAM, SUBSCRIPTIONS_PROGRAM];
   const surfnet = Surfnet.startWithConfig({ remoteRpcUrl: datasourceRpc, offline: false });
   const rpcUrl = surfnet.rpcUrl;
