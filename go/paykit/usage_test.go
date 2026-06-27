@@ -419,6 +419,106 @@ func TestRequireUsageRejectsZeroChargeBeforeResponse(t *testing.T) {
 	}
 }
 
+func TestRequireUsagePreservesMissingChargeReasonWhenZeroSettlementFails(t *testing.T) {
+	verified := &releaseTrackingOpen{}
+	adapter := &stubUsageAdapter{
+		detect:    true,
+		verified:  verified,
+		settleErr: errors.New("rpc unavailable"),
+	}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 0 {
+		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
+	}
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`"code":"settlement_failed"`,
+		"usage Charge must be called before the handler returns",
+		"zero-amount settlement failed",
+		"rpc unavailable",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %q in body, got %s", want, body)
+		}
+	}
+	if strings.Contains(body, `{"ok":true}`) {
+		t.Fatalf("protected body leaked after zero settlement failure: %s", body)
+	}
+}
+
+func TestRequireUsagePreservesZeroChargeReasonWhenZeroSettlementFails(t *testing.T) {
+	verified := &releaseTrackingOpen{}
+	adapter := &stubUsageAdapter{
+		detect:    true,
+		verified:  verified,
+		settleErr: errors.New("rpc unavailable"),
+	}
+	client := &Client{
+		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+		usageAdapter: adapter,
+	}
+	gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+	h := client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, _ := ChargeFrom(r.Context())
+		c.Charge(0)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Payment-Signature", "abc")
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+	if adapter.settleCalls != 1 {
+		t.Fatalf("settle calls = %d, want 1", adapter.settleCalls)
+	}
+	if adapter.settledActual != 0 {
+		t.Fatalf("settled actual = %d, want 0", adapter.settledActual)
+	}
+	if verified.releases != 1 {
+		t.Fatalf("verified open releases = %d, want 1", verified.releases)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`"code":"settlement_failed"`,
+		"usage Charge must be greater than zero",
+		"zero-amount settlement failed",
+		"rpc unavailable",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %q in body, got %s", want, body)
+		}
+	}
+	if strings.Contains(body, `{"ok":true}`) {
+		t.Fatalf("protected body leaked after zero settlement failure: %s", body)
+	}
+}
+
 func TestRequireUsageRejectsNonUsageGate(t *testing.T) {
 	client := &Client{
 		Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},

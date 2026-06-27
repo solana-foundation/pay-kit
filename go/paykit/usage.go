@@ -13,8 +13,9 @@ import (
 )
 
 // VerifiedUsageOpen is an opaque, protocol-specific verified channel open
-// carried from VerifyOpen to SettleActual. Release must be idempotent; the
-// usage middleware calls it after settlement so protocol guards are not leaked.
+// carried from VerifyOpen to SettleActual. Release must be idempotent; protocol
+// SettleActual implementations may release it, and the usage middleware also
+// releases it as a fallback so protocol guards are not leaked.
 type VerifiedUsageOpen interface {
 	Release()
 }
@@ -321,6 +322,7 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 	}
 	w.settled = true
 	if w.verified != nil {
+		// Fallback release. Usage adapters may also release during SettleActual.
 		defer w.verified.Release()
 	}
 	actual, charged := w.meter.settledBaseUnits()
@@ -351,7 +353,7 @@ func (w *usageSettlementWriter) settle(ctx context.Context) {
 
 func (w *usageSettlementWriter) settleZeroAndFailClosed(ctx context.Context, message string) error {
 	if _, err := w.adapter.SettleActual(ctx, w.verified, 0); err != nil {
-		return err
+		return fmt.Errorf("%s; zero-amount settlement failed: %w", message, err)
 	}
 	return errors.New(message)
 }
