@@ -16,6 +16,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paykit"
 )
 
 // newStubRPC serves the JSON-RPC answers the playground needs at boot and
@@ -185,6 +186,43 @@ func TestPlaygroundEndpoints(t *testing.T) {
 		}
 		if _, ok := ids["premium-feed"]; ok {
 			t.Fatal("catalog must omit the subscription entry (no Go subscription method)")
+		}
+	})
+
+	t.Run("openapi discovery feeds the playground app", func(t *testing.T) {
+		response, body := doRequest(t, http.MethodGet, base+"/openapi.json", "", nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d: %s", response.StatusCode, body)
+		}
+		var doc openAPIDoc
+		decodeBody(t, body, &doc)
+		if doc.OpenAPI != "3.1.0" {
+			t.Fatalf("openapi = %q", doc.OpenAPI)
+		}
+		quote := doc.Paths["/api/v1/stocks/quote/{symbol}"]["get"]
+		if quote.Summary != "Stock quote" || len(quote.XPaymentInfo.Offers) != 1 {
+			t.Fatalf("quote operation = %+v", quote)
+		}
+		if quote.Responses["200"].Description == "" || quote.Responses["402"].Description == "" {
+			t.Fatalf("quote responses = %+v", quote.Responses)
+		}
+		offer := quote.XPaymentInfo.Offers[0]
+		if offer.Method != "mpp" || offer.Intent != "charge" ||
+			offer.PayTo != a.recipient || offer.Network != paykit.SolanaLocalnet.CAIP2() ||
+			offer.FeePayer != a.feePayer.PublicKey().String() {
+			t.Fatalf("quote offer = %+v", offer)
+		}
+		fortune := doc.Paths["/api/v1/fortune"]["get"].XPaymentInfo.Offers[0]
+		if fortune.Amount != "10000" || fortune.Scheme != "charge" {
+			t.Fatalf("fortune offer = %+v", fortune)
+		}
+		stream := doc.Paths["/sessions/stream"]["get"].XPaymentInfo.Offers[0]
+		if stream.Intent != "session" || stream.UnitPrice != "100" {
+			t.Fatalf("stream offer = %+v", stream)
+		}
+		usage := doc.Paths["/x402/usage"]["get"].XPaymentInfo.Offers[0]
+		if usage.Method != "x402" || usage.Intent != "charge" || usage.Scheme != "upto" {
+			t.Fatalf("usage offer = %+v", usage)
 		}
 	})
 

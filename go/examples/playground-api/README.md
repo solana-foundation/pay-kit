@@ -16,8 +16,10 @@ Payment Sandbox (a hosted test validator, no real funds):
   settlement via the idle-close watchdog.
 - **x402**: two `exact`-scheme demo routes plus the embedded facilitator
   endpoints.
-- `/api/v1/config`: the endpoint catalog and wallet/network metadata the web
-  app renders.
+- `/openapi.json`: the endpoint catalog and wallet/network metadata the web
+  app renders from `x-payment-info.offers[]`.
+- `/api/v1/config`: a legacy JSON catalog kept for direct smoke tests and
+  simple API inspection.
 
 ## Running
 
@@ -70,6 +72,7 @@ when the binary runs outside the repository checkout, and the standard
 | Method | Path | Gate |
 |--------|------|------|
 | GET | `/api/v1/health` | free |
+| GET | `/openapi.json` | free |
 | GET | `/api/v1/config` | free |
 | GET | `/api/v1/docs`, `/api/v1/docs/:lang/tree`, `/api/v1/docs/:lang/file` | free |
 | GET | `/api/v1/faucet/status` | free |
@@ -92,9 +95,10 @@ when the binary runs outside the repository checkout, and the standard
 | POST | `/facilitator/verify`, `/facilitator/settle` | free |
 | GET | `/x402/joke`, `/x402/fact` | x402 exact, $0.001 |
 
-As in the TypeScript example, the stocks-search / stocks-history / weather /
-fortune and `/x402/*` routes stay live server-side but are not advertised in
-the `/api/v1/config` nav catalog.
+As in the TypeScript example, `/openapi.json` is the discovery endpoint the
+playground app reads.
+The legacy `/api/v1/config` catalog stays smaller and exists only for direct
+inspection.
 
 ## Differences from the TypeScript example
 

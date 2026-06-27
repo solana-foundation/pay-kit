@@ -210,8 +210,8 @@ func bootstrapFunding(a *app) {
 	}
 }
 
-// registerHealthAndConfig mounts the health check and the endpoint catalog
-// that drives the playground web app's sidebar.
+// registerHealthAndConfig mounts health, OpenAPI discovery, and the legacy
+// JSON catalog kept for direct smoke tests.
 func registerHealthAndConfig(mux *http.ServeMux, a *app) {
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		body := map[string]any{
@@ -237,6 +237,9 @@ func registerHealthAndConfig(mux *http.ServeMux, a *app) {
 			"feePayer":  a.feePayer.PublicKey().String(),
 			"endpoints": buildEndpointList(),
 		})
+	})
+	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, buildOpenAPIDoc(a))
 	})
 }
 
