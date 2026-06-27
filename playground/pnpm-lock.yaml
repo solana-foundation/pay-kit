@@ -5,8 +5,8 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@x402/core': file:../typescript/.x402-vendor/x402-core-2.15.0.tgz
-  '@x402/svm': file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz
+  '@x402/core': file:../typescript/.x402-vendor/x402-core-2.16.0.tgz
+  '@x402/svm': file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz
 
 importers:
 
@@ -37,11 +37,11 @@ importers:
         specifier: file:../../typescript/packages/pay-kit
         version: file:../typescript/packages/pay-kit(@solana/addresses@6.10.0(typescript@5.9.3))(@solana/codecs-core@6.10.0(typescript@5.9.3))(@solana/codecs-strings@6.10.0(typescript@5.9.3))(@solana/keys@6.10.0(typescript@5.9.3))(@solana/kit@6.10.0(typescript@5.9.3))(@solana/mpp@file:../typescript/packages/mpp(@solana/kit@6.10.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.52.2(typescript@5.9.3)(zod@4.4.3)))(typescript@5.9.3))(@solana/signers@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))(@solana/transactions@6.10.0(typescript@5.9.3))(mppx@0.5.17(typescript@5.9.3)(viem@2.52.2(typescript@5.9.3)(zod@4.4.3)))
       '@x402/core':
-        specifier: file:../../typescript/.x402-vendor/x402-core-2.15.0.tgz
-        version: file:../typescript/.x402-vendor/x402-core-2.15.0.tgz
+        specifier: file:../../typescript/.x402-vendor/x402-core-2.16.0.tgz
+        version: file:../typescript/.x402-vendor/x402-core-2.16.0.tgz
       '@x402/svm':
-        specifier: file:../../typescript/.x402-vendor/x402-svm-2.15.0.tgz
-        version: file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz(@solana/kit@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))
+        specifier: file:../../typescript/.x402-vendor/x402-svm-2.16.0.tgz
+        version: file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz(@solana/kit@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))
       highlight.js:
         specifier: ^11.11.1
         version: 11.11.1
@@ -557,66 +557,79 @@ packages:
     resolution: {integrity: sha512-n1GJHPOvpIfhi3TmrCeh6S6URt9BFCt0KQE3qvexyGCTAKpR4Lg+eWvNZEqu7epxwus/8ElT3hacYEucm49SZg==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.62.2':
     resolution: {integrity: sha512-JqgflS8wEB+UXV/vS1RpRbifGBeN4D5lz8D8oOFbFZw4vedvdOgCFAjfBmIMdW3yL10XpQQ0Ambepw6MXrhOnA==}
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.62.2':
     resolution: {integrity: sha512-wnFJkogWvN4jm/hQRF2UBaeUmk20j5+DmHvoyWii2b8HJDyvz1MF2OU/6ynXt2KR63rbZLWkFpoytpdc/yBuSA==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.62.2':
     resolution: {integrity: sha512-HVu2bp0zhvJ8xHEV9+UUs7S90VadmBSY3LcIMvozbPo4AuMGDWlz3ymHLHZPX4hR67TKTt8Qp5PJ5RBg/i+RMQ==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.62.2':
     resolution: {integrity: sha512-mQqqAV8QaoSgr9I2fKDLY2BAVvmKjWoGiu/cSYQonsLvtqwEn1E4QYfnCOcp5zoEqNhsDYin1s6jx/VJmrxlZg==}
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.62.2':
     resolution: {integrity: sha512-IxKLoxCQ2IWi6bT2akyDUBGsOImDKB+sPp4EsTmwFQ/fMwpCKm8uLSSgP/Kx/QYUgKis6SEZ5/Nlhup0DIA0PQ==}
     cpu: [loong64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.62.2':
     resolution: {integrity: sha512-Mk5ha2RQSgyFfmYYLkBpPnUk8D8FriBxesO1u9O75X0mHgXL1UQcH5Itl2lurWL2tj0RxV9b9tJgipac0hRY9A==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.62.2':
     resolution: {integrity: sha512-CjvEnqJL/0/TQ3TXX3OPIJ/kmBellrWd4heXUmHeJlTnmwjKpSJzoehLaL6Xk0ZnMHBu9dZuFADNOrtjF4v+2w==}
     cpu: [ppc64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.62.2':
     resolution: {integrity: sha512-1SiZbzwdkaDURsew/tSOrooKiYy7EQGT6m8ufavAi9NEyQb/6VuIxFXAL1fqa4iZe3g4NbNk4P7J32z2tw5Mgg==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.62.2':
     resolution: {integrity: sha512-nQts12zJ3NQRoE6uYljOH89v7szzLDvG2JD/vsX+vGXU8w/At1GowTZ5/7qeFQ8m7L55rpR8Okugnuo5bgjy2Q==}
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.62.2':
     resolution: {integrity: sha512-E9/ll019jhPIJgpzfZoIkBGhcz+kKNgVWYRY0zr9srBdPPFVpvOKW8VaJKUbeK+eZXyQF9ltME+Kk6affeaPgg==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.62.2':
     resolution: {integrity: sha512-5BqxR/pshjey51iliyzTD5Xi3EN0aLmQ2lZ3lvefVV9c82BvrLo2/6OT55iifpWBufs6kdwWbuOKS841DrmK9A==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.62.2':
     resolution: {integrity: sha512-uNN83XxQrRAh/w0/pmAfibcwyb6YWt4gP+dpnQKPVJshAloQ785ii8CT8ZCIxkGg9opVsvAlGhFitSm6D1Jjpg==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.62.2':
     resolution: {integrity: sha512-srjEIxSH3LRnJN6THczDHWQplqEMFiAJrTab0msUryh9kwNpkICf3Ea6q6MN/2cZwRFUNx5w+h6Hpi4QuHS6Zg==}
@@ -858,7 +871,7 @@ packages:
   '@solana/mpp@file:../typescript/packages/mpp':
     resolution: {directory: ../typescript/packages/mpp, type: directory}
     peerDependencies:
-      '@solana/kit': '>=6.5.0'
+      '@solana/kit': '>=6.10.0'
       mppx: '>=0.5.5'
 
   '@solana/nominal-types@6.10.0':
@@ -1158,13 +1171,13 @@ packages:
     peerDependencies:
       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0
 
-  '@x402/core@file:../typescript/.x402-vendor/x402-core-2.15.0.tgz':
-    resolution: {integrity: sha512-N3XZPE+TAXcFfZ93Z4GoGcKAa+slEwlO8cDVq8Tr/eCjQlJNF0k/otOf155kYaWgTY9i9L7Dj2FV6SkvKIfj2g==, tarball: file:../typescript/.x402-vendor/x402-core-2.15.0.tgz}
-    version: 2.15.0
+  '@x402/core@file:../typescript/.x402-vendor/x402-core-2.16.0.tgz':
+    resolution: {integrity: sha512-McPBK1RK7CF3IgOygrz9pkBbBeL8b7rGEkjmaVhOsV/NOG3R4Zwvw60AaIO9nsFUgiVrU6fri0bAiOo/gKacww==, tarball: file:../typescript/.x402-vendor/x402-core-2.16.0.tgz}
+    version: 2.16.0
 
-  '@x402/svm@file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz':
-    resolution: {integrity: sha512-PhQuwEpk3/LyrrEgQH17ZKgzbnKQt/hqukQ/lt2HyNheaWNlEuf+D3CBug5It1EmiHUgMxRgId5lh5GPEOlzFQ==, tarball: file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz}
-    version: 2.15.0
+  '@x402/svm@file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz':
+    resolution: {integrity: sha512-BE55/8j+epwuwLpNekK5kOP//kroF1otZmNDHng3+p0H4JDzqTBt4+E7/niP8NH0RIz4uzLa80Nm73XY5DndHw==, tarball: file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz}
+    version: 2.16.0
     peerDependencies:
       '@solana/kit': '>=5.1.0'
 
@@ -2896,17 +2909,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@x402/core@file:../typescript/.x402-vendor/x402-core-2.15.0.tgz':
+  '@x402/core@file:../typescript/.x402-vendor/x402-core-2.16.0.tgz':
     dependencies:
       zod: 3.25.76
 
-  '@x402/svm@file:../typescript/.x402-vendor/x402-svm-2.15.0.tgz(@solana/kit@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))':
+  '@x402/svm@file:../typescript/.x402-vendor/x402-svm-2.16.0.tgz(@solana/kit@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))':
     dependencies:
       '@solana-program/compute-budget': 0.11.0(@solana/kit@6.10.0(typescript@5.9.3))
       '@solana-program/token': 0.9.0(@solana/kit@6.10.0(typescript@5.9.3))
       '@solana-program/token-2022': 0.6.1(@solana/kit@6.10.0(typescript@5.9.3))(@solana/sysvars@6.10.0(typescript@5.9.3))
       '@solana/kit': 6.10.0(typescript@5.9.3)
-      '@x402/core': file:../typescript/.x402-vendor/x402-core-2.15.0.tgz
+      '@x402/core': file:../typescript/.x402-vendor/x402-core-2.16.0.tgz
     transitivePeerDependencies:
       - '@solana/sysvars'
 
@@ -3541,7 +3554,7 @@ snapshots:
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
-      abitype: 1.2.3(typescript@5.9.3)(zod@4.4.3)
+      abitype: 1.2.4(typescript@5.9.3)(zod@4.4.3)
       eventemitter3: 5.0.1
     optionalDependencies:
       typescript: 5.9.3
