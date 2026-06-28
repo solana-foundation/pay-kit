@@ -111,6 +111,27 @@ class SolanaRpc:
             raise _RpcError("getLatestBlockhash returned no blockhash", code="payment_invalid")
         return _RpcResponse(_BlockhashValue(blockhash))
 
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        """Fetch an account's raw data bytes and owner (base58), or ``None`` when
+        the account is missing. Used to read on-chain payment-channel state
+        during x402 ``upto`` verification; the generated ``Channel.decode`` then
+        parses the returned bytes."""
+        result = await self._call("getAccountInfo", [address, {"encoding": "base64", "commitment": commitment}])
+        value = (result or {}).get("value") if isinstance(result, dict) else None
+        if not isinstance(value, dict):
+            return None
+        owner = value.get("owner")
+        if not isinstance(owner, str) or not owner:
+            return None
+        data_field = value.get("data")
+        if isinstance(data_field, list) and data_field and isinstance(data_field[0], str):
+            raw = base64.b64decode(data_field[0])
+        elif isinstance(data_field, str):
+            raw = base64.b64decode(data_field)
+        else:
+            return None
+        return raw, owner
+
     async def get_signature_statuses(self, signatures: list[str]) -> list[Any]:
         result = await self._call("getSignatureStatuses", [signatures, {"searchTransactionHistory": False}])
         return (result or {}).get("value") or []

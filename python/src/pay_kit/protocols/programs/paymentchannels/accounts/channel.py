@@ -114,7 +114,7 @@ class Channel:
 
     @classmethod
     def decode(cls, data: bytes) -> "Channel":
-        dec = Channel.layout.parse(data)
+        dec = Channel.layout.parse(data[1:])
         return cls(
                 version=dec.version,
                 bump=dec.bump,

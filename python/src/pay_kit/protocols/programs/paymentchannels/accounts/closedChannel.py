@@ -68,7 +68,7 @@ class ClosedChannel:
 
     @classmethod
     def decode(cls, data: bytes) -> "ClosedChannel":
-        dec = ClosedChannel.layout.parse(data)
+        dec = ClosedChannel.layout.parse(data[1:])
         return cls(
                 )
     def to_encodable(self) -> dict[str, typing.Any]:
