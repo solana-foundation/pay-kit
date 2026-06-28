@@ -243,6 +243,15 @@ pub async fn build_confidential_transfer_bundle(
                                 "mint has confidential fee config but no transfer-fee config: {e}"
                             ))
                         })?;
+                // Fee parameters are read for the *current* epoch and baked into the fee
+                // proofs. The on-chain `TransferWithFee` re-derives them at execution time, so a
+                // mismatch is possible only when the mint has a *scheduled* fee-schedule change
+                // (older vs newer fee) AND the bundle is built in the last epoch before the
+                // change but lands after the rollover. That case fails closed — the transfer is
+                // rejected, never mis-settled — and is retriable by rebuilding the bundle. For
+                // mints without a pending change (`older == newer`, the common case, e.g. USDPT)
+                // there is no drift. This matches standard spl-token tooling, which likewise reads
+                // the current epoch's fee at build time.
                 let epoch = rpc
                     .get_epoch_info()
                     .map_err(|e| Error::Rpc(e.to_string()))?
