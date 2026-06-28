@@ -35,10 +35,13 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError("pay_kit.fastapi requires FastAPI; install with 'pay_kit[fastapi]'") from exc
 
+import weakref
+
 from pay_kit._middleware import PAYMENT_ATTR, PayCore, payment
 from pay_kit.config import config as _config
-from pay_kit.errors import PayKitError, PaymentRequiredError
+from pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from pay_kit.payment import Payment
+from pay_kit.usage import CHARGE_ATTR, Charge, finalize_usage
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
@@ -46,8 +49,39 @@ if TYPE_CHECKING:
     from pay_kit.price import Price
     from pay_kit.pricing import Pricing
     from pay_kit.protocols.mpp.server import Session, SessionChallengeOptions
+    from pay_kit.protocols.x402.upto import X402Upto
 
-__all__ = ["RequirePayment", "RequireSession", "install_exception_handler", "payment", "Payment"]
+__all__ = [
+    "RequirePayment",
+    "RequireSession",
+    "RequireUsage",
+    "install_exception_handler",
+    "payment",
+    "Payment",
+    "Charge",
+]
+
+#: Request-state attribute holding a pending usage settlement
+#: ``(engine, verified, charge, gate)`` set by :func:`RequireUsage` and drained
+#: by the usage-settlement middleware after the handler returns.
+_USAGE_STATE_ATTR = "paykit_usage_pending"
+
+#: One x402 ``upto`` engine per Config - it owns the per-channel in-flight
+#: reservation set, so it must be a singleton (a fresh engine per request would
+#: not dedupe concurrent settlements on the same channel).
+_UPTO_CACHE: weakref.WeakKeyDictionary[Config, X402Upto] = weakref.WeakKeyDictionary()
+
+
+def _upto_engine(config: Config) -> X402Upto:
+    cached = _UPTO_CACHE.get(config)
+    if cached is not None:
+        return cached
+    from pay_kit.protocols.x402.upto import X402Upto
+
+    engine = X402Upto(config)
+    _UPTO_CACHE[config] = engine
+    return engine
+
 
 #: Header that carries each settlement header's name through the response hook.
 _SETTLEMENT_STATE_ATTR = "paykit_settlement_headers"
@@ -116,6 +150,67 @@ def RequireSession(  # noqa: N802 - factory reads as a dependency constructor
         return result.headers
 
     return dependency
+
+
+def RequireUsage(  # noqa: N802 - factory reads as a dependency constructor
+    gate_ref: Gate | Callable[[Request], Gate],
+    *,
+    config: Config | None = None,
+) -> Callable[..., Any]:
+    """Build a FastAPI dependency that gates a route behind an x402 ``upto`` usage gate.
+
+    On a missing/invalid credential it raises ``HTTPException`` carrying the 402
+    upto challenge. On success it opens + binds the payment channel, attaches a
+    :class:`~pay_kit.usage.Charge` meter to ``request.state`` (read it with
+    :func:`~pay_kit.usage.charge_from`, or ``Depends`` on this), and registers a
+    pending settlement that the usage middleware finalizes after the handler
+    returns. The handler MUST call ``charge.charge(actual_base_units)`` with a
+    positive amount before returning, else the response is withheld (fail-closed)
+    and the channel is finalized with a full refund. Requires :func:`install`
+    (or :func:`install_exception_handler`) so the settlement middleware runs.
+    """
+
+    async def dependency(request: Request) -> Charge:
+        from pay_kit.gate import Gate as _Gate
+
+        cfg = config if config is not None else _config()
+        engine = _upto_engine(cfg)
+        gate = gate_ref if isinstance(gate_ref, _Gate) else gate_ref(request)
+        if not engine.detect_usage(request):
+            raise _http_exception(_usage_challenge(engine, gate, request))
+        try:
+            verified = await engine.verify_open(gate, request)
+        except PaymentRequiredError as exc:
+            raise _http_exception(_usage_challenge(engine, gate, request)) from exc
+        except InvalidProofError as exc:
+            raise _http_exception(_usage_challenge(engine, gate, request, exc)) from exc
+        charge = Charge(verified.max_amount)
+        setattr(request.state, CHARGE_ATTR, charge)
+        setattr(request.state, _USAGE_STATE_ATTR, (engine, verified, charge, gate))
+        return charge
+
+    return dependency
+
+
+def _usage_challenge(
+    engine: X402Upto,
+    gate: Gate,
+    request: Request,
+    exc: InvalidProofError | None = None,
+) -> PaymentRequiredError:
+    """Build a 402 PaymentRequiredError carrying the upto challenge for the shim."""
+    err = PaymentRequiredError("pay_kit: payment required")
+    body: dict[str, Any] = {
+        "error": "payment_required",
+        "resource": request.url.path,
+        "accepts": [engine.accepts_entry(gate, request)],
+    }
+    if exc is not None:
+        body["code"] = exc.code or "invalid_proof"
+        body["message"] = str(exc)
+    err.challenge_headers = engine.challenge_headers(gate, request)  # type: ignore[attr-defined]
+    err.body = body  # type: ignore[attr-defined]
+    return err
 
 
 #: Response headers carrying MPP/x402 payment challenges and settlement proofs.
@@ -205,6 +300,43 @@ def install_exception_handler(app: Any) -> None:
         if isinstance(settlement, dict):
             for name, value in cast("dict[str, str]", settlement).items():
                 response.headers[name] = value
+        return response
+
+    @app.middleware("http")
+    async def _paykit_usage_settle(  # pyright: ignore[reportUnusedFunction]  # registered via @app.middleware
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        import contextlib
+
+        from fastapi.responses import JSONResponse
+
+        try:
+            response = await call_next(request)
+        except BaseException:
+            # The channel is open on-chain; settle 0 (finalize + full refund) so
+            # an abandoned request never leaves the deposit locked.
+            pending = getattr(request.state, _USAGE_STATE_ATTR, None)
+            if pending is not None:
+                setattr(request.state, _USAGE_STATE_ATTR, None)
+                engine, verified, _charge, _gate = pending
+                # best-effort finalize on handler failure
+                with contextlib.suppress(Exception):
+                    await engine.settle_actual(verified, 0)
+            raise
+        pending = getattr(request.state, _USAGE_STATE_ATTR, None)
+        if pending is None:
+            return response
+        setattr(request.state, _USAGE_STATE_ATTR, None)
+        engine, verified, charge, gate = pending
+        outcome = await finalize_usage(engine, verified, charge)
+        if not outcome.ok:
+            return JSONResponse(
+                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                status_code=outcome.status,
+                headers=engine.challenge_headers(gate, request),
+            )
+        for name, value in outcome.settlement_headers.items():
+            response.headers[name] = value
         return response
 
 
