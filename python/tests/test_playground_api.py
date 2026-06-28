@@ -36,6 +36,10 @@ def test_discovery_advertises_offers(client: TestClient) -> None:
     assert {offer["method"] for offer in offers} == {"x402", "mpp"}
     joke_offers = doc["paths"]["/api/v1/joke"]["get"]["x-payment-info"]["offers"]
     assert {offer["method"] for offer in joke_offers} == {"mpp"}
+    # The x402 upto usage gate is advertised so the playground UI renders it.
+    summarize_offers = doc["paths"]["/api/v1/summarize"]["post"]["x-payment-info"]["offers"]
+    assert summarize_offers[0]["scheme"] == "upto"
+    assert summarize_offers[0]["intent"] == "usage"
 
 
 def test_docs_index_is_free(client: TestClient) -> None:

@@ -131,6 +131,28 @@ def session_offer(
     )
 
 
+def upto_offer(gate: Gate, config: Config, *, currency: str = "USDC") -> dict[str, Any]:
+    """The single x402 `upto` discovery offer (authorize a ceiling, bill usage).
+
+    Offer `description` is an "up to <ceiling> <currency>" price hint, mirroring
+    the TS playground's usage offer shape.
+    """
+    network_label = _mints_network(config)
+    amount = base_units(gate.total(), currency=currency, network=network_label)
+    cap_human = gate.total().amount_string()
+    return _offer(
+        amount=amount,
+        currency=currency,
+        description=f"up to {cap_human} {currency}",
+        feePayer=config.operator.signer.pubkey(),
+        intent="usage",
+        method="x402",
+        network=config.network.caip2(),
+        payTo=gate.pay_to,
+        scheme="upto",
+    )
+
+
 def build_openapi_document(
     *,
     info: dict[str, str] | None = None,

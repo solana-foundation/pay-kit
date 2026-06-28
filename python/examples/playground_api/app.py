@@ -224,6 +224,12 @@ _OPENAPI = discovery.build_openapi_document(
                 )
             ],
         },
+        {
+            "method": "POST",
+            "path": "/api/v1/summarize",
+            "summary": summarize_gate.description,
+            "offers": [discovery.upto_offer(summarize_gate, _cfg)],
+        },
     ],
 )
 
