@@ -9,12 +9,20 @@ package main
 // shapes for external x402 clients. See README.md.
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"math/rand"
 	"net/http"
+	"strconv"
 
-	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+)
+
+const (
+	summarizeMaxBodyBytes       = 1 << 20
+	summarizePricePerTokenUnits = 100
 )
 
 // jokes is the canned joke pool.
@@ -113,26 +121,13 @@ func registerX402(mux *http.ServeMux, a *app) error {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "transaction": signature})
 	})
 
-	// x402-gated routes: a dedicated x402-only paykit client, self-hosted
+	// x402-gated routes: dedicated x402-only paykit clients, self-hosted
 	// verification + settlement against the configured RPC.
-	network, err := paykit.ParseNetwork(a.network)
+	exactClient, err := newX402ExactClient(a)
 	if err != nil {
 		return err
 	}
-	operatorSigner, err := signer.FromBase58(a.feePayer.String())
-	if err != nil {
-		return err
-	}
-	client, err := paykit.New(paykit.Config{
-		Network: network,
-		RPCURL:  a.rpcURL,
-		Accept:  []paykit.Protocol{paykit.X402},
-		Operator: paykit.Operator{
-			Recipient: paykit.Address(a.recipient),
-			Signer:    operatorSigner,
-			FeePayer:  true,
-		},
-	})
+	usageClient, err := newX402UsageClient(a)
 	if err != nil {
 		return err
 	}
@@ -142,7 +137,7 @@ func registerX402(mux *http.ServeMux, a *app) error {
 		Name:   "x402Joke",
 		Desc:   "A random programmer joke",
 	}
-	mux.Handle("GET /x402/joke", client.Require(jokeGate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("GET /x402/joke", exactClient.Require(jokeGate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"joke":   jokes[rand.Intn(len(jokes))],
 			"source": "x402",
@@ -154,12 +149,39 @@ func registerX402(mux *http.ServeMux, a *app) error {
 		Name:   "x402Fact",
 		Desc:   "A random fun fact",
 	}
-	mux.Handle("GET /x402/fact", client.Require(factGate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("GET /x402/fact", exactClient.Require(factGate)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"fact":   facts[rand.Intn(len(facts))],
 			"source": "x402",
 		})
 	})))
+
+	summarizeGate := paykit.Gate{
+		Amount: paykit.MustParseUSD("0.10"),
+		Name:   "summarize",
+		Desc:   "Summarize text, billed per token",
+		Kind:   paykit.GateUsage,
+	}
+	summarizeHandler := usageClient.RequireUsage(summarizeGate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		charge, ok := paykit.ChargeFrom(r.Context())
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no charge meter"})
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid-body")
+			return
+		}
+		billedBaseUnits, tokens := summarizeUsage(len(body), charge.MaxBaseUnits())
+		charge.Charge(billedBaseUnits)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"billedBaseUnits": strconv.FormatUint(billedBaseUnits, 10),
+			"summarizedBytes": strconv.FormatUint(uint64(len(body)), 10),
+			"tokens":          strconv.FormatUint(tokens, 10),
+		})
+	}))
+	mux.Handle("POST /api/v1/summarize", bufferRequestBody(summarizeMaxBodyBytes, summarizeHandler))
 
 	// Usage-gated route: the client opens a payment channel depositing
 	// the authorized ceiling; the handler meters the response and the
@@ -170,7 +192,7 @@ func registerX402(mux *http.ServeMux, a *app) error {
 		Desc:   "Usage-metered endpoint",
 		Kind:   paykit.GateUsage,
 	}
-	mux.Handle("GET /x402/usage", client.RequireUsage(usageGate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /x402/usage", usageClient.RequireUsage(usageGate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		charge, ok := paykit.ChargeFrom(r.Context())
 		if !ok {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no charge meter"})
@@ -188,4 +210,36 @@ func registerX402(mux *http.ServeMux, a *app) error {
 	})))
 
 	return nil
+}
+
+func summarizeUsage(bodyLen int, maxBaseUnits uint64) (uint64, uint64) {
+	tokens := uint64(bodyLen / 4)
+	if tokens < 1 {
+		tokens = 1
+	}
+	billedBaseUnits := tokens * summarizePricePerTokenUnits
+	if billedBaseUnits > maxBaseUnits {
+		billedBaseUnits = maxBaseUnits
+	}
+	return billedBaseUnits, tokens
+}
+
+func bufferRequestBody(maxBytes int64, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
+		if err != nil {
+			status := http.StatusBadRequest
+			code := "invalid-body"
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				status = http.StatusRequestEntityTooLarge
+				code = "body-too-large"
+			}
+			writeJSONError(w, status, code)
+			return
+		}
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+	})
 }

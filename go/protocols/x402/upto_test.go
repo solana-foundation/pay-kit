@@ -264,6 +264,30 @@ func TestParseUptoPaymentSignatureValid(t *testing.T) {
 	}
 }
 
+func TestParseUptoPaymentSignatureAcceptsUpstreamV2Envelope(t *testing.T) {
+	accepted, err := uptoRequirements().AcceptedValue()
+	if err != nil {
+		t.Fatalf("AcceptedValue: %v", err)
+	}
+	envelope := UptoSignatureEnvelope{
+		X402Version: X402Version,
+		Accepted:    accepted,
+		Payload:     uptoPayload(),
+	}
+	raw, _ := json.Marshal(envelope)
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	parsed, err := ParseUptoPaymentSignature(encoded)
+	if err != nil {
+		t.Fatalf("ParseUptoPaymentSignature: %v", err)
+	}
+	if parsed.Scheme != UptoScheme {
+		t.Fatalf("scheme = %q, want %q", parsed.Scheme, UptoScheme)
+	}
+	if parsed.Network != uptoRequirements().Network {
+		t.Fatalf("network = %q, want %q", parsed.Network, uptoRequirements().Network)
+	}
+}
+
 func TestParseUptoPaymentSignatureRejectsWrongScheme(t *testing.T) {
 	envelope := UptoSignatureEnvelope{X402Version: X402Version, Scheme: "exact", Payload: uptoPayload()}
 	raw, _ := json.Marshal(envelope)

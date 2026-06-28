@@ -199,7 +199,10 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		}
 		return nil, &paykit.PaymentError{Code: code, Err: err, Gate: req.Gate}
 	}
-	replayKey := tx.Signatures[0].String()
+	replayKey, err := transactionReplayKey(tx)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
+	}
 	if _, loaded := a.replay.LoadOrStore(replayKey, struct{}{}); loaded {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
 	}
@@ -249,6 +252,15 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 		SettlementHeaders: headers,
 		Raw:               sig,
 	}, nil
+}
+
+func transactionReplayKey(tx *solana.Transaction) (string, error) {
+	for _, sig := range tx.Signatures {
+		if !sig.IsZero() {
+			return sig.String(), nil
+		}
+	}
+	return "", errors.New("transaction carries no non-zero signer signature")
 }
 
 func (a *Adapter) verifyLegacyBinding(gate *paykit.Gate, credential *proto.Credential) error {

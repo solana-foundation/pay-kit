@@ -5,17 +5,20 @@ the HTTP API behind the [pay-kit playground](../../../playground/). It serves
 the same endpoints with the same payment gating semantics against the Solana
 Payment Sandbox (a hosted test validator, no real funds):
 
-- **Charges**: `solana.charge` endpoints (stock quote, marketplace purchase
-  with multi-recipient splits, fortune payment link) gated through the Go
+- **Charges**: TS-style quote and joke endpoints, legacy stock/weather and
+  marketplace endpoints, and the fortune payment link gated through the Go
   `paykit` umbrella client, plus a faucet that funds wallets through surfpool
-  cheatcodes.
-- **Sessions**: the in-process Go session method gating `/sessions/stream`
-  (pay-per-chunk SSE) and `/sessions/compute` (pay-per-call), with real
+  cheatcodes. `/api/v1/quote/:symbol` and `/api/v1/fortune` advertise both
+  x402 exact and MPP charge.
+- **Sessions**: the in-process Go session method gating `/api/v1/stream`
+  (pay-per-chunk SSE, also served at `/sessions/stream`) and
+  `/sessions/compute` (pay-per-call), with real
   payment-channel opens (server-completed fee-payer signature), voucher
   metering through the `/__402/session/*` side channel, and on-chain
   settlement via the idle-close watchdog.
-- **x402**: two `exact`-scheme demo routes plus the embedded facilitator
-  endpoints.
+- **x402**: the TS-style `/api/v1/summarize` usage endpoint, two legacy
+  `exact`-scheme demo routes, one legacy `upto` route, plus the embedded
+  facilitator endpoints.
 - `/openapi.json`: the endpoint catalog and wallet/network metadata the web
   app renders from `x-payment-info.offers[]`.
 - `/api/v1/config`: a legacy JSON catalog kept for direct smoke tests and
@@ -77,13 +80,18 @@ when the binary runs outside the repository checkout, and the standard
 | GET | `/api/v1/docs`, `/api/v1/docs/:lang/tree`, `/api/v1/docs/:lang/file` | free |
 | GET | `/api/v1/faucet/status` | free |
 | POST | `/api/v1/faucet/airdrop` | free |
+| GET | `/api/v1/quote/:symbol` | x402 exact or MPP charge 0.01 USDC |
+| GET | `/api/v1/joke` | MPP charge 0.01 USDC |
+| POST | `/api/v1/summarize` | x402 upto, cap 0.10 USDC |
+| GET | `/api/v1/stream` | session, cap 1.00 USDC, 0.0001 USDC/chunk |
+| POST | `/api/v1/stream` | session voucher commits |
 | GET | `/api/v1/stocks/quote/:symbol` | charge 0.01 USDC |
 | GET | `/api/v1/stocks/search?q=` | charge 0.01 USDC |
 | GET | `/api/v1/stocks/history/:symbol` | charge 0.05 USDC |
 | GET | `/api/v1/weather/:city` | charge 0.01 USDC |
 | GET | `/api/v1/marketplace/products` | free |
 | GET | `/api/v1/marketplace/buy/:productId?referrer=` | charge with splits |
-| GET | `/api/v1/fortune` | charge 0.01 USDC, HTML payment link |
+| GET | `/api/v1/fortune` | x402 exact or MPP charge 0.01 USDC, HTML payment link |
 | GET | `/api/v1/premium/feed` | 501 stub (see below) |
 | GET | `/sessions/stream` | session, cap 1.00 USDC, 0.0001 USDC/chunk |
 | POST | `/sessions/stream` | session voucher commits |
@@ -94,6 +102,7 @@ when the binary runs outside the repository checkout, and the standard
 | GET | `/facilitator/supported` | free |
 | POST | `/facilitator/verify`, `/facilitator/settle` | free |
 | GET | `/x402/joke`, `/x402/fact` | x402 exact, $0.001 |
+| GET | `/x402/usage` | x402 upto, cap 1.00 USDC |
 
 As in the TypeScript example, `/openapi.json` is the discovery endpoint the
 playground app reads.
@@ -111,10 +120,16 @@ faithful behavior is served and listed here:
    The endpoint catalog omits the subscription entry, which is exactly how
    the TypeScript server behaves when its plan bootstrap fails, so the
    playground UI renders its graceful empty state.
-2. **x402 gating is self-hosted**: the TypeScript routes are gated by
+2. **Fortune keeps the HTML payment link**: `/api/v1/fortune` advertises
+   the same dual x402/MPP fixed charge as the TypeScript server for API
+   clients. Browser HTML and service-worker requests still use the
+   protocol-layer MPP server so the payment-link E2E keeps exercising the
+   hosted pay.sh-style challenge page.
+3. **x402 gating is self-hosted**: the TypeScript routes are gated by
    `x402-express` POSTing to the embedded facilitator; the Go x402 adapter
-   only implements self-hosted mode, so `/x402/joke` and `/x402/fact` verify
-   and settle in-process with the operator signer. The
+   only implements self-hosted mode, so `/api/v1/summarize`, `/x402/joke`,
+   `/x402/fact`, and `/x402/usage` verify and settle in-process with the
+   operator signer. The
    `/facilitator/supported|verify|settle` endpoints are still served with
    the same response shapes for external x402 clients. The challenge
    advertises the configured `NETWORK` instead of the TypeScript example's

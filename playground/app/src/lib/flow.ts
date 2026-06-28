@@ -102,6 +102,22 @@ function receiptReference(receiptB64: string | undefined): string | null {
   }
 }
 
+/** Pull the settle tx signature out of an x402 Payment-Response header. */
+function x402SettlementReference(headers: Record<string, string>): string | null {
+  const value = headers['payment-response'] ?? headers['x-payment-response']
+  if (!value) return null
+  try {
+    const json = JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))) as {
+      reference?: unknown
+      transaction?: unknown
+    }
+    const signature = json.transaction ?? json.reference
+    return typeof signature === 'string' && signature.length > 0 ? signature : null
+  } catch {
+    return null
+  }
+}
+
 async function pollSessionReceipt(channelId: string, timeoutMs = 10_000): Promise<string | null> {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
@@ -290,11 +306,11 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
           }
         }
 
-        // With server-side broadcast the client never emits paying/paid —
-        // the settle signature only comes back in the Payment-Receipt
-        // header. Surface it so the Broadcast / Settled steps complete.
+        // With server-side broadcast the client never emits paying/paid -
+        // the settle signature only comes back in settlement response headers.
+        // Surface it so the Broadcast / Settled steps complete.
         if (response.ok && !sawPaid) {
-          const signature = receiptReference(headers['payment-receipt'])
+          const signature = receiptReference(headers['payment-receipt']) ?? x402SettlementReference(headers)
           if (signature) {
             yield { type: 'paying' }
             yield { type: 'paid', signature }

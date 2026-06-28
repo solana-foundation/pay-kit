@@ -32,7 +32,9 @@ var tokenChunks = []string{
 //
 // Routes:
 //   - GET  /sessions/stream: pay-per-chunk SSE, cap 1.00 USDC, 0.0001 USDC/chunk
+//   - GET  /api/v1/stream: TS-reference alias for /sessions/stream
 //   - POST /sessions/stream: voucher commits for the stream endpoint
+//   - POST /api/v1/stream: TS-reference alias for voucher commits
 //   - POST /sessions/compute: pay-per-call compute, cap 0.50 USDC, 0.005 USDC/call
 //     (also accepts voucher commits)
 //   - POST /__402/session/deliveries: SessionFetch-style delivery reservation
@@ -91,8 +93,7 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 		return server.SessionChallengeOptions{Cap: "500000", Description: "Voucher-billed inference call"}, nil
 	})
 
-	// GET /sessions/stream: stream tokens as SSE; each chunk costs 0.0001 USDC.
-	mux.Handle("GET /sessions/stream", streamGate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	streamHandler := streamGate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		stream := server.NewMeteredStream(w)
 		w.WriteHeader(http.StatusOK)
 		for _, chunk := range tokenChunks {
@@ -102,14 +103,21 @@ func registerSessions(mux *http.ServeMux, a *app) (func(), error) {
 			time.Sleep(80 * time.Millisecond)
 		}
 		_ = stream.WriteDone()
-	})))
+	}))
+	// GET /sessions/stream and /api/v1/stream: stream tokens as SSE; each
+	// chunk costs 0.0001 USDC.
+	mux.Handle("GET /sessions/stream", streamHandler)
+	mux.Handle("GET /api/v1/stream", streamHandler)
 
-	// POST /sessions/stream: voucher commits arrive on the URL the session
-	// was opened against, with the signed voucher in the Authorization
-	// credential. The middleware's verify path applies it; the body is an ack.
-	mux.Handle("POST /sessions/stream", streamGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	streamCommitHandler := streamGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, commitAck(r))
-	})))
+	}))
+	// POST /sessions/stream and /api/v1/stream: voucher commits arrive on
+	// the URL the session was opened against, with the signed voucher in the
+	// Authorization credential. The middleware's verify path applies it; the
+	// body is an ack.
+	mux.Handle("POST /sessions/stream", streamCommitHandler)
+	mux.Handle("POST /api/v1/stream", streamCommitHandler)
 
 	// POST /sessions/compute: pay-per-call compute; the same handler also
 	// accepts voucher commits (a deliveryId in the body discriminates).

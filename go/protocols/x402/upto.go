@@ -390,6 +390,14 @@ func ParseUptoPaymentSignature(header string) (UptoSignatureEnvelope, error) {
 	if err := json.Unmarshal(decoded, &envelope); err != nil {
 		return UptoSignatureEnvelope{}, fmt.Errorf("invalid 402 response: %w", err)
 	}
+	if envelope.Scheme == "" && len(envelope.Accepted) > 0 {
+		var accepted UptoRequirements
+		if err := json.Unmarshal(envelope.Accepted, &accepted); err != nil {
+			return UptoSignatureEnvelope{}, fmt.Errorf("invalid accepted requirements: %w", err)
+		}
+		envelope.Scheme = accepted.Scheme
+		envelope.Network = accepted.Network
+	}
 	if envelope.Scheme != UptoScheme {
 		return UptoSignatureEnvelope{}, fmt.Errorf("invalid payload type: %s", envelope.Scheme)
 	}
