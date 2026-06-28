@@ -210,6 +210,7 @@ impl X402Upto {
                 fee_payer: self.operator(),
                 channel_program: Some(pc::pubkey_string(&self.program_id()?)),
                 recent_blockhash: None,
+                last_valid_block_height: None,
                 valid_after: None,
             },
         })
@@ -225,11 +226,12 @@ impl X402Upto {
         // the in-SDK client hard-requires `extra.recentBlockhash` to build the
         // channel open, so a silent `None` would surface as a non-retryable
         // payment failure on a transient RPC hiccup.
-        let blockhash = self
+        let (blockhash, last_valid_block_height) = self
             .rpc
-            .get_latest_blockhash()
+            .get_latest_blockhash_with_commitment(self.rpc.commitment())
             .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?;
         requirement.extra.recent_blockhash = Some(blockhash.to_string());
+        requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),
             description: self.config.description.clone(),

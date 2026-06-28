@@ -178,7 +178,8 @@ impl X402 {
         amount: &str,
         options: ExactOptions<'_>,
     ) -> Result<PaymentRequiredEnvelope, Error> {
-        let requirements = self.exact_requirements(amount, options)?;
+        let mut requirements = self.exact_requirements(amount, options)?;
+        self.embed_recent_blockhash(&mut requirements);
         Ok(PaymentRequiredEnvelope {
             x402_version: X402_VERSION_V2,
             resource: requirements.resource_info(),
@@ -186,6 +187,42 @@ impl X402 {
             error: None,
             extensions: None,
         })
+    }
+
+    /// Embed a recent blockhash in the 402 *challenge* so the client can build
+    /// its transaction without its own RPC round-trip and against the same RPC
+    /// that will settle it (the client reads it in `client/exact`). Mirrors
+    /// x402-foundation/x402#2693.
+    ///
+    /// Challenge-only and best-effort: only when an RPC is configured, omitted
+    /// on RPC failure (the client fetches its own), and never applied to the
+    /// verify-time rebuild — `verify_envelope_payload` strips these fields from
+    /// the structural match since they are transient build hints, not pinned
+    /// binding fields.
+    ///
+    /// On the Surfpool sandbox this also lets a localnet client recognize the
+    /// surfnet fork: the embedded blockhash carries the `SURFNETxSAFEHASH`
+    /// sentinel the client keys on, regardless of the wire CAIP-2 network.
+    fn embed_recent_blockhash(&self, requirements: &mut PaymentRequirements) {
+        if self.config.rpc_url.is_none() {
+            return;
+        }
+        let Ok((blockhash, last_valid_block_height)) = self
+            .rpc
+            .get_latest_blockhash_with_commitment(self.rpc.commitment())
+        else {
+            return;
+        };
+        requirements.recent_blockhash = Some(blockhash.to_string());
+        let extra = requirements
+            .extra
+            .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(obj) = extra.as_object_mut() {
+            obj.insert(
+                "lastValidBlockHeight".to_string(),
+                serde_json::Value::String(last_valid_block_height.to_string()),
+            );
+        }
     }
 
     pub fn exact_requirements(
@@ -278,7 +315,9 @@ impl X402 {
         }
         let mut accepts = Vec::with_capacity(options.len());
         for option in options {
-            accepts.push(self.exact_requirements_for_option(option)?);
+            let mut requirements = self.exact_requirements_for_option(option)?;
+            self.embed_recent_blockhash(&mut requirements);
+            accepts.push(requirements);
         }
         let resource = accepts[0].resource_info();
         Ok(PaymentRequiredEnvelope {
@@ -530,10 +569,18 @@ impl X402 {
             // resource, decimals, token_program, …) is a binding mismatch
             // by protocol. Compared via JSON values so unknown future
             // fields are covered automatically.
-            let accepted_json = serde_json::to_value(&accepted_requirements)
+            let mut accepted_json = serde_json::to_value(&accepted_requirements)
                 .map_err(|e| Error::Other(format!("Failed to serialize accepted: {e}")))?;
-            let route_json = serde_json::to_value(requirements)
+            let mut route_json = serde_json::to_value(requirements)
                 .map_err(|e| Error::Other(format!("Failed to serialize requirements: {e}")))?;
+            // `recentBlockhash` / `lastValidBlockHeight` are transient client
+            // build hints the server embeds in the *challenge* (#2693), not
+            // pinned binding fields: the challenge carries them but the
+            // verify-time rebuild (`exact_requirements`) does not, so exclude
+            // them from the structural match. The transaction's actual blockhash
+            // is validated separately (`check_network_blockhash` + on-chain).
+            strip_blockhash_hints(&mut accepted_json);
+            strip_blockhash_hints(&mut route_json);
             if accepted_json != route_json {
                 return Err(Error::Other(
                     "Credential's accepted requirements do not structurally match this route's expected requirements".into(),
@@ -683,6 +730,17 @@ fn is_loopback_rpc(rpc_url: &str) -> bool {
         host_and_rest.split(':').next().unwrap_or("")
     };
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0")
+}
+
+/// Remove the server-provided build hints (`extra.recentBlockhash` /
+/// `extra.lastValidBlockHeight`, #2693) from a serialized requirements value so
+/// the verify-time structural match ignores them — they're present in the
+/// challenge the client echoes but absent from the verify-time rebuild.
+fn strip_blockhash_hints(value: &mut serde_json::Value) {
+    if let Some(extra) = value.get_mut("extra").and_then(|e| e.as_object_mut()) {
+        extra.remove("recentBlockhash");
+        extra.remove("lastValidBlockHeight");
+    }
 }
 
 fn managed_signers_for_requirements(

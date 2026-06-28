@@ -115,6 +115,7 @@ mod tests {
                 fee_payer: OPERATOR.to_string(),
                 channel_program: None,
                 recent_blockhash: None,
+                last_valid_block_height: None,
                 valid_after: None,
             },
         }

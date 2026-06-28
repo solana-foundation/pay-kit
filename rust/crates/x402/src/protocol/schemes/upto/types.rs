@@ -49,6 +49,12 @@ pub struct UptoExtra {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
 
+    /// Last block height at which `recent_blockhash` is valid (decimal string),
+    /// bounding the open transaction's validity window. See
+    /// x402-foundation/x402#2693.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_valid_block_height: Option<String>,
+
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
@@ -232,6 +238,7 @@ mod tests {
                 fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
                 channel_program: None,
                 recent_blockhash: None,
+                last_valid_block_height: None,
                 valid_after: None,
             },
         }
