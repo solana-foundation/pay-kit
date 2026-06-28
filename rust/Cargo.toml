@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ap2",
     "crates/core",
     "crates/mpp",
     "crates/programs/payment-channels",

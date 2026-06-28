@@ -1,0 +1,45 @@
+[package]
+name = "solana-ap2"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Payments Protocol (AP2) helpers for Solana — Intent/Cart/Payment Mandates over x402 + MPP"
+license = "MIT"
+repository = "https://github.com/solana-foundation/pay-kit"
+
+[features]
+default = []
+
+[dependencies]
+# Pay-kit protocol crates (workspace siblings)
+solana-x402 = { path = "../x402", default-features = false }
+solana-mpp = { path = "../mpp", default-features = false }
+
+# Signing — Ed25519 over canonical JSON. Mirrors the convention solana-mpp
+# already uses for credential signing.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# Canonical JSON (RFC 8785 / JCS). Same dep solana-mpp uses, so the on-the-wire
+# serialization stays consistent across the two protocol crates.
+serde_json_canonicalizer = "0.3"
+
+# Hashing — SHA-256 of the canonical cart, used to bind a PaymentMandate to
+# a specific CartMandate snapshot.
+sha2 = "0.10"
+
+# Base58 for pubkey/signature encoding (Solana convention).
+bs58 = "0.5"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "1"
+
+# Used by `Ed25519Signer::generate` for fresh key generation. Stays a
+# main dep (not dev-only) because `generate()` is useful in production
+# too — e.g. spinning up ephemeral merchant signers for tests/demos.
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+[dev-dependencies]
+rand = "0.8"
