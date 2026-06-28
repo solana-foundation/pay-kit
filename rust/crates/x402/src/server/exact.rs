@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
+use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
@@ -510,6 +512,61 @@ impl X402 {
 
     pub fn payment_signature_header_name(&self) -> &'static str {
         PAYMENT_SIGNATURE_HEADER
+    }
+
+    /// Settle a verified `exact` payment on-chain and return the settlement
+    /// signature.
+    ///
+    /// `process_payment` only *verifies* the client's credential (structure,
+    /// network, recipient, amount) — it does not move funds. The caller MUST
+    /// settle before serving the resource:
+    /// - `Transaction` proof (pull): the sponsor (`fee_payer`) co-signs the
+    ///   still-empty fee-payer slot, then the transaction is simulated and
+    ///   broadcast + confirmed. The confirmed signature is returned.
+    /// - `Signature` proof (push): already on-chain — returned as-is.
+    pub async fn settle_exact(
+        &self,
+        verified: VerifiedExactPayment,
+        fee_payer: &dyn SolanaSigner,
+    ) -> Result<String, Error> {
+        let mut tx = match verified {
+            VerifiedExactPayment::Signature(signature) => return Ok(signature),
+            VerifiedExactPayment::Transaction(tx) => tx,
+        };
+
+        // Co-sign the fee-payer slot (the client left it empty for the sponsor).
+        let fee_payer_key = fee_payer.pubkey();
+        let signer_index = tx
+            .message
+            .static_account_keys()
+            .iter()
+            .position(|key| key == &fee_payer_key)
+            .ok_or_else(|| Error::Other("fee payer not found in transaction accounts".into()))?;
+        if signer_index >= tx.signatures.len() {
+            return Err(Error::Other(
+                "fee payer is not a required transaction signer".into(),
+            ));
+        }
+        let signature = fee_payer
+            .sign_message(&tx.message.serialize())
+            .await
+            .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
+        tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
+
+        // Simulate first for an actionable error, then broadcast + confirm.
+        let simulation = self
+            .rpc
+            .simulate_transaction(&tx)
+            .map_err(|e| Error::Rpc(format!("exact settlement simulation failed: {e}")))?;
+        if let Some(err) = simulation.value.err {
+            return Err(Error::Rpc(format!(
+                "exact settlement simulation failed: {err:?}"
+            )));
+        }
+        self.rpc
+            .send_and_confirm_transaction(&tx)
+            .map(|s| s.to_string())
+            .map_err(|e| Error::Rpc(format!("exact settlement broadcast failed: {e}")))
     }
 
     async fn verify_envelope_payload(
