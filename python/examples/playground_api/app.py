@@ -47,7 +47,12 @@ from . import discovery
 from .docs import register_docs
 from .sandbox import fund_sandbox, fund_usdc, register_faucet
 
-pay_kit.configure(network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"))
+pay_kit.configure(
+    network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"),
+    # Point at a specific Solana RPC (e.g. a local surfnet) when set; otherwise
+    # the network default is used. Mirrors the TS playground's RPC_URL knob.
+    rpc_url=os.getenv("PAY_KIT_RPC_URL") or None,
+)
 
 # Imported after configure() so the session method builds from the resolved
 # operator / recipient / challenge-binding secret.
