@@ -41,7 +41,7 @@ from pay_kit._middleware import PAYMENT_ATTR, PayCore, payment
 from pay_kit.config import config as _config
 from pay_kit.errors import InvalidProofError, PayKitError, PaymentRequiredError
 from pay_kit.payment import Payment
-from pay_kit.usage import CHARGE_ATTR, Charge, finalize_usage
+from pay_kit.usage import CHARGE_ATTR, Charge, fetch_recent_blockhash, finalize_usage
 
 if TYPE_CHECKING:
     from pay_kit.config import Config
@@ -84,7 +84,13 @@ def _upto_engine(config: Config) -> X402Upto:
         return cached
     from pay_kit.protocols.x402.upto import X402Upto
 
-    engine = X402Upto(config)
+    # Pre-fetch ``extra.recentBlockhash`` from the configured RPC so the client
+    # can build the channel-open without an extra round-trip (parity with the
+    # harness server; the helper degrades to None on any RPC failure).
+    engine = X402Upto(
+        config,
+        recent_blockhash_provider=lambda: fetch_recent_blockhash(config.effective_rpc_url()),
+    )
     _UPTO_CACHE[config] = engine
     return engine
 

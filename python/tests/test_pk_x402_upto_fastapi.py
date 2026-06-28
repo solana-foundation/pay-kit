@@ -40,6 +40,9 @@ def _clean(monkeypatch: pytest.MonkeyPatch):
 def _app() -> TestClient:
     cfg = configure(
         network="solana_localnet",
+        # Loopback RPC so the engine's recentBlockhash pre-fetch fast-fails
+        # offline (these tests assert the challenge shape, not the blockhash).
+        rpc_url="http://127.0.0.1:1",
         preflight=False,
         accept=(Protocol.X402,),
         operator=Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey())),
@@ -82,6 +85,9 @@ def test_requireusage_without_install_refuses_to_open() -> None:
     settles (P2 regression)."""
     cfg = configure(
         network="solana_localnet",
+        # Loopback RPC so the engine's recentBlockhash pre-fetch fast-fails
+        # offline (these tests assert the challenge shape, not the blockhash).
+        rpc_url="http://127.0.0.1:1",
         preflight=False,
         accept=(Protocol.X402,),
         operator=Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey())),

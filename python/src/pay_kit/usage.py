@@ -27,7 +27,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-__all__ = ["Charge", "UsageOutcome", "finalize_usage", "charge_from", "CHARGE_ATTR"]
+__all__ = [
+    "Charge",
+    "UsageOutcome",
+    "finalize_usage",
+    "charge_from",
+    "fetch_recent_blockhash",
+    "CHARGE_ATTR",
+]
 
 #: Request attribute the framework shims write the per-request Charge meter under.
 CHARGE_ATTR = "paykit_charge"
@@ -142,3 +149,34 @@ def charge_from(request: Any) -> Charge | None:
         value = cast("Mapping[str, object]", request).get(CHARGE_ATTR)
         return value if isinstance(value, Charge) else None
     return None
+
+
+def fetch_recent_blockhash(rpc_url: str) -> str | None:
+    """Fetch a recent blockhash over a blocking JSON-RPC call (no asyncio).
+
+    The ``upto`` challenge stamps ``extra.recentBlockhash`` so the client can
+    build the channel-open without an extra RPC round-trip. The engine reads it
+    synchronously from ``accepts_entry``, so this must stay blocking; the
+    framework shims wire it as the engine's ``recent_blockhash_provider``.
+    Returns ``None`` on any RPC/transport failure so the challenge degrades to
+    "no pre-fetched blockhash" rather than failing the request.
+    """
+    import json
+    import urllib.request
+
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": [{"commitment": "confirmed"}],
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(rpc_url, data=body, headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read())
+        blockhash = payload["result"]["value"]["blockhash"]
+    except Exception:
+        return None
+    return blockhash if isinstance(blockhash, str) and blockhash else None
