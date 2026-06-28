@@ -9,14 +9,15 @@ Python SDK ships today.
     GET  /api/v1/quote/{symbol}   fixed charge, MPP or x402
     GET  /api/v1/joke             MPP charge with a platform split (x402 auto-off)
     GET  /api/v1/stream           MPP session: open a channel, stream metered SSE
+    GET  /api/v1/usage            x402 upto: open a channel, meter, settle the actual
     GET  /api/v1/docs[...]        unpaid SDK reference (docs.py)
     POST /api/v1/faucet/airdrop   localnet-only USDC faucet (sandbox.py)
     GET  /openapi.json            OpenAPI 3.1 discovery (x-payment-info offers)
     GET  /api/v1/health           free liveness probe + operator/network info
 
-The x402 `upto` (usage) and MPP `subscription` gates the TS playground also shows
-are intentionally absent: the Python SDK does not ship those gate kinds yet, so
-they are left for a follow-up rather than hand-rolled here.
+The MPP `subscription` gate the TS playground also shows is intentionally absent
+(the Python SDK does not ship that gate kind yet); the x402 `upto` usage gate is
+served at `/api/v1/usage`.
 
 Run:
 
@@ -27,6 +28,7 @@ Drive it:
 
     curl -i http://127.0.0.1:3000/api/v1/fortune     # 402 payment required
     pay curl http://127.0.0.1:3000/api/v1/fortune     # pays and succeeds
+    curl -i http://127.0.0.1:3000/api/v1/usage        # 402 x402 upto challenge
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from fastapi import Depends, FastAPI, Request
 import pay_kit
 from pay_kit import Gate, Pricing, usd
 from pay_kit._paycore.protocol import Protocol
-from pay_kit.fastapi import Payment, RequirePayment, install
+from pay_kit.fastapi import Charge, Payment, RequirePayment, RequireUsage, install
 
 from . import discovery
 from .docs import register_docs
@@ -88,6 +90,18 @@ require_fortune = Depends(RequirePayment("fortune", pricing=catalog))
 require_quote = Depends(RequirePayment("quote", pricing=catalog))
 require_joke = Depends(RequirePayment("joke", pricing=catalog))
 
+# x402 `upto` usage gate: the client opens a payment channel depositing the
+# authorized ceiling; the handler meters the response and the gate settles the
+# actual amount after it returns. Mirrors the Go playground's GET /x402/usage.
+usage_gate = Gate.build(
+    name="usage",
+    amount=usd("1.00"),
+    description="Usage-metered endpoint (x402 upto)",
+    default_pay_to=_RECIPIENT,
+    accept=(Protocol.X402,),
+)
+require_usage = Depends(RequireUsage(usage_gate))
+
 JOKES = (
     "Why do programmers prefer dark mode? Because light attracts bugs.",
     'A SQL query walks into a bar, sees two tables, and asks: "Can I JOIN you?"',
@@ -130,6 +144,23 @@ async def quote(symbol: str, payment: Payment = require_quote) -> dict[str, obje
 async def joke(_payment: Payment = require_joke) -> dict[str, str]:
     """MPP charge with a platform split (seller nets 0.007, platform 0.003)."""
     return {"joke": random.choice(JOKES)}
+
+
+@app.get("/api/v1/usage")
+async def usage(charge: Charge = require_usage) -> dict[str, object]:
+    """x402 ``upto``: open a channel for the ceiling, meter, settle the actual.
+
+    The client's signed channel open deposits the 1.00 USDC ceiling; this handler
+    meters the response (a real app would count tokens/bytes/compute) and the gate
+    settles only the actual after it returns, refunding the unused remainder.
+    """
+    charge.charge(50_000)  # 0.05 USDC of the 1.00 ceiling (demo fixed amount)
+    return {
+        "ok": True,
+        "source": "x402-upto",
+        "maxUnits": charge.max_base_units,
+        "charged": charge.settled_base_units(),
+    }
 
 
 @app.get("/api/v1/health")

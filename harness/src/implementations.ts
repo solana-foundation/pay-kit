@@ -246,6 +246,19 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["x402-upto"],
     reportsAs: "rust",
   },
+  {
+    id: "python-x402-upto",
+    label: "Python pay_kit x402 upto client",
+    role: "client",
+    // Drives the pay_kit x402 upto client (parse the upto challenge -> build a
+    // partially-signed channel open + PAYMENT-SIGNATURE -> retry). Inserts
+    // python/src on sys.path like harness/python-server/server.py. Opt in via
+    // `X402_HARNESS_CLIENTS=python-x402-upto`.
+    command: ["python3", "python-x402-upto-client/main.py"],
+    enabled: isEnabled("python-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "python",
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
@@ -446,5 +459,26 @@ export const serverImplementations: ImplementationDefinition[] = [
     enabled: isEnabled("go-x402-upto", "X402_HARNESS_SERVERS", false),
     intents: ["x402-upto"],
     reportsAs: "go-paykit",
+  },
+  {
+    id: "python-x402-upto",
+    label: "Python PayKit x402 upto server",
+    role: "server",
+    // Same umbrella server as the `python` entry; the orchestrator sets
+    // PAY_KIT_HARNESS_PROTOCOL=x402-upto for the upto intent so it mounts the
+    // upto usage gate (channel open + voucher settle). PayKit usage middleware
+    // fail-closes on a zero charge, so the `x402-upto-zero-actual` scenario
+    // (serverIds: ["rust-x402-upto"]) excludes this server, matching go-paykit.
+    command: [
+      "uv",
+      "run",
+      "--project",
+      "../python",
+      "python",
+      "python-server/server.py",
+    ],
+    enabled: isEnabled("python-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "python",
   },
 ];

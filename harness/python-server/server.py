@@ -37,6 +37,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,8 @@ from pay_kit.protocols.mpp.server.charge import (  # noqa: E402
 )
 from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
 from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
+from pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
+from pay_kit.usage import Charge, finalize_usage  # noqa: E402
 
 
 def require_env(name: str) -> str:
@@ -135,6 +138,27 @@ def _base_units_to_human(base_units: str, decimals: int) -> str:
     return f"{sign}{quotient}.{fraction}"
 
 
+def _fetch_blockhash_sync(rpc_url: str) -> str | None:
+    """Fetch a recent blockhash via a blocking JSON-RPC call (no asyncio).
+
+    The x402 upto challenge requires ``extra.recentBlockhash`` so the client can
+    build the channel-open transaction. ``accepts_entry`` runs both at challenge
+    time and inside ``verify_open`` (itself under ``asyncio.run``), so the
+    provider must be synchronous to avoid nesting event loops.
+    """
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash", "params": [{"commitment": "confirmed"}]}
+    ).encode("utf-8")
+    request = urllib.request.Request(rpc_url, data=body, headers={"content-type": "application/json"})  # noqa: S310
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+        blockhash = data["result"]["value"]["blockhash"]
+        return blockhash if isinstance(blockhash, str) and blockhash else None
+    except Exception:  # noqa: BLE001 - blockhash fetch is best-effort at challenge time
+        return None
+
+
 def _coin_for_mint(mint: str) -> Stablecoin:
     """Pick the settlement Stablecoin for the scenario mint.
 
@@ -153,6 +177,8 @@ def _coin_for_mint(mint: str) -> Stablecoin:
 def _detect_protocol() -> str:
     """Decide which protocol this run exercises (mirror PHP detection)."""
     explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
+    if explicit in ("x402-upto", "upto"):
+        return "upto"
     if explicit in ("x402", "mpp", "charge", "session"):
         return "mpp" if explicit == "charge" else explicit
     x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
@@ -174,6 +200,8 @@ class _Adapter:
         self.x402 = self.protocol == "x402"
         if self.protocol == "x402":
             self._build_x402()
+        elif self.protocol == "upto":
+            self._build_upto()
         elif self.protocol == "session":
             self._build_session()
         else:
@@ -206,6 +234,42 @@ class _Adapter:
         self.pay_to = pay_to
         decimals = int(optional_env("X402_HARNESS_DECIMALS", "6"))
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
+        self.replay_path = ""
+
+    # -- x402 upto ------------------------------------------------------------
+
+    def _build_upto(self) -> None:
+        rpc_url = require_env("X402_HARNESS_RPC_URL")
+        pay_to = require_env("X402_HARNESS_PAY_TO")
+        facilitator_json = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+        mint = optional_env("X402_HARNESS_MINT", "USDC")
+        network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
+        self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
+        self.price = optional_env("X402_HARNESS_PRICE", "0.10")
+        # The metered amount the handler "charges" after serving (base units).
+        self.actual_amount = int(optional_env("X402_HARNESS_ACTUAL_AMOUNT", "0"))
+        self.coin = _coin_for_mint(mint)
+        program_id = os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or None
+
+        signer = Signer.json(facilitator_json)
+        config = Config(
+            network=_resolve_network(network_raw),
+            accept=(Protocol.X402,),
+            stablecoins=(self.coin,),
+            rpc_url=rpc_url,
+            operator=Operator(recipient=pay_to, signer=signer, fee_payer=True),
+            preflight=False,
+        ).model_copy()
+        self.config = config
+        self.pay_to = pay_to
+        self.rpc_url = rpc_url
+        self.upto_engine = X402Upto(
+            config,
+            channel_program=program_id,
+            recent_blockhash_provider=lambda: _fetch_blockhash_sync(rpc_url),
+        )
+        self.routes = {self.resource_path: self.price}
         self.replay_path = ""
 
     # -- mpp ------------------------------------------------------------------
@@ -361,7 +425,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
         request = self._request_bag()
 
-        if adapter.x402:
+        if adapter.protocol == "upto":
+            self._handle_upto(adapter, adapter.gate_for(self.path), request)
+        elif adapter.x402:
             self._handle_x402(adapter, adapter.gate_for(self.path), request)
         else:
             self._handle_mpp(adapter, request)
@@ -410,6 +476,47 @@ class HarnessHandler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {"ok": True, "paid": True, "protocol": "x402", "transaction": payment.transaction},
+            extra_headers=headers,
+        )
+
+    def _handle_upto(self, adapter: _Adapter, gate: Gate, request: dict[str, Any]) -> None:
+        engine = adapter.upto_engine
+        if not request["headers"].get("payment-signature"):
+            challenge_headers = engine.challenge_headers(gate, request)
+            accepts = engine.accepts_entry(gate, request)
+            self._send_json(
+                402,
+                {"error": "payment_required", "resource": self.path, "accepts": [accepts]},
+                extra_headers=challenge_headers,
+            )
+            return
+        try:
+            verified = asyncio.run(engine.verify_open(gate, request))
+        except InvalidProofError as err:
+            self._send_json(
+                402,
+                {"error": err.code or "invalid_proof", "code": err.code, "message": str(err)},
+                extra_headers=engine.challenge_headers(gate, request),
+            )
+            return
+        # Serve the resource: meter the configured actual amount, then settle
+        # after the handler (fail-closed on a zero/absent charge, like Go PayKit).
+        charge = Charge(verified.max_amount)
+        if adapter.actual_amount > 0:
+            charge.charge(adapter.actual_amount)
+        outcome = asyncio.run(finalize_usage(engine, verified, charge))
+        if not outcome.ok:
+            self._send_json(
+                402,
+                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                extra_headers=engine.challenge_headers(gate, request),
+            )
+            return
+        headers = dict(outcome.settlement_headers)
+        headers[adapter.settlement_header] = outcome.transaction
+        self._send_json(
+            200,
+            {"ok": True, "paid": True, "protocol": "x402-upto", "transaction": outcome.transaction},
             extra_headers=headers,
         )
 
