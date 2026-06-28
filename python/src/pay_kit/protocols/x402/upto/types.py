@@ -58,10 +58,12 @@ class UptoExtra(_UptoExtraRequired, total=False):
     """The ``extra`` object on an ``upto`` payment requirement.
 
     ``profiles``/``decimals``/``tokenProgram``/``feePayer`` are required (spec
-    §4.1); ``channelProgram``/``recentBlockhash``/``validAfter``/``splits`` are
-    optional.
+    §4.1). ``facilitator`` is the spec's name for the operator key (the TS client
+    requires it; Go uses ``feePayer``) and is sent alongside ``feePayer``.
+    ``channelProgram``/``recentBlockhash``/``validAfter``/``splits`` are optional.
     """
 
+    facilitator: str
     channelProgram: str
     recentBlockhash: str
     validAfter: int

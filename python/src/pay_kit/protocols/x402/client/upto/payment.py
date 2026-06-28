@@ -102,9 +102,10 @@ def build_upto_payload(
     max_amount = int(requirements["amount"], 10)
     payee = Pubkey.from_string(requirements["payTo"])
     mint = Pubkey.from_string(requirements["asset"])
-    operator_str = extra.get("feePayer")
+    # Spec uses extra.facilitator; Go uses extra.feePayer. Accept either.
+    operator_str = extra.get("facilitator") or extra.get("feePayer")
     if not operator_str:
-        raise ValueError("x402 client: requirement missing extra.feePayer")
+        raise ValueError("x402 client: requirement missing extra.facilitator/feePayer")
     operator = Pubkey.from_string(operator_str)
     program_id = Pubkey.from_string(extra.get("channelProgram") or PAYMENT_CHANNELS_PROGRAM_ID)
     token_program = Pubkey.from_string(extra.get("tokenProgram") or TOKEN_PROGRAM)

@@ -180,6 +180,9 @@ class X402Upto:
                 "profiles": [PROFILE_PAYMENT_CHANNEL],
                 "decimals": 6,
                 "tokenProgram": token_program,
+                # The spec field is `facilitator` (the TS client requires it); Go
+                # uses `feePayer`. Send both so every client interops.
+                "facilitator": operator,
                 "feePayer": operator,
                 "channelProgram": self._channel_program,
             },

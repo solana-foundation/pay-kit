@@ -169,6 +169,8 @@ def test_accepts_entry_shape(monkeypatch) -> None:
     assert req["amount"] == "100000"
     assert req["extra"]["profiles"] == ["payment-channel"]
     assert req["extra"]["feePayer"] == _op_pubkey(cfg)
+    # The spec field `facilitator` is sent too, so the TS client interops.
+    assert req["extra"].get("facilitator") == _op_pubkey(cfg)
     assert req["extra"].get("recentBlockhash") == BH
 
 
