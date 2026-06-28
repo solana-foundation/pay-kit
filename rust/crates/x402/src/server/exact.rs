@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use solana_commitment_config::CommitmentConfig;
 use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -143,7 +144,13 @@ impl X402 {
             .unwrap_or_else(|| default_rpc_url(&config.network).to_string());
 
         Ok(Self {
-            rpc: Arc::new(RpcClient::new(rpc_url)),
+            // `confirmed`, not the default `finalized`: settlement (and blockhash/
+            // simulate) shouldn't block ~13s waiting for finalization — confirmed
+            // is the settled point. Mirrors the MPP charge path.
+            rpc: Arc::new(RpcClient::new_with_commitment(
+                rpc_url,
+                CommitmentConfig::confirmed(),
+            )),
             config,
         })
     }

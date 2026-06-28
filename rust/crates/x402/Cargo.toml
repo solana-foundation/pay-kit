@@ -21,6 +21,7 @@ solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain"
 solana-hash = { version = "3.1", default-features = false }
 solana-address = { version = "1.1", default-features = false }
 solana-instruction = { version = "3.1", default-features = false }
+solana-commitment-config = { version = "3.0", default-features = false }
 solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-rpc-client = { version = "4", default-features = false }

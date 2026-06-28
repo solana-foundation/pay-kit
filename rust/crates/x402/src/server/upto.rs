@@ -147,7 +147,12 @@ impl X402Upto {
             .unwrap_or_else(|| default_rpc_url(&config.cluster).to_string());
 
         Ok(Self {
-            rpc: Arc::new(RpcClient::new(rpc_url)),
+            // `confirmed`, not the default `finalized`: the channel open + voucher
+            // settlement shouldn't block ~13s on finalization.
+            rpc: Arc::new(RpcClient::new_with_commitment(
+                rpc_url,
+                solana_commitment_config::CommitmentConfig::confirmed(),
+            )),
             config,
             operator,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
