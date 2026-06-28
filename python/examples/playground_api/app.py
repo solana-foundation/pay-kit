@@ -9,15 +9,15 @@ Python SDK ships today.
     GET  /api/v1/quote/{symbol}   fixed charge, MPP or x402
     GET  /api/v1/joke             MPP charge with a platform split (x402 auto-off)
     GET  /api/v1/stream           MPP session: open a channel, stream metered SSE
-    GET  /api/v1/usage            x402 upto: open a channel, meter, settle the actual
+    POST /api/v1/summarize        x402 upto: authorize a ceiling, bill metered tokens
     GET  /api/v1/docs[...]        unpaid SDK reference (docs.py)
     POST /api/v1/faucet/airdrop   localnet-only USDC faucet (sandbox.py)
     GET  /openapi.json            OpenAPI 3.1 discovery (x-payment-info offers)
     GET  /api/v1/health           free liveness probe + operator/network info
 
-The MPP `subscription` gate the TS playground also shows is intentionally absent
-(the Python SDK does not ship that gate kind yet); the x402 `upto` usage gate is
-served at `/api/v1/usage`.
+The x402 `upto` usage gate is served at `POST /api/v1/summarize` (mirrors the TS
+playground). The MPP `subscription` gate (TS `/api/v1/feed`) is intentionally
+absent: the Python SDK does not ship that gate kind yet.
 
 Run:
 
@@ -28,7 +28,7 @@ Drive it:
 
     curl -i http://127.0.0.1:3000/api/v1/fortune     # 402 payment required
     pay curl http://127.0.0.1:3000/api/v1/fortune     # pays and succeeds
-    curl -i http://127.0.0.1:3000/api/v1/usage        # 402 x402 upto challenge
+    curl -i -X POST http://127.0.0.1:3000/api/v1/summarize  # 402 x402 upto challenge
 """
 
 from __future__ import annotations
@@ -90,17 +90,19 @@ require_fortune = Depends(RequirePayment("fortune", pricing=catalog))
 require_quote = Depends(RequirePayment("quote", pricing=catalog))
 require_joke = Depends(RequirePayment("joke", pricing=catalog))
 
-# x402 `upto` usage gate: the client opens a payment channel depositing the
-# authorized ceiling; the handler meters the response and the gate settles the
-# actual amount after it returns. Mirrors the Go playground's GET /x402/usage.
-usage_gate = Gate.build(
-    name="usage",
-    amount=usd("1.00"),
-    description="Usage-metered endpoint (x402 upto)",
+# x402 `upto` usage gate (POST /api/v1/summarize): authorize up to $0.10 and bill
+# the tokens produced. Mirrors the TypeScript playground's summarize route.
+summarize_gate = Gate.build(
+    name="summarize",
+    amount=usd("0.10"),
+    description="Summarize text, billed per token",
     default_pay_to=_RECIPIENT,
     accept=(Protocol.X402,),
 )
-require_usage = Depends(RequireUsage(usage_gate))
+require_summarize = Depends(RequireUsage(summarize_gate))
+
+#: Base units billed per summarized token (matches the TS playground).
+PRICE_PER_TOKEN = 100
 
 JOKES = (
     "Why do programmers prefer dark mode? Because light attracts bugs.",
@@ -146,21 +148,20 @@ async def joke(_payment: Payment = require_joke) -> dict[str, str]:
     return {"joke": random.choice(JOKES)}
 
 
-@app.get("/api/v1/usage")
-async def usage(charge: Charge = require_usage) -> dict[str, object]:
-    """x402 ``upto``: open a channel for the ceiling, meter, settle the actual.
+@app.post("/api/v1/summarize")
+async def summarize(request: Request, charge: Charge = require_summarize) -> dict[str, object]:
+    """x402 ``upto``: authorize up to $0.10, then bill the tokens produced.
 
-    The client's signed channel open deposits the 1.00 USDC ceiling; this handler
-    meters the response (a real app would count tokens/bytes/compute) and the gate
-    settles only the actual after it returns, refunding the unused remainder.
+    The client opens a channel for the ceiling; this handler meters the request
+    (about one token per four bytes of body) and the gate settles only that
+    amount after it returns, refunding the unused remainder.
     """
-    charge.charge(50_000)  # 0.05 USDC of the 1.00 ceiling (demo fixed amount)
-    return {
-        "ok": True,
-        "source": "x402-upto",
-        "maxUnits": charge.max_base_units,
-        "charged": charge.settled_base_units(),
-    }
+    raw = await request.body()
+    text = raw.decode("utf-8", "replace") if raw else ""
+    tokens = max(1, len(text) // 4)
+    billed = tokens * PRICE_PER_TOKEN
+    charge.charge(billed)
+    return {"billedBaseUnits": str(billed), "summarizedBytes": len(text), "tokens": str(tokens)}
 
 
 @app.get("/api/v1/health")
