@@ -57,3 +57,17 @@ def test_paid_route_challenges_before_handler(client: TestClient, method: str, p
     resp = client.request(method, path)
     assert resp.status_code == 402
     assert resp.headers.get("www-authenticate", "").startswith("Payment ")
+
+
+def test_usage_route_challenges_with_upto(client: TestClient) -> None:
+    """The x402 ``upto`` usage route returns a 402 with the upto challenge.
+
+    x402-only, so it advertises the ``payment-required`` header (not the MPP
+    ``www-authenticate``) and an ``upto`` / ``payment-channel`` accepts entry.
+    """
+    resp = client.get("/api/v1/usage")
+    assert resp.status_code == 402
+    assert any(k.lower() == "payment-required" for k in resp.headers)
+    accepts = resp.json()["accepts"]
+    assert accepts[0]["scheme"] == "upto"
+    assert accepts[0]["extra"]["profiles"] == ["payment-channel"]

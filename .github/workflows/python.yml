@@ -69,11 +69,54 @@ jobs:
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server"
+          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server,harness_upto_client,harness_upto_server"
           cargo-cache-key: python
+      # x402 upto settles on the canonical payment-channels program; the upto
+      # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors
+      # the harness-go job in .github/workflows/go.yml.
+      - name: Checkout payment channels program
+        uses: actions/checkout@v5
+        with:
+          repository: Moonsong-Labs/solana-payment-channels
+          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
+          path: _payment-channels
+          fetch-depth: 1
+      - name: Install Anza CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Patch payment channels localnet artifact
+        working-directory: _payment-channels
+        run: |
+          old_program_id="CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg"
+          new_program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          sentinel_file="program/payment_channels/src/constants.rs"
+          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
+          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
+          grep_args=(--exclude-dir=.git --exclude-dir=target)
+          mapfile -t id_files < <(grep -RIl "${grep_args[@]}" "$old_program_id" .)
+          if [ "${#id_files[@]}" -gt 0 ]; then
+            sed -i "s/$old_program_id/$new_program_id/g" "${id_files[@]}"
+          fi
+          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
+          if ! grep -R "${grep_args[@]}" "$new_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch did not write $new_program_id"
+            exit 1
+          fi
+          if grep -R "${grep_args[@]}" "$old_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch left $old_program_id in the checkout"
+            exit 1
+          fi
+          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
+            echo "::error::payment-channels treasury sentinel patch did not apply"
+            exit 1
+          fi
+      - name: Build payment channels program
+        working-directory: _payment-channels/program/payment_channels
+        run: cargo build-sbf --tools-version v1.52 --arch v1
       # Sync the uv environment the conformance runner (runners/python.json:
       # ``uv run python conformance_runner.py``) executes in, so the cross-SDK
-      # vectors — including the frozen 48-byte session voucher preimage — run
+      # vectors - including the frozen 48-byte session voucher preimage - run
       # without a per-vector cold install.
       - name: Sync Python uv environment
         working-directory: python
@@ -127,4 +170,23 @@ jobs:
           MPP_HARNESS_SERVERS: rust-x402,python
           X402_HARNESS_CLIENTS: python-x402
           X402_HARNESS_SERVERS: rust-x402,python
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
+      # x402 upto: drive the Python pay_kit upto client + PayKit upto server
+      # (channel open + voucher settle on the embedded surfnet) against the Rust
+      # upto reference. x402-upto-basic runs every active client x server; the
+      # zero-actual scenario is pinned to rust-x402-upto (serverIds in
+      # intents/x402-upto.ts), so the fail-closed PayKit python/go servers are
+      # excluded from it. Requires the payment-channels .so built above.
+      - name: Focused python-x402-upto -> rust/python upto servers
+        working-directory: harness
+        env:
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
+          MPP_HARNESS_CLIENTS: python-x402-upto,rust-x402-upto
+          MPP_HARNESS_SERVERS: python-x402-upto,rust-x402-upto
+          X402_HARNESS_CLIENTS: python-x402-upto,rust-x402-upto
+          X402_HARNESS_SERVERS: python-x402-upto,rust-x402-upto
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
