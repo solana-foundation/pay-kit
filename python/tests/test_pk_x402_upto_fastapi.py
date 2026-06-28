@@ -76,6 +76,34 @@ def test_requireusage_challenges_without_credential() -> None:
     assert body["accepts"][0]["extra"]["profiles"] == ["payment-channel"]
 
 
+def test_requireusage_without_install_refuses_to_open() -> None:
+    """Without install()/install_exception_handler the settle-after middleware is
+    absent, so RequireUsage must refuse rather than open a channel that never
+    settles (P2 regression)."""
+    cfg = configure(
+        network="solana_localnet",
+        preflight=False,
+        accept=(Protocol.X402,),
+        operator=Operator(signer=LocalSigner.from_keypair(Keypair()), recipient=str(Keypair().pubkey())),
+    )
+    app = FastAPI()  # deliberately NOT install(app)
+    gate = Gate.build(
+        name="usage",
+        amount=Price.usd("0.10", Stablecoin.USDC),
+        default_pay_to=cfg.effective_recipient(),
+        accept=(Protocol.X402,),
+    )
+
+    @app.get("/usage")
+    async def usage(charge: Charge = Depends(RequireUsage(gate, config=cfg))) -> dict[str, bool]:  # noqa: B008
+        charge.charge(1)
+        return {"ok": True}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/usage")
+    assert resp.status_code == 500  # guard fires before any channel is opened
+
+
 def test_non_usage_route_passes_through_middleware() -> None:
     client = _app()
     resp = client.get("/free")

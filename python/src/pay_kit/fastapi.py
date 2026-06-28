@@ -66,6 +66,12 @@ __all__ = [
 #: by the usage-settlement middleware after the handler returns.
 _USAGE_STATE_ATTR = "paykit_usage_pending"
 
+#: App-state marker set by :func:`install_exception_handler` once the usage
+#: settle-after middleware is registered. :func:`RequireUsage` checks it and
+#: refuses to open a channel when the middleware is absent (else settlement
+#: would never run and the deposit would stay locked).
+_USAGE_READY_ATTR = "paykit_usage_settle_installed"
+
 #: One x402 ``upto`` engine per Config - it owns the per-channel in-flight
 #: reservation set, so it must be a singleton (a fresh engine per request would
 #: not dedupe concurrent settlements on the same channel).
@@ -173,6 +179,14 @@ def RequireUsage(  # noqa: N802 - factory reads as a dependency constructor
     async def dependency(request: Request) -> Charge:
         from pay_kit.gate import Gate as _Gate
 
+        # Refuse to open a channel if the settle-after middleware is not installed:
+        # otherwise the handler runs, the channel opens, but settlement never fires
+        # and the payer deposit stays locked until the channel times out.
+        if not getattr(request.app.state, _USAGE_READY_ATTR, False):
+            raise RuntimeError(
+                "pay_kit.fastapi.RequireUsage needs the settlement middleware; "
+                "call pay_kit.fastapi.install(app) or install_exception_handler(app) at startup."
+            )
         cfg = config if config is not None else _config()
         engine = _upto_engine(cfg)
         gate = gate_ref if isinstance(gate_ref, _Gate) else gate_ref(request)
@@ -338,6 +352,10 @@ def install_exception_handler(app: Any) -> None:
         for name, value in outcome.settlement_headers.items():
             response.headers[name] = value
         return response
+
+    # Mark the app so RequireUsage knows the settle-after middleware is live.
+    if hasattr(app, "state"):
+        setattr(app.state, _USAGE_READY_ATTR, True)
 
 
 def _http_exception(exc: PayKitError) -> HTTPException:

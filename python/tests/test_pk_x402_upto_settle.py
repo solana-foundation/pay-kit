@@ -209,6 +209,29 @@ async def test_verify_open_happy(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
+    """A usage gate with its own pay_to is honored end to end: the channel binds
+    to that payee and settlement targets it, not the global recipient (P1
+    security regression - settle_actual must use verified.payee)."""
+    eng, cfg, holder = _engine(monkeypatch)
+    custom_payee = str(Keypair().pubkey())
+    gate = Gate.build(
+        name="usage", amount=Price.usd("0.10", Stablecoin.USDC), pay_to=custom_payee, accept=(Protocol.X402,)
+    )
+    req = eng.accepts_entry(gate, {"path": "/usage"})
+    assert req["payTo"] == custom_payee and custom_payee != cfg.effective_recipient()
+    client = LocalSigner.from_keypair(Keypair())
+    payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
+    header = encode_upto_header(req, payload)
+    holder["account"] = _fake_channel(
+        payer=client.pubkey(), payee=custom_payee, mint=req["asset"], operator=_op_pubkey(cfg), deposit=100000
+    )
+    verified = await eng.verify_open(gate, _Req(header))
+    assert str(verified.payee) == custom_payee
+    verified.release()
+
+
+@pytest.mark.asyncio
 async def test_verify_open_rejects_deposit_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
     header, client_pk, req = _client_header(eng, cfg)
@@ -255,6 +278,7 @@ def _verified(cfg, *, max_amount: int = 100000) -> VerifiedUptoOpen:
     return VerifiedUptoOpen(
         channel_id=Pubkey.from_string("11111111111111111111111111111112"),
         payer=Pubkey.from_string(str(Keypair().pubkey())),
+        payee=Pubkey.from_string(cfg.effective_recipient()),
         rent_payer=Pubkey.from_string(operator),
         mint=Pubkey.from_string(mint),
         token_program=Pubkey.from_string(token_program_for("USDC", label)),
@@ -300,6 +324,7 @@ def test_verified_release_idempotent() -> None:
     v = VerifiedUptoOpen(
         channel_id=Pubkey.default(),
         payer=Pubkey.default(),
+        payee=Pubkey.default(),
         rent_payer=Pubkey.default(),
         mint=Pubkey.default(),
         token_program=Pubkey.default(),

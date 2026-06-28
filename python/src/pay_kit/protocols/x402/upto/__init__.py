@@ -98,6 +98,7 @@ class VerifiedUptoOpen:
 
     channel_id: Pubkey
     payer: Pubkey
+    payee: Pubkey
     rent_payer: Pubkey
     mint: Pubkey
     token_program: Pubkey
@@ -246,8 +247,8 @@ class X402Upto:
         max_amount = parse_base_units(payload["maxAmount"], "maxAmount")
         expires_at = int(payload["expiresAt"])
 
-        self._reserve_channel(str(channel_id))
         released = False
+        self._reserve_channel(str(channel_id))
 
         def _release() -> None:
             with self._in_flight_lock:
@@ -287,6 +288,7 @@ class X402Upto:
             verified = VerifiedUptoOpen(
                 channel_id=channel_id,
                 payer=payer,
+                payee=payee,
                 rent_payer=Pubkey.from_string(str(channel.rentPayer)),
                 mint=mint,
                 token_program=token_program,
@@ -345,7 +347,10 @@ class X402Upto:
                     program_id=verified.program_id,
                 )
 
-            payee = Pubkey.from_string(self._config.effective_recipient())
+            # Settle to the payee the channel was opened and validated against in
+            # verify_open (gate.pay_to), not the global recipient - a usage gate
+            # may set its own pay_to, and distribute must target that ATA.
+            payee = verified.payee
             treasury = treasury_owner()
             distribute = build_distribute_instruction(
                 channel=verified.channel_id,
