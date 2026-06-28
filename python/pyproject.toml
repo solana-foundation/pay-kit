@@ -76,6 +76,7 @@ strict = [
     "src/pay_kit/price.py",
     "src/pay_kit/pricing.py",
     "src/pay_kit/signer.py",
+    "src/pay_kit/usage.py",
     "src/pay_kit/_paycore/__init__.py",
     "src/pay_kit/_paycore/currency.py",
     "src/pay_kit/_paycore/mints.py",
@@ -92,6 +93,11 @@ strict = [
     "src/pay_kit/protocols/x402/client/exact/__init__.py",
     "src/pay_kit/protocols/x402/client/exact/payment.py",
     "src/pay_kit/protocols/x402/client/exact/transport.py",
+    "src/pay_kit/protocols/x402/upto/__init__.py",
+    "src/pay_kit/protocols/x402/upto/types.py",
+    "src/pay_kit/protocols/x402/upto/verify.py",
+    "src/pay_kit/protocols/x402/client/upto/__init__.py",
+    "src/pay_kit/protocols/x402/client/upto/payment.py",
 ]
 reportMissingTypeStubs = false
 include = ["src", "tests"]
