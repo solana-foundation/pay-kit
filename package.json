@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "playground:install": "cd playground && pnpm install",
+    "playground:dev": "cd playground && pnpm dev",
+    "playground:build": "cd playground && pnpm build",
+    "playground:start": "cd playground && pnpm start"
+  }
+}
