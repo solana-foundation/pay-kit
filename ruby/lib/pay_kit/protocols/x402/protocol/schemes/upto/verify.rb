@@ -130,9 +130,13 @@ module PayKit::Protocols::X402
 
             salt = PaymentChannels.read_u64_le(data, 1)
             deposit = PaymentChannels.read_u64_le(data, 9)
+            grace_period = PaymentChannels.read_u32_le(data, 17)
             recipients_count = PaymentChannels.read_u32_le(data, 21)
             unless deposit == max
               raise reject("open deposit #{deposit} must equal the authorized maximum #{max}")
+            end
+            unless grace_period == PaymentChannels::DEFAULT_GRACE_PERIOD_SECONDS
+              raise reject("open grace period #{grace_period} must equal the canonical #{PaymentChannels::DEFAULT_GRACE_PERIOD_SECONDS}")
             end
             unless recipients_count.zero?
               raise reject("x402 upto requires an empty-recipient open (got #{recipients_count} splits)")

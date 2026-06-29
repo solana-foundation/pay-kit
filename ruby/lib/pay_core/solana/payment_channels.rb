@@ -53,6 +53,11 @@ module PayCore
       # Channel.status enum (idl channelStatus): 0 = open, 1 = finalized, 2 = closing.
       STATUS_OPEN = 0
 
+      # Canonical channel close grace period in seconds, pinned across the SDKs
+      # (rust DEFAULT_GRACE_PERIOD_SECONDS). The on-chain program rejects zero;
+      # `upto` opens commit this exact value so the close timing is fixed.
+      DEFAULT_GRACE_PERIOD_SECONDS = 900
+
       # Borsh `Channel` account size: a 1-byte account discriminator followed by
       # the fixed fields below. The on-chain account keeps the discriminator at
       # offset 0 (unlike the codama-py dropped-discriminator quirk), so Ruby
