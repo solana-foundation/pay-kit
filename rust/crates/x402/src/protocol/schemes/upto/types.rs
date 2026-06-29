@@ -332,8 +332,14 @@ mod tests {
             Some(req.network.as_str()),
             "network read from accepted"
         );
-        assert_eq!(accepted.get("scheme").and_then(|s| s.as_str()), Some("upto"));
-        assert_eq!(env.payload.channel_id, "Chan1111111111111111111111111111111111111");
+        assert_eq!(
+            accepted.get("scheme").and_then(|s| s.as_str()),
+            Some("upto")
+        );
+        assert_eq!(
+            env.payload.channel_id,
+            "Chan1111111111111111111111111111111111111"
+        );
 
         // And the client-built shape (empty scheme) omits it on the wire.
         let emitted = UptoSignatureEnvelope {
@@ -342,8 +348,14 @@ mod tests {
             ..env
         };
         let wire = serde_json::to_value(&emitted).unwrap();
-        assert!(wire.get("scheme").is_none(), "empty scheme skipped on the wire");
-        assert!(wire.get("network").is_none(), "absent network skipped on the wire");
+        assert!(
+            wire.get("scheme").is_none(),
+            "empty scheme skipped on the wire"
+        );
+        assert!(
+            wire.get("network").is_none(),
+            "absent network skipped on the wire"
+        );
     }
 
     #[test]

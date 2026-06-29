@@ -714,6 +714,7 @@ mod tests {
     use solana_pay_core::payment_channels::{
         build_open_instruction, derive_channel_addresses, OpenChannelParams,
     };
+    use solana_signature::Signature;
 
     struct TestSigner(Pubkey);
 

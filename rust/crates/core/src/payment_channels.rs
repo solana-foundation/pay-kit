@@ -21,8 +21,8 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
-use solana_transaction::Transaction;
 use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction::Transaction;
 
 use crate::{Error, Result};
 
