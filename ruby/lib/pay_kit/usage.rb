@@ -88,7 +88,18 @@ module PayKit
 
         charge = Charge.new(open.max_amount)
         env[CHARGE_ENV_KEY] = charge
-        status, headers, body = @app.call(env)
+
+        # The channel is now open and reserved. If the protected app raises
+        # before settlement runs, settle a zero charge to close the channel and
+        # refund the payer's full deposit — which also releases the in-flight
+        # reservation — then re-raise so the app's error surfaces. Without this
+        # the reservation would leak and the payer's deposit would stay locked.
+        begin
+          status, headers, body = @app.call(env)
+        rescue => app_error
+          release_after_app_failure(open)
+          raise app_error
+        end
         settled = charge.settled_base_units
 
         # Phase 4 (after the resource): settlement may broadcast on-chain, so a
@@ -123,6 +134,16 @@ module PayKit
       # bodies do not leak their underlying resources.
       def close_body(body)
         body.close if body.respond_to?(:close)
+      end
+
+      # The protected app raised after the channel opened. Settle a zero charge
+      # to close the channel and refund the payer; `settle_actual` releases the
+      # in-flight reservation in its own ensure even if the settle broadcast
+      # fails, so fall back to an explicit (idempotent) release on error.
+      def release_after_app_failure(open)
+        @engine.settle_actual(open, 0)
+      rescue
+        open.release! if open.respond_to?(:release!)
       end
 
       # A post-resource settlement failure: report a server error, never a 402,

@@ -193,6 +193,18 @@ class UsageMiddlewareTest < Minitest::Test
     assert body.closed
   end
 
+  def test_app_exception_settles_zero_and_reraises
+    boom = ->(env) {
+      env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(40_000)
+      raise "app boom"
+    }
+    mw = ::PayKit::Usage::Middleware.new(boom, engine: @engine, resource_path: "/usage")
+
+    error = assert_raises(RuntimeError) { mw.call(env_for("/usage", header: "HDR")) }
+    assert_equal "app boom", error.message
+    assert_equal [0], @engine.settled_with, "an app failure must settle 0 to close and refund the channel"
+  end
+
   private
 
   def env_for(path, header: nil, legacy_header: nil, meter: 0)
