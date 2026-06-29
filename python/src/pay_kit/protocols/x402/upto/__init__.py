@@ -227,7 +227,7 @@ class X402Upto:
         # x402 v2 (specs/x402-specification-v2.md §5.2): the chosen
         # PaymentRequirements live in `accepted`; `scheme` and `network` are
         # required there. There is no envelope-level scheme/network.
-        accepted = envelope.get("accepted") or {}
+        accepted: dict[str, Any] = envelope.get("accepted") or {}
         if accepted.get("scheme") != UPTO_SCHEME:
             raise InvalidProofError(
                 f"invalid payload type: {accepted.get('scheme')}", code="payment_invalid"
