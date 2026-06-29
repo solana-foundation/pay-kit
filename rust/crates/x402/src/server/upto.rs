@@ -280,8 +280,15 @@ impl X402Upto {
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
         let envelope: UptoSignatureEnvelope = serde_json::from_slice(&decoded)
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
-        if envelope.scheme != UPTO_SCHEME {
-            return Err(Error::InvalidPayloadType(envelope.scheme));
+        // x402 v2 spec §5.2: scheme lives in `accepted` (the chosen
+        // PaymentRequirements), not at the envelope level.
+        let scheme = envelope
+            .accepted
+            .get("scheme")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default();
+        if scheme != UPTO_SCHEME {
+            return Err(Error::InvalidPayloadType(scheme.to_string()));
         }
         Ok(envelope)
     }
@@ -298,15 +305,9 @@ impl X402Upto {
         let payload = &envelope.payload;
 
         verify_upto_payload(payload, &requirements, &self.operator(), now_unix())?;
-        // Canonical x402 v2 carries the network inside `accepted`, not at the
-        // envelope level; fall back to it so canonical clients verify.
-        let claimed_network = envelope.network.as_deref().or_else(|| {
-            envelope
-                .accepted
-                .as_ref()
-                .and_then(|a| a.get("network"))
-                .and_then(|n| n.as_str())
-        });
+        // x402 v2 spec §5.2: network lives in `accepted` (the chosen
+        // PaymentRequirements), not at the envelope level.
+        let claimed_network = envelope.accepted.get("network").and_then(|n| n.as_str());
         if claimed_network != Some(requirements.network.as_str()) {
             return Err(Error::Other(format!(
                 "network mismatch: payload {:?}, expected {}",

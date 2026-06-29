@@ -187,27 +187,15 @@ impl UptoPayload {
 pub struct UptoSignatureEnvelope {
     pub x402_version: u64,
 
-    /// Scheme tag. Canonical x402 v2 omits this at the envelope level — the
-    /// scheme lives in `accepted` (`payload.accepted.scheme` in the TS impl).
-    /// Default it so canonical `PAYMENT-SIGNATURE` payloads parse, and skip it
-    /// on the wire when empty so we emit the canonical shape ourselves.
-    #[serde(default = "upto_scheme", skip_serializing_if = "String::is_empty")]
-    pub scheme: String,
-
-    /// Network tag. Canonical x402 v2 omits this at the envelope level too (it
-    /// lives in `accepted.network`); kept optional for back-compat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<String>,
-
-    /// The echoed `PaymentRequirements` being paid — a sibling of `payload` in
-    /// the canonical x402 v2 envelope, and where the scheme/network live.
+    /// The chosen `PaymentRequirements` (x402 v2 spec §5.2). Required — this is
+    /// where `scheme` and `network` live; the canonical `PaymentPayload` has no
+    /// envelope-level scheme/network.
     ///
     /// Kept as opaque JSON rather than a typed `UptoRequirements` so a
-    /// canonical-compatible client that echoes an `accepted` object missing
-    /// fields the server never reads (everything but `network`) still parses.
-    /// The server pulls only `accepted.network` from it as a fallback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted: Option<serde_json::Value>,
+    /// canonical-compatible client that echoes an `accepted` object omitting
+    /// fields the server never reads still parses; the server pulls `scheme`
+    /// and `network` from it.
+    pub accepted: serde_json::Value,
 
     pub payload: UptoPayload,
 }
@@ -324,16 +312,14 @@ mod tests {
         });
 
         let env: UptoSignatureEnvelope = serde_json::from_value(canonical).unwrap();
-        assert_eq!(env.scheme, "upto", "scheme defaults when absent");
-        assert!(env.network.is_none(), "no top-level network in canonical");
-        let accepted = env.accepted.clone().expect("accepted present");
+        // scheme + network live in `accepted`, per x402 v2 spec §5.2.
         assert_eq!(
-            accepted.get("network").and_then(|n| n.as_str()),
+            env.accepted.get("network").and_then(|n| n.as_str()),
             Some(req.network.as_str()),
             "network read from accepted"
         );
         assert_eq!(
-            accepted.get("scheme").and_then(|s| s.as_str()),
+            env.accepted.get("scheme").and_then(|s| s.as_str()),
             Some("upto")
         );
         assert_eq!(
@@ -341,20 +327,19 @@ mod tests {
             "Chan1111111111111111111111111111111111111"
         );
 
-        // And the client-built shape (empty scheme) omits it on the wire.
-        let emitted = UptoSignatureEnvelope {
-            scheme: String::new(),
-            network: None,
-            ..env
-        };
-        let wire = serde_json::to_value(&emitted).unwrap();
+        // The emitted wire shape carries no envelope-level scheme/network.
+        let wire = serde_json::to_value(&env).unwrap();
         assert!(
             wire.get("scheme").is_none(),
-            "empty scheme skipped on the wire"
+            "no envelope-level scheme on the wire"
         );
         assert!(
             wire.get("network").is_none(),
-            "absent network skipped on the wire"
+            "no envelope-level network on the wire"
+        );
+        assert!(
+            wire.get("accepted").is_some(),
+            "accepted present on the wire"
         );
     }
 

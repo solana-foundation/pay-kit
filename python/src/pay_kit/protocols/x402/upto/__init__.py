@@ -224,17 +224,24 @@ class X402Upto:
         if not header:
             raise InvalidProofError("pay_kit: payment required", code="payment_required")
         envelope = _decode_envelope(header)
-        if envelope.get("scheme") != UPTO_SCHEME:
-            raise InvalidProofError(f"invalid payload type: {envelope.get('scheme')}", code="payment_invalid")
+        # x402 v2 (specs/x402-specification-v2.md §5.2): the chosen
+        # PaymentRequirements live in `accepted`; `scheme` and `network` are
+        # required there. There is no envelope-level scheme/network.
+        accepted = envelope.get("accepted") or {}
+        if accepted.get("scheme") != UPTO_SCHEME:
+            raise InvalidProofError(
+                f"invalid payload type: {accepted.get('scheme')}", code="payment_invalid"
+            )
 
         requirements = self.accepts_entry(gate, request)
         payload = _parse_payload(envelope.get("payload"))
         verify_upto_payload(payload, requirements, operator, int(time.time()))
 
-        # Phase 3: network + feePayer bound to this server's offer.
-        if envelope.get("network") != requirements["network"]:
+        # Phase 3: network + feePayer bound to this server's offer. Network is
+        # read from `accepted` (the canonical PaymentRequirements), per spec.
+        if accepted.get("network") != requirements["network"]:
             raise InvalidProofError(
-                f"network mismatch: payload {envelope.get('network')!r}, expected {requirements['network']!r}",
+                f"network mismatch: payload {accepted.get('network')!r}, expected {requirements['network']!r}",
                 code="payment_invalid",
             )
         if requirements["extra"].get("feePayer") != operator:

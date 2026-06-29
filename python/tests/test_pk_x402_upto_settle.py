@@ -356,7 +356,8 @@ def _remux(header: str, mutate) -> str:
 async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
     header, _pk, _req = _client_header(eng, cfg)
-    bad = _remux(header, lambda e: e.update(scheme="exact"))
+    # x402 v2 carries scheme inside `accepted` (the chosen PaymentRequirements).
+    bad = _remux(header, lambda e: e["accepted"].update(scheme="exact"))
     with pytest.raises(InvalidProofError, match="invalid payload type"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 
@@ -365,7 +366,8 @@ async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
 async def test_verify_open_rejects_network_mismatch(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
     header, _pk, _req = _client_header(eng, cfg)
-    bad = _remux(header, lambda e: e.update(network="solana:wrongwrongwrongwrongwrongwrong"))
+    # x402 v2 carries network inside `accepted` (the chosen PaymentRequirements).
+    bad = _remux(header, lambda e: e["accepted"].update(network="solana:wrongwrongwrongwrongwrongwrong"))
     with pytest.raises(InvalidProofError, match="network mismatch"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 
