@@ -21,7 +21,6 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction::Transaction;
 
@@ -299,10 +298,16 @@ impl X402Upto {
         let payload = &envelope.payload;
 
         verify_upto_payload(payload, &requirements, &self.operator(), now_unix())?;
-        if envelope.network.as_deref() != Some(requirements.network.as_str()) {
+        // Canonical x402 v2 carries the network inside `accepted`, not at the
+        // envelope level; fall back to it so canonical clients verify.
+        let claimed_network = envelope
+            .network
+            .as_deref()
+            .or_else(|| envelope.accepted.as_ref().map(|a| a.network.as_str()));
+        if claimed_network != Some(requirements.network.as_str()) {
             return Err(Error::Other(format!(
                 "network mismatch: payload {:?}, expected {}",
-                envelope.network, requirements.network
+                claimed_network, requirements.network
             )));
         }
 
@@ -564,45 +569,20 @@ impl X402Upto {
 }
 
 /// Co-sign the operator's (fee-payer) slot of a partially-signed transaction.
-/// Shared by the `upto` and `batch-settlement` servers.
+/// Shared by the `upto` and `batch-settlement` servers — the implementation
+/// lives in `solana-pay-core` so the MPP session opener reuses it too.
 pub(crate) async fn cosign_operator_fee_payer(
     signer: &dyn SolanaSigner,
     operator: &Pubkey,
     tx: &mut VersionedTransaction,
 ) -> Result<(), Error> {
-    let account_keys = tx.message.static_account_keys();
-    if account_keys.first() != Some(operator) {
-        return Err(Error::Other(
-            "open transaction fee payer must be the advertised operator".into(),
-        ));
-    }
-    let idx = account_keys
-        .iter()
-        .position(|k| k == operator)
-        .ok_or_else(|| Error::Other("operator (fee payer) not in transaction".into()))?;
-    if idx >= tx.signatures.len() {
-        return Err(Error::Other(
-            "operator is not a required signer in the transaction".into(),
-        ));
-    }
-    let msg_data = tx.message.serialize();
-    let sig_bytes: [u8; 64] = signer
-        .sign_message(&msg_data)
-        .await
-        .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?
-        .into();
-    tx.signatures[idx] = Signature::from(sig_bytes);
-    Ok(())
+    Ok(pc::cosign_fee_payer(signer, operator, tx).await?)
 }
 
 /// Decode a base64 (standard) bincode transaction, accepting legacy and v0.
+/// Thin wrapper over the shared `solana-pay-core` decoder.
 pub(crate) fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
-        .map_err(|e| Error::Other(format!("invalid base64 transaction: {e}")))?;
-    bincode::deserialize::<Transaction>(&bytes)
-        .map(VersionedTransaction::from)
-        .or_else(|_| bincode::deserialize::<VersionedTransaction>(&bytes))
-        .map_err(|e| Error::Other(format!("invalid transaction: {e}")))
+    Ok(pc::decode_transaction(b64)?)
 }
 
 fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> Result<(), Error> {

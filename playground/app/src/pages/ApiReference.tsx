@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { CodeBlock } from '../components/CodeBlock'
 import { LANG_DOCS } from '../lib/docs.gen'
 
 interface TreeNode {
@@ -108,6 +109,24 @@ export function ApiReference() {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
+                  // The generated reference is full of ```ts``` signature
+                  // blocks. Without this they render as raw, unstyled text;
+                  // route them through the same highlighter the snippet tabs
+                  // use. `pre` is flattened so CodeBlock's own <pre> isn't
+                  // nested inside another (invalid HTML).
+                  pre: ({ children }) => <>{children}</>,
+                  code: ({ className, children, ...props }) => {
+                    const match = /language-(\w+)/.exec(className ?? '')
+                    const text = String(children).replace(/\n$/, '')
+                    if (match && text.includes('\n')) {
+                      return <CodeBlock language={match[1]} text={text} />
+                    }
+                    return (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    )
+                  },
                   a: ({ href, children, ...props }) => {
                     if (!href) return <a {...props}>{children}</a>
                     // Internal .md links inside the same lang dir

@@ -15,5 +15,17 @@
     "x402": {
       "client": "const signer = await createKeyPairSignerFromBytes(getBase58Encoder().encode(SECRET))\nconst client = await createPayKitClient({ signer, rpcUrl: 'http://localhost:8899' })\n\n// Force the x402 rail (omit the 3rd arg to let pay-kit pick MPP or x402).\nconst res = await client.fetch('${URL}', undefined, 'x402')\nconsole.log(await res.json())"
     }
+  },
+  "rust": {
+    "charge": {
+      "client": "// 1. Parse the MPP charge challenge from the 402 `WWW-Authenticate` header.\nlet challenge = parse_challenge(www_authenticate)?;\n\n// 2. Sign a payment credential and replay the request with it.\nlet authorization = build_credential_header(signer, rpc, &challenge).await?;\nlet res = reqwest::Client::new()\n    .get(\"${URL}\")\n    .header(\"Authorization\", authorization)\n    .send()\n    .await?;\nprintln!(\"{}\", res.text().await?);",
+      "server": "let pay = PayKit::new(PayKitConfig {\n    recipient: \"CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY\".to_string(),\n    network: \"localnet\".to_string(),\n    rpc_url: Some(\"https://402.surfnet.dev:8899\".to_string()),\n    ..Default::default()\n})\n.expect(\"valid config\");\n\n// `paid_get(handler, price, &pay)` settles the 402 (MPP or x402, the\n// client's choice) before the handler runs.\nlet app = Router::new().route(\"${PATH}\", paid_get(quote, \"0.01\", &pay));"
+    }
+  },
+  "go": {
+    "charge": {
+      "client": "// The returned *http.Client settles a 402 transparently on any call.\nhttpClient := x402client.NewClient(signer, rpc)\n\nresp, err := httpClient.Get(\"${URL}\")\nif err != nil {\n\tpanic(err)\n}\ndefer resp.Body.Close()\n\nbody, _ := io.ReadAll(resp.Body)\nfmt.Println(string(body))",
+      "server": "client, err := paykit.New(paykit.Config{\n\tNetwork: paykit.SolanaLocalnet,\n\tAccept:  []paykit.Protocol{paykit.X402, paykit.MPP},\n\tMPP: paykit.MPPConfig{\n\t\tRealm:                  \"MyApp\",\n\t\tChallengeBindingSecret: []byte(\"local-dev-secret\"),\n\t},\n})\nif err != nil {\n\tpanic(err)\n}\n\ngate := paykit.Gate{Amount: paykit.MustParseUSD(\"0.01\"), Desc: \"Stock quote\"}\n\n// client.Require(gate) is func(http.Handler) http.Handler — it settles the\n// 402 (MPP or x402, the client's choice) before your handler runs.\nmux := http.NewServeMux()\nmux.Handle(\"${PATH}\", client.Require(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\tpmt, _ := paykit.PaymentFrom(r.Context())\n\tfmt.Fprintf(w, `{\"ok\":true,\"paid_via\":%q}`, pmt.Protocol)\n})))"
+    }
   }
 }

@@ -32,7 +32,10 @@ use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
-use solana_transaction::{versioned::VersionedTransaction, Transaction};
+use solana_transaction::versioned::VersionedTransaction;
+// Legacy `Transaction` is only needed by the test-only pre-broadcast helper.
+#[cfg(test)]
+use solana_transaction::Transaction;
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use std::str::FromStr;
 
@@ -997,12 +1000,14 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        // Accept legacy transactions and v0 transactions. For v0, we only
-        // allow static account keys so the pre-broadcast verifier can inspect
-        // the exact account set without resolving address lookup tables.
-        let mut tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
-            .map(VersionedTransaction::from)
-            .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
+        // Accept legacy and v0 transactions. Decode straight to
+        // `VersionedTransaction` — its message deserializer dispatches on the
+        // version-prefix byte, so it handles both formats. (Trying legacy
+        // `Transaction` first is unsound: bincode ignores trailing bytes, so a
+        // long-enough v0 tx can deserialize as a *garbage* legacy tx — wrong
+        // account keys, e.g. a bogus fee payer — instead of failing through to
+        // the v0 path.)
+        let mut tx: VersionedTransaction = bincode::deserialize(&tx_bytes)
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
         let t0 = std::time::Instant::now();

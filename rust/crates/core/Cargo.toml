@@ -10,7 +10,7 @@ repository = "https://github.com/solana-foundation/pay-kit"
 # Background batched settlement worker (tokio actor): mpsc accumulator, size +
 # linger-timer flush, sign with the operator, broadcast, background confirm.
 # Shared by the mpp session and x402 settlement paths.
-worker = ["dep:tokio", "dep:solana-rpc-client", "dep:solana-signature", "dep:tracing", "dep:async-trait"]
+worker = ["dep:tokio", "dep:solana-rpc-client", "dep:tracing", "dep:async-trait"]
 # Test/demo harness for the worker (open real channels, fund via cheatcodes,
 # drive + observe packing). Shared by the x402/mpp tests and the pay bench.
 testkit = ["worker", "dep:reqwest"]
@@ -43,11 +43,12 @@ solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-transaction = { version = "3", default-features = false }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
+# Used by the shared payment-channel transaction cosigner (fee-payer slot).
+solana-signature = { version = "3", default-features = false }
 
 # Settlement worker (feature `worker`) — optional.
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"], optional = true }
 solana-rpc-client = { version = "4", default-features = false, optional = true }
-solana-signature = { version = "3", default-features = false, optional = true }
 tracing = { version = "0.1", optional = true }
 async-trait = { version = "0.1", optional = true }
 

@@ -107,11 +107,14 @@ pub fn encode_upto_header(
     requirements: &UptoRequirements,
     payload: UptoPayload,
 ) -> Result<String, Error> {
+    // Emit the canonical x402 v2 shape: `{ x402Version, payload, accepted }`.
+    // The scheme/network live inside `accepted`, not at the envelope level, so
+    // we leave them empty (skipped on the wire) to interop with any x402 server.
     let envelope = UptoSignatureEnvelope {
         x402_version: X402_VERSION_V2,
-        scheme: UPTO_SCHEME.to_string(),
-        network: Some(requirements.network.clone()),
-        accepted: Some(requirements.to_accepted_value()?),
+        scheme: String::new(),
+        network: None,
+        accepted: Some(requirements.clone()),
         payload,
     };
     let json = serde_json::to_string(&envelope)

@@ -77,6 +77,11 @@ pub struct ExactOptions<'a> {
     pub description: Option<&'a str>,
     pub resource: Option<&'a str>,
     pub max_age: Option<u64>,
+    /// On-chain memo (`extra.memo`) the client stamps on the transfer. When
+    /// unset the client falls back to a random 16-byte nonce; set it (e.g. to
+    /// the endpoint resource) for a stable, human-meaningful settlement memo.
+    /// The verifier requires the tx memo to equal this exactly.
+    pub memo: Option<&'a str>,
 }
 
 /// One payment option offered by a multi-currency route.
@@ -304,6 +309,20 @@ impl X402 {
         if let Some(key) = &self.config.fee_payer_key {
             requirements.fee_payer = Some(true);
             requirements.fee_payer_key = Some(key.clone());
+        }
+        // Stable settlement memo (`extra.memo`): the client stamps it on the
+        // transfer and the verifier requires an exact match. Without it the
+        // client uses a random nonce.
+        if let Some(memo) = option.extra.memo {
+            let extra = requirements
+                .extra
+                .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let Some(obj) = extra.as_object_mut() {
+                obj.insert(
+                    "memo".to_string(),
+                    serde_json::Value::String(memo.to_string()),
+                );
+            }
         }
         Ok(requirements)
     }

@@ -20,7 +20,9 @@ use solana_instruction::Instruction;
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
+use solana_signature::Signature;
 use solana_transaction::Transaction;
+use solana_transaction::versioned::VersionedTransaction;
 
 use crate::{Error, Result};
 
@@ -158,6 +160,60 @@ pub fn to_address(pubkey: &Pubkey) -> Address {
 
 pub fn from_address(address: &Address) -> Pubkey {
     Pubkey::from(address.to_bytes())
+}
+
+/// Decode a base64 (standard) bincode transaction, accepting both legacy and v0
+/// versioned wire formats. Payment-channel opens are built by legacy clients
+/// (the pay Rust client) and v0 clients (the canonical pay-kit JS client, which
+/// builds `createTransactionMessage({ version: 0 })`), so any server that
+/// broadcasts a client-built open must accept either. Shared by x402
+/// (`upto`/`batch-settlement`) and the MPP session opener.
+///
+/// Decodes straight to `VersionedTransaction` — its message deserializer
+/// dispatches on the version-prefix byte, so it handles both formats. (Trying
+/// legacy `Transaction` first is unsound: bincode ignores trailing bytes, so a
+/// long-enough v0 tx can deserialize as a *garbage* legacy tx — wrong account
+/// keys — instead of failing through to the v0 path.)
+pub fn decode_transaction(b64: &str) -> Result<VersionedTransaction> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| Error::Other(format!("invalid base64 transaction: {e}")))?;
+    bincode::deserialize(&bytes).map_err(|e| Error::Other(format!("invalid transaction: {e}")))
+}
+
+/// Co-sign the operator's (fee-payer) slot of a partially-signed payment-channel
+/// transaction. The operator must be the fee payer (the first static account
+/// key); its signature slot is filled in place. Works on both legacy and v0
+/// transactions (via [`VersionedTransaction`]). Shared by x402
+/// (`upto`/`batch-settlement`) and the MPP session opener.
+pub async fn cosign_fee_payer(
+    signer: &dyn SolanaSigner,
+    operator: &Pubkey,
+    tx: &mut VersionedTransaction,
+) -> Result<()> {
+    let account_keys = tx.message.static_account_keys();
+    if account_keys.first() != Some(operator) {
+        return Err(Error::Other(
+            "open transaction fee payer must be the advertised operator".into(),
+        ));
+    }
+    let idx = account_keys
+        .iter()
+        .position(|k| k == operator)
+        .ok_or_else(|| Error::Other("operator (fee payer) not in transaction".into()))?;
+    if idx >= tx.signatures.len() {
+        return Err(Error::Other(
+            "operator is not a required signer in the transaction".into(),
+        ));
+    }
+    let msg_data = tx.message.serialize();
+    let sig_bytes: [u8; 64] = signer
+        .sign_message(&msg_data)
+        .await
+        .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?
+        .into();
+    tx.signatures[idx] = Signature::from(sig_bytes);
+    Ok(())
 }
 
 pub fn find_channel_pda(

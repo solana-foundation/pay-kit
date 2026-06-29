@@ -28,8 +28,7 @@ export default defineConfig({
       '/openapi.json': target,
       '/api': target, // priced routes (/api/v1/*) + meta (health, faucet, docs)
       '^/x402/': target, // legacy x402 demo API routes kept for compatibility
-      '/sessions': target, // session receipt poll
-      '/__402': target, // session delivery side-channel
+      '/__402': target, // session side-channels: delivery reserve + settle-receipt poll
     },
   },
 })
