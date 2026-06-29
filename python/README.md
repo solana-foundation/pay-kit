@@ -209,11 +209,17 @@ network fees, the customer's signed transaction settles funds to `pay_to`.
 Gates with `fee_within` or `fee_on_top` recipients auto-disable x402,
 because stock x402 facilitators settle to one address.
 
-| Scheme  | Client | Server |
-|---------|:------:|:------:|
-| `exact` | ✅     | ✅     |
-| `upto`  | —      | —      |
-| `batch` | —      | —      |
+| Scheme             | Client | Server |
+|--------------------|:------:|:------:|
+| `exact`            | ✅     | ✅     |
+| `upto`             | ✅     | ✅     |
+| `batch-settlement` | —      | —      |
+
+`upto` charges for actual usage up to a ceiling: the client opens a payment
+channel depositing the authorized maximum, the handler meters the response and
+reports it via the `Charge` dependency, then the gate settles the actual amount
+and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
+(rather than `require_payment`) and needs an operator signer.
 
 ### Client
 
@@ -259,11 +265,12 @@ Use MPP when:
 - You want the server to subsidize the customer's network fee.
 - You want one challenge per gate instead of per-mint-quoted offers.
 
-| Scheme        | Status |
-|---------------|--------|
-| `charge/pull` | ✅      |
-| `charge/push` | ✅      |
-| `session`     | ✅      |
+| Intent         | Client | Server |
+|----------------|:------:|:------:|
+| `charge/pull`  | ✅     | ✅     |
+| `charge/push`  | —      | ✅     |
+| `session`      | ✅     | ✅     |
+| `subscription` | —      | —      |
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =

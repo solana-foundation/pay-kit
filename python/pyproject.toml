@@ -44,8 +44,10 @@ packages = ["src/pay_kit"]
 target-version = "py311"
 line-length = 120
 # Rendered by codama-py (skills/pay-sdk-implementation/codegen); never edited
-# by hand, so it is exempt from lint and formatting.
-extend-exclude = ["src/pay_kit/protocols/programs/paymentchannels"]
+# by hand, so it is exempt from lint and formatting. `docs/snippets` holds
+# illustrative SDK-doc snippets (extracted into the playground + docs site),
+# not part of the package, so it is exempt too.
+extend-exclude = ["src/pay_kit/protocols/programs/paymentchannels", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]

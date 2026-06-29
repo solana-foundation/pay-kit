@@ -167,23 +167,39 @@ mux := http.NewServeMux()
 mux.Handle("${c.endpoint.path}", client.Require(gate)(handler))`,
   }),
   python: (c: Ctx) => ({
-    client: `from pay_kit.client import PayKitClient
+    client: `import asyncio
 
-client = PayKitClient(signer=signer, rpc_url="http://localhost:8899")
-res = client.get("${c.fullUrl}")
-print(res.json())`,
-    server: `from flask import Flask
-from pay_kit.server import ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate
+from pay_kit import Signer
+from pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
+
+
+async def main():
+    # x402_async_client auto-pays the 402 and replays the request.
+    async with x402_async_client(Signer.demo(), SolanaRpc("https://api.devnet.solana.com")) as http:
+        resp = await http.get("${c.fullUrl}")
+        print(resp.status_code, resp.text)
+
+
+asyncio.run(main())`,
+    // Python gates a route with @require_payment (Flask/Django) or
+    // Depends(RequirePayment(...)) (FastAPI). RequireUsage adds x402 upto and
+    // RequireSession adds MPP session; subscription isn't implemented.
+    server: `import pay_kit
+from flask import Flask, jsonify
+from pay_kit import Gate, usd
+from pay_kit.flask import require_payment
+
+pay_kit.configure(network="solana_localnet")
+gate = Gate.build(name="paid", amount=usd("0.01"),
+                  default_pay_to=pay_kit.config().effective_recipient())
 
 app = Flask(__name__)
-gate = ${c.primitive === 'session' ? 'Session' : c.primitive === 'subscription' ? 'Subscription' : 'Charge'}Gate(
-    recipient=RECIPIENT, network="mainnet", signer=fee_payer,
-)
 
-@app.route("${c.endpoint.path}", methods=["${c.method}"])
-@gate.guard
+
+@app.get("${c.endpoint.path}")
+@require_payment(gate)
 def handler():
-    return {"ok": True}`,
+    return jsonify(ok=True)`,
   }),
   ruby: (c: Ctx) => ({
     server: `require "sinatra"
