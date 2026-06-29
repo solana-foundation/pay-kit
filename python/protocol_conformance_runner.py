@@ -2,7 +2,7 @@
 
 Speaks the canonical mpp-tools adapter ABI (see
 `harness/src/protocol/README.md`): read one `{ "op": ..., "input": ... }`
-request as JSON on stdin, drive the real Python ``pay_kit`` MPP protocol core
+request as JSON on stdin, drive the real Python ``solana_pay_kit`` MPP protocol core
 (challenge / credential / receipt header codec, base64url, and the
 challenge-id HMAC), and write one response as JSON on stdout:
 
@@ -13,7 +13,7 @@ This is the protocol-primitive counterpart to the cross-SDK charge/x402
 ``conformance_runner.py``. It maps each canonical operation onto the SDK
 function named in the per-operation map in the PR description:
 
-| op                 | pay_kit function                                   |
+| op                 | solana_pay_kit function                                   |
 |--------------------|----------------------------------------------------|
 | challenge.parse    | core.headers.parse_www_authenticate                |
 | challenge.format   | core.headers.format_www_authenticate               |
@@ -37,11 +37,11 @@ import json
 import sys
 from typing import Any
 
-from pay_kit.protocols.mpp.core.base64url import decode as base64url_decode
-from pay_kit.protocols.mpp.core.base64url import decode_json, encode_json
-from pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
-from pay_kit.protocols.mpp.core.challenge import compute_challenge_id
-from pay_kit.protocols.mpp.core.headers import (
+from solana_pay_kit.protocols.mpp.core.base64url import decode as base64url_decode
+from solana_pay_kit.protocols.mpp.core.base64url import decode_json, encode_json
+from solana_pay_kit.protocols.mpp.core.base64url import encode as base64url_encode
+from solana_pay_kit.protocols.mpp.core.challenge import compute_challenge_id
+from solana_pay_kit.protocols.mpp.core.headers import (
     format_authorization,
     format_receipt,
     format_www_authenticate,
@@ -49,7 +49,7 @@ from pay_kit.protocols.mpp.core.headers import (
     parse_receipt,
     parse_www_authenticate,
 )
-from pay_kit.protocols.mpp.core.types import (
+from solana_pay_kit.protocols.mpp.core.types import (
     ChallengeEcho,
     PaymentChallenge,
     PaymentCredential,
@@ -248,7 +248,7 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
 def _challenge_id(input_: dict[str, Any]) -> str:
     """Canonical challenge-id derivation over the Python SDK HMAC.
 
-    The canonical ABI passes ``request`` as a JSON object; pay_kit's
+    The canonical ABI passes ``request`` as a JSON object; solana_pay_kit's
     ``compute_challenge_id`` takes the already-canonically-encoded base64url
     ``request`` pipe-slot string, so encode it here exactly the way the SDK
     does internally (RFC 8785 JCS -> base64url). ``opaque`` enters the pipe

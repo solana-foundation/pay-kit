@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pay_kit.protocols.mpp.core.challenge import compute_challenge_id, constant_time_equal
+from solana_pay_kit.protocols.mpp.core.challenge import compute_challenge_id, constant_time_equal
 
 
 class TestComputeChallengeId:

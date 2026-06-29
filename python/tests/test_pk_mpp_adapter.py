@@ -2,7 +2,7 @@
 fee splits, and the caveat #4 HMAC secret auto-resolution chain.
 
 No live RPC: all verify paths assert on the binding/Tier-2 layer, which rejects
-before settlement. The cross-route test reuses ``pay_kit.protocols.mpp``'s real challenge
+before settlement. The cross-route test reuses ``solana_pay_kit.protocols.mpp``'s real challenge
 HMAC so the pin actually fires.
 """
 
@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
-from pay_kit.config import reset
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.mpp import MppAdapter, SecretResolver
-from pay_kit.protocols.mpp.core.headers import format_authorization
-from pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
+from solana_pay_kit import Gate, MppConfig, Price, Protocol, Stablecoin, configure
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.mpp import MppAdapter, SecretResolver
+from solana_pay_kit.protocols.mpp.core.headers import format_authorization
+from solana_pay_kit.protocols.mpp.core.types import ChallengeEcho, PaymentCredential
 
 SECRET = "challenge-binding-secret-long-enough-for-hmac"
 FEE_A = "9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ"

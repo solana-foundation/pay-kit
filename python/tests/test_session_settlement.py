@@ -12,10 +12,10 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.transaction import Transaction  # type: ignore[import-untyped]
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit.protocols.mpp.server import SessionOptions, new_session
-from pay_kit.protocols.mpp.server.session_store import ChannelState
-from pay_kit.signer import LocalSigner
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
+from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
+from solana_pay_kit.signer import LocalSigner
 
 _BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 # A valid base58 signature the fake RPC returns; the open path confirms it.
@@ -208,11 +208,11 @@ async def test_settle_is_noop_without_signer_or_rpc() -> None:
 
 def _server_open_payload(operator: Keypair):
     """A client-built open whose fee-payer (operator) slot the server completes."""
-    from pay_kit.protocols.mpp.client.payment_channels import (
+    from solana_pay_kit.protocols.mpp.client.payment_channels import (
         PaymentChannelSessionOpenOptions,
         create_payment_channel_session_opener,
     )
-    from pay_kit.protocols.mpp.intents.session import SessionRequest
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
     payer = Keypair.from_seed(bytes([11] * 32))
     session_signer = Keypair.from_seed(bytes([9] * 32))
@@ -306,7 +306,7 @@ async def test_server_broadcast_open_skipped_for_pull_without_transaction() -> N
     ``openTxSubmitter="server"`` config could never establish a session for a
     no-transaction client. Mirrors the TS ``else`` open branch.
     """
-    from pay_kit.protocols.mpp.intents.session import OpenPayload
+    from solana_pay_kit.protocols.mpp.intents.session import OpenPayload
 
     operator = Keypair.from_seed(bytes([12] * 32))
     rpc = _SettleRpc()
@@ -396,7 +396,7 @@ async def test_push_open_without_transaction_trusts_channel_id_without_rpc() -> 
     the trust path: no on-chain confirmation is attempted and the channel is
     persisted under the channel id. Mirrors the TS push-else branch when no RPC
     is configured (the open signature is trusted as previously broadcast)."""
-    from pay_kit.protocols.mpp.intents.session import OpenPayload
+    from solana_pay_kit.protocols.mpp.intents.session import OpenPayload
 
     recipient = str(Keypair.from_seed(bytes([15] * 32)).pubkey())
     session = new_session(
@@ -512,7 +512,7 @@ async def test_settle_not_confirmed_within_timeout_raises_and_releases_settling(
 
     import inspect
 
-    import pay_kit.protocols.mpp.server.session_onchain as onchain
+    import solana_pay_kit.protocols.mpp.server.session_onchain as onchain
 
     confirm = onchain.confirm_transaction_signature
     timeout_kw = "timeout_seconds"

@@ -21,13 +21,13 @@ from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
-from pay_kit import Gate, Price, Protocol, Stablecoin, configure
-from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
-from pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
-from pay_kit.config import reset
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402 import ExactVerifier, X402Adapter
-from pay_kit.protocols.x402.exact.verify import (
+from solana_pay_kit import Gate, Price, Protocol, Stablecoin, configure
+from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.solana import ASSOCIATED_TOKEN_PROGRAM
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.x402 import ExactVerifier, X402Adapter
+from solana_pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
     TOKEN_2022_PROGRAM,
@@ -190,7 +190,7 @@ def test_verify_rejects_ata_create_instruction():
 
 def test_verify_allows_lighthouse_optional_instruction():
     """Lighthouse asserts are wallet-injected and MUST be allowed."""
-    from pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+    from solana_pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
 
     fee_payer, authority, pay_to, src, dest = _scenario()
     lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [])
@@ -213,7 +213,7 @@ def test_verify_allows_lighthouse_in_last_optional_slot():
     instruction index 4 (slot_index 1) and instruction index 5 (slot_index 2).
     The old ``slot_index < 2`` guard wrongly rejected Lighthouse at slot_index 2.
     """
-    from pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
+    from solana_pay_kit.protocols.x402.exact.verify import LIGHTHOUSE_PROGRAM
 
     fee_payer, authority, pay_to, src, dest = _scenario()
     lighthouse = Instruction(Pubkey.from_string(LIGHTHOUSE_PROGRAM), b"\x00", [])
@@ -562,7 +562,7 @@ def test_adapter_challenge_headers_base64():
 
 
 def test_adapter_delegated_mode_not_implemented():
-    from pay_kit import X402Config
+    from solana_pay_kit import X402Config
 
     cfg = configure(network="solana_localnet", preflight=False, x402=X402Config(facilitator_url="https://fac"))
     with pytest.raises(NotImplementedError, match="delegated mode"):

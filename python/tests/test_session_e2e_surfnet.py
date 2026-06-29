@@ -19,14 +19,14 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
-from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
-from pay_kit.protocols.mpp.client.payment_channels import (
+from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM, resolve_mint
+from solana_pay_kit.protocols.mpp.client.payment_channels import (
     create_payment_channel_session_opener,
 )
-from pay_kit.protocols.mpp.intents.session import ClosePayload, SessionRequest, VoucherPayload
-from pay_kit.protocols.mpp.server import SessionOptions, new_session
-from pay_kit.signer import LocalSigner
+from solana_pay_kit.protocols.mpp.intents.session import ClosePayload, SessionRequest, VoucherPayload
+from solana_pay_kit.protocols.mpp.server import SessionOptions, new_session
+from solana_pay_kit.signer import LocalSigner
 
 _RPC_URL = os.environ.get("MPP_HARNESS_RPC_URL", "https://402.surfnet.dev:8899")
 _USDC = resolve_mint("USDC", "localnet")

@@ -195,11 +195,11 @@ func main() {
     client: true,
     snippet: `# app.py
 from flask import Flask, jsonify
-import pay_kit
-from pay_kit import usd
-from pay_kit.flask import require_payment
+import solana_pay_kit
+from solana_pay_kit import usd
+from solana_pay_kit.flask import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 app = Flask(__name__)
 
 @app.get("/report")

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from pay_kit.usage import CHARGE_ATTR, Charge, charge_from, finalize_usage
+from solana_pay_kit.usage import CHARGE_ATTR, Charge, charge_from, finalize_usage
 
 
 class _StubEngine:

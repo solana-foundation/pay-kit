@@ -13,7 +13,7 @@ from dataclasses import replace
 import pytest
 from solders.pubkey import Pubkey
 
-from pay_kit.protocols.mpp._paymentchannels import (
+from solana_pay_kit.protocols.mpp._paymentchannels import (
     PAYMENT_CHANNELS_PROGRAM_ID,
     PROGRAM_ID,
     Distribution,

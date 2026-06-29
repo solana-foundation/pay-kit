@@ -15,9 +15,9 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.client.session import ActiveSession
-from pay_kit.protocols.mpp.client.session_consumer import CommitTransport, SessionConsumer
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.client.session import ActiveSession
+from solana_pay_kit.protocols.mpp.client.session_consumer import CommitTransport, SessionConsumer
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     CommitPayload,
     CommitReceipt,

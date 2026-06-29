@@ -26,8 +26,8 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from pay_kit._paycore.mints import SYSTEM_PROGRAM, TOKEN_PROGRAM
-from pay_kit._paycore.solana import resolve_mint
+from solana_pay_kit._paycore.mints import SYSTEM_PROGRAM, TOKEN_PROGRAM
+from solana_pay_kit._paycore.solana import resolve_mint
 
 # The sandbox clones mainnet state, so it funds the *mainnet* USDC mint
 # regardless of the configured network tag (mirrors sandbox.ts).

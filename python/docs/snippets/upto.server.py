@@ -3,12 +3,12 @@
 # Mirrors the summarize route in examples/playground_api/app.py. Not one of the
 # playground's four primitives, so the playground extractor ignores it — the SDK
 # docs read it directly. See ../../../docs/snippets-convention.md.
-import pay_kit
+import solana_pay_kit
 from fastapi import Depends, FastAPI, Request
-from pay_kit import Gate, Protocol, usd
-from pay_kit.fastapi import Charge, RequireUsage, install
+from solana_pay_kit import Gate, Protocol, usd
+from solana_pay_kit.fastapi import Charge, RequireUsage, install
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
 # snippet:start
 # A usage gate authorizes a ceiling (x402 `upto`); the handler meters actual
@@ -18,7 +18,7 @@ summarize_gate = Gate.build(
     name="summarize",
     amount=usd("0.10"),
     description="Summarize text, billed per token",
-    default_pay_to=pay_kit.config().effective_recipient(),
+    default_pay_to=solana_pay_kit.config().effective_recipient(),
     accept=(Protocol.X402,),
 )
 

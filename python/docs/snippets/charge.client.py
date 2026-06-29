@@ -3,8 +3,8 @@
 # Mirrors examples/x402-client/main.py. See ../../../docs/snippets-convention.md.
 import asyncio
 
-from pay_kit import Signer
-from pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
+from solana_pay_kit import Signer
+from solana_pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
 
 
 async def main() -> None:

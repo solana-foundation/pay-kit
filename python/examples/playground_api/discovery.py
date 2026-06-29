@@ -20,11 +20,11 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from pay_kit._paycore.protocol import Protocol
-from pay_kit._paycore.solana import stablecoin_decimals
-from pay_kit.config import Config
-from pay_kit.gate import Gate
-from pay_kit.price import Price
+from solana_pay_kit._paycore.protocol import Protocol
+from solana_pay_kit._paycore.solana import stablecoin_decimals
+from solana_pay_kit.config import Config
+from solana_pay_kit.gate import Gate
+from solana_pay_kit.price import Price
 
 
 def _mints_network(config: Config) -> str:

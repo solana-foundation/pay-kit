@@ -2,13 +2,13 @@
 #
 # Mirrors examples/playground_api/sessions.py. See
 # ../../../docs/snippets-convention.md for the snippet:start/end convention.
-import pay_kit
+import solana_pay_kit
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
-from pay_kit.fastapi import RequireSession
-from pay_kit.protocols.mpp.server import (
+from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit._paycore.solana import resolve_mint, stablecoin_decimals
+from solana_pay_kit.fastapi import RequireSession
+from solana_pay_kit.protocols.mpp.server import (
     SessionChallengeOptions,
     SessionOptions,
     new_session,
@@ -16,7 +16,7 @@ from pay_kit.protocols.mpp.server import (
 )
 
 router = APIRouter()
-cfg = pay_kit.config()
+cfg = solana_pay_kit.config()
 
 # snippet:start
 # One session method, built from the shared config. `cap` is the ceiling the

@@ -169,8 +169,8 @@ mux.Handle("${c.endpoint.path}", client.Require(gate)(handler))`,
   python: (c: Ctx) => ({
     client: `import asyncio
 
-from pay_kit import Signer
-from pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
+from solana_pay_kit import Signer
+from solana_pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
 
 
 async def main():
@@ -184,14 +184,14 @@ asyncio.run(main())`,
     // Python gates a route with @require_payment (Flask/Django) or
     // Depends(RequirePayment(...)) (FastAPI). RequireUsage adds x402 upto and
     // RequireSession adds MPP session; subscription isn't implemented.
-    server: `import pay_kit
+    server: `import solana_pay_kit
 from flask import Flask, jsonify
-from pay_kit import Gate, usd
-from pay_kit.flask import require_payment
+from solana_pay_kit import Gate, usd
+from solana_pay_kit.flask import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 gate = Gate.build(name="paid", amount=usd("0.01"),
-                  default_pay_to=pay_kit.config().effective_recipient())
+                  default_pay_to=solana_pay_kit.config().effective_recipient())
 
 app = Flask(__name__)
 

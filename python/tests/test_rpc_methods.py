@@ -1,6 +1,6 @@
 """Exhaustive coverage for SolanaRpc methods.
 
-Hits every branch in :mod:`pay_kit._paycore.rpc` so the JSON-RPC wrapper meets
+Hits every branch in :mod:`solana_pay_kit._paycore.rpc` so the JSON-RPC wrapper meets
 the 90 percent line coverage gate: the error branch in ``_call``, both
 ``get_signature_statuses`` return shapes, ``get_transaction``,
 ``confirm_transaction`` legacy shim (success and timeout), and
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError, _RpcResponse
 
 
 class _FakeResponse:
@@ -120,7 +120,7 @@ async def test_confirm_transaction_timeout():
     # Always returns "processed" status so confirm_transaction loops 40x and returns timeout.
     rpc._client = _ScriptedClient([{"result": {"value": [{"confirmationStatus": "processed"}]}, "id": 1}])  # type: ignore[assignment]
     # Speed up: monkeypatch asyncio.sleep on the module
-    import pay_kit._paycore.rpc as rpc_mod
+    import solana_pay_kit._paycore.rpc as rpc_mod
 
     async def _noop_sleep(_s):
         return None

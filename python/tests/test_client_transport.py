@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
-from pay_kit.protocols.mpp.client.transport import PaymentTransport
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate
-from pay_kit.protocols.mpp.core.types import PaymentChallenge
+from solana_pay_kit.protocols.mpp.client.transport import PaymentTransport
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
 
 
 class MockTransport(httpx.AsyncBaseTransport):
@@ -120,7 +120,7 @@ class TestPaymentTransport:
             return "Payment credential"
 
         monkeypatch.setattr(
-            "pay_kit.protocols.mpp.client.transport.build_credential_header",
+            "solana_pay_kit.protocols.mpp.client.transport.build_credential_header",
             fake_build_credential_header,
         )
 

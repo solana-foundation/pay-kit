@@ -1,5 +1,5 @@
 # examples/playground_api/app.py
-"""The pay-kit playground API (FastAPI), gated with the unified pay_kit surface.
+"""The pay-kit playground API (FastAPI), gated with the unified solana_pay_kit surface.
 
 Aligned with the TypeScript playground (`typescript/examples/playground-api`):
 one config boots the server and a small route catalogue exercises every gate the
@@ -38,16 +38,16 @@ import random
 
 from fastapi import Depends, FastAPI, Request
 
-import pay_kit
-from pay_kit import Gate, Pricing, usd
-from pay_kit._paycore.protocol import Protocol
-from pay_kit.fastapi import Charge, Payment, RequirePayment, RequireUsage, install
+import solana_pay_kit
+from solana_pay_kit import Gate, Pricing, usd
+from solana_pay_kit._paycore.protocol import Protocol
+from solana_pay_kit.fastapi import Charge, Payment, RequirePayment, RequireUsage, install
 
 from . import discovery
 from .docs import register_docs
 from .sandbox import fund_sandbox, fund_usdc, register_faucet
 
-pay_kit.configure(
+solana_pay_kit.configure(
     network=os.getenv("PAY_KIT_NETWORK", "solana_localnet"),
     # Point at a specific Solana RPC (e.g. a local surfnet) when set; otherwise
     # the network default is used. Mirrors the TS playground's RPC_URL knob.
@@ -58,7 +58,7 @@ pay_kit.configure(
 # operator / recipient / challenge-binding secret.
 from . import sessions  # noqa: E402
 
-_cfg = pay_kit.config()
+_cfg = solana_pay_kit.config()
 _RECIPIENT = _cfg.effective_recipient()
 # A second recipient for the split demo (the platform's cut). A fixed, valid
 # base58 pubkey distinct from the operator/recipient.
