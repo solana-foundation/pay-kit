@@ -59,6 +59,18 @@ class ServerUptoTest < Minitest::Test
     assert_equal "0", response["amount"]
   end
 
+  def test_requirement_advertises_facilitator_and_fee_payer
+    req = UptoTypes.requirement(
+      network: NETWORK, amount: MAX, asset: @mint, pay_to: @payee,
+      max_timeout_seconds: 300, decimals: 6, token_program: @token_program,
+      fee_payer: @operator, channel_program: "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+    )
+    extra = req["extra"]
+    # TS @x402/svm reads extra.facilitator; Go/Rust read extra.feePayer.
+    assert_equal @operator, extra["facilitator"]
+    assert_equal @operator, extra["feePayer"]
+  end
+
   def test_settle_actual_rejects_above_ceiling
     engine, header, = build_case(salt: 4)
     open = engine.verify_open(header, now: now)

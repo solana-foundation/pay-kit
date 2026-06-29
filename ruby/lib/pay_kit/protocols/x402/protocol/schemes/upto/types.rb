@@ -84,6 +84,11 @@ module PayKit::Protocols::X402
             "profiles" => [PROFILE_PAYMENT_CHANNEL],
             "decimals" => decimals,
             "tokenProgram" => token_program,
+            # The operator is the fee payer. Advertise it under both keys: the
+            # SVM upto spec / TS @x402/svm client read `extra.facilitator`, while
+            # Go/Rust read `extra.feePayer`. Sending both keeps every client
+            # interoperable (mirrors the Python SDK).
+            "facilitator" => fee_payer,
             "feePayer" => fee_payer,
             "channelProgram" => channel_program
           }
