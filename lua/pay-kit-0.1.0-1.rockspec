@@ -1,8 +1,25 @@
+-- DRAFT release rockspec proposal (NOT published).
+--
+-- GitHub-based distribution, no central LuaRocks upload required:
+-- consumers install straight from this rockspec / the repo, e.g.
+--
+--     luarocks install https://raw.githubusercontent.com/solana-foundation/pay-kit/lua-v0.1.0/lua/pay-kit-0.1.0-1.rockspec
+--
+-- or, from a checkout:
+--
+--     cd lua && luarocks make pay-kit-0.1.0-1.rockspec
+--
+-- The `source` below points at a git tag so the install is reproducible
+-- without relying on luarocks.org hosting the rock. Because pay-kit is a
+-- monorepo and the Lua tree lives under `lua/`, `source.dir` re-roots the
+-- build into that subdirectory after the tag tarball is unpacked.
 rockspec_format = '3.0'
 package = 'pay-kit'
-version = 'dev-1'
+version = '0.1.0-1'
 source = {
   url = 'git+https://github.com/solana-foundation/pay-kit.git',
+  tag = 'lua-v0.1.0',
+  dir = 'pay-kit/lua',
 }
 description = {
   summary = 'Building blocks for Agentic payments (x402, MPP, AP2)',
