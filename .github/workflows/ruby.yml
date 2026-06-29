@@ -77,3 +77,80 @@ jobs:
           X402_HARNESS_CLIENTS: rust-x402
           X402_HARNESS_SERVERS: ""
         run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "ruby" --testTimeout 180000
+
+  harness-ruby-upto:
+    name: "Harness: Ruby x402 upto (payment-channel)"
+    needs: test-ruby
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ruby
+      - uses: ./.github/actions/setup-harness
+        with:
+          # Ruby is server-only for x402; the canonical Rust client builds and
+          # broadcasts the channel `open` this server settles against.
+          cargo-bins: "solana-x402:harness_upto_client"
+          cargo-cache-key: ruby
+      - name: Checkout payment channels program
+        uses: actions/checkout@v5
+        with:
+          repository: Moonsong-Labs/solana-payment-channels
+          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
+          path: _payment-channels
+          fetch-depth: 1
+      - name: Install Anza CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Patch payment channels localnet artifact
+        working-directory: _payment-channels
+        run: |
+          old_program_id="CQAyft83tN1w2bRofB5PZ79eVDU2xZUVo43LU1qL4zRg"
+          new_program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+          sentinel_file="program/payment_channels/src/constants.rs"
+          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
+          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
+          grep_args=(--exclude-dir=.git --exclude-dir=target)
+          mapfile -t id_files < <(grep -RIl "${grep_args[@]}" "$old_program_id" .)
+          if [ "${#id_files[@]}" -gt 0 ]; then
+            sed -i "s/$old_program_id/$new_program_id/g" "${id_files[@]}"
+          fi
+          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
+          if ! grep -R "${grep_args[@]}" "$new_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch did not write $new_program_id"
+            exit 1
+          fi
+          if grep -R "${grep_args[@]}" "$old_program_id" . >/dev/null; then
+            echo "::error::payment-channels program id patch left $old_program_id in the checkout"
+            exit 1
+          fi
+          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
+            echo "::error::payment-channels treasury sentinel patch did not apply"
+            exit 1
+          fi
+      - name: Build payment channels program
+        working-directory: _payment-channels/program/payment_channels
+        run: cargo build-sbf --tools-version v1.52 --arch v1
+      - name: Run Ruby x402 upto harness matrix
+        working-directory: harness
+        env:
+          # Ruby upto server under test, paired against the canonical Rust upto
+          # client. The usage middleware fail-closes on a zero charge, so the
+          # Ruby server runs only x402-upto-basic; x402-upto-zero-actual stays
+          # pinned to the low-level Rust server in the Go/Rust jobs.
+          MPP_HARNESS_INTENTS: x402-upto
+          MPP_HARNESS_SCENARIOS: x402-upto-basic
+          MPP_HARNESS_CLIENTS: rust-x402-upto
+          MPP_HARNESS_SERVERS: ruby-x402-upto
+          X402_HARNESS_CLIENTS: rust-x402-upto
+          X402_HARNESS_SERVERS: ruby-x402-upto
+          # Localnet SBF artifact: the mainnet deployment uses BPF instructions
+          # unsupported by the embedded surfnet.
+          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
+          SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
+        run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000

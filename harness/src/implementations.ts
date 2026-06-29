@@ -481,4 +481,23 @@ export const serverImplementations: ImplementationDefinition[] = [
     intents: ["x402-upto"],
     reportsAs: "python",
   },
+  {
+    id: "ruby-x402-upto",
+    label: "Ruby PayKit x402 upto server",
+    role: "server",
+    // Same umbrella binary as the `ruby` entry; the orchestrator sets
+    // PAY_KIT_HARNESS_PROTOCOL=x402-upto for the upto intent so it mounts the
+    // PayKit::Usage middleware (channel open + voucher settle). The usage
+    // middleware fail-closes on a zero charge, so the `x402-upto-zero-actual`
+    // scenario (serverIds: ["rust-x402-upto"]) excludes this server, matching
+    // go-paykit and python-x402-upto.
+    command: [
+      "sh",
+      "-c",
+      "cd ../ruby && bundle exec ruby ../harness/ruby-server/server.rb",
+    ],
+    enabled: isEnabled("ruby-x402-upto", "X402_HARNESS_SERVERS", false),
+    intents: ["x402-upto"],
+    reportsAs: "ruby",
+  },
 ];
