@@ -114,7 +114,10 @@ pub fn encode_upto_header(
         x402_version: X402_VERSION_V2,
         scheme: String::new(),
         network: None,
-        accepted: Some(requirements.clone()),
+        accepted: Some(
+            serde_json::to_value(requirements)
+                .map_err(|e| Error::Other(format!("upto accepted serialization failed: {e}")))?,
+        ),
         payload,
     };
     let json = serde_json::to_string(&envelope)

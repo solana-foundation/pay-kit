@@ -201,8 +201,13 @@ pub struct UptoSignatureEnvelope {
 
     /// The echoed `PaymentRequirements` being paid — a sibling of `payload` in
     /// the canonical x402 v2 envelope, and where the scheme/network live.
+    ///
+    /// Kept as opaque JSON rather than a typed `UptoRequirements` so a
+    /// canonical-compatible client that echoes an `accepted` object missing
+    /// fields the server never reads (everything but `network`) still parses.
+    /// The server pulls only `accepted.network` from it as a fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted: Option<UptoRequirements>,
+    pub accepted: Option<serde_json::Value>,
 
     pub payload: UptoPayload,
 }
@@ -322,8 +327,12 @@ mod tests {
         assert_eq!(env.scheme, "upto", "scheme defaults when absent");
         assert!(env.network.is_none(), "no top-level network in canonical");
         let accepted = env.accepted.clone().expect("accepted present");
-        assert_eq!(accepted.network, req.network, "network read from accepted");
-        assert_eq!(accepted.scheme, "upto");
+        assert_eq!(
+            accepted.get("network").and_then(|n| n.as_str()),
+            Some(req.network.as_str()),
+            "network read from accepted"
+        );
+        assert_eq!(accepted.get("scheme").and_then(|s| s.as_str()), Some("upto"));
         assert_eq!(env.payload.channel_id, "Chan1111111111111111111111111111111111111");
 
         // And the client-built shape (empty scheme) omits it on the wire.

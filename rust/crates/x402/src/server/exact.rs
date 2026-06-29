@@ -561,18 +561,22 @@ impl X402 {
         };
 
         // Co-sign the fee-payer slot (the client left it empty for the sponsor).
+        // Solana's fee payer is always account index 0, so require the sponsor
+        // to occupy that slot — finding the key anywhere in the account list
+        // would let a crafted tx put another signer at index 0 and the sponsor
+        // later, signing the wrong slot and leaving the real fee payer unsigned.
         let fee_payer_key = fee_payer.pubkey();
-        let signer_index = tx
-            .message
-            .static_account_keys()
-            .iter()
-            .position(|key| key == &fee_payer_key)
-            .ok_or_else(|| Error::Other("fee payer not found in transaction accounts".into()))?;
-        if signer_index >= tx.signatures.len() {
+        if tx.message.static_account_keys().first() != Some(&fee_payer_key) {
+            return Err(Error::Other(
+                "transaction fee payer must match the provided fee payer signer".into(),
+            ));
+        }
+        if tx.signatures.is_empty() {
             return Err(Error::Other(
                 "fee payer is not a required transaction signer".into(),
             ));
         }
+        let signer_index = 0;
         let signature = fee_payer
             .sign_message(&tx.message.serialize())
             .await
@@ -926,6 +930,7 @@ mod tests {
                     description: Some("Override"),
                     resource: Some("/override"),
                     max_age: Some(120),
+                    memo: None,
                 },
             )
             .unwrap();

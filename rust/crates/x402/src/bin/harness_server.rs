@@ -156,6 +156,7 @@ fn payment_options(state: &HarnessState) -> Vec<PaymentOption<'static>> {
                     description: Some("Surfpool-backed protected content"),
                     resource: Some(resource_path),
                     max_age: Some(60),
+                    memo: None,
                 },
             }
         })
@@ -170,6 +171,7 @@ fn payment_options(state: &HarnessState) -> Vec<PaymentOption<'static>> {
             description: Some("Surfpool-backed protected content"),
             resource: Some(resource_path),
             max_age: Some(60),
+            memo: None,
         },
     }];
     options.extend(extras);
