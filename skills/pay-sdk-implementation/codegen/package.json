@@ -8,7 +8,8 @@
     "payment-channels:rust": "tsx ./generate-payment-channels-client-rs.ts",
     "payment-channels:go": "tsx ./generate-payment-channels-client-go.ts",
     "payment-channels:ts": "tsx ./generate-payment-channels-client-ts.ts",
-    "payment-channels:python": "tsx ./generate-payment-channels-client-py.ts"
+    "payment-channels:python": "tsx ./generate-payment-channels-client-py.ts",
+    "payment-channels:ruby": "tsx ./generate-payment-channels-client-rb.ts"
   },
   "dependencies": {
     "@codama/nodes-from-anchor": "^1.4.1",

@@ -2,7 +2,7 @@
 
 require_relative "../test_helper"
 
-# Byte-level parity tests for the hand-written payment-channels client. The
+# Byte-level parity tests for the Codama-backed payment-channels facade. The
 # golden vectors are lifted from the Go/Rust references so a Ruby encoder drift
 # fails here, offline, before it ever reaches a validator.
 class PaymentChannelsTest < Minitest::Test
@@ -207,6 +207,14 @@ class PaymentChannelsTest < Minitest::Test
 
     assert_equal PC::CHANNEL_ACCOUNT_SIZE, PC::CHANNEL_ACCOUNT_SIZE
     assert_instance_of PC::Channel, PC.decode_channel(data)
+  end
+
+  def test_uses_codama_generated_client
+    assert_same ::PayCore::Solana::Generated::PaymentChannels, PC::Generated
+    assert_equal PC::PROGRAM_ID, PC::Generated::PROGRAM_ID.to_s
+    assert_equal PC::DISCRIMINATOR_SETTLE_AND_FINALIZE, PC::Generated::SETTLE_AND_FINALIZE_DISCRIMINATOR
+    assert_equal PC::DISCRIMINATOR_DISTRIBUTE, PC::Generated::DISTRIBUTE_DISCRIMINATOR
+    assert_equal PC::STATUS_OPEN, PC::Generated::ChannelStatus::OPEN
   end
 
   # ---- constants + LE helpers -------------------------------------------

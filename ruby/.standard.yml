@@ -1,0 +1,2 @@
+ignore:
+  - 'lib/pay_core/solana/generated/**/*'

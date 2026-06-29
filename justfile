@@ -82,8 +82,14 @@ payment-channels-generate-ts: codegen-install
 payment-channels-generate-py: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:python
 
-# Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript, Python).
-payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts payment-channels-generate-py
+# Render the Ruby client from the vendored IDL. Wipes
+# `ruby/lib/pay_core/solana/generated/` and rewrites it in place — see
+# {{codegen_dir}}/generate-payment-channels-client-rb.ts.
+payment-channels-generate-rb: codegen-install
+    cd {{codegen_dir}} && pnpm run payment-channels:ruby
+
+# Full refresh: pull IDL + regenerate every client (Rust, Go, TypeScript, Python, Ruby).
+payment-channels-sync: payment-channels-pull-idl payment-channels-generate-rs payment-channels-generate-go payment-channels-generate-ts payment-channels-generate-py payment-channels-generate-rb
 
 # ── TypeScript ──
 

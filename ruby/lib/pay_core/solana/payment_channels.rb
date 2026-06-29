@@ -7,16 +7,15 @@ require_relative "public_key"
 require_relative "ata"
 require_relative "mints"
 require_relative "instruction"
+require_relative "generated/payment_channels"
 
 module PayCore
   module Solana
-    # Hand-written, byte-identical client for the pay-kit payment-channels
-    # program — the SVM `upto` (usage-based) settlement primitive. Ruby has no
-    # codama codegen target, so the channel account decoder, PDA derivations,
-    # voucher preimage, distribution-hash commitment, and the settle /
-    # distribute / Ed25519-precompile instruction encoders are written here by
-    # hand and pinned to golden byte-vectors lifted from the Go/Rust references
-    # (`go/paycore/paymentchannels/*`, `rust/crates/core/src/payment_channels.rs`).
+    # Thin payment-channels facade for the SVM `upto` (usage-based) settlement
+    # primitive. Account decode and on-chain instruction layouts come from the
+    # Codama-generated Ruby client under `generated/payment_channels`; this file
+    # keeps the pay-kit-specific PDA, voucher, distribution-hash, ATA, and
+    # PreparedInstruction conveniences pinned to cross-language golden vectors.
     #
     # The bytes emitted here MUST stay identical across the language SDKs or the
     # on-chain program rejects them; the offline parity tests are the guard, the
@@ -24,10 +23,11 @@ module PayCore
     module PaymentChannels
       module_function
 
-      # Canonical mainnet program id; matches the codama-generated default and
-      # every PDA derivation pinned to it (go/paycore/paymentchannels/
-      # paymentchannels.go:27). The issue draft's `GuoKrza…` is stale.
-      PROGRAM_ID = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
+      Generated = ::PayCore::Solana::Generated::PaymentChannels
+
+      # Canonical mainnet program id from the Codama-generated client; every PDA
+      # derivation is pinned to it. The issue draft's `GuoKrza…` is stale.
+      PROGRAM_ID = Generated::PROGRAM_ID.to_s
 
       # Ed25519 signature-verification native precompile (settlement.go:22).
       ED25519_PROGRAM = "Ed25519SigVerify111111111111111111111111111"
@@ -45,13 +45,12 @@ module PayCore
       CHANNEL_SEED = "channel"
       EVENT_AUTHORITY_SEED = "event_authority"
 
-      # One-byte instruction discriminators (idl/payment-channels.json +
-      # go/protocols/programs/paymentchannels/instruction_*.go).
-      DISCRIMINATOR_SETTLE_AND_FINALIZE = 4
-      DISCRIMINATOR_DISTRIBUTE = 7
+      # One-byte instruction discriminators from the Codama-generated builders.
+      DISCRIMINATOR_SETTLE_AND_FINALIZE = Generated::SETTLE_AND_FINALIZE_DISCRIMINATOR
+      DISCRIMINATOR_DISTRIBUTE = Generated::DISTRIBUTE_DISCRIMINATOR
 
       # Channel.status enum (idl channelStatus): 0 = open, 1 = finalized, 2 = closing.
-      STATUS_OPEN = 0
+      STATUS_OPEN = Generated::ChannelStatus::OPEN
 
       # Canonical channel close grace period in seconds, pinned across the SDKs
       # (rust DEFAULT_GRACE_PERIOD_SECONDS). The on-chain program rejects zero;
@@ -148,25 +147,28 @@ module PayCore
           raise ArgumentError, "channel account is #{data.respond_to?(:bytesize) ? data.bytesize : "?"} bytes, want >= #{CHANNEL_ACCOUNT_SIZE}"
         end
 
+        generated = Generated::Channel.from_bytes(data)
         Channel.new(
-          discriminator: data.getbyte(0),
-          version: data.getbyte(1),
-          bump: data.getbyte(2),
-          status: data.getbyte(3),
-          salt: read_u64_le(data, 4),
-          deposit: read_u64_le(data, 12),
-          settled: read_u64_le(data, 20),
-          payout_watermark: read_u64_le(data, 28),
-          closure_started_at: read_i64_le(data, 36),
-          payer_withdrawn_at: read_i64_le(data, 44),
-          grace_period: read_u32_le(data, 52),
-          distribution_hash: data.byteslice(56, 32),
-          payer: Base58.encode(data.byteslice(88, 32)),
-          payee: Base58.encode(data.byteslice(120, 32)),
-          authorized_signer: Base58.encode(data.byteslice(152, 32)),
-          mint: Base58.encode(data.byteslice(184, 32)),
-          rent_payer: Base58.encode(data.byteslice(216, 32))
+          discriminator: generated.discriminator,
+          version: generated.version,
+          bump: generated.bump,
+          status: generated.status,
+          salt: generated.salt,
+          deposit: generated.deposit,
+          settled: generated.settlement.settled,
+          payout_watermark: generated.settlement.payout_watermark,
+          closure_started_at: generated.closure_started_at,
+          payer_withdrawn_at: generated.payer_withdrawn_at,
+          grace_period: generated.grace_period,
+          distribution_hash: generated.distribution_hash.pack("C*"),
+          payer: generated.payer.to_s,
+          payee: generated.payee.to_s,
+          authorized_signer: generated.authorized_signer.to_s,
+          mint: generated.mint.to_s,
+          rent_payer: generated.rent_payer.to_s
         )
+      rescue Generated::Error => error
+        raise ArgumentError, error.message
       end
 
       # ---- instruction encoders --------------------------------------------
@@ -211,17 +213,13 @@ module PayCore
           has_voucher = 1
         end
 
-        # disc(4) || SettleAndFinalizeArgs{ hasVoucher: u8 }.
-        settle = PreparedInstruction.new(
-          program_id,
-          [
-            AccountMeta.signer_readonly(merchant),
-            AccountMeta.writable(channel),
-            AccountMeta.readonly(INSTRUCTIONS_SYSVAR)
-          ],
-          [DISCRIMINATOR_SETTLE_AND_FINALIZE, has_voucher].pack("C2")
+        settle = Generated.build_settle_and_finalize(
+          merchant: generated_pubkey(merchant),
+          channel: generated_pubkey(channel),
+          instructions_sysvar: generated_pubkey(INSTRUCTIONS_SYSVAR),
+          settle_and_finalize_args: Generated::SettleAndFinalizeArgs.new(has_voucher: has_voucher)
         )
-        instructions << settle
+        instructions << prepared_instruction(settle, program_id: program_id)
         instructions
       end
 
@@ -237,28 +235,32 @@ module PayCore
         treasury_token = ATA.derive(owner: treasury, mint: mint, token_program: token_program)
         event_authority = find_event_authority_pda(program_id: program_id)
 
-        accounts = [
-          AccountMeta.writable(channel),
-          AccountMeta.writable(payer),
-          AccountMeta.writable(rent_payer),
-          AccountMeta.writable(channel_token),
-          AccountMeta.writable(payer_token),
-          AccountMeta.writable(payee_token),
-          AccountMeta.writable(treasury_token),
-          AccountMeta.readonly(mint),
-          AccountMeta.readonly(token_program),
-          AccountMeta.readonly(event_authority),
-          AccountMeta.readonly(program_id)
-        ]
-
-        data = [DISCRIMINATOR_DISTRIBUTE].pack("C") + u32_le(recipients.length)
-        recipients.each do |entry|
-          recipient = entry.fetch(:recipient)
-          accounts << AccountMeta.writable(ATA.derive(owner: recipient, mint: mint, token_program: token_program))
-          data += Base58.decode(recipient) + u16_le(entry.fetch(:bps))
+        generated_recipients = recipients.map do |entry|
+          Generated::DistributionEntry.new(
+            recipient: generated_pubkey(entry.fetch(:recipient)),
+            bps: entry.fetch(:bps)
+          )
+        end
+        recipient_token_accounts = recipients.map do |entry|
+          generated_pubkey(ATA.derive(owner: entry.fetch(:recipient), mint: mint, token_program: token_program))
         end
 
-        PreparedInstruction.new(program_id, accounts, data)
+        distribute = Generated.build_distribute(
+          channel: generated_pubkey(channel),
+          payer: generated_pubkey(payer),
+          rent_payer: generated_pubkey(rent_payer),
+          channel_token_account: generated_pubkey(channel_token),
+          payer_token_account: generated_pubkey(payer_token),
+          payee_token_account: generated_pubkey(payee_token),
+          treasury_token_account: generated_pubkey(treasury_token),
+          mint: generated_pubkey(mint),
+          token_program: generated_pubkey(token_program),
+          event_authority: generated_pubkey(event_authority),
+          self_program: generated_pubkey(program_id),
+          distribute_args: Generated::DistributeArgs.new(recipients: generated_recipients),
+          recipient_token_accounts: recipient_token_accounts
+        )
+        prepared_instruction(distribute, program_id: program_id)
       end
 
       # Idempotent associated-token-account create. The settle transaction
@@ -278,6 +280,18 @@ module PayCore
             AccountMeta.readonly(token_program)
           ],
           [1].pack("C")
+        )
+      end
+
+      def generated_pubkey(value)
+        Generated::Pubkey.from_base58(value)
+      end
+
+      def prepared_instruction(instruction, program_id: instruction.program_id.to_s)
+        PreparedInstruction.new(
+          program_id,
+          instruction.accounts.map { |account| AccountMeta.new(account.pubkey.to_s, account.is_signer, account.is_writable) },
+          instruction.data
         )
       end
     end
