@@ -20,7 +20,7 @@ confidential = ["solana-pay-kit/confidential"]
 worker = ["solana-pay-kit/worker"]
 
 [dependencies]
-solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client", "settlement"] }
+solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
