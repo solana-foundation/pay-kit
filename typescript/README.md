@@ -129,7 +129,7 @@ Two safety rails fire at boot:
 
 ## Run the example
 
-The playground at [`playground/`](../playground) wires the server-side
+The playground at [`playground/`](https://github.com/solana-foundation/pay-kit/tree/main/playground) wires the server-side
 SDK into an Express app exposing every primitive the kit ships
 (`/api/v1/stocks/quote/:symbol`, `/api/v1/weather/:city`, x402,
 subscriptions, sessions, …).
@@ -411,7 +411,7 @@ pnpm test:integration
 
 ## Harness
 
-The cross-language harness lives in [`../harness`](../harness).
+The cross-language harness lives in [`harness/`](https://github.com/solana-foundation/pay-kit/tree/main/harness).
 The TypeScript SDK ships both the reference client
 (`harness/ts-client`) and the in-process reference server used by every
 other SDK's adapter.
@@ -428,7 +428,7 @@ This SDK implements the
 [Solana Charge Intent](https://paymentauth.org/draft-solana-charge-00.html)
 for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 The cross-language surface is specified in
-[`docs/paykit-interface.md`](../docs/paykit-interface.md).
+[`docs/paykit-interface.md`](https://github.com/solana-foundation/pay-kit/blob/main/docs/paykit-interface.md).
 
 ---
 
