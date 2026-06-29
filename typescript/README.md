@@ -395,8 +395,7 @@ Hono shim needs no context plumbing at all.
 ## Install
 
 ```bash
-pnpm add @solana/pay-kit     # gate routes (this README)
-pnpm add @solana/mpp         # protocol layer + paying client
+pnpm add @solana/pay-kit
 ```
 
 ## Test
