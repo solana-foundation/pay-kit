@@ -116,7 +116,6 @@ describe('express usage gate settle-after-response', () => {
         const response = await fetch(`${base}/summarize`, { headers: { [CREDENTIAL_HEADER]: 'present' } });
 
         expect(response.status).toBe(200);
-        expect(response.status).not.toBe(402);
         expect(response.headers.get('x-payment-response')).toBeNull();
         const body = (await response.json()) as { hasMeter: boolean; ok: boolean };
         expect(body).toEqual({ hasMeter: true, ok: true });
