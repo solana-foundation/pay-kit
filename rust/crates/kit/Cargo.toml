@@ -2,7 +2,7 @@
 name = "solana-pay-kit"
 version = "0.1.0"
 edition = "2021"
-description = "Solana payment SDK: MPP + x402 unified behind feature flags"
+description = "Building blocks for Agentic payments (x402, MPP, AP2)"
 license = "MIT"
 repository = "https://github.com/solana-foundation/pay-kit"
 # The SDK guide lives at the workspace README (rust/README.md); reuse it as the
@@ -27,8 +27,8 @@ otel = ["solana-mpp?/otel"]
 testkit = ["solana-mpp?/testkit"]
 
 [dependencies]
-solana-mpp = { path = "../mpp", optional = true }
-solana-x402 = { path = "../x402", optional = true }
+solana-mpp = { version = "0.6.0", path = "../mpp", optional = true }
+solana-x402 = { version = "0.1.0", path = "../x402", optional = true }
 axum = { version = "0.8", optional = true, default-features = false }
 tracing = { version = "0.1", optional = true }
 serde_json = { version = "1", optional = true }

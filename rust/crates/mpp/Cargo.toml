@@ -43,10 +43,11 @@ confidential = [
 worker = ["confidential", "server", "dep:solana-rpc-client-api"]
 
 [dependencies]
-# Signing — solana-keychain with sdk-v3. Rev d788028 widens the solana-signature
-# bound to <3.5, letting signature resolve to 3.3.x — the version the solana 4.0
-# client line (`~3.3.0`) and litesvm 0.13 require.
-solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "d788028edbe02a94ef5eee7585d0230ad771296e", default-features = false, features = ["memory", "sdk-v3"] }
+# Signing — solana-keychain with sdk-v3. 1.4 widens the solana-signature bound to
+# <3.5, letting signature resolve to 3.3.x — the version the solana 4.0 client
+# line (`~3.3.0`) and litesvm 0.13 require. (1.4.0 supersedes the previously
+# pinned git rev d788028, which is now an ancestor of the 1.4.0 release.)
+solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
 
 # Solana — atomic crates only. Low-level interface crates stay on flexible 3.x
 # ranges so they unify with litesvm 0.13's pins (message 3.1.0, instruction
@@ -124,8 +125,8 @@ bs58 = "0.5"
 base64 = "0.22"
 bincode = "1"
 borsh = { version = "1.0", features = ["derive"] }
-solana-pay-core = { path = "../core" }
-subscriptions_client = { package = "subscriptions-client", path = "../programs/subscriptions" }
+solana-pay-core = { version = "0.1.0", path = "../core" }
+subscriptions_client = { package = "subscriptions-client", version = "0.1.0", path = "../programs/subscriptions" }
 solana-address = { version = "2", features = ["borsh", "curve25519"] }
 
 # Crypto (HMAC challenge IDs + distribution hash + voucher verification)

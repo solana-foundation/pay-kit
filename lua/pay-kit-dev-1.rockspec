@@ -4,7 +4,7 @@ source = {
   url = 'git+https://github.com/solana-foundation/pay-kit.git',
 }
 description = {
-  summary = 'Server-side PayKit SDK for Lua (x402 + MPP).',
+  summary = 'Building blocks for Agentic payments (x402, MPP, AP2)',
   detailed = [[
     Lua / LuaJIT 2.1 implementation of the PayKit umbrella surface.
     One module, two protocols underneath: x402 (exact scheme on

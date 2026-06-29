@@ -1,7 +1,7 @@
 {
     "name": "@solana/pay-kit",
     "version": "0.2.0",
-    "description": "Protocol-agnostic payment gating for HTTP services on Solana",
+    "description": "Building blocks for Agentic payments (x402, MPP, AP2)",
     "repository": {
         "type": "git",
         "url": "https://github.com/solana-foundation/pay-kit",

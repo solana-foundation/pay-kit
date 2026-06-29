@@ -8,13 +8,13 @@ let package = Package(
         .macOS(.v13),
     ],
     dependencies: [
-        .package(path: "../../swift"),
+        .package(path: "../.."),
     ],
     targets: [
         .executableTarget(
             name: "SwiftX402Client",
             dependencies: [
-                .product(name: "SolanaPayKit", package: "swift"),
+                .product(name: "SolanaPayKit", package: "pay-kit"),
             ]
         ),
     ]

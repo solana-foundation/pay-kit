@@ -12,10 +12,10 @@ client = ["dep:reqwest"]
 
 [dependencies]
 # Shared channel primitives (PDA/voucher/instruction builders for the upto scheme)
-solana-pay-core = { path = "../core" }
+solana-pay-core = { version = "0.1.0", path = "../core" }
 
 # Signing — solana-keychain with sdk-v3
-solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain", rev = "d788028edbe02a94ef5eee7585d0230ad771296e", default-features = false, features = ["memory", "sdk-v3"] }
+solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
 
 # Solana — atomic crates only
 solana-hash = { version = "3.1", default-features = false }

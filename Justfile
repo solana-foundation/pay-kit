@@ -409,7 +409,7 @@ docs-swift:
         echo "Install: brew install sourcedocs"; exit 1; \
     fi
     @mkdir -p {{docs_out}}/swift
-    cd swift && sourcedocs generate --output-folder {{docs_out}}/swift \
+    sourcedocs generate --output-folder {{docs_out}}/swift \
         --module-name SolanaPayKit \
         --clean
 

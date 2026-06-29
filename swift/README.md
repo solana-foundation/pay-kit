@@ -8,6 +8,8 @@
 
 # SolanaPayKit
 
+> Building blocks for Agentic payments (x402, MPP, AP2)
+
 Consume stablecoin-gated HTTP endpoints (USDC, USDT, PYUSD, ...) from
 Swift. Implements the client side of the Solana payment method for the
 [Machine Payments Protocol](https://mpp.dev).
@@ -97,10 +99,17 @@ a built-in table), or a raw base58 mint pubkey.
 Add the package to your Swift Package Manager dependencies:
 
 ```swift
-.package(path: "../mpp-sdk/swift")
+.package(url: "https://github.com/solana-foundation/pay-kit.git", from: "0.6.1")
 ```
 
-Then add `SolanaPayKit` to your target dependencies.
+Or in Xcode: **File ▸ Add Package Dependencies…** and enter
+`https://github.com/solana-foundation/pay-kit`.
+
+Then add `SolanaPayKit` to your target dependencies:
+
+```swift
+.product(name: "SolanaPayKit", package: "pay-kit")
+```
 
 ## Protocol compatibility matrix
 

@@ -1,6 +1,6 @@
 {
   "name": "solana/pay-kit",
-  "description": "Server-side PayKit SDK for PHP (x402 + MPP).",
+  "description": "Building blocks for Agentic payments (x402, MPP, AP2)",
   "type": "library",
   "license": "MIT",
   "repositories": [
