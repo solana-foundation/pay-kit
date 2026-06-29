@@ -82,7 +82,7 @@ module PayKit::Protocols::X402
           # instruction targeting the advertised channel program, with all 14
           # accounts in the exact program order. Mirrors
           # validateUptoOpenInstruction (upto.go:660-747).
-          def validate_open_instruction!(transaction, program_id:, operator:, payer:, payee:, mint:, token_program:, channel_id:)
+          def validate_open_instruction!(transaction, program_id:, operator:, payer:, payee:, mint:, token_program:, channel_id:, max:)
             keys = transaction.message.account_keys
             instructions = transaction.message.instructions
             unless instructions.length == 1
@@ -114,6 +114,35 @@ module PayKit::Protocols::X402
             expect(instruction, keys, OPEN_ASSOCIATED_TOKEN_PROGRAM, PaymentChannels::ASSOCIATED_TOKEN_PROGRAM, "associated_token_program")
             expect(instruction, keys, OPEN_EVENT_AUTHORITY, event_authority, "event_authority")
             expect(instruction, keys, OPEN_SELF_PROGRAM, program_id, "self_program")
+
+            validate_open_args!(instruction.data, max: max, payer: payer, payee: payee, mint: mint,
+              operator: operator, channel_id: channel_id, program_id: program_id)
+          end
+
+          # Validate the OpenArgs the client signed before the operator spends a
+          # fee broadcasting them. The account list passing does not bind the
+          # args: a client could match every account yet sign a bad salt,
+          # deposit, or distribution, forcing the operator to broadcast a
+          # channel that verify_open then rejects on-chain (operator fee grief).
+          # OpenArgs Borsh: salt(u64) deposit(u64) gracePeriod(u32) recipients(vec).
+          def validate_open_args!(data, max:, payer:, payee:, mint:, operator:, channel_id:, program_id:)
+            raise reject("open instruction data is too short for OpenArgs") if data.bytesize < 25
+
+            salt = PaymentChannels.read_u64_le(data, 1)
+            deposit = PaymentChannels.read_u64_le(data, 9)
+            recipients_count = PaymentChannels.read_u32_le(data, 21)
+            unless deposit == max
+              raise reject("open deposit #{deposit} must equal the authorized maximum #{max}")
+            end
+            unless recipients_count.zero?
+              raise reject("x402 upto requires an empty-recipient open (got #{recipients_count} splits)")
+            end
+            derived = PaymentChannels.find_channel_pda(
+              payer: payer, payee: payee, mint: mint, authorized_signer: operator, salt: salt, program_id: program_id
+            )
+            unless derived == channel_id
+              raise reject("open salt does not derive the payload channelId")
+            end
           end
 
           # Verify the operator is the fee payer (account index 0) on the open

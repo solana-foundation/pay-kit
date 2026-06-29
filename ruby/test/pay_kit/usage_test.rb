@@ -49,12 +49,13 @@ class UsageMiddlewareTest < Minitest::Test
   # Minimal engine double: records verify_open / settle_actual calls.
   class FakeEngine
     attr_reader :settled_with
-    attr_accessor :raise_on_verify
+    attr_accessor :raise_on_verify, :raise_on_settle
 
     Open = Struct.new(:max_amount)
 
     def initialize(raise_on_verify: nil)
       @raise_on_verify = raise_on_verify
+      @raise_on_settle = nil
       @settled_with = []
     end
 
@@ -67,11 +68,31 @@ class UsageMiddlewareTest < Minitest::Test
 
     def settle_actual(_open, actual)
       @settled_with << actual
+      raise @raise_on_settle if @raise_on_settle
+
       {"success" => true, "transaction" => "SiG#{actual}", "network" => "n", "amount" => actual.to_s}
     end
 
     def payment_required(resource:)
       "CHALLENGE:#{resource}"
+    end
+  end
+
+  # A Rack body that records whether the server (or middleware) closed it.
+  class CloseTrackingBody
+    attr_reader :closed
+
+    def initialize(chunks)
+      @chunks = chunks
+      @closed = false
+    end
+
+    def each(&block)
+      @chunks.each(&block)
+    end
+
+    def close
+      @closed = true
     end
   end
 
@@ -134,6 +155,42 @@ class UsageMiddlewareTest < Minitest::Test
     assert_equal 402, status
     assert_equal "bad open", JSON.parse(body.join)["invalidReason"]
     assert headers.key?(Constants::PAYMENT_REQUIRED_HEADER)
+  end
+
+  def test_settlement_failure_is_a_server_error_not_a_challenge
+    @engine.raise_on_settle = RuntimeError.new("rpc timeout")
+    status, headers, body = @mw.call(env_for("/usage", header: "HDR", meter: 50_000))
+
+    assert_equal 502, status
+    refute headers.key?(Constants::PAYMENT_REQUIRED_HEADER), "must not tell the client to pay again"
+    assert_equal "settlement_failed", JSON.parse(body.join)["error"]
+  end
+
+  def test_closes_dropped_body_on_zero_charge
+    body = CloseTrackingBody.new([JSON.generate({ok: true})])
+    app = ->(env) {
+      env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(0)
+      [200, {}, body]
+    }
+    mw = ::PayKit::Usage::Middleware.new(app, engine: @engine, resource_path: "/usage")
+
+    status, = mw.call(env_for("/usage", header: "HDR"))
+    assert_equal 402, status
+    assert body.closed, "fail-closed path must close the dropped body"
+  end
+
+  def test_closes_dropped_body_on_settlement_failure
+    @engine.raise_on_settle = RuntimeError.new("rpc timeout")
+    body = CloseTrackingBody.new([JSON.generate({ok: true})])
+    app = ->(env) {
+      env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(50_000)
+      [200, {}, body]
+    }
+    mw = ::PayKit::Usage::Middleware.new(app, engine: @engine, resource_path: "/usage")
+
+    status, = mw.call(env_for("/usage", header: "HDR"))
+    assert_equal 502, status
+    assert body.closed
   end
 
   private

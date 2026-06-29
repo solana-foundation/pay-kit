@@ -109,6 +109,19 @@ class ServerUptoTest < Minitest::Test
     assert_reject("payee mismatch") { verify(salt: 14, open_payee: pubkey(77)) }
   end
 
+  # ---- open-args rejects (pre-broadcast, operator-fee-grief guard) -------
+  def test_rejects_open_deposit_below_max
+    assert_reject("open deposit") { verify(salt: 30, open_deposit: 50_000) }
+  end
+
+  def test_rejects_open_with_recipients
+    assert_reject("empty-recipient open") { verify(salt: 31, open_recipients_count: 1) }
+  end
+
+  def test_rejects_open_salt_not_deriving_channel
+    assert_reject("does not derive the payload channelId") { verify(salt: 32, open_salt: 999) }
+  end
+
   # ---- channel rejects ---------------------------------------------------
   def test_rejects_channel_not_open
     assert_reject("not open") { verify(salt: 15, channel: {status: 1}) }
@@ -161,10 +174,12 @@ class ServerUptoTest < Minitest::Test
 
   # Build [engine, header, channel] for a fresh salt. Knobs let each test
   # corrupt exactly one input.
-  def build_case(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil)
+  def build_case(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
+    open_salt: nil, open_deposit: nil, open_recipients_count: 0)
     cid = channel_id(salt)
     header = open_header(salt: salt, cid: cid, network: network, payload: payload,
-      open_program: open_program, open_payee: open_payee || @payee)
+      open_program: open_program, open_payee: open_payee || @payee,
+      open_salt: open_salt || salt, open_deposit: open_deposit || MAX, open_recipients_count: open_recipients_count)
     fake = fake_channel(channel)
     engine = ::PayKit::Protocols::X402::Server::Upto.new(
       Upto::Config.new(
@@ -178,13 +193,15 @@ class ServerUptoTest < Minitest::Test
     [engine, header, fake]
   end
 
-  def verify(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil, now_override: nil)
+  def verify(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
+    now_override: nil, open_salt: nil, open_deposit: nil, open_recipients_count: 0)
     engine, header, = build_case(salt: salt, payload: payload, channel: channel, network: network,
-      open_program: open_program, open_payee: open_payee)
+      open_program: open_program, open_payee: open_payee,
+      open_salt: open_salt, open_deposit: open_deposit, open_recipients_count: open_recipients_count)
     engine.verify_open(header, now: now_override || now)
   end
 
-  def open_header(salt:, cid:, network:, payload:, open_program:, open_payee:)
+  def open_header(salt:, cid:, network:, payload:, open_program:, open_payee:, open_salt:, open_deposit:, open_recipients_count:)
     payer_token = ::PayCore::Solana::ATA.derive(owner: @payer, mint: @mint, token_program: @token_program)
     channel_token = ::PayCore::Solana::ATA.derive(owner: cid, mint: @mint, token_program: @token_program)
     ea = PC.find_event_authority_pda
@@ -194,7 +211,8 @@ class ServerUptoTest < Minitest::Test
       AM.readonly(@token_program), AM.readonly(PC::SYSTEM_PROGRAM), AM.readonly(PC::RENT_SYSVAR),
       AM.readonly(PC::ASSOCIATED_TOKEN_PROGRAM), AM.readonly(ea), AM.readonly(PC::PROGRAM_ID)
     ]
-    data = [1].pack("C") + PC.u64_le(salt) + PC.u64_le(MAX) + PC.u32_le(900) + PC.u32_le(0)
+    data = [1].pack("C") + PC.u64_le(open_salt) + PC.u64_le(open_deposit) + PC.u32_le(900) + PC.u32_le(open_recipients_count)
+    open_recipients_count.times { data += ::PayCore::Solana::Base58.decode(@payee) + [1].pack("v") }
     tx = MB.build_legacy(fee_payer: @operator, recent_blockhash: pubkey(9),
       instructions: [::PayCore::Solana::PreparedInstruction.new(open_program, accounts, data)])
     body = {

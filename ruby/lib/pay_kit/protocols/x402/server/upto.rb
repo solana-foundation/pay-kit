@@ -194,7 +194,7 @@ module PayKit::Protocols::X402
             transaction,
             program_id: program_id, operator: operator, payer: payer,
             payee: @config.pay_to, mint: @config.mint, token_program: @config.token_program,
-            channel_id: channel_id
+            channel_id: channel_id, max: parsed[:max]
           )
           unless Verifier.fee_payer?(transaction, operator)
             raise reject("open transaction fee payer must be the advertised operator")

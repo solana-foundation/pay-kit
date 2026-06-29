@@ -78,19 +78,38 @@ module PayKit
         header = payment_header(env)
         return challenge(env) if header.nil? || header.empty?
 
-        open = @engine.verify_open(header)
+        # Phase 3 (before the resource): nothing was served and nothing
+        # settled, so a 402 re-challenge is the correct response to a failure.
+        begin
+          open = @engine.verify_open(header)
+        rescue => error
+          return challenge(env, error: error.message)
+        end
+
         charge = Charge.new(open.max_amount)
         env[CHARGE_ENV_KEY] = charge
-
         status, headers, body = @app.call(env)
         settled = charge.settled_base_units
-        settlement = @engine.settle_actual(open, settled)
 
-        return challenge(env) unless Usage.deliver?(settled)
+        # Phase 4 (after the resource): settlement may broadcast on-chain, so a
+        # failure here must NOT tell the client to pay again — that risks a
+        # double charge if the settle transaction later lands. It is a server
+        # error, and the buffered resource body is dropped (and closed).
+        begin
+          settlement = @engine.settle_actual(open, settled)
+        rescue => error
+          close_body(body)
+          return settle_error(error)
+        end
+
+        # Fail-closed on a zero charge: the channel still settled 0 on-chain
+        # (closed, full refund), but no resource body is delivered.
+        unless Usage.deliver?(settled)
+          close_body(body)
+          return challenge(env)
+        end
 
         [status, settlement_headers(headers, settlement), body]
-      rescue => error
-        challenge(env, error: error.message)
       end
 
       private
@@ -98,6 +117,23 @@ module PayKit
       def payment_header(env)
         env["HTTP_" + Constants::PAYMENT_SIGNATURE_HEADER.upcase.tr("-", "_")] ||
           env["HTTP_X_PAYMENT"]
+      end
+
+      # Close a Rack body we are about to drop so streaming/file/BodyProxy
+      # bodies do not leak their underlying resources.
+      def close_body(body)
+        body.close if body.respond_to?(:close)
+      end
+
+      # A post-resource settlement failure: report a server error, never a 402,
+      # so the client is not told to retry a payment that may already be
+      # settling on-chain.
+      def settle_error(error)
+        [
+          502,
+          {"content-type" => "application/json"},
+          [JSON.generate({"error" => "settlement_failed", "message" => error.message})]
+        ]
       end
 
       def settlement_headers(headers, settlement)
