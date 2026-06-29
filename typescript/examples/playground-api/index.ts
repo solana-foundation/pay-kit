@@ -29,7 +29,7 @@ import { registerDocs } from './docs.js'
 import { bootstrapPlan, fundSandbox, fundUsdc, registerFaucet } from './sandbox.js'
 
 const NETWORK = (process.env.NETWORK ?? 'localnet') as 'devnet' | 'localnet' | 'mainnet'
-const RPC_URL = process.env.RPC_URL ?? 'https://402.surfnet.dev:8899'
+const RPC_URL = process.env.PAY_KIT_RPC_URL ?? 'https://402.surfnet.dev:8899'
 const PORT = parseInt(process.env.PORT || '3000', 10)
 const SECRET_KEY = process.env.MPP_SECRET_KEY ?? crypto.randomBytes(32).toString('hex')
 

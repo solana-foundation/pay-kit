@@ -7,7 +7,7 @@
 //	cd go
 //	go run ./examples/playground-api
 //
-// Environment: PORT, NETWORK, RPC_URL, RECIPIENT, FEE_PAYER_KEY,
+// Environment: PORT, NETWORK, PAY_KIT_RPC_URL, RECIPIENT, FEE_PAYER_KEY,
 // MPP_SECRET_KEY. See README.md for the full table.
 package main
 
@@ -36,7 +36,7 @@ import (
 // app carries the boot configuration shared by every module.
 type app struct {
 	network string // raw NETWORK tag: localnet | devnet | mainnet
-	// rpcURL is the Solana JSON-RPC endpoint (RPC_URL env var; defaults to
+	// rpcURL is the Solana JSON-RPC endpoint (PAY_KIT_RPC_URL env var; defaults to
 	// the hosted Solana Payment Sandbox).
 	rpcURL string
 	// recipient is the base58 address paid by the charge endpoints
@@ -59,9 +59,9 @@ func main() {
 	network := envOr("NETWORK", "localnet")
 	// Default to the hosted Solana Payment Sandbox so the playground works
 	// zero-config: it has the payment-channels program preloaded and supports
-	// the surfnet cheatcodes used by the faucet. Override RPC_URL to point at
-	// a local surfpool when you need offline iteration.
-	rpcURL := envOr("RPC_URL", "https://402.surfnet.dev:8899")
+	// the surfnet cheatcodes used by the faucet. Override PAY_KIT_RPC_URL to
+	// point at a local surfpool when you need offline iteration.
+	rpcURL := envOr("PAY_KIT_RPC_URL", "https://402.surfnet.dev:8899")
 	secretKey := os.Getenv("MPP_SECRET_KEY")
 	if secretKey == "" {
 		secretKey = randomHexSecret()

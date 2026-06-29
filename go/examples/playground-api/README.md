@@ -61,7 +61,7 @@ Same table as the TypeScript example:
 |----------|---------|---------|
 | `PORT` | `3000` | Listen port |
 | `NETWORK` | `localnet` | Solana network tag for MPP / x402 challenges |
-| `RPC_URL` | `https://402.surfnet.dev:8899` | Surfpool RPC endpoint (hosted sandbox by default) |
+| `PAY_KIT_RPC_URL` | `https://402.surfnet.dev:8899` | Surfpool RPC endpoint (hosted sandbox by default) |
 | `RECIPIENT` | (auto-generated) | Solana address that receives payments |
 | `FEE_PAYER_KEY` | (auto-generated) | Base58 fee-payer keypair (server signs as fee payer) |
 | `MPP_SECRET_KEY` | (random per-boot) | MPP secret key for challenge HMAC |

@@ -63,7 +63,7 @@ a faucet (`/api/v1/faucet/airdrop`) using sandbox cheatcodes — see
 |----------|---------|---------|
 | `PORT` | `3000` | Express listen port |
 | `NETWORK` | `localnet` | Solana network for the payment challenges |
-| `RPC_URL` | `https://402.surfnet.dev:8899` | RPC endpoint (hosted sandbox by default) |
+| `PAY_KIT_RPC_URL` | `https://402.surfnet.dev:8899` | RPC endpoint (hosted sandbox by default) |
 | `RECIPIENT` | (operator address) | Address that receives payments |
 | `FEE_PAYER_KEY` | (auto-generated) | Base58 operator keypair — fee-pays + signs settlement |
 | `MPP_SECRET_KEY` | (random per-boot) | HMAC secret binding MPP challenges |
