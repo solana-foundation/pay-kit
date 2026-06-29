@@ -106,6 +106,26 @@ module PayCore
         value["owner"]
       end
 
+      # Fetch full account info (base64-encoded). Returns a Hash with the
+      # decoded binary `:data`, the `:owner` program id, and `:lamports`, or
+      # nil when the account does not exist. The x402 `upto` facilitator reads
+      # the on-chain channel account through this to confirm the open.
+      def get_account_info(pubkey)
+        value = call("getAccountInfo", [
+          pubkey,
+          {"encoding" => "base64", "commitment" => "confirmed"}
+        ]).fetch("value")
+        return nil if value.nil?
+
+        encoded = value["data"]
+        encoded = encoded.first if encoded.is_a?(Array)
+        {
+          data: (encoded.nil? || encoded.empty?) ? "".b : Base64.strict_decode64(encoded),
+          owner: value["owner"],
+          lamports: value["lamports"]
+        }
+      end
+
       # Fetch a confirmed transaction by signature using base64 encoding.
       def transaction_base64(signature)
         call("getTransaction", [
