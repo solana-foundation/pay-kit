@@ -829,11 +829,19 @@ fn is_loopback_rpc(rpc_url: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0")
 }
 
-/// Remove the server-provided build hints (`extra.recentBlockhash` /
-/// `extra.lastValidBlockHeight`, #2693) from a serialized requirements value so
-/// the verify-time structural match ignores them — they're present in the
-/// challenge the client echoes but absent from the verify-time rebuild.
+/// Remove the server-provided build hints (`recentBlockhash` /
+/// `lastValidBlockHeight`, #2693) from a serialized requirements value so the
+/// verify-time match ignores them — they're present in the challenge the client
+/// echoes but absent from the verify-time rebuild.
+///
+/// `recentBlockhash` is stripped at both the top level and inside `extra`: the
+/// canonical `Serialize` routes it into `extra`, but a credential whose raw
+/// `accepted` is passed through verbatim (see `PaymentRequirements::accepted`)
+/// can carry it at the top level, so both must be cleared for matching to hold.
 fn strip_blockhash_hints(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("recentBlockhash");
+    }
     if let Some(extra) = value.get_mut("extra").and_then(|e| e.as_object_mut()) {
         extra.remove("recentBlockhash");
         extra.remove("lastValidBlockHeight");
@@ -1254,9 +1262,16 @@ mod tests {
             .collect();
 
         // Echo option[0] back, but with the server's challenge build-hints
-        // injected into `extra` — exactly what a real client returns after a
-        // 402 whose options were stamped by `embed_recent_blockhash`.
+        // injected — exactly what a real client returns after a 402 whose
+        // options were stamped by `embed_recent_blockhash`. Cover both shapes:
+        // the canonical `extra.*` form and a top-level `recentBlockhash` (which
+        // survives the verbatim `accepted` passthrough), so the normalization
+        // has to clear both.
         let mut accepted = serde_json::to_value(&available[0]).unwrap();
+        accepted.as_object_mut().unwrap().insert(
+            "recentBlockhash".to_string(),
+            serde_json::Value::String("SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string()),
+        );
         let extra = accepted
             .get_mut("extra")
             .and_then(|e| e.as_object_mut())
