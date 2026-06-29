@@ -41,8 +41,15 @@ subscriptions-pull-idl:
 # Render the Rust client from the vendored IDL. Wipes
 # `rust/crates/kit/src/generated/subscriptions/generated/` and rewrites it
 # in place — see {{codegen_dir}}/generate-subscriptions-client.ts.
+#
+# Codama emits crate-root-relative paths (`crate::…`) that assume the client
+# is its own crate. It now lives nested at `crate::generated::subscriptions`,
+# so re-root those paths after rendering (skipping already-rooted ones — the
+# perl is idempotent). Then format.
 subscriptions-generate-rs: codegen-install
     cd {{codegen_dir}} && pnpm run subscriptions:rust
+    find rust/crates/kit/src/generated/subscriptions/generated -name '*.rs' \
+        -exec perl -i -pe 's/\bcrate::(?!generated::subscriptions::)/crate::generated::subscriptions::/g' {} +
     cd rust && cargo fmt -p solana-pay-kit
 
 # Full refresh: pull IDL + regenerate Rust client.
@@ -61,8 +68,15 @@ payment-channels-pull-idl:
 # Render the Rust client from the vendored IDL. Wipes
 # `rust/crates/kit/src/generated/payment_channels/generated/` and rewrites
 # it in place — see {{codegen_dir}}/generate-payment-channels-client-rs.ts.
+#
+# Codama emits crate-root-relative paths (`crate::…`) that assume the client
+# is its own crate. It now lives nested at `crate::generated::payment_channels`,
+# so re-root those paths after rendering (skipping already-rooted ones — the
+# perl is idempotent). Then format.
 payment-channels-generate-rs: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:rust
+    find rust/crates/kit/src/generated/payment_channels/generated -name '*.rs' \
+        -exec perl -i -pe 's/\bcrate::(?!generated::payment_channels::)/crate::generated::payment_channels::/g' {} +
     cd rust && cargo fmt -p solana-pay-kit
 
 # Render the Go client from the vendored IDL into
