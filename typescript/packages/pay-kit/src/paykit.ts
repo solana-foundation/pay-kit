@@ -4,6 +4,7 @@ import { createSessionEngine, type SessionEngine } from './adapters/mpp-session.
 import { createX402ExactAdapter } from './adapters/x402.js';
 import { Charge, X402Upto } from './adapters/x402-upto.js';
 import type { AcceptsEntry, Challenge } from './challenge.js';
+import { resolveCoin } from './coin.js';
 import { configure, type ConfigureParams, type PayKitConfig } from './config.js';
 import { ConfigurationError, InvalidProofError } from './errors.js';
 import { type ExpressRoutesApp, GATE_METADATA, introspectExpressRoutes } from './express-routes.js';
@@ -161,7 +162,14 @@ export type PayKit<P extends PricingDef = PricingDef> = {
     readonly paid: (request: object, gate?: GateName<P>) => boolean;
     /** The verified payment on `request`, if any. */
     readonly payment: (request: object) => Payment | undefined;
-    /** Verify-or-deny: settles a credential (or opens a usage channel) or produces the 402 challenge. */
+    /**
+     * Verify-or-deny: settles a credential (or opens a usage channel) or
+     * produces the 402 challenge. For a `usage` gate the returned
+     * {@link PaymentGranted} holds an in-flight channel reservation released
+     * only when its `settle` (or `withSettlement`) runs; a caller driving
+     * `requirePayment` directly must call one of them, as the framework
+     * wrappers do.
+     */
     readonly requirePayment: (request: Request, gate: GateRef<P>) => Promise<RequirePaymentResult>;
     /** The side-channel + receipt handlers for a `session` gate, for the app to mount. */
     readonly sessionRoutes: (gate: Gate | GateName<P>) => SessionRouteHandlers;
@@ -483,7 +491,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
     }
 
     /** Settlement coin for a gate (its explicit preference, else the config default). */
-    const coinFor = (gate: Gate): string => gate.amount.primaryCoin() ?? config.stablecoins[0] ?? 'USDC';
+    const coinFor = (gate: Gate): string => resolveCoin(gate.amount, config.stablecoins);
 
     /**
      * The discovery `intent` for a gate kind. `subscription` and `session` are
@@ -618,12 +626,17 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     // 0, so this refunds). Best-effort; re-throw the original error.
                     try {
                         await result.settle();
-                    } catch {
-                        /* swallow settle failure; the handler error is what matters */
+                    } catch (settleError) {
+                        logSettleFailure(settleError);
                     }
                     throw error;
                 }
-                return await result.withSettlement(response);
+                try {
+                    return await result.withSettlement(response);
+                } catch (settleError) {
+                    logSettleFailure(settleError);
+                    return response;
+                }
             };
         },
 
@@ -643,8 +656,8 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     try {
                         for (const [name, value] of Object.entries(await result.settle()))
                             c.res.headers.set(name, value);
-                    } catch {
-                        /* swallow settle failure; preserve the handler outcome */
+                    } catch (settleError) {
+                        logSettleFailure(settleError);
                     }
                 }
                 return undefined;
@@ -733,6 +746,10 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
     return instance;
 }
 
+function logSettleFailure(error: unknown): void {
+    console.warn('[pay-kit] settlement failed; serving the response without settlement headers.', error);
+}
+
 /**
  * Run an Express handler with settle-after-response: buffer every commit path,
  * run the handler, settle the metered amount, then replay — so the settlement
@@ -796,8 +813,8 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         // refunds. Best-effort — forward the original handler error regardless.
         try {
             await result.settle();
-        } catch {
-            /* swallow settle failure; the handler error is what matters */
+        } catch (settleError) {
+            logSettleFailure(settleError);
         }
         next(error);
         return;
@@ -809,15 +826,11 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         // Settle even on a handler error: the meter is 0 unless the handler
         // reported usage, so a failed request finalizes the channel and refunds.
         for (const [name, value] of Object.entries(await result.settle())) res.setHeader(name, value);
-    } catch {
-        settled = true;
-        res.writeHead = originalWriteHead;
-        res.write = originalWrite;
-        res.end = originalEnd;
-        bufferedCalls = [];
-        res.statusCode = 402;
-        originalEnd();
-        return;
+    } catch (settleError) {
+        // The upto ceiling is already escrowed on-chain, so the request is paid;
+        // serve the buffered handler response without settlement headers and let
+        // the out-of-band refund retry.
+        logSettleFailure(settleError);
     }
     restoreAndReplay();
 }
