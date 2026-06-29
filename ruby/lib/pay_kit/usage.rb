@@ -34,10 +34,11 @@ module PayKit
         @settled = 0
       end
 
-      # Record additional metered base units. Negative deltas floor at 0; the
-      # running total is capped at the ceiling.
+      # Record the actual metered amount, replacing any prior value; clamped to
+      # [0, max] so a handler can never settle above the ceiling. Last call wins,
+      # mirroring the Go/Python/TS Charge.
       def charge(amount)
-        @settled = (@settled + amount.to_i).clamp(0, @max_base_units)
+        @settled = amount.to_i.clamp(0, @max_base_units)
       end
 
       # The clamped amount to settle on-chain.

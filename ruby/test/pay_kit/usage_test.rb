@@ -14,11 +14,12 @@ class UsageChargeTest < Minitest::Test
     assert_equal 0, Charge.new(100).settled_base_units
   end
 
-  def test_accumulates
+  def test_replaces_with_last_value
     charge = Charge.new(100)
     charge.charge(30)
     charge.charge(20)
-    assert_equal 50, charge.settled_base_units
+    # Last call wins (replace), matching the Go/Python/TS Charge.
+    assert_equal 20, charge.settled_base_units
   end
 
   def test_clamps_to_ceiling
