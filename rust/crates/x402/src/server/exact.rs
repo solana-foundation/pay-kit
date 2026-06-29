@@ -486,13 +486,23 @@ impl X402 {
                 let accepted_requirements: PaymentRequirements =
                     serde_json::from_value(accepted.clone())
                         .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
-                let accepted_json = serde_json::to_value(&accepted_requirements)
+                let mut accepted_json = serde_json::to_value(&accepted_requirements)
                     .map_err(|e| Error::Other(format!("Failed to serialize accepted: {e}")))?;
+                // `recentBlockhash` / `lastValidBlockHeight` are transient build
+                // hints the server embeds in the *challenge* (#2693) and the
+                // client echoes back in `accepted`, but the verify-time option
+                // rebuild omits them. Strip them from both sides so a
+                // hint-carrying credential still matches its offered option —
+                // mirrors the structural backstop in `verify_envelope_payload`.
+                strip_blockhash_hints(&mut accepted_json);
                 available
                     .iter()
                     .find(|requirement| {
                         serde_json::to_value(requirement)
-                            .map(|json| json == accepted_json)
+                            .map(|mut json| {
+                                strip_blockhash_hints(&mut json);
+                                json == accepted_json
+                            })
                             .unwrap_or(false)
                     })
                     .ok_or_else(|| {
@@ -1216,6 +1226,56 @@ mod tests {
             err.to_string().contains("does not match any offered"),
             "got: {err:?}"
         );
+    }
+
+    /// A multi-option credential that echoes the challenge's blockhash build
+    /// hints (`recentBlockhash` / `lastValidBlockHeight`, #2693) in `accepted`
+    /// must still match its offered option. The hints are embedded into the
+    /// challenge but absent from the verify-time option rebuild, so matching
+    /// has to ignore them — otherwise a valid multi-option payment fails with
+    /// "does not match any offered" whenever `rpc_url` is configured.
+    #[test]
+    fn find_matching_requirement_ignores_blockhash_hints() {
+        let x402 = X402::new(config()).unwrap();
+
+        let options = [
+            PaymentOption::new("1.0"),
+            PaymentOption {
+                amount: "1.0",
+                currency: Some("PYUSD"),
+                decimals: Some(6),
+                token_program: None,
+                extra: ExactOptions::default(),
+            },
+        ];
+        let available: Vec<_> = options
+            .iter()
+            .map(|o| x402.exact_requirements_for_option(o).unwrap())
+            .collect();
+
+        // Echo option[0] back, but with the server's challenge build-hints
+        // injected into `extra` — exactly what a real client returns after a
+        // 402 whose options were stamped by `embed_recent_blockhash`.
+        let mut accepted = serde_json::to_value(&available[0]).unwrap();
+        let extra = accepted
+            .get_mut("extra")
+            .and_then(|e| e.as_object_mut())
+            .expect("accepted has an extra object");
+        extra.insert(
+            "recentBlockhash".to_string(),
+            serde_json::Value::String("SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string()),
+        );
+        extra.insert(
+            "lastValidBlockHeight".to_string(),
+            serde_json::Value::String("123456789".to_string()),
+        );
+
+        let header = make_envelope_with_accepted(accepted);
+        let envelope = x402.parse_payment_signature(&header).unwrap();
+        let matched = x402
+            .find_matching_requirement(&available, &envelope)
+            .expect("hint-carrying credential should match its offered option");
+        assert_eq!(matched.currency, "USDC");
     }
 
     /// Tier-2 backstop for multi-currency: even if a route hand-builds
