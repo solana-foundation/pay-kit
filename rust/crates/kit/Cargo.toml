@@ -177,6 +177,10 @@ axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 serde_json = "1"
 ed25519-dalek = "2"
+# Test mock signers impl the (#[async_trait]) solana-keychain SolanaSigner trait.
+# async-trait is otherwise only an optional dep (settlement feature), so make it
+# a dev-dep too — it must be available in any test build, not just settlement.
+async-trait = "0.1"
 base64 = "0.22"
 # Atomic solana crates the in-tree examples / unit tests import directly.
 solana-hash = { version = "3.1", default-features = false }
