@@ -4,6 +4,7 @@ import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
+import { resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
 import { ConfigurationError, InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
@@ -52,7 +53,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const handlers = new Map<string, ChargeHandler>();
 
     function coinFor(gate: Gate): { coin: string; mint: string } {
-        const coin = gate.amount.primaryCoin() ?? config.stablecoins[0] ?? 'USDC';
+        const coin = resolveCoin(gate.amount, config.stablecoins);
         const mint = resolveStablecoinMint(coin, network);
         if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
         return { coin, mint };
@@ -61,7 +62,18 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     function handlerFor(gate: Gate): ChargeHandler {
         const { mint } = coinFor(gate);
         const splits = splitsFor(gate);
-        const key = JSON.stringify([gate.kind, gate.payTo, mint, splits, gate.subscription ?? null]);
+        // Key on every field a built handler captures, so gates differing only
+        // in amount, description, or externalId get distinct handlers.
+        const key = JSON.stringify([
+            gate.kind,
+            gate.payTo,
+            mint,
+            splits,
+            gate.subscription ?? null,
+            totalAmount(gate).toString(),
+            gate.description ?? null,
+            gate.externalId ?? null,
+        ]);
         let handler = handlers.get(key);
         if (!handler) {
             const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
