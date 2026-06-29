@@ -8,13 +8,13 @@ let package = Package(
         .macOS(.v13),
     ],
     dependencies: [
-        .package(path: "../.."),
+        .package(name: "SolanaPayKit", path: "../.."),
     ],
     targets: [
         .executableTarget(
             name: "SwiftHarnessClient",
             dependencies: [
-                .product(name: "SolanaPayKit", package: "pay-kit"),
+                .product(name: "SolanaPayKit", package: "SolanaPayKit"),
             ]
         ),
     ]
