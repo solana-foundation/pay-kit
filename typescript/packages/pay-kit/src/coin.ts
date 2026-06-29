@@ -10,20 +10,14 @@ export function resolveCoin(amount: Price, stablecoins: readonly string[]): stri
 }
 
 /**
- * The settlement coin for a price together with its on-chain mint.
+ * Assert that a coin resolved to a mint on the target network.
  *
- * @param toMint - Maps a coin symbol to its mint address on the target network.
+ * @param coin - The settlement coin symbol.
+ * @param mint - The mint resolved for the coin, if any.
  * @param network - Network label used in the error message.
- * @throws {ConfigurationError} when the resolved coin has no mint on the network.
+ * @throws {ConfigurationError} when the coin has no mint on the network.
  */
-export function resolveCoinAndMint<TMint>(
-    amount: Price,
-    stablecoins: readonly string[],
-    toMint: (coin: string) => TMint | null | undefined,
-    network: string,
-): { coin: string; mint: TMint } {
-    const coin = resolveCoin(amount, stablecoins);
-    const mint = toMint(coin);
+export function requireMint(coin: string, mint: string | undefined, network: string): string {
     if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${network}.`);
-    return { coin, mint };
+    return mint;
 }

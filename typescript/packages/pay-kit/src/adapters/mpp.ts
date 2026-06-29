@@ -4,7 +4,7 @@ import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
-import { resolveCoinAndMint } from '../coin.js';
+import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
 import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
@@ -52,17 +52,9 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
 
-    function coinFor(gate: Gate): { coin: string; mint: string } {
-        return resolveCoinAndMint(
-            gate.amount,
-            config.stablecoins,
-            coin => resolveStablecoinMint(coin, network),
-            config.network,
-        );
-    }
-
     function handlerFor(gate: Gate): ChargeHandler {
-        const { mint } = coinFor(gate);
+        const coin = resolveCoin(gate.amount, config.stablecoins);
+        const mint = requireMint(coin, resolveStablecoinMint(coin, network), config.network);
         const splits = splitsFor(gate);
         // Key on every field a built handler captures, so gates differing only
         // in amount, description, or externalId get distinct handlers.
@@ -145,7 +137,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
 
     return {
         acceptsEntry(gate: Gate): Promise<AcceptsEntry> {
-            const { coin } = coinFor(gate);
+            const coin = resolveCoin(gate.amount, config.stablecoins);
             const splits = splitsFor(gate);
             return Promise.resolve({
                 amount: totalAmount(gate).toString(),
