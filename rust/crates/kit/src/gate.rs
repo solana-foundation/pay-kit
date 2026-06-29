@@ -35,14 +35,14 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, MethodRouter};
 
-use solana_mpp::server::{Config as MppConfig, Mpp};
-use solana_mpp::solana_keychain::SolanaSigner;
-use solana_mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
-use solana_x402::server::{
+use crate::mpp::server::{Config as MppConfig, Mpp};
+use crate::mpp::solana_keychain::SolanaSigner;
+use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
+use crate::x402::server::{
     BatchConfig, Config as X402Config, ExactOptions, UptoConfig, VerifiedExactPayment,
     X402BatchSettlement, X402Upto, X402,
 };
-use solana_x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
+use crate::x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
 
 const PAYMENT_RECEIPT_HEADER: &str = "Payment-Receipt";
 
@@ -989,7 +989,7 @@ mod tests {
         let mut kp = [0u8; 64];
         kp[..32].copy_from_slice(sk.as_bytes());
         kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
-        Arc::new(solana_mpp::solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+        Arc::new(crate::mpp::solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
     }
 
     /// PayKit with an operator signer (enables `upto`). A bogus RPC URL makes
@@ -1121,7 +1121,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn mpp_cross_route_replay_returns_402() {
-        use solana_mpp::{format_authorization, PaymentCredential};
+        use crate::mpp::{format_authorization, PaymentCredential};
 
         let pay = test_paykit();
         // A credential minted for the $0.01 route...

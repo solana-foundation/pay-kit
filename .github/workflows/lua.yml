@@ -127,7 +127,7 @@ jobs:
 
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client"
           cargo-cache-key: lua
 
       - name: TS-to-Lua focused matrix

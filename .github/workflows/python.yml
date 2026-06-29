@@ -69,7 +69,7 @@ jobs:
           pip install -e ".[dev]"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server,harness_upto_client,harness_upto_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server,x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: python
       # x402 upto settles on the canonical payment-channels program; the upto
       # e2e deploys this localnet SBF artifact onto the embedded surfnet. Mirrors

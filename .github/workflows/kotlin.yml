@@ -83,7 +83,7 @@ jobs:
           gradle-version: "9.5.1"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-x402:harness_server"
+          cargo-bins: "paykit-harness-bins:x402_harness_server"
           cargo-cache-key: kotlin-x402
       # Pre-warm the Kotlin x402 client install so the harness adapter
       # (harness/src/implementations.ts → kotlin-x402) can launch the

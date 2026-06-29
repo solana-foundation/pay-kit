@@ -177,7 +177,7 @@ payer, broadcasts, polls to `confirmed`, and emits `Payment-Receipt`.
 ## x402
 
 [x402](https://x402.org) revives HTTP `402 Payment Required`. The Rust
-implementation (`solana-pay-kit::x402`, the `solana-x402` crate) ships the
+implementation (`solana_pay_kit::x402`, gated by the `x402` feature) ships the
 single-recipient `exact` scheme and the usage-based `upto` scheme — both server
 and client — plus SIWX.
 
@@ -318,16 +318,16 @@ cd rust
 cargo test -p solana-pay-kit --features axum
 cargo test --workspace
 
-# Single protocol:
-cargo test -p solana-mpp
-cargo test -p solana-x402
+# Single protocol module:
+cargo test -p solana-pay-kit --lib mpp
+cargo test -p solana-pay-kit --lib x402
 ```
 
 ## Harness
 
-The cross-language harness lives in [`../harness`](../harness). The Rust SDK
-ships `harness_server` / `harness_client` binaries used by the cross-language
-conformance suite.
+The cross-language harness lives in [`../harness`](../harness). The unpublished
+`paykit-harness-bins` crate ships the `mpp_harness_*` / `x402_harness_*`
+binaries used by the cross-language conformance suite.
 
 ```bash
 cd ../harness
@@ -348,16 +348,21 @@ the [HTTP Payment Authentication Scheme](https://paymentauth.org), and the x402
 
 ```text
 rust/
-├── Cargo.toml                 # workspace root
+├── Cargo.toml                     # workspace root
 ├── crates/
-│   ├── core/                  # solana-pay-core: shared Solana primitives
-│   │   └── payment-channels/  # generated Solana program client subcrate
-│   ├── mpp/                   # solana-mpp: MPP charge/session/subscription (client + server)
-│   ├── x402/                  # solana-x402: x402 exact + SIWX
-│   └── kit/                   # solana-pay-kit: this crate — the unified gate
-│       ├── src/gate.rs        # PayKit, paid_get/paid_post, Payment, Price
-│       └── examples/axum_quickstart.rs
-└── tests/                     # cross-protocol scenarios
+│   ├── kit/                       # solana-pay-kit: the ONE publishable crate
+│   │   └── src/
+│   │       ├── lib.rs             # feature-gated: pub mod core/mpp/x402/generated
+│   │       ├── core/              # shared Solana primitives
+│   │       ├── mpp/               # MPP charge/session/subscription (client + server)
+│   │       ├── x402/              # x402 exact + upto + SIWX
+│   │       ├── generated/         # inlined Codama program clients
+│   │       │   ├── payment_channels/generated/
+│   │       │   └── subscriptions/generated/
+│   │       ├── gate.rs            # PayKit, paid_get/paid_post, Payment, Price
+│   │       └── select.rs          # cross-protocol balance-aware selection
+│   ├── harness-bins/              # paykit-harness-bins: conformance bins (unpublished)
+│   └── integration-tests/         # paykit-integration-tests: surfpool/litesvm (unpublished)
 ```
 
 ## Coding convention

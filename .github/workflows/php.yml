@@ -51,7 +51,7 @@ jobs:
           php-version: "8.3"
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client solana-x402:harness_client"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,x402_harness_client"
           cargo-cache-key: php
       - name: Install PHP harness dependencies
         working-directory: php

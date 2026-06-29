@@ -1,0 +1,45 @@
+[package]
+name = "paykit-harness-bins"
+version = "0.1.0"
+edition = "2021"
+description = "Conformance harness binaries for the pay-kit MPP + x402 protocols (not published)"
+license = "MIT"
+publish = false
+
+[dependencies]
+solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client"] }
+serde_json = "1"
+base64 = "0.22"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+# solana-keychain / solana-rpc-client / solana-signature / solana-transaction are
+# re-exported through solana-pay-kit, but the x402 bins import them by their own
+# crate name, so depend on them directly too.
+solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
+solana-rpc-client = { version = "4", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-transaction = { version = "3", default-features = false }
+
+[[bin]]
+name = "mpp_harness_client"
+path = "src/bin/mpp_harness_client.rs"
+
+[[bin]]
+name = "mpp_harness_server"
+path = "src/bin/mpp_harness_server.rs"
+
+[[bin]]
+name = "x402_harness_client"
+path = "src/bin/x402_harness_client.rs"
+
+[[bin]]
+name = "x402_harness_server"
+path = "src/bin/x402_harness_server.rs"
+
+[[bin]]
+name = "x402_harness_upto_client"
+path = "src/bin/x402_harness_upto_client.rs"
+
+[[bin]]
+name = "x402_harness_upto_server"
+path = "src/bin/x402_harness_upto_server.rs"

@@ -15,7 +15,7 @@ default:
 #
 # Single source of truth for Solana program clients consumed by the SDKs.
 # Today: pulls the subscriptions IDL from a pinned upstream commit and
-# renders a Rust client into `rust/crates/programs/subscriptions/`.
+# renders a Rust client into `rust/crates/kit/src/generated/subscriptions/generated/`.
 # Extending to TS/Go/Python is a matter of dropping the matching
 # `@codama/renderers-*` into `skills/pay-sdk-implementation/codegen/`
 # and adding a recipe below.
@@ -39,11 +39,11 @@ subscriptions-pull-idl:
     @echo "Wrote idl/subscriptions.json"
 
 # Render the Rust client from the vendored IDL. Wipes
-# `rust/crates/programs/subscriptions/src/generated/` and rewrites it
+# `rust/crates/kit/src/generated/subscriptions/generated/` and rewrites it
 # in place — see {{codegen_dir}}/generate-subscriptions-client.ts.
 subscriptions-generate-rs: codegen-install
     cd {{codegen_dir}} && pnpm run subscriptions:rust
-    cd rust && cargo fmt -p subscriptions-client
+    cd rust && cargo fmt -p solana-pay-kit
 
 # Full refresh: pull IDL + regenerate Rust client.
 subscriptions-sync: subscriptions-pull-idl subscriptions-generate-rs
@@ -59,11 +59,11 @@ payment-channels-pull-idl:
     @echo "Wrote idl/payment-channels.json"
 
 # Render the Rust client from the vendored IDL. Wipes
-# `rust/crates/programs/payment-channels/src/generated/` and rewrites
+# `rust/crates/kit/src/generated/payment_channels/generated/` and rewrites
 # it in place — see {{codegen_dir}}/generate-payment-channels-client-rs.ts.
 payment-channels-generate-rs: codegen-install
     cd {{codegen_dir}} && pnpm run payment-channels:rust
-    cd rust && cargo fmt -p payment-channels-client
+    cd rust && cargo fmt -p solana-pay-kit
 
 # Render the Go client from the vendored IDL into
 # `go/protocols/programs/paymentchannels/` (see the matching codegen script).
