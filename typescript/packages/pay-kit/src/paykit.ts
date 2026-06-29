@@ -181,6 +181,13 @@ export type CreatePayKitOptions<P extends PricingDef> = ConfigureParams & {
     readonly adapters?: readonly ProtocolAdapter[];
     /** A pre-built, frozen config — skips the internal {@link configure} call. */
     readonly config?: PayKitConfig;
+    /**
+     * Invoked when settlement fails after the handler has run, so the request is
+     * served without settlement headers. Use it to route the event to a logger or
+     * alerting pipeline; a failed settlement is a payment event worth surfacing.
+     * Defaults to a `console.warn`.
+     */
+    readonly onSettleError?: (error: unknown) => void;
     /** The gate catalogue, inline. Gate names become typed on the returned instance. */
     readonly pricing?: P;
 };
@@ -212,8 +219,15 @@ export type CreatePayKitOptions<P extends PricingDef> = ConfigureParams & {
 export async function createPayKit<const P extends PricingDef = PricingDef>(
     options: CreatePayKitOptions<P> = {},
 ): Promise<PayKit<P>> {
-    const { adapters: adapterOverride, config: prebuilt, pricing: pricingDef, ...configureParams } = options;
+    const {
+        adapters: adapterOverride,
+        config: prebuilt,
+        onSettleError,
+        pricing: pricingDef,
+        ...configureParams
+    } = options;
     const config = prebuilt ?? (await configure(configureParams));
+    const handleSettleFailure = onSettleError ?? warnSettleFailure;
 
     const adapters =
         adapterOverride ??
@@ -603,7 +617,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     next();
                     return;
                 }
-                await runBufferedSettle(res, next, result);
+                await runBufferedSettle(res, next, result, handleSettleFailure);
             };
             // Tag the middleware so `openapiFromExpress` can recover the gate.
             return Object.assign(middleware, { [GATE_METADATA]: gate });
@@ -624,14 +638,14 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                     try {
                         await result.settle();
                     } catch (settleError) {
-                        logSettleFailure(settleError);
+                        handleSettleFailure(settleError);
                     }
                     throw error;
                 }
                 try {
                     return await result.withSettlement(response);
                 } catch (settleError) {
-                    logSettleFailure(settleError);
+                    handleSettleFailure(settleError);
                     return response;
                 }
             };
@@ -654,7 +668,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
                         for (const [name, value] of Object.entries(await result.settle()))
                             c.res.headers.set(name, value);
                     } catch (settleError) {
-                        logSettleFailure(settleError);
+                        handleSettleFailure(settleError);
                     }
                 }
                 return undefined;
@@ -743,7 +757,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
     return instance;
 }
 
-function logSettleFailure(error: unknown): void {
+function warnSettleFailure(error: unknown): void {
     console.warn('[pay-kit] settlement failed; serving the response without settlement headers.', error);
 }
 
@@ -752,7 +766,12 @@ function logSettleFailure(error: unknown): void {
  * run the handler, settle the metered amount, then replay — so the settlement
  * header lands on the reply. Mirrors the x402 metered middleware.
  */
-async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: PaymentGranted): Promise<void> {
+async function runBufferedSettle(
+    res: NodeResponse,
+    next: NextFunction,
+    result: PaymentGranted,
+    handleSettleFailure: (error: unknown) => void,
+): Promise<void> {
     const originalWriteHead = res.writeHead.bind(res);
     const originalWrite = res.write.bind(res);
     const originalEnd = res.end.bind(res);
@@ -811,7 +830,7 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         try {
             await result.settle();
         } catch (settleError) {
-            logSettleFailure(settleError);
+            handleSettleFailure(settleError);
         }
         next(error);
         return;
@@ -828,7 +847,7 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         // serve the buffered handler response without settlement headers. The
         // metered amount is not finalized in-process and nothing retries it — the
         // channel's on-chain timeout is the only fallback.
-        logSettleFailure(settleError);
+        handleSettleFailure(settleError);
     }
     restoreAndReplay();
 }
