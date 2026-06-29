@@ -103,8 +103,8 @@ class X402Adapter:
             amount = parse_units(gate.total().amount_string(), 6)
         except ValueError as exc:
             raise ConfigurationError(
-                f"solana_pay_kit: x402 price {gate.total().amount_string()!r} exceeds 6-decimal (micro-unit) precision; "
-                "USDC settles in micro-units"
+                f"solana_pay_kit: x402 price {gate.total().amount_string()!r} "
+                "exceeds 6-decimal (micro-unit) precision; USDC settles in micro-units"
             ) from exc
         signer = self._config.x402.effective_signer(self._config.operator)
         extra: X402Extra = {
@@ -310,7 +310,8 @@ class X402Adapter:
         for key in ("scheme", "network", "asset", "payTo"):
             if accepted.get(key) != offer.get(key):
                 raise InvalidProofError(
-                    "solana_pay_kit: charge_request_mismatch: accepted payment requirement does not match server challenge",
+                    "solana_pay_kit: charge_request_mismatch: "
+                    "accepted payment requirement does not match server challenge",
                     code="charge_request_mismatch",
                 )
         # Reject if EITHER the exact ``amount`` or the ``maxAmountRequired``

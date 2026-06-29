@@ -109,7 +109,8 @@ class Price(pydantic.BaseModel):
         """Sum two same-currency prices; raise on a currency mismatch."""
         if self.currency != other.currency:
             raise MixedCurrenciesError(
-                f"solana_pay_kit: cannot sum prices of different currencies ({self.currency.value} vs {other.currency.value})"
+                "solana_pay_kit: cannot sum prices of different currencies "
+                f"({self.currency.value} vs {other.currency.value})"
             )
         return Price(
             amount=self.amount + other.amount,

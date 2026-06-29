@@ -17,7 +17,10 @@ from __future__ import annotations
 
 __all__ = ["aws", "gcp", "vault"]
 
-_FOLLOW_UP = "is reserved for a follow-up release; use solana_pay_kit.Signer.file or solana_pay_kit.Signer.env in the meantime"
+_FOLLOW_UP = (
+    "is reserved for a follow-up release; "
+    "use solana_pay_kit.Signer.file or solana_pay_kit.Signer.env in the meantime"
+)
 
 
 def gcp(*, key_name: str, pubkey: str) -> object:
@@ -27,7 +30,9 @@ def gcp(*, key_name: str, pubkey: str) -> object:
 
 def aws(*, key_id: str, region: str, pubkey: str) -> object:
     """Reserved: an AWS KMS signer. Raises until the backend ships."""
-    raise NotImplementedError(f"solana_pay_kit.kms.aws(key_id={key_id!r}, region={region!r}, pubkey={pubkey!r}) {_FOLLOW_UP}")
+    raise NotImplementedError(
+        f"solana_pay_kit.kms.aws(key_id={key_id!r}, region={region!r}, pubkey={pubkey!r}) {_FOLLOW_UP}"
+    )
 
 
 def vault(*, addr: str, path: str, pubkey: str) -> object:

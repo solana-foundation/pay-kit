@@ -332,7 +332,9 @@ def _build_config(**kwargs: Any) -> Config:
     if operator is None:
         operator = Operator()
     elif not isinstance(operator, Operator):
-        raise ConfigurationError(f"solana_pay_kit: operator must be a solana_pay_kit.Operator, got {type(operator).__name__}")
+        raise ConfigurationError(
+            f"solana_pay_kit: operator must be a solana_pay_kit.Operator, got {type(operator).__name__}"
+        )
     resolved_operator = operator.with_defaults()
 
     cfg = Config(operator=resolved_operator, **kwargs)

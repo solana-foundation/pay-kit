@@ -1352,7 +1352,10 @@ class TestComputeBudgetGuard:
         return base64.b64encode(bytes(transaction)).decode("ascii")
 
     def test_set_compute_unit_limit_at_cap_is_accepted(self):
-        from solana_pay_kit.protocols.mpp.server.charge import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+        from solana_pay_kit.protocols.mpp.server.charge import (
+            MAX_COMPUTE_UNIT_LIMIT,
+            _decode_legacy_payment_instructions,
+        )
 
         data = bytes([2]) + MAX_COMPUTE_UNIT_LIMIT.to_bytes(4, "little")
         tx_b64 = self._build_tx_with_compute_budget_data(data)
@@ -1363,7 +1366,10 @@ class TestComputeBudgetGuard:
         assert not any(item.get("programId") == self._COMPUTE_BUDGET for item in out)
 
     def test_set_compute_unit_limit_over_cap_is_rejected(self):
-        from solana_pay_kit.protocols.mpp.server.charge import MAX_COMPUTE_UNIT_LIMIT, _decode_legacy_payment_instructions
+        from solana_pay_kit.protocols.mpp.server.charge import (
+            MAX_COMPUTE_UNIT_LIMIT,
+            _decode_legacy_payment_instructions,
+        )
 
         over = MAX_COMPUTE_UNIT_LIMIT + 1
         data = bytes([2]) + over.to_bytes(4, "little")

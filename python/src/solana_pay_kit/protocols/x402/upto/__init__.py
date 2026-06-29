@@ -159,7 +159,8 @@ class X402Upto:
         asset = resolve(coin_value, label)
         if not asset:
             raise ConfigurationError(
-                f"solana_pay_kit: x402 upto requires an SPL token (not native SOL); could not resolve mint for {coin_value!r}"
+                "solana_pay_kit: x402 upto requires an SPL token (not native SOL); "
+                f"could not resolve mint for {coin_value!r}"
             )
         token_program = token_program_for(coin_value, label)
         pay_to = gate.pay_to or self._config.effective_recipient()
@@ -167,7 +168,8 @@ class X402Upto:
             amount = parse_units(gate.total().amount_string(), 6)
         except ValueError as exc:
             raise ConfigurationError(
-                f"solana_pay_kit: x402 upto price {gate.total().amount_string()!r} exceeds 6-decimal (micro-unit) precision"
+                f"solana_pay_kit: x402 upto price {gate.total().amount_string()!r} "
+                "exceeds 6-decimal (micro-unit) precision"
             ) from exc
         requirements: UptoRequirements = {
             "scheme": UPTO_SCHEME,

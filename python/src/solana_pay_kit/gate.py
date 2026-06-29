@@ -66,7 +66,9 @@ def _build_fees(
         items = cast("dict[object, object]", mapping)
         for recipient, price in items.items():
             if not isinstance(recipient, str) or not recipient:
-                raise ConfigurationError(f"solana_pay_kit: fee_{kind} recipient must be a non-empty string, got {recipient!r}")
+                raise ConfigurationError(
+                    f"solana_pay_kit: fee_{kind} recipient must be a non-empty string, got {recipient!r}"
+                )
             if not isinstance(price, Price):
                 raise ConfigurationError(
                     f"solana_pay_kit: fee_{kind} price for {recipient!r} must be a Price (use usd/eur/gbp)"
@@ -154,7 +156,8 @@ class Gate(pydantic.BaseModel):
         resolved_pay_to = pay_to if pay_to is not None else default_pay_to
         if not isinstance(resolved_pay_to, str) or not resolved_pay_to:
             raise ConfigurationError(
-                f"solana_pay_kit: gate {name!r}: pay_to is required (set it on the gate or configure an operator recipient)"
+                f"solana_pay_kit: gate {name!r}: pay_to is required "
+                "(set it on the gate or configure an operator recipient)"
             )
 
         fees = _build_fees(fee_within, fee_on_top)
@@ -300,7 +303,8 @@ class DynamicGate:
                 accept_default=self._defaults.get("accept"),
             )
         raise ConfigurationError(
-            f"solana_pay_kit: dynamic gate {self.name!r}: builder must return a Gate or a Price, got {type(result).__name__}"
+            f"solana_pay_kit: dynamic gate {self.name!r}: builder must return a Gate or a Price, "
+            f"got {type(result).__name__}"
         )
 
 

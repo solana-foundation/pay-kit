@@ -22,12 +22,12 @@ if _python_src.is_dir():
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]  # noqa: E402
 
-from pay_kit.protocols.mpp.client.payment_channels import (  # noqa: E402
+from solana_pay_kit.protocols.mpp.client.payment_channels import (  # noqa: E402
     create_server_opened_payment_channel_session_opener,
 )
-from pay_kit.protocols.mpp.client.session import serialize_session_credential  # noqa: E402
-from pay_kit.protocols.mpp.core.headers import parse_www_authenticate  # noqa: E402
-from pay_kit.protocols.mpp.intents.session import (  # noqa: E402
+from solana_pay_kit.protocols.mpp.client.session import serialize_session_credential  # noqa: E402
+from solana_pay_kit.protocols.mpp.core.headers import parse_www_authenticate  # noqa: E402
+from solana_pay_kit.protocols.mpp.intents.session import (  # noqa: E402
     ClosePayload,
     SessionAction,
     SessionRequest,

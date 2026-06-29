@@ -1,4 +1,4 @@
-"""Cross-language harness adapter for the Python pay_kit x402 ``upto`` client.
+"""Cross-language harness adapter for the Python solana_pay_kit x402 ``upto`` client.
 
 Mirrors the Rust/Go upto harness clients: GET the target, parse the ``upto`` 402
 challenge, build the ``PAYMENT-SIGNATURE`` header (a partially-signed channel
@@ -37,8 +37,8 @@ if _python_src.is_dir():
 
 import httpx  # noqa: E402
 
-from pay_kit.protocols.x402.client.upto import build_upto_header, parse_upto_challenge  # noqa: E402
-from pay_kit.signer import Signer  # noqa: E402
+from solana_pay_kit.protocols.x402.client.upto import build_upto_header, parse_upto_challenge  # noqa: E402
+from solana_pay_kit.signer import Signer  # noqa: E402
 
 SETTLEMENT_HEADER = "x-payment-settlement-signature"
 PAYMENT_SIGNATURE_HEADER = "Payment-Signature"
