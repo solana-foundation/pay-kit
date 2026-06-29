@@ -4,9 +4,9 @@ import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
-import { resolveCoin } from '../coin.js';
+import { resolveCoinAndMint } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
@@ -53,10 +53,12 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const handlers = new Map<string, ChargeHandler>();
 
     function coinFor(gate: Gate): { coin: string; mint: string } {
-        const coin = resolveCoin(gate.amount, config.stablecoins);
-        const mint = resolveStablecoinMint(coin, network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
-        return { coin, mint };
+        return resolveCoinAndMint(
+            gate.amount,
+            config.stablecoins,
+            coin => resolveStablecoinMint(coin, network),
+            config.network,
+        );
     }
 
     function handlerFor(gate: Gate): ChargeHandler {

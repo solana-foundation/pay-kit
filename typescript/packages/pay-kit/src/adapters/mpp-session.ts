@@ -14,7 +14,7 @@ import { createSolanaRpc } from '@solana/kit';
 import { resolveStablecoinMint } from '@solana/mpp';
 import { createMemorySessionStore, Mppx, session } from '@solana/mpp/server';
 
-import { resolveCoin } from '../coin.js';
+import { resolveCoinAndMint } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
 import { ConfigurationError } from '../errors.js';
 import type { Gate } from '../gate.js';
@@ -61,9 +61,12 @@ export function createSessionEngine(config: PayKitConfig, gate: Gate): SessionEn
         );
     }
     const network = toSolanaNetwork(config.network);
-    const coin = resolveCoin(gate.amount, config.stablecoins);
-    const mint = resolveStablecoinMint(coin, network);
-    if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
+    const { mint } = resolveCoinAndMint(
+        gate.amount,
+        config.stablecoins,
+        coin => resolveStablecoinMint(coin, network),
+        config.network,
+    );
 
     const signer = config.operator.signer.signer;
     const store = createMemorySessionStore();

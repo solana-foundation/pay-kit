@@ -11,9 +11,9 @@ import { ExactSvmScheme as ExactSvmFacilitator } from '@x402/svm/exact/facilitat
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
-import { resolveCoin } from '../coin.js';
+import { resolveCoinAndMint } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2 } from '../protocol.js';
@@ -49,10 +49,12 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     );
 
     function mintFor(gate: Gate): string {
-        const coin = resolveCoin(gate.amount, config.stablecoins);
-        const mint = resolveStablecoinMint(coin, network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
-        return mint;
+        return resolveCoinAndMint(
+            gate.amount,
+            config.stablecoins,
+            coin => resolveStablecoinMint(coin, network),
+            config.network,
+        ).mint;
     }
 
     /** The route's pinned requirements — the credential is bound to this exact amount. */

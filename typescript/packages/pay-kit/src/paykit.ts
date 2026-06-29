@@ -490,9 +490,6 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         return granted(payment, () => Promise.resolve(settlementHeaders));
     }
 
-    /** Settlement coin for a gate (its explicit preference, else the config default). */
-    const coinFor = (gate: Gate): string => resolveCoin(gate.amount, config.stablecoins);
-
     /**
      * The discovery `intent` for a gate kind. `subscription` and `session` are
      * first-class intents (the UI keys its nav off these); `fixed` and `usage`
@@ -503,7 +500,7 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
 
     /** The discovery offers for a gate — one per accepted protocol/scheme. */
     async function offersForGate(gate: Gate, request: Request): Promise<PaymentOffer[]> {
-        const coin = coinFor(gate);
+        const coin = resolveCoin(gate.amount, config.stablecoins);
         const intent = intentFor(gate);
         const toOffer = (entry: AcceptsEntry, max: boolean): PaymentOffer => {
             const extra = (entry.extra ?? {}) as { facilitator?: unknown; feePayer?: unknown };
@@ -828,8 +825,9 @@ async function runBufferedSettle(res: NodeResponse, next: NextFunction, result: 
         for (const [name, value] of Object.entries(await result.settle())) res.setHeader(name, value);
     } catch (settleError) {
         // The upto ceiling is already escrowed on-chain, so the request is paid;
-        // serve the buffered handler response without settlement headers and let
-        // the out-of-band refund retry.
+        // serve the buffered handler response without settlement headers. The
+        // metered amount is not finalized in-process and nothing retries it — the
+        // channel's on-chain timeout is the only fallback.
         logSettleFailure(settleError);
     }
     restoreAndReplay();
