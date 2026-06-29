@@ -1,0 +1,205 @@
+name: Publish to PyPI (Python SDK)
+
+# Publishes the `solana-pay-kit` distribution to PyPI.
+#
+# Authentication is PyPI Trusted Publishing (OIDC) — no API token to manage.
+# One-time setup on PyPI (https://pypi.org/manage/account/publishing/), under
+# the `solana-pay-kit` project's "Publishing" settings, add a trusted publisher:
+#   Owner:        solana-foundation
+#   Repository:   pay-kit
+#   Workflow:     pypi-publish.yml
+#   Environment:  pypi
+# For the very first publish (project doesn't exist yet) use PyPI's
+# "pending publisher" form with the same values. After that the job below
+# publishes with no secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish-to-pypi:
+        description: 'Publish to PyPI registry'
+        required: true
+        default: true
+        type: boolean
+      create-github-release:
+        description: 'Create GitHub release'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write # PyPI Trusted Publishing (OIDC)
+
+# Prevent concurrent publishes
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/python.yml
+    secrets: inherit
+
+  publish:
+    name: Publish solana-pay-kit
+    runs-on: ubuntu-latest
+    needs: [ci]
+    environment:
+      name: pypi
+      url: https://pypi.org/project/solana-pay-kit/
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version' python/pyproject.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "FAIL: could not read version from python/pyproject.toml"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $VERSION"
+
+      - name: Check if prerelease
+        id: prerelease
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # PEP 440 pre-releases: 1.2.3a1 / b1 / rc1 / .dev1
+          if [[ "$VERSION" =~ (a|b|rc)[0-9]+$ ]] || [[ "$VERSION" == *.dev* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Pre-release version detected"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Builds the sdist + wheel via hatchling. `readme = "README.md"` in
+      # pyproject embeds python/README.md as the long description, so it renders
+      # as the PyPI project page.
+      - name: Build sdist + wheel
+        working-directory: python
+        run: |
+          rm -rf dist
+          uv build
+          ls -la dist
+
+      # Guard - the long description (README) must render on PyPI, and the
+      # artifacts must actually contain the package. `twine check` fails the
+      # job if the README has rendering problems.
+      - name: Guard - README renders + package present
+        working-directory: python
+        run: |
+          uvx twine check --strict dist/*
+          tarball=$(ls dist/*.tar.gz)
+          if ! tar -tzf "$tarball" | grep -q "/solana_pay_kit/__init__.py$"; then
+            echo "FAIL: sdist is missing the solana_pay_kit package"
+            tar -tzf "$tarball" | head -30
+            exit 1
+          fi
+          echo "twine check passed and solana_pay_kit is present"
+
+      - name: Publish to PyPI
+        if: ${{ github.event.inputs.publish-to-pypi == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+          # No `password:` — Trusted Publishing (OIDC) authenticates via the
+          # id-token permission + the `pypi` environment configured above.
+
+      - name: Create and push tag
+        if: ${{ github.event.inputs.publish-to-pypi == 'true' }}
+        run: |
+          TAG="python-v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag "$TAG"
+            echo "Created tag $TAG"
+          fi
+          git push origin "$TAG" 2>/dev/null || echo "Tag already pushed"
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create-github-release == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const version = `${{ steps.version.outputs.version }}`;
+            const tagName = `python-v${version}`;
+            const releaseName = `solana-pay-kit (Python) v${version}`;
+            const isPrerelease = '${{ steps.prerelease.outputs.is_prerelease }}' === 'true';
+
+            const body = `## solana-pay-kit (Python) v${version}
+
+            ### Installation
+
+            \`\`\`bash
+            pip install "solana-pay-kit[flask]"  # or [fastapi] / [django]
+            \`\`\`
+
+            \`\`\`python
+            import solana_pay_kit
+            \`\`\`
+
+            [PyPI](https://pypi.org/project/solana-pay-kit/${version}/)
+            `;
+
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tagName,
+              });
+              console.log(`Release ${tagName} already exists, skipping`);
+              return;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              name: releaseName,
+              body: body.trim(),
+              draft: false,
+              prerelease: isPrerelease,
+            });
+
+            console.log(`Created release: ${releaseName}`);
+
+      - name: Publish summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          ## Published
+
+          **Package**: \`solana-pay-kit\` (import \`solana_pay_kit\`)
+          **Version**: \`${VERSION}\`
+          **Tag**: \`python-v${VERSION}\`
+
+          EOF
+          if [ "${{ github.event.inputs.publish-to-pypi }}" == "true" ]; then
+            echo "Published to PyPI: https://pypi.org/project/solana-pay-kit/${VERSION}/" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Skipped PyPI publish (dry run)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${{ github.event.inputs.create-github-release }}" == "true" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "GitHub release: https://github.com/${{ github.repository }}/releases/tag/python-v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          fi

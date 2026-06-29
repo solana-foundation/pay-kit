@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "solana-pay-kit"
 version = "0.1.0"
 description = "Solana payment method for the Machine Payments Protocol"
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [

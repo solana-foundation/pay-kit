@@ -18,7 +18,7 @@ jobs:
           cache: pip
       - name: Install Python SDK
         working-directory: python
-        # Framework extras bring fastapi/flask/django so the pay_kit shim tests
+        # Framework extras bring fastapi/flask/django so the solana_pay_kit shim tests
         # import and pyright can resolve them; dev brings ruff, pyright, pytest.
         run: |
           python -m pip install --upgrade pip
@@ -33,13 +33,13 @@ jobs:
         run: pyright --pythonpath "$(python -c 'import sys; print(sys.executable)')"
       - name: Run tests with coverage
         working-directory: python
-        # Coverage gate: line coverage at 90% over pay_kit (the MPP wire layer
-        # now lives under pay_kit/protocols/mpp). preflight.py is omitted in
+        # Coverage gate: line coverage at 90% over solana_pay_kit (the MPP wire layer
+        # now lives under solana_pay_kit/protocols/mpp). preflight.py is omitted in
         # pyproject (live-RPC paths). Branch coverage gate is follow-up work,
         # tracked in #108.
         run: |
           pytest \
-            --cov=pay_kit \
+            --cov=solana_pay_kit \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
             --cov-fail-under=90 \
@@ -144,7 +144,7 @@ jobs:
           MPP_HARNESS_CLIENTS: rust
           MPP_HARNESS_SERVERS: python
         run: pnpm exec vitest run test/e2e.test.ts
-      # x402 exact: drive the Python pay_kit x402 client (a real signed v0
+      # x402 exact: drive the Python solana_pay_kit x402 client (a real signed v0
       # VersionedTransaction) against the full-settling rust and python x402
       # servers. test/e2e.test.ts self-hosts surfnet and threads the funded
       # client keypair into X402_HARNESS_CLIENT_SECRET_KEY. The matrix pairs
@@ -153,7 +153,7 @@ jobs:
       # go) out of this x402 run. ts-x402 is excluded: its stub server expects a
       # payload.challengeId and never broadcasts a real transaction, so it
       # cannot settle a genuine signed tx (same reason rust-x402 skips it). The
-      # x402 client adapter imports pay_kit from python/src on sys.path (no
+      # x402 client adapter imports solana_pay_kit from python/src on sys.path (no
       # extra install beyond the editable SDK above).
       - name: Focused python-x402 -> rust/python x402 servers
         working-directory: harness
@@ -165,7 +165,7 @@ jobs:
           X402_HARNESS_CLIENTS: python-x402
           X402_HARNESS_SERVERS: rust-x402,python
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
-      # x402 upto: drive the Python pay_kit upto client + PayKit upto server
+      # x402 upto: drive the Python solana_pay_kit upto client + PayKit upto server
       # (channel open + voucher settle on the embedded surfnet) against the Rust
       # upto reference. x402-upto-basic runs every active client x server; the
       # zero-actual scenario is pinned to rust-x402-upto (serverIds in
