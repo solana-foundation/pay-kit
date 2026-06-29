@@ -230,6 +230,13 @@ export function EndpointWorkbench({
   )
 }
 
+// Sample request body for POST endpoints. The x402 `upto` summarize gate bills
+// per byte, so sending a non-empty body is what makes the demo show real
+// usage-based metering instead of always settling the 1-token minimum.
+const SAMPLE_POST_BODY =
+  'Summarize this passage. The x402 upto scheme authorizes a ceiling, meters the request by the byte, ' +
+  'settles only what is actually spent on-chain, and refunds the rest of the deposit.'
+
 async function* runFlow(
   endpoint: Endpoint,
   url: string,
@@ -238,11 +245,15 @@ async function* runFlow(
   protocol?: 'mpp' | 'x402',
 ): AsyncGenerator<FlowProgress> {
   void paramValues
+  const init: RequestInit =
+    endpoint.method === 'POST'
+      ? { method: 'POST', body: SAMPLE_POST_BODY, headers: { 'content-type': 'text/plain' } }
+      : { method: endpoint.method }
   for await (const step of payAndFetch(url, {
     primitive,
     protocol,
     unitPrice: endpoint.unitPrice,
-    init: { method: endpoint.method },
+    init,
   })) {
     yield step
   }
