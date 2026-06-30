@@ -314,7 +314,17 @@ private fun DemoScreen() {
                             onSelectProtocol = { protocolChoice = protocolChoice + (endpoint.id to it) },
                             onClick = onClick@{
                                 val s = signer ?: return@onClick
-                                when (endpoint.intent) {
+                                // A metered x402 upto route advertises the generic
+                                // `charge` intent, so route by scheme first: authorize a
+                                // ceiling; the server meters + settles actual <= max.
+                                if (endpoint.scheme == "upto") {
+                                    busy = BusyKind.Pay(endpoint.id)
+                                    scope.launch {
+                                        append(consumeUpto(s, endpoint))
+                                        refreshBalance()
+                                        busy = null
+                                    }
+                                } else when (endpoint.intent) {
                                     // One-shot charge: the 402 -> sign -> retry loop, over the
                                     // protocol the user picked (default: the advertised mpp).
                                     "charge" -> {
@@ -332,17 +342,6 @@ private fun DemoScreen() {
                                         busy = BusyKind.Pay(endpoint.id)
                                         scope.launch {
                                             append(consumeSession(s, endpoint))
-                                            refreshBalance()
-                                            busy = null
-                                        }
-                                    }
-                                    // x402 upto (usage): authorize a ceiling via a
-                                    // payment channel; the server meters actual usage
-                                    // and settles actual <= max, refunding the rest.
-                                    "upto" -> {
-                                        busy = BusyKind.Pay(endpoint.id)
-                                        scope.launch {
-                                            append(consumeUpto(s, endpoint))
                                             refreshBalance()
                                             busy = null
                                         }

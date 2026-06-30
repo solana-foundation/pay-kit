@@ -94,7 +94,7 @@ endpoints are rendered from the playground's OpenAPI spec; the log shows
 a `Stock quote — 200 OK` consumed over MPP with its on-chain settlement
 signature.
 
-![Android emulator screenshot: OpenAPI endpoints and a settled MPP charge](docs/android-demo-screenshot.png)
+![Android emulator screenshot: OpenAPI endpoints and a settled x402 upto (metered) payment](docs/android-demo-screenshot.png)
 
 ## Expected UI state
 
