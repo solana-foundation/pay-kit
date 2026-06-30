@@ -122,6 +122,10 @@ pub struct X402Upto {
     /// Channel ids currently being processed (verify_open → settle_actual), to
     /// reject concurrent replays of the same authorization.
     in_flight: Arc<Mutex<HashSet<Pubkey>>>,
+    /// Optional shared cache of a recent blockhash, refreshed out of band, so
+    /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
+    /// directly (prior behaviour).
+    blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
 }
 
 fn now_unix() -> i64 {
@@ -155,7 +159,19 @@ impl X402Upto {
             config,
             operator,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
+            blockhash_cache: None,
         })
+    }
+
+    /// Attach a shared blockhash cache (refreshed by a background task) so the
+    /// `upto` challenge embeds a recent blockhash without a per-challenge RPC
+    /// fetch. Falls back to a direct fetch when the cache is empty or stale.
+    pub fn with_blockhash_cache(
+        mut self,
+        cache: crate::core::blockhash::BlockhashCache,
+    ) -> Self {
+        self.blockhash_cache = Some(cache);
+        self
     }
 
     /// The operator/facilitator public key (base58).
@@ -230,11 +246,22 @@ impl X402Upto {
         // the in-SDK client hard-requires `extra.recentBlockhash` to build the
         // channel open, so a silent `None` would surface as a non-retryable
         // payment failure on a transient RPC hiccup.
-        let (blockhash, last_valid_block_height) = self
-            .rpc
-            .get_latest_blockhash_with_commitment(self.rpc.commitment())
-            .map_err(|e| Error::Rpc(format!("failed to fetch recent blockhash: {e}")))?;
-        requirement.extra.recent_blockhash = Some(blockhash.to_string());
+        // Prefer the shared cache (refreshed out of band) to avoid a blocking
+        // RPC round-trip per challenge; fall back to a direct fetch.
+        let (blockhash, last_valid_block_height) =
+            match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+                Some(cached) => (cached.blockhash, cached.last_valid_block_height),
+                None => {
+                    let (blockhash, last_valid_block_height) = self
+                        .rpc
+                        .get_latest_blockhash_with_commitment(self.rpc.commitment())
+                        .map_err(|e| {
+                            Error::Rpc(format!("failed to fetch recent blockhash: {e}"))
+                        })?;
+                    (blockhash.to_string(), last_valid_block_height)
+                }
+            };
+        requirement.extra.recent_blockhash = Some(blockhash);
         requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),

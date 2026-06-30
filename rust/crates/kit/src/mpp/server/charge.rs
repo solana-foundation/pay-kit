@@ -308,6 +308,10 @@ pub struct Mpp {
     pub(crate) html: bool,
     /// Audit #5: opt-in for push-mode credentials.
     pub(crate) accept_push_mode: bool,
+    /// Optional shared cache of a recent blockhash, refreshed out of band, so
+    /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ always
+    /// fetch directly (prior behaviour).
+    pub(crate) blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
 }
 
 impl Mpp {
@@ -372,7 +376,20 @@ impl Mpp {
             store,
             html: config.html,
             accept_push_mode: config.accept_push_mode,
+            blockhash_cache: None,
         })
+    }
+
+    /// Attach a shared blockhash cache (refreshed by a background task) so
+    /// `charge`/`charge_with_options` embed a recent blockhash without a
+    /// per-challenge RPC fetch. Falls back to a direct fetch when the cache is
+    /// empty or stale.
+    pub fn with_blockhash_cache(
+        mut self,
+        cache: crate::core::blockhash::BlockhashCache,
+    ) -> Self {
+        self.blockhash_cache = Some(cache);
+        self
     }
 
     // ── Accessors ──
@@ -495,12 +512,16 @@ impl Mpp {
             );
         }
 
-        // Pre-fetch blockhash so the client doesn't need an extra RPC call.
-        if let Ok(blockhash) = self.rpc.get_latest_blockhash() {
-            details.insert(
-                "recentBlockhash".into(),
-                serde_json::json!(blockhash.to_string()),
-            );
+        // Pre-fetch a recent blockhash so the client doesn't need an extra RPC
+        // call. Prefer the shared cache (refreshed out of band) to avoid a
+        // blocking RPC round-trip per challenge; fall back to a direct fetch
+        // when the cache is empty or stale.
+        let blockhash = match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+            Some(cached) => Some(cached.blockhash),
+            None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),
+        };
+        if let Some(blockhash) = blockhash {
+            details.insert("recentBlockhash".into(), serde_json::json!(blockhash));
         }
 
         request.method_details = Some(serde_json::Value::Object(details));

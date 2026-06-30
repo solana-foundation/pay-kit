@@ -47,6 +47,11 @@ pub mod store;
 /// the `settlement` feature. Shared with x402 via `solana-pay-core`.
 pub use crate::core::settlement;
 
+/// Shared, refresh-on-an-interval cache for a recent blockhash, so challenge
+/// issuance avoids a per-challenge RPC round-trip. Wire it onto a handler with
+/// `Mpp::with_blockhash_cache` (and the matching x402 builders).
+pub use crate::core::blockhash;
+
 #[cfg(feature = "client")]
 pub mod client;
 

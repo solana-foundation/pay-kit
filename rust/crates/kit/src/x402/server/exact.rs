@@ -133,6 +133,10 @@ pub enum VerifiedExactPayment {
 pub struct X402 {
     rpc: Arc<RpcClient>,
     config: Config,
+    /// Optional shared cache of a recent blockhash, refreshed out of band, so
+    /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
+    /// directly (prior behaviour).
+    blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
 }
 
 impl X402 {
@@ -157,7 +161,19 @@ impl X402 {
                 CommitmentConfig::confirmed(),
             )),
             config,
+            blockhash_cache: None,
         })
+    }
+
+    /// Attach a shared blockhash cache (refreshed by a background task) so
+    /// challenge issuance embeds a recent blockhash without a per-challenge RPC
+    /// fetch. Falls back to a direct fetch when the cache is empty or stale.
+    pub fn with_blockhash_cache(
+        mut self,
+        cache: crate::core::blockhash::BlockhashCache,
+    ) -> Self {
+        self.blockhash_cache = Some(cache);
+        self
     }
 
     pub fn recipient(&self) -> &str {
@@ -218,16 +234,26 @@ impl X402 {
     /// surfnet fork: the embedded blockhash carries the `SURFNETxSAFEHASH`
     /// sentinel the client keys on, regardless of the wire CAIP-2 network.
     fn embed_recent_blockhash(&self, requirements: &mut PaymentRequirements) {
-        if self.config.rpc_url.is_none() {
-            return;
-        }
-        let Ok((blockhash, last_valid_block_height)) = self
-            .rpc
-            .get_latest_blockhash_with_commitment(self.rpc.commitment())
-        else {
-            return;
-        };
-        requirements.recent_blockhash = Some(blockhash.to_string());
+        // Prefer the shared cache (refreshed out of band) to avoid a blocking
+        // RPC round-trip per challenge; fall back to a direct fetch. Skip
+        // entirely when neither a cached entry nor an RPC URL is available.
+        let (blockhash, last_valid_block_height) =
+            match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+                Some(cached) => (cached.blockhash, cached.last_valid_block_height),
+                None => {
+                    if self.config.rpc_url.is_none() {
+                        return;
+                    }
+                    let Ok((blockhash, last_valid_block_height)) = self
+                        .rpc
+                        .get_latest_blockhash_with_commitment(self.rpc.commitment())
+                    else {
+                        return;
+                    };
+                    (blockhash.to_string(), last_valid_block_height)
+                }
+            };
+        requirements.recent_blockhash = Some(blockhash);
         let extra = requirements
             .extra
             .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
