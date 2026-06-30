@@ -88,6 +88,10 @@ _EMPTY_DISTRIBUTION_HASH = [
 ]  # fmt: skip
 
 
+def _empty_distribution() -> list[Distribution]:
+    return []
+
+
 @dataclass
 class VerifiedUptoOpen:
     """A confirmed, on-chain-validated channel open carried into settlement.
@@ -108,7 +112,7 @@ class VerifiedUptoOpen:
     max_amount: int
     expires_at: int
     network: str
-    distribution: list[Distribution] = field(default_factory=list)
+    distribution: list[Distribution] = field(default_factory=_empty_distribution)
     _release_fn: Callable[[], None] | None = field(default=None, repr=False)
     _released: bool = field(default=False, repr=False)
 
