@@ -29,7 +29,7 @@ use crate::core::{Error, Result};
 pub use crate::generated::payment_channels as generated;
 use crate::generated::payment_channels::generated::instructions::{
     DistributeBuilder, FinalizeBuilder, OpenBuilder, RequestCloseBuilder, SettleBuilder,
-    TopUpBuilder,
+    TopUpBuilder, SETTLE_AND_FINALIZE_DISCRIMINATOR,
 };
 use crate::generated::payment_channels::generated::types::{
     DistributeArgs, DistributionEntry, OpenArgs, SettleAndFinalizeArgs, TopUpArgs, VoucherArgs,
@@ -474,7 +474,7 @@ pub fn build_settle_and_finalize_instructions(
     // `settle_and_finalize`. The generated client currently emits
     // merchant-first, which makes the program try to deserialize the merchant
     // wallet as a channel and fail with `InvalidAccountOwner`.
-    let mut data = vec![4];
+    let mut data = vec![SETTLE_AND_FINALIZE_DISCRIMINATOR];
     data.extend(
         borsh::to_vec(&SettleAndFinalizeArgs { has_voucher }).map_err(|e| {
             Error::Serialization(format!(
