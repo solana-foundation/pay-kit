@@ -135,11 +135,23 @@ pub async fn build_upto_header(
     encode_upto_header(requirements, payload)
 }
 
-/// Parse a 402 `upto` challenge from a `PAYMENT-REQUIRED` header value or body.
+/// Parse a 402 `upto` challenge from a `PAYMENT-REQUIRED` header value or body,
+/// returning the first advertised `upto` requirement. Use [`parse_upto_accepts`]
+/// to consider every advertised currency.
 pub fn parse_upto_challenge(
     headers: &[(String, String)],
     body: Option<&str>,
 ) -> Option<UptoRequirements> {
+    parse_upto_accepts(headers, body).into_iter().next()
+}
+
+/// Parse *all* `upto` requirements advertised on a 402 (every `scheme == "upto"`
+/// `accepts` entry), so a balance- and cost-aware selector can choose among the
+/// offered currencies — not just the first. Empty when none are present.
+pub fn parse_upto_accepts(
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Vec<UptoRequirements> {
     let from_header = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(PAYMENT_REQUIRED_HEADER))
@@ -148,13 +160,17 @@ pub fn parse_upto_challenge(
         })
         .and_then(|bytes| serde_json::from_slice::<UptoRequiredEnvelope>(&bytes).ok());
 
-    let envelope = from_header
-        .or_else(|| body.and_then(|b| serde_json::from_str::<UptoRequiredEnvelope>(b).ok()))?;
+    let Some(envelope) =
+        from_header.or_else(|| body.and_then(|b| serde_json::from_str::<UptoRequiredEnvelope>(b).ok()))
+    else {
+        return Vec::new();
+    };
 
     envelope
         .accepts
         .into_iter()
-        .find(|req| req.scheme == UPTO_SCHEME)
+        .filter(|req| req.scheme == UPTO_SCHEME)
+        .collect()
 }
 
 #[cfg(test)]

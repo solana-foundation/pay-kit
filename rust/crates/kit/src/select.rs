@@ -22,7 +22,7 @@ use crate::mpp::{
     parse_www_authenticate_all, resolve_stablecoin_mint, ChargeRequest, PaymentChallenge,
 };
 use crate::x402::client::exact::parse_x402_accepts;
-use crate::x402::client::upto::parse_upto_challenge;
+use crate::x402::client::upto::parse_upto_accepts;
 use crate::x402::exact::{cluster_for_caip2_network, PaymentRequirements};
 use crate::x402::upto::UptoRequirements;
 
@@ -435,10 +435,10 @@ fn collect_candidates(headers: &[(String, String)], body: Option<&str>) -> Vec<C
         }
     }
 
-    // x402 `upto` offer (a ceiling the operator settles down from). Parsed
+    // x402 `upto` offers (a ceiling the operator settles down from). Parsed
     // separately because an upto envelope is a distinct shape from `exact`;
-    // `parse_upto_challenge` returns the Solana `upto` requirement, if any.
-    if let Some(requirement) = parse_upto_challenge(headers, body) {
+    // every advertised `upto` currency is a candidate.
+    for requirement in parse_upto_accepts(headers, body) {
         if let Some(c) = x402_upto_candidate(&requirement, out.len()) {
             out.push(c);
         }
@@ -816,5 +816,36 @@ mod tests {
         .expect("a fundable option exists");
         assert_eq!(selected.protocol(), "x402-upto");
         assert_eq!(selected.mint(), mints::USDC_MAINNET);
+    }
+
+    /// An x402 `upto` body advertising two currencies, so selection must look
+    /// past the first `accepts` entry.
+    fn upto_body_multi(c1: &str, c2: &str, ceiling: u64) -> String {
+        let entry = |asset: &str| {
+            serde_json::json!({
+                "scheme": "upto",
+                "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                "amount": ceiling.to_string(),
+                "asset": asset,
+                "payTo": RECIPIENT,
+                "maxTimeoutSeconds": 300,
+                "extra": { "decimals": 6, "feePayer": RECIPIENT },
+            })
+        };
+        serde_json::json!({ "x402Version": 2, "accepts": [entry(c1), entry(c2)] }).to_string()
+    }
+
+    // Regression for the single-currency-upto bug: when upto is advertised in
+    // [USDC, USDG] and the wallet holds only USDG, the router must consider the
+    // *second* upto accept — not just the first (USDC).
+    #[test]
+    fn upto_considers_all_advertised_currencies() {
+        let body = upto_body_multi("USDC", "USDG", 1000);
+        let funded = vec![token(mints::USDG_MAINNET, 1_000_000)];
+
+        let selected = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+            .expect("the USDG upto accept should be fundable");
+        assert_eq!(selected.protocol(), "x402-upto");
+        assert_eq!(selected.mint(), mints::USDG_MAINNET);
     }
 }
