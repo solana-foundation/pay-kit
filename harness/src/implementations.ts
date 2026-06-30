@@ -212,6 +212,23 @@ export const clientImplementations: ImplementationDefinition[] = [
     intents: ["x402-exact"],
   },
   {
+    id: "swift-x402-upto",
+    label: "Swift x402 upto client",
+    role: "client",
+    // Drives the SolanaPayKit x402 upto client (parse the upto challenge ->
+    // build a partially-signed channel open + PAYMENT-SIGNATURE -> retry).
+    // Defaults off to match swift/go/etc: opt in via
+    // `X402_HARNESS_CLIENTS=swift-x402-upto`.
+    command: [
+      "sh",
+      "-c",
+      "cd swift-x402-upto-client && swift run --quiet SwiftX402UptoClient",
+    ],
+    enabled: isEnabled("swift-x402-upto", "X402_HARNESS_CLIENTS", false),
+    intents: ["x402-upto"],
+    reportsAs: "swift",
+  },
+  {
     id: "kotlin-x402",
     label: "Kotlin x402 exact client",
     role: "client",
