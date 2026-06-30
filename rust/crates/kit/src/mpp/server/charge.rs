@@ -29,6 +29,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use solana_client::client_error::{ClientError, ClientErrorKind};
+use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
 use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_message::compiled_instruction::CompiledInstruction;
@@ -1046,7 +1047,13 @@ impl Mpp {
         // Reject up-front if the client signed against the wrong network
         // (e.g. mainnet keypair pointed at a sandbox-configured server, or
         // vice versa). Cheaper and clearer than letting the broadcast fail.
-        check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
+        let tx_recent_blockhash = tx.message.recent_blockhash().to_string();
+        let uses_challenge_blockhash = method_details
+            .recent_blockhash
+            .as_deref()
+            .map(|recent_blockhash| recent_blockhash == tx_recent_blockhash)
+            .unwrap_or(false);
+        check_network_blockhash(&self.network, &tx_recent_blockhash)?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
         verify_versioned_transaction_pre_broadcast(&tx, request, method_details)?;
@@ -1125,6 +1132,44 @@ impl Mpp {
                         } else {
                             format!(" — {}", logs.join("; "))
                         };
+                        let sim_err = sim
+                            .err
+                            .as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string());
+                        if !retrying
+                            && uses_challenge_blockhash
+                            && is_blockhash_not_found_simulation(sim)
+                        {
+                            tracing::warn!(
+                                elapsed_ms = %t0.elapsed().as_millis(),
+                                attempt,
+                                max_attempts = SIMULATION_MAX_ATTEMPTS,
+                                error = %sim_err,
+                                recent_blockhash = %tx_recent_blockhash,
+                                "broadcast_pull retrying without preflight after blockhash preflight failure"
+                            );
+                            match self
+                                .rpc
+                                .send_transaction_with_config(&tx, skip_preflight_send_config())
+                            {
+                                Ok(signature) => {
+                                    broadcast_signature = Some(signature);
+                                    break;
+                                }
+                                Err(skip_err) => {
+                                    let message = format!(
+                                        "Broadcast RPC error after blockhash preflight failure: {skip_err}"
+                                    );
+                                    tracing::warn!(
+                                        elapsed_ms = %t0.elapsed().as_millis(),
+                                        error = %skip_err,
+                                        "broadcast_pull skip_preflight rpc error"
+                                    );
+                                    return Err(VerificationError::network_error(message));
+                                }
+                            }
+                        }
                         // Best-effort balance diagnostics add extra RPC calls,
                         // so only run them when this failure is about to be
                         // returned.
@@ -1133,11 +1178,6 @@ impl Mpp {
                         } else {
                             diagnose_balances(&self.rpc, &tx, request, method_details)
                         };
-                        let sim_err = sim
-                            .err
-                            .as_ref()
-                            .map(|e| e.to_string())
-                            .unwrap_or_else(|| "unknown error".to_string());
                         let message =
                             format!("Simulation failed: {sim_err}{log_detail}{balance_detail}");
                         tracing::warn!(
@@ -2816,6 +2856,21 @@ fn preflight_simulation(err: &ClientError) -> Option<&RpcSimulateTransactionResu
     }
 }
 
+fn is_blockhash_not_found_simulation(sim: &RpcSimulateTransactionResult) -> bool {
+    sim.err
+        .as_ref()
+        .map(|err| err.to_string() == "Blockhash not found")
+        .unwrap_or(false)
+}
+
+fn skip_preflight_send_config() -> RpcSendTransactionConfig {
+    RpcSendTransactionConfig {
+        skip_preflight: true,
+        preflight_commitment: Some(solana_commitment_config::CommitmentLevel::Confirmed),
+        ..RpcSendTransactionConfig::default()
+    }
+}
+
 fn diagnose_balances(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
@@ -3188,6 +3243,36 @@ mod tests {
         // The structured code is still available on the field for
         // callers that need to branch on it programmatically.
         assert_eq!(err.code, Some("wrong-network"));
+    }
+
+    #[test]
+    fn blockhash_not_found_simulation_is_detected() {
+        let sim: RpcSimulateTransactionResult =
+            serde_json::from_value(serde_json::json!({ "err": "BlockhashNotFound" })).unwrap();
+
+        assert!(is_blockhash_not_found_simulation(&sim));
+    }
+
+    #[test]
+    fn missing_simulation_error_is_not_blockhash_not_found() {
+        let sim: RpcSimulateTransactionResult =
+            serde_json::from_value(serde_json::json!({ "err": null })).unwrap();
+
+        assert!(!is_blockhash_not_found_simulation(&sim));
+    }
+
+    #[test]
+    fn skip_preflight_send_config_only_skips_preflight() {
+        let config = skip_preflight_send_config();
+
+        assert!(config.skip_preflight);
+        assert_eq!(
+            config.preflight_commitment,
+            Some(solana_commitment_config::CommitmentLevel::Confirmed)
+        );
+        assert_eq!(config.encoding, None);
+        assert_eq!(config.max_retries, None);
+        assert_eq!(config.min_context_slot, None);
     }
 
     // ── Audit #8: to_ui_amount ──
