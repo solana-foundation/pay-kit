@@ -455,10 +455,23 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun parse_header_envelope_without_accepts_key_falls_back_to_body() {
-        // A header that base64-decodes to JSON lacking the `accepts` key is not a
-        // parseable envelope, so the body is consulted next.
+    fun parse_header_envelope_without_accepts_key_resolves_empty() {
+        // A header that decodes to a valid envelope (has x402Version) but omits
+        // `accepts` resolves to no offers; the body is NOT consulted, matching the
+        // rust spine where accepts is serde(default) and from_header wins.
         val header = Base64.getEncoder().encodeToString("""{"x402Version":2}""".encodeToByteArray())
+        val all = parseUptoAccepts(
+            mapOf("payment-required" to header),
+            challengeEnvelope(uptoEntry()),
+        )
+        assertTrue(all.isEmpty())
+    }
+
+    @Test
+    fun parse_header_not_an_envelope_falls_back_to_body() {
+        // A header that decodes to JSON without x402Version is not an envelope, so
+        // the body is consulted next.
+        val header = Base64.getEncoder().encodeToString("""{"foo":1}""".encodeToByteArray())
         val req = parseUptoChallenge(
             mapOf("payment-required" to header),
             challengeEnvelope(uptoEntry()),

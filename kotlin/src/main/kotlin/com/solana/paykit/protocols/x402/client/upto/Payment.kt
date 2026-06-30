@@ -119,8 +119,12 @@ private fun lookupHeader(headers: Map<String, String>, name: String): String? {
  */
 private fun acceptsFrom(text: String): List<UptoRequirements>? =
     try {
-        val accepts = json.parseToJsonElement(text).jsonObject["accepts"]?.jsonArray
-            ?: return null
+        val obj = json.parseToJsonElement(text).jsonObject
+        // A parseable envelope must carry x402Version (the rust spine requires it).
+        // `accepts` is optional there (serde default), so an envelope that omits it
+        // resolves to no offers rather than falling through to the next source.
+        if (obj["x402Version"] == null) return null
+        val accepts = obj["accepts"]?.jsonArray ?: return emptyList()
         accepts.mapNotNull { element ->
             val scheme = element.jsonObject["scheme"]?.jsonPrimitive?.content
             if (scheme != UPTO_SCHEME) {
