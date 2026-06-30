@@ -20,6 +20,7 @@ export {
     type Operator,
     type OperatorParams,
     type PayKitConfig,
+    type X402Options,
 } from './config.js';
 export {
     ChallengeExpiredError,

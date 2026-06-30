@@ -26,6 +26,8 @@ const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
+const UPTO_ASSET_TRANSFER_METHOD = 'payment-channel';
+const BASIS_POINTS_DENOMINATOR = 10_000;
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
@@ -93,6 +95,7 @@ export class X402Upto {
     readonly #operator: string;
     readonly #operatorSigner: PayKitConfig['operator']['signer'];
     readonly #recipient: string;
+    readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
 
@@ -101,6 +104,7 @@ export class X402Upto {
         this.#operator = config.operator.signer.pubkey;
         this.#operatorSigner = config.operator.signer;
         this.#recipient = config.operator.recipient;
+        this.#facilitatorFee = config.x402.facilitatorFee;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
@@ -186,12 +190,12 @@ export class X402Upto {
                 channelId: payload.channelId,
                 mint: verified.requirements.asset,
                 network: verified.requirements.network,
-                payee: verified.requirements.payTo,
+                payee: this.#operator,
                 payer: payload.from,
                 rentPayer: this.#operator,
                 rpc: submitRpc,
                 signer: this.#operatorSigner.signer,
-                splits: [],
+                splits: this.#recipientSplits(verified.requirements.payTo),
                 tokenProgram: tokenProgramFor(verified.requirements),
                 voucher: signed ? { authorizedSigner: this.#operator, signed } : undefined,
             });
@@ -231,15 +235,23 @@ export class X402Upto {
         return {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
-            // Spec field names (scheme_upto_svm.md §4.1): `facilitator` (not the
-            // old non-spec `facilitatorAddress`) + the required `profiles`, so a
-            // Rust/other-SDK upto client can act on this challenge.
-            extra: { facilitator: this.#operator, feePayer: this.#operator, profiles: ['payment-channel'] },
+            extra: {
+                assetTransferMethod: UPTO_ASSET_TRANSFER_METHOD,
+                facilitatorAddress: this.#operator,
+                facilitatorFee: this.#facilitatorFee,
+                feePayer: this.#operator,
+            },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
             payTo: this.#recipient,
             scheme: 'upto',
         };
+    }
+
+    #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
+        return this.#operator === recipient
+            ? []
+            : [{ bps: BASIS_POINTS_DENOMINATOR - this.#facilitatorFee, recipient }];
     }
 
     /**

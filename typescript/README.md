@@ -210,6 +210,8 @@ facilitator each):
 pay-kit wires `exact` and `upto` straight into gates —
 `configure({ accept: ['x402'] })` mounts the `exact` adapter for
 fixed-price gates and the in-process `upto` facilitator for usage gates.
+For delegated `upto` channels, set `x402.facilitatorFee` to the
+facilitator share in basis points; the default is `0`.
 `batch-settlement` ships in `@x402/svm` but is not yet exposed as a
 pay-kit gate adapter. All three are exercised client- and server-side by
 the cross-language conformance suite in the harness.

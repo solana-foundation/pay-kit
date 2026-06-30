@@ -498,8 +498,12 @@ export async function createPayKit<const P extends PricingDef = PricingDef>(
         const coin = coinFor(gate);
         const intent = intentFor(gate);
         const toOffer = (entry: AcceptsEntry, max: boolean): PaymentOffer => {
-            const extra = (entry.extra ?? {}) as { facilitator?: unknown; feePayer?: unknown };
-            const feePayer = extra.feePayer ?? extra.facilitator ?? entry.feePayer;
+            const extra = (entry.extra ?? {}) as {
+                facilitator?: unknown;
+                facilitatorAddress?: unknown;
+                feePayer?: unknown;
+            };
+            const feePayer = extra.feePayer ?? extra.facilitatorAddress ?? extra.facilitator ?? entry.feePayer;
             return {
                 amount: entry.amount,
                 currency: typeof entry.currency === 'string' ? entry.currency : coin,
