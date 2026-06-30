@@ -157,7 +157,7 @@ the `Payment-Signature` header. See [x402.org](https://x402.org).
 | Intent | Client |
 |---|:---:|
 | `x402/exact` | ✅ |
-| `x402/upto` | — |
+| `x402/upto` | ✅ |
 | `x402/batch-settlement` | — |
 
 ## MPP
@@ -227,6 +227,8 @@ The harness adapters live outside the shipped library:
 - [`harness/kotlin-client`](../harness/kotlin-client) drives an MPP server.
 - [`harness/kotlin-x402-client`](../harness/kotlin-x402-client) drives an
   x402 exact server.
+- [`harness/kotlin-x402-upto-client`](../harness/kotlin-x402-upto-client) drives
+  an x402 `upto` (payment-channel) server.
 
 ```bash
 cd harness
