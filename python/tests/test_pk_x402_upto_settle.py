@@ -29,6 +29,7 @@ from solana_pay_kit import (
     configure,
 )
 from solana_pay_kit._paycore.mints import resolve, token_program_for
+from solana_pay_kit._paycore.paymentchannels import Distribution
 from solana_pay_kit.config import reset
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
@@ -112,6 +113,16 @@ def _op_pubkey(cfg: Config) -> str:
     return signer.pubkey()
 
 
+def _expected_distribution_hash(pay_to: str, operator: str, facilitator_fee: int = 0) -> list[int]:
+    if pay_to == operator:
+        return EMPTY_HASH
+    return list(
+        upto_mod._distribution_hash(  # noqa: SLF001
+            [Distribution(recipient=Pubkey.from_string(pay_to), bps=10_000 - facilitator_fee)]
+        )
+    )
+
+
 class _Req:
     def __init__(self, header: str, path: str = "/usage") -> None:
         self.headers = {"payment-signature": header}
@@ -167,10 +178,8 @@ def test_accepts_entry_shape(monkeypatch) -> None:
     req = eng.accepts_entry(_gate(cfg), {"path": "/usage"})
     assert req["scheme"] == "upto"
     assert req["amount"] == "100000"
-    assert req["extra"]["profiles"] == ["payment-channel"]
-    assert req["extra"]["feePayer"] == _op_pubkey(cfg)
-    # The spec field `facilitator` is sent too, so the TS client interops.
-    assert req["extra"].get("facilitator") == _op_pubkey(cfg)
+    assert req["extra"]["assetTransferMethod"] == "payment-channel"
+    assert req["extra"]["facilitatorAddress"] == _op_pubkey(cfg)
     assert req["extra"].get("recentBlockhash") == BH
 
 
@@ -198,7 +207,12 @@ async def test_verify_open_happy(monkeypatch) -> None:
     header, client_pk, req = _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
-        payer=client_pk, payee=cfg.effective_recipient(), mint=req["asset"], operator=operator, deposit=100000
+        payer=client_pk,
+        payee=operator,
+        mint=req["asset"],
+        operator=operator,
+        deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), operator),
     )
     verified = await eng.verify_open(_gate(cfg), _Req(header))
     assert verified.max_amount == 100000
@@ -212,9 +226,8 @@ async def test_verify_open_happy(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
-    """A usage gate with its own pay_to is honored end to end: the channel binds
-    to that payee and settlement targets it, not the global recipient (P1
-    security regression - settle_actual must use verified.payee)."""
+    """A usage gate with its own pay_to is honored end to end via the bound
+    payment-channel distribution split."""
     eng, cfg, holder = _engine(monkeypatch)
     custom_payee = str(Keypair().pubkey())
     gate = Gate.build(
@@ -225,11 +238,18 @@ async def test_verify_open_binds_custom_gate_payee(monkeypatch) -> None:
     client = LocalSigner.from_keypair(Keypair())
     payload = build_upto_payload(client, req, int(time.time()) + 300, nonce="n")
     header = encode_upto_header(req, payload)
+    operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
-        payer=client.pubkey(), payee=custom_payee, mint=req["asset"], operator=_op_pubkey(cfg), deposit=100000
+        payer=client.pubkey(),
+        payee=operator,
+        mint=req["asset"],
+        operator=operator,
+        deposit=100000,
+        distribution_hash=_expected_distribution_hash(custom_payee, operator),
     )
     verified = await eng.verify_open(gate, _Req(header))
-    assert str(verified.payee) == custom_payee
+    assert str(verified.payee) == operator
+    assert [str(entry.recipient) for entry in verified.distribution] == [custom_payee]
     verified.release()
 
 
@@ -239,26 +259,31 @@ async def test_verify_open_rejects_deposit_mismatch(monkeypatch) -> None:
     header, client_pk, req = _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
-        payer=client_pk, payee=cfg.effective_recipient(), mint=req["asset"], operator=operator, deposit=50000
+        payer=client_pk,
+        payee=operator,
+        mint=req["asset"],
+        operator=operator,
+        deposit=50000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), operator),
     )
     with pytest.raises(InvalidProofError, match="deposit"):
         await eng.verify_open(_gate(cfg), _Req(header))
 
 
 @pytest.mark.asyncio
-async def test_verify_open_rejects_non_empty_distribution_hash(monkeypatch) -> None:
+async def test_verify_open_rejects_distribution_hash_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
     header, client_pk, req = _client_header(eng, cfg)
     operator = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
-        payee=cfg.effective_recipient(),
+        payee=operator,
         mint=req["asset"],
         operator=operator,
         deposit=100000,
         distribution_hash=[1] * 32,
     )
-    with pytest.raises(InvalidProofError, match="empty-recipient"):
+    with pytest.raises(InvalidProofError, match="expected recipient split"):
         await eng.verify_open(_gate(cfg), _Req(header))
 
 
@@ -277,10 +302,13 @@ def _verified(cfg, *, max_amount: int = 100000) -> VerifiedUptoOpen:
     label = cfg.network.mints_label()
     mint = resolve("USDC", label)
     assert mint is not None
+    distribution = []
+    if cfg.effective_recipient() != operator:
+        distribution = [Distribution(recipient=Pubkey.from_string(cfg.effective_recipient()), bps=10_000)]
     return VerifiedUptoOpen(
         channel_id=Pubkey.from_string("11111111111111111111111111111112"),
         payer=Pubkey.from_string(str(Keypair().pubkey())),
-        payee=Pubkey.from_string(cfg.effective_recipient()),
+        payee=Pubkey.from_string(operator),
         rent_payer=Pubkey.from_string(operator),
         mint=Pubkey.from_string(mint),
         token_program=Pubkey.from_string(token_program_for("USDC", label)),
@@ -289,6 +317,7 @@ def _verified(cfg, *, max_amount: int = 100000) -> VerifiedUptoOpen:
         max_amount=max_amount,
         expires_at=int(time.time()) + 300,
         network=cfg.network.caip2(),
+        distribution=distribution,
     )
 
 
@@ -391,7 +420,13 @@ async def test_verify_open_channel_not_open(monkeypatch) -> None:
     header, client_pk, req = _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
-        payer=client_pk, payee=cfg.effective_recipient(), mint=req["asset"], operator=op, deposit=100000, status=2
+        payer=client_pk,
+        payee=op,
+        mint=req["asset"],
+        operator=op,
+        deposit=100000,
+        status=2,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
     with pytest.raises(InvalidProofError, match="not open"):
         await eng.verify_open(_gate(cfg), _Req(header))
@@ -404,10 +439,11 @@ async def test_verify_open_mint_mismatch(monkeypatch) -> None:
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
-        payee=cfg.effective_recipient(),
+        payee=op,
         mint=str(Keypair().pubkey()),  # wrong mint
         operator=op,
         deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
     with pytest.raises(InvalidProofError, match="mint mismatch"):
         await eng.verify_open(_gate(cfg), _Req(header))
@@ -420,10 +456,11 @@ async def test_verify_open_payer_mismatch(monkeypatch) -> None:
     op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=str(Keypair().pubkey()),  # not the credential payer
-        payee=cfg.effective_recipient(),
+        payee=op,
         mint=req["asset"],
         operator=op,
         deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
     with pytest.raises(InvalidProofError, match="does not match"):
         await eng.verify_open(_gate(cfg), _Req(header))
@@ -433,12 +470,14 @@ async def test_verify_open_payer_mismatch(monkeypatch) -> None:
 async def test_verify_open_authorized_signer_mismatch(monkeypatch) -> None:
     eng, cfg, holder = _engine(monkeypatch)
     header, client_pk, req = _client_header(eng, cfg)
+    op = _op_pubkey(cfg)
     holder["account"] = _fake_channel(
         payer=client_pk,
-        payee=cfg.effective_recipient(),
+        payee=op,
         mint=req["asset"],
         operator=str(Keypair().pubkey()),  # channel opened with a different authorized signer
         deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
     with pytest.raises(InvalidProofError, match="authorized_signer is not the operator"):
         await eng.verify_open(_gate(cfg), _Req(header))
@@ -459,7 +498,12 @@ async def test_verify_open_owner_mismatch(monkeypatch) -> None:
     header, client_pk, req = _client_header(eng, cfg)
     op = _op_pubkey(cfg)
     data, _owner = _fake_channel(
-        payer=client_pk, payee=cfg.effective_recipient(), mint=req["asset"], operator=op, deposit=100000
+        payer=client_pk,
+        payee=op,
+        mint=req["asset"],
+        operator=op,
+        deposit=100000,
+        distribution_hash=_expected_distribution_hash(cfg.effective_recipient(), op),
     )
     holder["account"] = (data, str(Keypair().pubkey()))  # wrong owner
     with pytest.raises(InvalidProofError, match="not owned by"):

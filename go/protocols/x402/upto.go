@@ -3,7 +3,9 @@ package x402
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,26 +36,21 @@ type uptoSigner interface {
 
 const (
 	UptoScheme                       = "upto"
-	ProfilePaymentChannel            = "payment-channel"
+	UptoAssetTransferMethod          = "payment-channel"
 	UptoErrorSettlementExceedsAmount = "invalid_upto_svm_payload_settlement_exceeds_amount"
 )
 
 // UptoExtra is the extra object on an x402 upto payment requirement.
 type UptoExtra struct {
-	Profiles        []string         `json:"profiles,omitempty"`
-	Decimals        *uint8           `json:"decimals,omitempty"`
-	TokenProgram    string           `json:"tokenProgram,omitempty"`
-	FeePayer        string           `json:"feePayer"`
-	ChannelProgram  string           `json:"channelProgram,omitempty"`
-	RecentBlockhash string           `json:"recentBlockhash,omitempty"`
-	ValidAfter      *int64           `json:"validAfter,omitempty"`
-	Splits          []UptoExtraSplit `json:"splits,omitempty"`
-}
-
-// UptoExtraSplit is a single split entry for the payment-channel profile.
-type UptoExtraSplit struct {
-	Recipient string `json:"recipient"`
-	BPS       uint16 `json:"bps"`
+	AssetTransferMethod  string `json:"assetTransferMethod"`
+	Decimals             *uint8 `json:"decimals,omitempty"`
+	TokenProgram         string `json:"tokenProgram,omitempty"`
+	FacilitatorAddress   string `json:"facilitatorAddress"`
+	FacilitatorFee       uint16 `json:"facilitatorFee,omitempty"`
+	ChannelProgram       string `json:"channelProgram,omitempty"`
+	RecentBlockhash      string `json:"recentBlockhash,omitempty"`
+	LastValidBlockHeight string `json:"lastValidBlockHeight,omitempty"`
+	ValidAfter           *int64 `json:"validAfter,omitempty"`
 }
 
 // UptoRequirements is the accepted object for the x402 upto scheme.
@@ -95,7 +92,6 @@ type UptoRequiredEnvelope struct {
 
 // UptoPayload is the client authorization carried in PAYMENT-SIGNATURE.payload.
 type UptoPayload struct {
-	Profile          string `json:"profile"`
 	From             string `json:"from"`
 	MaxAmount        string `json:"maxAmount"`
 	ExpiresAt        int64  `json:"expiresAt"`
@@ -129,7 +125,7 @@ func (p UptoPayload) ParsedDeposit() (uint64, error) {
 // UptoSignatureEnvelope is the PAYMENT-SIGNATURE envelope for x402 upto.
 type UptoSignatureEnvelope struct {
 	X402Version int             `json:"x402Version"`
-	Scheme      string          `json:"scheme"`
+	Scheme      string          `json:"scheme,omitempty"`
 	Network     string          `json:"network,omitempty"`
 	Accepted    json.RawMessage `json:"accepted,omitempty"`
 	Payload     UptoPayload     `json:"payload"`
@@ -147,18 +143,8 @@ type UptoSettlementResponse struct {
 
 // VerifyUptoPayload validates the payload against the route-pinned requirement.
 func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, operator string, now int64) error {
-	if payload.Profile != ProfilePaymentChannel {
-		return fmt.Errorf("invalid payload type: %s", payload.Profile)
-	}
-	advertised := false
-	for _, profile := range requirements.Extra.Profiles {
-		if profile == payload.Profile {
-			advertised = true
-			break
-		}
-	}
-	if !advertised {
-		return fmt.Errorf("profile %s not advertised by the server", payload.Profile)
+	if requirements.Extra.AssetTransferMethod != UptoAssetTransferMethod {
+		return fmt.Errorf("assetTransferMethod must be %s", UptoAssetTransferMethod)
 	}
 	max, err := requirements.MaxAmount()
 	if err != nil {
@@ -185,7 +171,7 @@ func VerifyUptoPayload(payload UptoPayload, requirements UptoRequirements, opera
 		return fmt.Errorf("authorization expired (expiresAt %d < now %d)", payload.ExpiresAt, now)
 	}
 	if payload.AuthorizedSigner != operator {
-		return errors.New("voucher authorized_signer must be the operator for the payment-channel profile")
+		return errors.New("voucher authorized_signer must be the operator for the payment-channel asset transfer method")
 	}
 	return nil
 }
@@ -202,10 +188,12 @@ func AssertSettlementWithinCeiling(actual, max uint64) error {
 type UptoVerifiedOpen struct {
 	ChannelID    solana.PublicKey
 	Payer        solana.PublicKey
+	Payee        solana.PublicKey
 	RentPayer    solana.PublicKey
 	Mint         solana.PublicKey
 	TokenProgram solana.PublicKey
 	ProgramID    solana.PublicKey
+	Distribution []paymentchannels.Distribution
 	Deposit      uint64
 	MaxAmount    uint64
 	ExpiresAt    int64
@@ -236,6 +224,7 @@ type UptoConfig struct {
 	TokenProgram            string
 	ChannelProgram          string
 	OperatorSigner          uptoSigner
+	FacilitatorFee          uint16
 	RecentBlockhashProvider func() (string, error)
 }
 
@@ -287,6 +276,9 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if _, err := solana.PublicKeyFromBase58(cfg.Recipient); err != nil {
 		return nil, fmt.Errorf("invalid recipient pubkey: %w", err)
 	}
+	if cfg.FacilitatorFee > 10_000 {
+		return nil, errors.New("facilitatorFee must be <= 10000")
+	}
 	rpcURL := cfg.RPCURL
 	if rpcURL == "" {
 		rpcURL = cfg.Network.DefaultRPCURL()
@@ -331,11 +323,12 @@ func (u *X402Upto) UptoRequirements(maxAmount string) (UptoRequirements, error) 
 		PayTo:             u.cfg.Recipient,
 		MaxTimeoutSeconds: u.cfg.MaxTimeoutSeconds,
 		Extra: UptoExtra{
-			Profiles:       []string{ProfilePaymentChannel},
-			Decimals:       &decimals,
-			TokenProgram:   tokenProgram,
-			FeePayer:       u.Operator(),
-			ChannelProgram: programID,
+			AssetTransferMethod: UptoAssetTransferMethod,
+			Decimals:            &decimals,
+			TokenProgram:        tokenProgram,
+			FacilitatorAddress:  u.Operator(),
+			FacilitatorFee:      u.cfg.FacilitatorFee,
+			ChannelProgram:      programID,
 		},
 	}, nil
 }
@@ -422,9 +415,9 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if envelope.Network != req.Network {
 		return nil, fmt.Errorf("network mismatch: payload %q, expected %q", envelope.Network, req.Network)
 	}
-	// Phase 3 step 3: confirm feePayer in extra is this server's key.
-	if req.Extra.FeePayer != u.Operator() {
-		return nil, errors.New("extra.feePayer is not this server's key")
+	// Phase 3 step 3: confirm facilitatorAddress in extra is this server's key.
+	if req.Extra.FacilitatorAddress != u.Operator() {
+		return nil, errors.New("extra.facilitatorAddress is not this server's key")
 	}
 	programID, err := solana.PublicKeyFromBase58(firstNonEmpty(req.Extra.ChannelProgram, paymentchannels.ProgramID))
 	if err != nil {
@@ -434,9 +427,10 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint: %w", err)
 	}
-	expectedPayee, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
+	expectedPayee := u.operator
+	expectedDistribution, err := u.distribution()
 	if err != nil {
-		return nil, fmt.Errorf("invalid recipient: %w", err)
+		return nil, err
 	}
 	tokenProgram, err := solana.PublicKeyFromBase58(req.Extra.TokenProgram)
 	if err != nil {
@@ -465,7 +459,7 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 		}
 	}()
 	if payload.OpenTransaction == "" {
-		return nil, errors.New("payment-channel profile requires openTransaction (pull)")
+		return nil, errors.New("payment-channel asset transfer method requires openTransaction (pull)")
 	}
 	tx, err := solanatx.DecodeTransactionBase64(payload.OpenTransaction)
 	if err != nil {
@@ -503,8 +497,9 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	if !channel.Payee.Equals(expectedPayee) {
 		return nil, fmt.Errorf("recipient mismatch: expected %s, got %s", expectedPayee, channel.Payee)
 	}
-	if !bytes.Equal(channel.DistributionHash[:], emptyDistributionHash()) {
-		return nil, errors.New("x402 upto currently supports only empty-recipient payment channels")
+	expectedDistributionHash := distributionHash(expectedDistribution)
+	if !bytes.Equal(channel.DistributionHash[:], expectedDistributionHash[:]) {
+		return nil, errors.New("channel distribution does not match the expected recipient split")
 	}
 	if !channel.AuthorizedSigner.Equals(u.operator) {
 		return nil, errors.New("channel authorized_signer is not the operator")
@@ -520,8 +515,9 @@ func (u *X402Upto) VerifyOpen(ctx context.Context, header, maxAmount string) (*U
 	}
 	release = false
 	return &UptoVerifiedOpen{
-		ChannelID: channelID, Payer: payer, RentPayer: channel.RentPayer, Mint: expectedMint, TokenProgram: tokenProgram,
-		ProgramID: programID, Deposit: channel.Deposit, MaxAmount: max, ExpiresAt: payload.ExpiresAt,
+		ChannelID: channelID, Payer: payer, Payee: expectedPayee, RentPayer: channel.RentPayer, Mint: expectedMint,
+		TokenProgram: tokenProgram, ProgramID: programID, Distribution: expectedDistribution,
+		Deposit: channel.Deposit, MaxAmount: max, ExpiresAt: payload.ExpiresAt,
 		Network: req.Network, guard: guard,
 	}, nil
 }
@@ -567,13 +563,13 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 			return UptoSettlementResponse{}, err
 		}
 	}
-	payee, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
-	if err != nil {
-		return UptoSettlementResponse{}, fmt.Errorf("invalid recipient: %w", err)
+	payee := open.Payee
+	if payee.IsZero() {
+		payee = u.operator
 	}
 	distribute, err := paymentchannels.BuildDistributeInstruction(paymentchannels.DistributeParams{
 		Channel: open.ChannelID, Payer: open.Payer, RentPayer: open.RentPayer, Payee: payee, Treasury: paymentchannels.TreasuryOwner(),
-		Mint: open.Mint, TokenProgram: open.TokenProgram, ProgramID: open.ProgramID,
+		Mint: open.Mint, Recipients: open.Distribution, TokenProgram: open.TokenProgram, ProgramID: open.ProgramID,
 	})
 	if err != nil {
 		return UptoSettlementResponse{}, err
@@ -587,6 +583,13 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		return UptoSettlementResponse{}, fmt.Errorf("build treasury ATA create: %w", err)
 	}
 	instructions = append(instructions, createPayeeATA, createTreasuryATA, distribute)
+	for _, entry := range open.Distribution {
+		createRecipientATA, err := solanatx.BuildCreateAssociatedTokenAccount(u.operator, entry.Recipient, open.Mint, open.TokenProgram)
+		if err != nil {
+			return UptoSettlementResponse{}, fmt.Errorf("build recipient ATA create: %w", err)
+		}
+		instructions = append(instructions[:len(instructions)-1], createRecipientATA, distribute)
+	}
 	blockhash, err := u.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return UptoSettlementResponse{}, fmt.Errorf("blockhash fetch failed: %w", err)
@@ -609,6 +612,23 @@ func (u *X402Upto) SettleActual(ctx context.Context, open *UptoVerifiedOpen, act
 		return UptoSettlementResponse{}, fmt.Errorf("settle confirmation failed: %w", err)
 	}
 	return UptoSettlementResponse{Success: true, Payer: open.Payer.String(), Transaction: signature.String(), Network: open.Network, Amount: strconv.FormatUint(actual, 10)}, nil
+}
+
+func (u *X402Upto) distribution() ([]paymentchannels.Distribution, error) {
+	if u.cfg.Recipient == "" || u.cfg.Recipient == u.Operator() {
+		return nil, nil
+	}
+	if u.cfg.FacilitatorFee > 10_000 {
+		return nil, errors.New("facilitatorFee must be <= 10000")
+	}
+	recipient, err := solana.PublicKeyFromBase58(u.cfg.Recipient)
+	if err != nil {
+		return nil, fmt.Errorf("invalid recipient: %w", err)
+	}
+	return []paymentchannels.Distribution{{
+		Recipient: recipient,
+		Bps:       10_000 - u.cfg.FacilitatorFee,
+	}}, nil
 }
 
 func (u *X402Upto) reserveChannel(channelID solana.PublicKey) (*uptoInFlightGuard, error) {
@@ -787,6 +807,22 @@ func parseDecimalUnits(amount string, decimals uint8) (string, error) {
 		return "", fmt.Errorf("invalid amount %q: %w", amount, err)
 	}
 	return d.Shift(int32(decimals)).Truncate(0).String(), nil
+}
+
+func distributionHash(recipients []paymentchannels.Distribution) [32]byte {
+	hasher := sha256.New()
+	var count [4]byte
+	binary.LittleEndian.PutUint32(count[:], uint32(len(recipients)))
+	_, _ = hasher.Write(count[:])
+	for _, recipient := range recipients {
+		_, _ = hasher.Write(recipient.Recipient.Bytes())
+		var bps [2]byte
+		binary.LittleEndian.PutUint16(bps[:], recipient.Bps)
+		_, _ = hasher.Write(bps[:])
+	}
+	var out [32]byte
+	copy(out[:], hasher.Sum(nil))
+	return out
 }
 
 func emptyDistributionHash() []byte { return EmptyDistributionHash[:] }

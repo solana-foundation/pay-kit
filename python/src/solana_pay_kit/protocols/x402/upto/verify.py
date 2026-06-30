@@ -1,4 +1,4 @@
-"""Pure verification for the x402 ``upto`` payment-channel profile.
+"""Pure verification for the x402 ``upto`` payment-channel asset transfer method.
 
 No I/O: these functions validate already-decoded structures and raise
 :class:`~solana_pay_kit.errors.InvalidProofError` on rejection. The ordered payload
@@ -24,7 +24,7 @@ from solana_pay_kit._paycore.solana import (
 )
 from solana_pay_kit.errors import InvalidProofError
 from solana_pay_kit.protocols.x402.upto.types import (
-    PROFILE_PAYMENT_CHANNEL,
+    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UptoPayload,
     UptoRequirements,
@@ -64,19 +64,16 @@ def verify_upto_payload(
 ) -> None:
     """Validate the client payload against the route-pinned requirement.
 
-    Ordered checks (mirroring the Rust/Go spine): profile is
-    ``payment-channel`` and advertised; ``maxAmount`` equals the verification
-    ceiling; ``deposit`` equals ``maxAmount``; ``validAfter <= now <= expiresAt``;
-    the ``authorizedSigner`` is the operator (the operator - not the client -
-    signs the settlement voucher).
+    Ordered checks (mirroring the Rust/Go spine): ``assetTransferMethod`` is
+    ``payment-channel``; ``maxAmount`` equals the verification ceiling;
+    ``deposit`` equals ``maxAmount``; ``validAfter <= now <= expiresAt``; the
+    ``authorizedSigner`` is the operator (the operator - not the client - signs
+    the settlement voucher).
     """
-    profile = payload.get("profile")
-    if profile != PROFILE_PAYMENT_CHANNEL:
-        raise InvalidProofError(f"invalid payload type: {profile}", code="payment_invalid")
-
-    advertised = requirements["extra"].get("profiles", [])
-    if profile not in advertised:
-        raise InvalidProofError(f"profile {profile} not advertised by the server", code="payment_invalid")
+    if requirements["extra"].get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
+        raise InvalidProofError(
+            f"assetTransferMethod must be {UPTO_ASSET_TRANSFER_METHOD}", code="payment_invalid"
+        )
 
     max_amount = parse_base_units(requirements["amount"], "amount")
     signed_max = parse_base_units(payload.get("maxAmount", ""), "maxAmount")
@@ -101,7 +98,7 @@ def verify_upto_payload(
 
     if payload.get("authorizedSigner") != operator:
         raise InvalidProofError(
-            "voucher authorized_signer must be the operator for the payment-channel profile",
+            "voucher authorized_signer must be the operator for the payment-channel asset transfer method",
             code="payment_invalid",
         )
 

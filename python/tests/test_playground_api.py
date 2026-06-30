@@ -74,4 +74,5 @@ def test_summarize_route_challenges_with_upto(client: TestClient) -> None:
     assert any(k.lower() == "payment-required" for k in resp.headers)
     accepts = resp.json()["accepts"]
     assert accepts[0]["scheme"] == "upto"
-    assert accepts[0]["extra"]["profiles"] == ["payment-channel"]
+    assert accepts[0]["extra"]["assetTransferMethod"] == "payment-channel"
+    assert accepts[0]["extra"]["facilitatorAddress"]

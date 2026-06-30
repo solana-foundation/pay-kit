@@ -76,7 +76,8 @@ def test_requireusage_challenges_without_credential() -> None:
     body = resp.json()
     assert body["error"] == "payment_required"
     assert body["accepts"][0]["scheme"] == "upto"
-    assert body["accepts"][0]["extra"]["profiles"] == ["payment-channel"]
+    assert body["accepts"][0]["extra"]["assetTransferMethod"] == "payment-channel"
+    assert body["accepts"][0]["extra"]["facilitatorAddress"]
 
 
 def test_requireusage_without_install_refuses_to_open() -> None:

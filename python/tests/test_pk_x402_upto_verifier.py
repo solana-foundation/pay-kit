@@ -25,7 +25,7 @@ from solana_pay_kit.protocols.x402.client.upto import (
 )
 from solana_pay_kit.protocols.x402.upto import _decode_transaction
 from solana_pay_kit.protocols.x402.upto.types import (
-    PROFILE_PAYMENT_CHANNEL,
+    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UPTO_SCHEME,
     UptoPayload,
@@ -57,10 +57,10 @@ def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequir
         "payTo": payee,
         "maxTimeoutSeconds": 300,
         "extra": {
-            "profiles": [PROFILE_PAYMENT_CHANNEL],
+            "assetTransferMethod": UPTO_ASSET_TRANSFER_METHOD,
             "decimals": 6,
             "tokenProgram": TOKEN_PROGRAM,
-            "feePayer": operator,
+            "facilitatorAddress": operator,
             "recentBlockhash": BH,
         },
     }
@@ -69,7 +69,6 @@ def _requirements(operator: str, payee: str, *, amount: int = MAX) -> UptoRequir
 def _payload(operator: str, *, channel_id: str = "11111111111111111111111111111112") -> UptoPayload:
     now = int(time.time())
     return {
-        "profile": PROFILE_PAYMENT_CHANNEL,
         "from": str(Keypair().pubkey()),
         "maxAmount": str(MAX),
         "expiresAt": now + 300,
@@ -102,19 +101,11 @@ def test_verify_payload_happy() -> None:
     verify_upto_payload(_payload(op), _requirements(op, str(Keypair().pubkey())), op, int(time.time()))
 
 
-def test_verify_payload_wrong_profile() -> None:
-    _, op = _operator()
-    p = _payload(op)
-    p["profile"] = "permit"
-    with pytest.raises(InvalidProofError, match="invalid payload type"):
-        verify_upto_payload(p, _requirements(op, str(Keypair().pubkey())), op, int(time.time()))
-
-
-def test_verify_payload_profile_not_advertised() -> None:
+def test_verify_payload_wrong_asset_transfer_method() -> None:
     _, op = _operator()
     req = _requirements(op, str(Keypair().pubkey()))
-    req["extra"]["profiles"] = []
-    with pytest.raises(InvalidProofError, match="not advertised"):
+    req["extra"]["assetTransferMethod"] = "permit"
+    with pytest.raises(InvalidProofError, match="assetTransferMethod"):
         verify_upto_payload(_payload(op), req, op, int(time.time()))
 
 
@@ -209,12 +200,12 @@ def test_parse_upto_challenge_none_when_absent() -> None:
     assert parse_upto_challenge({}, "{}") is None
 
 
-def test_build_payload_requires_profile() -> None:
+def test_build_payload_requires_asset_transfer_method() -> None:
     _, op = _operator()
     client = LocalSigner.from_keypair(Keypair())
     req = _requirements(op, str(Keypair().pubkey()))
-    req["extra"]["profiles"] = ["permit"]
-    with pytest.raises(ValueError, match="payment-channel profile"):
+    req["extra"]["assetTransferMethod"] = "permit"
+    with pytest.raises(ValueError, match="payment-channel asset transfer method"):
         build_upto_payload(client, req, int(time.time()) + 300)
 
 
@@ -231,7 +222,7 @@ def test_client_open_tx_passes_engine_validator() -> None:
     """The open transaction the client builds must satisfy the engine's
     14-account open-instruction validator with the matching expected pubkeys -
     proving the client and server agree on the wire."""
-    op_signer, op = _operator()
+    _, op = _operator()
     payee = str(Keypair().pubkey())
     client = LocalSigner.from_keypair(Keypair())
     req = _requirements(op, payee)
@@ -247,7 +238,7 @@ def test_client_open_tx_passes_engine_validator() -> None:
         program_id=_default_program(),
         operator=Pubkey.from_string(op),
         payer=Pubkey.from_string(client.pubkey()),
-        payee=Pubkey.from_string(payee),
+        payee=Pubkey.from_string(op),
         mint=Pubkey.from_string(MINT),
         token_program=Pubkey.from_string(TOKEN_PROGRAM),
         channel_id=Pubkey.from_string(payload["channelId"]),
@@ -259,15 +250,15 @@ def test_client_open_tx_passes_engine_validator() -> None:
 
     header = encode_upto_header(req, payload)
     decoded = json.loads(base64.b64decode(header))
-    assert decoded["scheme"] == UPTO_SCHEME
-    assert decoded["payload"]["profile"] == PROFILE_PAYMENT_CHANNEL
+    assert decoded["accepted"]["scheme"] == UPTO_SCHEME
+    assert "profile" not in decoded["payload"]
     assert decoded["payload"]["deposit"] == str(MAX)
     # build_upto_header is the one-shot equivalent of build + encode.
     assert build_upto_header(client, req, int(time.time()) + 300, nonce="n")
 
 
 def test_client_open_tx_validator_rejects_wrong_payee() -> None:
-    op_signer, op = _operator()
+    _, op = _operator()
     payee = str(Keypair().pubkey())
     client = LocalSigner.from_keypair(Keypair())
     req = _requirements(op, payee)

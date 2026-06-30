@@ -77,7 +77,8 @@ def test_require_usage_challenges_without_credential() -> None:
     body = resp.get_json()
     assert body["error"] == "payment_required"
     assert body["accepts"][0]["scheme"] == "upto"
-    assert body["accepts"][0]["extra"]["profiles"] == ["payment-channel"]
+    assert body["accepts"][0]["extra"]["assetTransferMethod"] == "payment-channel"
+    assert body["accepts"][0]["extra"]["facilitatorAddress"]
 
 
 def test_non_usage_route_passes_through() -> None:

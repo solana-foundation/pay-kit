@@ -1,4 +1,4 @@
-"""x402 ``upto`` client builder - ``payment-channel`` profile.
+"""x402 ``upto`` client builder - ``payment-channel`` asset transfer method.
 
 Parses an ``upto`` 402 challenge and builds the client authorization: a signed
 channel ``open`` transaction (the deposit is the ceiling, the operator is the
@@ -21,6 +21,7 @@ from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.paymentchannels import (
+    Distribution,
     PAYMENT_CHANNELS_PROGRAM_ID,
     OpenChannelParams,
     build_open_instruction,
@@ -29,7 +30,7 @@ from solana_pay_kit._paycore.paymentchannels import (
 from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
-    PROFILE_PAYMENT_CHANNEL,
+    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_SCHEME,
     UptoPayload,
     UptoRequirements,
@@ -89,24 +90,29 @@ def build_upto_payload(
 ) -> UptoPayload:
     """Build the ``upto`` payload: a partially-signed channel ``open`` + metadata.
 
-    The client (``signer``) is the channel payer; the operator (``extra.feePayer``)
-    is the fee payer, rent payer, and authorized signer. The open transaction is
-    built with the operator as fee payer and signed only in the client's payer
-    slot (pull-style); the operator slot is left empty for the facilitator.
+    The client (``signer``) is the channel payer; the operator
+    (``extra.facilitatorAddress``) is the channel payee, fee payer, rent payer,
+    and authorized signer. The open transaction is built with the operator as fee
+    payer and signed only in the client's payer slot (pull-style); the operator
+    slot is left empty for the facilitator.
     """
     extra = requirements["extra"]
-    profiles = extra.get("profiles", [])
-    if PROFILE_PAYMENT_CHANNEL not in profiles:
-        raise ValueError("x402 client: requirement does not advertise the payment-channel profile")
+    if extra.get("assetTransferMethod") != UPTO_ASSET_TRANSFER_METHOD:
+        raise ValueError("x402 client: requirement does not use the payment-channel asset transfer method")
 
     max_amount = int(requirements["amount"], 10)
-    payee = Pubkey.from_string(requirements["payTo"])
+    beneficiary = Pubkey.from_string(requirements["payTo"])
     mint = Pubkey.from_string(requirements["asset"])
-    # Spec uses extra.facilitator; Go uses extra.feePayer. Accept either.
-    operator_str = extra.get("facilitator") or extra.get("feePayer")
+    operator_str = extra.get("facilitatorAddress")
     if not operator_str:
-        raise ValueError("x402 client: requirement missing extra.facilitator/feePayer")
+        raise ValueError("x402 client: requirement missing extra.facilitatorAddress")
     operator = Pubkey.from_string(operator_str)
+    facilitator_fee = int(extra.get("facilitatorFee", 0))
+    if not 0 <= facilitator_fee <= 10_000:
+        raise ValueError("x402 client: facilitatorFee must be between 0 and 10000 basis points")
+    recipients: list[Distribution] = []
+    if beneficiary != operator:
+        recipients.append(Distribution(recipient=beneficiary, bps=10_000 - facilitator_fee))
     program_id = Pubkey.from_string(extra.get("channelProgram") or PAYMENT_CHANNELS_PROGRAM_ID)
     token_program = Pubkey.from_string(extra.get("tokenProgram") or TOKEN_PROGRAM)
 
@@ -117,17 +123,18 @@ def build_upto_payload(
 
     payer = Pubkey.from_string(signer.pubkey())
     salt = secrets.randbits(64)
-    channel, _ = find_channel_pda(payer, payee, mint, operator, salt, program_id)
+    channel, _ = find_channel_pda(payer, operator, mint, operator, salt, program_id)
     open_ix = build_open_instruction(
         OpenChannelParams(
             payer=payer,
             rent_payer=operator,
-            payee=payee,
+            payee=operator,
             mint=mint,
             authorized_signer=operator,
             salt=salt,
             deposit=max_amount,
             grace_period=_DEFAULT_GRACE_PERIOD_SECONDS,
+            recipients=recipients,
             token_program=token_program,
             program_id=program_id,
         )
@@ -136,7 +143,6 @@ def build_upto_payload(
 
     valid_after = int(extra.get("validAfter", 0))
     payload: UptoPayload = {
-        "profile": PROFILE_PAYMENT_CHANNEL,
         "from": signer.pubkey(),
         "maxAmount": str(max_amount),
         "expiresAt": expires_at,
@@ -154,8 +160,6 @@ def encode_upto_header(requirements: UptoRequirements, payload: UptoPayload) -> 
     """Encode the ``PAYMENT-SIGNATURE`` header (base64 JSON envelope)."""
     envelope = {
         "x402Version": X402_VERSION,
-        "scheme": UPTO_SCHEME,
-        "network": requirements["network"],
         "accepted": requirements,
         "payload": payload,
     }

@@ -14,9 +14,8 @@ from typing import TypedDict
 
 __all__ = [
     "UPTO_SCHEME",
-    "PROFILE_PAYMENT_CHANNEL",
+    "UPTO_ASSET_TRANSFER_METHOD",
     "UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT",
-    "UptoExtraSplit",
     "UptoExtra",
     "UptoRequirements",
     "UptoPayload",
@@ -28,46 +27,36 @@ __all__ = [
 #: The x402 scheme identifier for usage-based ``upto`` authorizations.
 UPTO_SCHEME = "upto"
 
-#: The only normative v1 profile: the on-chain payment-channels escrow. The
-#: ``permit`` profile is intentionally unimplemented (it needs an unaudited
-#: program), mirroring the Rust/Go references and the spec.
-PROFILE_PAYMENT_CHANNEL = "payment-channel"
+#: The SVM asset transfer method for ``upto`` authorizations.
+UPTO_ASSET_TRANSFER_METHOD = "payment-channel"
 
 #: Settlement error raised when the metered actual exceeds the signed ceiling.
 #: Identical string to the Rust/Go constant so cross-language error parity holds.
 UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exceeds_amount"
 
 
-class UptoExtraSplit(TypedDict):
-    """A single payout-split entry (``payment-channel`` profile only)."""
-
-    recipient: str
-    bps: int
-
-
 class _UptoExtraRequired(TypedDict):
     """Spec-required ``extra`` fields (always advertised by a server offer)."""
 
-    profiles: list[str]
+    assetTransferMethod: str
     decimals: int
     tokenProgram: str
-    feePayer: str
+    facilitatorAddress: str
 
 
 class UptoExtra(_UptoExtraRequired, total=False):
     """The ``extra`` object on an ``upto`` payment requirement.
 
-    ``profiles``/``decimals``/``tokenProgram``/``feePayer`` are required (spec
-    §4.1). ``facilitator`` is the spec's name for the operator key (the TS client
-    requires it; Go uses ``feePayer``) and is sent alongside ``feePayer``.
-    ``channelProgram``/``recentBlockhash``/``validAfter``/``splits`` are optional.
+    ``assetTransferMethod``/``decimals``/``tokenProgram``/``facilitatorAddress``
+    are required. ``facilitatorFee`` is optional and defaults to zero basis
+    points. ``channelProgram``/``recentBlockhash``/``validAfter`` are optional.
     """
 
-    facilitator: str
+    facilitatorFee: int
     channelProgram: str
     recentBlockhash: str
+    lastValidBlockHeight: str
     validAfter: int
-    splits: list[UptoExtraSplit]
 
 
 class UptoRequirements(TypedDict):
@@ -90,7 +79,6 @@ class UptoRequirements(TypedDict):
 _UptoPayloadRequired = TypedDict(
     "_UptoPayloadRequired",
     {
-        "profile": str,
         "from": str,
         "maxAmount": str,
         "expiresAt": int,

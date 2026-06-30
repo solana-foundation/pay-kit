@@ -30,18 +30,18 @@ func TestRandomSalt(t *testing.T) {
 	}
 }
 
-func TestProfileSupported(t *testing.T) {
+func TestAssetTransferMethodSupported(t *testing.T) {
 	r := &x402.UptoRequirements{}
-	if profileSupported(r) {
-		t.Fatal("expected false for empty profiles")
+	if assetTransferMethodSupported(r) {
+		t.Fatal("expected false for empty assetTransferMethod")
 	}
-	r.Extra.Profiles = []string{"permit"}
-	if profileSupported(r) {
-		t.Fatal("expected false for non-matching profile")
+	r.Extra.AssetTransferMethod = "permit"
+	if assetTransferMethodSupported(r) {
+		t.Fatal("expected false for non-matching assetTransferMethod")
 	}
-	r.Extra.Profiles = []string{x402.ProfilePaymentChannel}
-	if !profileSupported(r) {
-		t.Fatal("expected true for payment-channel profile")
+	r.Extra.AssetTransferMethod = x402.UptoAssetTransferMethod
+	if !assetTransferMethodSupported(r) {
+		t.Fatal("expected true for payment-channel assetTransferMethod")
 	}
 }
 
@@ -76,12 +76,12 @@ func uptoRequirements(signer solana.PublicKey) *x402.UptoRequirements {
 		PayTo:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		MaxTimeoutSeconds: 300,
 		Extra: x402.UptoExtra{
-			Profiles:        []string{x402.ProfilePaymentChannel},
-			Decimals:        &decimals,
-			TokenProgram:    paycore.TokenProgram,
-			FeePayer:        signer.String(),
-			ChannelProgram:  paymentchannels.ProgramID,
-			RecentBlockhash: "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h",
+			AssetTransferMethod: x402.UptoAssetTransferMethod,
+			Decimals:            &decimals,
+			TokenProgram:        paycore.TokenProgram,
+			FacilitatorAddress:  signer.String(),
+			ChannelProgram:      paymentchannels.ProgramID,
+			RecentBlockhash:     "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h",
 		},
 	}
 }
@@ -101,9 +101,6 @@ func TestBuildUptoPayload(t *testing.T) {
 	payload, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err != nil {
 		t.Fatalf("BuildUptoPayload: %v", err)
-	}
-	if payload.Profile != x402.ProfilePaymentChannel {
-		t.Fatalf("profile = %q", payload.Profile)
 	}
 	if payload.MaxAmount != "1000000" {
 		t.Fatalf("maxAmount = %q", payload.MaxAmount)
@@ -130,12 +127,16 @@ func TestBuildUptoPayload(t *testing.T) {
 	openIx := tx.Message.Instructions[0]
 	payerFromOpen := tx.Message.AccountKeys[openIx.Accounts[0]]
 	rentPayerFromOpen := tx.Message.AccountKeys[openIx.Accounts[1]]
+	payeeFromOpen := tx.Message.AccountKeys[openIx.Accounts[2]]
 	authorizedSignerFromOpen := tx.Message.AccountKeys[openIx.Accounts[4]]
 	if !payerFromOpen.Equals(priv.PublicKey()) {
 		t.Fatalf("open payer = %s, want %s", payerFromOpen, priv.PublicKey())
 	}
 	if !rentPayerFromOpen.Equals(operator) {
 		t.Fatalf("open rent_payer = %s, want operator %s", rentPayerFromOpen, operator)
+	}
+	if !payeeFromOpen.Equals(operator) {
+		t.Fatalf("open payee = %s, want operator %s", payeeFromOpen, operator)
 	}
 	if !authorizedSignerFromOpen.Equals(operator) {
 		t.Fatalf("open authorized_signer = %s, want operator %s", authorizedSignerFromOpen, operator)
@@ -165,9 +166,9 @@ func TestBuildUptoPayloadUsesChannelProgramForChannelID(t *testing.T) {
 	}
 	want, _, err := paymentchannels.FindChannelPDAForProgram(
 		priv.PublicKey(),
-		solana.MustPublicKeyFromBase58(req.PayTo),
+		solana.MustPublicKeyFromBase58(req.Extra.FacilitatorAddress),
 		solana.MustPublicKeyFromBase58(req.Asset),
-		solana.MustPublicKeyFromBase58(req.Extra.FeePayer),
+		solana.MustPublicKeyFromBase58(req.Extra.FacilitatorAddress),
 		mustReadOpenSalt(t, tx),
 		customProgram,
 	)
@@ -197,14 +198,14 @@ func mustReadOpenSalt(t *testing.T, tx *solana.Transaction) uint64 {
 		uint64(tx.Message.Instructions[0].Data[8])<<56
 }
 
-func TestBuildUptoPayloadRejectsUnsupportedProfile(t *testing.T) {
+func TestBuildUptoPayloadRejectsUnsupportedAssetTransferMethod(t *testing.T) {
 	priv := testutil.NewPrivateKey()
 	signer := testSigner{priv}
 	req := uptoRequirements(priv.PublicKey())
-	req.Extra.Profiles = []string{"permit"}
+	req.Extra.AssetTransferMethod = "permit"
 	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err == nil || !strings.Contains(err.Error(), "payment-channel") {
-		t.Fatalf("expected profile error, got %v", err)
+		t.Fatalf("expected assetTransferMethod error, got %v", err)
 	}
 }
 
@@ -241,14 +242,14 @@ func TestBuildUptoPayloadRejectsBadAsset(t *testing.T) {
 	}
 }
 
-func TestBuildUptoPayloadRejectsBadFeePayer(t *testing.T) {
+func TestBuildUptoPayloadRejectsBadFacilitatorAddress(t *testing.T) {
 	priv := testutil.NewPrivateKey()
 	signer := testSigner{priv}
 	req := uptoRequirements(priv.PublicKey())
-	req.Extra.FeePayer = "not-a-pubkey"
+	req.Extra.FacilitatorAddress = "not-a-pubkey"
 	_, err := BuildUptoPayload(context.Background(), signer, req, 4102444800, "n-1")
 	if err == nil {
-		t.Fatal("expected error for bad feePayer")
+		t.Fatal("expected error for bad facilitatorAddress")
 	}
 }
 

@@ -31,18 +31,17 @@ func uptoRequirements() UptoRequirements {
 		PayTo:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		MaxTimeoutSeconds: 300,
 		Extra: UptoExtra{
-			Profiles:       []string{ProfilePaymentChannel},
-			Decimals:       &decimals,
-			TokenProgram:   paycore.TokenProgram,
-			FeePayer:       "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
-			ChannelProgram: paymentchannels.ProgramID,
+			AssetTransferMethod: UptoAssetTransferMethod,
+			Decimals:            &decimals,
+			TokenProgram:        paycore.TokenProgram,
+			FacilitatorAddress:  "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+			ChannelProgram:      paymentchannels.ProgramID,
 		},
 	}
 }
 
 func uptoPayload() UptoPayload {
 	return UptoPayload{
-		Profile:          ProfilePaymentChannel,
 		From:             "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
 		MaxAmount:        "1000000",
 		ExpiresAt:        4102444800,
@@ -62,12 +61,12 @@ func TestVerifyUptoPayloadAcceptsValid(t *testing.T) {
 	}
 }
 
-func TestVerifyUptoPayloadRejectsWrongProfile(t *testing.T) {
-	p := uptoPayload()
-	p.Profile = "permit"
-	err := VerifyUptoPayload(p, uptoRequirements(), "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
-	if err == nil || !strings.Contains(err.Error(), "invalid payload type") {
-		t.Fatalf("expected invalid payload type, got %v", err)
+func TestVerifyUptoPayloadRejectsWrongAssetTransferMethod(t *testing.T) {
+	r := uptoRequirements()
+	r.Extra.AssetTransferMethod = "permit"
+	err := VerifyUptoPayload(uptoPayload(), r, "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
+	if err == nil || !strings.Contains(err.Error(), "assetTransferMethod") {
+		t.Fatalf("expected assetTransferMethod error, got %v", err)
 	}
 }
 
@@ -125,14 +124,12 @@ func TestVerifyUptoPayloadRejectsWrongSigner(t *testing.T) {
 	}
 }
 
-func TestVerifyUptoPayloadRejectsUnadvertisedProfile(t *testing.T) {
+func TestVerifyUptoPayloadRejectsMissingAssetTransferMethod(t *testing.T) {
 	r := uptoRequirements()
-	r.Extra.Profiles = []string{"permit"}
-	p := uptoPayload()
-	p.Profile = "permit"
-	err := VerifyUptoPayload(p, r, "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
+	r.Extra.AssetTransferMethod = ""
+	err := VerifyUptoPayload(uptoPayload(), r, "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin", 1000)
 	if err == nil {
-		t.Fatal("expected unadvertised profile rejection")
+		t.Fatal("expected assetTransferMethod rejection")
 	}
 }
 
@@ -191,11 +188,11 @@ func TestUptoRequirementsBuilds(t *testing.T) {
 	if req.PayTo == "" {
 		t.Fatal("payTo is empty")
 	}
-	if len(req.Extra.Profiles) != 1 || req.Extra.Profiles[0] != ProfilePaymentChannel {
-		t.Fatalf("profiles = %v, want [payment-channel]", req.Extra.Profiles)
+	if req.Extra.AssetTransferMethod != UptoAssetTransferMethod {
+		t.Fatalf("assetTransferMethod = %q, want %q", req.Extra.AssetTransferMethod, UptoAssetTransferMethod)
 	}
-	if req.Extra.FeePayer == "" {
-		t.Fatal("feePayer is empty")
+	if req.Extra.FacilitatorAddress == "" {
+		t.Fatal("facilitatorAddress is empty")
 	}
 	if req.Extra.ChannelProgram == "" {
 		t.Fatal("channelProgram is empty")
@@ -691,7 +688,6 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 		Scheme:      UptoScheme,
 		Network:     "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 		Payload: UptoPayload{
-			Profile:          ProfilePaymentChannel,
 			From:             payerKey.PublicKey().String(),
 			MaxAmount:        "1000000",
 			ExpiresAt:        time.Now().Add(1 * time.Hour).Unix(),
@@ -793,7 +789,6 @@ func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
 		Scheme:      UptoScheme,
 		Network:     "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 		Payload: UptoPayload{
-			Profile:          ProfilePaymentChannel,
 			From:             payerKey.PublicKey().String(),
 			MaxAmount:        "1000000",
 			ExpiresAt:        time.Now().Add(time.Hour).Unix(),
@@ -851,7 +846,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 	envelope := UptoSignatureEnvelope{
 		X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
 		Payload: UptoPayload{
-			Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(),
+			From:      payerKey.PublicKey().String(),
 			MaxAmount: "1000000", ExpiresAt: time.Now().Add(time.Hour).Unix(),
 			ChannelID: channel.String(), Deposit: "1000000",
 			AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
@@ -931,8 +926,8 @@ func TestNewX402UptoAcceptsRecipientDifferentFromOperator(t *testing.T) {
 	if req.PayTo != recipient.String() {
 		t.Fatalf("payTo = %s, want %s", req.PayTo, recipient)
 	}
-	if req.Extra.FeePayer != signer.PublicKey().String() {
-		t.Fatalf("feePayer = %s, want %s", req.Extra.FeePayer, signer.PublicKey())
+	if req.Extra.FacilitatorAddress != signer.PublicKey().String() {
+		t.Fatalf("facilitatorAddress = %s, want %s", req.Extra.FacilitatorAddress, signer.PublicKey())
 	}
 }
 
@@ -1181,7 +1176,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1226,7 +1221,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1270,7 +1265,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1314,7 +1309,7 @@ func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1358,7 +1353,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1394,7 +1389,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}
@@ -1437,7 +1432,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 	})
 	engine.SetRPCForTests(fakeRPC)
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
-		Profile: ProfilePaymentChannel, From: payerKey.PublicKey().String(), MaxAmount: "1000000",
+		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
 		AuthorizedSigner: operatorKey.PublicKey().String(), OpenTransaction: txBase64,
 	}}

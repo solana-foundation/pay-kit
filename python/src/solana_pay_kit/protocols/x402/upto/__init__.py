@@ -17,8 +17,10 @@ Mirrors the Rust spine (``server/upto.rs``) and the Go reference
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import struct
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,6 +37,7 @@ from spl.token.instructions import (  # type: ignore[import-untyped]
 from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import (
+    Distribution,
     PAYMENT_CHANNELS_PROGRAM_ID,
     build_distribute_instruction,
     build_settle_and_finalize_instructions,
@@ -47,7 +50,7 @@ from solana_pay_kit.errors import ConfigurationError, InvalidProofError
 from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 from solana_pay_kit.protocols.x402.exact.verify import X402_VERSION
 from solana_pay_kit.protocols.x402.upto.types import (
-    PROFILE_PAYMENT_CHANNEL,
+    UPTO_ASSET_TRANSFER_METHOD,
     UPTO_SCHEME,
     UptoPayload,
     UptoRequirements,
@@ -78,9 +81,7 @@ _CHANNEL_STATUS_OPEN = 0
 # Default authorization window (Go DefaultMaxTimeoutSeconds).
 _DEFAULT_MAX_TIMEOUT_SECONDS = 6 * 50  # 300
 
-# The empty-recipient distribution hash baked into the program (no splits). A
-# channel opened for x402 ``upto`` must carry this exact hash; mirrors Go's
-# EmptyDistributionHash.
+# The empty-recipient distribution hash baked into the program (no splits).
 _EMPTY_DISTRIBUTION_HASH = [
     223, 63, 97, 152, 4, 169, 47, 219, 64, 87, 25, 45, 196, 61, 215, 72,
     234, 119, 138, 220, 82, 188, 73, 140, 232, 5, 36, 192, 20, 184, 17, 25,
@@ -107,6 +108,7 @@ class VerifiedUptoOpen:
     max_amount: int
     expires_at: int
     network: str
+    distribution: list[Distribution] = field(default_factory=list)
     _release_fn: Callable[[], None] | None = field(default=None, repr=False)
     _released: bool = field(default=False, repr=False)
 
@@ -179,13 +181,10 @@ class X402Upto:
             "payTo": pay_to,
             "maxTimeoutSeconds": _DEFAULT_MAX_TIMEOUT_SECONDS,
             "extra": {
-                "profiles": [PROFILE_PAYMENT_CHANNEL],
+                "assetTransferMethod": UPTO_ASSET_TRANSFER_METHOD,
                 "decimals": 6,
                 "tokenProgram": token_program,
-                # The spec field is `facilitator` (the TS client requires it); Go
-                # uses `feePayer`. Send both so every client interops.
-                "facilitator": operator,
-                "feePayer": operator,
+                "facilitatorAddress": operator,
                 "channelProgram": self._channel_program,
             },
         }
@@ -239,23 +238,24 @@ class X402Upto:
         payload = _parse_payload(envelope.get("payload"))
         verify_upto_payload(payload, requirements, operator, int(time.time()))
 
-        # Phase 3: network + feePayer bound to this server's offer. Network is
+        # Phase 3: network + facilitatorAddress bound to this server's offer. Network is
         # read from `accepted` (the canonical PaymentRequirements), per spec.
         if accepted.get("network") != requirements["network"]:
             raise InvalidProofError(
                 f"network mismatch: payload {accepted.get('network')!r}, expected {requirements['network']!r}",
                 code="payment_invalid",
             )
-        if requirements["extra"].get("feePayer") != operator:
-            raise InvalidProofError("extra.feePayer is not this server's key", code="payment_invalid")
+        if requirements["extra"].get("facilitatorAddress") != operator:
+            raise InvalidProofError("extra.facilitatorAddress is not this server's key", code="payment_invalid")
 
         program_id = Pubkey.from_string(requirements["extra"].get("channelProgram") or PAYMENT_CHANNELS_PROGRAM_ID)
         mint = Pubkey.from_string(requirements["asset"])
-        payee = Pubkey.from_string(requirements["payTo"])
+        operator_pubkey = Pubkey.from_string(operator)
+        payee = operator_pubkey
+        distribution = self._distribution(requirements)
         token_program = Pubkey.from_string(requirements["extra"]["tokenProgram"])
         channel_id = Pubkey.from_string(payload["channelId"])
         payer = Pubkey.from_string(payload["from"])
-        operator_pubkey = Pubkey.from_string(operator)
         max_amount = parse_base_units(payload["maxAmount"], "maxAmount")
         expires_at = int(payload["expiresAt"])
 
@@ -271,7 +271,7 @@ class X402Upto:
             open_tx = payload.get("openTransaction")
             if not open_tx:
                 raise InvalidProofError(
-                    "payment-channel profile requires openTransaction (pull)", code="payment_invalid"
+                    "payment-channel asset transfer method requires openTransaction (pull)", code="payment_invalid"
                 )
             account_keys, instructions = _decode_transaction(open_tx)
             validate_upto_open_instruction(
@@ -295,7 +295,7 @@ class X402Upto:
             await rpc.await_confirmation(str(sent.value))
 
             channel = await self._fetch_channel(rpc, channel_id, program_id)
-            self._validate_channel_state(channel, operator_pubkey, payer, payee, mint, max_amount)
+            self._validate_channel_state(channel, operator_pubkey, payer, payee, mint, max_amount, distribution)
 
             verified = VerifiedUptoOpen(
                 channel_id=channel_id,
@@ -309,6 +309,7 @@ class X402Upto:
                 max_amount=max_amount,
                 expires_at=expires_at,
                 network=requirements["network"],
+                distribution=distribution,
                 _release_fn=_release,
             )
             released = True
@@ -369,7 +370,7 @@ class X402Upto:
                 payer=verified.payer,
                 payee=payee,
                 mint=verified.mint,
-                recipients=[],
+                recipients=verified.distribution,
                 token_program=verified.token_program,
                 program_id=verified.program_id,
                 treasury=treasury,
@@ -381,7 +382,13 @@ class X402Upto:
             create_treasury_ata = create_idempotent_associated_token_account(
                 operator, treasury, verified.mint, verified.token_program
             )
-            instructions = [*instructions, create_payee_ata, create_treasury_ata, distribute]
+            create_recipient_atas = [
+                create_idempotent_associated_token_account(
+                    operator, entry.recipient, verified.mint, verified.token_program
+                )
+                for entry in verified.distribution
+            ]
+            instructions = [*instructions, create_payee_ata, create_treasury_ata, *create_recipient_atas, distribute]
 
             rpc = SolanaRpc(self._config.effective_rpc_url())
             try:
@@ -428,6 +435,16 @@ class X402Upto:
             return None
         return value if isinstance(value, str) and value != "" else None
 
+    def _distribution(self, requirements: UptoRequirements) -> list[Distribution]:
+        operator = Pubkey.from_string(self._signer().pubkey())
+        beneficiary = Pubkey.from_string(requirements["payTo"])
+        if beneficiary == operator:
+            return []
+        fee_bps = int(requirements["extra"].get("facilitatorFee", 0))
+        if not 0 <= fee_bps <= 10_000:
+            raise InvalidProofError("facilitatorFee must be between 0 and 10000 basis points", code="payment_invalid")
+        return [Distribution(recipient=beneficiary, bps=10_000 - fee_bps)]
+
     async def _fetch_channel(self, rpc: SolanaRpc, channel_id: Pubkey, program_id: Pubkey) -> Any:
         account = await rpc.get_account_info(str(channel_id))
         if account is None:
@@ -452,6 +469,7 @@ class X402Upto:
         payee: Pubkey,
         mint: Pubkey,
         max_amount: int,
+        distribution: list[Distribution],
     ) -> None:
         if int(channel.status) != _CHANNEL_STATUS_OPEN:
             raise InvalidProofError("channel is not open after broadcast", code="payment_invalid")
@@ -461,9 +479,10 @@ class X402Upto:
             raise InvalidProofError(
                 f"recipient mismatch: expected {payee}, got {channel.payee}", code="payment_invalid"
             )
-        if list(channel.distributionHash) != _EMPTY_DISTRIBUTION_HASH:
+        expected_hash = list(_distribution_hash(distribution))
+        if list(channel.distributionHash) != expected_hash:
             raise InvalidProofError(
-                "x402 upto currently supports only empty-recipient payment channels", code="payment_invalid"
+                "channel distribution does not match the expected recipient split", code="payment_invalid"
             )
         if str(channel.authorizedSigner) != str(operator):
             raise InvalidProofError("channel authorized_signer is not the operator", code="payment_invalid")
@@ -502,10 +521,19 @@ def _parse_payload(raw: Any) -> UptoPayload:
     if not isinstance(raw, dict):
         raise InvalidProofError("upto payload missing or malformed", code="payment_invalid")
     payload = cast("dict[str, Any]", raw)
-    for key in ("profile", "from", "maxAmount", "channelId", "deposit", "authorizedSigner"):
+    for key in ("from", "maxAmount", "channelId", "deposit", "authorizedSigner"):
         if not isinstance(payload.get(key), str) or not payload[key]:
             raise InvalidProofError(f"upto payload missing {key}", code="payment_invalid")
     return cast("UptoPayload", payload)
+
+
+def _distribution_hash(distribution: list[Distribution]) -> bytes:
+    hasher = hashlib.sha256()
+    hasher.update(struct.pack("<I", len(distribution)))
+    for entry in distribution:
+        hasher.update(bytes(entry.recipient))
+        hasher.update(struct.pack("<H", entry.bps))
+    return hasher.digest()
 
 
 def _decode_transaction(transaction_b64: str) -> tuple[list[str], list[Any]]:
