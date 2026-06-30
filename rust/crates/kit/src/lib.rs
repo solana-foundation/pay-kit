@@ -47,8 +47,8 @@ pub mod select;
 
 #[cfg(all(feature = "mpp", feature = "x402", feature = "client"))]
 pub use select::{
-    select_payment, select_payment_parsed, AcceptableToken, OfferedOption, OrderingStrategy,
-    SelectError, SelectedPayment,
+    select_payment, select_payment_parsed, select_payment_parsed_all, AcceptableToken,
+    OfferedOption, OrderingStrategy, SelectError, SelectedPayment,
 };
 
 /// Unified, dual-protocol payment gate for axum.
