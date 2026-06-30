@@ -28,8 +28,8 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use crate::core::rpc::SKIP_PREFLIGHT_CONFIRMED_SEND;
 use solana_client::client_error::{ClientError, ClientErrorKind};
-use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
 use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_message::compiled_instruction::CompiledInstruction;
@@ -1147,12 +1147,14 @@ impl Mpp {
                                 max_attempts = SIMULATION_MAX_ATTEMPTS,
                                 error = %sim_err,
                                 recent_blockhash = %tx_recent_blockhash,
+                                broadcast_policy = SKIP_PREFLIGHT_CONFIRMED_SEND.name,
+                                skip_preflight = SKIP_PREFLIGHT_CONFIRMED_SEND.skip_preflight,
                                 "broadcast_pull retrying without preflight after blockhash preflight failure"
                             );
-                            match self
-                                .rpc
-                                .send_transaction_with_config(&tx, skip_preflight_send_config())
-                            {
+                            match self.rpc.send_transaction_with_config(
+                                &tx,
+                                SKIP_PREFLIGHT_CONFIRMED_SEND.config(),
+                            ) {
                                 Ok(signature) => {
                                     broadcast_signature = Some(signature);
                                     break;
@@ -1164,6 +1166,8 @@ impl Mpp {
                                     tracing::warn!(
                                         elapsed_ms = %t0.elapsed().as_millis(),
                                         error = %skip_err,
+                                        broadcast_policy = SKIP_PREFLIGHT_CONFIRMED_SEND.name,
+                                        skip_preflight = SKIP_PREFLIGHT_CONFIRMED_SEND.skip_preflight,
                                         "broadcast_pull skip_preflight rpc error"
                                     );
                                     return Err(VerificationError::network_error(message));
@@ -2863,14 +2867,6 @@ fn is_blockhash_not_found_simulation(sim: &RpcSimulateTransactionResult) -> bool
         .unwrap_or(false)
 }
 
-fn skip_preflight_send_config() -> RpcSendTransactionConfig {
-    RpcSendTransactionConfig {
-        skip_preflight: true,
-        preflight_commitment: Some(solana_commitment_config::CommitmentLevel::Confirmed),
-        ..RpcSendTransactionConfig::default()
-    }
-}
-
 fn diagnose_balances(
     rpc: &RpcClient,
     tx: &VersionedTransaction,
@@ -3259,20 +3255,6 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "err": null })).unwrap();
 
         assert!(!is_blockhash_not_found_simulation(&sim));
-    }
-
-    #[test]
-    fn skip_preflight_send_config_only_skips_preflight() {
-        let config = skip_preflight_send_config();
-
-        assert!(config.skip_preflight);
-        assert_eq!(
-            config.preflight_commitment,
-            Some(solana_commitment_config::CommitmentLevel::Confirmed)
-        );
-        assert_eq!(config.encoding, None);
-        assert_eq!(config.max_retries, None);
-        assert_eq!(config.min_context_slot, None);
     }
 
     // ── Audit #8: to_ui_amount ──

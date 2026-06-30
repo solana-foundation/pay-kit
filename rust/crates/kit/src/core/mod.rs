@@ -20,6 +20,7 @@ pub mod mints;
 #[cfg(feature = "otel")]
 pub mod otel;
 pub mod payment_channels;
+pub(crate) mod rpc;
 pub mod session;
 pub mod settlement;
 pub mod store;
