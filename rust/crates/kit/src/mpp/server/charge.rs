@@ -28,6 +28,9 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use solana_client::client_error::{ClientError, ClientErrorKind};
+use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
+use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -1081,23 +1084,90 @@ impl Mpp {
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
 
-        // Simulate before broadcasting (prevent fee loss). Retry a few times:
-        // RPC backends can briefly lag after a just-confirmed transaction
-        // creates an account that this payment now depends on.
-        let mut simulated = false;
+        // Broadcast with the node's preflight simulation (skip_preflight stays
+        // off) rather than a separate simulate round-trip: on success the tx is
+        // already accepted into the mempool; on preflight failure the error
+        // carries the simulation error + program logs. Retry a few times
+        // because RPC backends can briefly lag after a just-confirmed
+        // transaction creates an account that this payment now depends on — the
+        // lag surfaces as a preflight failure (or a transport error), both of
+        // which clear on retry.
+        //
+        // Confirmation polling stays in await_pull_confirmation so the caller
+        // can reserve the signature in the replay store between broadcast
+        // acceptance and confirmation polling.
+        let mut broadcast_signature: Option<Signature> = None;
         for attempt in 1..=SIMULATION_MAX_ATTEMPTS {
-            let sim = match self.rpc.simulate_transaction(&tx) {
-                Ok(sim) => sim,
+            let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
+            match self.rpc.send_transaction(&tx) {
+                Ok(signature) => {
+                    broadcast_signature = Some(signature);
+                    break;
+                }
                 Err(err) => {
-                    let message = format!("Simulation RPC error: {err}");
-                    let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
+                    if let Some(sim) = preflight_simulation(&err) {
+                        // Preflight rejected the tx. Include program logs for
+                        // actionable diagnostics: Solana's TransactionError
+                        // alone is opaque (e.g. "custom program error: 0x1"),
+                        // but the logs reveal the actual cause.
+                        let logs = sim
+                            .logs
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .filter(|l| {
+                                l.contains("Error") || l.contains("error") || l.contains("failed")
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let log_detail = if logs.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", logs.join("; "))
+                        };
+                        // Best-effort balance diagnostics add extra RPC calls,
+                        // so only run them when this failure is about to be
+                        // returned.
+                        let balance_detail = if retrying {
+                            String::new()
+                        } else {
+                            diagnose_balances(&self.rpc, &tx, request, method_details)
+                        };
+                        let sim_err = sim
+                            .err
+                            .as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string());
+                        let message =
+                            format!("Simulation failed: {sim_err}{log_detail}{balance_detail}");
+                        tracing::warn!(
+                            elapsed_ms = %t0.elapsed().as_millis(),
+                            attempt,
+                            max_attempts = SIMULATION_MAX_ATTEMPTS,
+                            retrying,
+                            error = %sim_err,
+                            logs = ?logs,
+                            detail = %message,
+                            "broadcast_pull preflight failed"
+                        );
+                        if retrying {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                SIMULATION_RETRY_DELAY_MS,
+                            ));
+                            continue;
+                        }
+                        return Err(VerificationError::transaction_failed(message));
+                    }
+
+                    // Transport / RPC error (node unreachable, transient 5xx).
+                    let message = format!("Broadcast RPC error: {err}");
                     tracing::warn!(
                         elapsed_ms = %t0.elapsed().as_millis(),
                         attempt,
                         max_attempts = SIMULATION_MAX_ATTEMPTS,
                         retrying,
                         error = %err,
-                        "verify_pull simulation rpc error"
+                        "broadcast_pull rpc error"
                     );
                     if retrying {
                         std::thread::sleep(std::time::Duration::from_millis(
@@ -1107,70 +1177,11 @@ impl Mpp {
                     }
                     return Err(VerificationError::network_error(message));
                 }
-            };
-
-            if let Some(err) = sim.value.err {
-                // Include program logs for actionable diagnostics.
-                // Solana's TransactionError alone is opaque (e.g. "custom program
-                // error: 0x1"), but the logs reveal the actual cause.
-                let logs = sim
-                    .value
-                    .logs
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|l| l.contains("Error") || l.contains("error") || l.contains("failed"))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let log_detail = if logs.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {}", logs.join("; "))
-                };
-
-                let retrying = attempt < SIMULATION_MAX_ATTEMPTS;
-                // Best-effort balance diagnostics add extra RPC calls, so only
-                // run them when this failure is about to be returned.
-                let balance_detail = if retrying {
-                    String::new()
-                } else {
-                    diagnose_balances(&self.rpc, &tx, request, method_details)
-                };
-                let message = format!("Simulation failed: {err}{log_detail}{balance_detail}");
-                tracing::warn!(
-                    elapsed_ms = %t0.elapsed().as_millis(),
-                    attempt,
-                    max_attempts = SIMULATION_MAX_ATTEMPTS,
-                    retrying,
-                    error = %err,
-                    logs = ?logs,
-                    detail = %message,
-                    "verify_pull simulation failed"
-                );
-                if retrying {
-                    std::thread::sleep(std::time::Duration::from_millis(SIMULATION_RETRY_DELAY_MS));
-                    continue;
-                }
-                return Err(VerificationError::transaction_failed(message));
             }
-
-            simulated = true;
-            break;
         }
-        if !simulated {
-            return Err(VerificationError::network_error(
-                "Simulation did not complete".to_string(),
-            ));
-        }
-        tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "simulate", "verify_pull");
-
-        // Broadcast. Confirmation polling moved into await_pull_confirmation
-        // so the caller can reserve the signature in the replay store
-        // between broadcast acceptance and confirmation polling.
-        let signature = self
-            .rpc
-            .send_transaction(&tx)
-            .map_err(|e| VerificationError::network_error(format!("Broadcast failed: {e}")))?;
+        let signature = broadcast_signature.ok_or_else(|| {
+            VerificationError::network_error("Broadcast did not complete".to_string())
+        })?;
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "send", "broadcast_pull");
         Ok(signature.to_string())
     }
@@ -2788,6 +2799,21 @@ fn string_field<'a>(
 fn to_ui_amount(amount_base_units: u64, decimals: u8) -> Option<f64> {
     let divisor = 10u64.checked_pow(decimals as u32)?;
     Some(amount_base_units as f64 / divisor as f64)
+}
+
+/// Extract the node's preflight simulation result from a failed
+/// `send_transaction`. Returns `Some` when the broadcast was rejected by
+/// preflight (carrying the simulation error + program logs we surface for
+/// diagnostics), and `None` for transport or other RPC-transport errors —
+/// letting the caller pick the right `VerificationError` variant.
+fn preflight_simulation(err: &ClientError) -> Option<&RpcSimulateTransactionResult> {
+    match err.kind() {
+        ClientErrorKind::RpcError(RpcError::RpcResponseError {
+            data: RpcResponseErrorData::SendTransactionPreflightFailure(result),
+            ..
+        }) => Some(result),
+        _ => None,
+    }
 }
 
 fn diagnose_balances(

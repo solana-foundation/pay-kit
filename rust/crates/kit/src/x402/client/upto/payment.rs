@@ -56,9 +56,8 @@ pub async fn build_upto_payload(
         .iter()
         .map(|d| {
             Ok(pc::Distribution {
-                recipient: Pubkey::from_str(&d.recipient).map_err(|e| {
-                    Error::Other(format!("invalid distribution recipient: {e}"))
-                })?,
+                recipient: Pubkey::from_str(&d.recipient)
+                    .map_err(|e| Error::Other(format!("invalid distribution recipient: {e}")))?,
                 bps: d.bps,
             })
         })
@@ -174,8 +173,8 @@ pub fn parse_upto_accepts(
         })
         .and_then(|bytes| serde_json::from_slice::<UptoRequiredEnvelope>(&bytes).ok());
 
-    let Some(envelope) =
-        from_header.or_else(|| body.and_then(|b| serde_json::from_str::<UptoRequiredEnvelope>(b).ok()))
+    let Some(envelope) = from_header
+        .or_else(|| body.and_then(|b| serde_json::from_str::<UptoRequiredEnvelope>(b).ok()))
     else {
         return Vec::new();
     };

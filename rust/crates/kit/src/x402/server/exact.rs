@@ -663,16 +663,11 @@ impl X402 {
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
 
-        // Simulate first for an actionable error, then broadcast + confirm.
-        let simulation = self
-            .rpc
-            .simulate_transaction(&tx)
-            .map_err(|e| Error::Rpc(format!("exact settlement simulation failed: {e}")))?;
-        if let Some(err) = simulation.value.err {
-            return Err(Error::Rpc(format!(
-                "exact settlement simulation failed: {err:?}"
-            )));
-        }
+        // Broadcast + confirm, relying on the node's preflight simulation
+        // (skip_preflight stays off) instead of a separate simulate round-trip.
+        // Preflight still rejects a bad tx before it lands, and on failure the
+        // returned error carries the simulation error and program logs, so the
+        // diagnostics that the explicit simulate used to surface survive.
         self.rpc
             .send_and_confirm_transaction(&tx)
             .map(|s| s.to_string())

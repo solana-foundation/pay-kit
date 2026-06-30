@@ -39,7 +39,7 @@ use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::SolanaSigner;
 use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
 use crate::x402::server::{
-    BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig,
+    BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig, UptoPayout,
     VerifiedExactPayment, X402BatchSettlement, X402Upto, X402,
 };
 use crate::x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
@@ -194,7 +194,14 @@ impl PayKit {
             .as_ref()
             .map(|signer| {
                 X402Upto::new(UptoConfig {
-                    recipient: config.recipient.clone(),
+                    // The channel payee is always the operator (the only key
+                    // the gate can sign settlement with); the gate's configured
+                    // recipient is the real beneficiary, paid the full settled
+                    // amount via the bound distribution (operator keeps 0 bps).
+                    payout: UptoPayout::Beneficiary {
+                        address: config.recipient.clone(),
+                        operator_fee_bps: 0,
+                    },
                     currencies: currencies.clone(),
                     cluster: config.network.clone(),
                     rpc_url: config.rpc_url.clone(),
