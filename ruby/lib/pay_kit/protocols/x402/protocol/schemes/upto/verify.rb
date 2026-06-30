@@ -212,18 +212,23 @@ module PayKit::Protocols::X402
           end
 
           # Verify the serialized signature bytes for every required signer slot
-          # except the operator's own (filled at co-sign). Rejects a zeroed or
-          # forged client signature before the operator spends a broadcast fee.
+          # except the single one the operator fills at co-sign. Rejects a
+          # zeroed or forged client signature before the operator spends a
+          # broadcast fee. The facilitator signs exactly one slot (`sign_with`
+          # fills the first account-key match), so skipping that one index rather
+          # than every operator-keyed slot still verifies a duplicate operator
+          # slot the client may have planted in the signer range.
           def verify_cosigner_signatures!(transaction, operator, required_signers)
             message = transaction.message.raw
             keys = transaction.message.account_keys
+            operator_slot = keys.index(operator)
             required_signers.times do |i|
-              signer = keys[i]
-              next if signer.nil? || signer == operator
+              next if i == operator_slot
 
+              signer = keys[i]
               signature = transaction.signatures[i]
               unless valid_signature?(signer, signature, message)
-                raise reject("open transaction signer #{signer} is missing a valid signature")
+                raise reject("open transaction signer #{signer || "<none>"} is missing a valid signature")
               end
             end
           end

@@ -25,6 +25,7 @@ class ServerUptoTest < Minitest::Test
     signing = ::Ed25519::SigningKey.new(seed)
     @operator = base58(signing.verify_key.to_bytes.bytes)
     @operator_secret = JSON.generate(seed.bytes + signing.verify_key.to_bytes.bytes)
+    @operator_account = ::PayCore::Solana::Account.from_json_array(@operator_secret)
     # The payer is a real keypair so fixtures can sign the open's payer slot;
     # the server verifies that client signature before the operator co-signs.
     payer_seed = "\x02".b * 32
@@ -256,7 +257,38 @@ class ServerUptoTest < Minitest::Test
     assert_reject("is missing a valid signature") { verify(salt: 27, sign_payer: false) }
   end
 
+  # The operator signs exactly one slot (sign_with fills the first key match),
+  # so a duplicate operator key planted in the signer range stays unsigned and
+  # must be rejected rather than skipped as "the operator's slot".
+  def test_cosigner_verification_rejects_duplicate_operator_signer_slot
+    message = "open-message-bytes".b
+    op_sig = @operator_account.sign(message)
+    payer_sig = @payer_account.sign(message)
+    # account_keys: operator (fee-payer slot the operator fills), a second
+    # operator copy in the signer range, then the payer.
+    tx = stub_tx([@operator, @operator, @payer], [op_sig, "\x00".b * 64, payer_sig], message)
+    error = assert_raises(::PayKit::Protocols::X402::Error::PaymentInvalid) do
+      Verifier.verify_cosigner_signatures!(tx, @operator, 3)
+    end
+    assert_includes error.message, "is missing a valid signature"
+  end
+
+  def test_cosigner_verification_accepts_signed_payer_with_single_operator_slot
+    message = "open-message-bytes".b
+    tx = stub_tx([@operator, @payer], ["\x00".b * 64, @payer_account.sign(message)], message)
+    Verifier.verify_cosigner_signatures!(tx, @operator, 2) # no raise
+  end
+
   private
+
+  Verifier = ::PayKit::Protocols::X402::Protocol::Schemes::Upto::Verifier
+
+  # Minimal transaction double exposing only what verify_cosigner_signatures!
+  # reads: message.raw / message.account_keys and the signatures array.
+  def stub_tx(account_keys, signatures, raw)
+    message = Struct.new(:raw, :account_keys).new(raw, account_keys)
+    Struct.new(:message, :signatures).new(message, signatures)
+  end
 
   # Decode a header, rewrite its openTransaction via the block, re-encode.
   def tamper_open_transaction(header)
