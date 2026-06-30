@@ -161,14 +161,11 @@ pub struct UptoPayload {
     /// Voucher signer — the operator/facilitator key (base58).
     pub authorized_signer: String,
 
-    /// Base64 client-signed `open` transaction for the operator to broadcast
-    /// (pull). Present unless the client pre-broadcast the open (push).
+    /// Base64 client-signed `open` transaction for the operator to co-sign
+    /// (fee payer + `rentPayer`) and broadcast. v1 is **pull-only**: the client
+    /// never broadcasts `open` itself, so it needs no SOL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_transaction: Option<String>,
-
-    /// Base58 signature of an already-broadcast `open` transaction (push).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
 }
 
 impl UptoPayload {
@@ -281,7 +278,6 @@ mod tests {
             deposit: "1000000".to_string(),
             authorized_signer: "Op11111111111111111111111111111111111111111".to_string(),
             open_transaction: Some("base64tx".to_string()),
-            signature: None,
         };
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains("\"openTransaction\":\"base64tx\""));

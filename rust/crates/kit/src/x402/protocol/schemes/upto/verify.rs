@@ -128,7 +128,6 @@ mod tests {
             deposit: "1000000".to_string(),
             authorized_signer: OPERATOR.to_string(),
             open_transaction: Some("tx".to_string()),
-            signature: None,
         }
     }
 

@@ -109,7 +109,6 @@ pub async fn build_upto_payload(
         deposit: max.to_string(),
         authorized_signer: pc::pubkey_string(&operator),
         open_transaction: Some(open.transaction),
-        signature: None,
     })
 }
 
@@ -224,7 +223,6 @@ mod tests {
             deposit: "1000000".to_string(),
             authorized_signer: OPERATOR.to_string(),
             open_transaction: Some("tx".to_string()),
-            signature: None,
         }
     }
 
