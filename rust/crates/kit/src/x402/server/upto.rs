@@ -1,4 +1,4 @@
-//! Server-side handler for the x402 `upto` scheme (payment-channel profile).
+//! Server-side handler for the x402 `upto` scheme (payment-channel asset transfer method).
 //!
 //! Flow (single HTTP round-trip, handler-determined amount):
 //!
@@ -35,7 +35,7 @@ use crate::x402::protocol::schemes::exact::{
 };
 use crate::x402::protocol::schemes::upto::{
     assert_settlement_within_ceiling, verify_upto_payload, UptoExtra, UptoRequiredEnvelope,
-    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, PROFILE_PAYMENT_CHANNEL,
+    UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, UPTO_ASSET_TRANSFER_METHOD,
     UPTO_SCHEME,
 };
 use crate::x402::server::CurrencyConfig;
@@ -351,7 +351,7 @@ impl X402Upto {
             pay_to: self.pay_to(),
             max_timeout_seconds: self.config.max_timeout_seconds,
             extra: UptoExtra {
-                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
+                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: Some(pc::pubkey_string(&token_program)),
                 facilitator_address: self.operator(),
                 facilitator_fee: self.facilitator_fee_bps(),
@@ -537,7 +537,9 @@ impl X402Upto {
         // Broadcast the client-signed open (pull). Push (already broadcast) is
         // not yet supported; require the transaction.
         let open_tx_b64 = payload.open_transaction.as_deref().ok_or_else(|| {
-            Error::Other("payment-channel profile requires openTransaction (pull)".to_string())
+            Error::Other(
+                "payment-channel asset transfer method requires openTransaction (pull)".to_string(),
+            )
         })?;
         let mut tx = decode_transaction(open_tx_b64)?;
         // SECURITY: the operator co-signs as fee payer, so it must only ever

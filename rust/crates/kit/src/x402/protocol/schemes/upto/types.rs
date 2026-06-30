@@ -2,9 +2,9 @@
 //!
 //! `upto` authorizes a **maximum** amount; the server settles for the **actual**
 //! usage (`actual ≤ max`) determined after the resource is consumed. The v1 SVM
-//! backend is the `payment-channel` profile: the client opens a channel whose
-//! `deposit` is the ceiling, and the operator settles the metered amount with a
-//! single voucher, refunding the remainder. See
+//! backend is the `payment-channel` asset transfer method: the client opens a
+//! channel whose `deposit` is the ceiling, and the operator settles the metered
+//! amount with a single voucher, refunding the remainder. See
 //! `specs/schemes/upto/scheme_upto_svm.md`.
 
 use serde::{Deserialize, Serialize};
@@ -15,8 +15,8 @@ use crate::x402::protocol::schemes::exact::ResourceInfo;
 /// `upto` scheme identifier.
 pub const UPTO_SCHEME: &str = "upto";
 
-/// Payment-channel settlement profile (normative v1).
-pub const PROFILE_PAYMENT_CHANNEL: &str = "payment-channel";
+/// Payment-channel asset transfer method (normative v1).
+pub const UPTO_ASSET_TRANSFER_METHOD: &str = "payment-channel";
 
 fn upto_scheme() -> String {
     UPTO_SCHEME.to_string()
@@ -128,15 +128,12 @@ pub struct UptoRequiredEnvelope {
 
 /// The client authorization carried in `PAYMENT-SIGNATURE.payload`.
 ///
-/// For the `payment-channel` profile the channel `open` is the authorization:
-/// the client's signature commits the deposit ceiling, payee, and mint. The
-/// operator settles the actual amount with a voucher it signs.
+/// For the `payment-channel` asset transfer method the channel `open` is the
+/// authorization: the client's signature commits the deposit ceiling, payee,
+/// and mint. The operator settles the actual amount with a voucher it signs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UptoPayload {
-    /// Settlement profile (`payment-channel` in v1).
-    pub profile: String,
-
     /// Payer wallet (base58).
     pub from: String,
 
@@ -237,7 +234,7 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
+                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
                 facilitator_address: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
                 facilitator_fee: 0,
@@ -271,7 +268,6 @@ mod tests {
     #[test]
     fn payload_omits_optional_fields_and_parses_amounts() {
         let payload = UptoPayload {
-            profile: PROFILE_PAYMENT_CHANNEL.to_string(),
             from: "Payer1111111111111111111111111111111111111".to_string(),
             max_amount: "1000000".to_string(),
             expires_at: 4_102_444_800,
@@ -292,14 +288,13 @@ mod tests {
     #[test]
     fn parses_canonical_envelope_without_top_level_scheme() {
         // The canonical x402 v2 client (the TS playground via `@x402/core`)
-        // emits `{ x402Version, payload, accepted }` with NO top-level `scheme`
-        // or `network` — they live in `accepted`. Earlier this failed to parse
-        // with `missing field scheme`; assert it now round-trips.
+        // emits `{ x402Version, payload, accepted }` with no top-level `scheme`
+        // or `network`; the asset transfer method lives in `accepted.extra`.
+        // Assert Rust accepts that canonical shape directly.
         let req = requirements();
         let canonical = serde_json::json!({
             "x402Version": 2,
             "payload": {
-                "profile": PROFILE_PAYMENT_CHANNEL,
                 "from": "Payer1111111111111111111111111111111111111",
                 "maxAmount": "1000000",
                 "expiresAt": 4_102_444_800i64,

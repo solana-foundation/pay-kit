@@ -1,13 +1,13 @@
 //! Pure (no-RPC) verification for the x402 `upto` scheme.
 //!
-//! These checks run at the envelope level: amounts, time window, profile, and
-//! operator binding. The on-chain binding (channel deposit/payee/mint/status)
-//! is confirmed by the server after it broadcasts and confirms the `open`
-//! transaction — see `server::upto`.
+//! These checks run at the envelope level: amounts, time window, advertised
+//! asset transfer method, and operator binding. The on-chain binding (channel
+//! deposit/payee/mint/status) is confirmed by the server after it broadcasts
+//! and confirms the `open` transaction — see `server::upto`.
 
 use crate::x402::error::Error;
 
-use super::types::{UptoPayload, UptoRequirements, PROFILE_PAYMENT_CHANNEL};
+use super::types::{UptoPayload, UptoRequirements, UPTO_ASSET_TRANSFER_METHOD};
 
 /// Scheme-specific error string for an over-ceiling settlement.
 pub const ERR_SETTLEMENT_EXCEEDS_AMOUNT: &str =
@@ -25,13 +25,10 @@ pub fn verify_upto_payload(
     operator: &str,
     now: i64,
 ) -> Result<(), Error> {
-    if payload.profile != PROFILE_PAYMENT_CHANNEL {
-        return Err(Error::InvalidPayloadType(payload.profile.clone()));
-    }
-    if requirements.extra.asset_transfer_method != payload.profile {
+    if requirements.extra.asset_transfer_method != UPTO_ASSET_TRANSFER_METHOD {
         return Err(Error::Other(format!(
-            "profile {} not advertised by the server",
-            payload.profile
+            "assetTransferMethod {} is not supported",
+            requirements.extra.asset_transfer_method
         )));
     }
 
@@ -72,7 +69,7 @@ pub fn verify_upto_payload(
     // comparison can never fail; the authorized_signer check is what matters.)
     if payload.authorized_signer != operator {
         return Err(Error::Other(
-            "voucher authorized_signer must be the operator for the payment-channel profile"
+            "voucher authorized_signer must be the operator for the payment-channel asset transfer method"
                 .to_string(),
         ));
     }
@@ -104,7 +101,7 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
+                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
                 facilitator_address: OPERATOR.to_string(),
                 facilitator_fee: 0,
@@ -118,7 +115,6 @@ mod tests {
 
     fn payload() -> UptoPayload {
         UptoPayload {
-            profile: PROFILE_PAYMENT_CHANNEL.to_string(),
             from: "Payer1111111111111111111111111111111111111".to_string(),
             max_amount: "1000000".to_string(),
             expires_at: 4_102_444_800,
@@ -137,13 +133,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wrong_profile() {
-        let mut p = payload();
-        p.profile = "permit".to_string();
-        assert!(matches!(
-            verify_upto_payload(&p, &requirements(), OPERATOR, 1000),
-            Err(Error::InvalidPayloadType(_))
-        ));
+    fn rejects_wrong_asset_transfer_method() {
+        let mut req = requirements();
+        req.extra.asset_transfer_method = "permit2".to_string();
+        assert!(verify_upto_payload(&payload(), &req, OPERATOR, 1000).is_err());
     }
 
     #[test]

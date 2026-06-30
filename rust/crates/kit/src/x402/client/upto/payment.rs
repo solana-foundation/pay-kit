@@ -16,7 +16,7 @@ use crate::core::payment_channels as pc;
 use crate::x402::error::Error;
 use crate::x402::protocol::schemes::upto::{
     UptoPayload, UptoRequiredEnvelope, UptoRequirements, UptoSignatureEnvelope,
-    PROFILE_PAYMENT_CHANNEL, UPTO_SCHEME,
+    UPTO_ASSET_TRANSFER_METHOD, UPTO_SCHEME,
 };
 use crate::x402::{PAYMENT_REQUIRED_HEADER, X402_VERSION_V2};
 
@@ -31,7 +31,7 @@ pub async fn build_upto_payload(
     expires_at: i64,
     nonce: impl Into<String>,
 ) -> Result<UptoPayload, Error> {
-    if requirements.extra.asset_transfer_method != PROFILE_PAYMENT_CHANNEL {
+    if requirements.extra.asset_transfer_method != UPTO_ASSET_TRANSFER_METHOD {
         return Err(Error::Other(
             "requirement does not use the payment-channel asset transfer method".to_string(),
         ));
@@ -99,7 +99,6 @@ pub async fn build_upto_payload(
     .await?;
 
     Ok(UptoPayload {
-        profile: PROFILE_PAYMENT_CHANNEL.to_string(),
         from: pc::pubkey_string(&payer_signer.pubkey()),
         max_amount: max.to_string(),
         expires_at,
@@ -199,7 +198,7 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
+                asset_transfer_method: UPTO_ASSET_TRANSFER_METHOD.to_string(),
                 token_program: None,
                 facilitator_address: OPERATOR.to_string(),
                 facilitator_fee: 0,
@@ -213,7 +212,6 @@ mod tests {
 
     fn sample_payload() -> UptoPayload {
         UptoPayload {
-            profile: PROFILE_PAYMENT_CHANNEL.to_string(),
             from: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_amount: "1000000".to_string(),
             expires_at: 4_102_444_800,
