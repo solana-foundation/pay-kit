@@ -1,6 +1,6 @@
 {
     "name": "@solana/pay-kit",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Building blocks for Agentic payments (x402, MPP, AP2)",
     "repository": {
         "type": "git",
