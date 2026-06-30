@@ -84,6 +84,7 @@ fn read_state(
     let upto = X402Upto::new(UptoConfig {
         recipient: pay_to,
         currency: mint,
+        accepted_currencies: None,
         decimals: TOKEN_DECIMALS,
         cluster: network,
         rpc_url: Some(rpc_url),

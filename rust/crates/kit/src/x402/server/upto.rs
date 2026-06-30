@@ -53,6 +53,15 @@ pub struct UptoConfig {
     pub recipient: String,
     /// Currency symbol (`"USDC"`) or mint address.
     pub currency: String,
+    /// Universe of currencies this server is willing to accept.
+    ///
+    /// `None` means single-currency mode and only `currency` is offered and
+    /// accepted. To accept multiple currencies (e.g. USDC plus PYUSD) set this
+    /// to `Some(vec!["USDC".into(), "PYUSD".into()])`: the `upto` challenge then
+    /// advertises one `accepts[]` entry per currency and `verify_open` accepts a
+    /// payment in any of them, binding the channel to the chosen currency's
+    /// mint + token program.
+    pub accepted_currencies: Option<Vec<String>>,
     /// Token decimals.
     pub decimals: u8,
     /// Solana cluster: `mainnet-beta`, `devnet`, or `localnet`.
@@ -188,18 +197,54 @@ impl X402Upto {
         }
     }
 
+    /// Resolve the mint for the configured default currency. Retained as a
+    /// convenience delegating to [`X402Upto::mint_for`]; the verify path now
+    /// resolves per matched currency.
+    #[allow(dead_code)]
     fn mint(&self) -> Result<Pubkey, Error> {
-        let mint = resolve_stablecoin_mint(&self.config.currency, Some(&self.config.cluster))
+        self.mint_for(&self.config.currency)
+    }
+
+    /// Resolve the mint for a specific currency symbol (or mint address) on the
+    /// configured cluster. Generalizes [`X402Upto::mint`] for multi-currency.
+    fn mint_for(&self, currency: &str) -> Result<Pubkey, Error> {
+        let mint = resolve_stablecoin_mint(currency, Some(&self.config.cluster))
             .ok_or_else(|| Error::Other("upto requires an SPL token (not native SOL)".into()))?;
         Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint: {e}")))
     }
 
+    /// Resolve the token program for the configured default currency. Retained
+    /// as a convenience delegating to [`X402Upto::token_program_for`]; the
+    /// verify path now resolves per matched currency.
+    #[allow(dead_code)]
     fn token_program(&self) -> Result<Pubkey, Error> {
-        let tp = self.config.token_program.clone().unwrap_or_else(|| {
-            default_token_program_for_currency(&self.config.currency, Some(&self.config.cluster))
-                .to_string()
-        });
+        self.token_program_for(&self.config.currency)
+    }
+
+    /// Resolve the token program for a specific currency symbol on the
+    /// configured cluster. The `Config.token_program` override only applies to
+    /// the configured default `currency`; other currencies derive their program
+    /// (legacy SPL vs Token-2022) from the symbol. Generalizes
+    /// [`X402Upto::token_program`] for multi-currency.
+    fn token_program_for(&self, currency: &str) -> Result<Pubkey, Error> {
+        let tp = if currency == self.config.currency {
+            self.config.token_program.clone().unwrap_or_else(|| {
+                default_token_program_for_currency(currency, Some(&self.config.cluster)).to_string()
+            })
+        } else {
+            default_token_program_for_currency(currency, Some(&self.config.cluster)).to_string()
+        };
         Pubkey::from_str(&tp).map_err(|e| Error::Other(format!("invalid token program: {e}")))
+    }
+
+    /// The currencies this server offers in its `upto` challenge — the explicit
+    /// `accepted_currencies` list, or just `Config.currency` in single-currency
+    /// mode.
+    fn offered_currencies(&self) -> Vec<String> {
+        self.config
+            .accepted_currencies
+            .clone()
+            .unwrap_or_else(|| vec![self.config.currency.clone()])
     }
 
     /// Build the `upto` payment requirement for the given authorized maximum.
@@ -212,8 +257,22 @@ impl X402Upto {
     /// [`upto`] when building the 402 challenge. The verify path reuses this
     /// without fetching (or diverging on) a blockhash.
     pub fn upto_requirements(&self, max_amount: &str) -> Result<UptoRequirements, Error> {
-        let mint = self.mint()?;
-        let token_program = self.token_program()?;
+        self.upto_requirements_for(&self.config.currency, max_amount)
+    }
+
+    /// Build the `upto` payment requirement for a specific currency.
+    ///
+    /// Same as [`X402Upto::upto_requirements`] but resolves the mint and token
+    /// program from the passed currency rather than `Config.currency`, so a
+    /// multi-currency server can advertise one requirement per offered currency.
+    /// Pure (no RPC): the recent blockhash is filled in by [`X402Upto::upto`].
+    pub fn upto_requirements_for(
+        &self,
+        currency: &str,
+        max_amount: &str,
+    ) -> Result<UptoRequirements, Error> {
+        let mint = self.mint_for(currency)?;
+        let token_program = self.token_program_for(currency)?;
         let base_units = crate::x402::server::exact::parse_units(max_amount, self.config.decimals)?;
 
         Ok(UptoRequirements {
@@ -241,13 +300,13 @@ impl X402Upto {
     /// This is where the (best-effort) recent blockhash is fetched and attached,
     /// so the client can build the channel `open` without an extra RPC.
     pub fn upto(&self, max_amount: &str) -> Result<UptoRequiredEnvelope, Error> {
-        let mut requirement = self.upto_requirements(max_amount)?;
         // Fail loudly (retryable) rather than issuing a 402 with no blockhash:
         // the in-SDK client hard-requires `extra.recentBlockhash` to build the
         // channel open, so a silent `None` would surface as a non-retryable
         // payment failure on a transient RPC hiccup.
         // Prefer the shared cache (refreshed out of band) to avoid a blocking
-        // RPC round-trip per challenge; fall back to a direct fetch.
+        // RPC round-trip per challenge; fall back to a direct fetch. Fetched
+        // ONCE and stamped on every offered currency's requirement.
         let (blockhash, last_valid_block_height) =
             match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
                 Some(cached) => (cached.blockhash, cached.last_valid_block_height),
@@ -261,8 +320,19 @@ impl X402Upto {
                     (blockhash.to_string(), last_valid_block_height)
                 }
             };
-        requirement.extra.recent_blockhash = Some(blockhash);
-        requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
+
+        // One `accepts[]` entry per offered currency (single-currency mode
+        // yields exactly one, identical to the prior behaviour). Every entry
+        // carries the SAME freshly-fetched blockhash + last-valid height.
+        let currencies = self.offered_currencies();
+        let mut accepts = Vec::with_capacity(currencies.len());
+        for currency in &currencies {
+            let mut requirement = self.upto_requirements_for(currency, max_amount)?;
+            requirement.extra.recent_blockhash = Some(blockhash.clone());
+            requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
+            accepts.push(requirement);
+        }
+
         let resource = (!self.config.resource.is_empty()).then(|| ResourceInfo {
             url: self.config.resource.clone(),
             description: self.config.description.clone(),
@@ -271,7 +341,7 @@ impl X402Upto {
         Ok(UptoRequiredEnvelope {
             x402_version: X402_VERSION_V2,
             resource,
-            accepts: vec![requirement],
+            accepts,
             error: None,
         })
     }
@@ -328,8 +398,20 @@ impl X402Upto {
         max_amount: &str,
     ) -> Result<VerifiedUptoOpen, Error> {
         let envelope = self.parse_payment_signature(header)?;
-        let requirements = self.upto_requirements(max_amount)?;
         let payload = &envelope.payload;
+
+        // Multi-currency: build one offered requirement per advertised currency
+        // and pick the one the client's `accepted` structurally matches (after
+        // stripping transient blockhash hints, mirroring exact's
+        // `find_matching_requirement`). The chosen asset is therefore guaranteed
+        // to be one we offered; the channel is then bound to THAT currency's
+        // mint + token program below.
+        let offered = self
+            .offered_currencies()
+            .iter()
+            .map(|currency| self.upto_requirements_for(currency, max_amount))
+            .collect::<Result<Vec<_>, _>>()?;
+        let requirements = match_offered_requirement(&offered, &envelope.accepted)?.clone();
 
         verify_upto_payload(payload, &requirements, &self.operator(), now_unix())?;
         // x402 v2 spec §5.2: network lives in `accepted` (the chosen
@@ -343,8 +425,20 @@ impl X402Upto {
         }
 
         let program_id = self.program_id()?;
-        let expected_mint = self.mint()?;
-        let token_program = self.token_program()?;
+        // Bind the channel to the MATCHED currency's mint + token program — not
+        // the configured default — so a multi-currency open is validated
+        // against the currency the client actually chose.
+        let expected_mint = Pubkey::from_str(&requirements.asset)
+            .map_err(|e| Error::Other(format!("invalid matched asset mint: {e}")))?;
+        let token_program = requirements
+            .extra
+            .token_program
+            .as_deref()
+            .ok_or_else(|| Error::Other("matched requirement missing token program".into()))
+            .and_then(|tp| {
+                Pubkey::from_str(tp)
+                    .map_err(|e| Error::Other(format!("invalid matched token program: {e}")))
+            })?;
         let expected_payee = Pubkey::from_str(&self.config.recipient)
             .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
         let channel_id = Pubkey::from_str(&payload.channel_id)
@@ -614,6 +708,64 @@ pub(crate) async fn cosign_operator_fee_payer(
 /// Thin wrapper over the shared `solana-pay-core` decoder.
 pub(crate) fn decode_transaction(b64: &str) -> Result<VersionedTransaction, Error> {
     Ok(pc::decode_transaction(b64)?)
+}
+
+/// Remove the server-provided build hints (`recentBlockhash` /
+/// `lastValidBlockHeight`, #2693) from a serialized requirements value so the
+/// verify-time structural match ignores them. They are embedded into the 402
+/// challenge and echoed back by the client in `accepted`, but the verify-time
+/// rebuild omits them. Mirrors exact's `strip_blockhash_hints`.
+fn strip_upto_blockhash_hints(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("recentBlockhash");
+    }
+    if let Some(extra) = value.get_mut("extra").and_then(|e| e.as_object_mut()) {
+        extra.remove("recentBlockhash");
+        extra.remove("lastValidBlockHeight");
+    }
+}
+
+/// Find which offered `upto` requirement the client's `accepted` matches.
+///
+/// Serializes each offered requirement to JSON, strips transient blockhash
+/// hints from both sides, and compares for structural equality — mirroring
+/// exact's `find_matching_requirement`. Returns the matched offered requirement
+/// (the source of truth for mint/token-program binding), or an error if the
+/// client's `accepted` matches none of the offered currencies.
+///
+/// SECURITY: the returned requirement is always one the server offered, so the
+/// chosen asset can never be attacker-controlled; the channel is bound to its
+/// mint + token program by the caller.
+fn match_offered_requirement<'r>(
+    offered: &'r [UptoRequirements],
+    accepted: &serde_json::Value,
+) -> Result<&'r UptoRequirements, Error> {
+    // Round-trip the client's `accepted` through the typed `UptoRequirements`
+    // so both sides normalize via the same Serialize impl (field ordering,
+    // skipped optionals) before comparison — mirrors exact's matcher. A
+    // canonical-compatible client that echoes extra fields the server never
+    // emits would fail to parse here, which is the desired strict behaviour:
+    // the server only matches its own offered shapes.
+    let accepted_requirements: UptoRequirements = serde_json::from_value(accepted.clone())
+        .map_err(|e| Error::InvalidPaymentRequired(format!("invalid accepted requirement: {e}")))?;
+    let mut accepted_json = serde_json::to_value(&accepted_requirements)
+        .map_err(|e| Error::Other(format!("failed to serialize accepted: {e}")))?;
+    strip_upto_blockhash_hints(&mut accepted_json);
+    offered
+        .iter()
+        .find(|requirement| {
+            serde_json::to_value(requirement)
+                .map(|mut json| {
+                    strip_upto_blockhash_hints(&mut json);
+                    json == accepted_json
+                })
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            Error::Other(
+                "credential's accepted does not match any offered currency option".into(),
+            )
+        })
 }
 
 fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> Result<(), Error> {
@@ -1015,6 +1167,7 @@ mod tests {
         let engine = X402Upto::new(UptoConfig {
             recipient: pc::pubkey_string(&recipient),
             currency: "USDC".to_string(),
+            accepted_currencies: None,
             decimals: 6,
             cluster: "localnet".to_string(),
             rpc_url: Some("http://127.0.0.1:8899".to_string()),
@@ -1121,6 +1274,109 @@ mod tests {
         assert!(
             err.to_string().contains("address lookup tables"),
             "expected ALT rejection, got: {err}"
+        );
+    }
+
+    // ── Multi-currency tests ────────────────────────────────────────────────
+
+    fn multi_currency_engine(accepted: Option<Vec<String>>) -> X402Upto {
+        X402Upto::new(UptoConfig {
+            recipient: pc::pubkey_string(&Pubkey::new_unique()),
+            currency: "USDC".to_string(),
+            accepted_currencies: accepted,
+            decimals: 6,
+            // Mainnet so PYUSD resolves to its Token-2022 mint (devnet PYUSD also
+            // exists, but mainnet keeps the legacy-vs-2022 contrast crisp).
+            cluster: "mainnet-beta".to_string(),
+            rpc_url: Some("http://127.0.0.1:8899".to_string()),
+            resource: "/usage".to_string(),
+            description: None,
+            max_timeout_seconds: 300,
+            token_program: None,
+            program_id: None,
+            operator_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
+        })
+        .expect("engine should build")
+    }
+
+    /// `upto()` with `accepted_currencies = Some(["USDC","PYUSD"])` advertises
+    /// one `accepts[]` entry per currency, each with a distinct mint and the
+    /// correct token program (legacy SPL for USDC, Token-2022 for PYUSD).
+    #[test]
+    fn upto_advertises_each_accepted_currency() {
+        let engine =
+            multi_currency_engine(Some(vec!["USDC".to_string(), "PYUSD".to_string()]));
+        // Avoid an RPC round-trip: serve the blockhash from the cache.
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        cache.set("CacheTestBlockhash1111111111111111111111111".to_string(), 100);
+        let engine = engine.with_blockhash_cache(cache);
+
+        let envelope = engine.upto("1.00").expect("challenge should build");
+        assert_eq!(envelope.accepts.len(), 2);
+
+        let usdc = &envelope.accepts[0];
+        let pyusd = &envelope.accepts[1];
+        // Distinct mints.
+        assert_ne!(usdc.asset, pyusd.asset);
+        // Per-currency token program.
+        let legacy = pc::pubkey_string(
+            &Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").unwrap(),
+        );
+        let token_2022 = pc::pubkey_string(
+            &Pubkey::from_str("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb").unwrap(),
+        );
+        assert_eq!(usdc.extra.token_program.as_deref(), Some(legacy.as_str()));
+        assert_eq!(
+            pyusd.extra.token_program.as_deref(),
+            Some(token_2022.as_str())
+        );
+        // Both carry the same fetched blockhash.
+        assert_eq!(usdc.extra.recent_blockhash, pyusd.extra.recent_blockhash);
+        assert!(usdc.extra.recent_blockhash.is_some());
+    }
+
+    /// The matcher selects the offered requirement whose currency the client
+    /// echoed — even when the echoed `accepted` carries the challenge's
+    /// blockhash build-hints — and rejects a currency that was never offered.
+    #[test]
+    fn match_offered_requirement_selects_chosen_currency() {
+        let engine =
+            multi_currency_engine(Some(vec!["USDC".to_string(), "PYUSD".to_string()]));
+        let offered: Vec<_> = engine
+            .offered_currencies()
+            .iter()
+            .map(|c| engine.upto_requirements_for(c, "1.00").unwrap())
+            .collect();
+
+        // Client echoes the PYUSD requirement with blockhash hints injected
+        // (exactly what `upto()` stamped into the challenge).
+        let mut accepted = serde_json::to_value(&offered[1]).unwrap();
+        let extra = accepted
+            .get_mut("extra")
+            .and_then(|e| e.as_object_mut())
+            .expect("accepted has an extra object");
+        extra.insert(
+            "recentBlockhash".to_string(),
+            serde_json::Value::String("SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxxxxxxxxxxx".to_string()),
+        );
+        extra.insert(
+            "lastValidBlockHeight".to_string(),
+            serde_json::Value::String("123456789".to_string()),
+        );
+
+        let matched =
+            match_offered_requirement(&offered, &accepted).expect("PYUSD should match");
+        assert_eq!(matched.asset, offered[1].asset);
+        assert_eq!(matched.extra.token_program, offered[1].extra.token_program);
+
+        // A currency the server didn't offer (USDT) must be rejected.
+        let usdt_engine = multi_currency_engine(Some(vec!["USDT".to_string()]));
+        let usdt_req = usdt_engine.upto_requirements_for("USDT", "1.00").unwrap();
+        let not_offered = serde_json::to_value(&usdt_req).unwrap();
+        let err = match_offered_requirement(&offered, &not_offered).unwrap_err();
+        assert!(
+            err.to_string().contains("does not match any offered"),
+            "got: {err}"
         );
     }
 }

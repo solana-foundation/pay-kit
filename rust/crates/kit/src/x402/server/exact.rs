@@ -208,6 +208,38 @@ impl X402 {
         amount: &str,
         options: ExactOptions<'_>,
     ) -> Result<PaymentRequiredEnvelope, Error> {
+        // Multi-currency mode: fan out one `accepts[]` entry per configured
+        // currency so the client can pick any of them. Mirrors
+        // `exact_with_payment_options` but driven by `Config.accepted_currencies`
+        // rather than an explicit options list, so the gateway path
+        // (`payment_required_header` → here) advertises every accepted currency.
+        if let Some(currencies) = self.config.accepted_currencies.as_ref() {
+            if !currencies.is_empty() {
+                let mut accepts = Vec::with_capacity(currencies.len());
+                for currency in currencies {
+                    let mut requirements =
+                        self.exact_requirements_for_option(&PaymentOption {
+                            amount,
+                            currency: Some(currency.as_str()),
+                            decimals: None,
+                            token_program: None,
+                            extra: options.clone(),
+                        })?;
+                    self.embed_recent_blockhash(&mut requirements);
+                    accepts.push(requirements);
+                }
+                let resource = accepts[0].resource_info();
+                return Ok(PaymentRequiredEnvelope {
+                    x402_version: X402_VERSION_V2,
+                    resource,
+                    accepts,
+                    error: None,
+                    extensions: None,
+                });
+            }
+        }
+
+        // Single-currency mode (`accepted_currencies = None`): unchanged.
         let mut requirements = self.exact_requirements(amount, options)?;
         self.embed_recent_blockhash(&mut requirements);
         Ok(PaymentRequiredEnvelope {
@@ -459,6 +491,32 @@ impl X402 {
         amount: &str,
         options: ExactOptions<'_>,
     ) -> Result<VerifiedExactPayment, Error> {
+        // Multi-currency mode: build the requirement for each configured
+        // currency and verify the credential against whichever it matches,
+        // exactly like `process_payment_with_options`. Mirrors the fan-out in
+        // `exact_with_options` so the verify path accepts any advertised
+        // currency.
+        if let Some(currencies) = self.config.accepted_currencies.as_ref() {
+            if !currencies.is_empty() {
+                let mut available = Vec::with_capacity(currencies.len());
+                for currency in currencies {
+                    available.push(self.exact_requirements_for_option(&PaymentOption {
+                        amount,
+                        currency: Some(currency.as_str()),
+                        decimals: None,
+                        token_program: None,
+                        extra: options.clone(),
+                    })?);
+                }
+                let envelope = self.parse_payment_signature(header)?;
+                let matched = self.find_matching_requirement(&available, &envelope)?;
+                // Clone so the borrow on `available` ends before the async call.
+                let matched = matched.clone();
+                return self.verify_envelope_payload(envelope, &matched).await;
+            }
+        }
+
+        // Single-currency mode (`accepted_currencies = None`): unchanged.
         let requirements = self.exact_requirements(amount, options)?;
         self.verify_payment_signature_for_requirements(header, &requirements)
             .await
@@ -1317,6 +1375,38 @@ mod tests {
             .find_matching_requirement(&available, &envelope)
             .expect("hint-carrying credential should match its offered option");
         assert_eq!(matched.currency, "USDC");
+    }
+
+    /// The SINGLE-method gateway path (`exact_with_options`, called by
+    /// `payment_required_header`) must fan out one `accepts[]` entry per
+    /// configured currency when `accepted_currencies` is set — this is the
+    /// bug fix: previously it ignored the list and emitted a single accept.
+    #[test]
+    fn exact_with_options_fans_out_accepted_currencies() {
+        let mut cfg = config();
+        cfg.accepted_currencies = Some(vec!["USDC".to_string(), "PYUSD".to_string()]);
+        let x402 = X402::new(cfg).unwrap();
+
+        let envelope = x402.exact_with_options("1.0", ExactOptions::default()).unwrap();
+        assert_eq!(envelope.accepts.len(), 2);
+        assert_eq!(envelope.accepts[0].currency, "USDC");
+        assert_eq!(envelope.accepts[1].currency, "PYUSD");
+        // Distinct token programs per currency (legacy SPL for USDC,
+        // Token-2022 for PYUSD).
+        assert_ne!(
+            envelope.accepts[0].token_program,
+            envelope.accepts[1].token_program
+        );
+    }
+
+    /// With `accepted_currencies = None`, the single method behaves exactly as
+    /// before: a single-entry `accepts`.
+    #[test]
+    fn exact_with_options_single_currency_unchanged() {
+        let x402 = X402::new(config()).unwrap();
+        let envelope = x402.exact_with_options("1.0", ExactOptions::default()).unwrap();
+        assert_eq!(envelope.accepts.len(), 1);
+        assert_eq!(envelope.accepts[0].currency, "USDC");
     }
 
     /// Tier-2 backstop for multi-currency: even if a route hand-builds

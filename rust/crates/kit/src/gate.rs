@@ -177,6 +177,7 @@ impl PayKit {
                 X402Upto::new(UptoConfig {
                     recipient: config.recipient.clone(),
                     currency: config.currency.clone(),
+                    accepted_currencies: config.accepted_currencies.clone(),
                     decimals: config.decimals,
                     cluster: config.network.clone(),
                     rpc_url: config.rpc_url.clone(),
