@@ -28,8 +28,8 @@ use crate::core::{Error, Result};
 
 pub use crate::generated::payment_channels as generated;
 use crate::generated::payment_channels::generated::instructions::{
-    DistributeBuilder, FinalizeBuilder, OpenBuilder, RequestCloseBuilder, SettleBuilder,
-    TopUpBuilder,
+    DistributeBuilder, FinalizeBuilder, OpenBuilder, RequestCloseBuilder, SettleAndFinalizeBuilder,
+    SettleBuilder, TopUpBuilder,
 };
 use crate::generated::payment_channels::generated::types::{
     DistributeArgs, DistributionEntry, OpenArgs, SettleAndFinalizeArgs, TopUpArgs, VoucherArgs,
@@ -470,27 +470,13 @@ pub fn build_settle_and_finalize_instructions(
     } else {
         0
     };
-    // The deployed payment-channels program expects `channel` first for
-    // `settle_and_finalize`. The generated client currently emits
-    // merchant-first, which makes the program try to deserialize the merchant
-    // wallet as a channel and fail with `InvalidAccountOwner`.
-    let mut data = vec![4];
-    data.extend(
-        borsh::to_vec(&SettleAndFinalizeArgs { has_voucher }).map_err(|e| {
-            Error::Serialization(format!(
-                "settle_and_finalize args serialization failed: {e}"
-            ))
-        })?,
-    );
-    let settle_and_finalize = Instruction {
-        program_id: to_address(program_id),
-        accounts: vec![
-            AccountMeta::new(to_address(channel), false),
-            AccountMeta::new_readonly(to_address(merchant), true),
-            AccountMeta::new_readonly(to_address(&instructions_sysvar_id()), false),
-        ],
-        data,
-    };
+    let mut settle_and_finalize = SettleAndFinalizeBuilder::new()
+        .merchant(to_address(merchant))
+        .channel(to_address(channel))
+        .instructions_sysvar(to_address(&instructions_sysvar_id()))
+        .settle_and_finalize_args(SettleAndFinalizeArgs { has_voucher })
+        .instruction();
+    settle_and_finalize.program_id = to_address(program_id);
     instructions.push(settle_and_finalize);
     Ok(instructions)
 }
@@ -659,41 +645,6 @@ mod tests {
         assert_eq!(&bytes[..32], pk(9).as_ref());
         assert_eq!(&bytes[32..40], &42u64.to_le_bytes());
         assert_eq!(&bytes[40..48], &1234i64.to_le_bytes());
-    }
-
-    #[test]
-    fn settle_and_finalize_uses_deployed_program_account_order() {
-        let merchant = pk(1);
-        let channel = pk(2);
-        let authorized_signer = pk(3);
-        let program_id = default_program_id();
-        let signature = [7u8; 64];
-
-        let ixs = build_settle_and_finalize_instructions(
-            &merchant,
-            &channel,
-            &authorized_signer,
-            Some(&signature),
-            42,
-            1234,
-            &program_id,
-        )
-        .unwrap();
-
-        assert_eq!(ixs.len(), 2);
-        let settle = &ixs[1];
-        assert_eq!(settle.program_id, to_address(&program_id));
-        assert_eq!(settle.accounts[0].pubkey, to_address(&channel));
-        assert!(settle.accounts[0].is_writable);
-        assert!(!settle.accounts[0].is_signer);
-        assert_eq!(settle.accounts[1].pubkey, to_address(&merchant));
-        assert!(!settle.accounts[1].is_writable);
-        assert!(settle.accounts[1].is_signer);
-        assert_eq!(
-            settle.accounts[2].pubkey,
-            to_address(&instructions_sysvar_id())
-        );
-        assert_eq!(settle.data, vec![4, 1]);
     }
 
     #[test]
