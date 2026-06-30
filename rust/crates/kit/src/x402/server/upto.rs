@@ -28,6 +28,7 @@ use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 
 use crate::x402::error::Error;
+use crate::x402::server::CurrencyConfig;
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency,
     resolve_stablecoin_mint, ResourceInfo,
@@ -51,19 +52,12 @@ const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 pub struct UptoConfig {
     /// Base58 recipient (payTo) of the metered charge.
     pub recipient: String,
-    /// Currency symbol (`"USDC"`) or mint address.
-    pub currency: String,
-    /// Universe of currencies this server is willing to accept.
-    ///
-    /// `None` means single-currency mode and only `currency` is offered and
-    /// accepted. To accept multiple currencies (e.g. USDC plus PYUSD) set this
-    /// to `Some(vec!["USDC".into(), "PYUSD".into()])`: the `upto` challenge then
-    /// advertises one `accepts[]` entry per currency and `verify_open` accepts a
-    /// payment in any of them, binding the channel to the chosen currency's
-    /// mint + token program.
-    pub accepted_currencies: Option<Vec<String>>,
-    /// Token decimals.
-    pub decimals: u8,
+    /// Non-empty universe of currencies this server offers and accepts. `[0]`
+    /// is the primary/default currency. The `upto` challenge advertises one
+    /// `accepts[]` entry per currency and `verify_open` accepts a payment in any
+    /// of them, binding the channel to the chosen currency's mint + token
+    /// program.
+    pub currencies: Vec<CurrencyConfig>,
     /// Solana cluster: `mainnet-beta`, `devnet`, or `localnet`.
     pub cluster: String,
     /// RPC URL override (defaults per cluster).
@@ -74,8 +68,6 @@ pub struct UptoConfig {
     pub description: Option<String>,
     /// Completion window in seconds.
     pub max_timeout_seconds: u64,
-    /// Token program override.
-    pub token_program: Option<String>,
     /// Channel program id override (defaults to the canonical deployment).
     pub program_id: Option<String>,
     /// Operator signer - co-signs the open as fee payer and signs settlement
@@ -149,6 +141,11 @@ impl X402Upto {
         if config.recipient.is_empty() {
             return Err(Error::Other("recipient is required".into()));
         }
+        if config.currencies.is_empty() {
+            return Err(Error::Other(
+                "at least one currency is required".into(),
+            ));
+        }
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
 
@@ -197,57 +194,38 @@ impl X402Upto {
         }
     }
 
-    /// Resolve the mint for the configured default currency. Retained as a
-    /// convenience delegating to [`X402Upto::mint_for`]; the verify path now
-    /// resolves per matched currency.
-    #[allow(dead_code)]
-    fn mint(&self) -> Result<Pubkey, Error> {
-        self.mint_for(&self.config.currency)
+    /// The primary/default currency: `currencies[0]`. The constructor rejects
+    /// an empty list, so this never panics.
+    fn primary_currency(&self) -> &CurrencyConfig {
+        &self.config.currencies[0]
     }
 
-    /// Resolve the mint for a specific currency symbol (or mint address) on the
-    /// configured cluster. Generalizes [`X402Upto::mint`] for multi-currency.
-    fn mint_for(&self, currency: &str) -> Result<Pubkey, Error> {
-        let mint = resolve_stablecoin_mint(currency, Some(&self.config.cluster))
+    /// Resolve the mint for a specific currency descriptor on the configured
+    /// cluster.
+    fn mint_for(&self, cc: &CurrencyConfig) -> Result<Pubkey, Error> {
+        let mint = resolve_stablecoin_mint(&cc.currency, Some(&self.config.cluster))
             .ok_or_else(|| Error::Other("upto requires an SPL token (not native SOL)".into()))?;
         Pubkey::from_str(mint).map_err(|e| Error::Other(format!("invalid mint: {e}")))
     }
 
-    /// Resolve the token program for the configured default currency. Retained
-    /// as a convenience delegating to [`X402Upto::token_program_for`]; the
-    /// verify path now resolves per matched currency.
-    #[allow(dead_code)]
-    fn token_program(&self) -> Result<Pubkey, Error> {
-        self.token_program_for(&self.config.currency)
-    }
-
-    /// Resolve the token program for a specific currency symbol on the
-    /// configured cluster. The `Config.token_program` override only applies to
-    /// the configured default `currency`; other currencies derive their program
-    /// (legacy SPL vs Token-2022) from the symbol. Generalizes
-    /// [`X402Upto::token_program`] for multi-currency.
-    fn token_program_for(&self, currency: &str) -> Result<Pubkey, Error> {
-        let tp = if currency == self.config.currency {
-            self.config.token_program.clone().unwrap_or_else(|| {
-                default_token_program_for_currency(currency, Some(&self.config.cluster)).to_string()
-            })
-        } else {
-            default_token_program_for_currency(currency, Some(&self.config.cluster)).to_string()
-        };
+    /// Resolve the token program for a specific currency descriptor on the
+    /// configured cluster. The descriptor's `token_program` override wins;
+    /// otherwise the program (legacy SPL vs Token-2022) is derived from the
+    /// currency symbol.
+    fn token_program_for(&self, cc: &CurrencyConfig) -> Result<Pubkey, Error> {
+        let tp = cc.token_program.clone().unwrap_or_else(|| {
+            default_token_program_for_currency(&cc.currency, Some(&self.config.cluster)).to_string()
+        });
         Pubkey::from_str(&tp).map_err(|e| Error::Other(format!("invalid token program: {e}")))
     }
 
-    /// The currencies this server offers in its `upto` challenge — the explicit
-    /// `accepted_currencies` list, or just `Config.currency` in single-currency
-    /// mode.
-    fn offered_currencies(&self) -> Vec<String> {
-        self.config
-            .accepted_currencies
-            .clone()
-            .unwrap_or_else(|| vec![self.config.currency.clone()])
+    /// The currencies this server offers in its `upto` challenge.
+    fn offered_currencies(&self) -> &[CurrencyConfig] {
+        &self.config.currencies
     }
 
-    /// Build the `upto` payment requirement for the given authorized maximum.
+    /// Build the `upto` payment requirement for the primary currency at the
+    /// given authorized maximum.
     ///
     /// `max_amount` is a human-decimal amount (e.g. `"0.10"`), converted to base
     /// units using the configured decimals - same convention as the `exact`
@@ -257,23 +235,23 @@ impl X402Upto {
     /// [`upto`] when building the 402 challenge. The verify path reuses this
     /// without fetching (or diverging on) a blockhash.
     pub fn upto_requirements(&self, max_amount: &str) -> Result<UptoRequirements, Error> {
-        self.upto_requirements_for(&self.config.currency, max_amount)
+        self.upto_requirements_for(self.primary_currency(), max_amount)
     }
 
-    /// Build the `upto` payment requirement for a specific currency.
+    /// Build the `upto` payment requirement for a specific currency descriptor.
     ///
-    /// Same as [`X402Upto::upto_requirements`] but resolves the mint and token
-    /// program from the passed currency rather than `Config.currency`, so a
-    /// multi-currency server can advertise one requirement per offered currency.
-    /// Pure (no RPC): the recent blockhash is filled in by [`X402Upto::upto`].
+    /// Same as [`X402Upto::upto_requirements`] but resolves the mint, decimals,
+    /// and token program from the passed descriptor, so a multi-currency server
+    /// can advertise one requirement per offered currency. Pure (no RPC): the
+    /// recent blockhash is filled in by [`X402Upto::upto`].
     pub fn upto_requirements_for(
         &self,
-        currency: &str,
+        cc: &CurrencyConfig,
         max_amount: &str,
     ) -> Result<UptoRequirements, Error> {
-        let mint = self.mint_for(currency)?;
-        let token_program = self.token_program_for(currency)?;
-        let base_units = crate::x402::server::exact::parse_units(max_amount, self.config.decimals)?;
+        let mint = self.mint_for(cc)?;
+        let token_program = self.token_program_for(cc)?;
+        let base_units = crate::x402::server::exact::parse_units(max_amount, cc.decimals)?;
 
         Ok(UptoRequirements {
             scheme: UPTO_SCHEME.to_string(),
@@ -284,7 +262,7 @@ impl X402Upto {
             max_timeout_seconds: self.config.max_timeout_seconds,
             extra: UptoExtra {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                decimals: Some(self.config.decimals),
+                decimals: Some(cc.decimals),
                 token_program: Some(pc::pubkey_string(&token_program)),
                 fee_payer: self.operator(),
                 channel_program: Some(pc::pubkey_string(&self.program_id()?)),
@@ -326,8 +304,8 @@ impl X402Upto {
         // carries the SAME freshly-fetched blockhash + last-valid height.
         let currencies = self.offered_currencies();
         let mut accepts = Vec::with_capacity(currencies.len());
-        for currency in &currencies {
-            let mut requirement = self.upto_requirements_for(currency, max_amount)?;
+        for cc in currencies {
+            let mut requirement = self.upto_requirements_for(cc, max_amount)?;
             requirement.extra.recent_blockhash = Some(blockhash.clone());
             requirement.extra.last_valid_block_height = Some(last_valid_block_height.to_string());
             accepts.push(requirement);
@@ -409,7 +387,7 @@ impl X402Upto {
         let offered = self
             .offered_currencies()
             .iter()
-            .map(|currency| self.upto_requirements_for(currency, max_amount))
+            .map(|cc| self.upto_requirements_for(cc, max_amount))
             .collect::<Result<Vec<_>, _>>()?;
         let requirements = match_offered_requirement(&offered, &envelope.accepted)?.clone();
 
@@ -1166,15 +1144,16 @@ mod tests {
         let recipient = Pubkey::new_unique();
         let engine = X402Upto::new(UptoConfig {
             recipient: pc::pubkey_string(&recipient),
-            currency: "USDC".to_string(),
-            accepted_currencies: None,
-            decimals: 6,
+            currencies: vec![CurrencyConfig {
+                currency: "USDC".to_string(),
+                decimals: 6,
+                token_program: None,
+            }],
             cluster: "localnet".to_string(),
             rpc_url: Some("http://127.0.0.1:8899".to_string()),
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
-            token_program: None,
             program_id: None,
             operator_signer: std::sync::Arc::new(TestSigner(operator)),
         })
@@ -1279,12 +1258,20 @@ mod tests {
 
     // ── Multi-currency tests ────────────────────────────────────────────────
 
-    fn multi_currency_engine(accepted: Option<Vec<String>>) -> X402Upto {
+    /// Build an engine offering the given currency symbols (each with 6
+    /// decimals and program derived from the symbol).
+    fn multi_currency_engine(symbols: &[&str]) -> X402Upto {
+        let currencies = symbols
+            .iter()
+            .map(|s| CurrencyConfig {
+                currency: s.to_string(),
+                decimals: 6,
+                token_program: None,
+            })
+            .collect();
         X402Upto::new(UptoConfig {
             recipient: pc::pubkey_string(&Pubkey::new_unique()),
-            currency: "USDC".to_string(),
-            accepted_currencies: accepted,
-            decimals: 6,
+            currencies,
             // Mainnet so PYUSD resolves to its Token-2022 mint (devnet PYUSD also
             // exists, but mainnet keeps the legacy-vs-2022 contrast crisp).
             cluster: "mainnet-beta".to_string(),
@@ -1292,7 +1279,6 @@ mod tests {
             resource: "/usage".to_string(),
             description: None,
             max_timeout_seconds: 300,
-            token_program: None,
             program_id: None,
             operator_signer: std::sync::Arc::new(TestSigner(Pubkey::new_unique())),
         })
@@ -1304,8 +1290,7 @@ mod tests {
     /// correct token program (legacy SPL for USDC, Token-2022 for PYUSD).
     #[test]
     fn upto_advertises_each_accepted_currency() {
-        let engine =
-            multi_currency_engine(Some(vec!["USDC".to_string(), "PYUSD".to_string()]));
+        let engine = multi_currency_engine(&["USDC", "PYUSD"]);
         // Avoid an RPC round-trip: serve the blockhash from the cache.
         let cache = crate::core::blockhash::BlockhashCache::new();
         cache.set("CacheTestBlockhash1111111111111111111111111".to_string(), 100);
@@ -1340,8 +1325,7 @@ mod tests {
     /// blockhash build-hints — and rejects a currency that was never offered.
     #[test]
     fn match_offered_requirement_selects_chosen_currency() {
-        let engine =
-            multi_currency_engine(Some(vec!["USDC".to_string(), "PYUSD".to_string()]));
+        let engine = multi_currency_engine(&["USDC", "PYUSD"]);
         let offered: Vec<_> = engine
             .offered_currencies()
             .iter()
@@ -1370,8 +1354,10 @@ mod tests {
         assert_eq!(matched.extra.token_program, offered[1].extra.token_program);
 
         // A currency the server didn't offer (USDT) must be rejected.
-        let usdt_engine = multi_currency_engine(Some(vec!["USDT".to_string()]));
-        let usdt_req = usdt_engine.upto_requirements_for("USDT", "1.00").unwrap();
+        let usdt_engine = multi_currency_engine(&["USDT"]);
+        let usdt_req = usdt_engine
+            .upto_requirements_for(&usdt_engine.config.currencies[0], "1.00")
+            .unwrap();
         let not_offered = serde_json::to_value(&usdt_req).unwrap();
         let err = match_offered_requirement(&offered, &not_offered).unwrap_err();
         assert!(

@@ -39,8 +39,8 @@ use crate::mpp::server::{Config as MppConfig, Mpp};
 use crate::mpp::solana_keychain::SolanaSigner;
 use crate::mpp::{format_receipt, format_www_authenticate, Receipt, ReceiptKind};
 use crate::x402::server::{
-    BatchConfig, Config as X402Config, ExactOptions, UptoConfig, VerifiedExactPayment,
-    X402BatchSettlement, X402Upto, X402,
+    BatchConfig, Config as X402Config, CurrencyConfig, ExactOptions, UptoConfig,
+    VerifiedExactPayment, X402BatchSettlement, X402Upto, X402,
 };
 use crate::x402::{PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_V1_PAYMENT_HEADER};
 
@@ -142,6 +142,27 @@ impl PayKit {
             .as_ref()
             .map(|s| s.pubkey().to_string());
 
+        // Map the gate's own currency fields into the x402 servers' currency
+        // list. When `accepted_currencies` is set it is the full universe of
+        // offered symbols (its first entry is the primary); otherwise the gate
+        // offers a single currency. Each entry inherits the gate's `decimals`
+        // and derives its token program from the symbol.
+        let currencies: Vec<CurrencyConfig> = match config.accepted_currencies.as_ref() {
+            Some(list) if !list.is_empty() => list
+                .iter()
+                .map(|currency| CurrencyConfig {
+                    currency: currency.clone(),
+                    decimals: config.decimals,
+                    token_program: None,
+                })
+                .collect(),
+            _ => vec![CurrencyConfig {
+                currency: config.currency.clone(),
+                decimals: config.decimals,
+                token_program: None,
+            }],
+        };
+
         let mpp = Mpp::new(MppConfig {
             recipient: config.recipient.clone(),
             currency: config.currency.clone(),
@@ -158,12 +179,10 @@ impl PayKit {
 
         let x402 = X402::new(X402Config {
             recipient: config.recipient.clone(),
-            currency: config.currency.clone(),
-            decimals: config.decimals,
+            currencies: currencies.clone(),
             network: config.network.clone(),
             rpc_url: config.rpc_url.clone(),
             fee_payer_key,
-            accepted_currencies: config.accepted_currencies.clone(),
             ..Default::default()
         })
         .map_err(|e| PayKitError::X402(e.to_string()))?;
@@ -176,15 +195,12 @@ impl PayKit {
             .map(|signer| {
                 X402Upto::new(UptoConfig {
                     recipient: config.recipient.clone(),
-                    currency: config.currency.clone(),
-                    accepted_currencies: config.accepted_currencies.clone(),
-                    decimals: config.decimals,
+                    currencies: currencies.clone(),
                     cluster: config.network.clone(),
                     rpc_url: config.rpc_url.clone(),
                     resource: String::new(),
                     description: None,
                     max_timeout_seconds: UPTO_MAX_TIMEOUT_SECONDS,
-                    token_program: None,
                     program_id: None,
                     operator_signer: signer.clone(),
                 })

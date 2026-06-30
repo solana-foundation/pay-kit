@@ -12,7 +12,7 @@ use serde_json::json;
 use solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::exact::{PaymentRequiredEnvelope, PaymentRequirements},
-    server::{exact::PaymentOption, Config, ExactOptions, VerifiedExactPayment, X402},
+    server::{exact::PaymentOption, Config, CurrencyConfig, ExactOptions, VerifiedExactPayment, X402},
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V2,
 };
 use solana_rpc_client::rpc_client::RpcClient;
@@ -97,28 +97,30 @@ fn read_state() -> Result<HarnessState, Box<dyn std::error::Error + Send + Sync>
         })
         .unwrap_or_default();
 
-    // When extra mints are advertised, expand `accepted_currencies` so the
-    // Tier-2 backstop allows any of them.
-    let accepted_currencies = if extra_offered_mints.is_empty() {
-        None
-    } else {
-        let mut all = vec![mint.clone()];
-        all.extend(extra_offered_mints.iter().cloned());
-        Some(all)
-    };
+    // The primary currency keeps its explicit token-program override; any
+    // extra offered mints derive their program from the symbol. A single-entry
+    // list (no extras) is exactly the prior single-currency behaviour, and the
+    // Tier-2 backstop allows any currency in this list.
+    let mut currencies = vec![CurrencyConfig {
+        currency: mint,
+        decimals: TOKEN_DECIMALS,
+        token_program: Some(TOKEN_PROGRAM.to_string()),
+    }];
+    currencies.extend(extra_offered_mints.iter().map(|mint| CurrencyConfig {
+        currency: mint.clone(),
+        decimals: TOKEN_DECIMALS,
+        token_program: None,
+    }));
 
     Ok(HarnessState {
         x402: X402::new(Config {
             recipient: pay_to,
-            currency: mint,
-            decimals: TOKEN_DECIMALS,
+            currencies,
             network,
             rpc_url: Some(rpc_url.clone()),
             resource: DEFAULT_RESOURCE_PATH.to_string(),
             description: Some("Surfpool-backed protected content".to_string()),
             max_age: Some(60),
-            token_program: Some(TOKEN_PROGRAM.to_string()),
-            accepted_currencies,
             fee_payer_key: Some(fee_payer.pubkey().to_string()),
         })?,
         rpc_url,

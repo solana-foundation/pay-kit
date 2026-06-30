@@ -10,7 +10,10 @@ use serde_json::json;
 use solana_keychain::memory::MemorySigner;
 use solana_pay_kit::x402::{
     protocol::schemes::upto::UptoSettlementResponse,
-    server::upto::{UptoConfig, X402Upto},
+    server::{
+        upto::{UptoConfig, X402Upto},
+        CurrencyConfig,
+    },
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER,
 };
 
@@ -83,15 +86,16 @@ fn read_state(
 
     let upto = X402Upto::new(UptoConfig {
         recipient: pay_to,
-        currency: mint,
-        accepted_currencies: None,
-        decimals: TOKEN_DECIMALS,
+        currencies: vec![CurrencyConfig {
+            currency: mint,
+            decimals: TOKEN_DECIMALS,
+            token_program: None,
+        }],
         cluster: network,
         rpc_url: Some(rpc_url),
         resource: resource_path.clone(),
         description: Some("Surfpool-backed usage endpoint".to_string()),
         max_timeout_seconds: 300,
-        token_program: None,
         program_id,
         operator_signer,
     })?;
