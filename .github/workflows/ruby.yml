@@ -93,7 +93,7 @@ jobs:
         with:
           # Ruby is server-only for x402; the canonical Rust client builds and
           # broadcasts the channel `open` this server settles against.
-          cargo-bins: "solana-x402:harness_upto_client"
+          cargo-bins: "paykit-harness-bins:x402_harness_upto_client"
           cargo-cache-key: ruby
       - name: Checkout payment channels program
         uses: actions/checkout@v5
