@@ -123,7 +123,7 @@ private fun acceptsFrom(text: String): List<UptoRequirements>? =
         // A parseable envelope must carry x402Version (the rust spine requires it).
         // `accepts` is optional there (serde default), so an envelope that omits it
         // resolves to no offers rather than falling through to the next source.
-        if (obj["x402Version"] == null) return null
+        obj["x402Version"] ?: return null
         val accepts = obj["accepts"]?.jsonArray ?: return emptyList()
         accepts.mapNotNull { element ->
             val scheme = element.jsonObject["scheme"]?.jsonPrimitive?.content
