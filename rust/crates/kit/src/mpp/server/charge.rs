@@ -513,6 +513,12 @@ impl Mpp {
         // call. Prefer the shared cache (refreshed out of band) to avoid a
         // blocking RPC round-trip per challenge; fall back to a direct fetch
         // when the cache is empty or stale.
+        // Intentionally forward only the blockhash, not `last_valid_block_height`:
+        // the MPP charge wire shape has never carried `lastValidBlockHeight`
+        // (the direct-RPC fallback `get_latest_blockhash()` cannot produce one),
+        // and emitting it only on a cache hit would make the field flicker in
+        // and out of the challenge depending on cache warmth. The x402 paths,
+        // which already commit to the field, forward it; MPP does not.
         let blockhash = match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
             Some(cached) => Some(cached.blockhash),
             None => self.rpc.get_latest_blockhash().ok().map(|h| h.to_string()),

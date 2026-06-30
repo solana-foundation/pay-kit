@@ -44,22 +44,29 @@ impl BlockhashCache {
     }
 
     /// Store a freshly-fetched blockhash, stamped at the current instant.
+    ///
+    /// Recovers from a poisoned lock (a reader/writer panicked while holding the
+    /// guard) rather than silently skipping the update — otherwise a single
+    /// panic would permanently disable the cache for the process lifetime,
+    /// degrading every challenge to a direct RPC fetch with no diagnostics.
     pub fn set(&self, blockhash: String, last_valid_block_height: u64) {
-        if let Ok(mut guard) = self.inner.write() {
-            *guard = Some((
-                CachedBlockhash {
-                    blockhash,
-                    last_valid_block_height,
-                },
-                Instant::now(),
-            ));
-        }
+        let mut guard = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        *guard = Some((
+            CachedBlockhash {
+                blockhash,
+                last_valid_block_height,
+            },
+            Instant::now(),
+        ));
     }
 
     /// Return the cached blockhash if present and younger than [`MAX_AGE`];
     /// otherwise `None`, signalling the caller to fetch directly.
+    ///
+    /// Recovers from a poisoned lock for the same reason as [`Self::set`]: a
+    /// poisoned guard should not mask a perfectly valid cached entry.
     pub fn get(&self) -> Option<CachedBlockhash> {
-        let guard = self.inner.read().ok()?;
+        let guard = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let (entry, stamped_at) = guard.as_ref()?;
         (stamped_at.elapsed() < MAX_AGE).then(|| entry.clone())
     }
