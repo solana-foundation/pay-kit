@@ -28,7 +28,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use crate::core::rpc::SKIP_PREFLIGHT_CONFIRMED_SEND;
+use crate::core::rpc::SKIP_PREFLIGHT_SEND;
 use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
 use solana_client::rpc_response::RpcSimulateTransactionResult;
@@ -1147,14 +1147,14 @@ impl Mpp {
                                 max_attempts = SIMULATION_MAX_ATTEMPTS,
                                 error = %sim_err,
                                 recent_blockhash = %tx_recent_blockhash,
-                                broadcast_policy = SKIP_PREFLIGHT_CONFIRMED_SEND.name,
-                                skip_preflight = SKIP_PREFLIGHT_CONFIRMED_SEND.skip_preflight,
+                                broadcast_policy = SKIP_PREFLIGHT_SEND.name,
+                                skip_preflight = SKIP_PREFLIGHT_SEND.skip_preflight,
                                 "broadcast_pull retrying without preflight after blockhash preflight failure"
                             );
-                            match self.rpc.send_transaction_with_config(
-                                &tx,
-                                SKIP_PREFLIGHT_CONFIRMED_SEND.config(),
-                            ) {
+                            match self
+                                .rpc
+                                .send_transaction_with_config(&tx, SKIP_PREFLIGHT_SEND.config())
+                            {
                                 Ok(signature) => {
                                     broadcast_signature = Some(signature);
                                     break;
@@ -1166,8 +1166,8 @@ impl Mpp {
                                     tracing::warn!(
                                         elapsed_ms = %t0.elapsed().as_millis(),
                                         error = %skip_err,
-                                        broadcast_policy = SKIP_PREFLIGHT_CONFIRMED_SEND.name,
-                                        skip_preflight = SKIP_PREFLIGHT_CONFIRMED_SEND.skip_preflight,
+                                        broadcast_policy = SKIP_PREFLIGHT_SEND.name,
+                                        skip_preflight = SKIP_PREFLIGHT_SEND.skip_preflight,
                                         "broadcast_pull skip_preflight rpc error"
                                     );
                                     return Err(VerificationError::network_error(message));

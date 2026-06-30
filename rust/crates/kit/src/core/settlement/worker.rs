@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::time::Instant;
 use tracing::Instrument;
 
-use crate::core::rpc::SKIP_PREFLIGHT_CONFIRMED_SEND;
+use crate::core::rpc::SKIP_PREFLIGHT_SEND;
 
 use super::packing::{tx_size, would_overflow_tx, DEFAULT_MAX_CHANNELS_PER_TX};
 
@@ -246,7 +246,7 @@ async fn settle_group(
 ) {
     let started = Instant::now();
     let ids: Vec<String> = group.iter().map(|u| u.channel_id.clone()).collect();
-    let send_policy = SKIP_PREFLIGHT_CONFIRMED_SEND;
+    let send_policy = SKIP_PREFLIGHT_SEND;
     let span = tracing::info_span!(
         "settlement_flush",
         trigger,
@@ -326,15 +326,14 @@ async fn settle_group(
         // Background confirm (best-effort; store is the durable source of truth).
         if let Ok(sig) = result {
             let attempts = cfg.confirm_attempts;
-            let confirm_policy = send_policy;
             tokio::spawn(async move {
                 for _ in 0..attempts {
                     match broadcaster.confirm(&sig).await {
                         Ok(ConfirmOutcome::Confirmed) => {
                             tracing::debug!(
                                 tx = %sig,
-                                broadcast_policy = confirm_policy.name,
-                                skip_preflight = confirm_policy.skip_preflight,
+                                broadcast_policy = send_policy.name,
+                                skip_preflight = send_policy.skip_preflight,
                                 "settlement confirmed"
                             );
                             return;
@@ -348,8 +347,8 @@ async fn settle_group(
                             tracing::warn!(
                                 monotonic_counter.pay_settlement_failed_total = 1_u64,
                                 tx = %sig,
-                                broadcast_policy = confirm_policy.name,
-                                skip_preflight = confirm_policy.skip_preflight,
+                                broadcast_policy = send_policy.name,
+                                skip_preflight = send_policy.skip_preflight,
                                 error = %err,
                                 "settlement failed on-chain (store will reconcile)",
                             );
@@ -364,8 +363,8 @@ async fn settle_group(
                 tracing::warn!(
                     monotonic_counter.pay_settlement_unconfirmed_total = 1_u64,
                     tx = %sig,
-                    broadcast_policy = confirm_policy.name,
-                    skip_preflight = confirm_policy.skip_preflight,
+                    broadcast_policy = send_policy.name,
+                    skip_preflight = send_policy.skip_preflight,
                     "settlement not confirmed in window",
                 );
             });
@@ -403,7 +402,7 @@ impl Broadcaster for RpcBroadcaster {
         let rpc = self.rpc.clone();
         let tx = tx.clone();
         tokio::task::spawn_blocking(move || {
-            let send_policy = SKIP_PREFLIGHT_CONFIRMED_SEND;
+            let send_policy = SKIP_PREFLIGHT_SEND;
             // Settlement follows a confirmed channel-open fetch. A separate
             // preflight simulation can run against a stale bank that has not
             // loaded the new channel PDA yet, producing false
