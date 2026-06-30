@@ -190,7 +190,7 @@ module PayKit::Protocols::X402
 
         reserve_channel(channel_id)
         released = false
-        broadcast_done = false
+        maybe_broadcast = false
         begin
           transaction = ::PayCore::Solana::Transaction.from_base64(payload["openTransaction"])
           Verifier.validate_open_instruction!(
@@ -204,8 +204,11 @@ module PayKit::Protocols::X402
           end
 
           transaction.sign_with(@config.operator)
+          # From here the open may have landed on-chain: send_raw can submit and
+          # then time out before returning, so flag a possible broadcast before
+          # the call, not after, otherwise a send-then-timeout skips the log.
+          maybe_broadcast = true
           broadcast_and_confirm(transaction.to_base64)
-          broadcast_done = true
 
           channel = fetch_channel(channel_id)
           validate_channel!(channel, payer: payer, max: parsed[:max])
@@ -219,12 +222,12 @@ module PayKit::Protocols::X402
           released = true
           verified
         rescue => error
-          # The open already broadcast and confirmed on-chain, but the
-          # post-broadcast read or validation failed, so no VerifiedOpen reaches
-          # the caller to settle or refund. The reservation is about to be
-          # released and the client told to pay again, so log the channel id
-          # loudly: the deposit may be locked and needs manual reconciliation.
-          log_orphaned_open(channel_id, error) if broadcast_done && !released
+          # The open may already be on-chain (send succeeded, then confirmation
+          # or the post-broadcast read failed), but no VerifiedOpen reaches the
+          # caller to settle or refund. The reservation is about to be released
+          # and the client told to pay again, so log the channel id loudly: the
+          # deposit may be locked and needs manual reconciliation.
+          log_orphaned_open(channel_id, error) if maybe_broadcast && !released
           raise
         ensure
           release_channel(channel_id) unless released

@@ -214,7 +214,46 @@ class ServerUptoTest < Minitest::Test
     ::PayKit.logger = previous
   end
 
+  # A confirmation timeout after send_raw may have submitted the open can leave
+  # the channel on-chain, so the orphan log must fire on a broadcast failure,
+  # not only on a post-broadcast read failure.
+  def test_confirmation_failure_after_send_logs_channel_for_reconciliation
+    captured = []
+    fake_logger = Object.new
+    fake_logger.define_singleton_method(:warn) { |msg| captured << msg }
+    previous = ::PayKit.logger
+    ::PayKit.logger = fake_logger
+    engine, header, = build_case(salt: 25, signature_confirmer: ->(_c, _sig) { raise "confirmation timed out" })
+    assert_raises(RuntimeError) { engine.verify_open(header, now: now) }
+    assert(captured.any? { |m| m.include?(channel_id(25)) && m.include?("manual reconciliation") },
+      "expected an orphaned-channel warning naming the channel id on confirm failure")
+  ensure
+    ::PayKit.logger = previous
+  end
+
+  # A client can pin payer/rent_payer to signer slots yet serialize fewer
+  # signatures than the header requires; reject before the operator signs.
+  def test_rejects_open_with_short_signature_array
+    _, header, = build_case(salt: 26)
+    tampered = tamper_open_transaction(header) do |tx|
+      ::PayCore::Solana::Transaction.new(
+        signatures: tx.signatures[0...-1], message: tx.message,
+        message_offset: tx.message_offset, version: tx.version
+      )
+    end
+    engine, = build_case(salt: 26)
+    assert_reject("signatures, expected") { engine.verify_open(tampered, now: now) }
+  end
+
   private
+
+  # Decode a header, rewrite its openTransaction via the block, re-encode.
+  def tamper_open_transaction(header)
+    envelope = JSON.parse(Base64.strict_decode64(header))
+    tx = ::PayCore::Solana::Transaction.from_base64(envelope["payload"]["openTransaction"])
+    envelope["payload"]["openTransaction"] = yield(tx).to_base64
+    Base64.strict_encode64(JSON.generate(envelope))
+  end
 
   def now = 1_000_000
 
@@ -226,7 +265,8 @@ class ServerUptoTest < Minitest::Test
   # corrupt exactly one input.
   def build_case(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
     open_salt: nil, open_deposit: nil, open_recipients_count: 0, open_grace_period: 900,
-    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, channel_fetcher: nil)
+    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, channel_fetcher: nil,
+    signature_confirmer: nil)
     cid = channel_id(salt)
     header = open_header(salt: salt, cid: cid, network: network, payload: payload,
       open_program: open_program, open_payee: open_payee || @payee,
@@ -239,7 +279,8 @@ class ServerUptoTest < Minitest::Test
         rpc_url: "http://localhost:8899", pay_to: @payee, facilitator_secret_key: @operator_secret,
         amount: MAX.to_s, mint: @mint, network: NETWORK, token_program: @token_program,
         transaction_sender: ->(_c, _b) { "SiGnAtUrE1111111111111111111111111111111111" },
-        signature_confirmer: ->(_c, sig) { sig }, channel_fetcher: channel_fetcher || ->(_c, _id) { fake },
+        signature_confirmer: signature_confirmer || ->(_c, sig) { sig },
+        channel_fetcher: channel_fetcher || ->(_c, _id) { fake },
         recent_blockhash_provider: -> { pubkey(9) }
       )
     )

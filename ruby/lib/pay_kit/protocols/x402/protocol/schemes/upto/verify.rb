@@ -96,6 +96,16 @@ module PayKit::Protocols::X402
               raise reject("open transaction is not a channel-open instruction")
             end
 
+            # The wire signature array must cover every required signer. A client
+            # can pin payer/rent_payer to signer slots yet serialize fewer
+            # signatures than the header requires; the operator fills slot 0 and
+            # broadcasts a transaction the runtime rejects for missing
+            # signatures, after the fee is spent. Pin the array length first.
+            required_signers = transaction.message.header[:required_signatures]
+            unless transaction.signatures.length == required_signers
+              raise reject("open transaction has #{transaction.signatures.length} signatures, expected #{required_signers}")
+            end
+
             payer_token = ATA.derive(owner: payer, mint: mint, token_program: token_program)
             channel_token = ATA.derive(owner: channel_id, mint: mint, token_program: token_program)
             event_authority = PaymentChannels.find_event_authority_pda(program_id: program_id)
