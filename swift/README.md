@@ -130,7 +130,7 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 | Intent | Client |
 |---|:---:|
 | `x402/exact` | pass |
-| `x402/upto` | --- |
+| `x402/upto` | pass |
 | `x402/batch-settlement` | --- |
 
 ## Examples
@@ -243,7 +243,11 @@ swift/
 │           ├── Client/Exact/
 │           │   ├── Payment.swift     # x402 challenge parse + payment building
 │           │   └── Transport.swift   # X402Interceptor (402 -> Payment-Signature)
-│           └── Exact/Types.swift     # x402 wire-format Codable types
+│           ├── Client/Upto/
+│           │   ├── UptoPayment.swift   # x402 upto challenge parse + channel-open building
+│           │   └── UptoTransport.swift # X402UptoInterceptor (402 -> Payment-Signature)
+│           ├── Exact/Types.swift     # x402 wire-format Codable types
+│           └── Upto/UptoTypes.swift  # x402 upto wire-format Codable types
 ├── Tests/SolanaPayKitTests/   # swift-testing suite
 └── Examples/                  # Sample clients (planned: Solana Seeker demo)
 ```
