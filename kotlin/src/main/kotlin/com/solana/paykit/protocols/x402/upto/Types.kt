@@ -130,8 +130,8 @@ data class UptoSettlementResponse(
     val errorReason: String? = null,
     /** Payer wallet (base58) the operator settled against. */
     val payer: String? = null,
-    /** Settlement transaction signature. */
-    val transaction: String,
+    /** Settlement transaction signature; absent on a failure response. */
+    val transaction: String? = null,
     /** CAIP-2 network identifier. */
     val network: String,
     /** Actual base units charged (may be ``0``). */

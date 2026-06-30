@@ -500,6 +500,16 @@ class UptoPaymentTest {
     }
 
     @Test
+    fun settlement_failure_response_without_transaction_parses() {
+        // A failure response omits `transaction`; deserializing it must not throw.
+        val body = """{"success":false,"errorReason":"insufficient_funds","network":"$network","amount":"0"}"""
+        val back = json.decodeFromString(UptoSettlementResponse.serializer(), body)
+        assertTrue(!back.success)
+        assertEquals("insufficient_funds", back.errorReason)
+        assertEquals(null, back.transaction)
+    }
+
+    @Test
     fun required_envelope_round_trips() {
         val env = UptoRequiredEnvelope(x402Version = 2, accepts = listOf(requirements()))
         val encoded = encoder.encodeToString(UptoRequiredEnvelope.serializer(), env)
