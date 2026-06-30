@@ -138,9 +138,7 @@ impl X402 {
             return Err(Error::Other("recipient is required".into()));
         }
         if config.currencies.is_empty() {
-            return Err(Error::Other(
-                "at least one currency is required".into(),
-            ));
+            return Err(Error::Other("at least one currency is required".into()));
         }
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
@@ -166,10 +164,7 @@ impl X402 {
     /// Attach a shared blockhash cache (refreshed by a background task) so
     /// challenge issuance embeds a recent blockhash without a per-challenge RPC
     /// fetch. Falls back to a direct fetch when the cache is empty or stale.
-    pub fn with_blockhash_cache(
-        mut self,
-        cache: crate::core::blockhash::BlockhashCache,
-    ) -> Self {
+    pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
     }
@@ -827,9 +822,10 @@ impl X402 {
         // Multi-currency setups vary token program per currency and rely on the
         // per-option requirement to carry the correct one.
         if self.config.currencies.len() == 1 {
-            if let (Some(server_token_program), Some(req_token_program)) =
-                (&self.primary_currency().token_program, &requirements.token_program)
-            {
+            if let (Some(server_token_program), Some(req_token_program)) = (
+                &self.primary_currency().token_program,
+                &requirements.token_program,
+            ) {
                 if req_token_program != server_token_program {
                     return Err(Error::Other(
                         "Requirements token program does not match server-configured token program"
@@ -1389,7 +1385,9 @@ mod tests {
         let cfg = multi_currency_config(&["USDC", "PYUSD"]);
         let x402 = X402::new(cfg).unwrap();
 
-        let envelope = x402.exact_with_options("1.0", ExactOptions::default()).unwrap();
+        let envelope = x402
+            .exact_with_options("1.0", ExactOptions::default())
+            .unwrap();
         assert_eq!(envelope.accepts.len(), 2);
         assert_eq!(envelope.accepts[0].currency, "USDC");
         assert_eq!(envelope.accepts[1].currency, "PYUSD");
@@ -1406,7 +1404,9 @@ mod tests {
     #[test]
     fn exact_with_options_single_currency_unchanged() {
         let x402 = X402::new(config()).unwrap();
-        let envelope = x402.exact_with_options("1.0", ExactOptions::default()).unwrap();
+        let envelope = x402
+            .exact_with_options("1.0", ExactOptions::default())
+            .unwrap();
         assert_eq!(envelope.accepts.len(), 1);
         assert_eq!(envelope.accepts[0].currency, "USDC");
     }

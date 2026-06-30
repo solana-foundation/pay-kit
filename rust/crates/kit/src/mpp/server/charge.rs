@@ -384,10 +384,7 @@ impl Mpp {
     /// `charge`/`charge_with_options` embed a recent blockhash without a
     /// per-challenge RPC fetch. Falls back to a direct fetch when the cache is
     /// empty or stale.
-    pub fn with_blockhash_cache(
-        mut self,
-        cache: crate::core::blockhash::BlockhashCache,
-    ) -> Self {
+    pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
     }

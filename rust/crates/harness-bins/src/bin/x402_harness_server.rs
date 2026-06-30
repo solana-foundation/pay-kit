@@ -12,7 +12,9 @@ use serde_json::json;
 use solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_pay_kit::x402::{
     protocol::schemes::exact::{PaymentRequiredEnvelope, PaymentRequirements},
-    server::{exact::PaymentOption, Config, CurrencyConfig, ExactOptions, VerifiedExactPayment, X402},
+    server::{
+        exact::PaymentOption, Config, CurrencyConfig, ExactOptions, VerifiedExactPayment, X402,
+    },
     PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V2,
 };
 use solana_rpc_client::rpc_client::RpcClient;

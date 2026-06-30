@@ -793,9 +793,8 @@ mod tests {
         let body = upto_body("USDC", 1000);
         let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
 
-        let selected =
-            select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
-                .expect("upto offer should be fundable with USDC");
+        let selected = select_payment(&[], Some(&body), &funded, &OrderingStrategy::HighestBalance)
+            .expect("upto offer should be fundable with USDC");
         assert_eq!(selected.protocol(), "x402-upto");
         assert_eq!(selected.mint(), mints::USDC_MAINNET);
     }
@@ -808,9 +807,13 @@ mod tests {
         let body = upto_body("USDC", 1000);
         let funded = vec![token(mints::USDC_MAINNET, 1_000_000)];
 
-        let selected =
-            select_payment(&headers, Some(&body), &funded, &OrderingStrategy::CheapestPayable)
-                .expect("a fundable option exists");
+        let selected = select_payment(
+            &headers,
+            Some(&body),
+            &funded,
+            &OrderingStrategy::CheapestPayable,
+        )
+        .expect("a fundable option exists");
         assert_eq!(selected.protocol(), "x402-upto");
         assert_eq!(selected.mint(), mints::USDC_MAINNET);
     }

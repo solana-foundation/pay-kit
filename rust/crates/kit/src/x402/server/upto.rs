@@ -28,7 +28,6 @@ use crate::core::payment_channels as pc;
 use crate::core::payment_channels::generated::accounts::Channel;
 
 use crate::x402::error::Error;
-use crate::x402::server::CurrencyConfig;
 use crate::x402::protocol::schemes::exact::{
     caip2_network_for_cluster, default_rpc_url, default_token_program_for_currency,
     resolve_stablecoin_mint, ResourceInfo,
@@ -38,6 +37,7 @@ use crate::x402::protocol::schemes::upto::{
     UptoRequirements, UptoSettlementResponse, UptoSignatureEnvelope, PROFILE_PAYMENT_CHANNEL,
     UPTO_SCHEME,
 };
+use crate::x402::server::CurrencyConfig;
 use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION_V2};
 
 /// `ChannelStatus::Open` discriminant in the generated client.
@@ -142,9 +142,7 @@ impl X402Upto {
             return Err(Error::Other("recipient is required".into()));
         }
         if config.currencies.is_empty() {
-            return Err(Error::Other(
-                "at least one currency is required".into(),
-            ));
+            return Err(Error::Other("at least one currency is required".into()));
         }
         Pubkey::from_str(&config.recipient)
             .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
@@ -172,10 +170,7 @@ impl X402Upto {
     /// Attach a shared blockhash cache (refreshed by a background task) so the
     /// `upto` challenge embeds a recent blockhash without a per-challenge RPC
     /// fetch. Falls back to a direct fetch when the cache is empty or stale.
-    pub fn with_blockhash_cache(
-        mut self,
-        cache: crate::core::blockhash::BlockhashCache,
-    ) -> Self {
+    pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
         self
     }
@@ -740,9 +735,7 @@ fn match_offered_requirement<'r>(
                 .unwrap_or(false)
         })
         .ok_or_else(|| {
-            Error::Other(
-                "credential's accepted does not match any offered currency option".into(),
-            )
+            Error::Other("credential's accepted does not match any offered currency option".into())
         })
 }
 
@@ -1293,7 +1286,10 @@ mod tests {
         let engine = multi_currency_engine(&["USDC", "PYUSD"]);
         // Avoid an RPC round-trip: serve the blockhash from the cache.
         let cache = crate::core::blockhash::BlockhashCache::new();
-        cache.set("CacheTestBlockhash1111111111111111111111111".to_string(), 100);
+        cache.set(
+            "CacheTestBlockhash1111111111111111111111111".to_string(),
+            100,
+        );
         let engine = engine.with_blockhash_cache(cache);
 
         let envelope = engine.upto("1.00").expect("challenge should build");
@@ -1348,8 +1344,7 @@ mod tests {
             serde_json::Value::String("123456789".to_string()),
         );
 
-        let matched =
-            match_offered_requirement(&offered, &accepted).expect("PYUSD should match");
+        let matched = match_offered_requirement(&offered, &accepted).expect("PYUSD should match");
         assert_eq!(matched.asset, offered[1].asset);
         assert_eq!(matched.extra.token_program, offered[1].extra.token_program);
 
