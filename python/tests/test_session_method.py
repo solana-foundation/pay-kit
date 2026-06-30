@@ -23,9 +23,9 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge, PaymentCredential
+from solana_pay_kit.protocols.mpp.intents.session import (
     ClosePayload,
     CommitPayload,
     OpenPayload,
@@ -35,14 +35,14 @@ from pay_kit.protocols.mpp.intents.session import (
     VoucherData,
     VoucherPayload,
 )
-from pay_kit.protocols.mpp.server.session import Split
-from pay_kit.protocols.mpp.server.session_method import (
+from solana_pay_kit.protocols.mpp.server.session import Split
+from solana_pay_kit.protocols.mpp.server.session_method import (
     Session,
     SessionChallengeOptions,
     SessionOptions,
     new_session,
 )
-from pay_kit.signer import LocalSigner
+from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
@@ -236,7 +236,7 @@ async def test_session_challenge_canonical_shape() -> None:
     assert challenge.method == "solana"
     assert challenge.realm == "api.test"
 
-    from pay_kit.protocols.mpp.intents.session import SessionRequest
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
     request = SessionRequest.from_dict(challenge.decode_request())
     assert request.cap == "1000000"
@@ -254,7 +254,7 @@ async def test_session_challenge_clamps_requested_cap() -> None:
     """Mirrors TestSessionChallengeClampsRequestedCap."""
     session = _new_test_session(cap=1_000_000)
     challenge = await session.challenge(SessionChallengeOptions(cap="50000000"))
-    from pay_kit.protocols.mpp.intents.session import SessionRequest
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
     request = SessionRequest.from_dict(challenge.decode_request())
     assert request.cap == "1000000"
@@ -272,7 +272,7 @@ async def test_session_challenge_includes_blockhash_with_rpc() -> None:
     fake = _FakeRpc()
     session = _new_test_session(rpc=fake)
     challenge = await session.challenge(SessionChallengeOptions())
-    from pay_kit.protocols.mpp.intents.session import SessionRequest
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
     request = SessionRequest.from_dict(challenge.decode_request())
     assert request.recent_blockhash == fake.blockhash
@@ -282,7 +282,7 @@ async def test_session_challenge_advertises_pull_strategy() -> None:
     """Mirrors TestSessionChallengeAdvertisesPullStrategy."""
     session = _new_test_session(modes=["pull", "push"], pull_voucher_strategy="clientVoucher")
     challenge = await session.challenge(SessionChallengeOptions(external_id="ref-7"))
-    from pay_kit.protocols.mpp.intents.session import SessionRequest
+    from solana_pay_kit.protocols.mpp.intents.session import SessionRequest
 
     request = SessionRequest.from_dict(challenge.decode_request())
     assert len(request.modes) == 2
@@ -746,7 +746,7 @@ async def test_session_close_settled_double_close_rejected() -> None:
     TestSessionCloseUnknownChannelAndSettledDoubleClose: the re-drive guard only
     fires while ``SettledSignature == nil``.
     """
-    from pay_kit.protocols.mpp.server.session_store import ChannelState
+    from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
 
     session = _new_test_session()
     signer = _TestVoucherSigner(0x21)
@@ -835,8 +835,8 @@ async def test_session_open_pull_without_strategy_rejected_at_method_layer() -> 
     this builds the core ``SessionServer`` directly with a pull-mode config that
     omits the strategy to exercise the method-layer guard in isolation.
     """
-    from pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
-    from pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+    from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
+    from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
     config = SessionConfig(
         operator=SESSION_TEST_RECIPIENT,
@@ -878,7 +878,7 @@ async def test_session_commit_for_reserved_delivery() -> None:
     session = _new_test_session()
     signer, channel_id = await _open_trusted_channel(session, 1_000)
 
-    from pay_kit.protocols.mpp.server.session import DeliveryRequest
+    from solana_pay_kit.protocols.mpp.server.session import DeliveryRequest
 
     directive = await session.core().begin_delivery(DeliveryRequest(session_id=channel_id, amount=200))
     assert directive.delivery_id == f"{channel_id}:1"
@@ -900,7 +900,7 @@ async def test_session_commit_for_reserved_delivery() -> None:
 
 async def test_session_commit_replay_re_verifies_signature() -> None:
     """Mirrors TestSessionCommitReplayReVerifiesSignature."""
-    from pay_kit.protocols.mpp.server.session_store import ChannelState, CommittedDelivery
+    from solana_pay_kit.protocols.mpp.server.session_store import ChannelState, CommittedDelivery
 
     session = _new_test_session()
     signer = _TestVoucherSigner(1)

@@ -13,14 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Run tests with coverage
-        working-directory: swift
+        # The Swift package manifest lives at the repo root (so SPM can consume
+        # this monorepo by URL); sources are under swift/.
         run: swift test --enable-code-coverage
       - name: Upload Swift coverage
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: swift-coverage
-          path: swift/.build/debug/codecov/
+          path: .build/debug/codecov/
           if-no-files-found: ignore
 
   harness-swift:
@@ -30,7 +31,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_server"
           cargo-cache-key: swift
       - name: Build Swift harness client
         working-directory: harness/swift-client
@@ -60,7 +61,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-x402:harness_server"
+          cargo-bins: "paykit-harness-bins:x402_harness_server"
           cargo-cache-key: swift-x402
       - name: Build Swift x402 harness client
         working-directory: harness/swift-x402-client

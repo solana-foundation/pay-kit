@@ -2,15 +2,28 @@ plugins {
     kotlin("jvm") version "2.3.21"
     kotlin("plugin.serialization") version "2.3.21"
     `java-library`
+    `maven-publish`
     jacoco
     id("org.jetbrains.dokka") version "1.9.20"
 }
 
 group = "com.solana.paykit"
-version = "0.1.0"
+// Default version for local builds. JitPack builds from a git tag and passes
+// it via `-Pversion=$VERSION` (see jitpack.yml), which overrides this default
+// so the published artifact carries the tag.
+version = (findProperty("version") as String?)?.takeIf { it != "unspecified" } ?: "0.1.0"
 
 kotlin {
     jvmToolchain(17)
+}
+
+// Publish sources and javadoc jars alongside the library so consumers get
+// IDE navigation and documentation. JitPack harvests whatever
+// publishToMavenLocal writes, so wiring these into the `java` component is
+// enough — no extra tasks to invoke.
+java {
+    withSourcesJar()
+    withJavadocJar()
 }
 
 dependencies {
@@ -85,4 +98,49 @@ tasks.check {
 tasks.named<org.jetbrains.dokka.gradle.DokkaTask>("dokkaGfm") {
     outputDirectory.set(rootDir.parentFile.resolve("docs/api/kotlin"))
     moduleName.set("com.solana.paykit")
+}
+
+// Maven publication. JitPack builds this repo from a git tag on demand and
+// harvests the artifact written by `publishToMavenLocal`; it overrides the
+// version with the tag at build time (the `0.1.0` above is only a default).
+// Consumer coordinate (monorepo / JitPack): the groupId is forced to
+// `com.github.<owner>.<repo>` by JitPack and the artifactId is this Gradle
+// module name (`solana-pay-kit-kotlin`, from settings.gradle.kts), so the
+// dependency reads:
+//   com.github.solana-foundation.pay-kit:solana-pay-kit-kotlin:<tag>
+// Maven surfaces POM metadata (name/description/url/scm) rather than a README,
+// so the description below is the discoverability surface for this artifact.
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+
+            pom {
+                name.set("pay-kit (Kotlin)")
+                description.set("Building blocks for Agentic payments (x402, MPP, AP2)")
+                url.set("https://github.com/solana-foundation/pay-kit")
+
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://github.com/solana-foundation/pay-kit/blob/main/LICENSE")
+                    }
+                }
+
+                developers {
+                    developer {
+                        id.set("solana-foundation")
+                        name.set("Solana Foundation")
+                        url.set("https://github.com/solana-foundation")
+                    }
+                }
+
+                scm {
+                    url.set("https://github.com/solana-foundation/pay-kit")
+                    connection.set("scm:git:https://github.com/solana-foundation/pay-kit.git")
+                    developerConnection.set("scm:git:git@github.com:solana-foundation/pay-kit.git")
+                }
+            }
+        }
+    }
 }

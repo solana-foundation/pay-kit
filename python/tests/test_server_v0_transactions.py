@@ -1,4 +1,4 @@
-"""V0 (versioned) transaction coverage for ``pay_kit.protocols.mpp.server.charge``.
+"""V0 (versioned) transaction coverage for ``solana_pay_kit.protocols.mpp.server.charge``.
 
 The legacy-transaction paths in ``_decode_legacy_payment_instructions``,
 ``_co_sign_with_fee_payer``, and ``_validate_instruction_allowlist`` are
@@ -33,11 +33,11 @@ from solders.message import MessageV0
 from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.solana import MethodDetails
-from pay_kit._paycore.transaction import is_v0_wire_bytes
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest
-from pay_kit.protocols.mpp.server import charge as M
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import MethodDetails
+from solana_pay_kit._paycore.transaction import is_v0_wire_bytes
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest
+from solana_pay_kit.protocols.mpp.server import charge as M
 
 TEST_BLOCKHASH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 

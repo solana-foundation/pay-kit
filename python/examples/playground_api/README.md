@@ -1,8 +1,8 @@
 # Playground API (Python)
 
-A FastAPI server gated with the unified `pay_kit` surface, aligned with the
+A FastAPI server gated with the unified `solana_pay_kit` surface, aligned with the
 TypeScript playground (`typescript/examples/playground-api`). Zero-config:
-`pay_kit.configure(network="solana_localnet")` boots against the hosted Surfpool
+`solana_pay_kit.configure(network="solana_localnet")` boots against the hosted Surfpool
 sandbox with the shipped demo signer.
 
 Routes:

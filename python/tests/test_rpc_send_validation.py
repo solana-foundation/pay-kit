@@ -8,7 +8,7 @@ empty or non-string signatures before the caller writes to the store.
 
 import pytest
 
-from pay_kit._paycore.rpc import SolanaRpc, _RpcError
+from solana_pay_kit._paycore.rpc import SolanaRpc, _RpcError
 
 
 class _FakeResponse:

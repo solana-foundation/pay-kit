@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit._paycore.network_check import (
+from solana_pay_kit._paycore.network_check import (
     SURFPOOL_BLOCKHASH_PREFIX,
     WrongNetworkError,
     check_network_blockhash,

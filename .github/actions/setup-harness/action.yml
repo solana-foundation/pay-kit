@@ -9,9 +9,10 @@ inputs:
   cargo-bins:
     description: >-
       Space-separated "pkg:bin[,bin...]" specs of Rust harness adapters to build,
-      e.g. "solana-mpp:harness_client solana-x402:harness_client" or
-      "solana-mpp:harness_client,harness_server". Empty (default) skips Rust
-      setup entirely (for languages that only test against the TypeScript spine).
+      e.g. "paykit-harness-bins:mpp_harness_client" or
+      "paykit-harness-bins:mpp_harness_client,mpp_harness_server". Empty (default)
+      skips Rust setup entirely (for languages that only test against the
+      TypeScript spine).
     required: false
     default: ""
   cargo-cache-key:

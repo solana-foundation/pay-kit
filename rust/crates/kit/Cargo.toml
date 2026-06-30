@@ -2,7 +2,7 @@
 name = "solana-pay-kit"
 version = "0.1.0"
 edition = "2021"
-description = "Solana payment SDK: MPP + x402 unified behind feature flags"
+description = "Building blocks for Agentic payments (x402, MPP, AP2)"
 license = "MIT"
 repository = "https://github.com/solana-foundation/pay-kit"
 # The SDK guide lives at the workspace README (rust/README.md); reuse it as the
@@ -11,34 +11,184 @@ readme = "../../README.md"
 
 [features]
 default = ["mpp", "x402"]
-mpp = ["dep:solana-mpp"]
-x402 = ["dep:solana-x402"]
-server = ["solana-mpp?/server", "solana-x402?/server"]
-# Client-side selection (kit::select) needs serde_json to decode MPP method
-# details; pull it in here so subset builds without `client` don't pay for it.
-client = ["solana-mpp?/client", "solana-x402?/client", "dep:serde_json"]
-# The unified axum gate dispatches both protocols, so it needs both servers.
-axum = ["mpp", "x402", "server", "solana-mpp?/axum", "dep:axum", "dep:tracing"]
-gcp_kms = ["solana-mpp?/gcp_kms"]
-# Passthroughs so umbrella consumers can enable the mpp sub-features they need.
-confidential = ["solana-mpp?/confidential"]
-settlement = ["solana-mpp?/settlement"]
-otel = ["solana-mpp?/otel"]
-testkit = ["solana-mpp?/testkit"]
+# Protocol modules. `mpp`/`x402` gate `pub mod mpp`/`pub mod x402` in lib.rs;
+# both pull in the shared `core` + generated program clients.
+mpp = []
+x402 = []
+# Server-side verification helpers (tokio run-loops + axum extractor wiring).
+server = ["dep:tokio"]
+# Client-side transaction building + balance-aware `select` (needs serde_json
+# to decode MPP method details).
+client = ["dep:reqwest"]
+# The unified axum gate dispatches both protocols, so it needs both modules
+# plus the server side.
+axum = ["mpp", "x402", "server", "dep:axum"]
+gcp_kms = ["solana-keychain/gcp_kms"]
+# Token-2022 confidential transfers: ZK proof generation + the Token-2022
+# confidential-transfer instruction builders. Opt-in so non-confidential
+# consumers (mobile/wasm/FFI) stay lean.
+confidential = [
+    "dep:solana-zk-sdk",
+    "dep:spl-token-2022",
+    "dep:spl-token-confidential-transfer-proof-generation",
+    "dep:spl-token-confidential-transfer-proof-extraction",
+    "dep:solana-zk-elgamal-proof-interface",
+    "dep:solana-zk-sdk-pod",
+    "dep:spl-record",
+    "dep:spl-associated-token-account",
+    "dep:bytemuck",
+    "dep:solana-keypair",
+    "dep:solana-signer",
+]
+# Batched on-chain settlement worker (tokio actor) shared by the mpp session
+# and x402 settlement paths. Pulls the background-worker deps.
+settlement = ["dep:tokio", "dep:async-trait"]
+# Single confidential-settlement worker run-loop (tokio actor) + the orphan
+# sweeper. Needs the server (tokio) + confidential settlement primitives, plus
+# solana-rpc-client-api for the getProgramAccounts scan.
+worker = ["confidential", "server", "dep:solana-rpc-client-api"]
+# Settlement test/demo harness (open real channels, fund, drive + observe).
+testkit = ["settlement", "dep:reqwest"]
+# Generated program-client account fetch helpers (RPC). Off by default — the
+# pay-kit protocol layers only use instruction/type builders.
+fetch = ["dep:solana-account"]
+# Opt-in gate for the in-tree confidential-transfer unit tests that drive the
+# real ZK ElGamal Proof program inside litesvm. These need `litesvm` as a
+# dev-dependency, which pins `solana-address = =2.2.0` and only resolves under
+# the workspace `[patch.crates-io]` litesvm fork — that patch is dropped on
+# `cargo publish`, so litesvm is intentionally NOT a dev-dependency here. To run
+# them, add litesvm as a dev-dep and build with `--features confidential,litesvm-tests`.
+litesvm-tests = ["confidential"]
+# Reusable OpenTelemetry init (console + OTLP traces/metrics).
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:opentelemetry-semantic-conventions",
+    "dep:tracing-opentelemetry",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
-solana-mpp = { path = "../mpp", optional = true }
-solana-x402 = { path = "../x402", optional = true }
+# Signing — solana-keychain with sdk-v3. Rev d788028 widens the solana-signature
+# bound to <3.5, letting signature resolve to 3.3.x.
+solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
+
+# Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
+# which solana-keypair/solana-signature rely on.
+five8_core = { version = "=0.1.2", features = ["std"] }
+
+# Solana — atomic crates only. Low-level interface crates stay on flexible 3.x
+# ranges so they unify with litesvm 0.13's pins; higher-level client crates that
+# published a 4.0 major move to 4.0.
+solana-hash = { version = "3.1", default-features = false }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "3", default-features = false }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-commitment-config = { version = "3.0", default-features = false }
+solana-rpc-client = { version = "4", default-features = false }
+# Program-account scan (memcmp by gateway authority) for the confidential
+# orphan sweeper. Optional; pulled in only by the `worker` feature.
+solana-rpc-client-api = { version = "4", default-features = false, optional = true }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "3", default-features = false }
+# transaction-status 4.0 gates its whole lib behind `agave-unstable-api`; the
+# wire types we use live in the stable client-types crate.
+solana-transaction-status-client-types = { version = "4", default-features = false }
+solana-zero-copy = { version = "1", default-features = false }
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
+
+# Generated program-client deps (payment-channels + subscriptions).
+num-derive = "0.4"
+num-traits = "0.2"
+solana-account-info = "^3"
+solana-program-error = "^3"
+solana-cpi = "^3"
+solana-client = "^4"
+solana-account = { version = "^3", optional = true }
+
+# Confidential transfers (opt-in via the `confidential` feature).
+solana-zk-sdk = { version = "7.0.1", optional = true }
+spl-token-2022 = { version = "=10.0.0", optional = true, default-features = false, features = ["zk-ops"] }
+spl-token-confidential-transfer-proof-generation = { version = "0.6.1", optional = true }
+spl-token-confidential-transfer-proof-extraction = { version = "0.5.1", optional = true }
+solana-zk-elgamal-proof-interface = { version = "0.1.2", optional = true }
+solana-zk-sdk-pod = { version = "0.1.1", optional = true }
+spl-record = { version = "0.4.0", optional = true, features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "8.0.0", optional = true, features = ["no-entrypoint"] }
+bytemuck = { version = "1.25", optional = true }
+# Ephemeral keypairs for proof context-state + record accounts (client-side).
+solana-keypair = { version = "3.0", optional = true }
+solana-signer = { version = "3.0", optional = true }
+
+# Async (server run-loops + settlement worker) — optional.
+tokio = { version = "1", features = ["full"], optional = true }
+
+# HTTP client (client-side payment building + testkit cheatcodes) — optional.
+reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
+
+# Axum extractor / unified gate (opt-in).
 axum = { version = "0.8", optional = true, default-features = false }
-tracing = { version = "0.1", optional = true }
-serde_json = { version = "1", optional = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_json_canonicalizer = "0.3"
+bs58 = "0.5"
+base64 = "0.22"
+bincode = "1"
+borsh = { version = "1.0", features = ["derive"] }
+url = "2"
+getrandom = "0.3"
+
+# Crypto (HMAC challenge IDs + distribution hash + voucher verification)
+hmac = "0.12"
+sha2 = "0.10"
+blake3 = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
+
+# Time (expiration, timestamps)
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+# Observability
+tracing = "0.1"
+async-trait = { version = "0.1", optional = true }
+
+# OpenTelemetry (feature `otel`) — optional.
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["logs"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"], optional = true }
+opentelemetry-appender-tracing = { version = "0.31", optional = true }
+opentelemetry-semantic-conventions = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+# Errors
+thiserror = "2"
 
 [dev-dependencies]
+# Kept lean so `cargo publish` resolves without the workspace litesvm patch.
+# The on-chain (surfpool/litesvm) tests live in the separate, unpublished
+# `paykit-integration-tests` crate.
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 serde_json = "1"
 ed25519-dalek = "2"
+# Test mock signers impl the (#[async_trait]) solana-keychain SolanaSigner trait.
+# async-trait is otherwise only an optional dep (settlement feature), so make it
+# a dev-dep too — it must be available in any test build, not just settlement.
+async-trait = "0.1"
+base64 = "0.22"
+# Atomic solana crates the in-tree examples / unit tests import directly.
+solana-hash = { version = "3.1", default-features = false }
+solana-message = { version = "3", default-features = false }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "3", default-features = false }
 
 [[example]]
 name = "axum_quickstart"
@@ -51,3 +201,19 @@ required-features = ["axum"]
 [[example]]
 name = "axum_batch"
 required-features = ["axum"]
+
+[[example]]
+name = "golden_tx"
+required-features = ["mpp", "client"]
+
+[[example]]
+name = "payment_link_server"
+required-features = ["mpp", "axum"]
+
+[[example]]
+name = "protocol_runner"
+required-features = ["mpp"]
+
+[[test]]
+name = "kotlin_golden_vector"
+required-features = ["x402"]

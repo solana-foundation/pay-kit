@@ -1,5 +1,5 @@
 # examples/x402-client/main.py
-"""Pay an x402-gated endpoint with the pay_kit x402 ``exact`` client.
+"""Pay an x402-gated endpoint with the solana_pay_kit x402 ``exact`` client.
 
 The auto-pay transport mirrors the Go ``NewClient`` ergonomics: give it a payer
 signer and an RPC, get back an ``httpx.AsyncClient`` that turns any ``402`` into
@@ -22,8 +22,8 @@ import asyncio
 import os
 import sys
 
-from pay_kit import Signer
-from pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
+from solana_pay_kit import Signer
+from solana_pay_kit.protocols.x402.client import SolanaRpc, x402_async_client
 
 
 async def main(url: str) -> int:

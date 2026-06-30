@@ -14,24 +14,24 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-from pay_kit import LocalSigner
-from pay_kit._paycore.solana import TOKEN_PROGRAM
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402.client.upto import (
+from solana_pay_kit import LocalSigner
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.x402.client.upto import (
     build_upto_header,
     build_upto_payload,
     encode_upto_header,
     parse_upto_challenge,
 )
-from pay_kit.protocols.x402.upto import _decode_transaction
-from pay_kit.protocols.x402.upto.types import (
+from solana_pay_kit.protocols.x402.upto import _decode_transaction
+from solana_pay_kit.protocols.x402.upto.types import (
     PROFILE_PAYMENT_CHANNEL,
     UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT,
     UPTO_SCHEME,
     UptoPayload,
     UptoRequirements,
 )
-from pay_kit.protocols.x402.upto.verify import (
+from solana_pay_kit.protocols.x402.upto.verify import (
     assert_settlement_within_ceiling,
     parse_base_units,
     validate_upto_open_instruction,
@@ -181,7 +181,7 @@ def test_ceiling_exceeded() -> None:
 
 def test_parse_upto_challenge_from_header() -> None:
     _, op = _operator()
-    from pay_kit.protocols.x402.upto import X402Upto  # noqa: PLC0415
+    from solana_pay_kit.protocols.x402.upto import X402Upto  # noqa: PLC0415
 
     req = _requirements(op, str(Keypair().pubkey()))
     import base64
@@ -288,6 +288,6 @@ def test_client_open_tx_validator_rejects_wrong_payee() -> None:
 
 
 def _default_program() -> Pubkey:
-    from pay_kit._paycore.paymentchannels import PROGRAM_ID
+    from solana_pay_kit._paycore.paymentchannels import PROGRAM_ID
 
     return PROGRAM_ID

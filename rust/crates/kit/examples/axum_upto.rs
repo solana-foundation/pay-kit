@@ -54,7 +54,7 @@ async fn main() {
 
     let pay = PayKit::new(PayKitConfig {
         recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
-        network: "devnet".to_string(),
+        network: "localnet".to_string(),
         rpc_url: Some("https://402.surfnet.dev:8899".to_string()),
         // upto settlement vouchers are operator-signed, so a signer is required.
         fee_payer_signer: Some(Arc::new(operator)),

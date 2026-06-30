@@ -3,7 +3,7 @@
 Covers the three new surfaces that ship the legacy wire alongside the canonical
 (v2) one, mirroring the rust spine v1 arms:
 
-* :mod:`pay_kit.protocols.x402.exact.legacy` plain-SVM-name mappings.
+* :mod:`solana_pay_kit.protocols.x402.exact.legacy` plain-SVM-name mappings.
 * the client legacy producer ``build_payment_header_legacy`` (top-level
   scheme/network, no ``accepted``) and the legacy challenge-parse fallbacks
   (``X-PAYMENT-REQUIRED`` header + 402 ``accepts[]`` body with plain slugs).
@@ -26,9 +26,9 @@ from solders.keypair import Keypair
 from solders.message import MessageV0
 from solders.pubkey import Pubkey
 
-import pay_kit.protocols.x402 as xmod
-from pay_kit import Gate as GateCls
-from pay_kit import (
+import solana_pay_kit.protocols.x402 as xmod
+from solana_pay_kit import Gate as GateCls
+from solana_pay_kit import (
     LocalSigner,
     MemoryStore,
     Operator,
@@ -37,17 +37,17 @@ from pay_kit import (
     Stablecoin,
     configure,
 )
-from pay_kit._paycore.mints import derive_ata, resolve, token_program_for
-from pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
-from pay_kit.config import reset
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.x402 import X402Adapter
-from pay_kit.protocols.x402.client.exact import (
+from solana_pay_kit._paycore.mints import derive_ata, resolve, token_program_for
+from solana_pay_kit._paycore.network import SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.x402 import X402Adapter
+from solana_pay_kit.protocols.x402.client.exact import (
     ChallengeSelection,
     build_payment_header_legacy,
     parse_x402_challenge,
 )
-from pay_kit.protocols.x402.exact.legacy import (
+from solana_pay_kit.protocols.x402.exact.legacy import (
     SOLANA_DEVNET_NAME,
     SOLANA_NETWORK_NAME,
     X402_LEGACY_PAYMENT_HEADER,
@@ -55,7 +55,7 @@ from pay_kit.protocols.x402.exact.legacy import (
     caip2_for_network,
     legacy_network_for_caip2,
 )
-from pay_kit.protocols.x402.exact.verify import (
+from solana_pay_kit.protocols.x402.exact.verify import (
     COMPUTE_BUDGET_PROGRAM,
     EXACT_SCHEME,
     MEMO_PROGRAM,
@@ -394,7 +394,7 @@ async def test_server_still_emits_v2_challenge_by_default(monkeypatch):
 @pytest.mark.asyncio
 async def test_server_prefers_canonical_header_over_legacy(monkeypatch):
     # When BOTH headers are present, the canonical (v2) one is read first.
-    from pay_kit.protocols.x402 import _legacy_payment_header, _payment_signature_header
+    from solana_pay_kit.protocols.x402 import _legacy_payment_header, _payment_signature_header
 
     class _BothReq:
         def __init__(self, v2_header, legacy_header):

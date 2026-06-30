@@ -15,7 +15,7 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 
 pytest.importorskip("django")
 
-from pay_kit import (  # noqa: E402
+from solana_pay_kit import (  # noqa: E402
     Gate,
     LocalSigner,
     Operator,
@@ -24,7 +24,7 @@ from pay_kit import (  # noqa: E402
     Stablecoin,
     configure,
 )
-from pay_kit.config import reset  # noqa: E402
+from solana_pay_kit.config import reset  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -77,7 +77,7 @@ def test_require_usage_challenges_without_credential() -> None:
     from django.http import JsonResponse
     from django.test import RequestFactory
 
-    import pay_kit.django as pk_django
+    import solana_pay_kit.django as pk_django
 
     cfg = _config()
 

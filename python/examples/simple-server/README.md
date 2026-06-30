@@ -1,7 +1,7 @@
 # simple-server
 
-The smallest pay_kit server: Python's standard-library `http.server` with one
-gated endpoint, driven through the unified `pay_kit` umbrella surface. No web
+The smallest solana_pay_kit server: Python's standard-library `http.server` with one
+gated endpoint, driven through the unified `solana_pay_kit` umbrella surface. No web
 framework, no wallet setup.
 
 ## Run

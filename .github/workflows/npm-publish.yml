@@ -318,7 +318,8 @@ jobs:
           fi
 
       # Builds @solana/mpp (tsc) + @solana/pay-kit (tsup, which bundles the
-      # vendored @x402/* + zod into pay-kit's dist).
+      # vendored @x402/* + zod AND @solana/mpp into pay-kit's dist, so pay-kit
+      # publishes standalone with no @solana/mpp dependency / publish ordering).
       - name: Build
         run: cd typescript && pnpm build
 
@@ -360,7 +361,12 @@ jobs:
               console.error("FAIL: @x402/* leaked into dependencies (must be bundled)");
               process.exit(1);
             }
-            console.log("Runtime deps clean (no workspace:/file:/link:, no @x402/*)");
+            const allDeps = { ...(p.dependencies || {}), ...(p.peerDependencies || {}) };
+            if ("@solana/mpp" in allDeps) {
+              console.error("FAIL: @solana/mpp leaked into deps/peerDeps (must be bundled via tsup noExternal so pay-kit publishes standalone)");
+              process.exit(1);
+            }
+            console.log("Runtime deps clean (no workspace:/file:/link:, no @x402/*, no @solana/mpp)");
           '
 
       - name: Guard - Fail if tarball missing dist/ artifacts

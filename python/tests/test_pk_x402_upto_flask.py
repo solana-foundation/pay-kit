@@ -15,7 +15,7 @@ pytest.importorskip("flask")
 
 import flask  # noqa: E402
 
-from pay_kit import (  # noqa: E402
+from solana_pay_kit import (  # noqa: E402
     Gate,
     LocalSigner,
     Operator,
@@ -24,8 +24,8 @@ from pay_kit import (  # noqa: E402
     Stablecoin,
     configure,
 )
-from pay_kit.config import reset  # noqa: E402
-from pay_kit.flask import Charge, require_usage  # noqa: E402
+from solana_pay_kit.config import reset  # noqa: E402
+from solana_pay_kit.flask import Charge, require_usage  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

@@ -20,10 +20,10 @@ import time
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
-from pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
-from pay_kit.protocols.mpp.server.session_routes import session_routes
-from pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
+from solana_pay_kit.protocols.mpp.server.session import SessionConfig, SessionServer
+from solana_pay_kit.protocols.mpp.server.session_routes import session_routes
+from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
@@ -57,7 +57,7 @@ def _far_future() -> int:
 
 
 async def _open(server: SessionServer) -> tuple[_Signer, str]:
-    from pay_kit.protocols.mpp.intents.session import OpenPayload
+    from solana_pay_kit.protocols.mpp.intents.session import OpenPayload
 
     signer = _Signer()
     channel_id = str(Keypair().pubkey())

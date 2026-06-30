@@ -102,27 +102,35 @@ function receiptReference(receiptB64: string | undefined): string | null {
   }
 }
 
-/** Pull the settle tx signature out of an x402 Payment-Response header. */
-function x402SettlementReference(headers: Record<string, string>): string | null {
-  const value = headers['payment-response'] ?? headers['x-payment-response']
+/**
+ * Extract the on-chain settlement signature from an x402 `Payment-Response`
+ * header. The header is either a base64-encoded settlement envelope (standard
+ * x402: `{ transaction }`) or the bare base58 signature (some gateways) — try
+ * the envelope first, then fall back to the raw value.
+ */
+function settlementSignature(value: string | undefined): string | null {
   if (!value) return null
   try {
     const json = JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))) as {
-      reference?: unknown
-      transaction?: unknown
+      transaction?: string
+      signature?: string
+      reference?: string
     }
-    const signature = json.transaction ?? json.reference
-    return typeof signature === 'string' && signature.length > 0 ? signature : null
+    const sig = json.transaction ?? json.signature ?? json.reference
+    if (sig) return sig
   } catch {
-    return null
+    // Not a base64 envelope — fall through to the raw value.
   }
+  return value
 }
 
 async function pollSessionReceipt(channelId: string, timeoutMs = 10_000): Promise<string | null> {
   const deadline = performance.now() + timeoutMs
   while (performance.now() < deadline) {
     try {
-      const res = await nativeFetch(`/sessions/receipt/${encodeURIComponent(channelId)}`)
+      const res = await nativeFetch(
+        `/__402/payment-channels/receipt/${encodeURIComponent(channelId)}`,
+      )
       if (res.ok) {
         const body = (await res.json()) as { settledSignature: string | null; finalized: boolean }
         if (body.settledSignature) return body.settledSignature
@@ -306,11 +314,14 @@ export async function* payAndFetch(url: string, opts: Options = {}): AsyncGenera
           }
         }
 
-        // With server-side broadcast the client never emits paying/paid -
-        // the settle signature only comes back in settlement response headers.
-        // Surface it so the Broadcast / Settled steps complete.
+        // With server-side broadcast the client never emits paying/paid — the
+        // settle signature only comes back in a response header: MPP uses
+        // `Payment-Receipt`, x402 uses `Payment-Response`. Surface it so the
+        // Broadcast / Settled steps complete.
         if (response.ok && !sawPaid) {
-          const signature = receiptReference(headers['payment-receipt']) ?? x402SettlementReference(headers)
+          const signature =
+            receiptReference(headers['payment-receipt']) ??
+            settlementSignature(headers['payment-response'])
           if (signature) {
             yield { type: 'paying' }
             yield { type: 'paid', signature }

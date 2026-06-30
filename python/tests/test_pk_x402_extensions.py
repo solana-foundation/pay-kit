@@ -16,9 +16,9 @@ from typing import Any, cast
 import pytest
 from solders.keypair import Keypair
 
-from pay_kit._paycore.mints import resolve, token_program_for
-from pay_kit.protocols.x402.client.exact import build_payment, build_payment_header
-from pay_kit.protocols.x402.exact.extensions import (
+from solana_pay_kit._paycore.mints import resolve, token_program_for
+from solana_pay_kit.protocols.x402.client.exact import build_payment, build_payment_header
+from solana_pay_kit.protocols.x402.exact.extensions import (
     PAYMENT_IDENTIFIER_ID_PATTERN,
     PAYMENT_IDENTIFIER_KEY,
     PaymentIdentifierError,
@@ -30,8 +30,8 @@ from pay_kit.protocols.x402.exact.extensions import (
     verify_payment_identifier,
     with_payment_identifier_id,
 )
-from pay_kit.protocols.x402.exact.types import X402AcceptsEntry
-from pay_kit.signer import Signer
+from solana_pay_kit.protocols.x402.exact.types import X402AcceptsEntry
+from solana_pay_kit.signer import Signer
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 _USDC_DEVNET = resolve("USDC", "devnet")

@@ -5,20 +5,20 @@ scenario by which env namespace the harness orchestrator sets (or by the
 explicit ``PAY_KIT_HARNESS_PROTOCOL`` hint). Mirrors ``harness/php-server/
 server.php`` and the Ruby/Lua pay-kit-server pattern.
 
-This adapter routes every request through the unified ``pay_kit`` surface:
+This adapter routes every request through the unified ``solana_pay_kit`` surface:
 
-  * x402 exact  -> ``pay_kit.protocols.x402.X402Adapter`` (the umbrella adapter)
-  * MPP charge  -> ``pay_kit.protocols.mpp.server.charge.Mpp`` (the lower-level wire)
+  * x402 exact  -> ``solana_pay_kit.protocols.x402.X402Adapter`` (the umbrella adapter)
+  * MPP charge  -> ``solana_pay_kit.protocols.mpp.server.charge.Mpp`` (the lower-level wire)
 
 This split mirrors the canonical PHP adapter (``harness/php-server/
 server.php``): x402 routes through the umbrella adapter, while MPP charge
-routes through the lower-level ``pay_kit.protocols.mpp`` handler. The umbrella's
+routes through the lower-level ``solana_pay_kit.protocols.mpp`` handler. The umbrella's
 ticker-based currency model (``Stablecoin`` enum -> ``Mints.resolve``) is the
 right surface for x402, where the offer's ``asset`` is the resolved on-chain
 mint; but the harness MPP charge matrix runs in *pubkey mode* (the harness
 deploys the scenario mint at an arbitrary ``MPP_HARNESS_MINT`` pubkey, not the
 canonical USDC mint), so the MPP challenge must advertise that literal mint as
-its ``currency``. The lower-level ``pay_kit.protocols.mpp`` handler takes the raw mint
+its ``currency``. The lower-level ``solana_pay_kit.protocols.mpp`` handler takes the raw mint
 directly, exactly as the PHP ``SolanaChargeHandler`` path does.
 
 Cross-route replay protection on the MPP path is enforced by
@@ -55,7 +55,7 @@ _python_src = _repo_root / "python" / "src"
 if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
 
-from pay_kit import (  # noqa: E402
+from solana_pay_kit import (  # noqa: E402
     Config,
     Gate,
     Network,
@@ -65,26 +65,26 @@ from pay_kit import (  # noqa: E402
     Signer,
     Stablecoin,
 )
-from pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
-from pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
-from pay_kit._paycore.store import MemoryStore  # noqa: E402
-from pay_kit.errors import InvalidProofError  # noqa: E402
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
-from pay_kit.protocols.mpp.server import (  # noqa: E402
+from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
+from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
+from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
+from solana_pay_kit.errors import InvalidProofError  # noqa: E402
+from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
     SessionChallengeOptions,
     SessionOptions,
     new_session,
     session_routes,
 )
-from pay_kit.protocols.mpp.server.charge import (  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.charge import (  # noqa: E402
     ChargeOptions,
     Mpp,
 )
-from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
-from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
-from pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
-from pay_kit.usage import Charge, finalize_usage  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
+from solana_pay_kit.protocols.x402 import X402Adapter  # noqa: E402
+from solana_pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
+from solana_pay_kit.usage import Charge, finalize_usage  # noqa: E402
 
 
 def require_env(name: str) -> str:
@@ -107,7 +107,7 @@ def _free_port() -> int:
 
 
 def _resolve_network(raw: str) -> Network:
-    """Map the harness network string to a pay_kit Network enum.
+    """Map the harness network string to a solana_pay_kit Network enum.
 
     Charge scenarios send the short slug ``localnet``; x402 scenarios send a
     CAIP-2 string (``solana:<genesis>``). Mirrors PHP ``resolve_network``.
@@ -193,7 +193,7 @@ def _detect_protocol() -> str:
 
 
 class _Adapter:
-    """Holds the built pay_kit adapter plus per-route gate amounts."""
+    """Holds the built solana_pay_kit adapter plus per-route gate amounts."""
 
     def __init__(self) -> None:
         self.protocol = _detect_protocol()
@@ -298,7 +298,7 @@ class _Adapter:
             fee_payer = Keypair.from_bytes(bytes(json.loads(fee_payer_raw)))
         self.fee_payer = fee_payer
 
-        # Build the lower-level pay_kit.protocols.mpp handler with the raw mint. The
+        # Build the lower-level solana_pay_kit.protocols.mpp handler with the raw mint. The
         # ``Mpp`` server boots with ``rpc=None``; a request-lifetime
         # ``SolanaRpc`` is scoped via ``using_rpc`` in the request path.
         config = MppServerConfig(

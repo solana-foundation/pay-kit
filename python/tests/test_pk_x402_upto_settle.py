@@ -17,8 +17,8 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-import pay_kit.protocols.x402.upto as upto_mod
-from pay_kit import (
+import solana_pay_kit.protocols.x402.upto as upto_mod
+from solana_pay_kit import (
     Config,
     Gate,
     LocalSigner,
@@ -28,14 +28,14 @@ from pay_kit import (
     Stablecoin,
     configure,
 )
-from pay_kit._paycore.mints import resolve, token_program_for
-from pay_kit.config import reset
-from pay_kit.errors import InvalidProofError
-from pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
-from pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
-from pay_kit.protocols.x402.upto import _EMPTY_DISTRIBUTION_HASH as EMPTY_HASH
-from pay_kit.protocols.x402.upto import VerifiedUptoOpen, X402Upto
-from pay_kit.protocols.x402.upto.types import UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT, UptoRequirements
+from solana_pay_kit._paycore.mints import resolve, token_program_for
+from solana_pay_kit.config import reset
+from solana_pay_kit.errors import InvalidProofError
+from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+from solana_pay_kit.protocols.x402.client.upto import build_upto_payload, encode_upto_header
+from solana_pay_kit.protocols.x402.upto import _EMPTY_DISTRIBUTION_HASH as EMPTY_HASH
+from solana_pay_kit.protocols.x402.upto import VerifiedUptoOpen, X402Upto
+from solana_pay_kit.protocols.x402.upto.types import UPTO_ERROR_SETTLEMENT_EXCEEDS_AMOUNT, UptoRequirements
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 
@@ -356,7 +356,8 @@ def _remux(header: str, mutate) -> str:
 async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
     header, _pk, _req = _client_header(eng, cfg)
-    bad = _remux(header, lambda e: e.update(scheme="exact"))
+    # x402 v2 carries scheme inside `accepted` (the chosen PaymentRequirements).
+    bad = _remux(header, lambda e: e["accepted"].update(scheme="exact"))
     with pytest.raises(InvalidProofError, match="invalid payload type"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 
@@ -365,7 +366,8 @@ async def test_verify_open_rejects_wrong_scheme(monkeypatch) -> None:
 async def test_verify_open_rejects_network_mismatch(monkeypatch) -> None:
     eng, cfg, _ = _engine(monkeypatch)
     header, _pk, _req = _client_header(eng, cfg)
-    bad = _remux(header, lambda e: e.update(network="solana:wrongwrongwrongwrongwrongwrong"))
+    # x402 v2 carries network inside `accepted` (the chosen PaymentRequirements).
+    bad = _remux(header, lambda e: e["accepted"].update(network="solana:wrongwrongwrongwrongwrongwrong"))
     with pytest.raises(InvalidProofError, match="network mismatch"):
         await eng.verify_open(_gate(cfg), _Req(bad))
 

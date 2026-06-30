@@ -41,11 +41,11 @@ keypair as the recipient and the hosted Surfpool sandbox at
 # app.py
 from flask import Flask, jsonify
 
-import pay_kit
-from pay_kit import usd
-from pay_kit.flask import require_payment
+import solana_pay_kit
+from solana_pay_kit import usd
+from solana_pay_kit.flask import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
 app = Flask(__name__)
 
@@ -57,7 +57,7 @@ def report():
 app.run(host="127.0.0.1", port=8000)
 ```
 
-`pay_kit.configure(...)` builds the process-wide config once at boot.
+`solana_pay_kit.configure(...)` builds the process-wide config once at boot.
 `@require_payment(usd("0.10"))` answers a 402 with a payment challenge when
 no valid proof was sent, or runs the view if one was.
 
@@ -73,17 +73,17 @@ When more than one route is paid, lift the prices into a single
 # app.py
 from flask import Flask, jsonify
 
-import pay_kit
-from pay_kit import Gate, Protocol, Pricing, usd
-from pay_kit.flask import require_payment
+import solana_pay_kit
+from solana_pay_kit import Gate, Protocol, Pricing, usd
+from solana_pay_kit.flask import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
 class Catalog(Pricing):
     def __init__(self):
         defaults = {
-            "default_pay_to": pay_kit.config().effective_recipient(),
-            "accept_default": pay_kit.config().accept,
+            "default_pay_to": solana_pay_kit.config().effective_recipient(),
+            "accept_default": solana_pay_kit.config().accept,
         }
         self.report = Gate.build(name="report", amount=usd("0.10"),
                                  description="Premium report", **defaults)
@@ -119,12 +119,12 @@ stablecoins. The Flask app is unchanged, only the `configure` call grows.
 
 ```python
 # app.py, same routes as snippet 2.
-import pay_kit
-from pay_kit import Gate, Operator, Pricing, Signer, Stablecoin, usd
+import solana_pay_kit
+from solana_pay_kit import Gate, Operator, Pricing, Signer, Stablecoin, usd
 
 PLATFORM = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
-pay_kit.configure(
+solana_pay_kit.configure(
     network="solana_mainnet",
     stablecoins=(Stablecoin.USDC, Stablecoin.PYUSD),
     operator=Operator(signer=Signer.file("operator.json")),
@@ -133,7 +133,7 @@ pay_kit.configure(
 
 class Catalog(Pricing):
     def __init__(self):
-        defaults = {"default_pay_to": pay_kit.config().effective_recipient()}
+        defaults = {"default_pay_to": solana_pay_kit.config().effective_recipient()}
         self.report = Gate.build(name="report", amount=usd("0.10"),
                                  description="Premium report", **defaults)
         # Platform-fee pattern: customer pays $10.00,
@@ -149,7 +149,7 @@ class Catalog(Pricing):
 `configure` reads literal values here; in real deployments pull the signer
 and RPC URL from your environment (`Signer.env("OPERATOR_KEY")`,
 `os.getenv("RPC_URL")`) or drive the whole thing from env vars with
-`pay_kit.configure_from()`.
+`solana_pay_kit.configure_from()`.
 
 Two safety rails fire at boot:
 
@@ -209,11 +209,17 @@ network fees, the customer's signed transaction settles funds to `pay_to`.
 Gates with `fee_within` or `fee_on_top` recipients auto-disable x402,
 because stock x402 facilitators settle to one address.
 
-| Scheme  | Client | Server |
-|---------|:------:|:------:|
-| `exact` | ✅     | ✅     |
-| `upto`  | —      | —      |
-| `batch` | —      | —      |
+| Scheme             | Client | Server |
+|--------------------|:------:|:------:|
+| `exact`            | ✅     | ✅     |
+| `upto`             | ✅     | ✅     |
+| `batch-settlement` | —      | —      |
+
+`upto` charges for actual usage up to a ceiling: the client opens a payment
+channel depositing the authorized maximum, the handler meters the response and
+reports it via the `Charge` dependency, then the gate settles the actual amount
+and refunds the remainder. It is gated with `require_usage` / `RequireUsage`
+(rather than `require_payment`) and needs an operator signer.
 
 ### Client
 
@@ -225,9 +231,9 @@ payment, then returns the paid response.
 ```python
 import asyncio
 
-from pay_kit import Signer
-from pay_kit._paycore.rpc import SolanaRpc
-from pay_kit.protocols.x402.client import x402_async_client
+from solana_pay_kit import Signer
+from solana_pay_kit._paycore.rpc import SolanaRpc
+from solana_pay_kit.protocols.x402.client import x402_async_client
 
 async def main():
     signer = Signer.file("payer.json")  # the payer's keypair
@@ -259,11 +265,12 @@ Use MPP when:
 - You want the server to subsidize the customer's network fee.
 - You want one challenge per gate instead of per-mint-quoted offers.
 
-| Scheme        | Status |
-|---------------|--------|
-| `charge/pull` | ✅      |
-| `charge/push` | ✅      |
-| `session`     | ✅      |
+| Intent         | Client | Server |
+|----------------|:------:|:------:|
+| `charge/pull`  | ✅     | ✅     |
+| `charge/push`  | —      | ✅     |
+| `session`      | ✅     | ✅     |
+| `subscription` | —      | —      |
 
 `session` ships both sides. Client: `ActiveSession` voucher signing, the
 challenge-driven pull/clientVoucher payment-channel openers (fee payer =
@@ -319,8 +326,8 @@ gating inside a handler, mirrored by the per-framework shims:
 | `get_payment(request)`     | The verified `Payment`, `None` until paid |
 
 Each framework shim also exposes its own decorator/dependency form:
-`pay_kit.flask.require_payment`, `pay_kit.fastapi.RequirePayment`, and
-`pay_kit.django.require_payment`.
+`solana_pay_kit.flask.require_payment`, `solana_pay_kit.fastapi.RequirePayment`, and
+`solana_pay_kit.django.require_payment`.
 
 ## Inline pricing
 
@@ -378,14 +385,14 @@ Boot-time validations (all raise `ConfigurationError` or a subclass):
 
 ## Framework-first
 
-`pay_kit` carries no web-framework dependency in the base install. The
+`solana_pay_kit` carries no web-framework dependency in the base install. The
 framework shims live in optional submodules imported on demand:
 
-- `pay_kit.flask` (install `pay_kit[flask]`), a `@require_payment` view
+- `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), a `@require_payment` view
   decorator plus `is_paid` / `payment` request accessors.
-- `pay_kit.fastapi` (install `pay_kit[fastapi]`), a `RequirePayment`
+- `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a `RequirePayment`
   dependency for `Depends(...)` plus `install_exception_handler(app)`.
-- `pay_kit.django` (install `pay_kit[django]`), a `require_payment` view
+- `solana_pay_kit.django` (install `solana_pay_kit[django]`), a `require_payment` view
   decorator and an optional `PaymentMiddleware` stack form.
 
 Every shim delegates protocol/scheme dispatch and 402-challenge assembly to
@@ -396,7 +403,7 @@ Django) and its settlement headers are merged onto the success response.
 
 ```python
 # Imperative gating, no decorator, any framework:
-from pay_kit import require_payment
+from solana_pay_kit import require_payment
 
 def view(request):
     payment = require_payment(request)  # raises PaymentRequiredError if unpaid
@@ -410,12 +417,12 @@ def view(request):
 Runnable examples ship with this package:
 
 - [`examples/simple-server/server.py`](examples/simple-server/server.py), the
-  smallest pay_kit server: stdlib `http.server` with one gated endpoint over
-  the unified `pay_kit` surface, no web framework.
+  smallest solana_pay_kit server: stdlib `http.server` with one gated endpoint over
+  the unified `solana_pay_kit` surface, no web framework.
 - [`examples/fastapi/app.py`](examples/fastapi/app.py), FastAPI server using
   the `RequirePayment` dependency and `install_exception_handler`.
 - [`examples/flask/app.py`](examples/flask/app.py), Flask server gated with
-  the unified `pay_kit` surface (`@require_payment` decorator and the
+  the unified `solana_pay_kit` surface (`@require_payment` decorator and the
   `Pricing` registry).
 - [`examples/django/views.py`](examples/django/views.py), Django views +
   URLconf snippet using the `@require_payment` decorator.
@@ -431,11 +438,11 @@ pip install -e ".[dev]"
 ruff check src tests
 ruff format --check src tests
 pyright
-pytest --cov=pay_kit --cov-fail-under=90
+pytest --cov=solana_pay_kit --cov-fail-under=90
 ```
 
-The `pay_kit` surface is gated at 90 percent line coverage in CI. The
-`pay_kit.preflight` module is omitted from the gate: it wraps live Solana
+The `solana_pay_kit` surface is gated at 90 percent line coverage in CI. The
+`solana_pay_kit.preflight` module is omitted from the gate: it wraps live Solana
 RPC + Surfnet cheatcodes that cannot run inside the offline unit suite, and
 its two opt-out knobs are covered separately against a stubbed run/RPC.
 
@@ -466,7 +473,7 @@ credential shape are all defined at [paymentauth.org](https://paymentauth.org).
 
 ```text
 python/
-├── src/pay_kit/                              unified surface over x402 + MPP
+├── src/solana_pay_kit/                              unified surface over x402 + MPP
 │   ├── config.py, operator.py, signer.py, price.py, fee.py, gate.py,
 │   │   pricing.py, payment.py, preflight.py, errors.py    # umbrella surface
 │   ├── _paycore/                             Currency / Network / Protocol / Stablecoin / Mints / Solana
@@ -481,7 +488,7 @@ python/
 │           ├── server/                       charge handler, middleware, network check, defaults, payment page
 │           └── client/                       charge + transport
 ├── examples/simple-server/                   stdlib http.server, one gated endpoint
-├── examples/{fastapi,flask,django}/          pay_kit framework examples
+├── examples/{fastapi,flask,django}/          solana_pay_kit framework examples
 ├── tests/                                    pytest suite
 └── pyproject.toml
 ```

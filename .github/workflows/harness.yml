@@ -32,7 +32,7 @@ jobs:
       # cargo cache (key suffix "shared"), installs + typechecks the harness.
       - uses: ./.github/actions/setup-harness
         with:
-          cargo-bins: "solana-mpp:harness_client,harness_server solana-x402:harness_client,harness_server"
+          cargo-bins: "paykit-harness-bins:mpp_harness_client,mpp_harness_server,x402_harness_client,x402_harness_server"
           cargo-cache-key: shared
       - name: Upload @solana/mpp dist
         uses: actions/upload-artifact@v7
@@ -267,7 +267,7 @@ jobs:
       # timeout) instead of letting the smoke's `cargo run` cold-compile it.
       - name: Build Rust harness server
         working-directory: rust
-        run: cargo build -p solana-mpp --bin harness_server
+        run: cargo build -p paykit-harness-bins --bin mpp_harness_server
       - name: Build Swift harness client
         working-directory: harness/swift-client
         run: swift build
@@ -301,7 +301,7 @@ jobs:
       # instead of cold-compiling it inside the smoke's `cargo run`.
       - name: Build Rust x402 harness server
         working-directory: rust
-        run: cargo build -p solana-x402 --bin harness_server
+        run: cargo build -p paykit-harness-bins --bin x402_harness_server
       - name: Build Swift x402 harness client
         working-directory: harness/swift-x402-client
         run: swift build --quiet

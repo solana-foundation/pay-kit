@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit._paycore.store import MemoryStore
-from pay_kit.protocols.mpp.core.headers import format_authorization
-from pay_kit.protocols.mpp.core.types import PaymentCredential
-from pay_kit.protocols.mpp.server.charge import Config, Mpp
-from pay_kit.protocols.mpp.server.middleware import pay
+from solana_pay_kit._paycore.store import MemoryStore
+from solana_pay_kit.protocols.mpp.core.headers import format_authorization
+from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
+from solana_pay_kit.protocols.mpp.server.charge import Config, Mpp
+from solana_pay_kit.protocols.mpp.server.middleware import pay
 from tests.test_server import (
     TEST_RECIPIENT,
     TEST_SECRET,

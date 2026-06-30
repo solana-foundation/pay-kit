@@ -1,12 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/mpp",
-    "crates/programs/payment-channels",
-    "crates/programs/subscriptions",
-    "crates/x402",
     "crates/kit",
+    "crates/harness-bins",
+    "crates/integration-tests",
 ]
 
 # litesvm whose `solana-address` pin is loosened from `=2.2.0` so it can coexist

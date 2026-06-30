@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
     CommitPayload,
@@ -24,13 +24,13 @@ from pay_kit.protocols.mpp.intents.session import (
     VoucherData,
     VoucherPayload,
 )
-from pay_kit.protocols.mpp.server.session import (
+from solana_pay_kit.protocols.mpp.server.session import (
     DeliveryRequest,
     SessionConfig,
     SessionServer,
     Split,
 )
-from pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 

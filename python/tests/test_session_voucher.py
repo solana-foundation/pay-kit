@@ -10,8 +10,8 @@ import time
 
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
-from pay_kit.protocols.mpp.server.session_voucher import (
+from solana_pay_kit.protocols.mpp.intents.session import SignedVoucher, VoucherData
+from solana_pay_kit.protocols.mpp.server.session_voucher import (
     ChannelState,
     VerifyVoucherArgs,
     VoucherRejectReason,

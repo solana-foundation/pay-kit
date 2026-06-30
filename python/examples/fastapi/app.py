@@ -1,7 +1,7 @@
 # examples/fastapi/app.py
-"""FastAPI server gated with pay_kit.
+"""FastAPI server gated with solana_pay_kit.
 
-Zero-config: a bare ``pay_kit.configure()`` boots against solana_localnet
+Zero-config: a bare ``solana_pay_kit.configure()`` boots against solana_localnet
 (the hosted Surfpool sandbox at https://402.surfnet.dev:8899) with the
 shipped demo signer as the recipient. No keys, no .env, no flags.
 
@@ -27,11 +27,11 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI
 
-import pay_kit
-from pay_kit import Gate, Pricing, usd
-from pay_kit.fastapi import Payment, RequirePayment, install_exception_handler
+import solana_pay_kit
+from solana_pay_kit import Gate, Pricing, usd
+from solana_pay_kit.fastapi import Payment, RequirePayment, install_exception_handler
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
 
 class Catalog(Pricing):
@@ -42,8 +42,8 @@ class Catalog(Pricing):
             name="report",
             amount=usd("0.10"),
             description="Premium report",
-            default_pay_to=pay_kit.config().effective_recipient(),
-            accept_default=pay_kit.config().accept,
+            default_pay_to=solana_pay_kit.config().effective_recipient(),
+            accept_default=solana_pay_kit.config().accept,
         )
 
 
