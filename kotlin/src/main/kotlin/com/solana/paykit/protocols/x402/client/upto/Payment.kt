@@ -117,25 +117,30 @@ private fun lookupHeader(headers: Map<String, String>, name: String): String? {
  * its ``upto`` accepts (possibly empty), or ``null`` when the text is not a
  * parseable envelope so the caller can fall back to the next source.
  */
-private fun acceptsFrom(text: String): List<UptoRequirements>? =
-    try {
+private fun acceptsFrom(text: String): List<UptoRequirements>? {
+    return try {
         val obj = json.parseToJsonElement(text).jsonObject
         // A parseable envelope must carry x402Version (the rust spine requires it).
         // `accepts` is optional there (serde default), so an envelope that omits it
         // resolves to no offers rather than falling through to the next source.
-        obj["x402Version"] ?: return null
-        val accepts = obj["accepts"]?.jsonArray ?: return emptyList()
-        accepts.mapNotNull { element ->
-            val scheme = element.jsonObject["scheme"]?.jsonPrimitive?.content
-            if (scheme != UPTO_SCHEME) {
-                null
-            } else {
-                json.decodeFromJsonElement(UptoRequirements.serializer(), element).copy(raw = element)
+        when {
+            obj["x402Version"] == null -> null
+            else -> when (val accepts = obj["accepts"]?.jsonArray) {
+                null -> emptyList()
+                else -> accepts.mapNotNull { element ->
+                    val scheme = element.jsonObject["scheme"]?.jsonPrimitive?.content
+                    if (scheme != UPTO_SCHEME) {
+                        null
+                    } else {
+                        json.decodeFromJsonElement(UptoRequirements.serializer(), element).copy(raw = element)
+                    }
+                }
             }
         }
     } catch (_: Exception) {
         null
     }
+}
 
 // ── Payment building ──────────────────────────────────────────────────────────
 
