@@ -39,7 +39,6 @@ from solana_pay_kit._paycore.solana import (
 )
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.distribute import Distribute
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.open import Open
-from solana_pay_kit.protocols.programs.paymentchannels.instructions.settleAndFinalize import SettleAndFinalize
 from solana_pay_kit.protocols.programs.paymentchannels.instructions.topUp import TopUp
 from solana_pay_kit.protocols.programs.paymentchannels.types.distributeArgs import DistributeArgs
 from solana_pay_kit.protocols.programs.paymentchannels.types.distributionEntry import (
@@ -48,7 +47,6 @@ from solana_pay_kit.protocols.programs.paymentchannels.types.distributionEntry i
 from solana_pay_kit.protocols.programs.paymentchannels.types.openArgs import (
     OpenArgs as _OpenArgs,
 )
-from solana_pay_kit.protocols.programs.paymentchannels.types.settleAndFinalizeArgs import SettleAndFinalizeArgs
 from solana_pay_kit.protocols.programs.paymentchannels.types.topUpArgs import (
     TopUpArgs as _TopUpArgs,
 )
@@ -480,18 +478,14 @@ def build_settle_and_finalize_instructions(
         instructions.append(build_ed25519_verify_instruction(authorized_signer, signature, message))
         has_voucher = 1
 
-    settle = SettleAndFinalize(
-        {
-            # The program reads the voucher from the preceding ed25519 precompile;
-            # settle_and_finalize carries only the hasVoucher flag.
-            "settleAndFinalizeArgs": SettleAndFinalizeArgs(hasVoucher=has_voucher),
-        },
-        {
-            "merchant": merchant,
-            "channel": channel,
-            "instructionsSysvar": Pubkey.from_string(SYSVAR_INSTRUCTIONS),
-        },
-        program_id=program_id,
+    settle = Instruction(
+        program_id,
+        bytes([4, has_voucher]),
+        [
+            AccountMeta(pubkey=channel, is_signer=False, is_writable=True),
+            AccountMeta(pubkey=merchant, is_signer=True, is_writable=False),
+            AccountMeta(pubkey=Pubkey.from_string(SYSVAR_INSTRUCTIONS), is_signer=False, is_writable=False),
+        ],
     )
     instructions.append(settle)
     return instructions

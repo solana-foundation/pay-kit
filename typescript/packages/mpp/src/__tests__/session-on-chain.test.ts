@@ -166,12 +166,12 @@ describe('buildSettleAndFinalizeInstructions', () => {
 
         const ix = out.instructions[0]!;
         expect(ix.programAddress).toBe(PAYMENT_CHANNELS_PROGRAM_ID);
-        // accounts: merchant (signer/readonly), channel (writable), instructions sysvar (readonly)
+        // accounts: channel (writable), merchant (signer/readonly), instructions sysvar (readonly)
         expect(ix.accounts).toHaveLength(3);
-        expect(ix.accounts[0]!.address).toBe(merchant.address);
-        expect(ix.accounts[0]!.role).toBe(AccountRole.READONLY_SIGNER);
-        expect(ix.accounts[1]!.address).toBe(channelId);
-        expect(ix.accounts[1]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[0]!.address).toBe(channelId);
+        expect(ix.accounts[0]!.role).toBe(AccountRole.WRITABLE);
+        expect(ix.accounts[1]!.address).toBe(merchant.address);
+        expect(ix.accounts[1]!.role).toBe(AccountRole.READONLY_SIGNER);
         expect(ix.accounts[2]!.address).toBe(INSTRUCTIONS_SYSVAR_ADDRESS);
         expect(ix.accounts[2]!.role).toBe(AccountRole.READONLY);
 

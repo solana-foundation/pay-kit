@@ -41,7 +41,6 @@ import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
-import { getSettleAndFinalizeInstruction } from '../../generated/payment-channels/instructions/settleAndFinalize.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
 import { findEventAuthorityPda } from '../../generated/payment-channels/pdas/eventAuthority.js';
 import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../../generated/payment-channels/programs/paymentChannels.js';
@@ -246,18 +245,15 @@ export function buildSettleAndFinalizeInstructions(args: SettleAndFinalizeBuildA
         );
     }
 
-    const ix = getSettleAndFinalizeInstruction(
-        {
-            channel,
-            instructionsSysvar: INSTRUCTIONS_SYSVAR_ADDRESS,
-            merchant: args.merchantSigner,
-            // The program reads the voucher from the ed25519 precompile; the
-            // settle_and_finalize args carry only the hasVoucher flag.
-            settleAndFinalizeArgs: { hasVoucher },
-        },
-        { programAddress: programId },
-    );
-    instructions.push(ix as unknown as ServerInstruction);
+    instructions.push({
+        accounts: [
+            { address: channel, role: AccountRole.WRITABLE },
+            { address: args.merchantSigner.address, role: AccountRole.READONLY_SIGNER, signer: args.merchantSigner },
+            { address: INSTRUCTIONS_SYSVAR_ADDRESS, role: AccountRole.READONLY },
+        ],
+        data: new Uint8Array([4, hasVoucher]),
+        programAddress: programId,
+    } as unknown as ServerInstruction);
 
     return {
         instructions,

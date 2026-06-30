@@ -16,10 +16,12 @@ from solders.pubkey import Pubkey
 from solana_pay_kit.protocols.mpp._paymentchannels import (
     PAYMENT_CHANNELS_PROGRAM_ID,
     PROGRAM_ID,
+    SYSVAR_INSTRUCTIONS,
     Distribution,
     OpenChannelParams,
     TopUpParams,
     build_open_instruction,
+    build_settle_and_finalize_instructions,
     build_top_up_instruction,
     find_associated_token_address,
     find_channel_pda,
@@ -304,3 +306,30 @@ def test_build_top_up_instruction_data_roundtrip() -> None:
 def test_top_up_params_default_token_program_is_spl_token() -> None:
     params = TopUpParams(payer=pk(1), channel=pk(2), mint=pk(3), amount=1)
     assert str(params.token_program) == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+
+def test_build_settle_and_finalize_uses_deployed_account_order() -> None:
+    channel = pk(1)
+    merchant = pk(2)
+    instructions = build_settle_and_finalize_instructions(
+        channel=channel,
+        merchant=merchant,
+        authorized_signer=pk(3),
+        signature=None,
+        cumulative=0,
+        expires_at=0,
+    )
+
+    assert len(instructions) == 1
+    ix = instructions[0]
+    assert ix.program_id == PROGRAM_ID
+    assert bytes(ix.data) == bytes([4, 0])
+
+    accounts = ix.accounts
+    assert [account.pubkey for account in accounts] == [
+        channel,
+        merchant,
+        Pubkey.from_string(SYSVAR_INSTRUCTIONS),
+    ]
+    assert [account.is_signer for account in accounts] == [False, True, False]
+    assert [account.is_writable for account in accounts] == [True, False, False]
