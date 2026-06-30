@@ -21,8 +21,8 @@ from solders.message import Message  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.paymentchannels import (
-    Distribution,
     PAYMENT_CHANNELS_PROGRAM_ID,
+    Distribution,
     OpenChannelParams,
     build_open_instruction,
     find_channel_pda,

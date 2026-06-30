@@ -37,8 +37,8 @@ from spl.token.instructions import (  # type: ignore[import-untyped]
 from solana_pay_kit._paycore.currency import parse_units
 from solana_pay_kit._paycore.mints import resolve, token_program_for
 from solana_pay_kit._paycore.paymentchannels import (
-    Distribution,
     PAYMENT_CHANNELS_PROGRAM_ID,
+    Distribution,
     build_distribute_instruction,
     build_settle_and_finalize_instructions,
     treasury_owner,
