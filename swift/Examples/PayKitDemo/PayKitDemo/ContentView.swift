@@ -262,8 +262,46 @@ struct ContentView: View {
             return
         }
 
-        // Other non-charge intents (subscription, x402 `upto` usage) are
-        // multi-step flows with dedicated pay-kit APIs the tap demo doesn't drive.
+        // x402 `upto` (usage): authorize a ceiling by opening a payment channel,
+        // then the server meters actual usage and settles `actual <= max`,
+        // refunding the rest. One tap drives the whole flow through the upto
+        // client; the response body reports the metered amount billed.
+        if endpoint.intent == "upto" {
+            busy = .pay(endpoint.id)
+            defer { busy = nil }
+            let client = PayKit.HttpClient.x402Upto(
+                signer: signer,
+                settlementHeader: "x-payment-response"
+            )
+            let url = playgroundURL.appendingPathComponent(endpoint.path)
+            do {
+                let response = try await client
+                    .request(
+                        url,
+                        method: .post,
+                        headers: ["Accept": "application/json", "Content-Type": "text/plain"],
+                        body: Data("Solana is a fast, low-cost blockchain for payments and apps.".utf8)
+                    )
+                    .response()
+                let bodyString = String(data: response.body, encoding: .utf8) ?? ""
+                if (200..<300).contains(response.status) {
+                    append(.success(
+                        endpoint: endpoint,
+                        signature: response.settlementSignature,
+                        body: bodyString
+                    ))
+                    await refreshBalance()
+                } else {
+                    append(.failure(endpoint: endpoint, message: "HTTP \(response.status)\n\(bodyString)"))
+                }
+            } catch {
+                append(.failure(endpoint: endpoint, message: String(describing: error)))
+            }
+            return
+        }
+
+        // Other non-charge intents (subscription) are multi-step flows with
+        // dedicated pay-kit APIs the tap demo doesn't drive.
         guard endpoint.intent == "charge" else {
             append(.failure(
                 endpoint: endpoint,

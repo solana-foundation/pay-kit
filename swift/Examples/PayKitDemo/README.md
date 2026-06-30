@@ -8,6 +8,11 @@ Keychain-backed account, tops it up over Surfpool cheatcodes, then lets
 you consume any endpoint and surfaces each charge's settlement
 signature in an append-only log.
 
+The tap flow drives MPP charge, x402 `exact`, MPP `session`, and x402
+`upto` (usage): tapping the metered endpoint authorizes a ceiling, then
+the server meters actual usage and settles `actual <= max`, refunding the
+rest.
+
 ![PayKitDemo screenshot](docs/paykit-demo-screenshot.png)
 
 ## What you need
