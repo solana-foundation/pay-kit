@@ -27,7 +27,7 @@ public struct X402UptoInterceptor: PayKit.PaymentInterceptor {
         for response: HTTPURLResponse,
         body: Data
     ) async throws -> PayKit.RetryResult {
-        let rawHeaders = Self.allHeaders(from: response)
+        let rawHeaders = response.headerPairs()
         let bodyStr = String(decoding: body, as: UTF8.self)
         guard let requirement = parseUptoChallenge(headers: rawHeaders, body: bodyStr) else {
             throw MppError.unsupportedChallenge(
@@ -45,17 +45,6 @@ public struct X402UptoInterceptor: PayKit.PaymentInterceptor {
         return .retry(request: retry, paymentSent: payment)
     }
 
-    // MARK: - Private helpers
-
-    private static func allHeaders(from http: HTTPURLResponse) -> [(name: String, value: String)] {
-        var result: [(name: String, value: String)] = []
-        for (rawKey, _) in http.allHeaderFields {
-            guard let key = rawKey as? String,
-                  let value = http.value(forHTTPHeaderField: key) else { continue }
-            result.append((name: key, value: value))
-        }
-        return result
-    }
 }
 
 public extension PayKit.HttpClient {

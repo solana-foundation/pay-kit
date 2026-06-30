@@ -2,9 +2,6 @@ import Foundation
 
 // MARK: - x402 upto challenge parsing and payment building (payment-channel)
 
-/// Canonical v2 server challenge header name (lower-cased compare).
-let X402UptoPaymentRequiredHeaderName = "PAYMENT-REQUIRED"
-
 /// Maximum facilitator fee in basis points (100%).
 let X402UptoMaxFacilitatorFeeBps = 10_000
 
@@ -36,7 +33,7 @@ public func parseUptoAccepts(
     }
 
     var envelope: X402UptoRequiredEnvelope?
-    if let value = header(X402UptoPaymentRequiredHeaderName),
+    if let value = header(X402PaymentRequiredHeaderName),
        let data = Data(base64Encoded: value) {
         envelope = try? JSONDecoder().decode(X402UptoRequiredEnvelope.self, from: data)
     }
