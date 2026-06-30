@@ -103,6 +103,14 @@ module PayKit::Protocols::X402
             expect(instruction, keys, OPEN_PAYER, payer, "payer")
             expect(instruction, keys, OPEN_RENT_PAYER, operator, "rent_payer")
             expect(instruction, keys, OPEN_PAYEE, payee, "payee")
+            # The on-chain `open` requires payer + rent_payer to be signers
+            # (idl/payment-channels.json `open`, accounts 0/1). Matching only the
+            # pubkeys is not enough: a client can point those instruction slots at
+            # a non-signer account index, so the operator signs and pays the fee
+            # for a transaction the program then rejects. Pin both to signer
+            # positions in the message header before broadcast.
+            require_signer!(transaction, instruction, OPEN_PAYER, "payer")
+            require_signer!(transaction, instruction, OPEN_RENT_PAYER, "rent_payer")
             expect(instruction, keys, OPEN_MINT, mint, "mint")
             expect(instruction, keys, OPEN_AUTHORIZED_SIGNER, operator, "authorized_signer")
             expect(instruction, keys, OPEN_CHANNEL, channel_id, "channel")
@@ -160,6 +168,18 @@ module PayKit::Protocols::X402
           def expect(instruction, keys, position, want, label)
             got = account_at(instruction, keys, position)
             raise reject("open transaction #{label} mismatch: expected #{want}, got #{got || "<none>"}") unless got == want
+          end
+
+          # Assert the instruction account at `position` resolves to a signer
+          # slot in the message header. The compiled message lays out all
+          # required signers first, so an account key index below
+          # `header.required_signatures` is a signer (Solana message layout).
+          def require_signer!(transaction, instruction, position, label)
+            key_index = instruction.accounts[position]
+            required = transaction.message.header[:required_signatures]
+            unless !key_index.nil? && key_index < required
+              raise reject("open transaction #{label} must be a signer")
+            end
           end
 
           def account_at(instruction, keys, position)
