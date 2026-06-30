@@ -193,6 +193,27 @@ class ServerUptoTest < Minitest::Test
     assert_reject("already being processed") { engine.verify_open(header, now: now) }
   end
 
+  # The open broadcast and confirmed, but the post-broadcast channel read
+  # failed: no VerifiedOpen reaches the caller, so the channel id must be logged
+  # for manual reconciliation before the reservation is released.
+  def test_post_broadcast_read_failure_logs_channel_for_reconciliation
+    captured = []
+    fake_logger = Object.new
+    fake_logger.define_singleton_method(:warn) { |msg| captured << msg }
+    previous = ::PayKit.logger
+    ::PayKit.logger = fake_logger
+    engine, header, = build_case(salt: 24, channel_fetcher: ->(_c, _id) { raise "rpc unavailable" })
+    assert_raises(RuntimeError) { engine.verify_open(header, now: now) }
+    warning = captured.find { |m| m.include?(channel_id(24)) }
+    refute_nil warning, "expected an orphaned-channel warning naming the channel id"
+    assert_includes warning, "manual reconciliation"
+    # reservation released on failure: a retry hits the read error again, not
+    # the concurrent-request guard.
+    assert_raises(RuntimeError) { engine.verify_open(header, now: now) }
+  ensure
+    ::PayKit.logger = previous
+  end
+
   private
 
   def now = 1_000_000
@@ -205,7 +226,7 @@ class ServerUptoTest < Minitest::Test
   # corrupt exactly one input.
   def build_case(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
     open_salt: nil, open_deposit: nil, open_recipients_count: 0, open_grace_period: 900,
-    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil)
+    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, channel_fetcher: nil)
     cid = channel_id(salt)
     header = open_header(salt: salt, cid: cid, network: network, payload: payload,
       open_program: open_program, open_payee: open_payee || @payee,
@@ -218,7 +239,7 @@ class ServerUptoTest < Minitest::Test
         rpc_url: "http://localhost:8899", pay_to: @payee, facilitator_secret_key: @operator_secret,
         amount: MAX.to_s, mint: @mint, network: NETWORK, token_program: @token_program,
         transaction_sender: ->(_c, _b) { "SiGnAtUrE1111111111111111111111111111111111" },
-        signature_confirmer: ->(_c, sig) { sig }, channel_fetcher: ->(_c, _id) { fake },
+        signature_confirmer: ->(_c, sig) { sig }, channel_fetcher: channel_fetcher || ->(_c, _id) { fake },
         recent_blockhash_provider: -> { pubkey(9) }
       )
     )

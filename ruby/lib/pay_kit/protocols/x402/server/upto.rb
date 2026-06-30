@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "logger"
+
 require "pay_core/solana/account"
 require "pay_core/solana/caip2"
 require "pay_core/solana/mints"
@@ -188,6 +190,7 @@ module PayKit::Protocols::X402
 
         reserve_channel(channel_id)
         released = false
+        broadcast_done = false
         begin
           transaction = ::PayCore::Solana::Transaction.from_base64(payload["openTransaction"])
           Verifier.validate_open_instruction!(
@@ -202,6 +205,7 @@ module PayKit::Protocols::X402
 
           transaction.sign_with(@config.operator)
           broadcast_and_confirm(transaction.to_base64)
+          broadcast_done = true
 
           channel = fetch_channel(channel_id)
           validate_channel!(channel, payer: payer, max: parsed[:max])
@@ -214,6 +218,14 @@ module PayKit::Protocols::X402
           )
           released = true
           verified
+        rescue => error
+          # The open already broadcast and confirmed on-chain, but the
+          # post-broadcast read or validation failed, so no VerifiedOpen reaches
+          # the caller to settle or refund. The reservation is about to be
+          # released and the client told to pay again, so log the channel id
+          # loudly: the deposit may be locked and needs manual reconciliation.
+          log_orphaned_open(channel_id, error) if broadcast_done && !released
+          raise
         ensure
           release_channel(channel_id) unless released
         end
@@ -348,6 +360,24 @@ module PayKit::Protocols::X402
 
       def blank?(value)
         value.nil? || value.empty?
+      end
+
+      # Loud, actionable warning when an open confirmed on-chain but the
+      # post-broadcast read/validation failed, so no VerifiedOpen reaches the
+      # caller. Uses the PayKit logger convention so it lands alongside the rest
+      # of the application log; operators reconcile the channel by id.
+      def log_orphaned_open(channel_id, error)
+        logger.warn(
+          "x402 upto: channel #{channel_id} opened on-chain but the post-broadcast read failed; " \
+          "the payer deposit may be locked and the channel needs manual reconciliation " \
+          "(#{error.class}: #{error.message})"
+        )
+      end
+
+      def logger
+        ::PayKit.logger || (@default_logger ||= ::Logger.new($stderr).tap do |log|
+          log.formatter = proc { |_severity, _datetime, _progname, msg| "[PayKit] WARN: #{msg}\n" }
+        end)
       end
 
       def reject(message)
