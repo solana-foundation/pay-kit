@@ -200,6 +200,19 @@ class UsageMiddlewareTest < Minitest::Test
     assert body.closed
   end
 
+  def test_post_resource_settlement_failure_logs_channel_for_reconciliation
+    @engine.raise_on_settle = RuntimeError.new("rpc timeout")
+    log = StringIO.new
+    PayKit.logger = ::Logger.new(log).tap { |l| l.formatter = proc { |_s, _d, _p, msg| "#{msg}\n" } }
+
+    status, = @mw.call(env_for("/usage", header: "HDR", meter: 40_000))
+    assert_equal 502, status
+    assert_match(/chan_test/, log.string, "a post-resource settle failure must be logged with the channel id")
+    assert_match(/manual reconciliation/i, log.string, "the settle may land on-chain and charge the payer")
+  ensure
+    PayKit.logger = nil
+  end
+
   def test_app_exception_settles_zero_and_reraises
     boom = ->(env) {
       env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(40_000)

@@ -112,6 +112,7 @@ module PayKit
           settlement = @engine.settle_actual(open, settled)
         rescue => error
           close_body(body)
+          log_settlement_failure(open, settled, error)
           return settle_error(error)
         end
 
@@ -150,6 +151,20 @@ module PayKit
       rescue => settle_error
         open.release! if open.respond_to?(:release!)
         log_orphaned_channel(open, settle_error)
+      end
+
+      # A post-resource settlement broadcast may already have landed on-chain
+      # even though it raised here (RPC send or confirmation timeout). The client
+      # gets a 502, but the payer may already have been charged the metered
+      # amount, so log the channel id and amount loudly for manual reconciliation
+      # rather than returning the server error with no on-chain breadcrumb.
+      def log_settlement_failure(open, amount, error)
+        channel_id = open.respond_to?(:channel_id) ? open.channel_id : "unknown"
+        logger.warn(
+          "x402 upto: settlement of #{amount} failed for channel #{channel_id} after the resource ran; " \
+          "the settle transaction may still land on-chain and charge the payer, so the channel needs manual reconciliation " \
+          "(#{error.class}: #{error.message})"
+        )
       end
 
       # Loud, actionable warning when a compensating zero settlement fails and a
