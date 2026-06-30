@@ -258,7 +258,10 @@ mod tests {
         assert_eq!(json["amount"], "1000000");
         assert_eq!(json["maxTimeoutSeconds"], 300);
         assert_eq!(json["extra"]["assetTransferMethod"], "payment-channel");
-        assert_eq!(json["extra"]["facilitatorAddress"], req.extra.facilitator_address);
+        assert_eq!(
+            json["extra"]["facilitatorAddress"],
+            req.extra.facilitator_address
+        );
 
         let back: UptoRequirements = serde_json::from_value(json).unwrap();
         assert_eq!(back.max_amount().unwrap(), 1_000_000);

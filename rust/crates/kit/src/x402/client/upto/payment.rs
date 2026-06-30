@@ -52,9 +52,9 @@ pub async fn build_upto_payload(
         // Facilitator is the beneficiary — it keeps 100%, no split needed.
         Vec::new()
     } else {
-        let bps = 10_000u16.checked_sub(requirements.extra.facilitator_fee).ok_or_else(|| {
-            Error::Other("facilitatorFee exceeds 100%".to_string())
-        })?;
+        let bps = 10_000u16
+            .checked_sub(requirements.extra.facilitator_fee)
+            .ok_or_else(|| Error::Other("facilitatorFee exceeds 100%".to_string()))?;
         vec![pc::Distribution {
             recipient: beneficiary,
             bps,

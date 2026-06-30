@@ -215,10 +215,13 @@ impl X402 {
         // than an explicit options list, so the gateway path
         // (`payment_required_header` → here) advertises every accepted currency.
         let currencies = &self.config.currencies;
+        let blockhash_hint = self.recent_blockhash_hint();
         let mut accepts = Vec::with_capacity(currencies.len());
         for cc in currencies {
             let mut requirements = self.exact_requirements_for_currency(cc, amount, &options)?;
-            self.embed_recent_blockhash(&mut requirements);
+            if let Some(hint) = blockhash_hint.as_ref() {
+                Self::embed_recent_blockhash(&mut requirements, hint);
+            }
             accepts.push(requirements);
         }
         let resource = accepts[0].resource_info();
@@ -263,34 +266,40 @@ impl X402 {
     /// On the Surfpool sandbox this also lets a localnet client recognize the
     /// surfnet fork: the embedded blockhash carries the `SURFNETxSAFEHASH`
     /// sentinel the client keys on, regardless of the wire CAIP-2 network.
-    fn embed_recent_blockhash(&self, requirements: &mut PaymentRequirements) {
+    fn recent_blockhash_hint(&self) -> Option<crate::core::blockhash::CachedBlockhash> {
         // Prefer the shared cache (refreshed out of band) to avoid a blocking
         // RPC round-trip per challenge; fall back to a direct fetch. Skip
         // entirely when neither a cached entry nor an RPC URL is available.
-        let (blockhash, last_valid_block_height) =
-            match self.blockhash_cache.as_ref().and_then(|c| c.get()) {
-                Some(cached) => (cached.blockhash, cached.last_valid_block_height),
-                None => {
-                    if self.config.rpc_url.is_none() {
-                        return;
-                    }
-                    let Ok((blockhash, last_valid_block_height)) = self
-                        .rpc
-                        .get_latest_blockhash_with_commitment(self.rpc.commitment())
-                    else {
-                        return;
-                    };
-                    (blockhash.to_string(), last_valid_block_height)
-                }
-            };
-        requirements.recent_blockhash = Some(blockhash);
+        if let Some(cached) = self.blockhash_cache.as_ref().and_then(|c| c.get()) {
+            return Some(cached);
+        }
+        if self.config.rpc_url.is_none() {
+            return None;
+        }
+        let Ok((blockhash, last_valid_block_height)) = self
+            .rpc
+            .get_latest_blockhash_with_commitment(self.rpc.commitment())
+        else {
+            return None;
+        };
+        Some(crate::core::blockhash::CachedBlockhash {
+            blockhash: blockhash.to_string(),
+            last_valid_block_height,
+        })
+    }
+
+    fn embed_recent_blockhash(
+        requirements: &mut PaymentRequirements,
+        hint: &crate::core::blockhash::CachedBlockhash,
+    ) {
+        requirements.recent_blockhash = Some(hint.blockhash.clone());
         let extra = requirements
             .extra
             .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
         if let Some(obj) = extra.as_object_mut() {
             obj.insert(
                 "lastValidBlockHeight".to_string(),
-                serde_json::Value::String(last_valid_block_height.to_string()),
+                serde_json::Value::String(hint.last_valid_block_height.to_string()),
             );
         }
     }
@@ -400,9 +409,12 @@ impl X402 {
             ));
         }
         let mut accepts = Vec::with_capacity(options.len());
+        let blockhash_hint = self.recent_blockhash_hint();
         for option in options {
             let mut requirements = self.exact_requirements_for_option(option)?;
-            self.embed_recent_blockhash(&mut requirements);
+            if let Some(hint) = blockhash_hint.as_ref() {
+                Self::embed_recent_blockhash(&mut requirements, hint);
+            }
             accepts.push(requirements);
         }
         let resource = accepts[0].resource_info();
@@ -1392,6 +1404,33 @@ mod tests {
             envelope.accepts[0].token_program,
             envelope.accepts[1].token_program
         );
+    }
+
+    #[test]
+    fn exact_with_options_stamps_same_cached_blockhash_on_all_currencies() {
+        let cache = crate::core::blockhash::BlockhashCache::new();
+        let blockhash = Hash::new_from_array([7u8; 32]).to_string();
+        cache.set(blockhash.clone(), 123_456);
+        let x402 = X402::new(multi_currency_config(&["USDC", "PYUSD"]))
+            .unwrap()
+            .with_blockhash_cache(cache);
+
+        let envelope = x402
+            .exact_with_options("1.0", ExactOptions::default())
+            .unwrap();
+
+        assert_eq!(envelope.accepts.len(), 2);
+        for accept in &envelope.accepts {
+            assert_eq!(accept.recent_blockhash.as_deref(), Some(blockhash.as_str()));
+            assert_eq!(
+                accept
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.get("lastValidBlockHeight"))
+                    .and_then(|height| height.as_str()),
+                Some("123456")
+            );
+        }
     }
 
     /// With `accepted_currencies = None`, the single method behaves exactly as

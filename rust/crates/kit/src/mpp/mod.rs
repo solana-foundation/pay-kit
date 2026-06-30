@@ -43,8 +43,7 @@ pub mod program;
 pub mod protocol;
 pub mod store;
 
-/// Batched on-chain settlement — packing always; the background worker under
-/// the `settlement` feature. Shared with x402 via `solana-pay-core`.
+/// Batched on-chain settlement shared with x402.
 pub use crate::core::settlement;
 
 /// Shared, refresh-on-an-interval cache for a recent blockhash, so challenge

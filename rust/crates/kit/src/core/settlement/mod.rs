@@ -2,12 +2,10 @@
 //!
 //! [`packing`] is the pure, always-available size-bounded grouping of
 //! per-channel settlement instructions into legacy transactions. The background
-//! [`worker`] (feature `worker`) accumulates channels and flushes them on a size
-//! cap or a linger timer, signing with the operator and broadcasting.
+//! [`worker`] accumulates channels and flushes them on a size cap or a linger
+//! timer, signing with the operator and broadcasting.
 
 pub mod packing;
-
-#[cfg(feature = "settlement")]
 pub mod worker;
 
 /// Test/demo harness (open real channels, fund via cheatcodes, drive + observe

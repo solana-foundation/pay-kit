@@ -17,8 +17,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use solana_keychain::SolanaSigner;
 use solana_instruction::Instruction;
+use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -162,7 +162,6 @@ pub struct X402Upto {
     /// (see [`settle_actual_deferred`](Self::settle_actual_deferred)). Spawned
     /// on first use because it needs a tokio runtime; `Arc<OnceCell>` keeps the
     /// handler `Clone` while sharing one worker. Mirrors the mpp session path.
-    #[cfg(feature = "settlement")]
     settlement_worker:
         Arc<tokio::sync::OnceCell<crate::core::settlement::worker::SettlementHandle>>,
 }
@@ -210,7 +209,6 @@ impl X402Upto {
             operator,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             blockhash_cache: None,
-            #[cfg(feature = "settlement")]
             settlement_worker: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
@@ -791,7 +789,6 @@ impl X402Upto {
     /// The worker is spawned lazily on first use and shared across calls (it is
     /// keyed to this handler's operator + RPC), mirroring the mpp session
     /// settlement path.
-    #[cfg(feature = "settlement")]
     pub async fn settle_actual_deferred(
         &self,
         open: &VerifiedUptoOpen,
@@ -1614,7 +1611,10 @@ mod tests {
         let operator = Pubkey::new_unique(); // signs settle_and_finalize (merchant)
         let recipient = Pubkey::new_unique(); // payout target — NOT a signer
         let mint = Pubkey::new_unique();
-        assert_ne!(operator, recipient, "models recipient != operator (split keys)");
+        assert_ne!(
+            operator, recipient,
+            "models recipient != operator (split keys)"
+        );
 
         let params = OpenChannelParams {
             payer,
@@ -1691,7 +1691,11 @@ mod tests {
             engine.operator(),
             "facilitator must be the operator/settle-signer"
         );
-        assert_ne!(req.pay_to, engine.operator(), "payTo is the beneficiary, not the facilitator");
+        assert_ne!(
+            req.pay_to,
+            engine.operator(),
+            "payTo is the beneficiary, not the facilitator"
+        );
         assert_eq!(req.extra.facilitator_fee, 0, "no fee configured");
     }
 }

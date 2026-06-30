@@ -1,4 +1,4 @@
-//! Background batched-settlement worker (feature `worker`).
+//! Background batched-settlement worker.
 //!
 //! An mpsc actor that accumulates per-channel settlement instructions and
 //! flushes them as **legacy** transactions on either trigger:

@@ -15,8 +15,8 @@ default = ["mpp", "x402"]
 # both pull in the shared `core` + generated program clients.
 mpp = []
 x402 = []
-# Server-side verification helpers (tokio run-loops + axum extractor wiring).
-server = ["dep:tokio"]
+# Server-side verification helpers.
+server = []
 # Client-side transaction building + balance-aware `select` (needs serde_json
 # to decode MPP method details).
 client = ["dep:reqwest"]
@@ -40,15 +40,12 @@ confidential = [
     "dep:solana-keypair",
     "dep:solana-signer",
 ]
-# Batched on-chain settlement worker (tokio actor) shared by the mpp session
-# and x402 settlement paths. Pulls the background-worker deps.
-settlement = ["dep:tokio", "dep:async-trait"]
 # Single confidential-settlement worker run-loop (tokio actor) + the orphan
 # sweeper. Needs the server (tokio) + confidential settlement primitives, plus
 # solana-rpc-client-api for the getProgramAccounts scan.
 worker = ["confidential", "server", "dep:solana-rpc-client-api"]
 # Settlement test/demo harness (open real channels, fund, drive + observe).
-testkit = ["settlement", "dep:reqwest"]
+testkit = ["dep:reqwest"]
 # Generated program-client account fetch helpers (RPC). Off by default — the
 # pay-kit protocol layers only use instruction/type builders.
 fetch = ["dep:solana-account"]
@@ -123,8 +120,8 @@ bytemuck = { version = "1.25", optional = true }
 solana-keypair = { version = "3.0", optional = true }
 solana-signer = { version = "3.0", optional = true }
 
-# Async (server run-loops + settlement worker) — optional.
-tokio = { version = "1", features = ["full"], optional = true }
+# Async server run-loops + settlement worker.
+tokio = { version = "1", features = ["full"] }
 
 # HTTP client (client-side payment building + testkit cheatcodes) — optional.
 reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
@@ -154,7 +151,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 
 # Observability
 tracing = "0.1"
-async-trait = { version = "0.1", optional = true }
+async-trait = "0.1"
 
 # OpenTelemetry (feature `otel`) — optional.
 opentelemetry = { version = "0.31", optional = true }
@@ -177,10 +174,6 @@ axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 serde_json = "1"
 ed25519-dalek = "2"
-# Test mock signers impl the (#[async_trait]) solana-keychain SolanaSigner trait.
-# async-trait is otherwise only an optional dep (settlement feature), so make it
-# a dev-dep too — it must be available in any test build, not just settlement.
-async-trait = "0.1"
 base64 = "0.22"
 # Atomic solana crates the in-tree examples / unit tests import directly.
 solana-hash = { version = "3.1", default-features = false }

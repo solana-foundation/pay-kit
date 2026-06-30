@@ -9,7 +9,6 @@
 //! - `server` / `client` — server-side verification / client-side building.
 //! - `axum` — unified dual-protocol payment gate (needs both protocols).
 //! - `confidential` — Token-2022 confidential transfers (mpp).
-//! - `settlement` — batched on-chain settlement worker.
 //! - `gcp_kms` — GCP KMS signer support.
 //! - `otel` — OpenTelemetry init.
 //! - `testkit` — settlement test/demo harness.
