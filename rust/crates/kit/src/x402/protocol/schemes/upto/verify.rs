@@ -28,12 +28,7 @@ pub fn verify_upto_payload(
     if payload.profile != PROFILE_PAYMENT_CHANNEL {
         return Err(Error::InvalidPayloadType(payload.profile.clone()));
     }
-    if !requirements
-        .extra
-        .profiles
-        .iter()
-        .any(|p| p == &payload.profile)
-    {
+    if requirements.extra.asset_transfer_method != payload.profile {
         return Err(Error::Other(format!(
             "profile {} not advertised by the server",
             payload.profile
@@ -109,15 +104,14 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                decimals: Some(6),
+                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
                 token_program: None,
-                fee_payer: OPERATOR.to_string(),
+                facilitator_address: OPERATOR.to_string(),
+                facilitator_fee: 0,
                 channel_program: None,
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
-                distribution: Vec::new(),
             },
         }
     }

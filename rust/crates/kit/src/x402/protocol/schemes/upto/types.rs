@@ -26,20 +26,22 @@ fn upto_scheme() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UptoExtra {
-    /// Settlement profiles the server supports, in preference order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub profiles: Vec<String>,
-
-    /// Token decimals.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decimals: Option<u8>,
+    /// Asset transfer method for this `upto` requirement — EVM uses `"permit2"`,
+    /// SVM uses `"payment-channel"`.
+    pub asset_transfer_method: String,
 
     /// Token program address (legacy SPL or Token-2022).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_program: Option<String>,
 
-    /// Base58 operator/facilitator key authorized to settle.
-    pub fee_payer: String,
+    /// Base58 facilitator/operator key authorized to settle (and the channel's
+    /// on-chain payee + fee payer). Mirrors EVM upto's `extra.facilitatorAddress`.
+    pub facilitator_address: String,
+
+    /// Facilitator's cut in basis points (0–10000) of the settled amount; the
+    /// beneficiary (`payTo`) receives `10000 - facilitatorFee`. Omitted when 0.
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub facilitator_fee: u16,
 
     /// Channel program id; defaults to the canonical deployment when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,25 +60,10 @@ pub struct UptoExtra {
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
-
-    /// Bound distribution split the channel must commit to at open: each entry
-    /// is a beneficiary receiving `bps` basis points of the settled amount. The
-    /// channel payee (the operator) keeps the remainder. Empty ⇒ operator keeps
-    /// 100%. The server re-derives and validates this from its own config, so a
-    /// client cannot redirect funds.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub distribution: Vec<UptoDistribution>,
 }
 
-/// One advertised distribution beneficiary: `recipient` receives `bps` basis
-/// points of the settled amount (the channel payee keeps the remainder).
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct UptoDistribution {
-    /// Base58 beneficiary address.
-    pub recipient: String,
-    /// Basis points of the settled amount (0–10000).
-    pub bps: u16,
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 /// An `upto` payment requirement (the `accepted` object in a 402 challenge).
@@ -253,15 +240,14 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                decimals: Some(6),
+                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
                 token_program: None,
-                fee_payer: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                facilitator_address: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".to_string(),
+                facilitator_fee: 0,
                 channel_program: None,
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
-                distribution: Vec::new(),
             },
         }
     }
@@ -274,8 +260,8 @@ mod tests {
         assert_eq!(json["payTo"], req.pay_to);
         assert_eq!(json["amount"], "1000000");
         assert_eq!(json["maxTimeoutSeconds"], 300);
-        assert_eq!(json["extra"]["profiles"][0], "payment-channel");
-        assert_eq!(json["extra"]["feePayer"], req.extra.fee_payer);
+        assert_eq!(json["extra"]["assetTransferMethod"], "payment-channel");
+        assert_eq!(json["extra"]["facilitatorAddress"], req.extra.facilitator_address);
 
         let back: UptoRequirements = serde_json::from_value(json).unwrap();
         assert_eq!(back.max_amount().unwrap(), 1_000_000);

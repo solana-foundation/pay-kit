@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use solana_keychain::SolanaSigner;
+use solana_instruction::Instruction;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
@@ -157,6 +158,13 @@ pub struct X402Upto {
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
     /// directly (prior behaviour).
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
+    /// Lazily-spawned batched-settlement worker shared across deferred settles
+    /// (see [`settle_actual_deferred`](Self::settle_actual_deferred)). Spawned
+    /// on first use because it needs a tokio runtime; `Arc<OnceCell>` keeps the
+    /// handler `Clone` while sharing one worker. Mirrors the mpp session path.
+    #[cfg(feature = "settlement")]
+    settlement_worker:
+        Arc<tokio::sync::OnceCell<crate::core::settlement::worker::SettlementHandle>>,
 }
 
 fn now_unix() -> i64 {
@@ -202,6 +210,8 @@ impl X402Upto {
             operator,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             blockhash_cache: None,
+            #[cfg(feature = "settlement")]
+            settlement_worker: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
@@ -263,6 +273,25 @@ impl X402Upto {
     /// basis points, and the operator keeps `operator_fee_bps` as the payee
     /// remainder. `None` recipient ⇒ empty distribution (operator keeps 100%).
     /// Re-derived server-side at verify/settle so a client cannot redirect it.
+    /// EVM-aligned `payTo`: the beneficiary when configured, else the
+    /// facilitator (operator keeps everything).
+    fn pay_to(&self) -> String {
+        match &self.config.payout {
+            UptoPayout::Beneficiary { address, .. } => address.clone(),
+            UptoPayout::OperatorKeepsAll => self.operator(),
+        }
+    }
+
+    /// Facilitator's cut in basis points (0 when the operator keeps everything).
+    fn facilitator_fee_bps(&self) -> u16 {
+        match &self.config.payout {
+            UptoPayout::Beneficiary {
+                operator_fee_bps, ..
+            } => *operator_fee_bps,
+            UptoPayout::OperatorKeepsAll => 0,
+        }
+    }
+
     fn distribution(&self) -> Result<Vec<pc::Distribution>, Error> {
         let UptoPayout::Beneficiary {
             address,
@@ -318,27 +347,20 @@ impl X402Upto {
             network: caip2_network_for_cluster(&self.config.cluster).to_string(),
             amount: base_units,
             asset: pc::pubkey_string(&mint),
-            // The channel payee is the operator (the settle signer). The
-            // beneficiary is paid via `extra.distribution`, not by being payee.
-            pay_to: self.operator(),
+            // EVM-aligned: `payTo` is the beneficiary; the facilitator (operator)
+            // is advertised separately. The channel's on-chain payee = the
+            // facilitator is a client-side mapping (see `verify_open`/settle).
+            pay_to: self.pay_to(),
             max_timeout_seconds: self.config.max_timeout_seconds,
             extra: UptoExtra {
-                profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                decimals: Some(cc.decimals),
+                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
                 token_program: Some(pc::pubkey_string(&token_program)),
-                fee_payer: self.operator(),
+                facilitator_address: self.operator(),
+                facilitator_fee: self.facilitator_fee_bps(),
                 channel_program: Some(pc::pubkey_string(&self.program_id()?)),
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
-                distribution: self
-                    .distribution()?
-                    .iter()
-                    .map(|d| crate::x402::upto::UptoDistribution {
-                        recipient: pc::pubkey_string(&d.recipient),
-                        bps: d.bps,
-                    })
-                    .collect(),
             },
         })
     }
@@ -609,12 +631,59 @@ impl X402Upto {
     }
 
     /// Settle the actual metered amount (`actual ≤ max`) against a verified
-    /// open: `settle_and_finalize`, ATA setup, and `distribute`.
+    /// open: `settle_and_finalize`, ATA setup, and `distribute`, then broadcast
+    /// and confirm inline.
+    ///
+    /// Confirms before returning, so the on-chain confirm sits on the caller's
+    /// path. To keep settlement off a latency-sensitive path (e.g. the proxy's
+    /// response filter) and to batch concurrent settlements, prefer
+    /// [`settle_actual_deferred`](Self::settle_actual_deferred), which routes
+    /// the same instructions through the shared batched-settlement worker
+    /// (send-now, confirm-in-background).
     pub async fn settle_actual(
         &self,
         open: &VerifiedUptoOpen,
         actual: u64,
     ) -> Result<UptoSettlementResponse, Error> {
+        let instructions = self.settlement_instructions(open, actual).await?;
+
+        let blockhash = self
+            .rpc
+            .get_latest_blockhash()
+            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
+        let message = Message::new_with_blockhash(&instructions, Some(&self.operator), &blockhash);
+        let mut tx = Transaction::new_unsigned(message);
+        self.config
+            .operator_signer
+            .sign_transaction(&mut tx)
+            .await
+            .map_err(|e| Error::Other(format!("settle signing failed: {e}")))?;
+
+        let signature = self
+            .rpc
+            .send_and_confirm_transaction(&tx)
+            .map_err(|e| Error::Rpc(format!("settle broadcast failed: {e}")))?;
+
+        Ok(self.settlement_response(open, actual, signature.to_string()))
+    }
+
+    /// Build the settlement instructions (`settle_and_finalize`, ATA setup, and
+    /// `distribute`) for the actual metered amount (`actual ≤ max`) against a
+    /// verified open, signing the operator voucher but WITHOUT building,
+    /// signing, or broadcasting a transaction.
+    ///
+    /// Shared by [`settle_actual`](Self::settle_actual) (which wraps them in a
+    /// tx it signs + confirms) and the batched-settlement worker (which packs
+    /// instructions from several channels into one operator-signed tx). The
+    /// settle transaction is operator-signed only — the client's voucher
+    /// authorization rides inside the `settle_and_finalize` instruction data,
+    /// not as a transaction signature — so the worker can sign the envelope on
+    /// the caller's behalf.
+    pub async fn settlement_instructions(
+        &self,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+    ) -> Result<Vec<Instruction>, Error> {
         assert_settlement_within_ceiling(actual, open.max_amount)?;
 
         let mut instructions = if actual == 0 {
@@ -685,31 +754,76 @@ impl X402Upto {
             &open.program_id,
         ));
 
-        let blockhash = self
-            .rpc
-            .get_latest_blockhash()
-            .map_err(|e| Error::Rpc(format!("blockhash fetch failed: {e}")))?;
-        let message = Message::new_with_blockhash(&instructions, Some(&self.operator), &blockhash);
-        let mut tx = Transaction::new_unsigned(message);
-        self.config
-            .operator_signer
-            .sign_transaction(&mut tx)
-            .await
-            .map_err(|e| Error::Other(format!("settle signing failed: {e}")))?;
+        Ok(instructions)
+    }
 
-        let signature = self
-            .rpc
-            .send_and_confirm_transaction(&tx)
-            .map_err(|e| Error::Rpc(format!("settle broadcast failed: {e}")))?;
-
-        Ok(UptoSettlementResponse {
+    /// Build the `PAYMENT-RESPONSE` receipt for a settled `actual` amount and
+    /// its broadcast `signature`. Pure: pairs the settle signature (inline or
+    /// worker-provided) with the open's payer/network.
+    pub fn settlement_response(
+        &self,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+        signature: String,
+    ) -> UptoSettlementResponse {
+        UptoSettlementResponse {
             success: true,
             error_reason: None,
             payer: Some(pc::pubkey_string(&open.payer)),
-            transaction: signature.to_string(),
+            transaction: signature,
             network: open.network.clone(),
             amount: actual.to_string(),
-        })
+        }
+    }
+
+    /// Settle like [`settle_actual`](Self::settle_actual) but route the
+    /// instructions through the shared batched-settlement worker instead of
+    /// broadcasting inline: the worker packs concurrent channel settlements into
+    /// one operator-signed transaction, **sends without waiting for
+    /// confirmation**, and confirms/retries in the background. Returns once the
+    /// batch is sent, carrying the (already-final) settle signature for the
+    /// receipt — taking the multi-second confirm poll off the caller's path.
+    ///
+    /// The client's funds are locked by the confirmed channel `open`, so a
+    /// late or failed background confirm is an operator-retry concern (the
+    /// channel store sweeps it), not client-loss.
+    ///
+    /// The worker is spawned lazily on first use and shared across calls (it is
+    /// keyed to this handler's operator + RPC), mirroring the mpp session
+    /// settlement path.
+    #[cfg(feature = "settlement")]
+    pub async fn settle_actual_deferred(
+        &self,
+        open: &VerifiedUptoOpen,
+        actual: u64,
+    ) -> Result<UptoSettlementResponse, Error> {
+        use crate::core::settlement::worker::{spawn, RpcBroadcaster, SettlementConfig};
+
+        let instructions = self.settlement_instructions(open, actual).await?;
+
+        let operator = self.operator;
+        let signer = self.config.operator_signer.clone();
+        let rpc_url = self
+            .config
+            .rpc_url
+            .clone()
+            .unwrap_or_else(|| default_rpc_url(&self.config.cluster).to_string());
+        let handle = self
+            .settlement_worker
+            .get_or_init(|| async move {
+                spawn(
+                    SettlementConfig::new(operator, signer),
+                    Arc::new(RpcBroadcaster::new(rpc_url)),
+                )
+            })
+            .await;
+
+        let signature = handle
+            .settle(open.channel_id.to_string(), instructions)
+            .await
+            .map_err(|e| Error::Rpc(format!("upto settlement worker: {e}")))?;
+
+        Ok(self.settlement_response(open, actual, signature))
     }
 
     /// Verify the client transaction is exactly the expected payment-channels
@@ -1267,15 +1381,10 @@ mod tests {
             .expect("requirements should build");
         // Channel payee (pay_to) is the operator/settle-signer; the beneficiary
         // is paid via the bound distribution split, not by being the payee.
-        assert_eq!(req.pay_to, pc::pubkey_string(&operator));
-        assert_eq!(req.extra.fee_payer, pc::pubkey_string(&operator));
-        assert_eq!(
-            req.extra.distribution,
-            vec![crate::x402::upto::UptoDistribution {
-                recipient: pc::pubkey_string(&recipient),
-                bps: 10_000,
-            }]
-        );
+        // EVM-aligned wire: payTo = beneficiary, facilitator advertised separately.
+        assert_eq!(req.pay_to, pc::pubkey_string(&recipient));
+        assert_eq!(req.extra.facilitator_address, pc::pubkey_string(&operator));
+        assert_eq!(req.extra.facilitator_fee, 0);
     }
 
     #[tokio::test]
@@ -1570,19 +1679,19 @@ mod tests {
     /// RED until the payee=operator + recipient-as-split wiring lands; remove
     /// `#[ignore]` then.
     #[test]
-    fn upto_challenge_payee_is_the_settle_signer() {
-        let engine = multi_currency_engine(&["USDC"]); // recipient != operator
+    fn upto_challenge_advertises_facilitator_and_beneficiary() {
+        let engine = multi_currency_engine(&["USDC"]); // beneficiary != operator
         let req = engine
             .upto_requirements_for(&engine.config.currencies[0], "0.01")
             .expect("requirement builds");
-        // Channel payee (pay_to) is the operator/settle-signer; the configured
-        // beneficiary is advertised as a 100% distribution split.
+        // EVM-aligned: facilitator (the settle signer) is advertised separately;
+        // payTo is the beneficiary, distinct from the facilitator.
         assert_eq!(
-            req.pay_to,
+            req.extra.facilitator_address,
             engine.operator(),
-            "channel payee (pay_to) must be the settle signer"
+            "facilitator must be the operator/settle-signer"
         );
-        assert_eq!(req.extra.distribution.len(), 1, "beneficiary advertised as a split");
-        assert_eq!(req.extra.distribution[0].bps, 10_000, "100% to beneficiary (fee 0)");
+        assert_ne!(req.pay_to, engine.operator(), "payTo is the beneficiary, not the facilitator");
+        assert_eq!(req.extra.facilitator_fee, 0, "no fee configured");
     }
 }

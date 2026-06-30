@@ -31,37 +31,35 @@ pub async fn build_upto_payload(
     expires_at: i64,
     nonce: impl Into<String>,
 ) -> Result<UptoPayload, Error> {
-    if !requirements
-        .extra
-        .profiles
-        .iter()
-        .any(|p| p == PROFILE_PAYMENT_CHANNEL)
-    {
+    if requirements.extra.asset_transfer_method != PROFILE_PAYMENT_CHANNEL {
         return Err(Error::Other(
-            "requirement does not advertise the payment-channel profile".to_string(),
+            "requirement does not use the payment-channel asset transfer method".to_string(),
         ));
     }
 
     let max = requirements.max_amount()?;
     let mint = Pubkey::from_str(&requirements.asset)
         .map_err(|e| Error::Other(format!("invalid asset mint: {e}")))?;
-    // The channel payee/merchant is the operator (the only key that signs
-    // settlement). `pay_to` advertises the same operator; the real beneficiary
-    // is paid via the bound distribution split below.
-    let operator = Pubkey::from_str(&requirements.extra.fee_payer)
-        .map_err(|e| Error::Other(format!("invalid feePayer: {e}")))?;
-    let recipients = requirements
-        .extra
-        .distribution
-        .iter()
-        .map(|d| {
-            Ok(pc::Distribution {
-                recipient: Pubkey::from_str(&d.recipient)
-                    .map_err(|e| Error::Other(format!("invalid distribution recipient: {e}")))?,
-                bps: d.bps,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
+    // EVM-aligned: `facilitatorAddress` is the settler/operator. The Solana
+    // channel program requires the channel payee == the settle signer, so the
+    // channel is opened with payee = facilitator and the beneficiary (`payTo`)
+    // is paid via a derived distribution split of `10000 - facilitatorFee`.
+    let operator = Pubkey::from_str(&requirements.extra.facilitator_address)
+        .map_err(|e| Error::Other(format!("invalid facilitatorAddress: {e}")))?;
+    let beneficiary = Pubkey::from_str(&requirements.pay_to)
+        .map_err(|e| Error::Other(format!("invalid payTo: {e}")))?;
+    let recipients = if beneficiary == operator {
+        // Facilitator is the beneficiary — it keeps 100%, no split needed.
+        Vec::new()
+    } else {
+        let bps = 10_000u16.checked_sub(requirements.extra.facilitator_fee).ok_or_else(|| {
+            Error::Other("facilitatorFee exceeds 100%".to_string())
+        })?;
+        vec![pc::Distribution {
+            recipient: beneficiary,
+            bps,
+        }]
+    };
     let program_id = match &requirements.extra.channel_program {
         Some(value) => {
             Pubkey::from_str(value).map_err(|e| Error::Other(format!("invalid programId: {e}")))?
@@ -202,15 +200,14 @@ mod tests {
             pay_to: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
             max_timeout_seconds: 300,
             extra: UptoExtra {
-                profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
-                decimals: Some(6),
+                asset_transfer_method: PROFILE_PAYMENT_CHANNEL.to_string(),
                 token_program: None,
-                fee_payer: OPERATOR.to_string(),
+                facilitator_address: OPERATOR.to_string(),
+                facilitator_fee: 0,
                 channel_program: None,
                 recent_blockhash: Some(Hash::default().to_string()),
                 last_valid_block_height: None,
                 valid_after: None,
-                distribution: Vec::new(),
             },
         }
     }
@@ -261,7 +258,7 @@ mod tests {
 
         let parsed = parse_upto_challenge(&headers, None).unwrap();
         assert_eq!(parsed.amount, "1000000");
-        assert_eq!(parsed.extra.fee_payer, OPERATOR);
+        assert_eq!(parsed.extra.facilitator_address, OPERATOR);
     }
 
     #[test]

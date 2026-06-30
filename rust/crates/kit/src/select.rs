@@ -525,7 +525,9 @@ fn x402_upto_candidate(requirement: &UptoRequirements, order: usize) -> Option<C
         mint,
         network,
         amount,
-        decimals: requirement.extra.decimals.unwrap_or(6),
+        // upto no longer advertises decimals; our stablecoins are all 6-decimal,
+        // and decimals only affects cost-normalized ranking among them.
+        decimals: 6,
         source: Source::X402Upto(Box::new(requirement.clone())),
         order,
     })
@@ -780,7 +782,7 @@ mod tests {
                 "asset": currency,
                 "payTo": RECIPIENT,
                 "maxTimeoutSeconds": 300,
-                "extra": { "decimals": 6, "feePayer": RECIPIENT },
+                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
             }],
         })
         .to_string()
@@ -829,7 +831,7 @@ mod tests {
                 "asset": asset,
                 "payTo": RECIPIENT,
                 "maxTimeoutSeconds": 300,
-                "extra": { "decimals": 6, "feePayer": RECIPIENT },
+                "extra": { "assetTransferMethod": "payment-channel", "facilitatorAddress": RECIPIENT },
             })
         };
         serde_json::json!({ "x402Version": 2, "accepts": [entry(c1), entry(c2)] }).to_string()
