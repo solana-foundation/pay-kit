@@ -513,13 +513,16 @@ class UptoPaymentTest {
     }
 
     @Test
-    fun settlement_failure_response_without_transaction_parses() {
-        // A failure response omits `transaction`; deserializing it must not throw.
-        val body = """{"success":false,"errorReason":"insufficient_funds","network":"$network","amount":"0"}"""
+    fun settlement_failure_response_without_optional_fields_parses() {
+        // A generic failure response may omit transaction, network, and amount;
+        // deserializing it must not throw a MissingFieldException.
+        val body = """{"success":false,"errorReason":"blockhash_expired"}"""
         val back = json.decodeFromString(UptoSettlementResponse.serializer(), body)
         assertTrue(!back.success)
-        assertEquals("insufficient_funds", back.errorReason)
+        assertEquals("blockhash_expired", back.errorReason)
         assertEquals(null, back.transaction)
+        assertEquals(null, back.network)
+        assertEquals(null, back.amount)
     }
 
     @Test

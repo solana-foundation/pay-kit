@@ -132,8 +132,8 @@ data class UptoSettlementResponse(
     val payer: String? = null,
     /** Settlement transaction signature; absent on a failure response. */
     val transaction: String? = null,
-    /** CAIP-2 network identifier. */
-    val network: String,
-    /** Actual base units charged (may be ``0``). */
-    val amount: String,
+    /** CAIP-2 network identifier; absent on a generic failure response. */
+    val network: String? = null,
+    /** Actual base units charged (may be ``0``); absent on a failure response. */
+    val amount: String? = null,
 )
