@@ -582,7 +582,10 @@ private fun EndpointCard(
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold,
             color = Color.White,
-            maxLines = 2,
+            // One line (matching the iOS demo) so the price and protocol row
+            // below always fit the fixed-height card instead of being clipped
+            // when a long title would wrap to two lines.
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         Text(
