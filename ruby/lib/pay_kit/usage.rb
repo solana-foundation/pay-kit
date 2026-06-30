@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "logger"
 require "rack"
 
 require_relative "protocols/x402/runtime"
@@ -139,12 +140,34 @@ module PayKit
 
       # The protected app raised after the channel opened. Settle a zero charge
       # to close the channel and refund the payer; `settle_actual` releases the
-      # in-flight reservation in its own ensure even if the settle broadcast
-      # fails, so fall back to an explicit (idempotent) release on error.
+      # in-flight reservation in its own ensure even when the settle broadcast
+      # fails. If that compensating settlement fails the channel may still be
+      # open on-chain with the payer's deposit locked, and `release!` only clears
+      # the in-memory reservation — so log loudly with the channel id (operators
+      # must reconcile/refund it manually) instead of swallowing the failure.
       def release_after_app_failure(open)
         @engine.settle_actual(open, 0)
-      rescue
+      rescue => settle_error
         open.release! if open.respond_to?(:release!)
+        log_orphaned_channel(open, settle_error)
+      end
+
+      # Loud, actionable warning when a compensating zero settlement fails and a
+      # channel may be stranded on-chain. Uses the PayKit logger convention so it
+      # lands alongside the rest of the application log.
+      def log_orphaned_channel(open, error)
+        channel_id = open.respond_to?(:channel_id) ? open.channel_id : "unknown"
+        logger.warn(
+          "x402 upto: compensating zero settlement failed for channel #{channel_id}; " \
+          "the channel may remain open on-chain with the payer deposit locked and needs manual reconciliation " \
+          "(#{error.class}: #{error.message})"
+        )
+      end
+
+      def logger
+        ::PayKit.logger || (@default_logger ||= ::Logger.new($stderr).tap do |log|
+          log.formatter = proc { |_severity, _datetime, _progname, msg| "[PayKit] WARN: #{msg}\n" }
+        end)
       end
 
       # A post-resource settlement failure: report a server error, never a 402,

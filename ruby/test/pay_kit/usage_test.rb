@@ -52,7 +52,13 @@ class UsageMiddlewareTest < Minitest::Test
     attr_reader :settled_with
     attr_accessor :raise_on_verify, :raise_on_settle
 
-    Open = Struct.new(:max_amount)
+    Open = Struct.new(:max_amount, :channel_id, :released, keyword_init: true) do
+      def release!
+        self.released = true
+      end
+    end
+
+    attr_reader :last_open
 
     def initialize(raise_on_verify: nil)
       @raise_on_verify = raise_on_verify
@@ -64,7 +70,7 @@ class UsageMiddlewareTest < Minitest::Test
       raise @raise_on_verify if @raise_on_verify
 
       @verified_header = header
-      Open.new(100_000)
+      @last_open = Open.new(max_amount: 100_000, channel_id: "chan_test", released: false)
     end
 
     def settle_actual(_open, actual)
@@ -204,6 +210,26 @@ class UsageMiddlewareTest < Minitest::Test
     error = assert_raises(RuntimeError) { mw.call(env_for("/usage", header: "HDR")) }
     assert_equal "app boom", error.message
     assert_equal [0], @engine.settled_with, "an app failure must settle 0 to close and refund the channel"
+  end
+
+  def test_app_exception_with_failed_zero_settle_warns_about_orphaned_channel
+    @engine.raise_on_settle = RuntimeError.new("rpc timeout")
+    boom = ->(env) {
+      env[::PayKit::Usage::CHARGE_ENV_KEY]&.charge(40_000)
+      raise "app boom"
+    }
+    mw = ::PayKit::Usage::Middleware.new(boom, engine: @engine, resource_path: "/usage")
+
+    log = StringIO.new
+    PayKit.logger = ::Logger.new(log).tap { |l| l.formatter = proc { |_s, _d, _p, msg| "#{msg}\n" } }
+
+    error = assert_raises(RuntimeError) { mw.call(env_for("/usage", header: "HDR")) }
+    assert_equal "app boom", error.message, "the original app error still surfaces"
+    assert @engine.last_open.released, "the in-memory reservation is still released"
+    assert_match(/chan_test/, log.string, "a failed compensating settle must be logged with the channel id")
+    assert_match(/manual reconciliation/i, log.string, "operators must be told the deposit may be locked on-chain")
+  ensure
+    PayKit.logger = nil
   end
 
   private
