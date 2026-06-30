@@ -85,7 +85,10 @@ fn read_state(
     let program_id = env::var("PAYMENT_CHANNELS_PROGRAM_ID").ok();
 
     let upto = X402Upto::new(UptoConfig {
-        recipient: pay_to,
+        payout: solana_pay_kit::x402::server::UptoPayout::Beneficiary {
+            address: pay_to,
+            operator_fee_bps: 0,
+        },
         currencies: vec![CurrencyConfig {
             currency: mint,
             decimals: TOKEN_DECIMALS,

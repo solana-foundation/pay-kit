@@ -58,6 +58,25 @@ pub struct UptoExtra {
     /// Earliest activation time (Unix seconds).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<i64>,
+
+    /// Bound distribution split the channel must commit to at open: each entry
+    /// is a beneficiary receiving `bps` basis points of the settled amount. The
+    /// channel payee (the operator) keeps the remainder. Empty ⇒ operator keeps
+    /// 100%. The server re-derives and validates this from its own config, so a
+    /// client cannot redirect funds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub distribution: Vec<UptoDistribution>,
+}
+
+/// One advertised distribution beneficiary: `recipient` receives `bps` basis
+/// points of the settled amount (the channel payee keeps the remainder).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UptoDistribution {
+    /// Base58 beneficiary address.
+    pub recipient: String,
+    /// Basis points of the settled amount (0–10000).
+    pub bps: u16,
 }
 
 /// An `upto` payment requirement (the `accepted` object in a 402 challenge).
@@ -242,6 +261,7 @@ mod tests {
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
+                distribution: Vec::new(),
             },
         }
     }

@@ -50,8 +50,12 @@ const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
 /// Server configuration for the Solana x402 `upto` scheme.
 #[derive(Clone)]
 pub struct UptoConfig {
-    /// Base58 recipient (payTo) of the metered charge.
-    pub recipient: String,
+    /// Where settled funds go. The channel payee is always the operator (the
+    /// only key the server can sign settlement with); this only decides whether
+    /// the operator keeps everything or routes to a beneficiary via a bound
+    /// distribution split. The fee exists only in the `Beneficiary` variant —
+    /// meaningless without one — so the enum makes that unrepresentable.
+    pub payout: UptoPayout,
     /// Non-empty universe of currencies this server offers and accepts. `[0]`
     /// is the primary/default currency. The `upto` challenge advertises one
     /// `accepts[]` entry per currency and `verify_open` accepts a payment in any
@@ -75,6 +79,25 @@ pub struct UptoConfig {
     pub operator_signer: Arc<dyn SolanaSigner>,
 }
 
+/// Where an `upto` channel's settled funds go. The channel payee is always the
+/// operator (the only key the server can sign settlement with); this decides
+/// whether the operator keeps everything or routes to a beneficiary via a bound
+/// distribution split. Modeling the operator fee as a field of the
+/// `Beneficiary` variant makes "a fee with no beneficiary" unrepresentable.
+#[derive(Clone, Debug)]
+pub enum UptoPayout {
+    /// No separate beneficiary — the operator keeps the full settled amount.
+    OperatorKeepsAll,
+    /// Pay `address` via a `10000 - operator_fee_bps` distribution split; the
+    /// operator keeps `operator_fee_bps` (basis points, 0–10000) as remainder.
+    Beneficiary {
+        /// Base58 beneficiary (principal) address.
+        address: String,
+        /// Operator/facilitator cut in basis points of the settled amount.
+        operator_fee_bps: u16,
+    },
+}
+
 /// A confirmed, on-chain-verified channel open, carried from
 /// [`X402Upto::verify_open`] to [`X402Upto::settle_actual`].
 ///
@@ -92,6 +115,13 @@ pub struct VerifiedUptoOpen {
     pub max_amount: u64,
     pub expires_at: i64,
     pub network: String,
+    /// The channel's merchant/payee — the operator (the only key the server can
+    /// sign `settle_and_finalize` with). The real beneficiary is paid via
+    /// `distribution`, not by being the payee. See `verify_open`.
+    pub payee: Pubkey,
+    /// The bound distribution split validated at open (beneficiary at 100%).
+    /// Settlement must distribute to exactly this set.
+    pub distribution: Vec<pc::Distribution>,
     /// Releases this channel from the in-flight set on drop.
     _in_flight: InFlightGuard,
 }
@@ -138,14 +168,22 @@ fn now_unix() -> i64 {
 
 impl X402Upto {
     pub fn new(config: UptoConfig) -> Result<Self, Error> {
-        if config.recipient.is_empty() {
-            return Err(Error::Other("recipient is required".into()));
-        }
         if config.currencies.is_empty() {
             return Err(Error::Other("at least one currency is required".into()));
         }
-        Pubkey::from_str(&config.recipient)
-            .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
+        // Validate the beneficiary up front (the fee is intrinsic to the
+        // `Beneficiary` variant, so it can't exist without one).
+        if let UptoPayout::Beneficiary {
+            address,
+            operator_fee_bps,
+        } = &config.payout
+        {
+            Pubkey::from_str(address)
+                .map_err(|e| Error::Other(format!("Invalid recipient pubkey: {e}")))?;
+            if *operator_fee_bps > 10_000 {
+                return Err(Error::Other("operator_fee_bps must be <= 10000".into()));
+            }
+        }
 
         let operator = config.operator_signer.pubkey();
         let rpc_url = config
@@ -219,6 +257,33 @@ impl X402Upto {
         &self.config.currencies
     }
 
+    /// The bound distribution split for a settled channel. The channel payee is
+    /// always the operator (the only key the server can sign settlement with);
+    /// the configured `recipient` (when set) receives `10000 - operator_fee_bps`
+    /// basis points, and the operator keeps `operator_fee_bps` as the payee
+    /// remainder. `None` recipient ⇒ empty distribution (operator keeps 100%).
+    /// Re-derived server-side at verify/settle so a client cannot redirect it.
+    fn distribution(&self) -> Result<Vec<pc::Distribution>, Error> {
+        let UptoPayout::Beneficiary {
+            address,
+            operator_fee_bps,
+        } = &self.config.payout
+        else {
+            return Ok(Vec::new());
+        };
+        if *operator_fee_bps > 10_000 {
+            return Err(Error::Other(
+                "operator_fee_bps must be <= 10000".to_string(),
+            ));
+        }
+        let recipient = Pubkey::from_str(address)
+            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+        Ok(vec![pc::Distribution {
+            recipient,
+            bps: 10_000 - operator_fee_bps,
+        }])
+    }
+
     /// Build the `upto` payment requirement for the primary currency at the
     /// given authorized maximum.
     ///
@@ -253,7 +318,9 @@ impl X402Upto {
             network: caip2_network_for_cluster(&self.config.cluster).to_string(),
             amount: base_units,
             asset: pc::pubkey_string(&mint),
-            pay_to: self.config.recipient.clone(),
+            // The channel payee is the operator (the settle signer). The
+            // beneficiary is paid via `extra.distribution`, not by being payee.
+            pay_to: self.operator(),
             max_timeout_seconds: self.config.max_timeout_seconds,
             extra: UptoExtra {
                 profiles: vec![PROFILE_PAYMENT_CHANNEL.to_string()],
@@ -264,6 +331,14 @@ impl X402Upto {
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
+                distribution: self
+                    .distribution()?
+                    .iter()
+                    .map(|d| crate::x402::upto::UptoDistribution {
+                        recipient: pc::pubkey_string(&d.recipient),
+                        bps: d.bps,
+                    })
+                    .collect(),
             },
         })
     }
@@ -412,8 +487,11 @@ impl X402Upto {
                 Pubkey::from_str(tp)
                     .map_err(|e| Error::Other(format!("invalid matched token program: {e}")))
             })?;
-        let expected_payee = Pubkey::from_str(&self.config.recipient)
-            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+        // The channel payee/merchant is the operator — the only key that can
+        // sign `settle_and_finalize`. The beneficiary is paid via the bound
+        // distribution split (validated below), never by being the payee.
+        let expected_payee = self.operator;
+        let expected_distribution = self.distribution()?;
         let channel_id = Pubkey::from_str(&payload.channel_id)
             .map_err(|e| Error::Other(format!("invalid channelId: {e}")))?;
         let payer = Pubkey::from_str(&payload.from)
@@ -478,9 +556,11 @@ impl X402Upto {
                 actual: pc::pubkey_string(&pc::from_address(&channel.payee)),
             });
         }
-        // This first slice does not advertise split recipients, so bind the
-        // confirmed channel to the empty-recipient distribution before serving.
-        validate_empty_recipient_distribution_hash(&channel.distribution_hash)?;
+        // The channel must commit to exactly the distribution we expect (the
+        // beneficiary at `10000 - operator_fee_bps`, or empty when no recipient
+        // is configured), so settlement pays the right account and a client
+        // cannot redirect funds. Bound on-chain via the distribution hash.
+        validate_distribution_hash(&channel.distribution_hash, &expected_distribution)?;
         if pc::from_address(&channel.authorized_signer) != self.operator {
             return Err(Error::Other(
                 "channel authorized_signer is not the operator".to_string(),
@@ -522,6 +602,8 @@ impl X402Upto {
             max_amount: max,
             expires_at: payload.expires_at,
             network: requirements.network,
+            payee: expected_payee,
+            distribution: expected_distribution,
             _in_flight: in_flight,
         })
     }
@@ -566,8 +648,11 @@ impl X402Upto {
             )?
         };
 
-        let payee = Pubkey::from_str(&self.config.recipient)
-            .map_err(|e| Error::Other(format!("invalid recipient: {e}")))?;
+        // The channel payee is the operator (== the settle `merchant`); the
+        // bound distribution routes the metered amount to the beneficiary split
+        // and the operator keeps the remainder. Create the payee, treasury, and
+        // each beneficiary ATA before distributing.
+        let payee = open.payee;
         instructions.push(pc::build_create_associated_token_account_instruction(
             &self.operator,
             &payee,
@@ -580,6 +665,14 @@ impl X402Upto {
             &open.mint,
             &open.token_program,
         ));
+        for entry in &open.distribution {
+            instructions.push(pc::build_create_associated_token_account_instruction(
+                &self.operator,
+                &entry.recipient,
+                &open.mint,
+                &open.token_program,
+            ));
+        }
         instructions.push(pc::build_distribute_instruction(
             &open.channel_id,
             &open.payer,
@@ -587,7 +680,7 @@ impl X402Upto {
             &payee,
             &pc::treasury_owner(),
             &open.mint,
-            &[],
+            &open.distribution,
             &open.token_program,
             &open.program_id,
         ));
@@ -739,11 +832,17 @@ fn match_offered_requirement<'r>(
         })
 }
 
-fn validate_empty_recipient_distribution_hash(distribution_hash: &[u8; 32]) -> Result<(), Error> {
-    let expected = pc::distribution_hash(&[]);
-    if distribution_hash != &expected {
+/// Assert the channel committed (at open) to exactly the distribution the
+/// server expects. The on-chain `distribution_hash` binds the recipient split,
+/// so this guards that settlement pays the configured beneficiary and a client
+/// cannot redirect funds. An empty `expected` means the operator keeps 100%.
+fn validate_distribution_hash(
+    distribution_hash: &[u8; 32],
+    expected: &[pc::Distribution],
+) -> Result<(), Error> {
+    if distribution_hash != &pc::distribution_hash(expected) {
         return Err(Error::Other(
-            "x402 upto currently supports only empty-recipient payment channels".to_string(),
+            "channel distribution does not match the expected recipient split".to_string(),
         ));
     }
     Ok(())
@@ -1120,15 +1219,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_empty_recipient_distribution_hash() {
-        let empty = pc::distribution_hash(&[]);
-        assert!(validate_empty_recipient_distribution_hash(&empty).is_ok());
-
-        let non_empty = pc::distribution_hash(&[pc::Distribution {
-            recipient: Pubkey::new_unique(),
+    fn validate_distribution_hash_binds_the_expected_split() {
+        let recipient = Pubkey::new_unique();
+        let split = vec![pc::Distribution {
+            recipient,
             bps: 10_000,
-        }]);
-        assert!(validate_empty_recipient_distribution_hash(&non_empty).is_err());
+        }];
+
+        // Channel committed to exactly the expected split → accepted.
+        let bound = pc::distribution_hash(&split);
+        assert!(validate_distribution_hash(&bound, &split).is_ok());
+
+        // Channel committed to a different distribution (here: empty) → rejected,
+        // so a client cannot redirect the beneficiary's funds.
+        let empty = pc::distribution_hash(&[]);
+        assert!(validate_distribution_hash(&empty, &split).is_err());
+        // And empty-expected accepts only an empty commitment.
+        assert!(validate_distribution_hash(&empty, &[]).is_ok());
+        assert!(validate_distribution_hash(&bound, &[]).is_err());
     }
 
     #[test]
@@ -1136,7 +1244,10 @@ mod tests {
         let operator = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let engine = X402Upto::new(UptoConfig {
-            recipient: pc::pubkey_string(&recipient),
+            payout: UptoPayout::Beneficiary {
+                address: pc::pubkey_string(&recipient),
+                operator_fee_bps: 0,
+            },
             currencies: vec![CurrencyConfig {
                 currency: "USDC".to_string(),
                 decimals: 6,
@@ -1154,8 +1265,17 @@ mod tests {
         let req = engine
             .upto_requirements("1.00")
             .expect("requirements should build");
-        assert_eq!(req.pay_to, pc::pubkey_string(&recipient));
+        // Channel payee (pay_to) is the operator/settle-signer; the beneficiary
+        // is paid via the bound distribution split, not by being the payee.
+        assert_eq!(req.pay_to, pc::pubkey_string(&operator));
         assert_eq!(req.extra.fee_payer, pc::pubkey_string(&operator));
+        assert_eq!(
+            req.extra.distribution,
+            vec![crate::x402::upto::UptoDistribution {
+                recipient: pc::pubkey_string(&recipient),
+                bps: 10_000,
+            }]
+        );
     }
 
     #[tokio::test]
@@ -1263,7 +1383,10 @@ mod tests {
             })
             .collect();
         X402Upto::new(UptoConfig {
-            recipient: pc::pubkey_string(&Pubkey::new_unique()),
+            payout: UptoPayout::Beneficiary {
+                address: pc::pubkey_string(&Pubkey::new_unique()),
+                operator_fee_bps: 0,
+            },
             currencies,
             // Mainnet so PYUSD resolves to its Token-2022 mint (devnet PYUSD also
             // exists, but mainnet keeps the legacy-vs-2022 contrast crisp).
@@ -1359,5 +1482,107 @@ mod tests {
             err.to_string().contains("does not match any offered"),
             "got: {err}"
         );
+    }
+
+    // ── Bug 1 (settle `InvalidChannelPayee`, 0x6) — facilitator payee model ──
+    //
+    // `settle_and_finalize` requires its `merchant [signer]` account to equal
+    // `channel.payee`. The only account the server can sign with is the
+    // operator/authorized-signer, so the channel MUST be opened with
+    // `payee = operator`. When the payout recipient differs from the operator
+    // (the prod split-key config: recipient `Cs2z…`, KMS fee-payer `Bcdw…`),
+    // the recipient is paid via a *bound distribution split*, NOT by being the
+    // channel payee. Opening with `payee = recipient` is what reverts settle
+    // with 0x6.
+
+    /// Regression guard for the correct facilitator open: `payee = operator`
+    /// with the real recipient carried as a 100% distribution split. The open
+    /// must validate as operator-payee and must NOT validate as recipient-payee
+    /// (so `merchant = operator` at settle always matches `channel.payee`).
+    #[test]
+    fn facilitator_open_binds_channel_payee_to_the_settle_signer() {
+        let payer = Pubkey::new_unique();
+        let operator = Pubkey::new_unique(); // signs settle_and_finalize (merchant)
+        let recipient = Pubkey::new_unique(); // payout target — NOT a signer
+        let mint = Pubkey::new_unique();
+        assert_ne!(operator, recipient, "models recipient != operator (split keys)");
+
+        let params = OpenChannelParams {
+            payer,
+            rent_payer: operator,
+            payee: operator, // channel.payee == the settle signer
+            mint,
+            authorized_signer: operator,
+            salt: 7,
+            deposit: 1_000_000,
+            grace_period: 900,
+            // Real recipient is paid via a bound 100% split, not as the payee.
+            recipients: vec![crate::core::payment_channels::Distribution {
+                recipient,
+                bps: 10_000,
+            }],
+            token_program: token_program(),
+            program_id: pc::default_program_id(),
+        };
+        let channel = derive_channel_addresses(&params).channel;
+        let tx = unsigned_tx(&[build_open_instruction(&params)]);
+
+        // verify_open binds the channel payee to the operator (== settle merchant).
+        assert!(
+            validate_open_instruction(
+                &tx,
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &operator,
+                &mint,
+                &token_program(),
+                &channel,
+            )
+            .is_ok(),
+            "facilitator open (payee = operator) must validate"
+        );
+
+        // The recipient is NOT the channel payee: validating the same open as
+        // recipient-payee must fail — proving settle can't be authorized by a
+        // recipient that never signs (the shape that caused 0x6 in prod).
+        assert!(
+            validate_open_instruction(
+                &tx,
+                &pc::default_program_id(),
+                &operator,
+                &operator,
+                &payer,
+                &recipient,
+                &mint,
+                &token_program(),
+                &channel,
+            )
+            .is_err(),
+            "channel payee must be the operator/signer, never the payout recipient"
+        );
+    }
+
+    /// TDD spec for Bug 1's fix at the caller (challenge) layer: with
+    /// recipient != operator, the advertised `pay_to` (→ channel payee) must be
+    /// the operator/settle-signer, and the recipient is carried as a split.
+    /// RED until the payee=operator + recipient-as-split wiring lands; remove
+    /// `#[ignore]` then.
+    #[test]
+    fn upto_challenge_payee_is_the_settle_signer() {
+        let engine = multi_currency_engine(&["USDC"]); // recipient != operator
+        let req = engine
+            .upto_requirements_for(&engine.config.currencies[0], "0.01")
+            .expect("requirement builds");
+        // Channel payee (pay_to) is the operator/settle-signer; the configured
+        // beneficiary is advertised as a 100% distribution split.
+        assert_eq!(
+            req.pay_to,
+            engine.operator(),
+            "channel payee (pay_to) must be the settle signer"
+        );
+        assert_eq!(req.extra.distribution.len(), 1, "beneficiary advertised as a split");
+        assert_eq!(req.extra.distribution[0].bps, 10_000, "100% to beneficiary (fee 0)");
     }
 }

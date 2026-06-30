@@ -43,12 +43,26 @@ pub async fn build_upto_payload(
     }
 
     let max = requirements.max_amount()?;
-    let payee = Pubkey::from_str(&requirements.pay_to)
-        .map_err(|e| Error::Other(format!("invalid payTo: {e}")))?;
     let mint = Pubkey::from_str(&requirements.asset)
         .map_err(|e| Error::Other(format!("invalid asset mint: {e}")))?;
+    // The channel payee/merchant is the operator (the only key that signs
+    // settlement). `pay_to` advertises the same operator; the real beneficiary
+    // is paid via the bound distribution split below.
     let operator = Pubkey::from_str(&requirements.extra.fee_payer)
         .map_err(|e| Error::Other(format!("invalid feePayer: {e}")))?;
+    let recipients = requirements
+        .extra
+        .distribution
+        .iter()
+        .map(|d| {
+            Ok(pc::Distribution {
+                recipient: Pubkey::from_str(&d.recipient).map_err(|e| {
+                    Error::Other(format!("invalid distribution recipient: {e}"))
+                })?,
+                bps: d.bps,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     let program_id = match &requirements.extra.channel_program {
         Some(value) => {
             Pubkey::from_str(value).map_err(|e| Error::Other(format!("invalid programId: {e}")))?
@@ -73,13 +87,13 @@ pub async fn build_upto_payload(
     // operator is both the voucher signer (authorized_signer) and the fee payer.
     let open = pc::build_open_payment_channel_tx(
         payer_signer,
-        &payee,
+        &operator, // channel payee/merchant == authorized_signer == fee_payer
         &mint,
         &operator,
         salt,
         max,
         pc::DEFAULT_GRACE_PERIOD_SECONDS,
-        vec![],
+        recipients,
         &token_program,
         &program_id,
         &operator,
@@ -197,6 +211,7 @@ mod tests {
                 recent_blockhash: Some(Hash::default().to_string()),
                 last_valid_block_height: None,
                 valid_after: None,
+                distribution: Vec::new(),
             },
         }
     }

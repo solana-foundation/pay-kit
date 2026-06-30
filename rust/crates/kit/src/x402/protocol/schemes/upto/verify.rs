@@ -117,6 +117,7 @@ mod tests {
                 recent_blockhash: None,
                 last_valid_block_height: None,
                 valid_after: None,
+                distribution: Vec::new(),
             },
         }
     }
