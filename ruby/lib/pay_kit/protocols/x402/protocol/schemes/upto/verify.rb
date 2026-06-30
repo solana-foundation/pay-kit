@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
+require "ed25519"
+
 require "pay_core/solana/ata"
+require "pay_core/solana/base58"
 require "pay_core/solana/payment_channels"
 require "pay_core/solana/transaction"
 
@@ -85,6 +88,14 @@ module PayKit::Protocols::X402
           def validate_open_instruction!(transaction, program_id:, operator:, payer:, payee:, mint:, token_program:, channel_id:, max:)
             keys = transaction.message.account_keys
             instructions = transaction.message.instructions
+            # Reject v0 transactions that pull accounts from address lookup
+            # tables. This validator and the fee-payer co-sign resolve every
+            # account via the static key list; a non-empty ALT lookup could
+            # smuggle in accounts the position checks below cannot see, and the
+            # operator would blindly co-sign. Mirrors the Rust spine.
+            unless Array(transaction.message.address_table_lookups).empty?
+              raise reject("open transaction must not use address lookup tables")
+            end
             unless instructions.length == 1
               raise reject("open transaction must contain exactly one instruction, found #{instructions.length}")
             end
@@ -135,6 +146,14 @@ module PayKit::Protocols::X402
 
             validate_open_args!(instruction.data, max: max, payer: payer, payee: payee, mint: mint,
               operator: operator, channel_id: channel_id, program_id: program_id)
+
+            # Final check, once positions and signer slots are confirmed: every
+            # required signer other than the operator (whose slot the facilitator
+            # fills before broadcast) must already carry a valid signature over
+            # the message. A client can otherwise serialize a zeroed payer
+            # signature; the operator co-signs slot 0 and broadcasts, and the
+            # runtime rejects the open after the operator has paid the fee.
+            verify_cosigner_signatures!(transaction, operator, transaction.message.header[:required_signatures])
           end
 
           # Validate the OpenArgs the client signed before the operator spends a
@@ -190,6 +209,31 @@ module PayKit::Protocols::X402
             unless !key_index.nil? && key_index < required
               raise reject("open transaction #{label} must be a signer")
             end
+          end
+
+          # Verify the serialized signature bytes for every required signer slot
+          # except the operator's own (filled at co-sign). Rejects a zeroed or
+          # forged client signature before the operator spends a broadcast fee.
+          def verify_cosigner_signatures!(transaction, operator, required_signers)
+            message = transaction.message.raw
+            keys = transaction.message.account_keys
+            required_signers.times do |i|
+              signer = keys[i]
+              next if signer.nil? || signer == operator
+
+              signature = transaction.signatures[i]
+              unless valid_signature?(signer, signature, message)
+                raise reject("open transaction signer #{signer} is missing a valid signature")
+              end
+            end
+          end
+
+          def valid_signature?(pubkey, signature, message)
+            return false if signature.nil? || signature.bytesize != 64
+
+            ::Ed25519::VerifyKey.new(::PayCore::Solana::Base58.decode(pubkey)).verify(signature, message)
+          rescue
+            false
           end
 
           def account_at(instruction, keys, position)

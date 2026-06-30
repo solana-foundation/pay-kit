@@ -25,7 +25,12 @@ class ServerUptoTest < Minitest::Test
     signing = ::Ed25519::SigningKey.new(seed)
     @operator = base58(signing.verify_key.to_bytes.bytes)
     @operator_secret = JSON.generate(seed.bytes + signing.verify_key.to_bytes.bytes)
-    @payer = pubkey(2)
+    # The payer is a real keypair so fixtures can sign the open's payer slot;
+    # the server verifies that client signature before the operator co-signs.
+    payer_seed = "\x02".b * 32
+    payer_signing = ::Ed25519::SigningKey.new(payer_seed)
+    @payer = base58(payer_signing.verify_key.to_bytes.bytes)
+    @payer_account = ::PayCore::Solana::Account.new(payer_seed.bytes + payer_signing.verify_key.to_bytes.bytes)
     @payee = pubkey(3)
     @mint = PROGRAMS::MINTS.fetch("USDC").fetch("devnet")
     @token_program = PROGRAMS::TOKEN_PROGRAM
@@ -245,6 +250,12 @@ class ServerUptoTest < Minitest::Test
     assert_reject("signatures, expected") { engine.verify_open(tampered, now: now) }
   end
 
+  # The payer slot carries the right pubkey and a signer flag, but the client
+  # left its signature zeroed; reject before the operator co-signs and pays.
+  def test_rejects_open_with_unsigned_payer_slot
+    assert_reject("is missing a valid signature") { verify(salt: 27, sign_payer: false) }
+  end
+
   private
 
   # Decode a header, rewrite its openTransaction via the block, re-encode.
@@ -266,13 +277,13 @@ class ServerUptoTest < Minitest::Test
   def build_case(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
     open_salt: nil, open_deposit: nil, open_recipients_count: 0, open_grace_period: 900,
     open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, channel_fetcher: nil,
-    signature_confirmer: nil)
+    signature_confirmer: nil, sign_payer: true)
     cid = channel_id(salt)
     header = open_header(salt: salt, cid: cid, network: network, payload: payload,
       open_program: open_program, open_payee: open_payee || @payee,
       open_salt: open_salt || salt, open_deposit: open_deposit || MAX, open_recipients_count: open_recipients_count,
       open_grace_period: open_grace_period, open_payer_signer: open_payer_signer,
-      open_rent_payer_signer: open_rent_payer_signer, open_fee_payer: open_fee_payer)
+      open_rent_payer_signer: open_rent_payer_signer, open_fee_payer: open_fee_payer, sign_payer: sign_payer)
     fake = fake_channel(channel)
     engine = ::PayKit::Protocols::X402::Server::Upto.new(
       Upto::Config.new(
@@ -289,17 +300,17 @@ class ServerUptoTest < Minitest::Test
 
   def verify(salt:, payload: {}, channel: {}, network: NETWORK, open_program: PC::PROGRAM_ID, open_payee: nil,
     now_override: nil, open_salt: nil, open_deposit: nil, open_recipients_count: 0, open_grace_period: 900,
-    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil)
+    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, sign_payer: true)
     engine, header, = build_case(salt: salt, payload: payload, channel: channel, network: network,
       open_program: open_program, open_payee: open_payee,
       open_salt: open_salt, open_deposit: open_deposit, open_recipients_count: open_recipients_count,
       open_grace_period: open_grace_period, open_payer_signer: open_payer_signer,
-      open_rent_payer_signer: open_rent_payer_signer, open_fee_payer: open_fee_payer)
+      open_rent_payer_signer: open_rent_payer_signer, open_fee_payer: open_fee_payer, sign_payer: sign_payer)
     engine.verify_open(header, now: now_override || now)
   end
 
   def open_header(salt:, cid:, network:, payload:, open_program:, open_payee:, open_salt:, open_deposit:, open_recipients_count:, open_grace_period:,
-    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil)
+    open_payer_signer: true, open_rent_payer_signer: true, open_fee_payer: nil, sign_payer: true)
     payer_token = ::PayCore::Solana::ATA.derive(owner: @payer, mint: @mint, token_program: @token_program)
     channel_token = ::PayCore::Solana::ATA.derive(owner: cid, mint: @mint, token_program: @token_program)
     ea = PC.find_event_authority_pda
@@ -315,6 +326,9 @@ class ServerUptoTest < Minitest::Test
     open_recipients_count.times { data += ::PayCore::Solana::Base58.decode(@payee) + [1].pack("v") }
     tx = MB.build_legacy(fee_payer: open_fee_payer || @operator, recent_blockhash: pubkey(9),
       instructions: [::PayCore::Solana::PreparedInstruction.new(open_program, accounts, data)])
+    # The client signs the payer slot off-line before handing the open to the
+    # operator; only sign when the payer is actually a required signer.
+    tx.sign_with(@payer_account) if sign_payer && open_payer_signer
     body = {
       "profile" => "payment-channel", "from" => @payer, "maxAmount" => MAX.to_s, "expiresAt" => 4_102_444_800,
       "validAfter" => 0, "nonce" => "n#{salt}", "channelId" => cid, "deposit" => MAX.to_s,
