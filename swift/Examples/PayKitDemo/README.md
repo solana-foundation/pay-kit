@@ -13,7 +13,7 @@ The tap flow drives MPP charge, x402 `exact`, MPP `session`, and x402
 the server meters actual usage and settles `actual <= max`, refunding the
 rest.
 
-![PayKitDemo screenshot](docs/paykit-demo-screenshot.png)
+![PayKitDemo screenshot: OpenAPI endpoints and a settled x402 upto (metered) payment](docs/paykit-demo-screenshot.png)
 
 ## What you need
 

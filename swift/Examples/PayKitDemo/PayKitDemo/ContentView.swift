@@ -266,7 +266,7 @@ struct ContentView: View {
         // then the server meters actual usage and settles `actual <= max`,
         // refunding the rest. One tap drives the whole flow through the upto
         // client; the response body reports the metered amount billed.
-        if endpoint.intent == "upto" {
+        if endpoint.scheme == "upto" {
             busy = .pay(endpoint.id)
             defer { busy = nil }
             let client = PayKit.HttpClient.x402Upto(
@@ -457,6 +457,10 @@ struct Endpoint: Identifiable, Hashable {
     /// Discovery intent of the first offer (`charge` / `session` / …); the demo
     /// only settles `charge` over MPP and explains the rest.
     let intent: String
+    /// Scheme of the first offer (`exact` / `upto` / …) when present. A metered
+    /// `upto` route advertises the generic `charge` intent, so the demo routes by
+    /// this scheme to reach the usage flow.
+    let scheme: String?
     /// Accepted protocols in offer order, e.g. `["x402", "mpp"]`.
     let methods: [String]
     /// The protocol this demo actually settles over (`mpp` for charge endpoints
