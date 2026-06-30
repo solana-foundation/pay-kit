@@ -311,6 +311,26 @@ struct X402UptoBuildTests {
     }
 
     @Test
+    func feeTenThousandYieldsZeroBpsDistribution() async throws {
+        // A 100% facilitator fee leaves payTo with pay_to_bps = 10000 - 10000 = 0.
+        // The spec requires encoding payTo as a recipient whenever payTo differs
+        // from the operator, and the Rust/Go/Python clients emit the same 0-bps
+        // entry, so the client keeps wire parity rather than eliding it.
+        let signer = try UptoFixture.signer()
+        let req = UptoFixture.requirements(
+            extra: UptoFixture.extra(facilitatorFee: 10_000)
+        )
+        let payload = try await buildUptoPayload(
+            signer: signer, requirements: req, expiresAt: 1000, salt: 7
+        )
+        let payer = try Pubkey(bytes: signer.publicKey)
+        let decoded = try LegacyTxDecoder.decode(
+            base64: try #require(payload.openTransaction), payer: payer
+        )
+        #expect(decoded.recipientBps == [0])
+    }
+
+    @Test
     func openTransactionIsPayerSignedFeePayerUnsigned() async throws {
         let signer = try UptoFixture.signer()
         let req = UptoFixture.requirements()
