@@ -70,7 +70,7 @@ const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 /// for honest clients to bump priority during congestion without letting
 /// the merchant be drained.
 pub(crate) const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS_FEE_SPONSORED: u64 = 10_000;
-const SIMULATION_MAX_ATTEMPTS: usize = 1;
+const SIMULATION_MAX_ATTEMPTS: usize = 3;
 const SIMULATION_RETRY_DELAY_MS: u64 = 400;
 
 /// Audit #15: derive a per-app default realm from the recipient pubkey.
