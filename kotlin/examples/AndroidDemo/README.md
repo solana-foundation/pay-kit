@@ -8,6 +8,11 @@ a local signer, tops it up over Surfpool cheatcodes, and consumes any
 endpoint over MPP, surfacing each charge's settlement signature in an
 append-only log.
 
+The tap flow drives MPP charge, x402 `exact`, MPP `session`, and x402
+`upto` (usage): tapping the metered endpoint authorizes a ceiling, then
+the server meters actual usage and settles `actual <= max`, refunding the
+rest.
+
 ## Layout
 
 ```
