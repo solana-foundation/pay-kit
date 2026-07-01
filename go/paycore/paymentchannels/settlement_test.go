@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -91,6 +92,55 @@ func TestBuildEd25519VerifyInstructionLayout(t *testing.T) {
 func TestBuildEd25519VerifyInstructionRejectsOversizedMessage(t *testing.T) {
 	if _, err := BuildEd25519VerifyInstruction(fixedKey(1), [64]byte{}, make([]byte, 0x10000)); err == nil {
 		t.Fatal("expected oversized-message rejection")
+	}
+}
+
+// ── settle ──
+
+func TestBuildSettleInstructionsWithVoucher(t *testing.T) {
+	authorizedSigner := fixedKey(0x04)
+	channel := solana.MustPublicKeyFromBase58(zeroChannelID)
+	var signature [64]byte
+	for i := range signature {
+		signature[i] = 0xAA
+	}
+
+	instructions, err := BuildSettleInstructions(SettleParams{
+		Channel:          channel,
+		AuthorizedSigner: authorizedSigner,
+		Signature:        signature,
+		CumulativeAmount: 500,
+		ExpiresAt:        4_102_444_800,
+	})
+	if err != nil {
+		t.Fatalf("BuildSettleInstructions: %v", err)
+	}
+	if len(instructions) != 2 {
+		t.Fatalf("instructions = %d, want 2 (precompile + settle)", len(instructions))
+	}
+	if !instructions[0].ProgramID().Equals(Ed25519ProgramPubkey()) {
+		t.Fatalf("instruction 0 program = %s, want Ed25519 precompile", instructions[0].ProgramID())
+	}
+	precompileData, err := instructions[0].Data()
+	if err != nil {
+		t.Fatalf("precompile.Data: %v", err)
+	}
+	wantMessage, err := VoucherMessageBytes(channel, 500, 4_102_444_800)
+	if err != nil {
+		t.Fatalf("VoucherMessageBytes: %v", err)
+	}
+	if !bytes.Equal(precompileData[112:160], wantMessage) {
+		t.Fatal("precompile message != canonical 48-byte voucher payload")
+	}
+	settleData, err := instructions[1].Data()
+	if err != nil {
+		t.Fatalf("settle.Data: %v", err)
+	}
+	if len(settleData) != 1 {
+		t.Fatalf("settle data length = %d, want 1", len(settleData))
+	}
+	if settleData[0] != 2 {
+		t.Fatalf("discriminator = %d, want 2", settleData[0])
 	}
 }
 
@@ -219,10 +269,11 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	splitRecipient := solana.MustPublicKeyFromBase58("HQyfh1JGDB47A6Az4MD9KgF9LqcL3ESCkN8AT9Y8atGD")
 
 	ix, err := BuildDistributeInstruction(DistributeParams{
-		Channel: channel,
-		Payer:   payer,
-		Payee:   payee,
-		Mint:    mint,
+		Channel:   channel,
+		Payer:     payer,
+		RentPayer: fixedKey(0x02),
+		Payee:     payee,
+		Mint:      mint,
 		Recipients: []Distribution{
 			{Recipient: splitRecipient, Bps: 1000},
 			{Recipient: splitRecipient, Bps: 250},
@@ -237,14 +288,17 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	}
 
 	accounts := ix.Accounts()
-	if len(accounts) != 12 {
-		t.Fatalf("accounts = %d, want 12 (10 fixed + 2 recipient ATAs)", len(accounts))
+	// Distribute fixed head after the rentPayer (+1) shift: 0 channel, 1 payer,
+	// 2 rentPayer, 3 channelTokenAccount, 4 payerTokenAccount, 5 payeeToken,
+	// 6 treasuryToken, 7 mint, 8 tokenProgram, 9 eventAuthority, 10 selfProgram.
+	if len(accounts) != 13 {
+		t.Fatalf("accounts = %d, want 13 (11 fixed + 2 recipient ATAs)", len(accounts))
 	}
 	recipientATA, _, err := solana.FindAssociatedTokenAddressWithProgram(splitRecipient, mint, tokenProgram)
 	if err != nil {
 		t.Fatalf("derive recipient ATA: %v", err)
 	}
-	for slot := 10; slot < 12; slot++ {
+	for slot := 11; slot < 13; slot++ {
 		if !accounts[slot].PublicKey.Equals(recipientATA) {
 			t.Fatalf("tail account %d = %s, want recipient ATA %s", slot, accounts[slot].PublicKey, recipientATA)
 		}
@@ -256,8 +310,8 @@ func TestBuildDistributeAppendsRecipientTokenAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive treasury ATA: %v", err)
 	}
-	if !accounts[5].PublicKey.Equals(treasuryATA) {
-		t.Fatalf("treasury token account = %s, want %s", accounts[5].PublicKey, treasuryATA)
+	if !accounts[6].PublicKey.Equals(treasuryATA) {
+		t.Fatalf("treasury token account = %s, want %s", accounts[6].PublicKey, treasuryATA)
 	}
 
 	data, err := ix.Data()
@@ -283,6 +337,7 @@ func TestBuildDistributeZeroSplits(t *testing.T) {
 	ix, err := BuildDistributeInstruction(DistributeParams{
 		Channel:      solana.MustPublicKeyFromBase58(zeroChannelID),
 		Payer:        fixedKey(0x01),
+		RentPayer:    fixedKey(0x02),
 		Payee:        fixedKey(0x03),
 		Mint:         solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		TokenProgram: solana.TokenProgramID,
@@ -290,8 +345,8 @@ func TestBuildDistributeZeroSplits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDistributeInstruction: %v", err)
 	}
-	if len(ix.Accounts()) != 10 {
-		t.Fatalf("accounts = %d, want 10 fixed accounts only", len(ix.Accounts()))
+	if len(ix.Accounts()) != 11 {
+		t.Fatalf("accounts = %d, want 11 fixed accounts only", len(ix.Accounts()))
 	}
 	data, err := ix.Data()
 	if err != nil {
@@ -314,6 +369,7 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 	ix, err := BuildDistributeInstruction(DistributeParams{
 		Channel:      channel,
 		Payer:        fixedKey(0x01),
+		RentPayer:    fixedKey(0x02),
 		Payee:        payee,
 		Mint:         mint,
 		TokenProgram: token2022,
@@ -322,21 +378,23 @@ func TestBuildDistributeToken2022DerivesProgramSpecificATAs(t *testing.T) {
 		t.Fatalf("BuildDistributeInstruction: %v", err)
 	}
 	accounts := ix.Accounts()
-	if !accounts[7].PublicKey.Equals(token2022) {
-		t.Fatalf("token program account = %s, want Token-2022", accounts[7].PublicKey)
+	// After the rentPayer (+1) shift: payeeTokenAccount is slot 5, mint slot 7,
+	// tokenProgram slot 8.
+	if !accounts[8].PublicKey.Equals(token2022) {
+		t.Fatalf("token program account = %s, want Token-2022", accounts[8].PublicKey)
 	}
 	want2022, _, err := solana.FindAssociatedTokenAddressWithProgram(payee, mint, token2022)
 	if err != nil {
 		t.Fatalf("derive token-2022 ATA: %v", err)
 	}
-	if !accounts[4].PublicKey.Equals(want2022) {
-		t.Fatalf("payee token account = %s, want token-2022 ATA %s", accounts[4].PublicKey, want2022)
+	if !accounts[5].PublicKey.Equals(want2022) {
+		t.Fatalf("payee token account = %s, want token-2022 ATA %s", accounts[5].PublicKey, want2022)
 	}
 	wantLegacy, _, err := solana.FindAssociatedTokenAddressWithProgram(payee, mint, solana.TokenProgramID)
 	if err != nil {
 		t.Fatalf("derive legacy ATA: %v", err)
 	}
-	if accounts[4].PublicKey.Equals(wantLegacy) {
+	if accounts[5].PublicKey.Equals(wantLegacy) {
 		t.Fatal("payee token account was derived with the legacy token program")
 	}
 }
@@ -353,6 +411,7 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 
 	ix, err := BuildOpenInstruction(OpenChannelParams{
 		Payer:            fixedKey(0x01),
+		RentPayer:        fixedKey(0x02),
 		Payee:            fixedKey(0x03),
 		Mint:             solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		AuthorizedSigner: fixedKey(0x04),
@@ -373,5 +432,40 @@ func TestBuildOpenInstructionMatchesTypescriptGolden(t *testing.T) {
 	}
 	if got := hex.EncodeToString(data); got != goldenDataHex {
 		t.Fatalf("open instruction data mismatch\n got: %s\nwant: %s", got, goldenDataHex)
+	}
+}
+
+// ── rent-payer required guard ──
+
+// TestBuildersRejectZeroRentPayer locks the requirement that a caller must
+// pin the rent payer: the zero pubkey (the Go default, == system program)
+// would otherwise be placed into the required signer slot and pass local
+// validation while failing on-chain. Both builders must reject it up front.
+func TestBuildersRejectZeroRentPayer(t *testing.T) {
+	mint := solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+
+	_, err := BuildOpenInstruction(OpenChannelParams{
+		Payer:            fixedKey(0x01),
+		Payee:            fixedKey(0x03),
+		Mint:             mint,
+		AuthorizedSigner: fixedKey(0x04),
+		Salt:             1,
+		Deposit:          10,
+		GracePeriod:      900,
+		TokenProgram:     solana.TokenProgramID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rent_payer is required") {
+		t.Fatalf("BuildOpenInstruction with zero rent payer: got %v, want rent_payer-required error", err)
+	}
+
+	_, err = BuildDistributeInstruction(DistributeParams{
+		Channel:      solana.MustPublicKeyFromBase58(zeroChannelID),
+		Payer:        fixedKey(0x01),
+		Payee:        fixedKey(0x03),
+		Mint:         mint,
+		TokenProgram: solana.TokenProgramID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "rent_payer is required") {
+		t.Fatalf("BuildDistributeInstruction with zero rent payer: got %v, want rent_payer-required error", err)
 	}
 }

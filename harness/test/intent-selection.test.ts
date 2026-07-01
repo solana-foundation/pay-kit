@@ -22,12 +22,23 @@ describe("harness intent selection", () => {
     expect(selectHarnessIntents("session")).toEqual(["session"]);
   });
 
+  it("accepts the implemented x402-upto intent", () => {
+    expect(selectHarnessIntents("x402-upto")).toEqual(["x402-upto"]);
+  });
+
   it("accepts all intents at once", () => {
-    expect(selectHarnessIntents("charge,x402-exact,session")).toEqual([
+    expect(selectHarnessIntents("charge,x402-exact,session,x402-upto")).toEqual([
       "charge",
       "x402-exact",
       "session",
+      "x402-upto",
     ]);
+  });
+
+  it("rejects scenarios that are not implemented yet", () => {
+    expect(() => selectHarnessIntents("batch-settlement")).toThrow(
+      /Unsupported MPP_HARNESS_INTENTS/,
+    );
   });
 });
 
@@ -74,6 +85,14 @@ describe("harness scenario selection", () => {
     expect(
       selectHarnessScenarios("session", undefined).map((scenario) => scenario.id),
     ).toEqual(["session-basic"]);
+  });
+
+  it("returns x402-upto scenarios when explicitly requested", () => {
+    expect(
+      selectHarnessScenarios("x402-upto", undefined).map(
+        (scenario) => scenario.id,
+      ),
+    ).toEqual(["x402-upto-basic", "x402-upto-zero-actual"]);
   });
 
   it("runs one requested scenario", () => {

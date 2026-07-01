@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -56,6 +57,11 @@ type adapterResult struct {
 
 func main() {
 	switch resolveProtocolMode(os.Getenv) {
+	case "x402-upto":
+		if err := runX402UptoAdapter(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
 	case "x402":
 		if err := runX402Adapter(os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
@@ -131,6 +137,69 @@ func runX402Adapter(stdout io.Writer) error {
 		ResponseHeaders: responseHeaders(resp.Header),
 		ResponseBody:    parseResponseBody(rawBody),
 		Settlement:      resp.Header.Get(fixtureSettlementHeader),
+	}
+	return json.NewEncoder(stdout).Encode(result)
+}
+
+func runX402UptoAdapter(stdout io.Writer) error {
+	targetURL := os.Getenv("X402_HARNESS_TARGET_URL")
+	first, err := http.Get(targetURL)
+	if err != nil {
+		return fmt.Errorf("challenge request: %w", err)
+	}
+	defer first.Body.Close()
+	firstBody, err := io.ReadAll(first.Body)
+	if err != nil {
+		return fmt.Errorf("read challenge body: %w", err)
+	}
+	requirements, ok := x402client.ParseUptoChallenge(first.Header, firstBody)
+	if !ok {
+		return fmt.Errorf("server did not return a supported x402 upto challenge")
+	}
+
+	signer, err := readPrivateKeyEnv("X402_HARNESS_CLIENT_SECRET_KEY")
+	if err != nil {
+		return err
+	}
+	header, err := x402client.BuildUptoHeader(
+		context.Background(),
+		signer,
+		requirements,
+		time.Now().Add(time.Hour).Unix(),
+		fmt.Sprintf("go-upto-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		return fmt.Errorf("build upto payment header: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, targetURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Payment-Signature", header)
+	if actual := os.Getenv("X402_HARNESS_ACTUAL_AMOUNT"); actual != "" {
+		req.Header.Set("X402-HARNESS-ACTUAL-AMOUNT", actual)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("paid request: %w", err)
+	}
+	defer resp.Body.Close()
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+	headers := responseHeaders(resp.Header)
+	headers["payment-signature-sent"] = header
+	settlementHeader := envOrDefault("X402_HARNESS_SETTLEMENT_HEADER", fixtureSettlementHeader)
+	result := adapterResult{
+		Type:            "result",
+		Implementation:  "go",
+		Role:            "client",
+		OK:              resp.StatusCode >= 200 && resp.StatusCode < 300,
+		Status:          resp.StatusCode,
+		ResponseHeaders: headers,
+		ResponseBody:    parseResponseBody(rawBody),
+		Settlement:      resp.Header.Get(settlementHeader),
 	}
 	return json.NewEncoder(stdout).Encode(result)
 }

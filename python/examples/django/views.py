@@ -1,14 +1,14 @@
 # examples/django/views.py
-"""Django views + URLconf gated with pay_kit (snippet, not a full project).
+"""Django views + URLconf gated with solana_pay_kit (snippet, not a full project).
 
-Zero-config: ``pay_kit.configure()`` boots against solana_localnet (the
+Zero-config: ``solana_pay_kit.configure()`` boots against solana_localnet (the
 hosted Surfpool sandbox at https://402.surfnet.dev:8899) with the shipped
 demo signer as the recipient.
 
 Wire this into any Django project: drop the gate definitions and views
 below into an app, then ``path("report/", views.report)`` in your URLconf
 (the ``urlpatterns`` at the bottom of this file is ready to ``include()``).
-``pay_kit.configure(...)`` belongs in ``settings.py`` or ``apps.py.ready()``
+``solana_pay_kit.configure(...)`` belongs in ``settings.py`` or ``apps.py.ready()``
 so it runs once at startup.
 
 Two routes:
@@ -28,18 +28,18 @@ from __future__ import annotations
 from django.http import HttpRequest, JsonResponse
 from django.urls import path
 
-import pay_kit
-from pay_kit import Gate, usd
-from pay_kit.django import require_payment
+import solana_pay_kit
+from solana_pay_kit import Gate, usd
+from solana_pay_kit.django import require_payment
 
-pay_kit.configure(network="solana_localnet")
+solana_pay_kit.configure(network="solana_localnet")
 
 report_gate = Gate.build(
     name="report",
     amount=usd("0.10"),
     description="Premium report",
-    default_pay_to=pay_kit.config().effective_recipient(),
-    accept_default=pay_kit.config().accept,
+    default_pay_to=solana_pay_kit.config().effective_recipient(),
+    accept_default=solana_pay_kit.config().accept,
 )
 
 

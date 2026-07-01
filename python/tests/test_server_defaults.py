@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pay_kit.protocols.mpp.server.defaults import detect_realm, detect_secret_key
+from solana_pay_kit.protocols.mpp.server.defaults import detect_realm, detect_secret_key
 
 
 class TestDetectRealm:

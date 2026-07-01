@@ -16,18 +16,18 @@ from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp._paymentchannels import voucher_message_bytes
-from pay_kit.protocols.mpp.client.session import (
+from solana_pay_kit.protocols.mpp._paymentchannels import voucher_message_bytes
+from solana_pay_kit.protocols.mpp.client.session import (
     DEFAULT_VOUCHER_EXPIRES_AT,
     ActiveSession,
     parse_session_challenge,
     serialize_session_credential,
     session_request_modes,
 )
-from pay_kit.protocols.mpp.core.base64url import encode_json
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
-from pay_kit.protocols.mpp.core.types import PaymentChallenge
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.core.base64url import encode_json
+from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization
+from solana_pay_kit.protocols.mpp.core.types import PaymentChallenge
+from solana_pay_kit.protocols.mpp.intents.session import (
     SessionAction,
     SessionRequest,
     SignedVoucher,
@@ -36,7 +36,7 @@ from pay_kit.protocols.mpp.intents.session import (
 
 
 class _BytesSigner:
-    """A pay_kit-style signer: ``pubkey() -> str``, ``sign(bytes) -> bytes``."""
+    """A solana_pay_kit-style signer: ``pubkey() -> str``, ``sign(bytes) -> bytes``."""
 
     def __init__(self, seed: int) -> None:
         self._kp = Keypair.from_seed(bytes([seed] * 32))

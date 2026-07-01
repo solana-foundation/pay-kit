@@ -15,7 +15,7 @@
 //   pay curl -i http://127.0.0.1:4569/paid
 
 import net from "node:net";
-import { Surfnet } from "surfpool-sdk";
+import { Surfnet } from "@solana/surfpool";
 
 const PAY_WALLET = "7UZi5YiCCbrJDi1xKr3iRBds9xq3cq59Nd6vrNbP5Ex4";
 const RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
@@ -66,7 +66,9 @@ await new Promise((resolve, reject) => {
   });
 });
 
-console.log(`Surfpool ready at http://127.0.0.1:${rpcPort} -> ${surfnet.rpcUrl}`);
+console.log(
+  `Surfpool ready at http://127.0.0.1:${rpcPort} -> ${surfnet.rpcUrl}`,
+);
 console.log(`Pay wallet funded: SOL + 1000 USDC`);
 console.log(`Recipient ATA seeded: ${RECIPIENT} +0.001 USDC`);
 console.log();

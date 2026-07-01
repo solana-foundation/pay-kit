@@ -81,7 +81,7 @@ describe("x402 exact intent — cross-language matrix", () => {
   // (no real signed Solana transaction in the fixture) so they only
   // harnesserate with each other. The Rust spine adapters carry the
   // canonical PaymentProof and are exercised end-to-end by the rust
-  // crate's own integration tests (`cargo test -p solana-x402`).
+  // crate's own integration tests (`cargo test -p solana-pay-kit --lib x402`).
   // The cross-language matrix asserts the harness wiring and the
   // ready/result protocol; full TS<->Rust on-chain settlement parity
   // arrives with the TS SDK port (tracked separately).

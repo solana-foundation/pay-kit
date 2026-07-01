@@ -5,20 +5,20 @@ scenario by which env namespace the harness orchestrator sets (or by the
 explicit ``PAY_KIT_HARNESS_PROTOCOL`` hint). Mirrors ``harness/php-server/
 server.php`` and the Ruby/Lua pay-kit-server pattern.
 
-This adapter routes every request through the unified ``pay_kit`` surface:
+This adapter routes every request through the unified ``solana_pay_kit`` surface:
 
-  * x402 exact  -> ``pay_kit.protocols.x402.X402Adapter`` (the umbrella adapter)
-  * MPP charge  -> ``pay_kit.protocols.mpp.server.charge.Mpp`` (the lower-level wire)
+  * x402 exact  -> ``solana_pay_kit.protocols.x402.X402Adapter`` (the umbrella adapter)
+  * MPP charge  -> ``solana_pay_kit.protocols.mpp.server.charge.Mpp`` (the lower-level wire)
 
 This split mirrors the canonical PHP adapter (``harness/php-server/
 server.php``): x402 routes through the umbrella adapter, while MPP charge
-routes through the lower-level ``pay_kit.protocols.mpp`` handler. The umbrella's
+routes through the lower-level ``solana_pay_kit.protocols.mpp`` handler. The umbrella's
 ticker-based currency model (``Stablecoin`` enum -> ``Mints.resolve``) is the
 right surface for x402, where the offer's ``asset`` is the resolved on-chain
 mint; but the harness MPP charge matrix runs in *pubkey mode* (the harness
 deploys the scenario mint at an arbitrary ``MPP_HARNESS_MINT`` pubkey, not the
 canonical USDC mint), so the MPP challenge must advertise that literal mint as
-its ``currency``. The lower-level ``pay_kit.protocols.mpp`` handler takes the raw mint
+its ``currency``. The lower-level ``solana_pay_kit.protocols.mpp`` handler takes the raw mint
 directly, exactly as the PHP ``SolanaChargeHandler`` path does.
 
 Cross-route replay protection on the MPP path is enforced by
@@ -37,6 +37,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,7 @@ _python_src = _repo_root / "python" / "src"
 if _python_src.is_dir():
     sys.path.insert(0, str(_python_src))
 
-from pay_kit import (  # noqa: E402
+from solana_pay_kit import (  # noqa: E402
     Config,
     Gate,
     Network,
@@ -64,24 +65,26 @@ from pay_kit import (  # noqa: E402
     Signer,
     Stablecoin,
 )
-from pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
-from pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
-from pay_kit._paycore.store import MemoryStore  # noqa: E402
-from pay_kit.errors import InvalidProofError  # noqa: E402
-from pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
-from pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
-from pay_kit.protocols.mpp.server import (  # noqa: E402
+from solana_pay_kit._paycore.errors import PaymentError, canonical_code  # noqa: E402
+from solana_pay_kit._paycore.rpc import SolanaRpc  # noqa: E402
+from solana_pay_kit._paycore.store import MemoryStore  # noqa: E402
+from solana_pay_kit.errors import InvalidProofError  # noqa: E402
+from solana_pay_kit.protocols.mpp.core.headers import format_www_authenticate, parse_authorization, parse_receipt  # noqa: E402
+from solana_pay_kit.protocols.mpp.intents.charge import ChargeRequest  # noqa: E402
+from solana_pay_kit.protocols.mpp.server import (  # noqa: E402
     SessionChallengeOptions,
     SessionOptions,
     new_session,
     session_routes,
 )
-from pay_kit.protocols.mpp.server.charge import (  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.charge import (  # noqa: E402
     ChargeOptions,
     Mpp,
 )
-from pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
-from pay_kit.protocols.x402 import X402Adapter  # noqa: E402
+from solana_pay_kit.protocols.mpp.server.charge import Config as MppServerConfig  # noqa: E402
+from solana_pay_kit.protocols.x402 import X402Adapter  # noqa: E402
+from solana_pay_kit.protocols.x402.upto import X402Upto  # noqa: E402
+from solana_pay_kit.usage import Charge, finalize_usage  # noqa: E402
 
 
 def require_env(name: str) -> str:
@@ -104,7 +107,7 @@ def _free_port() -> int:
 
 
 def _resolve_network(raw: str) -> Network:
-    """Map the harness network string to a pay_kit Network enum.
+    """Map the harness network string to a solana_pay_kit Network enum.
 
     Charge scenarios send the short slug ``localnet``; x402 scenarios send a
     CAIP-2 string (``solana:<genesis>``). Mirrors PHP ``resolve_network``.
@@ -135,6 +138,27 @@ def _base_units_to_human(base_units: str, decimals: int) -> str:
     return f"{sign}{quotient}.{fraction}"
 
 
+def _fetch_blockhash_sync(rpc_url: str) -> str | None:
+    """Fetch a recent blockhash via a blocking JSON-RPC call (no asyncio).
+
+    The x402 upto challenge requires ``extra.recentBlockhash`` so the client can
+    build the channel-open transaction. ``accepts_entry`` runs both at challenge
+    time and inside ``verify_open`` (itself under ``asyncio.run``), so the
+    provider must be synchronous to avoid nesting event loops.
+    """
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash", "params": [{"commitment": "confirmed"}]}
+    ).encode("utf-8")
+    request = urllib.request.Request(rpc_url, data=body, headers={"content-type": "application/json"})  # noqa: S310
+    try:
+        with urllib.request.urlopen(request, timeout=10) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+        blockhash = data["result"]["value"]["blockhash"]
+        return blockhash if isinstance(blockhash, str) and blockhash else None
+    except Exception:  # noqa: BLE001 - blockhash fetch is best-effort at challenge time
+        return None
+
+
 def _coin_for_mint(mint: str) -> Stablecoin:
     """Pick the settlement Stablecoin for the scenario mint.
 
@@ -153,6 +177,8 @@ def _coin_for_mint(mint: str) -> Stablecoin:
 def _detect_protocol() -> str:
     """Decide which protocol this run exercises (mirror PHP detection)."""
     explicit = optional_env("PAY_KIT_HARNESS_PROTOCOL", "").lower()
+    if explicit in ("x402-upto", "upto"):
+        return "upto"
     if explicit in ("x402", "mpp", "charge", "session"):
         return "mpp" if explicit == "charge" else explicit
     x402_set = bool(os.environ.get("X402_HARNESS_RPC_URL"))
@@ -167,13 +193,15 @@ def _detect_protocol() -> str:
 
 
 class _Adapter:
-    """Holds the built pay_kit adapter plus per-route gate amounts."""
+    """Holds the built solana_pay_kit adapter plus per-route gate amounts."""
 
     def __init__(self) -> None:
         self.protocol = _detect_protocol()
         self.x402 = self.protocol == "x402"
         if self.protocol == "x402":
             self._build_x402()
+        elif self.protocol == "upto":
+            self._build_upto()
         elif self.protocol == "session":
             self._build_session()
         else:
@@ -208,6 +236,42 @@ class _Adapter:
         self.routes = {self.resource_path: _base_units_to_human(amount_units, decimals)}
         self.replay_path = ""
 
+    # -- x402 upto ------------------------------------------------------------
+
+    def _build_upto(self) -> None:
+        rpc_url = require_env("X402_HARNESS_RPC_URL")
+        pay_to = require_env("X402_HARNESS_PAY_TO")
+        facilitator_json = require_env("X402_HARNESS_FACILITATOR_SECRET_KEY")
+        mint = optional_env("X402_HARNESS_MINT", "USDC")
+        network_raw = optional_env("X402_HARNESS_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
+        self.resource_path = optional_env("X402_HARNESS_RESOURCE_PATH", "/usage")
+        self.settlement_header = optional_env("X402_HARNESS_SETTLEMENT_HEADER", "x-payment-settlement-signature").lower()
+        self.price = optional_env("X402_HARNESS_PRICE", "0.10")
+        # The metered amount the handler "charges" after serving (base units).
+        self.actual_amount = int(optional_env("X402_HARNESS_ACTUAL_AMOUNT", "0"))
+        self.coin = _coin_for_mint(mint)
+        program_id = os.environ.get("PAYMENT_CHANNELS_PROGRAM_ID") or None
+
+        signer = Signer.json(facilitator_json)
+        config = Config(
+            network=_resolve_network(network_raw),
+            accept=(Protocol.X402,),
+            stablecoins=(self.coin,),
+            rpc_url=rpc_url,
+            operator=Operator(recipient=pay_to, signer=signer, fee_payer=True),
+            preflight=False,
+        ).model_copy()
+        self.config = config
+        self.pay_to = pay_to
+        self.rpc_url = rpc_url
+        self.upto_engine = X402Upto(
+            config,
+            channel_program=program_id,
+            recent_blockhash_provider=lambda: _fetch_blockhash_sync(rpc_url),
+        )
+        self.routes = {self.resource_path: self.price}
+        self.replay_path = ""
+
     # -- mpp ------------------------------------------------------------------
 
     def _build_mpp(self) -> None:
@@ -234,7 +298,7 @@ class _Adapter:
             fee_payer = Keypair.from_bytes(bytes(json.loads(fee_payer_raw)))
         self.fee_payer = fee_payer
 
-        # Build the lower-level pay_kit.protocols.mpp handler with the raw mint. The
+        # Build the lower-level solana_pay_kit.protocols.mpp handler with the raw mint. The
         # ``Mpp`` server boots with ``rpc=None``; a request-lifetime
         # ``SolanaRpc`` is scoped via ``using_rpc`` in the request path.
         config = MppServerConfig(
@@ -361,7 +425,9 @@ class HarnessHandler(BaseHTTPRequestHandler):
 
         request = self._request_bag()
 
-        if adapter.x402:
+        if adapter.protocol == "upto":
+            self._handle_upto(adapter, adapter.gate_for(self.path), request)
+        elif adapter.x402:
             self._handle_x402(adapter, adapter.gate_for(self.path), request)
         else:
             self._handle_mpp(adapter, request)
@@ -410,6 +476,47 @@ class HarnessHandler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {"ok": True, "paid": True, "protocol": "x402", "transaction": payment.transaction},
+            extra_headers=headers,
+        )
+
+    def _handle_upto(self, adapter: _Adapter, gate: Gate, request: dict[str, Any]) -> None:
+        engine = adapter.upto_engine
+        if not request["headers"].get("payment-signature"):
+            challenge_headers = engine.challenge_headers(gate, request)
+            accepts = engine.accepts_entry(gate, request)
+            self._send_json(
+                402,
+                {"error": "payment_required", "resource": self.path, "accepts": [accepts]},
+                extra_headers=challenge_headers,
+            )
+            return
+        try:
+            verified = asyncio.run(engine.verify_open(gate, request))
+        except InvalidProofError as err:
+            self._send_json(
+                402,
+                {"error": err.code or "invalid_proof", "code": err.code, "message": str(err)},
+                extra_headers=engine.challenge_headers(gate, request),
+            )
+            return
+        # Serve the resource: meter the configured actual amount, then settle
+        # after the handler (fail-closed on a zero/absent charge, like Go PayKit).
+        charge = Charge(verified.max_amount)
+        if adapter.actual_amount > 0:
+            charge.charge(adapter.actual_amount)
+        outcome = asyncio.run(finalize_usage(engine, verified, charge))
+        if not outcome.ok:
+            self._send_json(
+                402,
+                {"error": "payment_required", "code": outcome.code, "message": outcome.detail or ""},
+                extra_headers=engine.challenge_headers(gate, request),
+            )
+            return
+        headers = dict(outcome.settlement_headers)
+        headers[adapter.settlement_header] = outcome.transaction
+        self._send_json(
+            200,
+            {"ok": True, "paid": True, "protocol": "x402-upto", "transaction": outcome.transaction},
             extra_headers=headers,
         )
 

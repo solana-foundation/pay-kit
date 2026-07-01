@@ -15,7 +15,7 @@ import struct
 
 import pytest
 
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
     CommitPayload,

@@ -1,0 +1,41 @@
+name: Setup PayKit harness leg
+description: >-
+  Per-language harness leg setup. Reuses the build job's prebuilt @solana/mpp
+  dist (artifact) and shared cargo cache instead of rebuilding them, then
+  installs the harness. Add the language toolchain BEFORE this step and the
+  adapter build + smoke run AFTER it.
+
+runs:
+  using: composite
+  steps:
+    - name: Download prebuilt @solana/mpp dist
+      uses: actions/download-artifact@v7
+      with:
+        name: mpp-dist
+        path: typescript/packages/mpp/dist
+    - uses: pnpm/action-setup@v5
+      with:
+        package_json_file: package.json
+    - uses: actions/setup-node@v5
+      with:
+        node-version: 22
+        cache: pnpm
+        cache-dependency-path: typescript/pnpm-lock.yaml
+    # Harness smokes drive Rust adapters via `cargo run`; reuse the build job's
+    # warmed cargo cache so the dependency tree is already compiled. (macOS legs
+    # miss this cache — different runner.os — and compile Rust themselves, as
+    # they do today.)
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Restore shared cargo cache
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust/target
+        key: ${{ runner.os }}-cargo-shared-harness-${{ hashFiles('rust/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-shared-harness-
+    - name: Install harness
+      working-directory: harness
+      shell: bash
+      run: pnpm install --frozen-lockfile

@@ -58,9 +58,22 @@ describe('x402 upto engine', () => {
         expect(entry.scheme).toBe('upto');
         expect(entry.amount).toBe('1000000'); // 1.00 USDC ceiling
         expect(entry.payTo).toBe(config.operator.recipient);
-        expect((entry.extra as { facilitator?: string }).facilitator).toBe(config.operator.signer.pubkey);
+        expect((entry.extra as { assetTransferMethod?: string }).assetTransferMethod).toBe('payment-channel');
+        expect((entry.extra as { facilitatorAddress?: string }).facilitatorAddress).toBe(config.operator.signer.pubkey);
+        expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(0);
         expect((entry.extra as { feePayer?: string }).feePayer).toBe(config.operator.signer.pubkey);
-        expect((entry.extra as { profiles?: string[] }).profiles).toContain('payment-channel');
+    });
+
+    it('advertises the configured facilitator fee', async () => {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-test-secret' },
+            network: 'solana_localnet',
+            x402: { facilitatorFee: 250 },
+        });
+        const upto = new X402Upto(config);
+        const [entry] = upto.accepts(usd('1.00'));
+
+        expect((entry.extra as { facilitatorFee?: number }).facilitatorFee).toBe(250);
     });
 
     it('detects the payment header and emits a challenge', async () => {

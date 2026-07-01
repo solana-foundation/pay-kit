@@ -26,16 +26,16 @@ from solders.transaction import (  # type: ignore[import-untyped]
     VersionedTransaction,
 )
 
-from pay_kit._paycore.errors import PaymentError
-from pay_kit._paycore.solana import TOKEN_PROGRAM
-from pay_kit.protocols.mpp._paymentchannels import (
+from solana_pay_kit._paycore.errors import PaymentError
+from solana_pay_kit._paycore.solana import TOKEN_PROGRAM
+from solana_pay_kit.protocols.mpp._paymentchannels import (
     PROGRAM_ID,
     OpenChannelParams,
     build_open_instruction,
     find_channel_pda,
 )
-from pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
-from pay_kit.protocols.mpp.server.session_onchain import (
+from solana_pay_kit.protocols.mpp.intents.session import OpenPayload, TopUpPayload
+from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     is_placeholder_signature,
     new_open_tx_verifier,
@@ -136,6 +136,7 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=payer.pubkey(),
         )
     )
     fixture = OpenTxFixture(
@@ -155,6 +156,9 @@ def build_open_tx_fixture(v0: bool) -> OpenTxFixture:
         max_cap=5_000_000,
         network="localnet",
         recipient=str(payee),
+        # operator is the expected rentPayer (required); the fixture pins
+        # rentPayer to its own payer.
+        operator=str(payer.pubkey()),
     )
     return fixture
 
@@ -201,6 +205,70 @@ async def test_verify_open_tx_honors_explicit_mint_and_program_overrides() -> No
     assert result.channel_id == str(fixture.channel)
 
 
+async def test_verify_open_tx_rejects_address_lookup_tables() -> None:
+    """A v0 open tx that resolves accounts through an address lookup table is
+    rejected: ``verify_open_tx`` validates the open instruction's accounts
+    against the static account keys and re-derives the channel PDA from them, so
+    an ALT could hide the real rentPayer / payee / mint behind indices the
+    verifier cannot see. The operator must never co-sign such a transaction.
+    """
+    from solders.address_lookup_table_account import (  # type: ignore[import-untyped]
+        AddressLookupTableAccount,
+    )
+
+    payer = _kp(1)
+    payee = _kp(2).pubkey()
+    authorized = _kp(3).pubkey()
+    mint = Pubkey.from_string(USDC_MAINNET_MINT)
+    channel, _ = find_channel_pda(payer.pubkey(), payee, mint, authorized, OPEN_FIXTURE_SALT, PROGRAM_ID)
+    ix = build_open_instruction(
+        OpenChannelParams(
+            payer=payer.pubkey(),
+            payee=payee,
+            mint=mint,
+            authorized_signer=authorized,
+            salt=OPEN_FIXTURE_SALT,
+            deposit=OPEN_FIXTURE_DEPOSIT,
+            grace_period=OPEN_FIXTURE_GRACE,
+            token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=payer.pubkey(),
+        )
+    )
+    # Stuff some of the instruction's read-only accounts into a lookup table so
+    # ``MessageV0.try_compile`` emits a non-empty ``address_table_lookups`` list.
+    lookup_addresses = [meta.pubkey for meta in ix.accounts if not meta.is_signer]
+    alt = AddressLookupTableAccount(key=_kp(9).pubkey(), addresses=lookup_addresses)
+    blockhash = Hash.from_string("EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N")
+    message_v0 = MessageV0.try_compile(payer.pubkey(), [ix], [alt], blockhash)
+    vtx = VersionedTransaction(message_v0, [payer])
+    # Confirm the fixture actually exercises an ALT before asserting rejection.
+    assert message_v0.address_table_lookups
+
+    encoded = base64.b64encode(bytes(vtx)).decode("ascii")
+    payload = OpenPayload.payment_channel(
+        str(channel),
+        str(OPEN_FIXTURE_DEPOSIT),
+        str(payer.pubkey()),
+        str(payee),
+        str(mint),
+        OPEN_FIXTURE_SALT,
+        OPEN_FIXTURE_GRACE,
+        str(authorized),
+        str(vtx.signatures[0]),
+    ).with_transaction(encoded)
+    expected = VerifyOpenTxExpected(
+        authorized_signer=str(authorized),
+        currency="USDC",
+        max_cap=5_000_000,
+        network="localnet",
+        recipient=str(payee),
+        operator=str(payer.pubkey()),
+    )
+
+    with pytest.raises(PaymentError, match="address lookup tables"):
+        await verify_open_tx(expected, payload, None)
+
+
 # -- verify_open_tx: failure modes --------------------------------------------
 
 
@@ -244,6 +312,23 @@ async def test_verify_open_tx_rejects_wrong_authorized_signer() -> None:
         await verify_open_tx(expected, fixture.payload, None)
 
 
+async def test_verify_open_tx_requires_operator() -> None:
+    """rentPayer is a security boundary: an empty/None expected operator must
+    raise ValueError rather than skipping the slot-1 rentPayer check."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator="")
+    with pytest.raises(ValueError, match="operator .*is required"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
+async def test_verify_open_tx_rejects_wrong_operator() -> None:
+    """The open's slot-1 rentPayer must equal the expected operator."""
+    fixture = build_open_tx_fixture(v0=False)
+    expected = replace(fixture.expected, operator=str(_kp(99).pubkey()))
+    with pytest.raises(PaymentError, match="rentPayer"):
+        await verify_open_tx(expected, fixture.payload, None)
+
+
 async def test_verify_open_tx_rejects_over_cap_deposit() -> None:
     """Mirrors TestVerifyOpenTxRejectsOverCapDeposit."""
     fixture = build_open_tx_fixture(v0=False)
@@ -267,6 +352,7 @@ async def test_verify_open_tx_rejects_zero_deposit() -> None:
             deposit=0,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
     _, fixture.payload = _sign_and_attach(fixture, ix, v0=False)
@@ -329,13 +415,15 @@ async def test_verify_open_tx_rejects_channel_pda_mismatch() -> None:
             deposit=OPEN_FIXTURE_DEPOSIT,
             grace_period=OPEN_FIXTURE_GRACE,
             token_program=Pubkey.from_string(TOKEN_PROGRAM),
+            rent_payer=fixture.payer.pubkey(),
         )
     )
-    # Swap the channel account (slot 4) for an unrelated key while keeping the
-    # instruction data intact: the re-derived PDA must catch it.
+    # Swap the channel account (slot 5, after the rentPayer +1 shift) for an
+    # unrelated key while keeping the instruction data intact: the re-derived
+    # PDA must catch it.
     accounts = list(ix.accounts)
-    tampered = accounts[4]
-    accounts[4] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
+    tampered = accounts[5]
+    accounts[5] = type(tampered)(_kp(77).pubkey(), tampered.is_signer, tampered.is_writable)
     forged = Instruction(ix.program_id, ix.data, accounts)
     _, fixture.payload = _sign_and_attach(fixture, forged, v0=False)
     with pytest.raises(PaymentError, match="PDA"):
@@ -405,6 +493,7 @@ class _OpenConfig:
     network: str
     recipient: str
     max_cap: int
+    operator: str = ""
     program_id: Pubkey | None = None
 
 
@@ -414,6 +503,8 @@ def _open_session_config(fixture: OpenTxFixture) -> _OpenConfig:
         network="localnet",
         recipient=str(fixture.payee),
         max_cap=5_000_000,
+        # The fixture pins rentPayer (the operator/fee payer) to its own payer.
+        operator=str(fixture.payer.pubkey()),
     )
 
 

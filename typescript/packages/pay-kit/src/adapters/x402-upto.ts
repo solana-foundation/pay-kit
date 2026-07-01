@@ -1,4 +1,10 @@
-import { createSolanaRpc } from '@solana/kit';
+import { createSolanaRpc, getBase58Decoder } from '@solana/kit';
+import {
+    buildAndSignWireTransaction,
+    encodeVoucherMessageBytes,
+    submitSettleAndDistribute,
+    waitForSignatureConfirmation,
+} from '@solana/mpp/server';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -6,13 +12,15 @@ import {
     encodePaymentResponseHeader,
 } from '@x402/core/http';
 import type { Network, PaymentPayload, PaymentRequired, PaymentRequirements } from '@x402/core/types';
-import { resolveStablecoinMint } from '@x402/svm';
+import { getStablecoinTokenProgram, resolveStablecoinMint } from '@x402/svm';
 import { UptoSvmScheme as UptoSvmFacilitator } from '@x402/svm/upto/facilitator';
 
+import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Price } from '../price.js';
 import { caip2 } from '../protocol.js';
+import { errorMessage, x402PaymentHeader } from './x402-shared.js';
 
 /** Settlement-response header mirrored by the x402 SDK family. */
 const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
@@ -20,11 +28,13 @@ const PAYMENT_RESPONSE_HEADER = 'x-payment-response';
 const PAYMENT_REQUIRED_HEADER = 'payment-required';
 const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
+const UPTO_ASSET_TRANSFER_METHOD = 'payment-channel';
+const BASIS_POINTS_DENOMINATOR = 10_000;
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
  * amount consumed (token base units) via {@link Charge.charge}; the gate settles
- * that amount — never above the authorized ceiling — after the handler returns,
+ * that amount - never above the authorized ceiling - after the handler returns,
  * refunding the remainder. If the handler never calls `charge`, the settled
  * amount is `0`. Mirrors the Rust `Charge` extractor on `paid_upto_*` routes.
  */
@@ -65,6 +75,10 @@ export type UptoSettlement = {
     readonly transaction: string;
 };
 
+type SettlementSubmitRpc = Parameters<typeof submitSettleAndDistribute>[0]['rpc'];
+type SettlementConfirmRpc = Parameters<typeof waitForSignatureConfirmation>[0]['rpc'];
+type SettlementWireRpc = Parameters<typeof buildAndSignWireTransaction>[0];
+
 /**
  * Usage-based (`upto`) x402 engine: the metered counterpart to the `exact`
  * adapter. The client opens a payment channel depositing the authorized ceiling;
@@ -74,21 +88,25 @@ export type UptoSettlement = {
  *
  * `upto` does not fit the protocol-uniform {@link import('../adapter.js').ProtocolAdapter}
  * contract (which settles before the handler runs), so it is exposed as a
- * dedicated engine the framework wrappers drive — exactly as Rust ships
+ * dedicated engine the framework wrappers drive - exactly as Rust ships
  * `paid_upto_*` separately from the unified gate.
  */
 export class X402Upto {
     readonly #facilitator: x402Facilitator;
     readonly #network: Network;
     readonly #operator: string;
+    readonly #operatorSigner: PayKitConfig['operator']['signer'];
     readonly #recipient: string;
+    readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
 
     constructor(config: PayKitConfig) {
         this.#network = caip2(config.network) as Network;
         this.#operator = config.operator.signer.pubkey;
+        this.#operatorSigner = config.operator.signer;
         this.#recipient = config.operator.recipient;
+        this.#facilitatorFee = config.x402.facilitatorFee;
         this.#rpcUrl = config.rpcUrl;
         this.#stablecoins = config.stablecoins;
         this.#facilitator = new x402Facilitator().register(
@@ -99,7 +117,7 @@ export class X402Upto {
 
     /** Whether `request` carries an x402 payment credential. */
     detect(request: Request): boolean {
-        return this.#paymentHeader(request) !== undefined;
+        return x402PaymentHeader(request) !== undefined;
     }
 
     /** The 402 challenge headers for a route capped at `maxPrice`. */
@@ -124,7 +142,7 @@ export class X402Upto {
      * @throws {InvalidProofError} when the authorization fails verification.
      */
     async verifyOpen(request: Request, maxPrice: Price): Promise<UptoVerified> {
-        const header = this.#paymentHeader(request);
+        const header = x402PaymentHeader(request);
         if (!header) throw new InvalidProofError('missing_x402_payment_header');
 
         let payload: PaymentPayload;
@@ -150,29 +168,80 @@ export class X402Upto {
      */
     async settle(verified: UptoVerified, actualBaseUnits: bigint): Promise<UptoSettlement> {
         const actual = actualBaseUnits > verified.maxBaseUnits ? verified.maxBaseUnits : actualBaseUnits;
-        const settleRequirements: PaymentRequirements = { ...verified.requirements, amount: actual.toString() };
-        const settlement = await this.#facilitator.settle(verified.payload, settleRequirements);
-        if (!settlement.success) {
-            throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
+        const payload = parseUptoPayload(verified.payload);
+        const rpc = createSolanaRpc(this.#rpcUrl);
+        const confirmRpc = rpc as unknown as SettlementConfirmRpc;
+        const submitRpc = rpc as unknown as SettlementSubmitRpc;
+        const wireRpc = rpc as unknown as SettlementWireRpc;
+        let signature: string;
+        try {
+            const signed =
+                actual > 0n
+                    ? {
+                          data: {
+                              channelId: payload.channelId,
+                              cumulativeAmount: actual.toString(),
+                              expiresAt: payload.expiresAt,
+                          },
+                          signature: await this.#signVoucher(payload.channelId, actual, BigInt(payload.expiresAt)),
+                      }
+                    : undefined;
+            const result = await submitSettleAndDistribute({
+                buildAndSignWireTransaction: instructions =>
+                    buildAndSignWireTransaction(wireRpc, this.#operatorSigner.signer, instructions),
+                channelId: payload.channelId,
+                mint: verified.requirements.asset,
+                network: verified.requirements.network,
+                payee: this.#operator,
+                payer: payload.from,
+                rentPayer: this.#operator,
+                rpc: submitRpc,
+                signer: this.#operatorSigner.signer,
+                splits: this.#recipientSplits(verified.requirements.payTo),
+                tokenProgram: tokenProgramFor(verified.requirements),
+                voucher: signed ? { authorizedSigner: this.#operator, signed } : undefined,
+            });
+            signature = result.signature;
+            await waitForSignatureConfirmation({
+                context: 'x402 upto settle',
+                rpc: confirmRpc,
+                signature: result.signature,
+            });
+        } catch (error) {
+            throw new InvalidProofError('transaction_failed', errorMessage(error));
         }
+        const settlement = {
+            amount: actual.toString(),
+            network: verified.payload.accepted.network,
+            payer: payload.from,
+            success: true,
+            transaction: signature,
+        } as const;
         return {
-            amount: settlement.amount ?? actual.toString(),
+            amount: settlement.amount,
             settlementHeaders: { [PAYMENT_RESPONSE_HEADER]: encodePaymentResponseHeader(settlement) },
             transaction: settlement.transaction,
         };
     }
 
+    async #signVoucher(channelId: string, cumulativeAmount: bigint, expiresAt: bigint): Promise<string> {
+        const message = encodeVoucherMessageBytes({ channelId, cumulativeAmount, expiresAt });
+        const signature = await this.#operatorSigner.sign(message);
+        return getBase58Decoder().decode(signature);
+    }
+
     #requirements(maxPrice: Price): PaymentRequirements {
-        const coin = maxPrice.primaryCoin() ?? this.#stablecoins[0] ?? 'USDC';
-        const mint = resolveStablecoinMint(coin, this.#network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${this.#network}.`);
+        const coin = resolveCoin(maxPrice, this.#stablecoins);
+        const mint = requireMint(coin, resolveStablecoinMint(coin, this.#network), this.#network);
         return {
             amount: maxPrice.baseUnits().toString(),
             asset: mint,
-            // Spec field names (scheme_upto_svm.md §4.1): `facilitator` (not the
-            // old non-spec `facilitatorAddress`) + the required `profiles`, so a
-            // Rust/other-SDK upto client can act on this challenge.
-            extra: { facilitator: this.#operator, feePayer: this.#operator, profiles: ['payment-channel'] },
+            extra: {
+                assetTransferMethod: UPTO_ASSET_TRANSFER_METHOD,
+                facilitatorAddress: this.#operator,
+                facilitatorFee: this.#facilitatorFee,
+                feePayer: this.#operator,
+            },
             maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
             network: this.#network,
             payTo: this.#recipient,
@@ -180,9 +249,15 @@ export class X402Upto {
         };
     }
 
+    #recipientSplits(recipient: string): readonly { readonly bps: number; readonly recipient: string }[] {
+        return this.#operator === recipient
+            ? []
+            : [{ bps: BASIS_POINTS_DENOMINATOR - this.#facilitatorFee, recipient }];
+    }
+
     /**
      * The challenge requirements with a server-fetched recent blockhash in
-     * `extra` — so the client can sign the channel-open without its own RPC
+     * `extra` - so the client can sign the channel-open without its own RPC
      * round-trip (mirroring MPP). Falls back to the bare requirements on error.
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
@@ -201,12 +276,29 @@ export class X402Upto {
             return base;
         }
     }
-
-    #paymentHeader(request: Request): string | undefined {
-        return request.headers.get('x-payment') ?? request.headers.get('payment-signature') ?? undefined;
-    }
 }
 
-function errorMessage(error: unknown): string | undefined {
-    return error instanceof Error ? error.message : undefined;
+type UptoPaymentChannelPayload = {
+    readonly channelId: string;
+    readonly expiresAt: number;
+    readonly from: string;
+};
+
+function parseUptoPayload(payload: PaymentPayload): UptoPaymentChannelPayload {
+    const raw = payload.payload as Partial<UptoPaymentChannelPayload> | undefined;
+    if (
+        !raw ||
+        typeof raw.channelId !== 'string' ||
+        typeof raw.from !== 'string' ||
+        typeof raw.expiresAt !== 'number'
+    ) {
+        throw new InvalidProofError('invalid_upto_payload');
+    }
+    return { channelId: raw.channelId, expiresAt: raw.expiresAt, from: raw.from };
+}
+
+function tokenProgramFor(requirements: PaymentRequirements): string {
+    const fromExtra = requirements.extra?.tokenProgram;
+    if (typeof fromExtra === 'string') return fromExtra;
+    return getStablecoinTokenProgram(requirements.asset, requirements.network);
 }

@@ -468,6 +468,10 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 	var channelID string
 	var deposit uint64
 	signature := payload.Signature
+	// Channel payer (the deposit funder / distribute refund destination, which
+	// the program pins to channel.payer), captured from the verified open when
+	// a transaction is present.
+	var channelPayer string
 
 	switch {
 	case hasTransaction:
@@ -479,6 +483,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			Currency:         s.currency,
 			MaxCap:           s.cap,
 			Network:          s.network,
+			Operator:         s.core.config.Operator,
 			ProgramID:        s.core.config.ProgramID,
 			Recipient:        s.recipient,
 		}
@@ -499,6 +504,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			if existing != nil {
 				channelID = preVerified.ChannelID
 				deposit = preVerified.Deposit
+				channelPayer = preVerified.Payer
 			} else {
 				submitted, err := SubmitOpenTx(ctx, expected, payload, s.payerSigner, s.rpc)
 				if err != nil {
@@ -506,6 +512,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 				}
 				channelID = submitted.ChannelID
 				deposit = submitted.Deposit
+				channelPayer = submitted.Payer
 				signature = submitted.Signature
 			}
 		} else {
@@ -515,6 +522,7 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 			}
 			channelID = verified.ChannelID
 			deposit = verified.Deposit
+			channelPayer = verified.Payer
 		}
 	case mode == intents.SessionModePush:
 		// No transaction in the payload: the client asserts a previously
@@ -559,10 +567,9 @@ func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) 
 		return "", fmt.Errorf("deposit %d exceeds cap %d", deposit, s.cap)
 	}
 
-	operator := payload.Owner
-	if operator == nil {
-		operator = payload.Payer
-	}
+	// Prefer the payer read from the verified open transaction (account 0, what
+	// the channel actually records) over the client-supplied payload fields.
+	operator := operatorFromVerifiedOpen(channelPayer, payload.Owner, payload.Payer)
 	fresh := ChannelState{
 		ChannelID:        channelID,
 		AuthorizedSigner: payload.AuthorizedSigner,
@@ -698,9 +705,10 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 				voucher.Data.Cumulative == strconv.FormatUint(current.Cumulative, 10)
 			if !replay {
 				verdict := VerifyVoucherForChannel(VerifyVoucherArgs{
-					State:   *current,
-					Signed:  voucher,
-					Deposit: current.Deposit,
+					State:                   *current,
+					Signed:                  voucher,
+					Deposit:                 current.Deposit,
+					SettlementWindowSeconds: s.core.config.SettlementWindowSeconds,
 				})
 				switch verdict.Status {
 				case VoucherVerifyRejected:
@@ -714,6 +722,13 @@ func (s *Session) handleClose(ctx context.Context, payload *intents.ClosePayload
 					expiresAt := verdict.NewExpiresAt
 					next.HighestVoucherSignature = &signature
 					next.HighestVoucherExpiresAt = &expiresAt
+				}
+			} else {
+				// Recheck expiry/window even on idempotent replay so the HTTP close
+				// path doesn't record close-pending against a voucher that no longer
+				// outlasts the settlement window (mirrors ProcessClose).
+				if err := verifySessionVoucher(voucher, current.AuthorizedSigner, s.core.config.SettlementWindowSeconds); err != nil {
+					return ChannelState{}, err
 				}
 			}
 		}
@@ -753,9 +768,12 @@ func (s *Session) closeAndSettleChannel(ctx context.Context, channelID string) (
 		return "", nil
 	}
 	merchant := s.signer.PublicKey()
-	// The recipient backstops the distribute payer for channels that never
-	// recorded an operator.
-	instructions, err := s.core.settlementInstructionsForState(*state, channelID, merchant, s.recipient)
+	// The distribute refund goes to the channel payer (the program enforces
+	// payer == channel.payer), recorded as state.Operator at open. Never fall
+	// back to the recipient: refunding the merchant would derive the wrong
+	// refund token account and fail settlement on-chain — settlement errors
+	// instead when the payer was never recorded.
+	instructions, err := s.core.settlementInstructionsForState(*state, channelID, merchant)
 	if err != nil {
 		return "", err
 	}

@@ -9,11 +9,12 @@ building. Each test mirrors a single Go ``Test...`` behavior through the public
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
     CommitPayload,
@@ -23,13 +24,13 @@ from pay_kit.protocols.mpp.intents.session import (
     VoucherData,
     VoucherPayload,
 )
-from pay_kit.protocols.mpp.server.session import (
+from solana_pay_kit.protocols.mpp.server.session import (
     DeliveryRequest,
     SessionConfig,
     SessionServer,
     Split,
 )
-from pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
 
 SESSION_TEST_RECIPIENT = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
 
@@ -305,6 +306,32 @@ async def test_verify_voucher_advances_watermark() -> None:
     assert state.cumulative == 300
     assert state.highest_voucher_signature is not None
     assert state.highest_voucher_expires_at is not None
+
+
+async def test_verify_voucher_rejects_expiry_inside_settlement_window() -> None:
+    """The configured ``settlement_window`` threads into voucher acceptance: a
+    non-zero voucher expiry that does not outlast ``now + settlement_window`` is
+    rejected so it cannot expire on-chain before the async close settlement."""
+    config = replace(session_test_config(), settlement_window=3_600)
+    server = new_session_test_server(config)
+    signer, channel_id = await _open_test_channel(server, 1_000_000)
+
+    # Expires in 60s, but the settlement window is 3600s: rejected.
+    soon = int(time.time()) + 60
+    voucher = signer.sign_voucher(channel_id, 100, soon)
+    with pytest.raises(ValueError, match="expires-before-settlement|settlement window"):
+        await server.verify_voucher(VoucherPayload(voucher=voucher))
+
+
+async def test_verify_voucher_accepts_zero_expiry_under_settlement_window() -> None:
+    """A zero (never-expires) voucher is accepted even when a settlement window
+    is configured, matching the on-chain ``expires_at == 0`` semantics."""
+    config = replace(session_test_config(), settlement_window=3_600)
+    server = new_session_test_server(config)
+    signer, channel_id = await _open_test_channel(server, 1_000_000)
+
+    voucher = signer.sign_voucher(channel_id, 100, 0)
+    assert await server.verify_voucher(VoucherPayload(voucher=voucher)) == 100
 
 
 async def test_verify_voucher_unknown_channel_rejected() -> None:

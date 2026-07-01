@@ -1,10 +1,11 @@
+rockspec_format = '3.0'
 package = 'pay-kit'
 version = 'dev-1'
 source = {
   url = 'git+https://github.com/solana-foundation/pay-kit.git',
 }
 description = {
-  summary = 'Server-side PayKit SDK for Lua (x402 + MPP).',
+  summary = 'Building blocks for Agentic payments (x402, MPP, AP2)',
   detailed = [[
     Lua / LuaJIT 2.1 implementation of the PayKit umbrella surface.
     One module, two protocols underneath: x402 (exact scheme on
@@ -14,8 +15,14 @@ description = {
     core for Kong and APISIX. Server-only; clients live in the
     TypeScript, Rust, Go, Python, Ruby, Kotlin, and Swift packages.
   ]],
-  homepage = 'https://github.com/solana-foundation/pay-kit',
+  homepage = 'https://github.com/solana-foundation/pay-kit/tree/main/lua',
+  issues_url = 'https://github.com/solana-foundation/pay-kit/issues',
+  maintainer = 'Solana Foundation',
   license = 'MIT',
+  labels = {
+    'solana', 'payments', 'x402', 'mpp', 'ap2',
+    'agentic', 'stablecoin', 'usdc', 'openresty',
+  },
 }
 dependencies = {
   'lua >= 5.1, < 5.5',

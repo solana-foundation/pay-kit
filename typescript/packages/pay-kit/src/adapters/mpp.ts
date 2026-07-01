@@ -4,8 +4,9 @@ import { Receipt } from 'mppx';
 
 import type { ProtocolAdapter } from '../adapter.js';
 import type { AcceptsEntry } from '../challenge.js';
+import { requireMint, resolveCoin } from '../coin.js';
 import type { PayKitConfig } from '../config.js';
-import { ConfigurationError, InvalidProofError } from '../errors.js';
+import { InvalidProofError } from '../errors.js';
 import type { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
 import { caip2, toSolanaNetwork } from '../protocol.js';
@@ -51,17 +52,22 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
     const network = toSolanaNetwork(config.network);
     const handlers = new Map<string, ChargeHandler>();
 
-    function coinFor(gate: Gate): { coin: string; mint: string } {
-        const coin = gate.amount.primaryCoin() ?? config.stablecoins[0] ?? 'USDC';
-        const mint = resolveStablecoinMint(coin, network);
-        if (!mint) throw new ConfigurationError(`No ${coin} mint known for ${config.network}.`);
-        return { coin, mint };
-    }
-
     function handlerFor(gate: Gate): ChargeHandler {
-        const { mint } = coinFor(gate);
+        const coin = resolveCoin(gate.amount, config.stablecoins);
+        const mint = requireMint(coin, resolveStablecoinMint(coin, network), config.network);
         const splits = splitsFor(gate);
-        const key = JSON.stringify([gate.kind, gate.payTo, mint, splits, gate.subscription ?? null]);
+        // Key on every field a built handler captures, so gates differing only
+        // in amount, description, or externalId get distinct handlers.
+        const key = JSON.stringify([
+            gate.kind,
+            gate.payTo,
+            mint,
+            splits,
+            gate.subscription ?? null,
+            totalAmount(gate).toString(),
+            gate.description ?? null,
+            gate.externalId ?? null,
+        ]);
         let handler = handlers.get(key);
         if (!handler) {
             const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
@@ -131,7 +137,7 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
 
     return {
         acceptsEntry(gate: Gate): Promise<AcceptsEntry> {
-            const { coin } = coinFor(gate);
+            const coin = resolveCoin(gate.amount, config.stablecoins);
             const splits = splitsFor(gate);
             return Promise.resolve({
                 amount: totalAmount(gate).toString(),

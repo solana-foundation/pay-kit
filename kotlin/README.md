@@ -29,6 +29,34 @@ are resolved for you from the challenge.
 [![Coverage](https://img.shields.io/badge/coverage-%3E%3D90%25-brightgreen)]()
 [![Branch coverage](https://img.shields.io/badge/branch%20coverage-jacoco-blue)]()
 
+## Install
+
+The Kotlin SDK is distributed through [JitPack](https://jitpack.io), which
+builds it on demand from a git tag (a published release). Add the JitPack
+repository and the dependency:
+
+```kotlin
+repositories {
+    maven("https://jitpack.io")
+}
+
+dependencies {
+    implementation("com.github.solana-foundation.pay-kit:solana-pay-kit-kotlin:<tag>")
+}
+```
+
+Replace `<tag>` with a release git tag (for example `v0.1.0`); JitPack
+resolves the coordinate from `com.github.<owner>.<repo>:<module>`, where the
+module is the Gradle artifact name `solana-pay-kit-kotlin`. You can also use a
+commit short hash or `main-SNAPSHOT` for an unreleased build.
+
+Groovy DSL equivalent:
+
+```groovy
+repositories { maven { url 'https://jitpack.io' } }
+dependencies { implementation 'com.github.solana-foundation.pay-kit:solana-pay-kit-kotlin:<tag>' }
+```
+
 ## Quick start
 
 The client is built [Retrofit](https://square.github.io/retrofit/)-style: a

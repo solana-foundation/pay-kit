@@ -12,7 +12,16 @@ package server
 // parse u64 -> finalized -> close pending -> idempotent replay (same
 // cumulative AND same signature, signature re-verified) -> cumulative >
 // watermark strictly -> cumulative <= deposit -> delta >= minVoucherDelta ->
-// Ed25519 verify against the stored authorizedSigner -> expiresAt > now.
+// Ed25519 verify against the stored authorizedSigner -> expiry.
+//
+// Expiry mirrors the on-chain settle guard, which rejects only
+// `expires_at != 0 && now >= expires_at`: an expiresAt of 0 NEVER expires and
+// is always accepted. A non-zero expiresAt is additionally required to outlast
+// the settlement window (the channel's forced-close grace period): the server
+// settles vouchers asynchronously, so a voucher that expires before the close
+// transaction can land would be rejected on-chain after the server has already
+// served. Rejecting `expiresAt < now + settlementWindow` keeps the off-chain
+// accept decision consistent with what the program will accept at settle time.
 
 import (
 	"crypto/ed25519"
@@ -66,6 +75,11 @@ const (
 	// VoucherRejectExpired: the voucher expiry is not in the future.
 	VoucherRejectExpired VoucherRejectReason = "expired"
 
+	// VoucherRejectExpiryTooSoon: the voucher expiry is in the future but does
+	// not outlast the settlement window, so the async settle transaction could
+	// be rejected on-chain after the server has already served.
+	VoucherRejectExpiryTooSoon VoucherRejectReason = "expiry-too-soon"
+
 	// VoucherRejectInvalidCumulative: the cumulative does not parse as a u64.
 	VoucherRejectInvalidCumulative VoucherRejectReason = "invalid-cumulative"
 
@@ -117,6 +131,14 @@ type VerifyVoucherArgs struct {
 	// cumulative. Zero disables the check.
 	MinVoucherDelta uint64
 
+	// SettlementWindowSeconds is the channel's forced-close grace period in
+	// seconds. A non-zero voucher expiry must outlast this window from now
+	// (expiresAt >= now + settlementWindow) so the async settle transaction
+	// cannot be rejected on-chain after the server has served. Zero applies the
+	// plain `expiresAt > now` check only. Never affects an expiresAt of 0,
+	// which never expires.
+	SettlementWindowSeconds int64
+
 	// NowSeconds overrides the clock (Unix seconds) for deterministic tests.
 	// Nil defaults to time.Now().
 	NowSeconds *int64
@@ -158,8 +180,8 @@ func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 		if err := verifyVoucherSignatureBytes(signed, state.AuthorizedSigner); err != nil {
 			return voucherReject(VoucherRejectInvalidSignature, err.Error())
 		}
-		if signed.Data.ExpiresAt <= voucherNow(args.NowSeconds) {
-			return voucherReject(VoucherRejectExpired, "voucher has expired")
+		if rejection := voucherExpiryRejection(signed.Data.ExpiresAt, voucherNow(args.NowSeconds), args.SettlementWindowSeconds); rejection != nil {
+			return *rejection
 		}
 		return VoucherVerifyResult{Status: VoucherVerifyReplayed, NewCumulative: newCumulative}
 	}
@@ -189,8 +211,8 @@ func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 	}
 
 	// 9. Expiry. The caller may override NowSeconds for deterministic tests.
-	if signed.Data.ExpiresAt <= voucherNow(args.NowSeconds) {
-		return voucherReject(VoucherRejectExpired, "voucher has expired")
+	if rejection := voucherExpiryRejection(signed.Data.ExpiresAt, voucherNow(args.NowSeconds), args.SettlementWindowSeconds); rejection != nil {
+		return *rejection
 	}
 
 	return VoucherVerifyResult{
@@ -204,6 +226,32 @@ func VerifyVoucherForChannel(args VerifyVoucherArgs) VoucherVerifyResult {
 // voucherReject builds a rejected verdict.
 func voucherReject(reason VoucherRejectReason, detail string) VoucherVerifyResult {
 	return VoucherVerifyResult{Status: VoucherVerifyRejected, Reason: reason, Detail: detail}
+}
+
+// voucherExpiryRejection applies the voucher expiry policy and returns a
+// rejected verdict to surface, or nil when the expiry is acceptable.
+//
+// It mirrors the on-chain settle guard (`expires_at != 0 && now >=
+// expires_at`): an expiresAt of 0 NEVER expires and is always accepted. A
+// non-zero expiresAt must be strictly in the future, and when a settlement
+// window is configured it must outlast that window from now so the async
+// settle transaction cannot be rejected on-chain after the server has served.
+func voucherExpiryRejection(expiresAt, now, settlementWindowSeconds int64) *VoucherVerifyResult {
+	if expiresAt == 0 {
+		// Never-expires voucher: matches the on-chain `expires_at == 0` case.
+		return nil
+	}
+	if expiresAt <= now {
+		rejection := voucherReject(VoucherRejectExpired, "voucher has expired")
+		return &rejection
+	}
+	if settlementWindowSeconds > 0 && expiresAt < now+settlementWindowSeconds {
+		rejection := voucherReject(VoucherRejectExpiryTooSoon,
+			fmt.Sprintf("voucher expiry %d does not outlast the settlement window (now %d + %d)",
+				expiresAt, now, settlementWindowSeconds))
+		return &rejection
+	}
+	return nil
 }
 
 // voucherNow returns the override when set, otherwise the wall clock in Unix
@@ -237,12 +285,18 @@ func verifyVoucherSignatureBytes(signed intents.SignedVoucher, authorizedSigner 
 	return nil
 }
 
-// verifySessionVoucher checks expiry first (against the wall clock), then
-// the Ed25519 signature. Used by the commit and close paths; the voucher
-// handler orders the two checks itself.
-func verifySessionVoucher(signed intents.SignedVoucher, authorizedSigner string) error {
-	if signed.Data.ExpiresAt <= time.Now().Unix() {
-		return fmt.Errorf("voucher has expired")
+// verifySessionVoucher checks expiry (including the settlement-window margin)
+// first, then the Ed25519 signature. Used by the commit and close paths; the
+// voucher handler orders the two checks itself.
+//
+// An expiresAt of 0 NEVER expires (matching the on-chain settle guard and
+// VerifyVoucherForChannel). A non-zero expiresAt must be strictly in the future
+// AND, when settlementWindowSeconds > 0, outlast that window (now + window) so a
+// committed or closing voucher can't expire before the async settle lands
+// on-chain — the same guard VerifyVoucherForChannel applies on the voucher path.
+func verifySessionVoucher(signed intents.SignedVoucher, authorizedSigner string, settlementWindowSeconds int64) error {
+	if rejection := voucherExpiryRejection(signed.Data.ExpiresAt, time.Now().Unix(), settlementWindowSeconds); rejection != nil {
+		return fmt.Errorf("%s", rejection.Detail)
 	}
 	return verifyVoucherSignatureBytes(signed, authorizedSigner)
 }

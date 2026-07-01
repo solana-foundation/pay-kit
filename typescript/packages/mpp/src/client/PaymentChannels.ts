@@ -4,6 +4,7 @@ import {
     appendTransactionMessageInstructions,
     type Base64EncodedWireTransaction,
     type Blockhash,
+    createNoopSigner,
     createSolanaRpc,
     createTransactionMessage,
     generateKeyPairSigner,
@@ -122,6 +123,15 @@ export async function buildOpenPaymentChannelTransaction(
     });
     const [eventAuthority] = await findEventAuthorityPda({ programAddress });
 
+    // rentPayer is the operator / fee payer: it funds the channel PDA +
+    // escrow-ATA rent at open. It is the same key set as fee payer above, so
+    // the single operator signature added server-side covers both the
+    // fee-payer and rentPayer signer roles. When the operator is the payer
+    // itself, reuse the payer signer instance (kit rejects two distinct signer
+    // objects for one address); otherwise a noop signer carries the operator
+    // address into the instruction without signing here.
+    const rentPayerSigner = feePayer === signer.address ? signer : createNoopSigner(feePayer);
+
     const instruction = getOpenInstruction(
         {
             associatedTokenProgram: address(ASSOCIATED_TOKEN_PROGRAM),
@@ -140,6 +150,7 @@ export async function buildOpenPaymentChannelTransaction(
             payer: signer,
             payerTokenAccount,
             rent: address(RENT_SYSVAR),
+            rentPayer: rentPayerSigner,
             selfProgram: programAddress,
             tokenProgram,
         },

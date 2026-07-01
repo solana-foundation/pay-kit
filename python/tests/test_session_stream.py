@@ -12,17 +12,17 @@ import io
 
 import pytest
 
-from pay_kit.protocols.mpp.client.http_stream import (
+from solana_pay_kit.protocols.mpp.client.http_stream import (
     MeteredSseEvent,
     SseDecoder,
     parse_metered_sse_event,
 )
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     MeteringDirective,
     MeteringUsage,
 )
-from pay_kit.protocols.mpp.server.session_stream import (
+from solana_pay_kit.protocols.mpp.server.session_stream import (
     new_metered_stream,
     new_metered_stream_writer,
 )

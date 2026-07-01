@@ -1,4 +1,4 @@
-"""Cross-language harness adapter for the Python pay_kit x402 ``exact`` client.
+"""Cross-language harness adapter for the Python solana_pay_kit x402 ``exact`` client.
 
 Mirrors the Rust spine harness client
 (``rust/crates/x402/src/bin/harness_client.rs``): GET the target, parse the
@@ -39,8 +39,8 @@ if _python_src.is_dir():
 
 import httpx  # noqa: E402
 
-from pay_kit.signer import Signer  # noqa: E402
-from pay_kit.protocols.x402.client.exact import (  # noqa: E402
+from solana_pay_kit.signer import Signer  # noqa: E402
+from solana_pay_kit.protocols.x402.client.exact import (  # noqa: E402
     ChallengeSelection,
     build_payment_header,
     parse_x402_challenge,
@@ -62,7 +62,7 @@ def _require_env(name: str) -> str:
 class _BlockhashRpc:
     """Minimal RPC exposing ``get_latest_blockhash`` for the build fallback.
 
-    Only used when an offer omits ``extra.recentBlockhash``; the pay_kit x402
+    Only used when an offer omits ``extra.recentBlockhash``; the solana_pay_kit x402
     server stamps the blockhash so this is the rare path.
     """
 

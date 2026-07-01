@@ -19,7 +19,7 @@ import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
 from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 
-from pay_kit.protocols.mpp.client.http_stream import (
+from solana_pay_kit.protocols.mpp.client.http_stream import (
     HttpCommitTransport,
     MeteredSseSession,
     MeteredSseStream,
@@ -27,9 +27,9 @@ from pay_kit.protocols.mpp.client.http_stream import (
     SseEvent,
     parse_metered_sse_event,
 )
-from pay_kit.protocols.mpp.client.session import ActiveSession
-from pay_kit.protocols.mpp.client.session_consumer import SessionConsumer
-from pay_kit.protocols.mpp.intents.session import (
+from solana_pay_kit.protocols.mpp.client.session import ActiveSession
+from solana_pay_kit.protocols.mpp.client.session_consumer import SessionConsumer
+from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     CommitPayload,
     CommitReceipt,

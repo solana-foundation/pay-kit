@@ -9,6 +9,7 @@ type Offer = {
     amount: string;
     currency: string;
     description?: string;
+    feePayer?: string;
     intent: string;
     method: string;
     planId?: string;
@@ -70,6 +71,7 @@ describe('pay.openapi', () => {
         expect(summarize).toHaveLength(1);
         expect(summarize[0]).toMatchObject({ amount: '100000', intent: 'charge', method: 'x402', scheme: 'upto' });
         expect(summarize[0]?.description).toBe('up to 0.1 USDC');
+        expect(summarize[0]?.feePayer).toBe(pay.config.operator.signer.pubkey);
     });
 
     it('advertises subscription and session intents (so the UI can classify them)', async () => {

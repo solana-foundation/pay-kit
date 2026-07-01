@@ -2,12 +2,13 @@ import type { CanonicalErrorCode } from "./canonical-codes";
 import { chargeScenarios } from "./intents/charge";
 import { sessionScenarios } from "./intents/session";
 import { x402ExactScenarios } from "./intents/x402-exact";
+import { x402UptoScenarios } from "./intents/x402-upto";
 
 export type { CanonicalErrorCode };
 
 export type AdapterKind = "client" | "server";
 
-export type HarnessIntent = "charge" | "x402-exact" | "session";
+export type HarnessIntent = "charge" | "x402-exact" | "session" | "x402-upto";
 
 export type HarnessScenarioSplit = {
   recipientKey: string;
@@ -33,6 +34,9 @@ export type HarnessScenario = {
   network: string;
   price: string;
   amount: string;
+  // Optional metered amount for usage (`x402-upto`) scenarios. When omitted,
+  // settlement assertions use `amount` as the final settled delta.
+  actualAmount?: string;
   // The literal value the harness sends to each adapter as
   // `MPP_HARNESS_MINT`. In `pubkey` mode (default) this is a 32+ char
   // base58 mint pubkey. In `symbol` mode this is a stablecoin symbol
@@ -162,6 +166,7 @@ export const harnessScenarios: readonly HarnessScenario[] = [
   ...chargeScenarios,
   ...x402ExactScenarios,
   ...sessionScenarios,
+  ...x402UptoScenarios,
 ];
 
 export const harnessScenario: HarnessScenario = {

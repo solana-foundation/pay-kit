@@ -28,14 +28,14 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
+	"github.com/solana-foundation/pay-kit/go/paycore"
+	"github.com/solana-foundation/pay-kit/go/paycore/signer"
+	"github.com/solana-foundation/pay-kit/go/paykit"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 	core "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/errorcodes"
-	"github.com/solana-foundation/pay-kit/go/paykit"
-	"github.com/solana-foundation/pay-kit/go/paycore"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/server"
-	"github.com/solana-foundation/pay-kit/go/paycore/signer"
 )
 
 type readyMessage struct {
@@ -76,6 +76,8 @@ func main() {
 	})
 
 	switch protocolMode {
+	case "x402-upto":
+		mountX402Upto(mux, resourcePath)
 	case "x402":
 		mountX402(mux, resourcePath, settlementHeader)
 	case "mpp":
@@ -135,6 +137,62 @@ func mountX402(mux *http.ServeMux, resourcePath, settlementHeader string) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402"})
+	})))
+}
+
+func mountX402Upto(mux *http.ServeMux, resourcePath string) {
+	rpcURL := requireEnv("X402_HARNESS_RPC_URL")
+	payTo := requireEnv("X402_HARNESS_PAY_TO")
+	facilitator := requireEnv("X402_HARNESS_FACILITATOR_SECRET_KEY")
+	price := optionalEnv("X402_HARNESS_PRICE", "0.10")
+	mint := requireEnv("X402_HARNESS_MINT")
+
+	preflight := false
+	cfg := paykit.Config{
+		Network:     paykit.SolanaLocalnet,
+		Preflight:   &preflight,
+		RPCURL:      rpcURL,
+		Accept:      []paykit.Protocol{paykit.X402},
+		Stablecoins: []paykit.Stablecoin{paykit.Stablecoin(mint)},
+		Operator: paykit.Operator{
+			Recipient: paykit.Address(payTo),
+			Signer:    signer.MustFromJSON(facilitator),
+			FeePayer:  true,
+		},
+		X402: paykit.X402Config{
+			Scheme:         "upto",
+			ChannelProgram: os.Getenv("PAYMENT_CHANNELS_PROGRAM_ID"),
+		},
+		MPP: paykit.MPPConfig{ChallengeBindingSecret: []byte("unused-x402-upto")},
+	}
+	client, err := paykit.New(cfg)
+	if err != nil {
+		log.Fatalf("paykit.New: %v", err)
+	}
+	gate := paykit.Gate{
+		Amount: paykit.MustParseUSD(price, paykit.Stablecoin(mint)),
+		Desc:   resourcePath,
+		Kind:   paykit.GateUsage,
+		Accept: []paykit.Protocol{paykit.X402},
+	}
+	mux.Handle(resourcePath, client.RequireUsage(gate)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, ok := paykit.ChargeFrom(r.Context())
+		if !ok || c == nil {
+			http.Error(w, "missing usage meter", http.StatusInternalServerError)
+			return
+		}
+		actual := optionalEnv("X402_HARNESS_ACTUAL_AMOUNT", "0")
+		if headerActual := r.Header.Get("X402-HARNESS-ACTUAL-AMOUNT"); headerActual != "" {
+			actual = headerActual
+		}
+		actualUnits, err := strconv.ParseUint(actual, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid actual amount", http.StatusInternalServerError)
+			return
+		}
+		c.Charge(actualUnits)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "paid": true, "protocol": "x402-upto"})
 	})))
 }
 

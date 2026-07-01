@@ -9,7 +9,7 @@
  * extra network round-trip.
  *
  * Output:
- *   rust/crates/programs/subscriptions/src/generated/   (rendered by Codama)
+ *   rust/crates/kit/src/generated/subscriptions/generated/   (rendered by Codama)
  *
  * Mirrors the upstream `solana-foundation/subscriptions/scripts/generate-clients.ts`
  * stripped to the Rust-only path, so the layout of the generated tree is byte-for-byte
@@ -28,7 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
 const idlPath = path.join(repoRoot, 'idl', 'subscriptions.json');
-const rustClientDir = path.join(repoRoot, 'rust', 'crates', 'programs', 'subscriptions');
+const rustClientDir = path.join(repoRoot, 'rust', 'crates', 'kit', 'src', 'generated', 'subscriptions');
 
 if (!fs.existsSync(idlPath)) {
     console.error(`[codegen] IDL not found at ${idlPath}`);
@@ -40,19 +40,19 @@ const idl = JSON.parse(fs.readFileSync(idlPath, 'utf-8')) as AnchorIdl;
 const codama = createFromJson(JSON.stringify(idl));
 
 console.log(`[codegen] Rendering Rust client from ${path.relative(repoRoot, idlPath)}`);
-console.log(`[codegen]   → ${path.relative(repoRoot, rustClientDir)}/src/generated/`);
+console.log(`[codegen]   → ${path.relative(repoRoot, rustClientDir)}/generated/`);
 
 void codama.accept(
     renderRustVisitor(rustClientDir, {
         // Pay-kit does not depend on Anchor at runtime. Generating bare Borsh
         // structs keeps the client free of `anchor-lang` transitively.
         anchorTraits: false,
-        // Codama re-renders into `src/generated/` on every run; pre-clearing
+        // Codama re-renders into `generated/` on every run; pre-clearing
         // means a removed instruction in the upstream IDL also disappears
         // here on regeneration.
         deleteFolderBeforeRendering: true,
         formatCode: true,
-        generatedFolder: 'src/generated',
+        generatedFolder: 'generated',
     }),
 );
 

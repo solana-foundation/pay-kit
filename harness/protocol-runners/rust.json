@@ -1,5 +1,5 @@
 {
   "language": "rust",
-  "command": ["cargo", "run", "-q", "-p", "solana-mpp", "--example", "protocol_runner"],
+  "command": ["cargo", "run", "-q", "-p", "solana-pay-kit", "--example", "protocol_runner"],
   "cwd": "rust"
 }

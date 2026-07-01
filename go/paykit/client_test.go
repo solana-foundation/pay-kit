@@ -9,10 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/solana-foundation/pay-kit/go/internal/testutil"
 	_ "github.com/solana-foundation/pay-kit/go/paycore/signer"
 	"github.com/solana-foundation/pay-kit/go/paykit"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/mpp"
-	_ "github.com/solana-foundation/pay-kit/go/protocols/x402"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/mpp"
+	_ "github.com/solana-foundation/pay-kit/go/paykit/adapters/x402"
 )
 
 func TestClientCloseIsNoop(t *testing.T) {
@@ -38,6 +39,40 @@ func TestX402OnlyDoesNotRequireMPPSecretWithPreflightOff(t *testing.T) {
 	}
 	if c.X402Adapter() == nil {
 		t.Error("expected x402 adapter")
+	}
+	if c.UsageAdapter() != nil {
+		t.Error("expected exact x402 config not to wire usage adapter")
+	}
+}
+
+func TestX402ExactAllowsRecipientDifferentFromSigner(t *testing.T) {
+	recipient := testutil.NewPrivateKey().PublicKey().String()
+	c, err := paykit.New(paykit.Config{
+		Network:   paykit.SolanaLocalnet,
+		Accept:    []paykit.Protocol{paykit.X402},
+		Preflight: disabled(),
+		Operator:  paykit.Operator{Recipient: paykit.Address(recipient)},
+	})
+	if err != nil {
+		t.Fatalf("x402 exact should not construct upto usage adapter: %v", err)
+	}
+	if c.UsageAdapter() != nil {
+		t.Fatal("exact x402 should not wire usage adapter")
+	}
+}
+
+func TestX402UptoWiresUsageAdapter(t *testing.T) {
+	c, err := paykit.New(paykit.Config{
+		Network:   paykit.SolanaLocalnet,
+		Accept:    []paykit.Protocol{paykit.X402},
+		Preflight: disabled(),
+		X402:      paykit.X402Config{Scheme: "upto"},
+	})
+	if err != nil {
+		t.Fatalf("x402 upto should wire usage adapter: %v", err)
+	}
+	if c.UsageAdapter() == nil {
+		t.Fatal("expected usage adapter for x402 upto config")
 	}
 }
 

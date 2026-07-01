@@ -1,0 +1,63 @@
+[package]
+name = "paykit-integration-tests"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain (surfpool/litesvm) integration tests for solana-pay-kit (not published)"
+license = "MIT"
+publish = false
+
+# This crate holds only integration tests; no library/binary surface. Keeping
+# the surfpool (git) + litesvm (patched) test deps out of the published
+# `solana-pay-kit` crate is what lets `cargo publish` resolve cleanly.
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Mirror the kit features the tests gate on, forwarding to solana-pay-kit.
+testkit = ["solana-pay-kit/testkit"]
+otel = ["solana-pay-kit/otel"]
+confidential = ["solana-pay-kit/confidential"]
+worker = ["solana-pay-kit/worker"]
+
+[dependencies]
+solana-pay-kit = { path = "../kit", features = ["mpp", "x402", "server", "client"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+serial_test = "3"
+serde_json = "1"
+bytemuck = "1.25"
+spl-record = { version = "0.4.0", features = ["no-entrypoint"] }
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", rev = "b46c47e06c28ed1aa31e119215b479b70e72d4c3" }
+# litesvm 0.13 via the workspace [patch.crates-io] (local fork with the
+# solana-address pin loosened so the confidential proof crates can resolve).
+litesvm = "0.13.0"
+# Atomic solana crates the integration tests import directly.
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
+solana-instruction = { version = "3.1", default-features = false }
+solana-message = { version = "3", default-features = false }
+solana-pubkey = { version = "3.0", default-features = false }
+solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
+solana-system-interface = { version = "2.0", default-features = false }
+solana-transaction = { version = "3", default-features = false }
+solana-rpc-client = { version = "4", default-features = false }
+# Confidential-transfer integration test (gated `#![cfg(feature = "confidential")]`).
+solana-zk-sdk = "7.0.1"
+solana-zk-elgamal-proof-interface = "0.1.2"
+spl-token-2022 = { version = "=10.0.0", default-features = false, features = ["zk-ops"] }
+spl-token-confidential-transfer-proof-extraction = "0.5.1"
+spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
+
+[[test]]
+name = "charge_integration"
+path = "tests/charge_integration.rs"
+
+[[test]]
+name = "settlement_onchain"
+path = "tests/settlement_onchain.rs"
+required-features = ["testkit"]
+
+[[test]]
+name = "confidential_integration"
+path = "tests/confidential_integration.rs"
+required-features = ["confidential", "worker"]

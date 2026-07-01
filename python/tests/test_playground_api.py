@@ -36,6 +36,10 @@ def test_discovery_advertises_offers(client: TestClient) -> None:
     assert {offer["method"] for offer in offers} == {"x402", "mpp"}
     joke_offers = doc["paths"]["/api/v1/joke"]["get"]["x-payment-info"]["offers"]
     assert {offer["method"] for offer in joke_offers} == {"mpp"}
+    # The x402 upto usage gate is advertised so the playground UI renders it.
+    summarize_offers = doc["paths"]["/api/v1/summarize"]["post"]["x-payment-info"]["offers"]
+    assert summarize_offers[0]["scheme"] == "upto"
+    assert summarize_offers[0]["intent"] == "usage"
 
 
 def test_docs_index_is_free(client: TestClient) -> None:
@@ -57,3 +61,18 @@ def test_paid_route_challenges_before_handler(client: TestClient, method: str, p
     resp = client.request(method, path)
     assert resp.status_code == 402
     assert resp.headers.get("www-authenticate", "").startswith("Payment ")
+
+
+def test_summarize_route_challenges_with_upto(client: TestClient) -> None:
+    """The x402 ``upto`` summarize route returns a 402 with the upto challenge.
+
+    x402-only, so it advertises the ``payment-required`` header (not the MPP
+    ``www-authenticate``) and an ``upto`` / ``payment-channel`` accepts entry.
+    """
+    resp = client.post("/api/v1/summarize", content="summarize this text please")
+    assert resp.status_code == 402
+    assert any(k.lower() == "payment-required" for k in resp.headers)
+    accepts = resp.json()["accepts"]
+    assert accepts[0]["scheme"] == "upto"
+    assert accepts[0]["extra"]["assetTransferMethod"] == "payment-channel"
+    assert accepts[0]["extra"]["facilitatorAddress"]
