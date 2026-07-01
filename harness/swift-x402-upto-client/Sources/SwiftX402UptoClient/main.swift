@@ -15,8 +15,6 @@ import SolanaPayKit
 
 struct HarnessError: Error { let message: String }
 
-let settlementHeaderName = "x-payment-settlement-signature"
-let paymentSignatureHeaderName = "Payment-Signature"
 
 func readEnv(_ name: String) throws -> String {
     guard let value = ProcessInfo.processInfo.environment[name], !value.isEmpty else {
@@ -85,14 +83,14 @@ struct HarnessEntry {
             let secret = try readKeypair("X402_HARNESS_CLIENT_SECRET_KEY")
             let signer = try MemorySigner(secretKey: secret)
 
-            let client = PayKit.HttpClient.x402Upto(
-                signer: signer, settlementHeader: settlementHeaderName
-            )
+            // `x402Upto` defaults `settlementHeader` to the harness settlement
+            // header, so it is not repeated here.
+            let client = PayKit.HttpClient.x402Upto(signer: signer)
             let response = try await client.request(targetURL).response()
 
             var headers = response.headers
             if let psig = response.paymentSent {
-                headers["\(paymentSignatureHeaderName)-sent"] = psig
+                headers["\(X402PaymentHeader)-sent"] = psig
             }
             emitResult(
                 ok: response.isSuccess,

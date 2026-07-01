@@ -120,18 +120,18 @@ Rust, Go, PHP, Ruby, Lua, and Python packages.
 
 | Intent | Client |
 |---|:---:|
-| `mpp/charge/pull` | pass |
-| `mpp/charge/push` | planned |
+| `mpp/charge/pull` | ✅ |
+| `mpp/charge/push` | — |
 | `mpp/session` | ✅ |
-| `mpp/subscription` | planned |
+| `mpp/subscription` | — |
 
 ### x402
 
 | Intent | Client |
 |---|:---:|
-| `x402/exact` | pass |
-| `x402/upto` | pass |
-| `x402/batch-settlement` | --- |
+| `x402/exact` | ✅ |
+| `x402/upto` | ✅ |
+| `x402/batch-settlement` | — |
 
 ## Examples
 

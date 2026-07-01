@@ -266,7 +266,7 @@ struct ContentView: View {
         // then the server meters actual usage and settles `actual <= max`,
         // refunding the rest. One tap drives the whole flow through the upto
         // client; the response body reports the metered amount billed.
-        if endpoint.scheme == "upto" {
+        if endpoint.scheme == X402UptoScheme {
             busy = .pay(endpoint.id)
             defer { busy = nil }
             let client = PayKit.HttpClient.x402Upto(
