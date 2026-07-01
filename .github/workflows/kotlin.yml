@@ -125,42 +125,10 @@ jobs:
           cargo-bins: "paykit-harness-bins:x402_harness_upto_client,x402_harness_upto_server"
           cargo-cache-key: kotlin-x402-upto
       # x402 upto settles on the canonical payment-channels program; the upto
-      # e2e deploys this localnet SBF artifact onto the embedded surfnet.
-      # Mirrors the harness-go/harness-python upto legs.
-      - name: Checkout payment channels program
-        uses: actions/checkout@v5
-        with:
-          repository: solana-foundation/payment-channels
-          ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
-          path: _payment-channels
-          fetch-depth: 1
-      - name: Install Anza CLI
-        run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
-      - name: Patch payment channels treasury owner
-        working-directory: _payment-channels
-        run: |
-          program_id="CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
-          lib_file="program/payment_channels/src/lib.rs"
-          sentinel_file="program/payment_channels/src/constants.rs"
-          sentinel_prefix="    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,"
-          sentinel_suffix="    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,"
-          # The pinned upstream ref already declares our canonical program id, so
-          # only the localnet treasury-owner sentinel needs patching. Guard the id
-          # assumption so a future ref bump that changes it fails loudly here.
-          if ! grep -Fq "declare_id!(\"$program_id\")" "$lib_file"; then
-            echo "::error::payment-channels no longer declares $program_id; revisit this patch"
-            exit 1
-          fi
-          perl -0pi -e 's/const TREASURY_OWNER_SENTINEL: \[u8; 32\] = \[\n.*?\n\];/const TREASURY_OWNER_SENTINEL: [u8; 32] = [\n    0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,\n    0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,\n];/s' "$sentinel_file"
-          if ! grep -Fq "$sentinel_prefix" "$sentinel_file" || ! grep -Fq "$sentinel_suffix" "$sentinel_file"; then
-            echo "::error::payment-channels treasury sentinel patch did not apply"
-            exit 1
-          fi
+      # e2e runs this localnet SBF build on the embedded surfnet.
       - name: Build payment channels program
-        working-directory: _payment-channels/program/payment_channels
-        run: cargo build-sbf --tools-version v1.52 --arch v1
+        id: payment-channels
+        uses: ./.github/actions/build-payment-channels
       # Pre-warm the Kotlin x402 upto client install so the harness adapter
       # (harness/src/implementations.ts → kotlin-x402-upto) can launch the script
       # at build/install/.../bin/. The kotlin SDK is consumed via the composite
@@ -180,7 +148,7 @@ jobs:
           MPP_HARNESS_SCENARIOS: x402-upto-basic,x402-upto-zero-actual
           X402_HARNESS_CLIENTS: kotlin-x402-upto
           X402_HARNESS_SERVERS: rust-x402-upto
-          PAYMENT_CHANNELS_PROGRAM_SO: ../_payment-channels/target/deploy/payment_channels.so
+          PAYMENT_CHANNELS_PROGRAM_SO: ${{ steps.payment-channels.outputs.program-so }}
           PAYMENT_CHANNELS_PROGRAM_ID: CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX
           SURFPOOL_DATASOURCE_RPC_URL: ${{ secrets.SURFPOOL_DATASOURCE_RPC_URL }}
         run: pnpm exec vitest run test/e2e.test.ts --testTimeout 180000
