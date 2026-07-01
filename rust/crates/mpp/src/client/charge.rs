@@ -4,7 +4,6 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
 use solana_transaction::Transaction;
 use std::str::FromStr;
@@ -286,18 +285,16 @@ pub async fn build_charge_transaction_with_options(
     let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
     let mut tx = Transaction::new_unsigned(message);
 
-    let sig_bytes = signer
-        .sign_message(&tx.message_data())
+    // Sign via the transaction-signing path (not `sign_message` over the raw
+    // message bytes). For a `MemorySigner` this yields the identical ed25519
+    // signature; for a hardware wallet (Ledger) it routes through the device's
+    // transaction-parsing APDU (hardware wallets cannot raw-sign arbitrary
+    // bytes). `sign_transaction` inserts the signature at the signer's index.
+    // Server verification is simulation-based, so the result is unchanged.
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    let signer_index = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &signer_pubkey)
-        .ok_or_else(|| Error::Other("Signer not found in transaction accounts".to_string()))?;
-    tx.signatures[signer_index] = sig;
 
     let serialized =
         bincode::serialize(&tx).map_err(|e| Error::Other(format!("Serialization failed: {e}")))?;

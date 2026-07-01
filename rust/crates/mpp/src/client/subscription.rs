@@ -16,7 +16,6 @@ use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
-use solana_signature::Signature;
 use solana_transaction::Transaction;
 
 use crate::error::Error;
@@ -308,19 +307,13 @@ pub async fn build_subscription_activation_transaction_with_options(
     // signatures (puller is the server, so the server holds the puller key
     // too). For v0 the subscriber is the only client-side signer; when fee
     // sponsorship is in play, the tx is broadcast partially signed.
-    let serialized_msg = tx.message_data();
-    let sig_bytes = signer
-        .sign_message(&serialized_msg)
+    // Sign via the transaction-signing path (hardware-wallet compatible; see
+    // charge.rs). `sign_transaction` inserts the subscriber signature at the
+    // signer's index. Identical bytes for a software key.
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("Subscriber signature failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    let subscriber_idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| k == &subscriber)
-        .ok_or_else(|| Error::Other("Subscriber not in account keys".into()))?;
-    tx.signatures[subscriber_idx] = sig;
 
     let serialized = bincode::serialize(&tx)
         .map_err(|e| Error::Other(format!("Failed to serialize tx: {e}")))?;
@@ -369,12 +362,12 @@ async fn ensure_subscription_authority_init_id(
 
     let message = Message::new_with_blockhash(&[init_ix], Some(&subscriber), blockhash);
     let mut tx = Transaction::new_unsigned(message);
-    let sig_bytes = signer
-        .sign_message(&tx.message_data())
+    // Transaction-signing path (hardware-wallet compatible); inserts the
+    // subscriber (fee-payer, index 0) signature. Identical for a software key.
+    signer
+        .sign_transaction(&mut tx)
         .await
         .map_err(|e| Error::Other(format!("SA init signature failed: {e}")))?;
-    let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
-    tx.signatures[0] = sig;
 
     rpc.send_and_confirm_transaction(&tx).map_err(|e| {
         Error::Other(format!(
