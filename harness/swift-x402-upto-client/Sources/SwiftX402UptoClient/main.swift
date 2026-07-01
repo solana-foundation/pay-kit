@@ -60,7 +60,9 @@ func emitResult(
         "status": status,
         "responseHeaders": headers,
         "responseBody": body,
-        "settlement": settlement as Any,
+        // Use NSNull for an absent settlement: a wrapped `nil as Any` is not a
+        // valid JSONSerialization value and would drop the whole result line.
+        "settlement": settlement ?? NSNull(),
     ]
     if let error { payload["error"] = error }
     let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
