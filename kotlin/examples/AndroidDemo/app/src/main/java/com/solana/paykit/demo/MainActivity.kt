@@ -854,7 +854,9 @@ private suspend fun consumeUpto(signer: SolanaSigner, endpoint: Endpoint): LogEn
         if (paidStatus in 200..299) {
             LogEntry.success(
                 endpoint = endpoint,
-                signature = settlement?.takeIf { it.isNotEmpty() },
+                // x-payment-response is a base64 settlement envelope; show the
+                // on-chain signature like the exact path does, not the blob.
+                signature = settlement?.let { signatureFromReceiptHeader(it) ?: it.takeIf { s -> s.isNotEmpty() } },
                 body = paidBody,
             )
         } else {
