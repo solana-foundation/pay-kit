@@ -74,6 +74,7 @@ import com.solana.paykit.paycore.SolanaSigner
 import com.solana.paykit.protocols.mpp.client.JsonRpcClient
 import com.solana.paykit.protocols.x402.client.upto.buildUptoHeader
 import com.solana.paykit.protocols.x402.client.upto.parseUptoChallenge
+import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -317,7 +318,7 @@ private fun DemoScreen() {
                                 // A metered x402 upto route advertises the generic
                                 // `charge` intent, so route by scheme first: authorize a
                                 // ceiling; the server meters + settles actual <= max.
-                                if (endpoint.scheme == "upto") {
+                                if (endpoint.scheme == UPTO_SCHEME) {
                                     busy = BusyKind.Pay(endpoint.id)
                                     scope.launch {
                                         append(consumeUpto(s, endpoint))
