@@ -29,7 +29,9 @@ export default defineConfig({
       '/api': target, // priced routes (/api/v1/*) + meta (health, faucet, docs)
       '^/x402/': target, // legacy x402 demo API routes kept for compatibility
       '/__402': target, // session side-channels: delivery reserve + settle-receipt poll
-      '/sessions': target, // session settle-receipt poll (/sessions/receipt/:channelId)
+      // Regex with the trailing slash so the SPA's own /sessions page still
+      // renders on refresh/deep-link; only the receipt poll hits the API.
+      '^/sessions/': target, // session settle-receipt poll (/sessions/receipt/:channelId)
     },
   },
 })
