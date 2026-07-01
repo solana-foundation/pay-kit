@@ -489,7 +489,7 @@ public struct X402PaymentExtensions: Codable, Sendable, Equatable {
     public static func echoing(_ inbound: JSONValue?) throws -> X402PaymentExtensions? {
         guard let inbound else { return nil }
         guard case let .object(object) = inbound else {
-            throw MppError.invalidJSON("x402 extensions must be a JSON object")
+            throw PayKitError.invalidJSON("x402 extensions must be a JSON object")
         }
         return X402PaymentExtensions(raw: object)
     }

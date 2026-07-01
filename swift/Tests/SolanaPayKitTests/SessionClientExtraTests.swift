@@ -34,7 +34,7 @@ struct SessionClientExtraTests {
         try challenge.requireSolanaSession() // does not throw
 
         let chargeChallenge = try PaymentChallenge(id: "1", realm: "r", method: "solana", intent: "charge", request: encoded)
-        #expect(throws: MppError.self) { try chargeChallenge.requireSolanaSession() }
+        #expect(throws: PayKitError.self) { try chargeChallenge.requireSolanaSession() }
     }
 
     @Test
@@ -96,7 +96,7 @@ struct SessionClientExtraTests {
     @Test
     func openerRejectsBadRecipientAndBadBlockhash() async throws {
         let (payer, sessionSigner) = try signers()
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await PaymentChannelSession.open(
                 request: request(recipient: "not base58 !!!"), payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash
             )

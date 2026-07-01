@@ -43,7 +43,7 @@ public final class ActiveSession {
     /// current watermark.
     public func prepareVoucher(_ cumulative: UInt64) async throws -> SignedVoucher {
         guard cumulative > self.cumulative else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher cumulative \(cumulative) must exceed current watermark \(self.cumulative)"
             )
         }
@@ -68,15 +68,15 @@ public final class ActiveSession {
     /// nonce when higher). Mirrors Go `RecordVoucher`.
     public func recordVoucher(_ voucher: SignedVoucher) throws {
         guard voucher.data.channelId == channelIdString() else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher channel \(voucher.data.channelId) does not match active session \(channelIdString())"
             )
         }
         guard let cumulative = UInt64(voucher.data.cumulative) else {
-            throw MppError.invalidTransaction("invalid voucher cumulative")
+            throw PayKitError.invalidTransaction("invalid voucher cumulative")
         }
         guard cumulative > self.cumulative else {
-            throw MppError.invalidTransaction(
+            throw PayKitError.invalidTransaction(
                 "voucher cumulative \(cumulative) must exceed current watermark \(self.cumulative)"
             )
         }
@@ -186,7 +186,7 @@ public final class ActiveSession {
     private func addToWatermark(_ amount: UInt64) throws -> UInt64 {
         let (sum, overflow) = cumulative.addingReportingOverflow(amount)
         guard !overflow else {
-            throw MppError.invalidTransaction("voucher cumulative overflow adding \(amount) to \(cumulative)")
+            throw PayKitError.invalidTransaction("voucher cumulative overflow adding \(amount) to \(cumulative)")
         }
         return sum
     }
@@ -300,7 +300,7 @@ public enum PaymentChannelSession {
 
         let blockhash = try Base58.decode(recentBlockhash)
         guard blockhash.count == 32 else {
-            throw MppError.invalidTransaction("recentBlockhash must decode to 32 bytes")
+            throw PayKitError.invalidTransaction("recentBlockhash must decode to 32 bytes")
         }
         let tx = try await PaymentChannels.buildOpenTransaction(
             payer: payerSigner,
@@ -330,10 +330,10 @@ public enum PaymentChannelSession {
 
     static func ensureClientVoucherPull(_ request: SessionRequest) throws {
         guard request.modes.contains(.pull) else {
-            throw MppError.invalidTransaction("session challenge does not advertise pull mode")
+            throw PayKitError.invalidTransaction("session challenge does not advertise pull mode")
         }
         guard request.pullVoucherStrategy == .clientVoucher else {
-            throw MppError.invalidTransaction("session challenge does not advertise pull + clientVoucher")
+            throw PayKitError.invalidTransaction("session challenge does not advertise pull + clientVoucher")
         }
     }
 
@@ -344,12 +344,12 @@ public enum PaymentChannelSession {
         options: PaymentChannelOpenOptions
     ) throws -> PaymentChannelOpen {
         guard let mintString = Mints.resolveChargeMint(currency: request.currency, network: request.network) else {
-            throw MppError.invalidTransaction("session payment channels require an SPL token")
+            throw PayKitError.invalidTransaction("session payment channels require an SPL token")
         }
         let mint = try Pubkey(base58: mintString)
         let payee: Pubkey
         do { payee = try Pubkey(base58: request.recipient) } catch {
-            throw MppError.invalidPubkey("invalid recipient \(request.recipient)")
+            throw PayKitError.invalidPubkey("invalid recipient \(request.recipient)")
         }
         let deposit: UInt64
         if let explicit = options.deposit {
@@ -357,7 +357,7 @@ public enum PaymentChannelSession {
         } else if let parsed = UInt64(request.cap) {
             deposit = parsed
         } else {
-            throw MppError.invalidTransaction("invalid session cap: \(request.cap)")
+            throw PayKitError.invalidTransaction("invalid session cap: \(request.cap)")
         }
         let gracePeriod = options.gracePeriod ?? PaymentChannels.defaultGracePeriodSeconds
         let programId: Pubkey
@@ -365,7 +365,7 @@ public enum PaymentChannelSession {
             programId = explicit
         } else if let requested = request.programId {
             do { programId = try Pubkey(base58: requested) } catch {
-                throw MppError.invalidPubkey("invalid programId \(requested)")
+                throw PayKitError.invalidPubkey("invalid programId \(requested)")
             }
         } else {
             programId = PaymentChannels.programId
@@ -383,7 +383,7 @@ public enum PaymentChannelSession {
             recipients = try request.splits.map { split in
                 let recipient: Pubkey
                 do { recipient = try Pubkey(base58: split.recipient) } catch {
-                    throw MppError.invalidPubkey("invalid split recipient \(split.recipient)")
+                    throw PayKitError.invalidPubkey("invalid split recipient \(split.recipient)")
                 }
                 return PaymentChannels.Distribution(recipient: recipient, bps: split.bps)
             }
@@ -428,7 +428,7 @@ extension PaymentChallenge {
     /// Require a `solana`/`session` challenge before opening a session.
     public func requireSolanaSession() throws {
         guard method == "solana", intent == "session" else {
-            throw MppError.unsupportedChallenge(method: method, intent: intent)
+            throw PayKitError.unsupportedChallenge(method: method, intent: intent)
         }
     }
 
@@ -436,13 +436,13 @@ extension PaymentChallenge {
     public var sessionRequest: SessionRequest {
         get throws {
             guard request.utf8.count <= MppHeaders.maxTokenLength else {
-                throw MppError.invalidHeader
+                throw PayKitError.invalidHeader
             }
             let data = try Base64URL.decode(request)
             do {
                 return try JSONDecoder().decode(SessionRequest.self, from: data)
             } catch {
-                throw MppError.invalidJSON(String(describing: error))
+                throw PayKitError.invalidJSON(String(describing: error))
             }
         }
     }

@@ -306,7 +306,7 @@ public struct OpenPayload: Codable, Equatable, Sendable {
         }
         if let s = try c.decodeIfPresent(String.self, forKey: .salt) {
             guard let value = UInt64(s) else {
-                throw MppError.invalidTransaction("invalid salt string: \(s)")
+                throw PayKitError.invalidTransaction("invalid salt string: \(s)")
             }
             return value
         }
@@ -361,7 +361,7 @@ public struct VoucherData: Codable, Equatable, Sendable {
     public func messageBytes() throws -> Data {
         let channel = try Pubkey(base58: channelId)
         guard let amount = UInt64(cumulative) else {
-            throw MppError.invalidTransaction("invalid voucher cumulative: \(cumulative)")
+            throw PayKitError.invalidTransaction("invalid voucher cumulative: \(cumulative)")
         }
         return PaymentChannels.voucherMessageBytes(channelId: channel, cumulative: amount, expiresAt: expiresAt)
     }
@@ -444,7 +444,7 @@ public struct MeteringDirective: Codable, Equatable, Sendable {
     /// Parse `amount` as base units. Mirrors `amount_base_units`.
     public func amountBaseUnits() throws -> UInt64 {
         guard let value = UInt64(amount) else {
-            throw MppError.invalidTransaction("invalid metering amount: \(amount)")
+            throw PayKitError.invalidTransaction("invalid metering amount: \(amount)")
         }
         return value
     }
@@ -460,7 +460,7 @@ public struct MeteringUsage: Codable, Equatable, Sendable {
 
     public func amountBaseUnits() throws -> UInt64 {
         guard let value = UInt64(amount) else {
-            throw MppError.invalidTransaction("invalid metering usage amount: \(amount)")
+            throw PayKitError.invalidTransaction("invalid metering usage amount: \(amount)")
         }
         return value
     }

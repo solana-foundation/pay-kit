@@ -243,16 +243,16 @@ public enum PaymentChannels {
         )
         let signature = try await payer.sign(message: message.serialize())
         guard signature.count == Ed25519.signatureLength else {
-            throw MppError.signingFailure("payment-channel open signature must be 64 bytes, got \(signature.count)")
+            throw PayKitError.signingFailure("payment-channel open signature must be 64 bytes, got \(signature.count)")
         }
         guard let signerIndex = message.accountKeys.firstIndex(of: payerPubkey) else {
-            throw MppError.invalidTransaction("payer is not in the open transaction account list")
+            throw PayKitError.invalidTransaction("payer is not in the open transaction account list")
         }
         var signatures = SignedTransaction.emptySignatureSlots(count: Int(message.header.numRequiredSignatures))
         // The payer must land in the signer prefix of the account list; guard the
         // subscript so a non-signer index throws instead of crashing.
         guard signerIndex < signatures.count else {
-            throw MppError.invalidTransaction("payer signer index \(signerIndex) is outside the required-signer range")
+            throw PayKitError.invalidTransaction("payer signer index \(signerIndex) is outside the required-signer range")
         }
         signatures[signerIndex] = signature
         let transaction = try SignedTransaction(signatures: signatures, message: message)

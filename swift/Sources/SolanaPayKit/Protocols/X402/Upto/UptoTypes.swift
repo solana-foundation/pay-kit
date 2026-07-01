@@ -160,7 +160,7 @@ public struct X402UptoRequirements: Codable, Sendable {
     /// Parse the authorized maximum as base units.
     public func maxAmount() throws -> UInt64 {
         guard let value = UInt64(amount) else {
-            throw MppError.invalidTransaction("x402 client: invalid upto amount \(amount)")
+            throw PayKitError.invalidTransaction("x402 client: invalid upto amount \(amount)")
         }
         return value
     }

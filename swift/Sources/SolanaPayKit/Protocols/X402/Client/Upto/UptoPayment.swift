@@ -74,7 +74,7 @@ public func buildUptoPayload(
 ) async throws -> X402UptoPayload {
     let extra = requirements.extra
     guard extra.assetTransferMethod == X402UptoAssetTransferMethod else {
-        throw MppError.invalidTransaction(
+        throw PayKitError.invalidTransaction(
             "x402 client: requirement does not use the payment-channel asset transfer method"
         )
     }
@@ -82,13 +82,13 @@ public func buildUptoPayload(
     let max = try requirements.maxAmount()
     let mint = try Pubkey(base58: requirements.asset)
     guard !extra.facilitatorAddress.isEmpty else {
-        throw MppError.missingField("x402 client: requirement missing extra.facilitatorAddress")
+        throw PayKitError.missingField("x402 client: requirement missing extra.facilitatorAddress")
     }
     let operator_ = try Pubkey(base58: extra.facilitatorAddress)
     let beneficiary = try Pubkey(base58: requirements.payTo)
 
     guard extra.facilitatorFee >= 0, extra.facilitatorFee <= X402UptoMaxFacilitatorFeeBps else {
-        throw MppError.invalidTransaction(
+        throw PayKitError.invalidTransaction(
             "x402 client: facilitatorFee must be between 0 and 10000 basis points"
         )
     }
@@ -117,11 +117,11 @@ public func buildUptoPayload(
     }
 
     guard let blockhashStr = extra.recentBlockhash, !blockhashStr.isEmpty else {
-        throw MppError.missingField("x402 client: requirement missing extra.recentBlockhash")
+        throw PayKitError.missingField("x402 client: requirement missing extra.recentBlockhash")
     }
     let blockhash = try Base58.decode(blockhashStr)
     guard blockhash.count == 32 else {
-        throw MppError.invalidTransaction(
+        throw PayKitError.invalidTransaction(
             "x402 client: recentBlockhash decodes to \(blockhash.count) bytes, expected 32"
         )
     }

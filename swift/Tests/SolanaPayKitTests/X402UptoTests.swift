@@ -102,7 +102,7 @@ private enum LegacyTxDecoder {
 
     static func decode(base64: String, payer: Pubkey) throws -> DecodedOpen {
         guard let data = Data(base64Encoded: base64) else {
-            throw MppError.invalidTransaction("not base64")
+            throw PayKitError.invalidTransaction("not base64")
         }
         var off = 0
         let sigCount = shortVec(data, &off)
@@ -804,7 +804,7 @@ struct X402UptoTransportTests {
     func expiresAtDerivesFromNowPlusMaxTimeout() async throws {
         let signer = try UptoFixture.signer()
         let fixedNow = Date(timeIntervalSince1970: 1_000_000)
-        let interceptor = X402UptoInterceptor(signer: signer, now: { fixedNow })
+        let interceptor = X402.UptoInterceptor(signer: signer, now: { fixedNow })
         let url = URL(string: "https://example.test/metered")!
         let http = HTTPURLResponse(
             url: url, statusCode: 402, httpVersion: "HTTP/1.1",
@@ -824,7 +824,7 @@ struct X402UptoTransportTests {
     @Test
     func nonUptoChallengeThrows() async throws {
         let signer = try UptoFixture.signer()
-        let interceptor = X402UptoInterceptor(signer: signer)
+        let interceptor = X402.UptoInterceptor(signer: signer)
         let url = URL(string: "https://example.test/metered")!
         let http = HTTPURLResponse(
             url: url, statusCode: 402, httpVersion: "HTTP/1.1", headerFields: [:]

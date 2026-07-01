@@ -97,7 +97,7 @@ struct SessionWireTests {
         // Round-trips through the wire.
         let decoded = try JSONDecoder().decode(MeteringUsage.self, from: try JSONEncoder().encode(usage))
         #expect(decoded == usage)
-        #expect(throws: MppError.self) { _ = try MeteringUsage(deliveryId: "d1", amount: "bad").amountBaseUnits() }
+        #expect(throws: PayKitError.self) { _ = try MeteringUsage(deliveryId: "d1", amount: "bad").amountBaseUnits() }
     }
 
     @Test
@@ -109,7 +109,7 @@ struct SessionWireTests {
     @Test
     func voucherMessageBytesRejectsInvalidCumulative() {
         let data = VoucherData(channelId: "11111111111111111111111111111112", cumulative: "not-a-number", expiresAt: 1)
-        #expect(throws: MppError.self) { _ = try data.messageBytes() }
+        #expect(throws: PayKitError.self) { _ = try data.messageBytes() }
     }
 }
 
@@ -174,7 +174,7 @@ struct SessionOpenerTests {
     @Test
     func rejectsNonPullChallenge() async throws {
         let (payer, sessionSigner) = try signers()
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await PaymentChannelSession.open(
                 request: request(modes: [.push], strategy: nil),
                 payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash
@@ -185,7 +185,7 @@ struct SessionOpenerTests {
     @Test
     func rejectsOperatedVoucherChallenge() async throws {
         let (payer, sessionSigner) = try signers()
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await PaymentChannelSession.open(
                 request: request(strategy: .operatedVoucher),
                 payerSigner: payer, sessionSigner: sessionSigner, recentBlockhash: blockhash

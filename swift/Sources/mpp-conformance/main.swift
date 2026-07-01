@@ -266,7 +266,7 @@ private struct RunnerResult: Encodable {
 // MARK: - Reject classification
 //
 // The harness asserts a normalized reject CATEGORY per reject vector. Map the
-// Swift SDK's native reject message (the `MppError` payload string) onto the
+// Swift SDK's native reject message (the `PayKitError` payload string) onto the
 // shared RejectCode vocabulary so the driver can compare categories across
 // SDKs rather than brittle prose. Swift is a CLIENT-only SDK, so the only
 // harness reject vector it actually processes is the splits-consume-amount

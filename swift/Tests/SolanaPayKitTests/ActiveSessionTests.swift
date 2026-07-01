@@ -25,7 +25,7 @@ struct ActiveSessionTests {
         #expect(session.cumulative == 75)
 
         // Recording the same voucher again is non-increasing → rejected.
-        #expect(throws: MppError.self) { try session.recordVoucher(prepared) }
+        #expect(throws: PayKitError.self) { try session.recordVoucher(prepared) }
     }
 
     @Test
@@ -46,11 +46,11 @@ struct ActiveSessionTests {
     func signVoucherRejectsNonIncreasingAndZero() async throws {
         let session = try makeSession()
         _ = try await session.signIncrement(100)
-        await #expect(throws: MppError.self) { _ = try await session.signVoucher(100) }
-        await #expect(throws: MppError.self) { _ = try await session.signVoucher(50) }
+        await #expect(throws: PayKitError.self) { _ = try await session.signVoucher(100) }
+        await #expect(throws: PayKitError.self) { _ = try await session.signVoucher(50) }
 
         let fresh = try makeSession(seed: 9, channel: 8)
-        await #expect(throws: MppError.self) { _ = try await fresh.signVoucher(0) }
+        await #expect(throws: PayKitError.self) { _ = try await fresh.signVoucher(0) }
     }
 
     @Test
@@ -60,7 +60,7 @@ struct ActiveSessionTests {
             data: VoucherData(channelId: session.channelIdString(), cumulative: "not-a-number", expiresAt: defaultSessionExpiresAt),
             signature: "sig"
         )
-        #expect(throws: MppError.self) { try session.recordVoucher(bad) }
+        #expect(throws: PayKitError.self) { try session.recordVoucher(bad) }
 
         // Missing nonce defaults to current nonce + 1.
         let noNonce = SignedVoucher(
@@ -78,7 +78,7 @@ struct ActiveSessionTests {
             data: VoucherData(channelId: "11111111111111111111111111111112", cumulative: "10", expiresAt: defaultSessionExpiresAt),
             signature: "sig"
         )
-        #expect(throws: MppError.self) { try session.recordVoucher(foreign) }
+        #expect(throws: PayKitError.self) { try session.recordVoucher(foreign) }
         #expect(session.cumulative == 0)
     }
 

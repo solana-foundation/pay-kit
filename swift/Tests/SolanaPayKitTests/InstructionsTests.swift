@@ -122,7 +122,7 @@ struct InstructionsTests {
         #expect(ix.data == Data("hello world".utf8))
 
         let big = String(repeating: "x", count: 567)
-        #expect(throws: MppError.invalidTransaction("memo exceeds 566 bytes")) {
+        #expect(throws: PayKitError.invalidTransaction("memo exceeds 566 bytes")) {
             _ = try Instructions.memo(big)
         }
     }

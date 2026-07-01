@@ -124,7 +124,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -165,7 +165,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -203,7 +203,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -336,7 +336,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -378,7 +378,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
         }
     }
@@ -444,7 +444,7 @@ struct ChargeWireTests {
             intent: "charge",
             request: requestB64
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -500,7 +500,7 @@ struct ChargeWireTests {
         let (challenge, rpc, signer) = try unknownMintChallenge(
             ownerProgram: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
         }
     }
@@ -540,7 +540,7 @@ struct ChargeWireTests {
             ownerProgram: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
             decimals: ""
         )
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer, rpc: rpc)
         }
     }
@@ -576,7 +576,7 @@ struct ChargeWireTests {
     func refusesAmountAboveMaxCap() async throws {
         let challenge = try solChallenge(amount: "1000")
         let signer = try MemorySigner(secretKey: Data(repeating: 41, count: 32))
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(
                 challenge: challenge,
                 signer: signer,
@@ -601,7 +601,7 @@ struct ChargeWireTests {
     func refusesUnexpectedNetwork() async throws {
         let challenge = try solChallenge(amount: "10", network: "mainnet")
         let signer = try MemorySigner(secretKey: Data(repeating: 43, count: 32))
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(
                 challenge: challenge,
                 signer: signer,
@@ -638,7 +638,7 @@ struct ChargeWireTests {
             expires: "2000-01-01T00:00:00Z"
         )
         let signer = try MemorySigner(secretKey: Data(repeating: 45, count: 32))
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
@@ -677,7 +677,7 @@ struct ChargeWireTests {
             expires: "not-a-timestamp"
         )
         let signer = try MemorySigner(secretKey: Data(repeating: 47, count: 32))
-        await #expect(throws: MppError.self) {
+        await #expect(throws: PayKitError.self) {
             _ = try await Charge.buildPullCredential(challenge: challenge, signer: signer)
         }
     }
