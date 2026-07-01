@@ -36,7 +36,10 @@ public extension X402 {
                 )
             }
 
-            let expiresAt = Int(now().timeIntervalSince1970) + requirement.maxTimeoutSeconds
+            let expiresAt = try uptoExpiresAt(
+                nowSeconds: Int(now().timeIntervalSince1970),
+                maxTimeoutSeconds: requirement.maxTimeoutSeconds
+            )
             let payment = try await buildUptoHeader(
                 signer: signer, requirements: requirement, expiresAt: expiresAt
             )
@@ -46,6 +49,24 @@ public extension X402 {
             return .retry(request: retry, paymentSent: payment)
         }
     }
+}
+
+/// Widest `maxTimeoutSeconds` a challenge may advertise (one year). The value
+/// is server-controlled and decoded as `Int`, and Swift `+` traps on overflow,
+/// so an unbounded add would let a hostile 402 endpoint crash the paying app.
+let uptoMaxTimeoutCeilingSeconds = 31_536_000
+
+/// Authorization expiry for an upto challenge: `now + maxTimeoutSeconds`,
+/// rejecting out-of-range (negative or absurd) server-advertised timeouts
+/// before any arithmetic can trap.
+func uptoExpiresAt(nowSeconds: Int, maxTimeoutSeconds: Int) throws -> Int {
+    guard (0...uptoMaxTimeoutCeilingSeconds).contains(maxTimeoutSeconds) else {
+        throw PayKitError.unsupportedChallenge(
+            method: "x402-upto",
+            intent: "maxTimeoutSeconds out of range: \(maxTimeoutSeconds)"
+        )
+    }
+    return nowSeconds + maxTimeoutSeconds
 }
 
 public extension PayKit.HttpClient {

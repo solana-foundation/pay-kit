@@ -836,3 +836,20 @@ struct X402UptoTransportTests {
         }
     }
 }
+
+// A hostile 402 endpoint controls maxTimeoutSeconds; the expiry math must
+// reject out-of-range values instead of trapping on Int overflow.
+@Test
+func uptoExpiresAtRejectsOutOfRangeTimeouts() throws {
+    #expect(throws: (any Error).self) {
+        _ = try uptoExpiresAt(nowSeconds: 1_000_000, maxTimeoutSeconds: Int.max)
+    }
+    #expect(throws: (any Error).self) {
+        _ = try uptoExpiresAt(nowSeconds: 1_000_000, maxTimeoutSeconds: -1)
+    }
+    #expect(try uptoExpiresAt(nowSeconds: 1_000_000, maxTimeoutSeconds: 300) == 1_000_300)
+    #expect(
+        try uptoExpiresAt(nowSeconds: 1_000_000, maxTimeoutSeconds: uptoMaxTimeoutCeilingSeconds)
+            == 1_000_000 + uptoMaxTimeoutCeilingSeconds
+    )
+}
