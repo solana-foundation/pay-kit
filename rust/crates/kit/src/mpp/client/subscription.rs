@@ -678,6 +678,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn sign_transaction_matches_manual_message_signature_for_fee_payer_tx() {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        let fee_payer_key = "FeePayerJ7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ";
+        let md = make_method_details(true, Some(fee_payer_key));
+        let payload = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            pinned_options(BuildSubscriptionActivationOptions::default()),
+        )
+        .await
+        .expect("activation tx");
+
+        let CredentialPayload::Transaction { transaction } = payload else {
+            panic!("expected Transaction payload");
+        };
+        let raw = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &transaction)
+            .expect("base64 decode");
+        let tx: Transaction = bincode::deserialize(&raw).expect("bincode tx");
+        let subscriber_index = tx
+            .message
+            .account_keys
+            .iter()
+            .position(|key| key == &signer.pubkey())
+            .expect("subscriber signer account");
+
+        let mut manual_tx = tx.clone();
+        manual_tx.signatures.fill(Signature::default());
+        let sig_bytes = signer
+            .sign_message(&manual_tx.message_data())
+            .await
+            .expect("manual message signature");
+        manual_tx.signatures[subscriber_index] = Signature::from(<[u8; 64]>::from(sig_bytes));
+
+        assert_eq!(manual_tx.signatures, tx.signatures);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn invalid_pubkey_in_method_details_surfaces_typed_error() {
         let signer = make_signer();
         let rpc = RpcClient::new_mock("succeeds".to_string());
