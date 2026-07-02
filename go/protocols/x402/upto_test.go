@@ -680,7 +680,7 @@ func TestUptoVerifyOpenAndSettle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewX402Upto: %v", err)
 	}
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 
 	// Build the payment signature header.
 	envelope := UptoSignatureEnvelope{
@@ -783,7 +783,7 @@ func TestUptoVerifyOpenRejectsClientFeePayer(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	envelope := UptoSignatureEnvelope{
 		X402Version: X402Version,
 		Scheme:      UptoScheme,
@@ -841,7 +841,7 @@ func TestUptoVerifyOpenRejectsInFlightReplay(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 
 	envelope := UptoSignatureEnvelope{
 		X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
@@ -1174,7 +1174,7 @@ func TestUptoVerifyOpenRejectsChannelNotOpen(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1219,7 +1219,7 @@ func TestUptoVerifyOpenRejectsMintMismatch(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1263,7 +1263,7 @@ func TestUptoVerifyOpenRejectsWrongPayer(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1307,7 +1307,7 @@ func TestUptoVerifyOpenRejectsWrongRentPayer(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1351,7 +1351,7 @@ func TestUptoVerifyOpenRejectsDepositMismatch(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1387,7 +1387,7 @@ func TestUptoFetchChannelRejectsMissingAccount(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",
@@ -1430,7 +1430,7 @@ func TestUptoSettleActualAllowsZeroAmount(t *testing.T) {
 		OperatorSigner:          signerSigner{operatorKey},
 		RecentBlockhashProvider: func() (string, error) { return "4vJ9JU1bJJbzZ4aJ8AqGxH9bK5VwY8bGf3sD5QG6h7h", nil },
 	})
-	engine.SetRPCForTests(fakeRPC)
+	engine.rpc = fakeRPC
 	env := UptoSignatureEnvelope{X402Version: X402Version, Scheme: UptoScheme, Network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", Payload: UptoPayload{
 		From: payerKey.PublicKey().String(), MaxAmount: "1000000",
 		ExpiresAt: time.Now().Add(time.Hour).Unix(), ChannelID: channel.String(), Deposit: "1000000",

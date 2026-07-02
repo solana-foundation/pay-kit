@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/solana-foundation/pay-kit/go/paykit"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
@@ -25,14 +26,27 @@ type usageAdapter struct {
 }
 
 func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
+	uptoCfg, err := buildUptoConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	engine, err := proto.NewX402Upto(uptoCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &usageAdapter{engine: engine, cfg: cfg}, nil
+}
+
+// buildUptoConfig maps a paykit.Config onto the protocol engine config.
+func buildUptoConfig(cfg paykit.Config) (proto.UptoConfig, error) {
 	if cfg.Operator.Signer == nil {
-		return nil, errors.New("usage adapter requires an operator signer")
+		return proto.UptoConfig{}, errors.New("usage adapter requires an operator signer")
 	}
 	coin := "USDC"
 	if len(cfg.Stablecoins) > 0 {
 		coin = string(cfg.Stablecoins[0])
 	}
-	uptoCfg := proto.UptoConfig{
+	return proto.UptoConfig{
 		Recipient:               string(cfg.Operator.Recipient),
 		Currency:                coin,
 		Decimals:                proto.StablecoinDecimals,
@@ -42,28 +56,23 @@ func NewUsageAdapter(cfg paykit.Config) (paykit.UsageAdapter, error) {
 		MaxTimeoutSeconds:       proto.DefaultMaxTimeoutSeconds,
 		OperatorSigner:          uptoSignerWrapper{signer: cfg.Operator.Signer},
 		RecentBlockhashProvider: cfg.RecentBlockhashProvider,
-	}
-	engine, err := proto.NewX402Upto(uptoCfg)
-	if err != nil {
-		return nil, err
-	}
-	return &usageAdapter{engine: engine, cfg: cfg}, nil
+	}, nil
 }
 
-func (u *usageAdapter) UsageChallengeHeaders(gate *paykit.Gate) map[string]string {
+func (u *usageAdapter) UsageChallengeHeaders(gate *paykit.Gate) (map[string]string, error) {
 	header, value, err := u.engine.PaymentRequiredHeader(gateAmount(gate))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/x402: build upto payment-required header: %w", err)
 	}
-	return map[string]string{header: value}
+	return map[string]string{header: value}, nil
 }
 
-func (u *usageAdapter) UsageAcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
+func (u *usageAdapter) UsageAcceptsEntry(gate *paykit.Gate) (paykit.AcceptsEntry, error) {
 	req, err := u.engine.UptoRequirements(gateAmount(gate))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/x402: build upto requirements: %w", err)
 	}
-	return uptoAcceptsEntry{req: req}
+	return uptoAcceptsEntry{req: req}, nil
 }
 
 func (u *usageAdapter) DetectUsage(req *paykit.AdapterRequest) bool {

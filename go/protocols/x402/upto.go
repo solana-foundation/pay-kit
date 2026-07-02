@@ -226,6 +226,9 @@ type UptoConfig struct {
 	OperatorSigner          uptoSigner
 	FacilitatorFee          uint16
 	RecentBlockhashProvider func() (string, error)
+	// RPCClient, when non-nil, is used instead of dialing RPCURL. It lets
+	// callers supply a custom transport or a deterministic client in tests.
+	RPCClient solanatx.RPCClient
 }
 
 // X402Upto is the server-side x402 upto payment-channel engine.
@@ -279,16 +282,15 @@ func NewX402Upto(cfg UptoConfig) (*X402Upto, error) {
 	if cfg.FacilitatorFee > 10_000 {
 		return nil, errors.New("facilitatorFee must be <= 10000")
 	}
-	rpcURL := cfg.RPCURL
-	if rpcURL == "" {
-		rpcURL = cfg.Network.DefaultRPCURL()
+	rpcClient := cfg.RPCClient
+	if rpcClient == nil {
+		rpcURL := cfg.RPCURL
+		if rpcURL == "" {
+			rpcURL = cfg.Network.DefaultRPCURL()
+		}
+		rpcClient = rpc.New(rpcURL)
 	}
-	return &X402Upto{cfg: cfg, rpc: rpc.New(rpcURL), operator: operator, inFlight: map[string]struct{}{}}, nil
-}
-
-// SetRPCForTests replaces the RPC client for deterministic tests.
-func (u *X402Upto) SetRPCForTests(rpcClient solanatx.RPCClient) {
-	u.rpc = rpcClient
+	return &X402Upto{cfg: cfg, rpc: rpcClient, operator: operator, inFlight: map[string]struct{}{}}, nil
 }
 
 // Operator returns the operator/facilitator public key.
