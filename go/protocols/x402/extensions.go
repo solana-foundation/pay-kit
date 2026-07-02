@@ -28,12 +28,12 @@ var paymentIdentifierIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 // PaymentIdentifierInfo carries the client/server fields of the
 // payment-identifier extension. camelCase wire (rust types.rs:483-493).
 type PaymentIdentifierInfo struct {
-	// Required is the server-side flag: when true and Id is missing the
+	// Required is the server-side flag: when true and ID is missing the
 	// server returns 400 (rust types.rs:484-487).
 	Required *bool `json:"required,omitempty"`
-	// Id is the client-side idempotency key. Must match
+	// ID is the client-side idempotency key. Must match
 	// ^[A-Za-z0-9_-]{16,128}$. Canonical Solana uses a pay_ prefix.
-	Id string `json:"id,omitempty"`
+	ID string `json:"id,omitempty"`
 }
 
 // PaymentIdentifierExtension is the payment-identifier extension. The
@@ -130,7 +130,7 @@ func (p *PaymentExtensions) PaymentIdentifierID() string {
 	if p == nil || p.PaymentIdentifier == nil {
 		return ""
 	}
-	return p.PaymentIdentifier.Info.Id
+	return p.PaymentIdentifier.Info.ID
 }
 
 // WithPaymentIdentifierID sets (or overwrites) the client-side
@@ -141,7 +141,7 @@ func (p *PaymentExtensions) WithPaymentIdentifierID(id string) {
 	if p.PaymentIdentifier == nil {
 		p.PaymentIdentifier = &PaymentIdentifierExtension{}
 	}
-	p.PaymentIdentifier.Info.Id = id
+	p.PaymentIdentifier.Info.ID = id
 }
 
 // Keys returns the sorted top-level extension keys present on the object

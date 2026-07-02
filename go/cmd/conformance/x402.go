@@ -292,7 +292,7 @@ func decodeX402EnvelopeShape(header string) (*X402EnvelopeShape, error) {
 			if r := ext.PaymentIdentifier.Info.Required; r != nil {
 				shape.PaymentIdentifierRequired = r
 			}
-			shape.PaymentIdentifierID = ext.PaymentIdentifier.Info.Id
+			shape.PaymentIdentifierID = ext.PaymentIdentifier.Info.ID
 		}
 	}
 	return shape, nil

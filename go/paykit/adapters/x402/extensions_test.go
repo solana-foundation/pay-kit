@@ -111,8 +111,8 @@ func TestPaymentExtensionsUnmarshalJSON(t *testing.T) {
 	if ext.PaymentIdentifier == nil {
 		t.Fatal("payment-identifier not split out")
 	}
-	if ext.PaymentIdentifier.Info.Id != "pay_0123456789abcdef" {
-		t.Fatalf("id = %q", ext.PaymentIdentifier.Info.Id)
+	if ext.PaymentIdentifier.Info.ID != "pay_0123456789abcdef" {
+		t.Fatalf("id = %q", ext.PaymentIdentifier.Info.ID)
 	}
 	if got := string(ext.Other["future-extension"]); got != `{"x":1}` {
 		t.Fatalf("unknown extension verbatim = %s", got)
@@ -181,7 +181,7 @@ func TestPaymentIdentifierID(t *testing.T) {
 	if (&proto.PaymentExtensions{}).PaymentIdentifierID() != "" {
 		t.Fatal("absent id must be empty")
 	}
-	ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{Id: "pay_0123456789abcdef"}}}
+	ext := &proto.PaymentExtensions{PaymentIdentifier: &proto.PaymentIdentifierExtension{Info: proto.PaymentIdentifierInfo{ID: "pay_0123456789abcdef"}}}
 	if ext.PaymentIdentifierID() != "pay_0123456789abcdef" {
 		t.Fatalf("id = %q", ext.PaymentIdentifierID())
 	}
