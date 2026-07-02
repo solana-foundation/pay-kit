@@ -841,7 +841,11 @@ private suspend fun consumeUpto(signer: SolanaSigner, endpoint: Endpoint): LogEn
                 "server did not return an x402 upto challenge (HTTP $challengeStatus)",
             )
 
-        val expiresAt = System.currentTimeMillis() / 1000 + requirement.maxTimeoutSeconds
+        // Fall back to 300s when the challenge advertises a non-positive
+        // maxTimeoutSeconds, matching the harness adapter, so the authorization
+        // does not expire immediately.
+        val timeout = requirement.maxTimeoutSeconds.takeIf { it > 0 } ?: 300L
+        val expiresAt = System.currentTimeMillis() / 1000 + timeout
         val paymentHeader = buildUptoHeader(signer, requirement, expiresAt)
 
         // Paid retry: the operator co-signs + broadcasts the open, meters, settles.
