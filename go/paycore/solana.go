@@ -107,8 +107,7 @@ func mintNetworkKey(network string) string {
 // Returns an empty string for native SOL.
 func ResolveMint(currency string, network string) string {
 	normalized := strings.ToUpper(currency)
-	switch normalized {
-	case "SOL":
+	if normalized == "SOL" {
 		return ""
 	}
 	if mints, ok := knownMints[normalized]; ok {

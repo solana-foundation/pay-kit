@@ -60,7 +60,7 @@ func BuildComputeUnitPrice(microLamports uint64) (solana.Instruction, error) {
 
 // BuildMemoInstruction builds a Solana Memo Program instruction.
 func BuildMemoInstruction(memo string) (solana.Instruction, error) {
-	if len([]byte(memo)) > 566 {
+	if len(memo) > 566 {
 		return nil, fmt.Errorf("memo cannot exceed 566 bytes")
 	}
 	programID, err := solana.PublicKeyFromBase58(paycore.MemoProgram)

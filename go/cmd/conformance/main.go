@@ -742,7 +742,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 				shape.MaxComputeUnitLimit = &limit
 			} else if len(data) == 9 && data[0] == 3 {
 				price := binary.LittleEndian.Uint64(data[1:9])
-				shape.MaxComputeUnitPrice = fmt.Sprintf("%d", price)
+				shape.MaxComputeUnitPrice = strconv.FormatUint(price, 10)
 			}
 		case memoProgram:
 			shape.Memo = append(shape.Memo, string(data))
@@ -759,7 +759,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 				shape.Transfers = append(shape.Transfers, Transfer{
 					Kind:        "sol",
 					Destination: dest,
-					Amount:      fmt.Sprintf("%d", binary.LittleEndian.Uint64(data[4:12])),
+					Amount:      strconv.FormatUint(binary.LittleEndian.Uint64(data[4:12]), 10),
 				})
 			}
 		case tokenProgram, token2022Program:
@@ -775,7 +775,7 @@ func shapeFromTransaction(transactionBase64 string) (*TransactionShape, error) {
 					Kind:         "spl",
 					Destination:  dest,
 					Mint:         mint,
-					Amount:       fmt.Sprintf("%d", binary.LittleEndian.Uint64(data[1:9])),
+					Amount:       strconv.FormatUint(binary.LittleEndian.Uint64(data[1:9]), 10),
 					Decimals:     &decimals,
 					TokenProgram: program,
 				})
@@ -798,8 +798,8 @@ func accountAt(keys []solana.PublicKey, accounts []uint16, pos int) string {
 }
 
 func parseUint64(value string) (uint64, error) {
-	var out uint64
-	if _, err := fmt.Sscanf(strings.TrimSpace(value), "%d", &out); err != nil {
+	out, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+	if err != nil {
 		return 0, fmt.Errorf("invalid uint64 %q: %w", value, err)
 	}
 	return out, nil

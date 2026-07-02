@@ -233,13 +233,13 @@ func selectFromJSON(raw []byte, sel ChallengeSelection) (*x402.AcceptsEntry, int
 // x402 offers, prefer the chosen network, then either match the client's
 // currency priority order (first wins, no fallback) or pick the cheapest.
 func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.AcceptsEntry {
-	solana := make([]x402.AcceptsEntry, 0, len(accepts))
+	solanaEntries := make([]x402.AcceptsEntry, 0, len(accepts))
 	for _, e := range accepts {
 		if e.Protocol == "x402" && strings.HasPrefix(e.Network, "solana:") {
-			solana = append(solana, e)
+			solanaEntries = append(solanaEntries, e)
 		}
 	}
-	if len(solana) == 0 {
+	if len(solanaEntries) == 0 {
 		return nil
 	}
 
@@ -247,8 +247,8 @@ func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.Acce
 	// leaves it empty and normalizes cluster slugs to CAIP-2 on both
 	// sides before comparing (select_requirement, payment.rs:282-309).
 	preferred := normalizeNetworkSlug(sel.Network)
-	filtered := make([]x402.AcceptsEntry, 0, len(solana))
-	for _, e := range solana {
+	filtered := make([]x402.AcceptsEntry, 0, len(solanaEntries))
+	for _, e := range solanaEntries {
 		if e.Network == preferred {
 			filtered = append(filtered, e)
 		}
@@ -269,7 +269,7 @@ func selectEntry(accepts []x402.AcceptsEntry, sel ChallengeSelection) *x402.Acce
 	if e := cheapest(onNetwork); e != nil {
 		return e
 	}
-	return cheapest(solana)
+	return cheapest(solanaEntries)
 }
 
 // currencyMatches reports whether an offer's mint corresponds to a client
