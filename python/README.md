@@ -391,7 +391,8 @@ framework shims live in optional submodules imported on demand:
 - `solana_pay_kit.flask` (install `solana_pay_kit[flask]`), a `@require_payment` view
   decorator plus `is_paid` / `payment` request accessors.
 - `solana_pay_kit.fastapi` (install `solana_pay_kit[fastapi]`), a `RequirePayment`
-  dependency for `Depends(...)` plus `install_exception_handler(app)`.
+  dependency for `Depends(...)`, plus a Django/DRF-style paywall middleware for
+  route metadata and default policies.
 - `solana_pay_kit.django` (install `solana_pay_kit[django]`), a `require_payment` view
   decorator and an optional `PaymentMiddleware` stack form.
 
@@ -409,6 +410,31 @@ def view(request):
     payment = require_payment(request)  # raises PaymentRequiredError if unpaid
     ...
 ```
+
+FastAPI apps can avoid duplicating paths in a payment allowlist by marking the
+endpoint or route group and installing one paywall:
+
+```python
+from fastapi import FastAPI
+
+import solana_pay_kit
+from solana_pay_kit import usd
+from solana_pay_kit.fastapi import PaywallConfig, install_paywall_from_config, pay_required
+
+solana_pay_kit.configure(network="solana_localnet")
+
+app = FastAPI()
+install_paywall_from_config(app, PaywallConfig(gate_ref=usd("0.01")))
+
+@app.post("/v1/chat/completions")
+@pay_required()
+async def chat_completions():
+    return {"ok": True}
+```
+
+Use `PaywallConfig(default_policy="paid")` to mirror Django's
+`LoginRequiredMiddleware`: all matched routes are paid unless marked with
+`@pay_not_required()` or a public route tag.
 
 ---
 
