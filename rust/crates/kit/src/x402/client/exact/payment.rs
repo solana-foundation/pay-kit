@@ -92,8 +92,16 @@ pub async fn build_payment(
         message: versioned_message,
     };
 
+    // Sign the serialized v0 message via the transaction-signing path, NOT
+    // `sign_message` (which signs arbitrary bytes as an off-chain message). For a
+    // software signer the bytes and resulting ed25519 signature are identical; a
+    // hardware wallet (Ledger) can only sign this way — it routes the serialized
+    // message through the device's transaction-parsing APDU and cannot raw-sign
+    // arbitrary bytes. The produced partially-signed VersionedTransaction is
+    // byte-for-byte what any x402 `exact` facilitator expects (see
+    // specs/schemes/exact/scheme_exact_svm.md), so this is a client-only change.
     let sig_bytes = signer
-        .sign_message(&tx.message.serialize())
+        .sign_transaction_message(&tx.message.serialize())
         .await
         .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
     let sig = Signature::from(<[u8; 64]>::from(sig_bytes));

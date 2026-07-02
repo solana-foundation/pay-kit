@@ -68,9 +68,11 @@ otel = [
 ]
 
 [dependencies]
-# Signing — solana-keychain with sdk-v3. Rev d788028 widens the solana-signature
-# bound to <3.5, letting signature resolve to 3.3.x.
-solana-keychain = { version = "1.4", default-features = false, features = ["memory", "sdk-v3"] }
+# Signing — solana-keychain with sdk-v3.
+# PROPOSAL / DEV WIRING: temporarily pointed at the branch carrying the
+# `sign_transaction_message` trait method this PR relies on. Restore to the
+# published crates.io version once a keychain release ships the method.
+solana-keychain = { git = "https://github.com/ledgicr/solana-keychain", branch = "ledger-x402-sign-transaction-message", default-features = false, features = ["memory", "sdk-v3"] }
 
 # Force five8_core's `std` feature ON: gates `impl Error for DecodeError`,
 # which solana-keypair/solana-signature rely on.
