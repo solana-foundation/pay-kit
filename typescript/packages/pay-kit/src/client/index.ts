@@ -116,7 +116,8 @@ export function createPayKitClient(options: PayKitClientOptions): Promise<PayKit
             const intent = mppIntent(probe.headers.get('www-authenticate'));
             if (intent === 'session') {
                 throw new ConfigurationError(
-                    'Session payments are streaming; use the dedicated session client (createSessionFetch), not client.fetch.',
+                    'Session payments are streaming and reuse one channel across calls; ' +
+                        "use the dedicated session client (`createSessionFetch` from '@solana/mpp/client'), not client.fetch.",
                 );
             }
             const mppx = intent === 'subscription' ? subscriptionClient() : chargeClient();
