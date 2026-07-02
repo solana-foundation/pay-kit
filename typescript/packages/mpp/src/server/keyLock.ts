@@ -15,7 +15,13 @@ const locks = new Map<string, Promise<unknown>>();
 export function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = locks.get(key) ?? Promise.resolve();
     // Run `fn` after the previous holder settles, whichever way it settled.
-    const current = previous.then(fn, fn);
+    // Call `fn()` explicitly (rather than passing it as the handler) so it never
+    // receives a settled value or rejection reason as an argument, even if a
+    // future change lets `previous` reject.
+    const current = previous.then(
+        () => fn(),
+        () => fn(),
+    );
     // The next waiter chains on a tail that never rejects, so one failure does
     // not poison the queue for the same key.
     const tail = current.then(

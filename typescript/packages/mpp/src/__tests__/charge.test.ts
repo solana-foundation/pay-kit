@@ -1536,10 +1536,10 @@ test('signature: concurrent requests with the same signature settle at most once
         store,
     });
 
-    // Delay every fetch so all three verifies clear the pre-lock consumed check
+    // Delay every fetch so all N verifies clear the pre-lock consumed check
     // and reach the on-chain verify at the same time: the exact TOCTOU window.
-    // Without per-signature serialization all three would settle (one payment,
-    // three accesses); with it, exactly one wins.
+    // Without per-signature serialization all of them would settle (one payment,
+    // N accesses); with it, exactly one wins.
     globalThis.fetch = (async () => {
         await new Promise(resolve => setTimeout(resolve, 20));
         return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
@@ -1551,14 +1551,14 @@ test('signature: concurrent requests with the same signature settle at most once
             request: {} as any,
         });
 
-    const results = await Promise.allSettled([verifyOnce(), verifyOnce(), verifyOnce()]);
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
     const settled = results.filter(r => r.status === 'fulfilled');
     const rejectedConsumed = results.filter(
         r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
     );
 
     expect(settled).toHaveLength(1);
-    expect(rejectedConsumed).toHaveLength(2);
+    expect(rejectedConsumed).toHaveLength(7);
 });
 
 // ── RPC error handling (type="signature") ──
