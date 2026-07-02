@@ -164,12 +164,12 @@ func (s *SessionServer) Store() ChannelStore {
 }
 
 // BuildChallengeRequest builds the SessionRequest to embed in a 402
-// challenge. cap is the maximum this session will allow, clamped to
+// challenge. capValue is the maximum this session will allow, clamped to
 // SessionConfig.MaxCap. MinVoucherDelta is included only when positive,
 // Modes is omitted when push-only, and PullVoucherStrategy is included only
 // when pull is offered.
-func (s *SessionServer) BuildChallengeRequest(cap uint64) intents.SessionRequest {
-	effectiveCap := min(cap, s.config.MaxCap)
+func (s *SessionServer) BuildChallengeRequest(capValue uint64) intents.SessionRequest {
+	effectiveCap := min(capValue, s.config.MaxCap)
 	decimals := s.config.Decimals
 
 	request := intents.SessionRequest{
@@ -230,6 +230,12 @@ func (s *SessionServer) supportsMode(mode intents.SessionMode) bool {
 }
 
 // ProcessOpen processes an open action and persists the channel state.
+//
+// The HTTP method layer does not route through here: Session.handleOpen
+// intentionally reimplements this open invariant as a superset (transaction
+// verification and server-side broadcast, idle-close touch). The two are kept
+// in sync deliberately; do not collapse one into the other without preserving
+// that extra behavior.
 //
 // The channel is keyed by OpenPayload.SessionID (channelId first, then
 // tokenAccount for pull opens). Replayed opens are idempotent: when a channel
@@ -734,6 +740,12 @@ func findCommitted(deliveries []CommittedDelivery, deliveryID string) *Committed
 
 // ProcessClose processes a close action: atomically set close-pending and
 // accept a final voucher if provided.
+//
+// The HTTP method layer does not route through here: Session.handleClose
+// intentionally diverges, its close is re-drivable (a retry after a
+// settlement failure is allowed) and it settles on-chain, whereas ProcessClose
+// always rejects a second close and leaves settlement to the host. The
+// divergence is deliberate; keep both final-voucher checks in step.
 //
 // Once CloseRequestedAt is set, vouchers, deliveries, commits, and top-ups
 // are all rejected, and a second close is rejected with "close already

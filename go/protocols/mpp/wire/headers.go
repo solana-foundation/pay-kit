@@ -3,7 +3,6 @@ package wire
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -432,18 +431,4 @@ func parseAuthParams(input string) (map[string]string, error) {
 
 func isSpaceRune(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\r' || r == '\n'
-}
-
-// SortedHeaderParams is a test helper for deterministic comparisons.
-func SortedHeaderParams(params map[string]string) []string {
-	keys := make([]string, 0, len(params))
-	for key := range params {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, key+"="+params[key])
-	}
-	return out
 }

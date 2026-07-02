@@ -18,7 +18,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -114,6 +114,11 @@ type SessionOptions struct {
 	// recentBlockhash prefetch, and settlement broadcasts. Nil skips every
 	// on-chain check and trusts payload claims as provided.
 	RPC solanatx.RPCClient
+
+	// Logger receives library-side diagnostics that have no synchronous
+	// caller to surface them, such as an idle-close settlement failure. Nil
+	// defaults to slog.Default().
+	Logger *slog.Logger
 }
 
 // Session is the server-side session method handler. Create with NewSession.
@@ -161,6 +166,10 @@ type Session struct {
 	// prefetch, and settlement broadcasts; nil skips every on-chain check
 	// and trusts payload claims as provided.
 	rpc solanatx.RPCClient
+
+	// logger receives library-side diagnostics with no synchronous caller
+	// (for example an idle-close settlement failure). Never nil.
+	logger *slog.Logger
 }
 
 // NewSession creates the server-side session method.
@@ -219,6 +228,9 @@ func NewSession(options SessionOptions) (*Session, error) {
 	if store == nil {
 		store = NewMemoryChannelStore()
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 
 	config := SessionConfig{
 		Operator:            options.Operator,
@@ -245,6 +257,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 		signer:          options.Signer,
 		payerSigner:     options.PaymentChannelPayerSigner,
 		rpc:             options.RPC,
+		logger:          options.Logger,
 	}
 	if options.CloseDelay > 0 {
 		session.lifecycle = NewSessionLifecycle(session.closeOnIdle, options.CloseDelay)
@@ -279,7 +292,7 @@ func (s *Session) closeOnIdle(channelID string) {
 		return
 	}
 	if _, err := s.closeAndSettleChannel(context.Background(), channelID); err != nil {
-		log.Printf("[solana-mpp] idle-close settle failed for %s: %v", channelID, err)
+		s.logger.Error("idle-close settle failed", "channel", channelID, "err", err)
 	}
 }
 
@@ -450,6 +463,12 @@ func (s *Session) verifyPinnedSessionFields(credential core.PaymentCredential, r
 // payload (verifying or broadcasting the attached transaction when present),
 // enforce the deposit invariants, and insert the channel state atomically and
 // idempotently.
+//
+// This intentionally does not delegate to SessionServer.ProcessOpen: it is a
+// superset that adds transaction verification/broadcast and the idle-close
+// touch on top of the same insert invariant. The duplication is deliberate;
+// keep the shared invariant (finalized/authorized-signer/deposit checks) in
+// step with ProcessOpen.
 func (s *Session) handleOpen(ctx context.Context, payload *intents.OpenPayload) (string, error) {
 	mode := payload.Mode
 	if !s.core.supportsMode(mode) {
