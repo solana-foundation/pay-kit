@@ -5,6 +5,7 @@ import com.solana.paykit.paycore.PaymentChannels
 import com.solana.paykit.paycore.Programs
 import com.solana.paykit.paycore.PublicKey
 import com.solana.paykit.paycore.SolanaSigner
+import com.solana.paykit.protocols.x402.X402_VERSION
 import com.solana.paykit.protocols.x402.upto.UPTO_ASSET_TRANSFER_METHOD
 import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import com.solana.paykit.protocols.x402.upto.UptoPayload
@@ -36,9 +37,6 @@ import java.util.Base64
  * level. It is encoded as compact JSON then standard base64 (with padding) and
  * carried in the ``Payment-Signature`` header.
  */
-
-/** x402 protocol version stamped in the envelope. INVARIANT: 2. */
-private const val X402_VERSION = 2
 
 /** Nonce length in bytes when the caller passes no explicit nonce. */
 private const val NONCE_BYTES = 16
