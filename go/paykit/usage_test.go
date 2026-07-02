@@ -92,8 +92,10 @@ type stubAcceptsEntry struct{}
 
 func (stubAcceptsEntry) AcceptsProtocol() Protocol { return X402 }
 
-func (s *stubUsageAdapter) UsageChallengeHeaders(*Gate) map[string]string { return s.challengeHeaders }
-func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) AcceptsEntry          { return s.acceptsEntry }
+func (s *stubUsageAdapter) UsageChallengeHeaders(*Gate) (map[string]string, error) {
+	return s.challengeHeaders, nil
+}
+func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) (AcceptsEntry, error) { return s.acceptsEntry, nil }
 func (s *stubUsageAdapter) DetectUsage(*AdapterRequest) bool              { return s.detect }
 func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (VerifiedUsageOpen, *Payment, error) {
 	if s.verifyOpenErr != nil {

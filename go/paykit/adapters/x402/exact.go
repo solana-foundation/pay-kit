@@ -56,7 +56,7 @@ type AcceptsEntry struct {
 
 func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.X402 }
 
-func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) (paykit.AcceptsEntry, error) {
 	coin := a.settlementCoin(gate)
 	label := a.cfg.Network.MintsLabel()
 	mint := paycore.ResolveMint(coin, label)
@@ -71,6 +71,9 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 		TokenProgram: paycore.DefaultTokenProgramForCurrency(coin, label),
 		Memo:         gate.Desc,
 	}
+	// recentBlockhash is best-effort: a stale/absent blockhash still
+	// yields a payable challenge, so a lookup error is intentionally
+	// non-fatal here rather than propagated.
 	if bh, err := a.recentBlockhash(); err == nil && bh != "" {
 		extra.RecentBlockhash = bh
 	}
@@ -84,11 +87,14 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 		PayTo:             string(payTo),
 		MaxTimeoutSeconds: proto.DefaultMaxTimeoutSeconds,
 		Extra:             extra,
-	}}
+	}}, nil
 }
 
-func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
-	entry := a.AcceptsEntry(gate)
+func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) (map[string]string, error) {
+	entry, err := a.AcceptsEntry(gate)
+	if err != nil {
+		return nil, err
+	}
 	accepts := []paykit.AcceptsEntry{entry}
 	envelope := map[string]interface{}{
 		"x402Version": proto.X402Version,
@@ -100,11 +106,11 @@ func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
 	}
 	raw, err := json.Marshal(envelope)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/x402: marshal payment-required envelope: %w", err)
 	}
 	return map[string]string{
 		proto.PaymentRequiredHeader: base64.StdEncoding.EncodeToString(raw),
-	}
+	}, nil
 }
 
 func (a *Adapter) advertisedExtensions() json.RawMessage {

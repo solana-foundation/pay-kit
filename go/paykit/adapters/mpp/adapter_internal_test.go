@@ -42,7 +42,9 @@ func testCfg() paykit.Config {
 
 func TestSignerBridgeSignAndPubkey(t *testing.T) {
 	demo := signer.Demo()
-	b := &signerBridge{signer: demo}
+	// The operator pubkey is decoded once by serverFor (where the base58 error
+	// can propagate) and passed in, so construct the bridge the same way.
+	b := &signerBridge{signer: demo, pub: solana.MustPublicKeyFromBase58(string(demo.Pubkey()))}
 	if b.PublicKey() != solana.MustPublicKeyFromBase58(string(demo.Pubkey())) {
 		t.Error("bridge pubkey mismatch")
 	}
@@ -120,7 +122,10 @@ func TestChallengeHeadersEmitsWWWAuthenticate(t *testing.T) {
 	cfg.RPCURL = "http://127.0.0.1:1" // unreachable; blockhash fetch is best-effort
 	a := &Adapter{cfg: cfg}
 	gate := &paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/paid"}
-	headers := a.ChallengeHeaders(gate)
+	headers, err := a.ChallengeHeaders(gate)
+	if err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
 	if headers == nil {
 		t.Fatal("expected challenge headers")
 	}
@@ -156,7 +161,11 @@ func TestAcceptsEntryEmitsSplitsAndNetwork(t *testing.T) {
 		FeeOnTop:  paykit.Fees{paykit.Address("GATEWAY"): paykit.MustParseUSD("0.50")},
 		FeeWithin: paykit.Fees{paykit.Address("PLATFORM"): paykit.MustParseUSD("0.30")},
 	}
-	entry := a.AcceptsEntry(gate).(AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(gate)
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(AcceptsEntry)
 	if entry.Network != paykit.SolanaLocalnet.CAIP2() {
 		t.Errorf("network: got %s", entry.Network)
 	}
@@ -230,8 +239,8 @@ func TestChallengeHeadersReturnsNilOnBadRecipient(t *testing.T) {
 		Amount: paykit.MustParseUSD("0.10"),
 		PayTo:  paykit.Address("!!!not-a-valid-pubkey"),
 	}
-	if headers := a.ChallengeHeaders(gate); headers != nil {
-		t.Errorf("expected nil for ChallengeHeaders with bad recipient, got %v", headers)
+	if _, err := a.ChallengeHeaders(gate); err == nil {
+		t.Error("expected an error from ChallengeHeaders with a bad recipient")
 	}
 }
 

@@ -16,11 +16,15 @@ import (
 
 type signerBridge struct {
 	signer paykit.Signer
+	// pub is the operator public key, decoded once in serverFor where the
+	// base58 error can propagate. Storing it keeps PublicKey (which the
+	// solanatx.Signer interface forbids from returning an error) from
+	// having to swallow a decode failure.
+	pub solana.PublicKey
 }
 
 func (b *signerBridge) PublicKey() solana.PublicKey {
-	pub, _ := solana.PublicKeyFromBase58(string(b.signer.Pubkey()))
-	return pub
+	return b.pub
 }
 
 func (b *signerBridge) Sign(payload []byte) (solana.Signature, error) {
@@ -69,7 +73,7 @@ type Split struct {
 
 func (e AcceptsEntry) AcceptsProtocol() paykit.Protocol { return paykit.MPP }
 
-func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
+func (a *Adapter) AcceptsEntry(gate *paykit.Gate) (paykit.AcceptsEntry, error) {
 	coin := a.settlementCoin(gate)
 	payTo := a.payTo(gate)
 	entry := AcceptsEntry{
@@ -89,23 +93,23 @@ func (a *Adapter) AcceptsEntry(gate *paykit.Gate) paykit.AcceptsEntry {
 			entry.Splits = append(entry.Splits, Split{Recipient: string(addr), Amount: a.priceUnits(fee)})
 		}
 	}
-	return entry
+	return entry, nil
 }
 
-func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) map[string]string {
+func (a *Adapter) ChallengeHeaders(gate *paykit.Gate) (map[string]string, error) {
 	srv, err := a.serverFor(gate)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	challenge, err := srv.ChargeWithOptions(context.Background(), a.amountString(gate), a.chargeOptions(gate))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/mpp: build charge challenge: %w", err)
 	}
 	wwwAuth, err := core.FormatWWWAuthenticate(challenge)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("protocols/mpp: format WWW-Authenticate: %w", err)
 	}
-	return map[string]string{core.WWWAuthenticateHeader: wwwAuth}
+	return map[string]string{core.WWWAuthenticateHeader: wwwAuth}, nil
 }
 
 func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, error) {
@@ -166,7 +170,11 @@ func (a *Adapter) serverFor(gate *paykit.Gate) (*server.Mpp, error) {
 	}
 	var feePayer solanatx.Signer
 	if a.cfg.Operator.FeePayer && a.cfg.Operator.Signer != nil {
-		feePayer = &signerBridge{signer: a.cfg.Operator.Signer}
+		pub, err := solana.PublicKeyFromBase58(string(a.cfg.Operator.Signer.Pubkey()))
+		if err != nil {
+			return nil, fmt.Errorf("protocols/mpp: fee-payer pubkey: %w", err)
+		}
+		feePayer = &signerBridge{signer: a.cfg.Operator.Signer, pub: pub}
 	}
 	srv, err := server.New(server.Config{
 		Recipient:      string(payTo),
@@ -252,8 +260,10 @@ func (a *Adapter) chargeOptions(gate *paykit.Gate) server.ChargeOptions {
 	return opts
 }
 
-func decimalsFor(coin string) int {
-	_ = paycore.ResolveMint
+// decimalsFor returns the on-chain decimal precision for a settlement
+// coin. Every stablecoin pay-kit settles (USDC, USDT, PYUSD, ...) is
+// 6-decimal, so the value is fixed today.
+func decimalsFor(string) int {
 	return 6
 }
 

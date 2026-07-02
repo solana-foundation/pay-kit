@@ -514,7 +514,11 @@ func TestAcceptsEntryAndCoinFallbacks(t *testing.T) {
 		rpc:    &fakeRPC{},
 	}
 	// No blockhash provider -> AcceptsEntry pulls it from the RPC.
-	entry := a.AcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")}).(AcceptsEntry)
+	rawEntry, err := a.AcceptsEntry(&paykit.Gate{Amount: paykit.MustParseUSD("0.10")})
+	if err != nil {
+		t.Fatalf("AcceptsEntry: %v", err)
+	}
+	entry := rawEntry.(AcceptsEntry)
 	if entry.Extra.RecentBlockhash == "" {
 		t.Error("expected recentBlockhash populated from rpc")
 	}

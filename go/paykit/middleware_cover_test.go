@@ -17,10 +17,12 @@ type fakeAdapter struct {
 	err      error
 }
 
-func (f *fakeAdapter) Protocol() Protocol              { return f.protocol }
-func (f *fakeAdapter) AcceptsEntry(*Gate) AcceptsEntry { return fakeAccepts{f.protocol} }
-func (f *fakeAdapter) ChallengeHeaders(*Gate) map[string]string {
-	return map[string]string{"x-fake": "1"}
+func (f *fakeAdapter) Protocol() Protocol { return f.protocol }
+func (f *fakeAdapter) AcceptsEntry(*Gate) (AcceptsEntry, error) {
+	return fakeAccepts{f.protocol}, nil
+}
+func (f *fakeAdapter) ChallengeHeaders(*Gate) (map[string]string, error) {
+	return map[string]string{"x-fake": "1"}, nil
 }
 func (f *fakeAdapter) VerifyAndSettle(*AdapterRequest) (*Payment, error) {
 	return f.pmt, f.err
