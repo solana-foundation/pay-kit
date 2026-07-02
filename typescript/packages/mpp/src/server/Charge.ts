@@ -9,8 +9,6 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
-import { withKeyLock } from './keyLock.js';
-
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     COMPUTE_BUDGET_PROGRAM,
@@ -27,6 +25,7 @@ import {
 import * as Methods from '../Methods.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
+import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
 
 /**
@@ -830,7 +829,7 @@ async function verifySignature(
         throw new Error('Transaction signature already consumed');
     }
 
-    return withKeyLock(consumedKey, async () => {
+    return await withKeyLock(consumedKey, async () => {
         // Re-check inside the lock: a concurrent request in this process may
         // have consumed the signature since the read above.
         if (await store.get(consumedKey)) {

@@ -1541,7 +1541,7 @@ test('signature: concurrent requests with the same signature settle at most once
     // Without per-signature serialization all three would settle (one payment,
     // three accesses); with it, exactly one wins.
     globalThis.fetch = (async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise(resolve => setTimeout(resolve, 20));
         return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
     }) as typeof fetch;
 
@@ -1552,9 +1552,9 @@ test('signature: concurrent requests with the same signature settle at most once
         });
 
     const results = await Promise.allSettled([verifyOnce(), verifyOnce(), verifyOnce()]);
-    const settled = results.filter((r) => r.status === 'fulfilled');
+    const settled = results.filter(r => r.status === 'fulfilled');
     const rejectedConsumed = results.filter(
-        (r) => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
+        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
     );
 
     expect(settled).toHaveLength(1);
