@@ -270,6 +270,9 @@ func (s *MemoryChannelStore) DeleteChannel(_ context.Context, channelID string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, channelID)
+	// Keep the per-channel lock map's lifetime in sync with the data map,
+	// otherwise s.locks grows without bound over the process lifetime.
+	delete(s.locks, channelID)
 	return nil
 }
 
