@@ -5,6 +5,7 @@ import com.solana.paykit.paycore.MemorySigner
 import com.solana.paykit.paycore.PaymentChannels
 import com.solana.paykit.paycore.Programs
 import com.solana.paykit.paycore.PublicKey
+import com.solana.paykit.paycore.SolanaNetwork
 import com.solana.paykit.protocols.x402.upto.UPTO_ASSET_TRANSFER_METHOD
 import com.solana.paykit.protocols.x402.upto.UPTO_SCHEME
 import com.solana.paykit.protocols.x402.upto.UptoExtra
@@ -67,7 +68,7 @@ class UptoPaymentTest {
         extra: UptoExtra = extra(),
     ) = UptoRequirements(
         scheme = UPTO_SCHEME,
-        network = network,
+        network = SolanaNetwork.Devnet,
         amount = amount,
         asset = asset,
         payTo = payTo,
@@ -502,14 +503,32 @@ class UptoPaymentTest {
             success = true,
             payer = "Payer",
             transaction = "sig",
-            network = network,
+            network = SolanaNetwork.Devnet,
             amount = "500000",
         )
         val encoded = encoder.encodeToString(UptoSettlementResponse.serializer(), resp)
         assertTrue(!encoded.contains("errorReason"))
+        // The typed network serializes to its bare CAIP-2 string.
+        assertContains(encoded, "\"network\":\"$network\"")
         val back = json.decodeFromString(UptoSettlementResponse.serializer(), encoded)
         assertTrue(back.success)
         assertEquals("500000", back.amount)
+        assertEquals(SolanaNetwork.Devnet, back.network)
+    }
+
+    @Test
+    fun unknown_network_parses_as_other_and_round_trips_verbatim() {
+        // A CAIP-2 id the SDK does not special-case must not fail to parse and
+        // must survive re-serialization byte-identical.
+        val exotic = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z-fork"
+        val entry = uptoEntry().replace(network, exotic)
+        val req = parseUptoChallenge(mapOf("content-type" to "application/json"), challengeEnvelope(entry))!!
+        assertEquals(SolanaNetwork.Other(exotic), req.network)
+        val header = buildUptoHeader(signer, req, expiresAt = 4_102_444_800L)
+        val accepted = json.parseToJsonElement(
+            Base64.getDecoder().decode(header).decodeToString(),
+        ).jsonObject["accepted"]!!.jsonObject
+        assertEquals(exotic, accepted["network"]!!.jsonPrimitive.content)
     }
 
     @Test

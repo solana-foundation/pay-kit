@@ -1,5 +1,6 @@
 package com.solana.paykit.protocols.x402.upto
 
+import com.solana.paykit.paycore.SolanaNetwork
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -49,8 +50,8 @@ data class UptoRequirements(
      *  server reads it from the echoed ``accepted`` object. */
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val scheme: String = UPTO_SCHEME,
-    /** CAIP-2 network identifier. */
-    val network: String,
+    /** CAIP-2 network identifier; unknown networks parse as [SolanaNetwork.Other]. */
+    val network: SolanaNetwork,
     /** Maximum authorized amount in base units (decimal string). */
     val amount: String,
     /** SPL mint address. */
@@ -133,7 +134,7 @@ data class UptoSettlementResponse(
     /** Settlement transaction signature; absent on a failure response. */
     val transaction: String? = null,
     /** CAIP-2 network identifier; absent on a generic failure response. */
-    val network: String? = null,
+    val network: SolanaNetwork? = null,
     /** Actual base units charged (may be ``0``); absent on a failure response. */
     val amount: String? = null,
 )
