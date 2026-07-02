@@ -246,14 +246,21 @@ once. Calls 2..N need no fresh open and no re-deposited ceiling, so the open,
 close, and the deposit float amortize across the session.
 
 ```ts
-import { createSessionFetch } from '@solana/mpp/client'
+import { createPaymentChannelSessionOpener, createSessionFetch } from '@solana/mpp/client'
+
+const client = createSessionFetch({
+  opener: createPaymentChannelSessionOpener({ signer, rpcUrl }),
+})
+
+const res = await client.fetch('https://api.example/paid')
 ```
 
-`createSessionFetch` returns a `SessionFetchClient` that you open once and then
-feed your running metered amount while it throttles the voucher commits. This is
-why `client.fetch` intentionally throws on a `session` challenge and points you
-here. It works end to end only when the resource server advertises a `session`
-challenge, not just `upto`.
+`createSessionFetch` returns a `SessionFetchClient` that opens one channel
+through the supplied opener and then reuses it: you feed your running metered
+amount and it throttles the cumulative-voucher commits. This is why the
+top-level `client.fetch` intentionally throws on a `session` challenge and points
+you here. It works end to end only when the resource server advertises a
+`session` challenge, not just `upto`.
 
 ---
 
