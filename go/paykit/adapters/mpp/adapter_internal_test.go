@@ -40,6 +40,32 @@ func testCfg() paykit.Config {
 	}
 }
 
+// TestAdapterProtocolAndChallengeHeaders exercises New, Protocol, and
+// ChallengeHeaders in-package. The end-to-end path is covered from
+// protocols/mpp, which runs in a separate test binary and does not attribute
+// coverage to this package.
+func TestAdapterProtocolAndChallengeHeaders(t *testing.T) {
+	a, err := New(testCfg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Protocol() != paykit.MPP {
+		t.Errorf("Protocol: got %v", a.Protocol())
+	}
+	g := &paykit.Gate{Amount: paykit.MustParseUSD("0.10"), Desc: "/x"}
+	if _, err := a.ChallengeHeaders(g); err != nil {
+		t.Fatalf("ChallengeHeaders: %v", err)
+	}
+}
+
+func TestNewRejectsMissingSecret(t *testing.T) {
+	c := testCfg()
+	c.MPP.ChallengeBindingSecret = nil
+	if _, err := New(c); err == nil {
+		t.Fatal("expected error for missing challenge binding secret")
+	}
+}
+
 func TestSignerBridgeSignAndPubkey(t *testing.T) {
 	demo := signer.Demo()
 	// The operator pubkey is decoded once by serverFor (where the base58 error

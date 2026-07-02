@@ -184,6 +184,16 @@ func TestVerifyLegacyBindingDirect(t *testing.T) {
 	}
 }
 
+func TestNewUsageAdapterRejectsBadRecipient(t *testing.T) {
+	cfg := paykit.Config{
+		Network:  paykit.SolanaLocalnet,
+		Operator: paykit.Operator{Signer: signer.Demo(), Recipient: paykit.Address("not-a-valid-pubkey")},
+	}
+	if _, err := NewUsageAdapter(cfg); err == nil {
+		t.Fatal("expected error for invalid recipient")
+	}
+}
+
 // cfgLocal builds a localnet adapter config for the envelope-level v1 tests
 // that never reach broadcast.
 func cfgLocal() paykit.Config {

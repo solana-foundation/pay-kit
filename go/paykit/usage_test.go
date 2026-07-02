@@ -78,6 +78,8 @@ type stubUsageAdapter struct {
 	settledActual    uint64
 	settleCalls      int
 	onSettle         func(ctx context.Context, actual uint64)
+	acceptsErr       error
+	headersErr       error
 }
 
 type releaseTrackingOpen struct {
@@ -93,10 +95,12 @@ type stubAcceptsEntry struct{}
 func (stubAcceptsEntry) AcceptsProtocol() Protocol { return X402 }
 
 func (s *stubUsageAdapter) UsageChallengeHeaders(*Gate) (map[string]string, error) {
-	return s.challengeHeaders, nil
+	return s.challengeHeaders, s.headersErr
 }
-func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) (AcceptsEntry, error) { return s.acceptsEntry, nil }
-func (s *stubUsageAdapter) DetectUsage(*AdapterRequest) bool              { return s.detect }
+func (s *stubUsageAdapter) UsageAcceptsEntry(*Gate) (AcceptsEntry, error) {
+	return s.acceptsEntry, s.acceptsErr
+}
+func (s *stubUsageAdapter) DetectUsage(*AdapterRequest) bool { return s.detect }
 func (s *stubUsageAdapter) VerifyOpen(context.Context, *AdapterRequest) (VerifiedUsageOpen, *Payment, error) {
 	if s.verifyOpenErr != nil {
 		return nil, nil, s.verifyOpenErr
@@ -134,6 +138,37 @@ func TestRequireUsageReturns402WhenNoPayment(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusPaymentRequired {
 		t.Fatalf("status = %d, want 402", rr.Code)
+	}
+}
+
+// TestRequireUsage402DropsFailedPieces exercises the writeUsage402 error
+// branches: a failing accepts entry or challenge header is logged and left
+// out of the offer, but the 402 is still returned.
+func TestRequireUsage402DropsFailedPieces(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter *stubUsageAdapter
+	}{
+		{"accepts entry error", &stubUsageAdapter{detect: false, acceptsErr: errors.New("boom"), challengeHeaders: map[string]string{"payment-required": "abc"}}},
+		{"challenge header error", &stubUsageAdapter{detect: false, headersErr: errors.New("boom"), acceptsEntry: stubAcceptsEntry{}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &Client{
+				Config:       Config{Network: SolanaLocalnet, Accept: []Protocol{X402}},
+				usageAdapter: tc.adapter,
+				errorHandler: DefaultErrorHandler,
+			}
+			gate := Gate{Amount: MustParseUSD("1.00"), Kind: GateUsage, Name: "test"}
+			h := client.RequireUsage(gate)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("handler should not be called")
+			}))
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/usage", nil))
+			if rr.Code != http.StatusPaymentRequired {
+				t.Fatalf("status = %d, want 402", rr.Code)
+			}
+		})
 	}
 }
 
