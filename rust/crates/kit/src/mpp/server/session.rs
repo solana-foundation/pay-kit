@@ -478,27 +478,97 @@ impl<S: ChannelStore> SessionServer<S> {
             )));
         }
 
-        // On-chain verification: confirm the open transaction was accepted.
+        // On-chain verification and binding.
         //
         // Pull mode: host integrations submit server-broadcast transactions or
         // validate delegated-token state before invoking this lower-level store
         // method. Skip tx-sig verification here.
         //
-        // Push mode: verify the payment-channel open tx is confirmed before persisting.
+        // Push mode (real payment channel): the client-supplied `channelId`,
+        // `deposit`, `payer`, `payee`, and `authorizedSigner` MUST NOT be trusted.
+        // Confirming that *some* transaction signature succeeded proves nothing
+        // about the channel, so a client could claim a fabricated deposit (up to
+        // `max_cap`) against any confirmed signature and then be served vouchers up
+        // to that phantom balance. Bind the persisted state to the on-chain channel
+        // account instead, mirroring the x402 batch-settlement fetch-and-bind path.
+        let mut bound_deposit = deposit;
         if payload.mode == SessionMode::Push {
-            if let Some(ref rpc_url) = self.config.rpc_url {
-                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open).map_err(|e| {
-                    tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
-                    e
-                })?;
-                tracing::debug!(signature = %payload.signature, "open tx confirmed on-chain");
+            match self.config.rpc_url.as_deref() {
+                Some(rpc_url) => {
+                    // Validate the payload against the challenge and confirm
+                    // `channelId` equals the PDA derived from
+                    // payer/payee/mint/authorizedSigner/salt.
+                    let params = self.payment_channel_open_params(payload)?;
+
+                    // Confirm the referenced open transaction actually succeeded.
+                    verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::Open)
+                        .map_err(|e| {
+                            tracing::warn!(signature = %payload.signature, %e, "open tx verification failed");
+                            e
+                        })?;
+
+                    // Read the authoritative channel state from the program and bind
+                    // every economically-relevant field to it.
+                    let channel_pda = parse_pubkey_field(session_id, "channelId")?;
+                    let channel = fetch_channel_account(rpc_url, &channel_pda)?;
+                    if channel.status != CHANNEL_STATUS_OPEN {
+                        return Err(Error::Other(format!(
+                            "channel {session_id} is not open on-chain (status {})",
+                            channel.status
+                        )));
+                    }
+                    if payment_channels::from_address(&channel.mint) != params.mint {
+                        return Err(Error::Other("on-chain channel mint mismatch".to_string()));
+                    }
+                    if payment_channels::from_address(&channel.payee) != params.payee {
+                        return Err(Error::Other("on-chain channel payee mismatch".to_string()));
+                    }
+                    if payment_channels::from_address(&channel.authorized_signer)
+                        != params.authorized_signer
+                    {
+                        return Err(Error::Other(
+                            "on-chain channel authorized_signer mismatch".to_string(),
+                        ));
+                    }
+                    if payment_channels::from_address(&channel.payer) != params.payer {
+                        return Err(Error::Other("on-chain channel payer mismatch".to_string()));
+                    }
+                    if channel.deposit == 0 {
+                        return Err(Error::Other("on-chain channel deposit is zero".to_string()));
+                    }
+                    if channel.deposit > self.config.max_cap {
+                        return Err(Error::Other(format!(
+                            "on-chain channel deposit {} exceeds max cap {}",
+                            channel.deposit, self.config.max_cap
+                        )));
+                    }
+                    // Persist the on-chain deposit, never the client's claim.
+                    bound_deposit = channel.deposit;
+                    tracing::debug!(
+                        signature = %payload.signature,
+                        deposit = channel.deposit,
+                        "open bound to on-chain channel"
+                    );
+                }
+                None => {
+                    // No RPC configured: the channel cannot be bound to on-chain
+                    // state, so the deposit and channel identity are unverifiable.
+                    // Fail closed on any real network; only localnet (unit/dev) may
+                    // skip the bind.
+                    if self.config.network.as_str() != "localnet" {
+                        return Err(Error::Other(
+                            "payment-channel push open requires an rpc_url to bind the on-chain channel off localnet"
+                                .to_string(),
+                        ));
+                    }
+                }
             }
         }
 
         let fresh_state = ChannelState {
             channel_id: session_id.to_string(),
             authorized_signer: payload.authorized_signer.clone(),
-            deposit,
+            deposit: bound_deposit,
             cumulative: 0,
             finalized: false,
             highest_voucher_signature: None,
@@ -1141,6 +1211,29 @@ fn verify_transaction_signature(sig_str: &str, rpc_url: &str, tx: VerifiedTx) ->
     }
 }
 
+/// On-chain `Channel.status` value for an open channel (mirrors the program's
+/// `ChannelStatus::Open`).
+#[cfg(feature = "server")]
+const CHANNEL_STATUS_OPEN: u8 = 0;
+
+/// Fetch and decode the on-chain payment-channels `Channel` account so an open
+/// can be bound to authoritative program state instead of client-supplied
+/// fields. Uses the blocking `RpcClient`, consistent with the rest of this
+/// module.
+#[cfg(feature = "server")]
+fn fetch_channel_account(
+    rpc_url: &str,
+    channel_id: &Pubkey,
+) -> Result<payment_channels::generated::accounts::Channel> {
+    use solana_rpc_client::rpc_client::RpcClient;
+    let rpc = RpcClient::new(rpc_url.to_string());
+    let data = rpc
+        .get_account_data(channel_id)
+        .map_err(|e| Error::Other(format!("channel account fetch failed: {e}")))?;
+    payment_channels::generated::accounts::Channel::from_bytes(&data)
+        .map_err(|e| Error::Other(format!("channel decode failed: {e}")))
+}
+
 fn parse_pubkey(s: &str) -> Result<Pubkey> {
     let bytes = bs58::decode(s)
         .into_vec()
@@ -1354,6 +1447,29 @@ mod tests {
             .process_open(&open_payload("chan1", 20_000_000, "signer1"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn process_open_push_without_rpc_off_localnet_fails_closed() {
+        // Off localnet with no rpc_url, a push open cannot be bound to the
+        // on-chain channel, so the server must refuse rather than trust the
+        // client-claimed deposit/channelId (the H1 fabrication guard). On
+        // localnet (see other tests) the bind is skipped for unit/dev use.
+        let server = SessionServer::new(
+            SessionConfig {
+                network: "devnet".to_string(),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let err = server
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("requires an rpc_url"),
+            "expected fail-closed error, got: {err}"
+        );
     }
 
     #[tokio::test]
