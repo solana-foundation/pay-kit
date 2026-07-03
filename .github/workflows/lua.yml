@@ -11,7 +11,7 @@ jobs:
     name: Lua tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
         run: |
@@ -22,7 +22,7 @@ jobs:
 
       - name: Cache rocks tree
         id: cache-rocks
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: lua/lua_modules
           key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}
@@ -80,14 +80,14 @@ jobs:
 
       - name: Upload Lua coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lua-coverage
           path: luacov.report.out
 
       - name: Upload Lua surfpool report data
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: surfpool-reports-lua
           path: lua/target/surfpool-reports/
@@ -97,7 +97,7 @@ jobs:
     name: Lua harness focused matrix
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install LuaJIT 2.1, LuaRocks, libsodium, openssl
         run: |
@@ -107,7 +107,7 @@ jobs:
 
       - name: Cache rocks tree
         id: cache-rocks
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: lua/lua_modules
           key: ${{ runner.os }}-luarocks-v2-${{ hashFiles('lua/pay-kit-dev-1.rockspec', 'lua/.luacov', 'lua/.luacheckrc') }}

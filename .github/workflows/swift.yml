@@ -11,14 +11,14 @@ jobs:
     name: Swift tests
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Run tests with coverage
         # The Swift package manifest lives at the repo root (so SPM can consume
         # this monorepo by URL); sources are under swift/.
         run: swift test --enable-code-coverage
       - name: Upload Swift coverage
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: swift-coverage
           path: .build/debug/codecov/
@@ -28,7 +28,7 @@ jobs:
     name: "Harness: Swift client to TypeScript + Rust servers"
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: ./.github/actions/setup-harness
         with:
           cargo-bins: "paykit-harness-bins:mpp_harness_server"
@@ -58,7 +58,7 @@ jobs:
     name: "Harness: Swift x402 client to Rust x402 server"
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: ./.github/actions/setup-harness
         with:
           cargo-bins: "paykit-harness-bins:x402_harness_server"

@@ -9,14 +9,14 @@ runs:
   using: composite
   steps:
     - name: Download prebuilt @solana/mpp dist
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
       with:
         name: mpp-dist
         path: typescript/packages/mpp/dist
-    - uses: pnpm/action-setup@v5
+    - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       with:
         package_json_file: package.json
-    - uses: actions/setup-node@v5
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
       with:
         node-version: 22
         cache: pnpm
@@ -27,7 +27,7 @@ runs:
     # they do today.)
     - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
     - name: Restore shared cargo cache
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: |
           ~/.cargo/registry
