@@ -81,10 +81,20 @@ jobs:
           ref: d1dee6b34d45d4e4a1ed3174ef421ca2e801aaea
           path: _payment-channels
           fetch-depth: 1
+      # Pinned Agave release, fetched as a tarball and checksum-verified —
+      # `curl https://release.anza.xyz/stable/install | sh` executed whatever
+      # script and toolchain the mutable "stable" channel served that day.
+      # Bump AGAVE_VERSION + AGAVE_SHA256 together to take upgrades.
       - name: Install Anza CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          AGAVE_VERSION="v4.1.1"
+          AGAVE_SHA256="a5c8e74b8ffa9ce906872b812849057c7fb21cf036ba08f219eb335e20fa4fb3"
+          curl -sSfL -o /tmp/solana-release.tar.bz2 \
+            "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          echo "${AGAVE_SHA256}  /tmp/solana-release.tar.bz2" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/solana/install"
+          tar -xjf /tmp/solana-release.tar.bz2 -C "$HOME/.local/share/solana/install"
+          echo "$HOME/.local/share/solana/install/solana-release/bin" >> "$GITHUB_PATH"
       - name: Patch payment channels treasury owner
         working-directory: _payment-channels
         run: |
