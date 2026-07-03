@@ -87,6 +87,16 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
 
+      - name: Guard - refuse to republish an existing version
+        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "@solana/mpp@${VERSION}" version >/dev/null 2>&1; then
+            echo "FAIL: @solana/mpp@${VERSION} is already published to npm; refusing to republish."
+            exit 1
+          fi
+          echo "Version ${VERSION} is not yet on npm; proceeding."
+
       - name: Check if prerelease
         id: prerelease
         run: |
@@ -308,6 +318,16 @@ jobs:
           VERSION=$(node -p "require('./typescript/packages/pay-kit/package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
+
+      - name: Guard - refuse to republish an existing version
+        if: ${{ github.event.inputs.publish-to-npm == 'true' }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if npm view "@solana/pay-kit@${VERSION}" version >/dev/null 2>&1; then
+            echo "FAIL: @solana/pay-kit@${VERSION} is already published to npm; refusing to republish."
+            exit 1
+          fi
+          echo "Version ${VERSION} is not yet on npm; proceeding."
 
       - name: Check if prerelease
         id: prerelease
