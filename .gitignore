@@ -17,7 +17,11 @@ typescript/packages/mpp/src/server/html-assets.gen.ts
 
 # Rust
 target/
+# The workspace lockfile IS committed: the workspace ships binaries
+# (paykit-harness-bins) and floating transitive deps otherwise make CI builds,
+# the coverage gate, and cache keys non-reproducible.
 Cargo.lock
+!rust/Cargo.lock
 .surfpool
 .DS_Store
 .npm-pack/
