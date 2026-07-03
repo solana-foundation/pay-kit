@@ -25,6 +25,41 @@ struct InstructionsTests {
         #expect(lamports == expected)
     }
 
+    /// M1 parity (cross-SDK): a native-SOL transfer amount must be carried as
+    /// an exact `UInt64`, never round-tripped through `Double`. The TS/Rust
+    /// reference verifiers compare on-chain `lamports` as an exact integer
+    /// because a JS `number` loses precision above 2^53 (~9007 SOL). Swift is
+    /// a client-only SDK with no on-chain verifier, so the only place lamports
+    /// exist here is this instruction encoder. Pin that a value above 2^53
+    /// encodes bit-exactly and would NOT survive a lossy `Double` round-trip,
+    /// so a future refactor cannot silently introduce a float on this path.
+    @Test
+    func systemTransferEncodesLargeLamportsExactlyNotAsDouble() {
+        let source = TransactionTests.pubkeyOf(1)
+        let destination = TransactionTests.pubkeyOf(2)
+
+        // 2^53 + 1: the smallest positive integer a Double cannot represent
+        // exactly. `Double(value)` rounds it down to 2^53, so any float path
+        // would encode the wrong amount.
+        let value: UInt64 = (1 << 53) + 1
+        #expect(UInt64(Double(value)) != value)
+
+        let ix = Instructions.systemTransfer(from: source, to: destination, lamports: value)
+
+        let lamports = ix.data.suffix(8)
+        var expected = Data()
+        expected.append(contentsOf: withUnsafeBytes(of: value.littleEndian, Array.init))
+        #expect(lamports == expected)
+
+        // Decode the wire bytes back to a UInt64 and confirm it is the exact
+        // value, not the lossy Double-rounded one.
+        let decoded = lamports.reduce(into: UInt64(0)) { acc, byte in
+            acc = (acc >> 8) | (UInt64(byte) << 56)
+        }
+        #expect(decoded == value)
+        #expect(decoded != UInt64(Double(value)))
+    }
+
     @Test
     func splTransferCheckedMatchesWireDiscriminator() {
         let source = TransactionTests.pubkeyOf(20)
