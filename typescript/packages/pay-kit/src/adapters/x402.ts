@@ -1,4 +1,4 @@
-import { createSolanaRpc } from '@solana/kit';
+import { createSolanaRpc, getBase58Decoder, getBase64Codec, getTransactionDecoder } from '@solana/kit';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -47,6 +47,44 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             toFacilitatorSvmSigner(config.operator.signer.signer, { defaultRpcUrl: config.rpcUrl }),
         ),
     );
+
+    // Local in-flight/consumed dedup for exact payloads, mirroring the Rust
+    // x402 exact signature-consume store and the `inFlightUptoChannels` guard
+    // on the upto path: without it, a duplicate X-PAYMENT payload racing (or
+    // trailing) the original settles the resource twice for one payment
+    // before the ledger can dedupe the broadcast. Keyed by the payload
+    // transaction's client signature(s) — the fee-payer signature slot is
+    // zeroed until the facilitator countersigns, so raw header bytes are
+    // malleable while the client signature is not. Entries expire after
+    // MAX_TIMEOUT_SECONDS: past that window the payment's blockhash has long
+    // expired and a rebroadcast is rejected on-chain anyway.
+    const consumedPayloads = new Map<string, number>();
+
+    function pruneConsumed(now: number): void {
+        // Insertion order is timestamp order (keys are only ever added), so
+        // stop at the first still-fresh entry.
+        for (const [key, at] of consumedPayloads) {
+            if (now - at <= MAX_TIMEOUT_SECONDS * 1000) break;
+            consumedPayloads.delete(key);
+        }
+    }
+
+    function payloadKey(header: string, payload: PaymentPayload): string {
+        const txBase64 = (payload.payload as { transaction?: unknown } | undefined)?.transaction;
+        if (typeof txBase64 !== 'string' || txBase64 === '') return `header:${header}`;
+        try {
+            const decoded = getTransactionDecoder().decode(getBase64Codec().encode(txBase64));
+            const signatures = Object.values(decoded.signatures as Readonly<Record<string, Uint8Array | null>>)
+                .filter((sig): sig is Uint8Array => sig !== null && sig.some(byte => byte !== 0))
+                .map(sig => getBase58Decoder().decode(sig))
+                .sort();
+            if (signatures.length > 0) return `sig:${signatures.join(':')}`;
+        } catch {
+            // Undecodable transaction bytes: fall through to the raw-bytes
+            // key; facilitator.verify() is the authority on acceptability.
+        }
+        return `tx:${txBase64}`;
+    }
 
     function mintFor(gate: Gate): string {
         const coin = resolveCoin(gate.amount, config.stablecoins);
@@ -128,8 +166,29 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
             }
 
-            const settlement = await facilitator.settle(payload, requirements);
+            // Consume the payload before settling. has()+set() run with no
+            // await between them, so the check is atomic on the event loop —
+            // a concurrent duplicate is rejected here, and a settled payload
+            // stays consumed for the advertised completion window. Only a
+            // FAILED settle releases the key (the payment did not happen, a
+            // retry must be able to proceed).
+            const key = payloadKey(header, payload);
+            const now = Date.now();
+            pruneConsumed(now);
+            if (consumedPayloads.has(key)) {
+                throw new InvalidProofError('x402_payment_replayed', 'payment payload already used or in flight');
+            }
+            consumedPayloads.set(key, now);
+
+            let settlement;
+            try {
+                settlement = await facilitator.settle(payload, requirements);
+            } catch (error) {
+                consumedPayloads.delete(key);
+                throw error;
+            }
             if (!settlement.success) {
+                consumedPayloads.delete(key);
                 throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
             }
 

@@ -234,4 +234,133 @@ describe('createX402ExactAdapter', () => {
             InvalidProofError,
         );
     });
+
+    // ── replay / in-flight dedup ────────────────────────────────────────────
+
+    it('rejects a sequential replay of the same payment payload', async () => {
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        const first = await adapter.verifyAndSettle(gate, paidRequest('REPLAY_CRED'));
+        expect(first.transaction).toBe('TxSig');
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('REPLAY_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
+    });
+
+    it('rejects a concurrent duplicate payload while the first settles', async () => {
+        let settleCalls = 0;
+        facilitatorControl.settle = () => {
+            settleCalls += 1;
+            return new Promise(resolve =>
+                setTimeout(() => resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' }), 20),
+            );
+        };
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        const results = await Promise.allSettled([
+            adapter.verifyAndSettle(gate, paidRequest('RACE_CRED')),
+            adapter.verifyAndSettle(gate, paidRequest('RACE_CRED')),
+        ]);
+        const fulfilled = results.filter(result => result.status === 'fulfilled');
+        const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0]!.reason).toMatchObject({ code: 'x402_payment_replayed' });
+        expect(settleCalls).toBe(1);
+    });
+
+    it('keys the dedup on the transaction client signature, not the raw header', async () => {
+        // Two different header strings decode to the same signed transaction —
+        // e.g. a replayer mutating the unsigned fee-payer slot bytes. The
+        // dedup must fire on the client signature embedded in the payload.
+        const kit = await vi.importActual<typeof import('@solana/kit')>('@solana/kit');
+        const signer = await kit.generateKeyPairSigner();
+        const message = kit.pipe(
+            kit.createTransactionMessage({ version: 0 }),
+            msg => kit.setTransactionMessageFeePayerSigner(signer, msg),
+            msg =>
+                kit.setTransactionMessageLifetimeUsingBlockhash(
+                    {
+                        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as never,
+                        lastValidBlockHeight: 0n,
+                    },
+                    msg,
+                ),
+        );
+        const signed = await kit.signTransactionMessageWithSigners(message as never);
+        const wire = kit.getBase64EncodedWireTransaction(signed) as string;
+        decodeControl.impl = () => ({ accepted: { network: 'solana:test' }, payload: { transaction: wire } });
+
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await adapter.verifyAndSettle(gate, paidRequest('HEADER_A'));
+        await expect(adapter.verifyAndSettle(gate, paidRequest('HEADER_B'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
+    });
+
+    it('releases the payload key when settlement fails so a retry can proceed', async () => {
+        facilitatorControl.settle = () =>
+            Promise.resolve({ errorMessage: 'rpc down', errorReason: 'settlement_failed', success: false });
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('RETRY_CRED'))).rejects.toMatchObject({
+            code: 'settlement_failed',
+        });
+
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        const retried = await adapter.verifyAndSettle(gate, paidRequest('RETRY_CRED'));
+        expect(retried.transaction).toBe('TxSig');
+    });
+
+    it('releases the payload key when settlement throws', async () => {
+        facilitatorControl.settle = () => Promise.reject(new Error('facilitator crashed'));
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'))).rejects.toThrow(/facilitator crashed/);
+
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        const retried = await adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'));
+        expect(retried.transaction).toBe('TxSig');
+    });
+
+    it('lets distinct payloads settle independently', async () => {
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        const first = await adapter.verifyAndSettle(gate, paidRequest('CRED_ONE'));
+        const second = await adapter.verifyAndSettle(gate, paidRequest('CRED_TWO'));
+        expect(first.transaction).toBe('TxSig');
+        expect(second.transaction).toBe('TxSig');
+    });
+
+    it('expires consumed entries after the completion window', async () => {
+        vi.useFakeTimers();
+        try {
+            const { adapter } = await setup();
+            const gate = await gateFor();
+
+            await adapter.verifyAndSettle(gate, paidRequest('WINDOW_CRED'));
+            // Within the 300s window the replay is still rejected.
+            vi.setSystemTime(Date.now() + 299_000);
+            await expect(adapter.verifyAndSettle(gate, paidRequest('WINDOW_CRED'))).rejects.toMatchObject({
+                code: 'x402_payment_replayed',
+            });
+            // Past the window the blockhash has expired on-chain; the local
+            // entry is pruned and the ledger owns dedup from here.
+            vi.setSystemTime(Date.now() + 302_000);
+            const late = await adapter.verifyAndSettle(gate, paidRequest('WINDOW_CRED'));
+            expect(late.transaction).toBe('TxSig');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
