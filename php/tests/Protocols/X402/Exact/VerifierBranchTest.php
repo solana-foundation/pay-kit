@@ -145,7 +145,7 @@ final class VerifierBranchTest extends TestCase
         [$tx, $req, $managed] = $this->build();
         $result = Verifier::verify($tx, $req, $managed);
         $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
         $this->assertArrayHasKey('source', $result);
         $this->assertArrayHasKey('mint', $result);
         $this->assertArrayHasKey('destination', $result);
@@ -169,14 +169,14 @@ final class VerifierBranchTest extends TestCase
             ],
         ]);
         $result = Verifier::verify($tx, $req, $managed);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testComputePriceAtMaxVerifies(): void
     {
         [$tx, $req, $managed] = $this->build(['computePrice' => self::MAX_PRICE]);
         $result = Verifier::verify($tx, $req, $managed);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     // ── rule 1: instruction count ───────────────────────────────────────────
@@ -402,6 +402,56 @@ final class VerifierBranchTest extends TestCase
         Verifier::verify($tx, $req, $managed);
     }
 
+    public function testHighBitU64AmountComparesExactly(): void
+    {
+        // 2^63 — above PHP_INT_MAX as an unsigned wire value. A native
+        // `(int)` requirement cast saturates and `unpack('P')` goes
+        // negative, so before the BigInteger path this exact payment was
+        // rejected as an amount mismatch.
+        $high = '9223372036854775808';
+        [$tx, $req, $managed] = $this->build([
+            'reqAmount'    => $high,
+            'transferData' => chr(12) . "\x00\x00\x00\x00\x00\x00\x00\x80" . chr(6),
+        ]);
+        $result = Verifier::verify($tx, $req, $managed);
+        $this->assertSame($high, $result['amount']);
+    }
+
+    public function testU64MaxAmountComparesExactly(): void
+    {
+        $max = '18446744073709551615';
+        [$tx, $req, $managed] = $this->build([
+            'reqAmount'    => $max,
+            'transferData' => chr(12) . str_repeat("\xff", 8) . chr(6),
+        ]);
+        $result = Verifier::verify($tx, $req, $managed);
+        $this->assertSame($max, $result['amount']);
+    }
+
+    public function testHighBitU64AmountMismatchStillRejected(): void
+    {
+        // Same high-bit wire amount (2^63) against a requirement one unit
+        // higher: both used to collapse under native-int handling and the
+        // comparison could no longer tell exact from wrong.
+        [$tx, $req, $managed] = $this->build([
+            'reqAmount'    => '9223372036854775809',
+            'transferData' => chr(12) . "\x00\x00\x00\x00\x00\x00\x00\x80" . chr(6),
+        ]);
+        $this->expectReject('amount_mismatch');
+        Verifier::verify($tx, $req, $managed);
+    }
+
+    public function testAmountAboveU64RangeFailsClosed(): void
+    {
+        // 2^64 — not representable on the wire; the requirement itself is
+        // invalid and must fail closed instead of wrapping or saturating.
+        [$tx, $req, $managed] = $this->build([
+            'reqAmount' => '18446744073709551616',
+        ]);
+        $this->expectReject('missing_field_amount');
+        Verifier::verify($tx, $req, $managed);
+    }
+
     // ── rule 9: optional-slot allowlist ─────────────────────────────────────
 
     public function testUnknownFourthInstructionRejected(): void
@@ -524,6 +574,6 @@ final class VerifierBranchTest extends TestCase
             'extra'             => ['tokenProgram' => self::TOKEN_PROGRAM, 'memo' => ''],
         ];
         $result = Verifier::verify($tx, $req, $managed);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 }

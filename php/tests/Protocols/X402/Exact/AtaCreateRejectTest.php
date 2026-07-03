@@ -130,7 +130,7 @@ final class AtaCreateRejectTest extends TestCase
         [$tx, $req] = $this->buildTransaction([]);
         $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
         $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
         $this->assertArrayNotHasKey('destinationCreateAta', $result);
     }
 
@@ -143,7 +143,7 @@ final class AtaCreateRejectTest extends TestCase
             ['program' => self::LIGHTHOUSE, 'data' => chr(0), 'accounts' => []],
         ]);
         $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testMemoOptionalInstructionAccepted(): void
@@ -152,7 +152,7 @@ final class AtaCreateRejectTest extends TestCase
             ['program' => self::MEMO_PROGRAM, 'data' => 'abc123nonce', 'accounts' => []],
         ]);
         $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testOfferWithoutExtraTokenProgramStillVerifies(): void
@@ -169,7 +169,7 @@ final class AtaCreateRejectTest extends TestCase
         $result = Verifier::verify($tx, $req, ['someFacilitatorPubkeyThatIsNotInTx']);
 
         $this->assertSame(self::TOKEN_PROGRAM, $result['program']);
-        $this->assertSame(100000, $result['amount']);
+        $this->assertSame('100000', $result['amount']);
     }
 
     public function testAtaCreateOptionalInstructionRejected(): void
