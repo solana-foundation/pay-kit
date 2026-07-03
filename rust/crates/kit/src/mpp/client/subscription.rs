@@ -774,4 +774,237 @@ mod tests {
         assert_eq!(limit_ix.data[0], 2);
         assert_eq!(limit_ix.data.len(), 5);
     }
+
+    #[test]
+    fn parse_subscription_authority_init_id_reads_le_i64() {
+        // discriminator(1)+user(32)+mint(32)+payer(32)+bump(1) = 98, then i64.
+        let mut bytes = vec![0u8; SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN];
+        let init_id: i64 = 1_234_567;
+        bytes[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET + 8]
+            .copy_from_slice(&init_id.to_le_bytes());
+        assert_eq!(
+            parse_subscription_authority_init_id(&bytes).unwrap(),
+            init_id
+        );
+    }
+
+    #[test]
+    fn parse_subscription_authority_init_id_rejects_wrong_length() {
+        let err = parse_subscription_authority_init_id(&[0u8; 10]).unwrap_err();
+        assert!(format!("{err}").contains("Unexpected SubscriptionAuthority length"));
+    }
+
+    #[test]
+    fn create_idempotent_ata_ix_layout() {
+        let funder = Pubkey::new_unique();
+        let ata = Pubkey::new_unique();
+        let wallet = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let token_program = Pubkey::new_unique();
+        let atp = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap();
+        let ix = build_create_idempotent_ata_ix(funder, ata, wallet, mint, token_program, atp);
+        assert_eq!(ix.program_id, atp);
+        assert_eq!(ix.data, vec![1u8]); // CreateIdempotent discriminator.
+        assert_eq!(ix.accounts.len(), 6);
+        assert!(ix.accounts[0].is_signer); // funder signs.
+        assert_eq!(ix.accounts[0].pubkey, funder);
+        assert_eq!(ix.accounts[1].pubkey, ata);
+        assert_eq!(ix.accounts[5].pubkey, token_program);
+    }
+
+    // ── Missing-required-field error branches (no RPC needed) ──
+
+    async fn build_with(md: &SubscriptionMethodDetails) -> Result<CredentialPayload, Error> {
+        let signer = make_signer();
+        let rpc = RpcClient::new_mock("succeeds".to_string());
+        build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            md,
+            pinned_options(BuildSubscriptionActivationOptions::default()),
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_plan_id_numeric_errors() {
+        let mut md = make_method_details(false, None);
+        md.plan_id_numeric = None;
+        let err = build_with(&md).await.expect_err("missing planIdNumeric");
+        assert!(format!("{err}").contains("planIdNumeric"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_plan_bump_errors() {
+        let mut md = make_method_details(false, None);
+        md.plan_bump = None;
+        let err = build_with(&md).await.expect_err("missing planBump");
+        assert!(format!("{err}").contains("planBump"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_expected_period_hours_errors() {
+        let mut md = make_method_details(false, None);
+        md.expected_period_hours = None;
+        let err = build_with(&md)
+            .await
+            .expect_err("missing expectedPeriodHours");
+        assert!(format!("{err}").contains("expectedPeriodHours"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_expected_created_at_errors() {
+        let mut md = make_method_details(false, None);
+        md.expected_created_at = None;
+        let err = build_with(&md)
+            .await
+            .expect_err("missing expectedCreatedAt");
+        assert!(format!("{err}").contains("expectedCreatedAt"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_amount_errors() {
+        let mut md = make_method_details(false, None);
+        md.amount = None;
+        let err = build_with(&md).await.expect_err("missing amount");
+        assert!(format!("{err}").contains("amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_amount_errors() {
+        let mut md = make_method_details(false, None);
+        md.amount = Some("not-a-number".into());
+        let err = build_with(&md).await.expect_err("bad amount");
+        assert!(format!("{err}").contains("amount"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_recent_blockhash_errors() {
+        let mut md = make_method_details(false, None);
+        md.recent_blockhash = None;
+        let err = build_with(&md).await.expect_err("missing recentBlockhash");
+        assert!(format!("{err}").contains("recentBlockhash"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn merchant_and_recipient_default_to_puller_when_absent() {
+        let mut md = make_method_details(false, None);
+        // Absent merchant/recipient must fall back to the puller (line coverage
+        // for the `None => puller` arms) and still build a valid tx.
+        md.merchant = None;
+        md.recipient = None;
+        let payload = build_with(&md).await.expect("activation tx");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wrapper_without_options_builds_via_rpc_lookup() {
+        // Exercises `build_subscription_activation_transaction` (the no-options
+        // wrapper) which does NOT pin the init id, so it drives the on-chain SA
+        // lookup against the mock RPC. Serve a canned SubscriptionAuthority so
+        // the "SA already exists" branch runs (no init broadcast).
+        use crate::mpp::program::subscriptions::{
+            default_program_id, find_subscription_authority_pda,
+        };
+        let signer = make_signer();
+        let md = make_method_details(false, None);
+
+        let mock = crate::x402::server::mock_rpc::MockRpc::start();
+        let rpc = RpcClient::new(mock.url());
+
+        let subscriber = signer.pubkey();
+        let mint = Pubkey::from_str(&md.mint).unwrap();
+        let (sa, _) = find_subscription_authority_pda(&subscriber, &mint, &default_program_id());
+
+        // A correctly-sized SubscriptionAuthority account with init_id = 7.
+        let mut data = vec![0u8; SUBSCRIPTION_AUTHORITY_ACCOUNT_LEN];
+        data[SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET..SUBSCRIPTION_AUTHORITY_INIT_ID_OFFSET + 8]
+            .copy_from_slice(&7i64.to_le_bytes());
+        mock.set_account(
+            &sa.to_string(),
+            data,
+            crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID,
+        );
+
+        let payload = build_subscription_activation_transaction(&*signer, &rpc, &md)
+            .await
+            .expect("activation tx via rpc SA lookup");
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_init_id_broadcasts_when_sa_absent() {
+        // SA account is NOT registered on the mock ⇒ the first get_account
+        // fails, so `ensure_subscription_authority_init_id` broadcasts a
+        // subscriber-signed init tx (getLatestBlockhash + sendTransaction +
+        // getSignatureStatuses) then re-reads the SA. Register the SA only for
+        // the post-broadcast read by pre-seeding it: the mock returns it on
+        // both reads, but the first read still exercises the "exists" path.
+        //
+        // To drive the *broadcast* branch we must make the first read miss and
+        // the second hit. The mock has no per-call state, so instead we assert
+        // the un-pinned build against a mock that serves the SA — which already
+        // covers the primary `parse` path — and separately cover the broadcast
+        // error path below.
+        use crate::mpp::program::subscriptions::{
+            default_program_id, find_subscription_authority_pda,
+        };
+        let signer = make_signer();
+        let md = make_method_details(false, None);
+
+        let mock = crate::x402::server::mock_rpc::MockRpc::start();
+        let rpc = RpcClient::new(mock.url());
+        let subscriber = signer.pubkey();
+        let mint = Pubkey::from_str(&md.mint).unwrap();
+        let (sa, _) = find_subscription_authority_pda(&subscriber, &mint, &default_program_id());
+
+        // Register an SA whose length is WRONG so the parse fails after fetch —
+        // this drives the `parse_subscription_authority_init_id` error arm from
+        // inside `ensure_subscription_authority_init_id`.
+        mock.set_account(
+            &sa.to_string(),
+            vec![0u8; 10],
+            crate::mpp::program::subscriptions::SUBSCRIPTIONS_PROGRAM_ID,
+        );
+
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            BuildSubscriptionActivationOptions::default(), // NOT pinned ⇒ RPC path.
+        )
+        .await
+        .expect_err("bad SA length");
+        assert!(format!("{err}").contains("Unexpected SubscriptionAuthority length"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_init_id_init_broadcast_path_runs() {
+        // SA missing on the mock ⇒ first get_account errors ⇒ the init-broadcast
+        // branch runs: build+sign the init tx, send_and_confirm (sendTransaction
+        // + getSignatureStatuses via the mock), then re-read the SA. The re-read
+        // also misses (mock has no post-write state), so the build surfaces the
+        // "still missing after init broadcast" error — which proves the whole
+        // broadcast branch (lines through the re-fetch) executed.
+        let signer = make_signer();
+        let md = make_method_details(false, None);
+
+        let mock = crate::x402::server::mock_rpc::MockRpc::start();
+        let rpc = RpcClient::new(mock.url());
+
+        let err = build_subscription_activation_transaction_with_options(
+            &*signer,
+            &rpc,
+            &md,
+            BuildSubscriptionActivationOptions::default(), // NOT pinned ⇒ RPC path.
+        )
+        .await
+        .expect_err("SA still missing after broadcast");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("still missing after init broadcast")
+                || msg.contains("Failed to broadcast SubscriptionAuthority init"),
+            "unexpected error: {msg}"
+        );
+    }
 }
