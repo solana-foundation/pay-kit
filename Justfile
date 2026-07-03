@@ -159,11 +159,13 @@ rs-fmt:
 rs-lint:
     cd rust && cargo clippy -- -D warnings
 
-# Check the Rust SDK builds for browser wasm (mpp,x402,client feature set)
+# Check the Rust SDK builds for browser wasm across supported feature combos
 rs-wasm-check:
-    cd rust && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+    cd rust && for feats in mpp x402 mpp,x402 mpp,client x402,client mpp,x402,client; do \
+        RUSTFLAGS='--cfg getrandom_backend="wasm_js" -D warnings' \
         cargo check -p solana-pay-kit --target wasm32-unknown-unknown \
-        --no-default-features --features mpp,x402,client
+        --no-default-features --features "$feats" || exit 1; \
+    done
 
 # ── Go ──
 # Recipes live in go/Justfile. The wrappers below delegate so the

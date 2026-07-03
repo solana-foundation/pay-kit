@@ -226,14 +226,20 @@ jobs:
         run: cargo fmt --check
 
       # Client-side SDK must keep building for browser wasm (no tokio, no
-      # native RPC client). Mirrors `just rs-wasm-check`.
-      - name: Rust wasm32 check (mpp,x402,client)
+      # native RPC client). Sweeps every supported feature combo and fails on
+      # warnings so wasm-only dead code can't accumulate. Mirrors
+      # `just rs-wasm-check`.
+      - name: Rust wasm32 check (mpp/x402/client combos)
         working-directory: rust
         env:
-          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+          RUSTFLAGS: --cfg getrandom_backend="wasm_js" -D warnings
         run: |
-          cargo check -p solana-pay-kit --target wasm32-unknown-unknown \
-              --no-default-features --features mpp,x402,client
+          for feats in mpp x402 mpp,x402 mpp,client x402,client mpp,x402,client; do
+              echo "::group::wasm32 check --features $feats"
+              cargo check -p solana-pay-kit --target wasm32-unknown-unknown \
+                  --no-default-features --features "$feats"
+              echo "::endgroup::"
+          done
 
       - name: Upload Rust coverage
         if: always()
