@@ -1089,9 +1089,12 @@ describe('session() verify() topUp hardening', () => {
         ).rejects.toThrow(/finalized/);
     });
 
-    test('topUp verifies the signature on-chain when rpc is configured', async () => {
+    test('topUp fails closed when the rpc cannot fetch the transaction for binding', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
+        // A status-only RPC can confirm liveness but cannot bind the
+        // signature to an actual top_up transaction — the top-up must be
+        // rejected rather than trust the client-asserted newDeposit.
         const rpc = mockStatusRpc({ 'open-sig': { err: null }, 'topup-sig': { err: null } });
         const method = session({
             cap: 5_000_000n,
@@ -1106,13 +1109,14 @@ describe('session() verify() topUp hardening', () => {
         });
         await openChannel(method, signer);
 
-        const receipt = await method.verify({
-            credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
-            request: {} as never,
-        });
-        expect(receipt.status).toBe('success');
+        await expect(
+            method.verify({
+                credential: makeCred({ action: 'topUp', channelId, newDeposit: '5000', signature: 'topup-sig' }),
+                request: {} as never,
+            }),
+        ).rejects.toThrow(/does not expose getTransaction/);
         expect(rpc.calls).toContain('topup-sig');
-        expect((await store.getChannel(channelId))?.deposit).toBe(5_000n);
+        expect((await store.getChannel(channelId))?.deposit).toBe(1_000n);
     });
 
     test('topUp rejects when the signature is unknown on-chain', async () => {

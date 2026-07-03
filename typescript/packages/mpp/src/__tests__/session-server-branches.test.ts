@@ -689,25 +689,31 @@ describe('session() verify() open signature checks', () => {
 // ── topUp against an rpc + close-pending guard ──────────────────────────
 
 describe('session() verify() topUp against rpc', () => {
-    test('topUp confirms the signature on-chain and raises the deposit', async () => {
+    test('topUp rejects when the transaction behind the signature cannot be fetched', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         // Open with a no-rpc method so the open assertion is skipped; then
-        // top up with an rpc-configured method sharing the same store.
+        // top up with an rpc-configured method sharing the same store. The
+        // signature status reports success, but getTransaction cannot
+        // produce the transaction — the top-up must not be trusted.
         await openPushChannel(session(baseParams({ cap: 5_000_000n, store })), signer, '1000');
-        const method = session(
-            baseParams({ cap: 5_000_000n, store, rpc: mockStatusRpc({ 'topup-sig': { err: null } }) as never }),
-        );
-        const receipt = await method.verify({
-            credential: makeCred({
-                action: 'topUp',
-                channelId: CHANNEL_ID,
-                newDeposit: '2000',
-                signature: 'topup-sig',
+        const rpc = {
+            ...mockStatusRpc({ 'topup-sig': { err: null } }),
+            getTransaction: () => ({ send: async () => null }),
+        };
+        const method = session(baseParams({ cap: 5_000_000n, store, rpc: rpc as never }));
+        await expect(
+            method.verify({
+                credential: makeCred({
+                    action: 'topUp',
+                    channelId: CHANNEL_ID,
+                    newDeposit: '2000',
+                    signature: 'topup-sig',
+                }),
+                request: {} as never,
             }),
-            request: {} as never,
-        });
-        expect(receipt.reference).toBe('topup-sig');
+        ).rejects.toThrow(/not found on-chain/);
+        expect((await store.getChannel(CHANNEL_ID))?.deposit).toBe(1_000n);
     });
 
     test('topUp is rejected once a close is pending', async () => {

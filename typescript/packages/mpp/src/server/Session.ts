@@ -23,6 +23,7 @@ import type {
 import { normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
+    isGetTransactionRpc,
     type MultiDelegateSubmitRpc,
     PAYMENT_CHANNELS_PROGRAM_ID,
     submitInitMultiDelegateTxIfMissing,
@@ -30,6 +31,7 @@ import {
     submitSettleAndDistribute,
     type SubmitSettleAndDistributeResult,
     verifyOpenTx,
+    verifyTopUpTx,
 } from './session/on-chain.js';
 import {
     type ChannelState,
@@ -288,9 +290,12 @@ export function session(parameters: session.Parameters) {
                         challengeId: cred.challenge.id,
                         externalId: cred.challenge.request.externalId,
                         lifecycle: lifecycleRef.value,
+                        mint: resolvedMint,
                         payload: cred.payload,
+                        programId: resolvedProgramId,
                         rpc,
                         store,
+                        tokenProgram,
                     });
                 case 'close':
                     return await handleClose({
@@ -675,14 +680,17 @@ interface HandleTopUpArgs {
     readonly challengeId: string | undefined;
     readonly externalId: string | undefined;
     readonly lifecycle: Lifecycle | undefined;
+    readonly mint: string;
     readonly payload: {
         readonly action: 'topUp';
         readonly channelId: string;
         readonly newDeposit: string;
         readonly signature: string;
     };
+    readonly programId: Address;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
+    readonly tokenProgram: string;
 }
 
 async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
@@ -698,11 +706,36 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
     if (existing.closeRequestedAt !== undefined) {
         throw new Error('Channel close is pending — no further top-ups accepted');
     }
+    if (newDeposit <= existing.deposit) {
+        throw new Error(`newDeposit ${newDeposit} must exceed current deposit ${existing.deposit}`);
+    }
 
-    // Confirm the top-up transaction on-chain before raising the deposit
-    // (parity with the open-signature verification).
+    // Confirm the top-up transaction on-chain AND bind it to this channel
+    // before raising the deposit. The topUp payload carries only a
+    // signature — no transaction bytes — so the liveness check alone would
+    // accept any successful signature; the fetched transaction must contain
+    // a top_up instruction for this channel with the exact deposit delta.
+    // Without an rpc the payload is trusted as-is (trusted-client mode,
+    // matching open verification with rpc unset).
     if (args.rpc) {
         await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, args.payload.signature, 'topUp');
+        if (!isGetTransactionRpc(args.rpc)) {
+            throw new Error(
+                'topUp: configured rpc does not expose getTransaction — cannot bind the top-up signature to a transaction',
+            );
+        }
+        await verifyTopUpTx({
+            expected: {
+                amountDelta: newDeposit - existing.deposit,
+                channelId: args.payload.channelId,
+                mint: args.mint,
+                payer: existing.operator,
+                programId: args.programId.toString(),
+                tokenProgram: args.tokenProgram,
+            },
+            rpc: args.rpc,
+            signature: args.payload.signature,
+        });
     }
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {

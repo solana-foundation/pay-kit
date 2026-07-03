@@ -91,6 +91,9 @@ const TREASURY_OWNER_BYTES = new Uint8Array([
 /** Payment-channel open instruction discriminator. */
 const OPEN_DISCRIMINATOR = 1;
 
+/** Payment-channel top_up instruction discriminator. */
+const TOP_UP_DISCRIMINATOR = 3;
+
 const U16_LE = (n: number) => new Uint8Array([n & 0xff, (n >> 8) & 0xff]);
 
 // ─────────────────────────────────────────────────────────────────────
@@ -631,6 +634,164 @@ export async function verifyOpenTx(args: VerifyOpenTxArgs): Promise<VerifyOpenTx
     }
 
     return { channelId: channelAddr, deposit, gracePeriod, payer: payerAddr, salt };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// verifyTopUpTx: fetch a top-up tx by signature and validate the IX
+// ─────────────────────────────────────────────────────────────────────
+
+/** Minimal RPC shape needed to fetch a confirmed transaction by signature. */
+export interface GetTransactionRpc {
+    getTransaction(
+        signature: Signature,
+        config?: unknown,
+    ): {
+        send(): Promise<{
+            meta?: { readonly err: unknown } | null | undefined;
+            transaction: unknown;
+        } | null>;
+    };
+}
+
+/** Narrow an arbitrary RPC-ish object to {@link GetTransactionRpc}. */
+export function isGetTransactionRpc(rpc: unknown): rpc is GetTransactionRpc {
+    return typeof rpc === 'object' && rpc !== null && typeof (rpc as GetTransactionRpc).getTransaction === 'function';
+}
+
+/** Expected channel facts a top-up transaction must be bound to. */
+export interface VerifyTopUpTxExpected {
+    /** Exact deposit increase (`newDeposit - currentDeposit`), base units. */
+    readonly amountDelta: bigint;
+    /** Payment-channel address (base58) the top_up must target. */
+    readonly channelId: string;
+    readonly mint: string;
+    /** Channel payer (base58) recorded at open. Checked when set. */
+    readonly payer?: string | undefined;
+    /** Optional override for the payment-channels program id. */
+    readonly programId?: string | undefined;
+    readonly tokenProgram: string;
+}
+
+/** Arguments to {@link verifyTopUpTx}. */
+export interface VerifyTopUpTxArgs {
+    /** Expected values from the stored channel + session config. */
+    readonly expected: VerifyTopUpTxExpected;
+    readonly rpc: GetTransactionRpc;
+    /** Signature of the already-broadcast top-up transaction (base58). */
+    readonly signature: string;
+}
+
+/**
+ * Fetch the transaction behind a client-asserted top-up signature and
+ * verify it actually contains a payment-channels `top_up` instruction
+ * bound to the expected channel / mint / token program / amount delta.
+ *
+ * A bare `{channelId, newDeposit, signature}` top-up payload carries no
+ * transaction bytes, so a liveness check alone would accept ANY
+ * successful signature — including one for an unrelated transaction —
+ * and let a client inflate its deposit for free. Mirrors the
+ * decode-and-bind pattern of {@link verifyOpenTx}, with the transaction
+ * bytes fetched via `getTransaction` instead of read from the payload.
+ */
+export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
+    const { expected } = args;
+    const response = await args.rpc
+        .getTransaction(args.signature as Signature, {
+            commitment: 'confirmed',
+            encoding: 'base64',
+            maxSupportedTransactionVersion: 0,
+        })
+        .send();
+    if (!response) {
+        throw new Error(`verifyTopUpTx: tx ${args.signature} not found on-chain`);
+    }
+    if (response.meta?.err) {
+        throw new Error(`verifyTopUpTx: tx ${args.signature} failed on-chain: ${JSON.stringify(response.meta.err)}`);
+    }
+
+    // `encoding: 'base64'` responses carry a `[data, 'base64']` tuple; be
+    // lenient about a bare string but reject anything else (e.g. a
+    // jsonParsed shape) rather than guess at its account ordering.
+    const raw = response.transaction;
+    const transactionBase64 = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+    if (typeof transactionBase64 !== 'string') {
+        throw new Error('verifyTopUpTx: unsupported getTransaction encoding (expected base64)');
+    }
+
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
+        addressTableLookups?: readonly unknown[] | undefined;
+        instructions: readonly {
+            accountIndices?: readonly number[];
+            data?: Uint8Array | undefined;
+            programAddressIndex: number;
+        }[];
+        staticAccounts: readonly string[];
+    };
+
+    // Same ALT guard as verifyOpenTx: every account this verifier inspects
+    // must be static, or a client could smuggle a different account past
+    // the slot checks via a lookup table.
+    if (message.addressTableLookups && message.addressTableLookups.length > 0) {
+        throw new Error(
+            'verifyTopUpTx: address-lookup tables are not permitted in a top-up transaction — all accounts must be static',
+        );
+    }
+
+    const programIdStr = expected.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    let topUpIx: { accountIndices: readonly number[]; data: Uint8Array } | undefined;
+    for (const ix of message.instructions) {
+        const programIxAddr = message.staticAccounts[ix.programAddressIndex];
+        if (programIxAddr !== programIdStr) continue;
+        if (!ix.data || ix.data.length < 1) continue;
+        if (ix.data[0] !== TOP_UP_DISCRIMINATOR) continue;
+        topUpIx = { accountIndices: ix.accountIndices ?? [], data: ix.data };
+        break;
+    }
+    if (!topUpIx) {
+        throw new Error('verifyTopUpTx: no payment-channels top_up instruction found');
+    }
+
+    // top_up instruction account layout (matches vendored topUp.ts):
+    //   0 payer, 1 channel, 2 payerTokenAccount, 3 channelTokenAccount,
+    //   4 mint, 5 tokenProgram
+    const indices = topUpIx.accountIndices;
+    if (indices.length < 6) {
+        throw new Error(`verifyTopUpTx: top_up instruction has too few accounts (${indices.length})`);
+    }
+    const accountAt = (slot: number, label: string): string => {
+        const idx = indices[slot];
+        const addr = idx === undefined ? undefined : message.staticAccounts[idx];
+        if (!addr) throw new Error(`verifyTopUpTx: missing account at slot ${slot} (${label})`);
+        return addr;
+    };
+    const payerAddr = accountAt(0, 'payer');
+    const channelAddr = accountAt(1, 'channel');
+    const mintAddr = accountAt(4, 'mint');
+    const tokenProgramAddr = accountAt(5, 'tokenProgram');
+
+    if (channelAddr !== expected.channelId) {
+        throw new Error(`verifyTopUpTx: channel ${channelAddr} != expected ${expected.channelId}`);
+    }
+    if (mintAddr !== expected.mint) {
+        throw new Error(`verifyTopUpTx: mint ${mintAddr} != expected ${expected.mint}`);
+    }
+    if (tokenProgramAddr !== expected.tokenProgram) {
+        throw new Error(`verifyTopUpTx: tokenProgram ${tokenProgramAddr} != expected ${expected.tokenProgram}`);
+    }
+    if (expected.payer !== undefined && payerAddr !== expected.payer) {
+        throw new Error(`verifyTopUpTx: payer ${payerAddr} != channel payer ${expected.payer}`);
+    }
+
+    // ix data: [discriminator u8][amount u64 LE]
+    if (topUpIx.data.length < 1 + 8) {
+        throw new Error('verifyTopUpTx: top_up instruction data too short');
+    }
+    const view = new DataView(topUpIx.data.buffer, topUpIx.data.byteOffset, topUpIx.data.byteLength);
+    const amount = view.getBigUint64(1, true);
+    if (expected.amountDelta <= 0n || amount !== expected.amountDelta) {
+        throw new Error(`verifyTopUpTx: top_up amount ${amount} != expected deposit delta ${expected.amountDelta}`);
+    }
 }
 
 /** Tuning knobs for {@link waitForSignatureConfirmation}. */
