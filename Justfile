@@ -159,7 +159,7 @@ rs-fmt:
 
 # Lint Rust
 rs-lint:
-    cd rust && cargo clippy --locked -p solana-pay-kit --all-targets --features server,mpp,x402,client,fetch -- -D warnings
+    cd rust && cargo clippy --locked -p solana-pay-kit --all-targets --features mpp,x402,server,client,axum,gcp_kms,confidential,worker,testkit,fetch,otel -- -D warnings
     cd rust && cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # ── Go ──
