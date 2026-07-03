@@ -38,7 +38,8 @@ use solana_transaction::Transaction;
 use crate::mpp::error::Error;
 use crate::mpp::expires;
 use crate::mpp::program::subscriptions::{
-    find_subscription_pda, parse_pubkey, INSTRUCTION_SUBSCRIBE, INSTRUCTION_TRANSFER_SUBSCRIPTION,
+    find_subscription_pda, parse_pubkey, ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
+    INSTRUCTION_SUBSCRIBE, INSTRUCTION_TRANSFER_SUBSCRIPTION, MEMO_PROGRAM_ID,
     SUBSCRIPTIONS_PROGRAM_ID,
 };
 use crate::mpp::protocol::core::{
@@ -750,33 +751,73 @@ fn validate_activation_scope(
         .map_err(|e| VerificationError::new(e.to_string()))?;
     let keys = &tx.message.account_keys;
 
+    // Strict allowlist of the programs a legitimate activation transaction is
+    // permitted to invoke. Anything else is rejected outright — never skipped.
+    //
+    // The fee-payer co-sign below authorizes EVERY instruction in this message
+    // that names the server key as a required signer. If we merely scanned for
+    // the subscribe/transfer pair and ignored other instructions, a client
+    // could append e.g. a System transfer or an SPL token transfer that spends
+    // the server's sponsored fee-payer wallet, and the server would blindly
+    // co-sign it. Enforcing an allowlist (not a skip) closes that hole.
+    let compute_budget = parse_pubkey(COMPUTE_BUDGET_PROGRAM_ID, "compute_budget_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let ata_program = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "associated_token_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let memo_program = parse_pubkey(MEMO_PROGRAM_ID, "memo_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+
     let mut subscribe_idx: Option<usize> = None;
     let mut transfer_idx: Option<usize> = None;
     for (i, ix) in tx.message.instructions.iter().enumerate() {
         let prog_idx = ix.program_id_index as usize;
-        if prog_idx >= keys.len() {
-            continue;
-        }
-        if keys[prog_idx] != program_id {
-            continue;
-        }
-        let Some(disc) = ix.data.first().copied() else {
-            continue;
-        };
-        if disc == INSTRUCTION_SUBSCRIBE {
-            if subscribe_idx.is_some() {
-                return Err(VerificationError::invalid_payload(
-                    "Activation tx contains multiple subscribe instructions",
-                ));
+        let prog = keys.get(prog_idx).ok_or_else(|| {
+            VerificationError::invalid_payload(
+                "Activation tx instruction references an out-of-range program id index",
+            )
+        })?;
+
+        if *prog == program_id {
+            let disc = ix.data.first().copied().ok_or_else(|| {
+                VerificationError::invalid_payload(
+                    "Activation tx subscriptions-program instruction has empty data",
+                )
+            })?;
+            match disc {
+                INSTRUCTION_SUBSCRIBE => {
+                    if subscribe_idx.is_some() {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation tx contains multiple subscribe instructions",
+                        ));
+                    }
+                    subscribe_idx = Some(i);
+                }
+                INSTRUCTION_TRANSFER_SUBSCRIPTION => {
+                    if transfer_idx.is_some() {
+                        return Err(VerificationError::invalid_payload(
+                            "Activation tx contains multiple transfer_subscription instructions",
+                        ));
+                    }
+                    transfer_idx = Some(i);
+                }
+                other => {
+                    return Err(VerificationError::invalid_payload(format!(
+                        "Activation tx contains a disallowed subscriptions-program instruction \
+                         (discriminator {other}); only subscribe and transfer_subscription are allowed"
+                    )));
+                }
             }
-            subscribe_idx = Some(i);
-        } else if disc == INSTRUCTION_TRANSFER_SUBSCRIPTION {
-            if transfer_idx.is_some() {
-                return Err(VerificationError::invalid_payload(
-                    "Activation tx contains multiple transfer_subscription instructions",
-                ));
-            }
-            transfer_idx = Some(i);
+        } else if *prog == compute_budget || *prog == ata_program || *prog == memo_program {
+            // Compute-budget (price/limit), idempotent-ATA bootstrap, and the
+            // optional external-id memo are the only auxiliary programs a
+            // legitimate activation transaction touches. These carry no
+            // fee-payer fund/authority risk on their own, so they are allowed.
+            continue;
+        } else {
+            return Err(VerificationError::invalid_payload(format!(
+                "Activation tx invokes a disallowed program `{prog}`; the fee payer will not \
+                 co-sign a transaction outside the subscription activation allowlist"
+            )));
         }
     }
 
@@ -805,16 +846,25 @@ async fn co_sign_as_fee_payer(
     signer: &Arc<dyn solana_keychain::SolanaSigner>,
 ) -> Result<(), VerificationError> {
     let pubkey = signer.pubkey();
-    let idx = tx
-        .message
-        .account_keys
-        .iter()
-        .position(|k| *k == pubkey)
-        .ok_or_else(|| {
-            VerificationError::invalid_payload(
-                "Fee payer pubkey not present in activation transaction",
-            )
-        })?;
+    // The fee payer MUST be account index 0 (Solana's transaction fee-payer
+    // slot). Signing wherever the key happens to appear would let a client
+    // place the server key at a non-zero index — as the authority/source of an
+    // attacker-inserted instruction — and still collect the server's signature.
+    // Pinning to index 0 means the server only ever signs as the fee payer.
+    let idx = 0usize;
+    match tx.message.account_keys.first() {
+        Some(k) if *k == pubkey => {}
+        Some(_) => {
+            return Err(VerificationError::invalid_payload(
+                "Fee payer must be the transaction fee-payer (account index 0)",
+            ));
+        }
+        None => {
+            return Err(VerificationError::invalid_payload(
+                "Activation transaction has no account keys",
+            ));
+        }
+    }
     let msg_bytes = tx.message_data();
     let sig_bytes = signer
         .sign_message(&msg_bytes)
@@ -1651,45 +1701,42 @@ mod tests {
     }
 
     #[test]
-    fn validate_scope_ignores_instructions_on_other_programs() {
-        // An instruction whose program index points at a non-subscriptions
-        // account key must be skipped, and empty-data instructions too.
+    fn validate_scope_rejects_instruction_on_unknown_program() {
+        // C1 regression: an instruction on a program outside the activation
+        // allowlist must be REJECTED, not skipped. The old behaviour scanned
+        // for the subscribe/transfer pair and ignored everything else, so a
+        // client could smuggle e.g. a System transfer that spends the
+        // sponsored fee payer and the server would still co-sign it.
         use solana_hash::Hash;
         use solana_message::compiled_instruction::CompiledInstruction;
         use solana_message::{Message, MessageHeader};
-        let subscriber = Pubkey::new_unique();
-        let other_program = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let attacker_recipient = Pubkey::new_unique();
+        let system_program = parse_pubkey(
+            crate::mpp::program::subscriptions::SYSTEM_PROGRAM_ID,
+            "system",
+        )
+        .unwrap();
         let sub_program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "program").unwrap();
-        let account_keys = vec![subscriber, other_program, sub_program];
+        // keys: [fee_payer(0), attacker_recipient(1), system(2), subscriptions(3)]
+        let account_keys = vec![fee_payer, attacker_recipient, system_program, sub_program];
         let instructions = vec![
-            // Program index out of range — skipped via the bounds guard.
+            // Legit subscribe + transfer on the subscriptions program.
             CompiledInstruction {
-                program_id_index: 99,
-                accounts: vec![],
-                data: vec![INSTRUCTION_SUBSCRIBE],
-            },
-            // On another program — skipped.
-            CompiledInstruction {
-                program_id_index: 1,
-                accounts: vec![],
-                data: vec![INSTRUCTION_SUBSCRIBE],
-            },
-            // Empty data — skipped (no discriminator byte).
-            CompiledInstruction {
-                program_id_index: 2,
-                accounts: vec![],
-                data: vec![],
-            },
-            // The real subscribe + transfer on the subscriptions program.
-            CompiledInstruction {
-                program_id_index: 2,
+                program_id_index: 3,
                 accounts: vec![],
                 data: vec![INSTRUCTION_SUBSCRIBE],
             },
             CompiledInstruction {
-                program_id_index: 2,
+                program_id_index: 3,
                 accounts: vec![],
                 data: vec![INSTRUCTION_TRANSFER_SUBSCRIPTION],
+            },
+            // Attacker-inserted System transfer draining the fee payer.
+            CompiledInstruction {
+                program_id_index: 2,
+                accounts: vec![0, 1],
+                data: vec![2, 0, 0, 0], // System::Transfer discriminator
             },
         ];
         let message = Message {
@@ -1697,6 +1744,116 @@ mod tests {
                 num_required_signatures: 1,
                 num_readonly_signed_accounts: 0,
                 num_readonly_unsigned_accounts: 2,
+            },
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions,
+        };
+        let tx = Transaction {
+            signatures: vec![Signature::default(); 1],
+            message,
+        };
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(
+            err.message.contains("disallowed program"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_out_of_range_program_index() {
+        // A program-id index past the end of account_keys must be a hard
+        // error, not a silent skip (which previously let a crafted subscribe
+        // instruction hide behind an out-of-range index).
+        use solana_hash::Hash;
+        use solana_message::compiled_instruction::CompiledInstruction;
+        use solana_message::{Message, MessageHeader};
+        let subscriber = Pubkey::new_unique();
+        let sub_program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "program").unwrap();
+        let account_keys = vec![subscriber, sub_program];
+        let instructions = vec![CompiledInstruction {
+            program_id_index: 99,
+            accounts: vec![],
+            data: vec![INSTRUCTION_SUBSCRIBE],
+        }];
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 1,
+            },
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions,
+        };
+        let tx = Transaction {
+            signatures: vec![Signature::default(); 1],
+            message,
+        };
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(err.message.contains("out-of-range"), "{}", err.message);
+    }
+
+    #[test]
+    fn validate_scope_rejects_unknown_subscriptions_instruction() {
+        // An instruction ON the subscriptions program but with a
+        // non-subscribe/transfer discriminator (e.g. a delegation revoke or
+        // plan mutation) must be rejected.
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+                (
+                    crate::mpp::program::subscriptions::INSTRUCTION_REVOKE_DELEGATION,
+                    vec![],
+                ),
+            ],
+        );
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(
+            err.message
+                .contains("disallowed subscriptions-program instruction"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_accepts_full_legit_activation_shape() {
+        // The exact shape the client builder emits:
+        // [compute_budget price, compute_budget limit, create_idempotent_ata,
+        //  subscribe, transfer_subscription, memo] must pass.
+        use solana_hash::Hash;
+        use solana_message::compiled_instruction::CompiledInstruction;
+        use solana_message::{Message, MessageHeader};
+        let fee_payer = Pubkey::new_unique();
+        let cb = parse_pubkey(COMPUTE_BUDGET_PROGRAM_ID, "cb").unwrap();
+        let ata = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "ata").unwrap();
+        let memo = parse_pubkey(MEMO_PROGRAM_ID, "memo").unwrap();
+        let sub = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "sub").unwrap();
+        // keys: [fee_payer(0), cb(1), ata(2), memo(3), sub(4)]
+        let account_keys = vec![fee_payer, cb, ata, memo, sub];
+        let mk = |prog: u8, data: Vec<u8>| CompiledInstruction {
+            program_id_index: prog,
+            accounts: vec![],
+            data,
+        };
+        let instructions = vec![
+            mk(1, vec![3]),                                 // SetComputeUnitPrice
+            mk(1, vec![2]),                                 // SetComputeUnitLimit
+            mk(2, vec![1]),                                 // ATA CreateIdempotent
+            mk(4, vec![INSTRUCTION_SUBSCRIBE]),             // subscribe
+            mk(4, vec![INSTRUCTION_TRANSFER_SUBSCRIPTION]), // transfer
+            mk(3, b"external-id".to_vec()),                 // memo
+        ];
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 4,
             },
             account_keys,
             recent_blockhash: Hash::default(),
@@ -1776,20 +1933,38 @@ mod tests {
         let other = Pubkey::new_unique();
         let mut tx = build_tx(&[other], vec![]);
         let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
-        assert!(
-            err.message.contains("Fee payer pubkey not present"),
-            "{}",
-            err.message
-        );
+        assert!(err.message.contains("account index 0"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn co_sign_rejects_fee_payer_not_at_index_zero() {
+        // C1 regression: the fee-payer key present at a NON-zero index (e.g.
+        // as the authority of an attacker-inserted instruction) must NOT be
+        // co-signed. The old code used `position()` and would sign wherever
+        // the key appeared.
+        let (signer, fee_payer) = fee_payer_signer_and_key();
+        let subscriber = Pubkey::new_unique();
+        // subscriber at index 0, fee-payer at index 1.
+        let mut tx = build_tx(&[subscriber, fee_payer], vec![]);
+        let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
+        assert!(err.message.contains("account index 0"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn co_sign_rejects_empty_account_keys() {
+        let (signer, _fee_payer) = fee_payer_signer_and_key();
+        let mut tx = build_tx(&[Pubkey::new_unique()], vec![]);
+        tx.message.account_keys.clear();
+        let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
+        assert!(err.message.contains("no account keys"), "{}", err.message);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn co_sign_rejects_short_signatures_vec() {
+        // Fee payer correctly at index 0, but the signatures vec is empty, so
+        // there is no slot 0 to fill.
         let (signer, fee_payer) = fee_payer_signer_and_key();
-        let subscriber = Pubkey::new_unique();
-        // Put the fee-payer at index 1, then truncate the signatures vec so
-        // it's shorter than that index.
-        let mut tx = build_tx(&[subscriber, fee_payer], vec![]);
+        let mut tx = build_tx(&[fee_payer], vec![]);
         tx.signatures.clear();
         let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
         assert!(
