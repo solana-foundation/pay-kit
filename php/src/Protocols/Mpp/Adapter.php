@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace PayKit\Protocols\Mpp;
 
 use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
+use PayKit\PayCore\Network;
 use PayKit\Payment;
 use PayKit\Price;
 use PayKit\Protocol;
@@ -41,25 +43,51 @@ final class Adapter
     /**
      * @param ?Store $replayStore Replay-protection store shared across every
      *        {@see SolanaChargeHandler} this adapter builds. When null (the
-     *        default) an in-process {@see MemoryStore} is used and a loud
-     *        dev-only warning is emitted: a single-process memory store
-     *        loses replay protection across workers/restarts, so production
-     *        deployments MUST inject a shared atomic store (Redis, Postgres).
+     *        default) an in-process {@see MemoryStore} is used. The in-memory
+     *        store is single-process, so a second replica or a restart would
+     *        accept a replayed signature; off localnet the adapter therefore
+     *        fails closed unless the operator injects a shared atomic store
+     *        (Redis, Postgres) or opts into single-process scope with
+     *        `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1`. Mirrors the TS
+     *        `resolveReplayStore` guard in pay-kit config.
      */
     public function __construct(
         private readonly Config $config,
         ?Store $replayStore = null,
     ) {
-        if ($replayStore === null) {
-            if (function_exists('error_log')) {
-                error_log(
-                    'pay_kit: WARN: mpp adapter using in-memory replay store; '
-                    . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
-                );
-            }
-            $replayStore = new MemoryStore();
+        $this->replayStore = $replayStore ?? self::defaultReplayStore($config->network);
+    }
+
+    /**
+     * Resolve the fallback replay store when the caller passed none.
+     *
+     * The in-memory default is only safe on localnet (single-process dev). Off
+     * localnet it is a replay hole: markers are process-local, so a restart or a
+     * second worker/replica would accept a replayed payment. Fail closed unless
+     * `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` explicitly acknowledges the
+     * single-process scope, matching the TS reference guard.
+     */
+    private static function defaultReplayStore(Network $network): Store
+    {
+        $allowInMemory = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE') === '1';
+        if ($network !== Network::SolanaLocalnet && !$allowInMemory) {
+            throw new ConfigurationException(
+                'pay_kit: a shared replay store is required outside localnet. The default in-memory '
+                . 'store is process-local, so a second replica or a restart would accept a replayed '
+                . 'payment. Inject a shared, persistent Store (ideally one with an atomic reserve, '
+                . 'e.g. Redis SET NX) into the mpp adapter, or set '
+                . 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process replay scope.',
+            );
         }
-        $this->replayStore = $replayStore;
+        if ($network !== Network::SolanaLocalnet && function_exists('error_log')) {
+            error_log(
+                'pay_kit: WARN: mpp adapter using in-memory replay store off localnet '
+                . '(PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1). Replay protection is process-local and '
+                . 'does not survive restarts or span replicas.',
+            );
+        }
+
+        return new MemoryStore();
     }
 
     public function acceptsEntry(Gate $gate, ServerRequestInterface $request): array
