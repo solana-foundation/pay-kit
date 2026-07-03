@@ -85,7 +85,7 @@ async function sessionGate(overrides: Parameters<typeof session>[1] = { unitPric
         mpp: { challengeBindingSecret: 'session-secret' },
         operator: { recipient: SELLER },
     });
-    const gate = Gate.create(session(usd('1.00'), { name: 'stream', ...overrides }), gateDefaults(config));
+    const gate = Gate.create({ ...session(usd('1.00'), { ...overrides }), name: 'stream' }, gateDefaults(config));
     return { config, gate };
 }
 
@@ -119,7 +119,7 @@ describe('createSessionEngine', () => {
             operator: { feePayer: false, recipient: SELLER },
         });
         const gate = Gate.create(
-            session(usd('1.00'), { name: 'stream', unitPrice: usd('0.0001') }),
+            { ...session(usd('1.00'), { unitPrice: usd('0.0001') }), name: 'stream' },
             gateDefaults(config),
         );
         expect(() => createSessionEngine(config, gate)).toThrow(/operator that sponsors fees/);
@@ -160,7 +160,7 @@ describe('createSessionEngine', () => {
             operator: { recipient: SELLER },
         });
         const gate = Gate.create(
-            session(usd('1.00'), { description: 'Live feed', name: 'stream', unitPrice: usd('0.0001') }),
+            { ...session(usd('1.00'), { description: 'Live feed', unitPrice: usd('0.0001') }), name: 'stream' },
             gateDefaults(config),
         );
         createSessionEngine(config, gate);

@@ -7,6 +7,8 @@ import { configure, type PayKitConfig } from '../config.js';
 import { ConfigurationError, InvalidProofError } from '../errors.js';
 import { Gate } from '../gate.js';
 import type { Payment } from '../payment.js';
+import type { PayKit } from '../paykit.js';
+import type { PricingDef } from '../pricing.js';
 import { createPayKit } from '../paykit.js';
 import { usd } from '../price.js';
 import { gateDefaults } from '../pricing.js';
@@ -113,10 +115,7 @@ describe('requireFixed adapter-eligibility guard', () => {
 });
 
 describe('pay.express error and respond wiring', () => {
-    async function startServer(
-        pay: Awaited<ReturnType<typeof setup>>['paykit'],
-        gate: Parameters<typeof pay.express>[0],
-    ) {
+    async function startServer<P extends PricingDef>(pay: PayKit<P>, gate: Parameters<typeof pay.express>[0]) {
         const middleware = pay.express(gate);
         const server = createServer((req, res) => {
             void middleware(req, res, error => {

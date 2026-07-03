@@ -87,6 +87,12 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     } as Parameters<typeof session>[0];
 }
 
+/** The mppx Receipt type omits challengeId even though the session server
+ * threads it through at runtime — read it through a cast. */
+function challengeIdOf(receipt: unknown): string | undefined {
+    return (receipt as { challengeId?: string }).challengeId;
+}
+
 /** Credential with no challenge.id (and no externalId) — flips the optional
  * `challengeId` / `externalId` receipt spreads to their absent branch. */
 function makeBareCred<P>(payload: P) {
@@ -1003,7 +1009,7 @@ describe('session() receipts with a bare credential', () => {
             }),
             request: {} as never,
         });
-        expect(openReceipt.challengeId).toBeUndefined();
+        expect(challengeIdOf(openReceipt)).toBeUndefined();
         expect(openReceipt.externalId).toBeUndefined();
 
         const voucher = await makeSignedVoucher(signer, CHANNEL_ID, 200n);
@@ -1011,7 +1017,7 @@ describe('session() receipts with a bare credential', () => {
             credential: makeBareCred({ action: 'voucher', voucher }),
             request: {} as never,
         });
-        expect(voucherReceipt.challengeId).toBeUndefined();
+        expect(challengeIdOf(voucherReceipt)).toBeUndefined();
 
         const topUpReceipt = await method.verify({
             credential: makeBareCred({
@@ -1022,7 +1028,7 @@ describe('session() receipts with a bare credential', () => {
             }),
             request: {} as never,
         });
-        expect(topUpReceipt.challengeId).toBeUndefined();
+        expect(challengeIdOf(topUpReceipt)).toBeUndefined();
 
         // Reserve + commit through a bare credential.
         const routes = session.routes(baseParams({ store }) as unknown as Parameters<typeof session.routes>[0]);
@@ -1039,13 +1045,13 @@ describe('session() receipts with a bare credential', () => {
             credential: makeBareCred({ action: 'commit', deliveryId, voucher: commitVoucher }),
             request: {} as never,
         });
-        expect(commitReceipt.challengeId).toBeUndefined();
+        expect(challengeIdOf(commitReceipt)).toBeUndefined();
 
         const closeReceipt = await method.verify({
             credential: makeBareCred({ action: 'close', channelId: CHANNEL_ID }),
             request: {} as never,
         });
-        expect(closeReceipt.challengeId).toBeUndefined();
+        expect(challengeIdOf(closeReceipt)).toBeUndefined();
         expect(closeReceipt.externalId).toBeUndefined();
     });
 });

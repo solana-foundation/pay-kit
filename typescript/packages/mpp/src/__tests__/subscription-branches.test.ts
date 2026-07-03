@@ -214,7 +214,12 @@ function transactionCredential(transaction: string, methodDetailsOverrides: Reco
             },
         },
         payload: { transaction, type: 'transaction' },
-    } as never;
+    };
+}
+
+/** Cast a test credential literal to the opaque credential parameter type. */
+function asCredential(credential: unknown) {
+    return credential as never;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -283,7 +288,7 @@ describe('subscription().verify() delegation mismatches', () => {
         globalThis.fetch = fetchWith(buildDelegationAccount(subscriberAddress, { mint: RECIPIENT }));
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/mint mismatch/);
     });
 
@@ -292,7 +297,7 @@ describe('subscription().verify() delegation mismatches', () => {
         globalThis.fetch = fetchWith(buildDelegationAccount(subscriberAddress, { amountPerPeriod: 999n }));
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/amount mismatch/);
     });
 
@@ -301,7 +306,7 @@ describe('subscription().verify() delegation mismatches', () => {
         globalThis.fetch = fetchWith(buildDelegationAccount(subscriberAddress, { periodHours: 24n }));
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/period mismatch/);
     });
 
@@ -312,7 +317,7 @@ describe('subscription().verify() delegation mismatches', () => {
         // Strip the challenge id so the `?? {}` receipt spreads are skipped.
         const credential = transactionCredential(transaction);
         (credential as { challenge: { id?: string } }).challenge.id = undefined;
-        const receipt = await method.verify!({ credential, request: {} as never });
+        const receipt = await method.verify!({ credential: asCredential(credential), request: {} as never });
         expect(receipt.status).toBe('success');
         expect((receipt as { challengeId?: string }).challengeId).toBeUndefined();
     });
@@ -373,7 +378,9 @@ describe('settleActivation edge branches', () => {
         };
         const method = subscription({ ...baseParams, signer, store: Store.memory() });
         const receipt = await method.verify!({
-            credential: transactionCredential(transaction, { feePayer: true, feePayerKey: signer.address }),
+            credential: asCredential(
+                transactionCredential(transaction, { feePayer: true, feePayerKey: signer.address }),
+            ),
             request: {} as never,
         });
         expect(receipt.status).toBe('success');
@@ -553,7 +560,7 @@ describe('codec + RPC helper branches', () => {
         };
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/No signature returned/);
     });
 
@@ -622,7 +629,7 @@ describe('subscription() additional branches', () => {
         const credential = transactionCredential(transaction);
         delete (credential as { challenge: { request: { methodDetails: { programId?: string } } } }).challenge.request
             .methodDetails.programId;
-        const receipt = await method.verify!({ credential, request: {} as never });
+        const receipt = await method.verify!({ credential: asCredential(credential), request: {} as never });
         expect(receipt.status).toBe('success');
     });
 
@@ -701,7 +708,7 @@ describe('subscription() additional branches', () => {
         };
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/RPC error/);
     });
 
@@ -722,7 +729,7 @@ describe('subscription() additional branches', () => {
         };
         const method = subscription({ ...baseParams, store: Store.memory() });
         await expect(
-            method.verify!({ credential: transactionCredential(transaction), request: {} as never }),
+            method.verify!({ credential: asCredential(transactionCredential(transaction)), request: {} as never }),
         ).rejects.toThrow(/Transaction failed/);
     });
 });

@@ -30,7 +30,12 @@ import {
     type Blockhash,
 } from '@solana/kit';
 import { buildChargeTransaction } from '../client/Charge.js';
-import { charge, interpretPostTimeoutStatus, verifyChargeTransaction } from '../server/Charge.js';
+import {
+    type ChallengeRequest,
+    charge,
+    interpretPostTimeoutStatus,
+    verifyChargeTransaction,
+} from '../server/Charge.js';
 import {
     ASSOCIATED_TOKEN_PROGRAM,
     CASH,

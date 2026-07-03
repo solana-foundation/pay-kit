@@ -288,7 +288,7 @@ describe('resolveStaticGate for session routes', () => {
             operator: { feePayer: true },
             pricing: { dynamic: () => usd('1.00') },
         });
-        // @ts-expect-error 'dynamic' resolves to a DynamicGate, invalid for session routes
+        // 'dynamic' resolves to a DynamicGate, invalid for session routes.
         expect(() => pay.sessionRoutes('dynamic')).toThrow(/cannot be request-resolved/);
     });
 });

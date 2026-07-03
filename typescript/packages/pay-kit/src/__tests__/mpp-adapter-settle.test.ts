@@ -91,7 +91,10 @@ async function subscriptionGate() {
         operator: { recipient: SELLER },
     });
     return Gate.create(
-        subscription(usd('9.99'), { periodCount: 1, periodUnit: 'day', planId: PLAN, puller: PULLER, name: 'plan' }),
+        {
+            ...subscription(usd('9.99'), { periodCount: 1, periodUnit: 'day', planId: PLAN, puller: PULLER }),
+            name: 'plan',
+        },
         gateDefaults(config),
     );
 }
@@ -159,13 +162,13 @@ describe('createMppAdapter — settlement wiring', () => {
     describe('respond (html payment page)', () => {
         it('returns undefined when html is disabled', async () => {
             const { adapter } = await setup();
-            const response = await adapter.respond(fixedGate(), new Request('http://t/marketplace'));
+            const response = await adapter.respond!(fixedGate(), new Request('http://t/marketplace'));
             expect(response).toBeUndefined();
         });
 
         it('returns undefined when the handler does not issue a 402', async () => {
             const { adapter } = await setup({ mpp: { challengeBindingSecret: 's', html: true } });
-            const response = await adapter.respond(fixedGate(), new Request('http://t/marketplace'));
+            const response = await adapter.respond!(fixedGate(), new Request('http://t/marketplace'));
             expect(response).toBeUndefined();
         });
 
@@ -173,7 +176,7 @@ describe('createMppAdapter — settlement wiring', () => {
             handlerControl.charge = () =>
                 Promise.resolve({ challenge: new Response('PAGE', { status: 402 }), status: 402 });
             const { adapter } = await setup({ mpp: { challengeBindingSecret: 's', html: true } });
-            const response = await adapter.respond(fixedGate(), new Request('http://t/marketplace'));
+            const response = await adapter.respond!(fixedGate(), new Request('http://t/marketplace'));
             expect(await response?.text()).toBe('PAGE');
         });
 
@@ -181,7 +184,7 @@ describe('createMppAdapter — settlement wiring', () => {
             handlerControl.charge = () =>
                 Promise.resolve({ challenge: new Response('SW', { status: 200 }), status: 402 });
             const { adapter } = await setup({ mpp: { challengeBindingSecret: 's', html: true } });
-            const response = await adapter.respond(fixedGate(), new Request('http://t/marketplace?__mppx_worker'));
+            const response = await adapter.respond!(fixedGate(), new Request('http://t/marketplace?__mppx_worker'));
             expect(response?.headers.get('Service-Worker-Allowed')).toBe('/');
         });
 
@@ -189,7 +192,7 @@ describe('createMppAdapter — settlement wiring', () => {
             handlerControl.charge = () =>
                 Promise.resolve({ challenge: new Response('SW', { status: 200 }), status: 402 });
             const { adapter } = await setup({ mpp: { challengeBindingSecret: 's', html: true } });
-            const response = await adapter.respond(fixedGate(), new Request('http://t/marketplace?__mpp_worker'));
+            const response = await adapter.respond!(fixedGate(), new Request('http://t/marketplace?__mpp_worker'));
             expect(response?.headers.get('Service-Worker-Allowed')).toBe('/');
         });
     });
