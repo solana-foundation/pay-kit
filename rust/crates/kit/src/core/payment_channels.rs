@@ -647,6 +647,85 @@ mod tests {
         assert_eq!(&bytes[40..48], &1234i64.to_le_bytes());
     }
 
+    /// Golden account layout for the settle family, pinned off-chain so a codama
+    /// regeneration or a hand edit that reorders accounts, flips a signer/writable
+    /// flag, or changes a discriminator fails here without needing a live program.
+    /// This is the cheap guard for the #202 class (settle_and_finalize is
+    /// merchant-first BY DESIGN: the merchant account must equal the channel
+    /// payee). Flags: (is_signer, is_writable).
+    #[test]
+    fn settle_family_account_layout_golden() {
+        let program_id = default_program_id();
+        let sig = [7u8; 64];
+        let meta = |m: &AccountMeta| (m.pubkey, m.is_signer, m.is_writable);
+
+        // settle: [channel(w), instructions_sysvar(ro)], discriminator 2. The
+        // ed25519 precompile is emitted first so the program can read the voucher.
+        let settle =
+            build_settle_instructions(&pk(1), &pk(2), &sig, 1_000, 999, &program_id).unwrap();
+        assert_eq!(settle.len(), 2, "settle = [ed25519 verify, settle]");
+        let s = settle.last().unwrap();
+        assert_eq!(s.program_id, to_address(&program_id));
+        assert_eq!(
+            s.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(1)), false, true), // channel, writable
+                (to_address(&instructions_sysvar_id()), false, false), // instructions sysvar, ro
+            ],
+        );
+        assert_eq!(s.data.first(), Some(&2u8), "settle discriminator");
+
+        // settle_and_finalize: [merchant(signer, ro), channel(w), instructions_sysvar(ro)],
+        // discriminator 4 + has_voucher=1. Merchant-first is intentional.
+        let saf = build_settle_and_finalize_instructions(
+            &pk(3),
+            &pk(1),
+            &pk(2),
+            Some(&sig),
+            1_000,
+            999,
+            &program_id,
+        )
+        .unwrap();
+        assert_eq!(
+            saf.len(),
+            2,
+            "settle_and_finalize = [ed25519 verify, settle_and_finalize]"
+        );
+        let f = saf.last().unwrap();
+        assert_eq!(f.program_id, to_address(&program_id));
+        assert_eq!(
+            f.accounts.iter().map(meta).collect::<Vec<_>>(),
+            vec![
+                (to_address(&pk(3)), true, false), // merchant, signer, readonly
+                (to_address(&pk(1)), false, true), // channel, writable
+                (to_address(&instructions_sysvar_id()), false, false), // instructions sysvar, ro
+            ],
+        );
+        assert_eq!(
+            f.data,
+            vec![4u8, 1u8],
+            "settle_and_finalize discriminator + has_voucher"
+        );
+
+        // request_close: [payer(signer), channel(w)], discriminator 5.
+        let rc = build_request_close_instruction(&pk(5), &pk(1), &program_id);
+        assert_eq!(rc.program_id, to_address(&program_id));
+        assert_eq!(rc.accounts[0].pubkey, to_address(&pk(5)));
+        assert!(rc.accounts[0].is_signer, "request_close payer is a signer");
+        assert_eq!(rc.accounts[1].pubkey, to_address(&pk(1)));
+        assert!(
+            rc.accounts[1].is_writable,
+            "request_close channel is writable"
+        );
+
+        // finalize: [channel(w)], discriminator 6.
+        let fin = build_finalize_instruction(&pk(1), &program_id);
+        assert_eq!(fin.accounts.len(), 1);
+        assert_eq!(fin.accounts[0].pubkey, to_address(&pk(1)));
+        assert!(fin.accounts[0].is_writable, "finalize channel is writable");
+    }
+
     #[test]
     fn channel_pda_is_stable() {
         let program_id = default_program_id();

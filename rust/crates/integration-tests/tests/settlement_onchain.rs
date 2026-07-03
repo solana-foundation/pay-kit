@@ -36,6 +36,24 @@ fn rpc_url() -> String {
     std::env::var("SURFNET_RPC").unwrap_or_else(|_| DEFAULT_RPC.to_string())
 }
 
+/// Whether the surfnet is reachable. When it is not, the on-chain tests skip so
+/// local runs without a surfnet stay green — UNLESS `PAYKIT_ONCHAIN_REQUIRED=1`
+/// is set (as the CI on-chain job does), in which case an unreachable surfnet is
+/// a hard failure. Otherwise a broken or absent on-chain gate would pass
+/// silently, which is exactly the class this suite exists to catch.
+async fn surfnet_ready(rpc: &RpcClient, url: &str) -> bool {
+    if rpc.get_latest_blockhash().await.is_ok() {
+        return true;
+    }
+    if std::env::var("PAYKIT_ONCHAIN_REQUIRED").as_deref() == Ok("1") {
+        panic!(
+            "surfnet {url} is unreachable but PAYKIT_ONCHAIN_REQUIRED=1 (on-chain gate required)"
+        );
+    }
+    eprintln!("skipping: surfnet {url} unreachable");
+    false
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -156,8 +174,7 @@ async fn confirm(rpc: &RpcClient, sig: &str) {
 async fn distribution_hash_matches_on_chain_commitment() {
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
-    if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+    if !surfnet_ready(&rpc, &url).await {
         return;
     }
 
@@ -229,8 +246,7 @@ async fn distribution_hash_matches_on_chain_commitment() {
 async fn expired_voucher_is_rejected_on_chain() {
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
-    if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+    if !surfnet_ready(&rpc, &url).await {
         return;
     }
 
@@ -276,8 +292,7 @@ async fn channels_settle_on_chain_in_batches() {
     const CHANNELS: u64 = 4; // ⌈4/3⌉ = 2 settle transactions ⇒ proves batching
     let url = rpc_url();
     let rpc = RpcClient::new(url.clone());
-    if rpc.get_latest_blockhash().await.is_err() {
-        eprintln!("skipping: surfnet {url} unreachable");
+    if !surfnet_ready(&rpc, &url).await {
         return;
     }
 
@@ -320,12 +335,8 @@ async fn channels_settle_on_chain_in_batches() {
 async fn settlement_throughput_smoke() {
     const K: u64 = 30; // ⌈30/3⌉ = 10 batched settle txs
     let url = rpc_url();
-    if RpcClient::new(url.clone())
-        .get_latest_blockhash()
-        .await
-        .is_err()
-    {
-        eprintln!("skipping: surfnet {url} unreachable");
+    let rpc = RpcClient::new(url.clone());
+    if !surfnet_ready(&rpc, &url).await {
         return;
     }
 
@@ -386,12 +397,8 @@ async fn settlement_packing_runloop_demo() {
     });
 
     let url = rpc_url();
-    if RpcClient::new(url.clone())
-        .get_latest_blockhash()
-        .await
-        .is_err()
-    {
-        eprintln!("skipping: surfnet {url} unreachable");
+    let rpc = RpcClient::new(url.clone());
+    if !surfnet_ready(&rpc, &url).await {
         return;
     }
 
