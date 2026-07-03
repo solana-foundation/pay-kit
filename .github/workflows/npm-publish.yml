@@ -198,10 +198,12 @@ jobs:
 
             const body = `## @solana/mpp v${version}
 
-            ### Installation
+            > **Deprecated.** \`@solana/mpp\` is superseded by [\`@solana/pay-kit\`](https://www.npmjs.com/package/@solana/pay-kit). This is a final maintenance release; new work lands in \`@solana/pay-kit\`.
+
+            ### Migrate
 
             \`\`\`bash
-            pnpm add @solana/mpp
+            pnpm remove @solana/mpp && pnpm add @solana/pay-kit
             \`\`\`
 
             [npm](https://www.npmjs.com/package/@solana/mpp/v/${version})
