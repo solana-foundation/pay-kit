@@ -1728,6 +1728,79 @@ test('pull: accepts valid native SOL transfer', async () => {
     expect(receipt.reference).toBe(SIGNATURE);
 });
 
+// ── Replay prevention (type="transaction") ──
+// Regression for the pull-path sibling of the #211 push-mode TOCTOU: the
+// broadcast path reserved a signature but never checked it, so the same signed
+// transaction could be re-verified (one payment, N accesses).
+
+test('pull: rejects an already-consumed transaction (sequential replay)', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+
+    // First submission settles.
+    const receipt = await method.verify({
+        credential: transactionCredential(tx, { amount: '1000000' }),
+        request: {} as any,
+    });
+    expect(receipt.status).toBe('success');
+
+    // Re-submitting the same signed transaction is rejected as a replay, even
+    // though the on-chain tx still looks valid — one payment, one access.
+    await expect(
+        method.verify({
+            credential: transactionCredential(tx, { amount: '1000000' }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/already consumed/);
+});
+
+test('pull: concurrent requests with the same transaction settle at most once', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // Delay the confirmation RPC so all N verifies clear the pre-lock consumed
+    // check and contend for the per-signature lock: the exact pull-mode TOCTOU
+    // window. With per-signature serialization exactly one settles; the rest are
+    // rejected as already-consumed.
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const rpcMethod = JSON.parse(init?.body as string).method;
+        if (rpcMethod === 'simulateTransaction') return rpcSuccess({ value: { err: null, logs: [] } });
+        if (rpcMethod === 'sendTransaction') return rpcSuccess(SIGNATURE);
+        if (rpcMethod === 'getSignatureStatuses') {
+            await new Promise(r => setTimeout(r, 20));
+            return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+        }
+        if (rpcMethod === 'getTransaction') return rpcSuccess(solTransferTx(RECIPIENT, 1000000));
+        throw new Error(`Unexpected RPC method: ${rpcMethod}`);
+    }) as typeof fetch;
+
+    // Build the signed transaction once so every request carries the same
+    // fee-payer signature (the replay key).
+    const tx = await buildSolPaymentTxBase64(RECIPIENT, 1000000);
+    const verifyOnce = () =>
+        method.verify({ credential: transactionCredential(tx, { amount: '1000000' }), request: {} as any });
+
+    const results = await Promise.allSettled(Array.from({ length: 8 }, verifyOnce));
+    const settled = results.filter(r => r.status === 'fulfilled');
+    const rejectedConsumed = results.filter(
+        r => r.status === 'rejected' && /already consumed/.test(String((r as PromiseRejectedResult).reason)),
+    );
+
+    expect(settled).toHaveLength(1);
+    expect(rejectedConsumed).toHaveLength(7);
+});
+
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
     const method = charge({
         recipient: RECIPIENT,

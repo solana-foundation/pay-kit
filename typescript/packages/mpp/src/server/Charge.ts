@@ -2,6 +2,7 @@ import {
     address,
     getBase64Codec,
     getCompiledTransactionMessageDecoder,
+    getSignatureFromTransaction,
     getTransactionDecoder,
     isTransactionPartialSigner,
     type TransactionPartialSigner,
@@ -769,35 +770,91 @@ async function verifyTransaction(
         txToSend = await coSignBase64Transaction(signer, clientTxBase64);
     }
 
-    // Simulate before broadcast to catch failures without wasting fees.
-    await simulateTransaction(rpcUrl, txToSend);
+    // The fee-payer signature is the on-chain transaction id and is fully
+    // determined once the transaction is signed, before broadcast. Use it as the
+    // replay key so pull mode (type="transaction") shares the same consumed-
+    // signature namespace as the push path (verifySignature). Without this, two
+    // concurrent requests carrying the same signed transaction both broadcast
+    // (Solana dedups the identical signature on-chain, so one transfer occurs),
+    // both verify, and both settle — the same TOCTOU that #211 closed for push
+    // mode, plus a cross-mode bypass of the consumed marker. The consumed-check,
+    // broadcast, reserve, and verify run atomically per signature in `withKeyLock`.
+    //
+    // Scope: single Node process. Multi-process/replica deployments sharing one
+    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
+    const signature = signatureFromWireTransaction(txToSend);
+    const consumedKey = `solana-charge:consumed:${signature}`;
 
-    // Broadcast the (now fully-signed) transaction.
-    const signature = await broadcastTransaction(rpcUrl, txToSend);
+    // Cheap read outside the lock rejects obvious replays without queueing.
+    if (await store.get(consumedKey)) {
+        throw new Error('Transaction signature already consumed');
+    }
 
-    // Audit #3: reserve the signature BETWEEN broadcast and confirmation polling.
-    // If we only marked it consumed after confirmation+verify (as before), a tx
-    // that landed during a confirmation-poll timeout could be lost — the user
-    // pays but the signature is never recorded, so a retry re-broadcasts (double
-    // charge) or replays. Reserving here closes the replay window; the
-    // post-timeout status recovery below rescues the false-negative case.
-    await store.put(`solana-charge:consumed:${signature}`, true);
+    return await withKeyLock(consumedKey, async () => {
+        // Re-check inside the lock: a concurrent request in this process may have
+        // consumed the signature since the read above.
+        if (await store.get(consumedKey)) {
+            throw new Error('Transaction signature already consumed');
+        }
 
-    // Wait for on-chain confirmation (with a definitive post-timeout status check).
-    await waitForConfirmation(rpcUrl, signature);
+        // Simulate before broadcast to catch failures without wasting fees.
+        await simulateTransaction(rpcUrl, txToSend);
 
-    // Verify the confirmed transaction matches the challenge.
-    await verifyOnChain(rpcUrl, signature, challenge, recipient);
+        // Broadcast the (now fully-signed) transaction.
+        const broadcastSignature = await broadcastTransaction(rpcUrl, txToSend);
 
-    return Receipt.from({
-        method: 'solana',
-        ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
-        reference: signature,
-        ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
-        status: 'success',
-        timestamp: new Date().toISOString(),
+        // Audit #3: reserve the signature BETWEEN broadcast and confirmation
+        // polling. A tx that lands during a confirmation-poll timeout must not be
+        // re-broadcast (double charge) or replayed, so reserve before polling.
+        await store.put(consumedKey, true);
+
+        try {
+            // Wait for on-chain confirmation (with a definitive post-timeout check).
+            await waitForConfirmation(rpcUrl, broadcastSignature);
+
+            // Verify the confirmed transaction matches the challenge.
+            await verifyOnChain(rpcUrl, broadcastSignature, challenge, recipient);
+        } catch (err) {
+            // Release the reservation ONLY when the transaction definitively never
+            // landed, so an honest retry of the same still-valid transaction is not
+            // permanently bricked (audit L1). A landed-but-failed tx, a confirmed
+            // tx that fails challenge verification, or an inconclusive status
+            // recovery all keep the reservation to avoid a double-charge/replay
+            // window.
+            if (err instanceof TransactionNotLandedError) {
+                await store.delete(consumedKey);
+            }
+            throw err;
+        }
+
+        return Receipt.from({
+            method: 'solana',
+            ...(credential.challenge.id ? { challengeId: credential.challenge.id } : {}),
+            reference: broadcastSignature,
+            ...(challenge.externalId ? { externalId: challenge.externalId } : {}),
+            status: 'success',
+            timestamp: new Date().toISOString(),
+        });
     });
 }
+
+/**
+ * The fee-payer signature of a signed base64 wire transaction, base58-encoded.
+ * This equals the value `sendTransaction` returns, so it is a stable replay key
+ * known before broadcast.
+ */
+function signatureFromWireTransaction(wireTxBase64: string): string {
+    const tx = getTransactionDecoder().decode(getBase64Codec().encode(wireTxBase64));
+    return getSignatureFromTransaction(tx);
+}
+
+/**
+ * Thrown by `waitForConfirmation` when a broadcast transaction definitively did
+ * not land (a `searchTransactionHistory` status check returned null). Distinct
+ * from a landed-but-failed tx or an inconclusive recovery, so the pull-mode
+ * verifier can release its replay reservation for exactly this case (audit L1).
+ */
+class TransactionNotLandedError extends Error {}
 
 // ── Push mode (type="signature") ──
 
@@ -1403,11 +1460,14 @@ async function waitForConfirmation(rpcUrl: string, signature: string, timeoutMs 
         case 'failed':
             throw new Error(`Transaction landed on-chain but failed: ${outcome.detail}`);
         case 'timeout':
-            throw new Error(
-                outcome.detail
-                    ? `Transaction confirmation timeout (status recovery failed: ${outcome.detail})`
-                    : 'Transaction confirmation timeout',
-            );
+            if (outcome.detail) {
+                // Recovery RPC itself failed — inconclusive, so the caller must
+                // NOT release the reservation (the tx may still have landed).
+                throw new Error(`Transaction confirmation timeout (status recovery failed: ${outcome.detail})`);
+            }
+            // Definitively not on-chain: the caller may release its replay
+            // reservation so the same still-valid transaction can be retried (L1).
+            throw new TransactionNotLandedError('Transaction confirmation timeout');
     }
 }
 
