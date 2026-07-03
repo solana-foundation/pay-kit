@@ -21,8 +21,12 @@ import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import java.security.KeyPairGenerator
 import java.security.PublicKey
+import java.time.Instant
 
 class ChargeCredentialTest {
+    /** Instant safely before the fixture challenge's 2026-05-20 expiry. */
+    private val BEFORE_EXPIRY = Instant.parse("2026-01-01T00:00:00Z")
+
     @Test
     fun parsesChargeChallengeWithSplits() {
         val challenge = MppHeaders.parseWWWAuthenticate(challengeHeader())
@@ -44,7 +48,7 @@ class ChargeCredentialTest {
         val challenge = MppHeaders.parseWWWAuthenticate(challengeHeader())
         val builder = ChargeCredentialBuilder(StaticChargeTransactionProvider("base64-transaction"))
 
-        val header = builder.authorizationHeader(challenge)
+        val header = builder.authorizationHeader(challenge, now = BEFORE_EXPIRY)
         assertTrue(header.startsWith("Payment "))
 
         val encoded = header.removePrefix("Payment ")
@@ -68,7 +72,7 @@ class ChargeCredentialTest {
             }
         )
 
-        val encoded = builder.authorizationHeader(challenge).removePrefix("Payment ")
+        val encoded = builder.authorizationHeader(challenge, now = BEFORE_EXPIRY).removePrefix("Payment ")
         val credential = Json.decodeFromString<PaymentCredential>(
             Base64Url.decode(encoded).decodeToString(),
         )
@@ -229,14 +233,52 @@ class ChargeCredentialTest {
         }
     }
 
+    @Test
+    fun refusesExpiredChallengeBeforeInvokingProvider() {
+        val challenge = MppHeaders.parseWWWAuthenticate(challengeHeader())
+        var providerInvoked = false
+        val builder = ChargeCredentialBuilder(
+            ChargeTransactionProvider {
+                providerInvoked = true
+                "unused"
+            },
+        )
+
+        val error = assertFailsWith<MppException.InvalidTransaction> {
+            builder.authorizationHeader(challenge, now = Instant.parse("2026-05-20T00:00:01Z"))
+        }
+        assertTrue((error.message ?: "").contains("expired"))
+        assertEquals(false, providerInvoked)
+    }
+
+    @Test
+    fun refusesMalformedExpiresBeforeInvokingProvider() {
+        // isExpired fails closed on an unparseable timestamp, so the wallet
+        // provider must never be reached.
+        val challenge = MppHeaders.parseWWWAuthenticate(challengeHeader(expires = "not-a-timestamp"))
+        var providerInvoked = false
+        val builder = ChargeCredentialBuilder(
+            ChargeTransactionProvider {
+                providerInvoked = true
+                "unused"
+            },
+        )
+
+        val error = assertFailsWith<MppException.InvalidTransaction> {
+            builder.authorizationHeader(challenge, now = BEFORE_EXPIRY)
+        }
+        assertTrue((error.message ?: "").contains("expired"))
+        assertEquals(false, providerInvoked)
+    }
+
     private class StaticChargeTransactionProvider(
         private val transaction: String,
     ) : ChargeTransactionProvider {
         override fun buildTransaction(request: ChargeRequest): String = transaction
     }
 
-    private fun challengeHeader(): String =
-        """Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="${encodedRequest()}", expires="2026-05-20T00:00:00Z""""
+    private fun challengeHeader(expires: String = "2026-05-20T00:00:00Z"): String =
+        """Payment id="challenge-1", realm="MPP Payment", method="solana", intent="charge", request="${encodedRequest()}", expires="$expires""""
 
     private fun encodedRequest(): String =
         Base64Url.encode(
