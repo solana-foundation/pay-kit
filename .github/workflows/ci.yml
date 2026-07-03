@@ -189,7 +189,7 @@ jobs:
         # inside the floor now (x402 was previously excluded/under-covered); the
         # settle-family account layout is additionally pinned by
         # settle_family_account_layout_golden.
-        run: cargo llvm-cov -p solana-pay-kit -p paykit-integration-tests --ignore-filename-regex 'crates/integration-tests/|crates/harness-bins/|client/multi_delegate|src/generated/|x402/server/mock_rpc.rs' --json --output-path coverage.json
+        run: cargo llvm-cov --locked -p solana-pay-kit -p paykit-integration-tests --ignore-filename-regex 'crates/integration-tests/|crates/harness-bins/|client/multi_delegate|src/generated/|x402/server/mock_rpc.rs' --json --output-path coverage.json
 
       # Library tests for the x402 module — a fast targeted run for the loose-402
       # challenge regression suite (`to_accepted_value_patches_loose_*`) that
@@ -197,7 +197,7 @@ jobs:
       # blocks (missing `scheme`, bare network slug, missing `maxTimeoutSeconds`).
       - name: Run solana-pay-kit x402 library tests
         working-directory: rust
-        run: cargo test -p solana-pay-kit --lib x402
+        run: cargo test --locked -p solana-pay-kit --lib x402
 
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust
@@ -424,10 +424,10 @@ jobs:
         run: npm install && npx playwright install chromium
       - name: Build Rust test server
         working-directory: rust
-        run: cargo build --example payment_link_server --features axum
+        run: cargo build --locked --example payment_link_server --features axum
       - name: Start Rust test server
         working-directory: rust
-        run: cargo run --example payment_link_server --features axum &
+        run: cargo run --locked --example payment_link_server --features axum &
       - name: Wait for Rust server
         working-directory: .
         run: |

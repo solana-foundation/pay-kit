@@ -10,7 +10,10 @@ members = [
 # with the confidential-transfer proof crates (solana-zk-sdk 6/7 require
 # `solana-address ^2.5`). Applies to litesvm pulled transitively by surfpool-sdk
 # too. The fix is merged upstream (now `solana-address = ">=2.2, <3"`) but not yet
-# in a crates.io release (0.13.0 still pins `=2.2.0`), so pin upstream master.
+# in a crates.io release (0.13.0 still pins `=2.2.0`). Pinned to an immutable
+# commit (0.13.1 on master) rather than the mutable `master` ref so upstream
+# cannot silently swap the code we build; bump the rev deliberately when a
+# crates.io release ships the fix.
 [patch.crates-io]
-litesvm = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
-litesvm-token = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
+litesvm = { git = "https://github.com/LiteSVM/litesvm.git", rev = "297cf2c25265549737bdb075935efd3f062acd82" }
+litesvm-token = { git = "https://github.com/LiteSVM/litesvm.git", rev = "297cf2c25265549737bdb075935efd3f062acd82" }

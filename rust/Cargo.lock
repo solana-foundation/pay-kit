@@ -4271,7 +4271,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 [[package]]
 name = "litesvm"
 version = "0.13.1"
-source = "git+https://github.com/LiteSVM/litesvm.git?branch=master#297cf2c25265549737bdb075935efd3f062acd82"
+source = "git+https://github.com/LiteSVM/litesvm.git?rev=297cf2c25265549737bdb075935efd3f062acd82#297cf2c25265549737bdb075935efd3f062acd82"
 dependencies = [
  "agave-feature-set",
  "agave-precompiles",
@@ -4338,7 +4338,7 @@ dependencies = [
 [[package]]
 name = "litesvm-token"
 version = "0.13.1"
-source = "git+https://github.com/LiteSVM/litesvm.git?branch=master#297cf2c25265549737bdb075935efd3f062acd82"
+source = "git+https://github.com/LiteSVM/litesvm.git?rev=297cf2c25265549737bdb075935efd3f062acd82#297cf2c25265549737bdb075935efd3f062acd82"
 dependencies = [
  "litesvm",
  "smallvec",

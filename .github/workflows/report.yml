@@ -73,7 +73,7 @@ jobs:
             echo "Generating report from $COUNT surfpool instances..."
             mkdir -p rust/target
             ln -sfn "$PWD/surfpool-reports" rust/target/surfpool-reports
-            cd rust && cargo test --test charge_integration generate_report -- --nocapture 2>&1 || true
+            cd rust && cargo test --locked --test charge_integration generate_report -- --nocapture 2>&1 || true
             [ -f target/surfpool-report.html ] && cp target/surfpool-report.html ../surfpool-report.html
           fi
 
