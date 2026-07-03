@@ -1296,6 +1296,118 @@ t.test('SECURITY: result.consumed is not set when context.store is absent', func
   t.assert_equal(result.replay_key, nil)
 end)
 
+-- M1: the jsonParsed RPC path decodes `info.lamports` as a Lua NUMBER, not a
+-- string. Every fixture above passes lamports as a string, which masks the
+-- bug: on LuaJIT / Lua 5.1 a JSON number is a double, and a u64 lamports value
+-- >= 2^53 (a) is lossy and (b) serializes via tostring() as scientific
+-- notation ("9e+18"), so the old `uint.compare(info.lamports, ...)` raised
+-- "invalid unsigned integer" on a genuinely large payment (DoS), and a
+-- truncated-but-normalizable value could match the wrong amount. These tests
+-- pass lamports as a number to exercise the jsonParsed shape directly.
+
+t.test('M1: signature verifier matches SOL transfer when lamports is an integer NUMBER', function()
+  local result = verify.verify_signature(signature_context(), {
+    fetch_transaction = function()
+      return {
+        meta = { err = nil },
+        transaction = {
+          message = {
+            instructions = {
+              {
+                program = 'system',
+                parsed = {
+                  type = 'transfer',
+                  -- NUMBER, not string: the jsonParsed shape.
+                  info = { destination = 'recipient-1', lamports = 1000 },
+                },
+              },
+            },
+          },
+        },
+      }
+    end,
+  })
+  t.assert_equal(result.reference, 'sig-123')
+end)
+
+t.test('M1: lossy double lamports is rejected as no-match, not an uint crash', function()
+  -- Force a double that is out of the exact-integer range (|x| > 2^53). On
+  -- LuaJIT / Lua 5.1 this is exactly what the JSON parser produces for a large
+  -- u64; on Lua 5.3+ the float literal keeps the double type. Pre-fix this
+  -- raised "invalid unsigned integer: 9e+18" from uint.normalize; post-fix the
+  -- lossy candidate is skipped and the loop reports the canonical rejection.
+  local lossy_lamports = 2.0 ^ 63 -- 9223372036854775808.0, a double well past 2^53
+  local context = signature_context({
+    request = {
+      amount = '9223372036854775808',
+      currency = 'sol',
+      recipient = 'recipient-1',
+      methodDetails = {},
+    },
+    method_details = {},
+  })
+  t.assert_error(function()
+    verify.verify_signature(context, {
+      fetch_transaction = function()
+        return {
+          meta = { err = nil },
+          transaction = {
+            message = {
+              instructions = {
+                {
+                  program = 'system',
+                  parsed = {
+                    type = 'transfer',
+                    info = { destination = 'recipient-1', lamports = lossy_lamports },
+                  },
+                },
+              },
+            },
+          },
+        }
+      end,
+    })
+    -- The rejection must be the canonical no-match, NOT uint's
+    -- "invalid unsigned integer" crash.
+  end, 'no matching SOL transfer')
+end)
+
+t.test('M1: fractional double lamports never satisfies an integer amount', function()
+  -- A non-integral lamports value can never equal a whole-lamport charge; it
+  -- must be rejected as a no-match rather than truncated into a false match.
+  local context = signature_context({
+    request = {
+      amount = '1000',
+      currency = 'sol',
+      recipient = 'recipient-1',
+      methodDetails = {},
+    },
+    method_details = {},
+  })
+  t.assert_error(function()
+    verify.verify_signature(context, {
+      fetch_transaction = function()
+        return {
+          meta = { err = nil },
+          transaction = {
+            message = {
+              instructions = {
+                {
+                  program = 'system',
+                  parsed = {
+                    type = 'transfer',
+                    info = { destination = 'recipient-1', lamports = 1000.5 },
+                  },
+                },
+              },
+            },
+          },
+        }
+      end,
+    })
+  end, 'no matching SOL transfer')
+end)
+
 
 -- Audit #5: push mode (type=signature) is opt-in via the signature verifier
 -- factory. Default-off reduces a server's attack surface (spec §13.5
