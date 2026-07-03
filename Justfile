@@ -157,7 +157,8 @@ rs-fmt:
 
 # Lint Rust
 rs-lint:
-    cd rust && cargo clippy -- -D warnings
+    cd rust && cargo clippy --locked -p solana-pay-kit --all-targets --features server,mpp,x402,client,fetch -- -D warnings
+    cd rust && cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # ── Go ──
 # Recipes live in go/Justfile. The wrappers below delegate so the

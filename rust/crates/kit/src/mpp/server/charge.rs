@@ -3301,8 +3301,7 @@ mod tests {
         // Tx landed on-chain but the runtime rejected it. This is a real
         // transaction failure, not a timeout — surface the on-chain error.
         let err = interpret_post_timeout_status(Ok(Some(Err("InsufficientFundsForFee".into()))))
-            .err()
-            .expect("on-chain failure should be reported");
+            .expect_err("on-chain failure should be reported");
         let msg = format!("{err}");
         assert!(
             msg.contains("landed on-chain but failed"),
@@ -3318,9 +3317,8 @@ mod tests {
     fn interpret_post_timeout_status_not_found_returns_timeout() {
         // Final check confirms the tx is genuinely not on-chain — keep the
         // timeout error.
-        let err = interpret_post_timeout_status(Ok(None))
-            .err()
-            .expect("not-found should still error");
+        let err =
+            interpret_post_timeout_status(Ok(None)).expect_err("not-found should still error");
         let msg = format!("{err}");
         assert!(
             msg.contains("not confirmed within timeout"),
@@ -3336,8 +3334,7 @@ mod tests {
         // can't tell whether the tx landed, so we keep the timeout error
         // but include the RPC failure in the message for ops.
         let err = interpret_post_timeout_status(Err("connection refused".into()))
-            .err()
-            .expect("rpc failure should error");
+            .expect_err("rpc failure should error");
         let msg = format!("{err}");
         assert!(
             msg.contains("not confirmed within timeout"),
@@ -5101,8 +5098,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("per-call fee_payer without signer should be rejected");
+            .expect_err("per-call fee_payer without signer should be rejected");
         assert!(
             err.to_string().contains("no fee_payer_signer"),
             "got: {err}"
@@ -5283,8 +5279,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("invalid split recipient should be rejected");
+            .expect_err("invalid split recipient should be rejected");
         assert!(
             format!("{err}").contains("invalid recipient pubkey"),
             "got: {err}"
@@ -5302,8 +5297,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("zero split amount should be rejected");
+            .expect_err("zero split amount should be rejected");
         assert!(format!("{err}").contains("greater than zero"), "got: {err}");
     }
 
@@ -5319,8 +5313,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("duplicate split recipient should be rejected");
+            .expect_err("duplicate split recipient should be rejected");
         assert!(
             format!("{err}").contains("duplicate recipient"),
             "got: {err}"
@@ -5341,8 +5334,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("too many splits should be rejected");
+            .expect_err("too many splits should be rejected");
         assert!(matches!(err, Error::TooManySplits));
     }
 
@@ -5368,8 +5360,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .err()
-            .expect("should reject primary recipient with ataCreationRequired");
+            .expect_err("should reject primary recipient with ataCreationRequired");
         let msg = err.to_string();
         assert!(
             msg.contains("top-level recipient"),
@@ -6137,7 +6128,7 @@ mod tests {
             .verify_credential_with_expected(&cred, &expected)
             .await
             .unwrap_err();
-        let msg = format!("{}", err.message);
+        let msg = err.message.to_string();
         assert!(
             !msg.contains("recentBlockhash mismatch") && !msg.contains("recent_blockhash mismatch"),
             "comparison should not reject on blockhash, got: {err:?}"

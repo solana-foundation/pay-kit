@@ -248,6 +248,18 @@ jobs:
         working-directory: rust
         run: cargo fmt --check
 
+      # Deny-warnings clippy over all targets, on the same feature set the
+      # rest of CI builds and tests. --all-features is not usable here:
+      # litesvm-tests deliberately requires an undeclared dev-dependency
+      # (see the feature's comment in crates/kit/Cargo.toml), and the
+      # confidential/worker/otel stack is not clippy-clean yet — extend the
+      # feature list as those are cleaned up.
+      - name: Rust clippy (deny warnings)
+        working-directory: rust
+        run: |
+          cargo clippy --locked -p solana-pay-kit --all-targets --features server,mpp,x402,client,fetch -- -D warnings
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+
       - name: Upload Rust coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

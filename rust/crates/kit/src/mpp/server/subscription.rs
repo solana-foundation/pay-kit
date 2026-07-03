@@ -1153,9 +1153,12 @@ mod tests {
         assert!(server.subscription_challenge("").is_err());
     }
 
+    /// Labelled field mutations for the reject-each-field test.
+    type MutationCases<T> = Vec<(&'static str, Box<dyn Fn(&mut T)>)>;
+
     #[test]
     fn rejects_each_missing_required_field() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut SubscriptionConfig)>)> = vec![
+        let cases: MutationCases<SubscriptionConfig> = vec![
             ("mint", Box::new(|c| c.mint = String::new())),
             (
                 "token_program",

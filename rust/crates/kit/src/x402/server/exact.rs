@@ -290,9 +290,7 @@ impl X402 {
         if let Some(cached) = self.blockhash_cache.as_ref().and_then(|c| c.get()) {
             return Some(cached);
         }
-        if self.config.rpc_url.is_none() {
-            return None;
-        }
+        self.config.rpc_url.as_ref()?;
         let Ok((blockhash, last_valid_block_height)) = self
             .rpc
             .get_latest_blockhash_with_commitment(self.rpc.commitment())

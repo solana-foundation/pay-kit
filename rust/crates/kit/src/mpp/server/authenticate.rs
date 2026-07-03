@@ -808,9 +808,12 @@ mod tests {
         }
     }
 
+    /// Labelled field mutations for the reject-each-field tests.
+    type MutationCases<T> = Vec<(&'static str, Box<dyn Fn(&mut T)>)>;
+
     #[test]
     fn new_rejects_each_missing_or_invalid_field() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut AuthenticateConfig)>)> = vec![
+        let cases: MutationCases<AuthenticateConfig> = vec![
             ("domain", Box::new(|c| c.domain = String::new())),
             ("uri", Box::new(|c| c.uri = String::new())),
             ("plan_id", Box::new(|c| c.plan_id = String::new())),
@@ -957,7 +960,7 @@ mod tests {
     fn verify_rejects_each_echo_field_mismatch() {
         let now = PLAN_CREATED_AT + 60;
         let (server, credential) = valid_credential(now);
-        let cases: Vec<(&str, Box<dyn Fn(&mut AuthenticatePayload)>)> = vec![
+        let cases: MutationCases<AuthenticatePayload> = vec![
             ("domain", Box::new(|p| p.domain = "evil.com".into())),
             ("uri", Box::new(|p| p.uri = "https://evil.com".into())),
             ("version", Box::new(|p| p.version = "999".into())),
