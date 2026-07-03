@@ -149,6 +149,48 @@ jobs:
             python/src/pay_kit/protocols/mpp/server/html/
             typescript/packages/mpp/src/server/html-assets.gen.ts
 
+  # Codama regen-diff gate: re-render every payment-channels client (Rust,
+  # Go, TypeScript, Python) from the pinned IDL + pinned renderers and fail
+  # if the committed trees differ. Catches hand-edits to generated code and
+  # renderer/IDL drift that would silently desynchronize the SDKs' view of
+  # the on-chain program.
+  payment-channels-regen:
+    name: Payment-channels generated clients in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          package_json_file: skills/pay-sdk-implementation/codegen/package.json
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: taiki-e/install-action@c6d51ded7cde3c421f6cd6046cd601f2248f3710
+        with:
+          tool: just
+      # The TS recipe formats the rendered client with the repo prettier.
+      - name: Install typescript workspace deps
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Regenerate payment-channels clients from the pinned IDL
+        run: just payment-channels-sync
+      - name: Verify committed generated clients match the renderer output
+        run: |
+          TREES=(
+            idl/payment-channels.json
+            rust/crates/kit/src/generated/payment_channels/
+            typescript/packages/mpp/src/generated/payment-channels/
+            go/protocols/programs/paymentchannels/
+            python/src/solana_pay_kit/protocols/programs/paymentchannels/
+          )
+          if [ -n "$(git status --porcelain -- "${TREES[@]}")" ]; then
+            echo "::error::Generated payment-channels clients are out of date or hand-edited. Run 'just payment-channels-sync' and commit the results."
+            git status --porcelain -- "${TREES[@]}"
+            git diff --stat -- "${TREES[@]}"
+            exit 1
+          fi
+
   test-rust:
     name: Rust tests
     needs: build-html
