@@ -34,6 +34,12 @@ pub enum Error {
     #[error("Transaction signature already consumed")]
     SignatureConsumed,
 
+    #[error("Payment transaction is older than the allowed max_age: {0}")]
+    StaleTransaction(String),
+
+    #[error("Signature-mode payments require a route-bound memo/nonce: {0}")]
+    MissingSignatureBinding(String),
+
     #[error("Simulation failed: {0}")]
     SimulationFailed(String),
 

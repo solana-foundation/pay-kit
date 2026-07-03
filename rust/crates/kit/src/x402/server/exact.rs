@@ -8,6 +8,7 @@ use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use std::str::FromStr;
 
+use crate::core::store::{MemoryStore, Store};
 use crate::x402::server::CurrencyConfig;
 use crate::x402::{
     error::Error,
@@ -130,6 +131,12 @@ pub struct X402 {
     /// challenge issuance avoids a per-challenge RPC round-trip. `None` ⇒ fetch
     /// directly (prior behaviour).
     blockhash_cache: Option<crate::core::blockhash::BlockhashCache>,
+    /// Replay store for signature-mode (push) credentials. A confirmed
+    /// signature is consumed atomically the first time it settles a route, so
+    /// the same on-chain transfer cannot be replayed to serve unlimited
+    /// requests. Defaults to an in-process `MemoryStore`; production
+    /// deployments across processes should inject a shared store.
+    store: Arc<dyn Store>,
 }
 
 impl X402 {
@@ -158,6 +165,7 @@ impl X402 {
             )),
             config,
             blockhash_cache: None,
+            store: Arc::new(MemoryStore::new()),
         })
     }
 
@@ -166,6 +174,15 @@ impl X402 {
     /// fetch. Falls back to a direct fetch when the cache is empty or stale.
     pub fn with_blockhash_cache(mut self, cache: crate::core::blockhash::BlockhashCache) -> Self {
         self.blockhash_cache = Some(cache);
+        self
+    }
+
+    /// Inject a shared replay store for signature-mode credentials. Use this
+    /// in multi-process / multi-replica deployments so the consumed-signature
+    /// marker is visible across instances (the default `MemoryStore` is
+    /// per-process only).
+    pub fn with_store(mut self, store: Arc<dyn Store>) -> Self {
+        self.store = store;
         self
     }
 
@@ -791,11 +808,42 @@ impl X402 {
                 Ok(VerifiedExactPayment::Transaction(tx))
             }
             PaymentProof::Signature { signature } => {
+                // Signature (push) mode presents an already-confirmed on-chain
+                // transaction. Without extra binding, a single confirmed
+                // transfer of the right amount/mint/recipient could be replayed
+                // to satisfy unlimited requests (and every same-priced route)
+                // forever. Three guards close that:
+                //
+                //   1. Require a route-bound memo/nonce so the transfer is tied
+                //      to a specific challenge, not just an amount+recipient.
+                //   2. Enforce freshness against `max_age` using the tx
+                //      block_time, so stale transactions are rejected.
+                //   3. Atomically consume the signature so it settles at most
+                //      once.
+                require_signature_binding(requirements)?;
                 let tx = fetch_transaction(&self.rpc, &signature)?;
                 verify_transaction_details(&tx, requirements)?;
+                enforce_transaction_freshness(&tx, requirements)?;
+                self.consume_signature(&signature).await?;
                 Ok(VerifiedExactPayment::Signature(signature))
             }
         }
+    }
+
+    /// Atomically reserve a signature-mode settlement signature so the same
+    /// confirmed transaction cannot be replayed across requests. Returns
+    /// [`Error::SignatureConsumed`] if the signature was already consumed.
+    async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
+        let consumed_key = format!("solana-x402-exact:consumed:{signature}");
+        let inserted = self
+            .store
+            .put_if_absent(&consumed_key, serde_json::json!(true))
+            .await
+            .map_err(|e| Error::Other(format!("Store error: {e}")))?;
+        if !inserted {
+            return Err(Error::SignatureConsumed);
+        }
+        Ok(())
     }
 
     /// Tier-2 pinned-field check.
@@ -870,6 +918,57 @@ pub const LOCALNET_NETWORK: &str = "localnet";
 /// Returns `Ok(())` in every other case — a non-Surfpool blockhash is
 /// undetectable as wrong-cluster from the slug alone, so we let the
 /// downstream broadcast handle it.
+/// Signature-mode credentials MUST carry a route-bound memo/nonce
+/// (`extra.memo`). Without it, verification would accept any confirmed
+/// transfer of the right amount/mint/recipient, letting an attacker replay a
+/// single unrelated payment (or one from another same-priced route) to satisfy
+/// this route. The memo ties the on-chain transfer to a specific challenge;
+/// `verify_transaction_details` then enforces the tx actually carries it.
+fn require_signature_binding(requirements: &PaymentRequirements) -> Result<(), Error> {
+    let has_memo = requirements
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("memo"))
+        .and_then(|memo| memo.as_str())
+        .map(|memo| !memo.is_empty())
+        .unwrap_or(false);
+    if !has_memo {
+        return Err(Error::MissingSignatureBinding(
+            "route must set extra.memo so a push (signature) payment is bound to this challenge"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a signature-mode transaction whose on-chain `block_time` is older
+/// than the route's `max_age` (seconds). A missing `max_age` means no freshness
+/// bound is configured; a missing `block_time` (transaction not yet timestamped)
+/// is treated as unverifiable and rejected so a stale/pending tx cannot slip
+/// through.
+fn enforce_transaction_freshness(
+    tx: &solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta,
+    requirements: &PaymentRequirements,
+) -> Result<(), Error> {
+    let Some(max_age) = requirements.max_age else {
+        return Ok(());
+    };
+    let block_time = tx.block_time.ok_or_else(|| {
+        Error::StaleTransaction("transaction has no block_time; cannot verify freshness".into())
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let age = now.saturating_sub(block_time);
+    if age > max_age as i64 {
+        return Err(Error::StaleTransaction(format!(
+            "transaction is {age}s old but max_age is {max_age}s"
+        )));
+    }
+    Ok(())
+}
+
 pub fn check_network_blockhash(network: &str, blockhash_b58: &str) -> Result<(), Error> {
     if !blockhash_b58.starts_with(SURFPOOL_BLOCKHASH_PREFIX) {
         return Ok(());
@@ -1910,5 +2009,249 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("fee payer"));
+    }
+
+    // ── H3: signature-mode replay / freshness / binding ─────────────────────
+    //
+    // Signature (push) mode presents an already-confirmed on-chain
+    // transaction. These tests pin the three guards that stop a single
+    // confirmed transfer from being replayed forever: a route-bound memo, a
+    // freshness bound against max_age, and single-use consumption.
+
+    const H3_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const H3_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+    // A real, decodable base58 signature (64 bytes of 0x01). The mock RPC keys
+    // its canned getTransaction result on this string.
+    fn h3_signature() -> String {
+        bs58::encode([1u8; 64]).into_string()
+    }
+
+    /// Route requirements for signature mode. `with_memo`/`max_age` toggle the
+    /// binding + freshness guards under test. Currency is a real mint pubkey so
+    /// `verify_transaction_details` can match the on-chain transferChecked.
+    fn h3_requirements(with_memo: bool, max_age: Option<u64>) -> PaymentRequirements {
+        let extra = if with_memo {
+            Some(serde_json::json!({ "memo": "order-42" }))
+        } else {
+            None
+        };
+        PaymentRequirements {
+            network: SOLANA_DEVNET.to_string(),
+            cluster: Some("devnet".to_string()),
+            recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+            amount: "1000".to_string(),
+            currency: H3_MINT.to_string(),
+            decimals: Some(6),
+            token_program: Some(H3_TOKEN_PROGRAM.to_string()),
+            resource: "/fortune".to_string(),
+            description: Some("Fortune".to_string()),
+            max_age,
+            recent_blockhash: None,
+            fee_payer: None,
+            fee_payer_key: None,
+            extra,
+            accepted: None,
+            resource_info: None,
+        }
+    }
+
+    /// Build a JsonParsed getTransaction result carrying a transferChecked to
+    /// the derived recipient ATA plus the given memos, stamped with `block_time`.
+    fn h3_tx_result(
+        requirements: &PaymentRequirements,
+        memos: &[&str],
+        block_time: i64,
+    ) -> serde_json::Value {
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let recipient = Pubkey::from_str(&requirements.recipient).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let (destination, _) = crate::core::payment_channels::find_associated_token_address(
+            &recipient,
+            &mint,
+            &token_program,
+        );
+
+        let mut instructions = vec![serde_json::json!({
+            "program": "spl-token",
+            "programId": H3_TOKEN_PROGRAM,
+            "parsed": {
+                "type": "transferChecked",
+                "info": {
+                    "destination": destination.to_string(),
+                    "mint": requirements.currency,
+                    "tokenAmount": {
+                        "amount": requirements.amount,
+                        "decimals": requirements.decimals.unwrap_or(6),
+                    },
+                },
+            },
+            "stackHeight": null
+        })];
+        for memo in memos {
+            instructions.push(serde_json::json!({
+                "program": "spl-memo",
+                "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+                "parsed": memo,
+                "stackHeight": null
+            }));
+        }
+
+        serde_json::json!({
+            "slot": 1,
+            "blockTime": block_time,
+            "transaction": {
+                "signatures": ["sig"],
+                "message": {
+                    "accountKeys": [
+                        { "pubkey": H3_TOKEN_PROGRAM, "writable": false, "signer": false, "source": null },
+                        { "pubkey": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "writable": false, "signer": false, "source": null }
+                    ],
+                    "recentBlockhash": "blockhash",
+                    "instructions": instructions,
+                    "addressTableLookups": null
+                }
+            },
+            "meta": {
+                "err": null,
+                "status": { "Ok": null },
+                "fee": 5000,
+                "preBalances": [],
+                "postBalances": [],
+                "innerInstructions": [],
+                "logMessages": [],
+                "preTokenBalances": [],
+                "postTokenBalances": [],
+                "rewards": [],
+                "loadedAddresses": { "writable": [], "readonly": [] }
+            }
+        })
+    }
+
+    fn h3_signature_header(requirements: &PaymentRequirements, signature: &str) -> String {
+        let accepted = serde_json::to_value(requirements).unwrap();
+        let envelope = PaymentSignatureEnvelope {
+            scheme: Some(EXACT_SCHEME.to_string()),
+            network: Some(SOLANA_DEVNET.to_string()),
+            x402_version: X402_VERSION_V2,
+            accepted: Some(accepted),
+            resource: None,
+            payload: PaymentProof::Signature {
+                signature: signature.to_string(),
+            },
+            extensions: None,
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+    }
+
+    fn h3_x402(rpc_url: String) -> X402 {
+        let cfg = Config {
+            recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+            currencies: vec![CurrencyConfig {
+                currency: H3_MINT.to_string(),
+                decimals: 6,
+                token_program: Some(H3_TOKEN_PROGRAM.to_string()),
+            }],
+            network: "devnet".to_string(),
+            rpc_url: Some(rpc_url),
+            resource: "/fortune".to_string(),
+            description: Some("Fortune".to_string()),
+            max_age: Some(60),
+            fee_payer_key: None,
+        };
+        X402::new(cfg).unwrap()
+    }
+
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    #[tokio::test]
+    async fn signature_mode_rejects_missing_memo_binding() {
+        // No extra.memo on the route → signature mode must fail closed before
+        // any replay is possible. Pre-fix this returned Ok.
+        let x402 = h3_x402("http://127.0.0.1:1".to_string());
+        let requirements = h3_requirements(false, Some(60));
+        let sig = h3_signature();
+        let header = h3_signature_header(&requirements, &sig);
+        let err = x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::MissingSignatureBinding(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signature_mode_accepts_fresh_bound_then_rejects_replay() {
+        // First settlement of a memo-bound, fresh signature succeeds; the
+        // second (a replay of the same signature) is rejected. Pre-fix BOTH
+        // succeeded because there was no consumed-signature store.
+        let mock = MockRpc::start();
+        let requirements = h3_requirements(true, Some(600));
+        let sig = h3_signature();
+        mock.set_transaction(&sig, h3_tx_result(&requirements, &["order-42"], now_secs()));
+        let x402 = h3_x402(mock.url());
+        let header = h3_signature_header(&requirements, &sig);
+
+        x402.verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .expect("first settlement succeeds");
+
+        let err = x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signature_mode_rejects_stale_transaction() {
+        // A memo-bound transfer older than max_age must be rejected. Pre-fix
+        // this succeeded because block_time was never checked.
+        let mock = MockRpc::start();
+        let requirements = h3_requirements(true, Some(60));
+        let sig = h3_signature();
+        let stale = now_secs() - 3_600;
+        mock.set_transaction(&sig, h3_tx_result(&requirements, &["order-42"], stale));
+        let x402 = h3_x402(mock.url());
+        let header = h3_signature_header(&requirements, &sig);
+
+        let err = x402
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::StaleTransaction(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn signature_mode_consumed_store_is_shared_when_injected() {
+        // The injected store is what enforces single-use; two X402 instances
+        // sharing one store must not both settle the same signature.
+        let mock = MockRpc::start();
+        let requirements = h3_requirements(true, Some(600));
+        let sig = h3_signature();
+        mock.set_transaction(&sig, h3_tx_result(&requirements, &["order-42"], now_secs()));
+        let shared: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let a = h3_x402(mock.url()).with_store(shared.clone());
+        let b = h3_x402(mock.url()).with_store(shared.clone());
+        let header = h3_signature_header(&requirements, &sig);
+
+        a.verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .expect("first instance settles");
+        let err = b
+            .verify_payment_signature_for_requirements(&header, &requirements)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "got: {err:?}");
     }
 }
