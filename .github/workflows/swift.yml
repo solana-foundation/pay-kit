@@ -16,6 +16,10 @@ jobs:
         # The Swift package manifest lives at the repo root (so SPM can consume
         # this monorepo by URL); sources are under swift/.
         run: swift test --enable-code-coverage
+      - name: Enforce Swift coverage floor (>=80 ratchet)
+        # Swift previously had no floor; Sources coverage is ~89%, so 80% is a
+        # conservative ratchet. Raise it as coverage improves.
+        run: bash swift/scripts/check_coverage.sh 80
       - name: Upload Swift coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
