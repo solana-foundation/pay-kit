@@ -44,7 +44,7 @@ from solana_pay_kit._paycore.errors import (
     PaymentError,
     payment_required_response,
 )
-from solana_pay_kit._paycore.solana import MAX_SPLITS
+from solana_pay_kit._paycore.solana import MAX_SPLITS, resolve_mint
 from solana_pay_kit.protocols.mpp.core.expires import minutes
 from solana_pay_kit.protocols.mpp.core.headers import (
     PAYMENT_RECEIPT_HEADER,
@@ -71,6 +71,7 @@ from solana_pay_kit.protocols.mpp.server.session_onchain import (
     VerifyOpenTxExpected,
     confirm_transaction_signature,
     cosign_and_broadcast_open,
+    fetch_and_bind_channel_account,
     settle_and_finalize_channel,
     verify_open_tx,
 )
@@ -489,6 +490,21 @@ class Session:
             program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
         )
 
+    def _expected_mint(self) -> str:
+        """Resolve the SPL mint the session settles in from its challenge
+        currency / network, for binding a push open to the on-chain channel.
+
+        Raises when the currency does not resolve to an SPL mint (native SOL or
+        an unknown symbol), since a payment channel must be denominated in a
+        token."""
+        mint = resolve_mint(self._currency, self._network)
+        if not mint:
+            raise PaymentError(
+                f"payment-channel sessions require an SPL token, got currency {self._currency!r}",
+                code="invalid-config",
+            )
+        return mint
+
     async def _handle_open(self, payload: OpenPayload) -> str:
         """Process an open action: resolve the channel facts, enforce the deposit
         invariants, and insert the channel state atomically and idempotently.
@@ -593,18 +609,40 @@ class Session:
             if not payload.payer:
                 payload.payer = verified.payer
             payload.deposit = str(verified.deposit)
-        elif mode == "push" and self._signer is not None and self._rpc is not None and not payload.payer:
-            raise PaymentError(
-                "push open requires payer or transaction when settle-at-close is configured",
-                code="invalid-payload",
-            )
         elif mode == "push" and self._rpc is not None:
+            # No transaction attached, but a channelId + confirmation signature.
+            # SECURITY (H1): confirming that *some* signature succeeded proves
+            # nothing about the channel, so the client-supplied deposit / payer /
+            # authorizedSigner MUST NOT be trusted. Confirm the open signature,
+            # then read the authoritative on-chain Channel account and bind the
+            # persisted state to it — persisting the ON-CHAIN deposit, never the
+            # client's claim. Mirrors the Rust process_open fetch-and-bind path.
             await confirm_transaction_signature(self._rpc, payload.signature, "open")
-        # else: no transaction is attached. Reachable by a pull open (the channel
-        # id / token account and deposit are trusted as provided, mirroring the TS
-        # `else` branch) or by a push open with a channel id and no RPC (trusted
-        # as previously broadcast). The server-broadcast path is skipped even when
-        # openTxSubmitter=server is configured.
+            bound = await fetch_and_bind_channel_account(
+                self._rpc,
+                payload.session_id(),
+                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+                max_cap=self._core.config.max_cap,
+                expected_authorized_signer=payload.authorized_signer,
+                expected_payee=self._recipient,
+                expected_mint=self._expected_mint(),
+            )
+            payload.deposit = str(bound.deposit)
+            payload.payer = bound.payer
+        elif mode == "push":
+            # No transaction and no RPC: the channel cannot be bound to on-chain
+            # state, so the deposit and channel identity are unverifiable. Fail
+            # closed on any real network; only localnet (unit/dev) may skip the
+            # bind. Mirrors the Rust process_open `None => ...` arm.
+            if self._network != "localnet":
+                raise PaymentError(
+                    "payment-channel push open requires an rpc client to bind the on-chain channel off localnet",
+                    code="invalid-config",
+                )
+        # else: a pull open with no transaction — the channel id / token account
+        # and deposit are trusted as provided, mirroring the TS `else` branch.
+        # The server-broadcast path is skipped even when openTxSubmitter=server
+        # is configured.
 
         try:
             state = await self._core.process_open(payload)

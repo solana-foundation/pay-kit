@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pytest
 from solders.keypair import Keypair  # type: ignore[import-untyped]
+from solders.pubkey import Pubkey  # type: ignore[import-untyped]
 from solders.signature import Signature  # type: ignore[import-untyped]
 
 from solana_pay_kit._paycore.errors import PaymentError
@@ -46,6 +47,9 @@ from solana_pay_kit.signer import LocalSigner
 
 SESSION_METHOD_SECRET = "session-method-secret"
 SESSION_TEST_RECIPIENT = str(Keypair.from_seed(bytes([7] * 32)).pubkey())
+# The mint the default localnet USDC session binds a push open against
+# (resolve_mint("USDC", "localnet") falls back to the mainnet USDC mint).
+SESSION_TEST_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 
 class _TestVoucherSigner:
@@ -78,13 +82,79 @@ def _confirmed_signature(fill: int) -> str:
     return str(Signature.from_bytes(bytes([fill] * 64)))
 
 
+def _encode_channel_account(
+    *,
+    deposit: int,
+    payer: str,
+    payee: str,
+    authorized_signer: str,
+    mint: str,
+    status: int = 0,
+) -> tuple[bytes, str]:
+    """Build a Borsh-encoded on-chain ``Channel`` account (1-byte discriminator
+    + struct), mirroring the ``_fake_channel`` idiom in
+    ``test_pk_x402_upto_settle.py``. Returned as ``(raw_bytes, owner_base58)`` to
+    match ``SolanaRpc.get_account_info``."""
+    from solana_pay_kit._paycore.paymentchannels import PAYMENT_CHANNELS_PROGRAM_ID
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    body = Channel.layout.build(
+        {
+            "version": 1,
+            "bump": 255,
+            "status": status,
+            "salt": 0,
+            "deposit": deposit,
+            "settlement": {"settled": 0, "payoutWatermark": 0},
+            "closureStartedAt": 0,
+            "payerWithdrawnAt": 0,
+            "gracePeriod": 900,
+            "distributionHash": [0] * 32,
+            "payer": Pubkey.from_string(payer),
+            "payee": Pubkey.from_string(payee),
+            "authorizedSigner": Pubkey.from_string(authorized_signer),
+            "mint": Pubkey.from_string(mint),
+            "rentPayer": Pubkey.from_string(payee),
+        }
+    )
+    return bytes([7]) + bytes(body), PAYMENT_CHANNELS_PROGRAM_ID
+
+
 class _FakeRpc:
     """Minimal RPC double: ``get_signature_statuses`` (any signature not seeded
-    is confirmed) and ``get_latest_blockhash``. Mirrors ``testutil.FakeRPC``."""
+    is confirmed), ``get_latest_blockhash``, and ``get_account_info`` serving
+    channel accounts seeded via ``seed_channel``. Mirrors ``testutil.FakeRPC``."""
 
     def __init__(self, blockhash: str = "FakeBlockhash1111111111111111111111111111111") -> None:
         self.statuses: dict[str, dict | None] = {}
         self.blockhash = blockhash
+        # channel_id (base58) -> (raw_bytes, owner) served by get_account_info.
+        self.accounts: dict[str, tuple[bytes, str] | None] = {}
+
+    def seed_channel(
+        self,
+        channel_id: str,
+        *,
+        deposit: int,
+        payer: str,
+        payee: str,
+        authorized_signer: str,
+        mint: str,
+        status: int = 0,
+    ) -> None:
+        """Register a well-formed on-chain channel account for ``channel_id`` so
+        the push-open fetch-and-bind path can read authoritative program state."""
+        self.accounts[channel_id] = _encode_channel_account(
+            deposit=deposit,
+            payer=payer,
+            payee=payee,
+            authorized_signer=authorized_signer,
+            mint=mint,
+            status=status,
+        )
+
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        return self.accounts.get(address)
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         out: list[dict | None] = []
@@ -444,7 +514,10 @@ async def test_session_open_replay_semantics() -> None:
 
 
 async def test_session_open_verifies_signature_on_chain() -> None:
-    """Mirrors TestSessionOpenVerifiesSignatureOnChain."""
+    """Mirrors TestSessionOpenVerifiesSignatureOnChain.
+
+    With an RPC configured, a channelId + signature push open is confirmed
+    on-chain and then bound to the fetched Channel account (H1)."""
     fake = _FakeRpc()
     ok_sig = _confirmed_signature(0x11)
     ghost_sig = _confirmed_signature(0x22)
@@ -456,8 +529,19 @@ async def test_session_open_verifies_signature_on_chain() -> None:
     signer = _TestVoucherSigner(1)
 
     channel_id = _new_wallet()
+    payer = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=payer,
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
     receipt = await _open_session_channel(session, channel_id, 1_000, signer.address(), ok_sig)
     assert receipt.reference == ok_sig
+    state = await _get_channel(session, channel_id)
+    assert state is not None and state.deposit == 1_000 and state.operator == payer
 
     ghost_channel = _new_wallet()
     ghost = OpenPayload.push(ghost_channel, "1000", signer.address(), ghost_sig)
@@ -634,6 +718,14 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
     session = _new_test_session(rpc=fake)
     signer = _TestVoucherSigner(1)
     channel_id = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
     await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
 
     receipt = await _verify_session_action(
@@ -786,45 +878,168 @@ async def test_session_idle_close_flips_state_without_signer_or_rpc() -> None:
 # ── method-layer open guards ──
 
 
-async def test_session_push_open_requires_payer_or_transaction_for_settlement() -> None:
+async def test_session_push_open_binds_payer_from_on_chain_channel() -> None:
+    """H1: a channelId + signature push open binds the channel operator (payer)
+    from the on-chain Channel account, not from the client payload. The channel
+    is settle-able at close because the on-chain payer is recorded even when the
+    client supplies no payer field."""
     operator = Keypair.from_seed(bytes([44] * 32))
+    fake = _FakeRpc()
     session = _new_test_session(
         operator=str(operator.pubkey()),
         recipient=SESSION_TEST_RECIPIENT,
         signer=LocalSigner.from_keypair(operator),
-        rpc=_FakeRpc(),
+        rpc=fake,
     )
     channel_id = _new_wallet()
     signer = _TestVoucherSigner(0x30)
+    on_chain_payer = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=on_chain_payer,
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
 
-    with pytest.raises(PaymentError, match="requires payer or transaction"):
-        await _verify_session_action(
-            session,
-            SessionAction.open_action(
-                OpenPayload.push(channel_id, "1000", signer.address(), _confirmed_signature(0x31))
-            ),
-        )
-
-    payer = _new_wallet()
+    # The client supplies no payer; the operator is bound from the on-chain
+    # channel account.
     await _verify_session_action(
         session,
-        SessionAction.open_action(
-            OpenPayload.payment_channel(
-                channel_id,
-                "1000",
-                payer,
-                SESSION_TEST_RECIPIENT,
-                "USDC",
-                1,
-                900,
-                signer.address(),
-                _confirmed_signature(0x32),
-            )
-        ),
+        SessionAction.open_action(OpenPayload.push(channel_id, "1000", signer.address(), _confirmed_signature(0x31))),
     )
     state = await _get_channel(session, channel_id)
     assert state is not None
-    assert state.operator == payer
+    assert state.operator == on_chain_payer
+
+
+# ── H1: push-open on-chain deposit binding ──
+
+
+async def test_session_push_open_binds_on_chain_deposit_not_client_claim() -> None:
+    """H1: a client that claims an inflated deposit against a confirmed
+    signature must NOT be trusted. The persisted deposit is the on-chain
+    channel's deposit, never the (larger) client-claimed amount, so the client
+    cannot draw vouchers against a phantom balance."""
+    fake = _FakeRpc()
+    session = _new_test_session(rpc=fake)  # cap = 5_000_000
+    signer = _TestVoucherSigner(0x41)
+    channel_id = _new_wallet()
+    # On-chain deposit is 1_000; the client lies and claims 4_000_000.
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+
+    await _open_session_channel(session, channel_id, 4_000_000, signer.address(), _confirmed_signature(0x42))
+    state = await _get_channel(session, channel_id)
+    assert state is not None
+    assert state.deposit == 1_000  # bound to on-chain, not the 4_000_000 claim
+
+
+async def test_session_push_open_no_rpc_off_localnet_fails_closed() -> None:
+    """H1: a push open that cannot be bound to on-chain state (no RPC) must fail
+    closed on any real network; only localnet may skip the bind."""
+    signer = _TestVoucherSigner(0x43)
+    channel_id = _new_wallet()
+
+    devnet_session = _new_test_session(network="devnet", rpc=None)
+    with pytest.raises(PaymentError, match="requires an rpc client to bind"):
+        await _open_session_channel(devnet_session, channel_id, 1_000, signer.address(), "sig")
+
+    mainnet_session = _new_test_session(network="mainnet", rpc=None)
+    with pytest.raises(PaymentError, match="requires an rpc client to bind"):
+        await _open_session_channel(mainnet_session, channel_id, 1_000, signer.address(), "sig")
+
+    # Localnet with no RPC still trusts the channel id / deposit (unit/dev).
+    localnet_session = _new_test_session(network="localnet", rpc=None)
+    await _open_session_channel(localnet_session, channel_id, 1_000, signer.address(), "sig")
+    state = await _get_channel(localnet_session, channel_id)
+    assert state is not None and state.deposit == 1_000
+
+
+async def test_session_push_open_rejects_on_chain_field_mismatch() -> None:
+    """H1: the fetched channel must actually be the one opened for this
+    challenge. A channel whose on-chain authorizedSigner / payee / mint / status
+    does not match the challenge is rejected, and no state is persisted."""
+    signer = _TestVoucherSigner(0x44)
+
+    # authorizedSigner mismatch: the on-chain channel authorizes a different key.
+    fake = _FakeRpc()
+    session = _new_test_session(rpc=fake)
+    chan_signer = _new_wallet()
+    other_signer = _TestVoucherSigner(0x45)
+    fake.seed_channel(
+        chan_signer,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=other_signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    with pytest.raises(PaymentError, match="authorized_signer"):
+        await _open_session_channel(session, chan_signer, 1_000, signer.address(), _confirmed_signature(0x46))
+    assert await _get_channel(session, chan_signer) is None
+
+    # payee mismatch: the on-chain channel pays a different recipient.
+    chan_payee = _new_wallet()
+    fake.seed_channel(
+        chan_payee,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=_new_wallet(),
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    with pytest.raises(PaymentError, match="payee"):
+        await _open_session_channel(session, chan_payee, 1_000, signer.address(), _confirmed_signature(0x47))
+    assert await _get_channel(session, chan_payee) is None
+
+    # non-open status: the on-chain channel is closed/closing.
+    chan_closed = _new_wallet()
+    fake.seed_channel(
+        chan_closed,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+        status=1,
+    )
+    with pytest.raises(PaymentError, match="not open on-chain"):
+        await _open_session_channel(session, chan_closed, 1_000, signer.address(), _confirmed_signature(0x48))
+    assert await _get_channel(session, chan_closed) is None
+
+    # missing account: the channel does not exist on-chain.
+    chan_missing = _new_wallet()
+    with pytest.raises(PaymentError, match="not found"):
+        await _open_session_channel(session, chan_missing, 1_000, signer.address(), _confirmed_signature(0x49))
+    assert await _get_channel(session, chan_missing) is None
+
+
+async def test_session_push_open_rejects_on_chain_deposit_over_cap() -> None:
+    """H1: an on-chain channel whose deposit exceeds the server's max cap is
+    rejected, so a channel funded beyond the session cap cannot be adopted."""
+    fake = _FakeRpc()
+    session = _new_test_session(cap=1_000, rpc=fake)
+    signer = _TestVoucherSigner(0x4A)
+    channel_id = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=5_000,  # over the 1_000 cap
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    with pytest.raises(PaymentError, match="exceeds max cap"):
+        await _open_session_channel(session, channel_id, 1_000, signer.address(), _confirmed_signature(0x4B))
+    assert await _get_channel(session, channel_id) is None
 
 
 async def test_session_open_pull_without_strategy_rejected_at_method_layer() -> None:
