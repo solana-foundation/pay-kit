@@ -1832,6 +1832,49 @@ test('signature: rejects a SOL transfer whose lamports exceed the safe-integer r
     ).rejects.toThrow(/No system transfer/);
 });
 
+// ── Policy parity: pre-broadcast (pull) vs on-chain (push) (L5) ──
+// The pull path (verifyChargeTransaction, pre-broadcast) and the push path
+// (verifyInstructions, on-chain) are two encodings of the same charge policy
+// over two different transaction representations. They can drift. Pin their
+// agreement: the same tampered payment must be rejected by BOTH.
+
+test('pull and push charge paths reject the same tampered payments', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const rejectsBoth = async (destination: string, paidLamports: number, claimedAmount: string) => {
+        // Pull path: the server would broadcast, so verifyChargeTransaction runs
+        // first and must reject before any broadcast.
+        mockServerBroadcastFetch(solTransferTx(destination, paidLamports));
+        await expect(
+            method.verify({
+                credential: transactionCredential(await buildSolPaymentTxBase64(destination, paidLamports), {
+                    amount: claimedAmount,
+                }),
+                request: {} as any,
+            }),
+        ).rejects.toThrow();
+
+        // Push path: the same tampered transfer, verified on-chain.
+        globalThis.fetch = async () => rpcSuccess(solTransferTx(destination, paidLamports));
+        await expect(
+            method.verify({
+                credential: signatureCredential(SIGNATURE, { amount: claimedAmount }),
+                request: {} as any,
+            }),
+        ).rejects.toThrow();
+    };
+
+    // Underpayment: pay less than the challenge amount.
+    await rejectsBoth(RECIPIENT, 500_000, '1000000');
+    // Wrong recipient: pay a different destination than the challenge recipient.
+    await rejectsBoth(PLATFORM, 1_000_000, '1000000');
+});
+
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
     const method = charge({
         recipient: RECIPIENT,
