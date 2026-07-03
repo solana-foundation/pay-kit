@@ -1801,6 +1801,37 @@ test('pull: concurrent requests with the same transaction settle at most once', 
     expect(rejectedConsumed).toHaveLength(7);
 });
 
+// ── Lamports precision (M1) ──
+// jsonParsed returns SOL `lamports` as a JS number. Above the safe-integer range
+// the value is already lossy, so the verifier must fail closed rather than match
+// a lossy `String(number)` against the expected amount.
+
+test('signature: rejects a SOL transfer whose lamports exceed the safe-integer range', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    // 2^53: not a safe integer, so it cannot be trusted as an exact base-unit
+    // amount. String(2^53) === expected would have matched under the old code.
+    const UNSAFE = 9_007_199_254_740_992;
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                { program: 'system', parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: UNSAFE } } },
+            ]),
+        );
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: String(UNSAFE) }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No system transfer/);
+});
+
 test('pull: accepts native SOL externalId memo pre-broadcast and on-chain', async () => {
     const method = charge({
         recipient: RECIPIENT,

@@ -135,8 +135,7 @@ export function charge(parameters: charge.Parameters) {
                   content: PAYMENT_UI_JS as string,
                   formatAmount: (request: { amount: string; currency: string }) => {
                       const dec = decimals ?? (request.currency.toLowerCase() === 'sol' ? 9 : 6);
-                      const raw = Number(request.amount) / 10 ** dec;
-                      const display = raw % 1 === 0 ? raw.toString() : raw.toFixed(Math.min(dec, 2));
+                      const display = formatBaseUnitsForDisplay(request.amount, dec);
                       if (request.currency.toLowerCase() === 'sol') return `${display} SOL`;
                       const sym = stablecoinSymbolForCurrency(request.currency);
                       if (sym) return `$${display}`;
@@ -1043,17 +1042,52 @@ function verifySolTransfer(
     expectedAmount: string,
     matchedInstructionIndexes: Set<number>,
 ) {
+    const expected = BigInt(expectedAmount);
     for (const [index, ix] of instructions.entries()) {
         if (matchedInstructionIndexes.has(index)) continue;
         if (typeof ix.parsed !== 'object' || ix.parsed?.type !== 'transfer' || ix.program !== 'system') continue;
         const info = ix.parsed.info as { destination?: string; lamports?: number | string };
-        if (info.destination === recipientAddress && String(info.lamports) === expectedAmount) {
+        // Compare in base units as bigint. jsonParsed returns `lamports` as a JS
+        // number, which is imprecise above 2^53 (~9007 SOL): `String(number)`
+        // would then yield a wrong decimal and mismatch a genuinely-correct large
+        // transfer (the SPL path is safe because the RPC returns amounts as
+        // strings). Reject a numeric lamports that is not an exact integer rather
+        // than trust a lossy value.
+        if (info.destination === recipientAddress && exactLamports(info.lamports) === expected) {
             matchedInstructionIndexes.add(index);
             return;
         }
     }
 
     throw new Error(`No system transfer instruction found for recipient ${recipientAddress}`);
+}
+
+/**
+ * Parse a jsonParsed `lamports` value (string or number) to an exact bigint, or
+ * `null` if it is a number that has already lost precision (not a safe integer).
+ */
+function exactLamports(lamports: number | string | undefined): bigint | null {
+    if (typeof lamports === 'string') return BigInt(lamports);
+    if (typeof lamports === 'number' && Number.isSafeInteger(lamports)) return BigInt(lamports);
+    return null;
+}
+
+/**
+ * Format a base-unit amount string for the interactive payment page. Uses bigint
+ * so amounts above 2^53 are not lossy the way `Number(amount) / 10 ** dec` is.
+ * Display only (settlement uses the exact string amount); the fractional part is
+ * shown to at most two digits, truncated rather than rounded so it never
+ * overstates.
+ */
+function formatBaseUnitsForDisplay(amount: string, dec: number): string {
+    const value = BigInt(amount);
+    const base = 10n ** BigInt(dec);
+    const whole = (value / base).toString();
+    const frac = value % base;
+    const places = Math.min(dec, 2);
+    if (frac === 0n || places === 0) return whole;
+    const fracDigits = frac.toString().padStart(dec, '0').slice(0, places);
+    return `${whole}.${fracDigits}`;
 }
 
 function verifyMemoInstructionsPreBroadcast(
