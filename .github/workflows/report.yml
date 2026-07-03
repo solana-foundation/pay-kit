@@ -77,11 +77,15 @@ jobs:
             [ -f target/surfpool-report.html ] && cp target/surfpool-report.html ../surfpool-report.html
           fi
 
-      # Fetch the reusable action
+      # Fetch the reusable test-report action, pinned to an immutable commit
+      # (feat/sdk-report head; the earlier feat/sdk branch no longer exists).
+      # This workflow runs with elevated permissions on workflow_run, so the
+      # third-party action it executes must not be a mutable ref an upstream
+      # push could silently swap. Bump the SHA deliberately to take updates.
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: solana-foundation/surfpool
-          ref: feat/sdk
+          ref: e0204c21c59e225fab81075a91ffc8d9c0b20d02 # feat/sdk-report
           sparse-checkout: .github/actions
           path: _surfpool
 
