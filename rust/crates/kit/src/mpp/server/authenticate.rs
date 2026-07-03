@@ -278,7 +278,10 @@ impl AuthenticateServer {
             credential.challenge.digest.as_deref(),
             credential.challenge.opaque.as_ref().map(|o| o.raw()),
         );
-        if credential.challenge.id != expected_id {
+        if !crate::mpp::protocol::core::challenge::constant_time_eq(
+            &credential.challenge.id,
+            &expected_id,
+        ) {
             return Err(VerifyError::ChallengeIdMismatch);
         }
 
