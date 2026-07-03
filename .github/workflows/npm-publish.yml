@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: 'Package to publish'
+        # @solana/pay-kit is the go-forward package. @solana/mpp is deprecated
+        # and retained here only for its final release; do not publish it after
+        # that.
+        description: 'Package to publish (mpp is deprecated, final release only)'
         required: true
         default: pay-kit
         type: choice
@@ -38,8 +41,11 @@ jobs:
     uses: ./.github/workflows/ci.yml
     secrets: inherit
 
+  # Deprecated: @solana/mpp is superseded by @solana/pay-kit. This job is kept
+  # only to cut the final @solana/mpp release (which carries the #211 TOCTOU
+  # fix); remove it once that release is out and `npm deprecate` has run.
   publish:
-    name: Publish @solana/mpp
+    name: Publish @solana/mpp (deprecated)
     runs-on: ubuntu-latest
     needs: [ci]
     if: ${{ github.event.inputs.package == 'mpp' || github.event.inputs.package == 'all' }}
@@ -104,7 +110,8 @@ jobs:
       - name: Pack tarball
         run: |
           mkdir -p .npm-pack
-          cp README.md typescript/packages/mpp/README.md
+          # @solana/mpp is deprecated in favor of @solana/pay-kit, so ship the
+          # package's own deprecation README rather than the root pay-kit one.
           pnpm --dir typescript/packages/mpp pack --pack-destination "$(pwd)/.npm-pack"
           TARBALL=$(find .npm-pack -maxdepth 1 -name '*.tgz' -print -quit)
 
@@ -118,7 +125,6 @@ jobs:
           echo ""
           echo "Packed tarball:"
           ls -la .npm-pack/
-          rm -f typescript/packages/mpp/README.md
 
       - name: "Guard - Fail if tarball contains workspace: protocol"
         run: |
