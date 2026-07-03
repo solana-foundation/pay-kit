@@ -5,8 +5,12 @@ on:
     workflows: [CI]
     types: [completed]
 
+# This job runs in the privileged `workflow_run` context and consumes artifacts
+# produced by the (possibly fork-PR) CI run, so it holds the minimum scope it
+# needs: read the repo and the run's artifacts, and comment on the PR. It does
+# NOT push, tag, or otherwise mutate repo contents, so `contents` is read-only.
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   actions: read
 
@@ -53,7 +57,7 @@ jobs:
         continue-on-error: true
 
       # Generate merged Surfpool report
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - uses: actions/cache@v5
         with:
           path: |

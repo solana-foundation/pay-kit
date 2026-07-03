@@ -25,7 +25,7 @@ runs:
     # warmed cargo cache so the dependency tree is already compiled. (macOS legs
     # miss this cache — different runner.os — and compile Rust themselves, as
     # they do today.)
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
     - name: Restore shared cargo cache
       uses: actions/cache@v5
       with:

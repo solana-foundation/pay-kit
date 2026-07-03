@@ -43,6 +43,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ci]
     if: ${{ github.event.inputs.package == 'mpp' || github.event.inputs.package == 'all' }}
+    # Protected environment gate (add required reviewers in repo settings),
+    # mirroring the pypi-publish job. Publishing uses npm OIDC trusted
+    # publishing: id-token:write below plus NPM_CONFIG_PROVENANCE authenticates
+    # via the OIDC exchange, so no NPM_TOKEN is stored. This requires a trusted
+    # publisher configured for @solana/mpp on npmjs.org and npm CLI >= 11.5.
+    environment: npm
     env:
       NPM_CONFIG_PROVENANCE: true
 
@@ -260,6 +266,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ci]
     if: ${{ github.event.inputs.package == 'pay-kit' || github.event.inputs.package == 'all' }}
+    # Protected environment gate + npm OIDC trusted publishing (see the mpp
+    # publish job). Requires a trusted publisher for @solana/pay-kit on npmjs.org.
+    environment: npm
     env:
       NPM_CONFIG_PROVENANCE: true
 
