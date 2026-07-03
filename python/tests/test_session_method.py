@@ -178,6 +178,8 @@ class _FakeRpc:
 
 
 def _new_test_session(**overrides) -> Session:
+    from solana_pay_kit.protocols.mpp.server.session_store import MemoryChannelStore
+
     options = SessionOptions(
         operator=SESSION_TEST_RECIPIENT,
         recipient=SESSION_TEST_RECIPIENT,
@@ -187,6 +189,9 @@ def _new_test_session(**overrides) -> Session:
         network="localnet",
         secret_key=SESSION_METHOD_SECRET,
         realm="api.test",
+        # Off-localnet override tests need an explicit store to satisfy the H3
+        # shared-store guard; a fresh in-memory one is fine for unit tests.
+        store=MemoryChannelStore(),
     )
     for key, value in overrides.items():
         setattr(options, key, value)
@@ -281,6 +286,20 @@ def test_new_session_validation_missing_secret(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("MPP_SECRET_KEY", raising=False)
     with pytest.raises(PaymentError, match="missing secret key"):
         new_session(SessionOptions(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=""))
+
+
+def test_new_session_requires_store_off_localnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3: off localnet the default in-memory channel store is unsafe (voucher
+    watermark lost across replicas/restarts), so new_session refuses it unless a
+    store is provided or the single-process opt-out is set."""
+    monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
+    off_localnet = dict(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=SESSION_METHOD_SECRET, network="devnet")
+    with pytest.raises(PaymentError, match="shared channel store is required"):
+        new_session(SessionOptions(**off_localnet))
+
+    monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
+    session = new_session(SessionOptions(**off_localnet))
+    assert session._network == "devnet"
 
 
 # ── new_session defaults (TestNewSessionDefaults) ──

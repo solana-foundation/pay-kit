@@ -939,6 +939,23 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
+    # H3: the default in-memory channel store is process-local, so a second
+    # replica or a restart drops the voucher watermark and would accept a replayed
+    # voucher. Off localnet, require an explicit shared store unless the operator
+    # opts into single-process scope (mirrors the charge/pay-kit replay-store guard
+    # and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE).
+    if options.store is None and network != "localnet":
+        import os
+
+        if os.environ.get("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE") != "1":
+            raise PaymentError(
+                "a shared channel store is required outside localnet: the default in-memory store "
+                "is process-local, so a second replica or a restart would drop the voucher watermark "
+                "and accept a replayed voucher. Provide options.store, or set "
+                "PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process scope.",
+                code="invalid-config",
+            )
+
     store = options.store if options.store is not None else MemoryChannelStore()
 
     config = SessionConfig(
