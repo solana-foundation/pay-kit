@@ -905,11 +905,18 @@ impl X402BatchSettlement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::x402::client::batch_settlement::sign_voucher;
+    use crate::generated::payment_channels::generated::types::SettlementWatermarks;
+    use crate::x402::client::batch_settlement::{build_deposit, encode_batch_header, sign_voucher};
+    use crate::x402::server::mock_rpc::MockRpc;
     use ed25519_dalek::SigningKey;
     use solana_keychain::memory::MemorySigner;
 
     const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01
+
+    /// The payment-channels program id (owner of a channel account).
+    fn program_id_b58() -> String {
+        pc::pubkey_string(&pc::default_program_id())
+    }
 
     fn memory_signer(seed: u8) -> MemorySigner {
         let sk = SigningKey::from_bytes(&[seed; 32]);
@@ -923,6 +930,61 @@ mod tests {
             Arc::new(memory_signer(1)),
         );
         X402BatchSettlement::with_store(config, store).unwrap()
+    }
+
+    /// A handler whose RPC points at the mock and whose operator/recipient are
+    /// the given signers. The recipient (channel payee) is a fresh key so the
+    /// deposit derives a stable PDA. `splits` are the merchant distribution
+    /// splits committed at open.
+    fn handler_with_rpc(
+        rpc_url: String,
+        operator: Arc<dyn SolanaSigner>,
+        recipient: &Pubkey,
+        store: Arc<dyn ChannelStore>,
+        splits: Vec<(String, u16)>,
+    ) -> X402BatchSettlement {
+        let mut config = BatchConfig::new(pc::pubkey_string(recipient), "devnet", operator);
+        config.rpc_url = Some(rpc_url);
+        config.splits = splits;
+        X402BatchSettlement::with_store(config, store).unwrap()
+    }
+
+    /// A borsh-serialized on-chain `Channel` account for the mock to return.
+    /// Every economically-relevant field is a parameter so a test can flip one
+    /// to exercise a specific bind-time mismatch branch.
+    #[allow(clippy::too_many_arguments)]
+    fn channel_bytes(
+        status: u8,
+        deposit: u64,
+        grace_period: u32,
+        payer: &Pubkey,
+        payee: &Pubkey,
+        authorized_signer: &Pubkey,
+        mint: &Pubkey,
+        distribution_hash: [u8; 32],
+    ) -> Vec<u8> {
+        let channel = Channel {
+            discriminator: 0,
+            version: 1,
+            bump: 255,
+            status,
+            salt: 7,
+            deposit,
+            settlement: SettlementWatermarks {
+                settled: 0,
+                payout_watermark: 0,
+            },
+            closure_started_at: 0,
+            payer_withdrawn_at: 0,
+            grace_period,
+            distribution_hash,
+            payer: pc::to_address(payer),
+            payee: pc::to_address(payee),
+            authorized_signer: pc::to_address(authorized_signer),
+            mint: pc::to_address(mint),
+            rent_payer: pc::to_address(&Pubkey::new_unique()),
+        };
+        borsh::to_vec(&channel).unwrap()
     }
 
     fn seeded_state(channel_id: &str, authorized_signer: &str, cumulative: u64) -> ChannelState {
@@ -1089,5 +1151,716 @@ mod tests {
         let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
         assert!(state.close_requested_at.is_none());
         assert!(!state.finalized);
+    }
+
+    // ── Deposit (open broadcast + on-chain bind) against a mock JSON-RPC ─────
+    //
+    // `process_deposit` is the module's biggest RPC-touching path: it broadcasts
+    // the client-signed open, confirms it, reads the channel back, and binds
+    // every economically-relevant field. These tests point the handler's RPC at
+    // the in-process mock and drive the whole path through a real client-built
+    // deposit payload, then flip individual on-chain fields to exercise each
+    // bind-time mismatch branch.
+
+    /// End-to-end deposit fixture: a mock RPC, a client-built deposit header,
+    /// and the derived channel PDA. `first_charge` seeds the first voucher.
+    struct DepositFixture {
+        mock: MockRpc,
+        handler: X402BatchSettlement,
+        header: String,
+        channel_id: Pubkey,
+        payer: Pubkey,
+        recipient: Pubkey,
+        mint: Pubkey,
+        amount: String,
+    }
+
+    async fn deposit_fixture(deposit: u64, first_charge: u64) -> DepositFixture {
+        let mock = MockRpc::start();
+        let operator = memory_signer(20);
+        let payer_signer = memory_signer(21);
+        let recipient = Pubkey::new_unique();
+        let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
+        let handler = handler_with_rpc(mock.url(), Arc::new(operator), &recipient, store, vec![]);
+
+        let amount = "0.10".to_string();
+        // Build the requirement the server advertises, stamp a blockhash the
+        // client needs to sign the open, then let the client build the deposit.
+        let mut requirements = handler.requirements(&amount).unwrap();
+        requirements.extra.recent_blockhash = Some("11111111111111111111111111111111".to_string());
+        let (channel_id, payload) = build_deposit(
+            &payer_signer,
+            &requirements,
+            deposit,
+            first_charge,
+            FAR_FUTURE,
+        )
+        .await
+        .unwrap();
+        let header = encode_batch_header(&requirements, payload).unwrap();
+
+        let mint = handler.mint().unwrap();
+        DepositFixture {
+            mock,
+            handler,
+            header,
+            channel_id,
+            payer: payer_signer.pubkey(),
+            recipient,
+            mint,
+            amount,
+        }
+    }
+
+    /// Bind an on-chain channel account matching the fixture's expectations.
+    fn bind_matching_channel(f: &DepositFixture, deposit: u64) {
+        let dist_hash = pc::distribution_hash(&[]);
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                deposit,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &f.recipient,
+                &f.payer, // authorized_signer == payer in batch mode
+                &f.mint,
+                dist_hash,
+            ),
+            &program_id_b58(),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_opens_channel_and_accepts_first_voucher() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        bind_matching_channel(&f, 1_000_000);
+
+        let outcome = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap();
+        assert!(outcome.serve, "a paid deposit must be served");
+        assert!(outcome.response.success);
+        assert_eq!(
+            outcome.response.payer.as_deref(),
+            Some(pc::pubkey_string(&f.payer).as_str())
+        );
+        // The first voucher (100_000) was accepted off-chain.
+        assert_eq!(outcome.response.charged_amount.as_deref(), Some("100000"));
+        assert_eq!(outcome.response.amount, "1000000");
+        // Channel state persisted with the confirmed deposit.
+        let state = f
+            .handler
+            .store
+            .get_channel(&pc::pubkey_string(&f.channel_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.deposit, 1_000_000);
+        assert_eq!(state.cumulative, 100_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_without_first_voucher_opens_channel() {
+        let f = deposit_fixture(1_000_000, 0).await;
+        bind_matching_channel(&f, 1_000_000);
+        let outcome = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap();
+        assert!(outcome.serve);
+        // No first voucher → charged_amount is None.
+        assert!(outcome.response.charged_amount.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_channel_not_open_after_broadcast() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        // status != Open (1 = Closing, say) → "channel is not open".
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                1,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &f.recipient,
+                &f.payer,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not open"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_mint_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &f.recipient,
+                &f.payer,
+                &Pubkey::new_unique(), // wrong mint
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::MintMismatch { .. }), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_payee_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &Pubkey::new_unique(), // wrong payee
+                &f.payer,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::RecipientMismatch { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_authorized_signer_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &f.recipient,
+                &Pubkey::new_unique(), // wrong authorized_signer
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("authorized_signer mismatch"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_payer_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &Pubkey::new_unique(), // wrong payer
+                &f.recipient,
+                &f.payer,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("payer mismatch"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_deposit_below_per_request() {
+        // per_request for "0.10" @ 6 decimals = 100_000; deposit below it.
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        bind_matching_channel(&f, 1); // on-chain deposit is 1 < 100_000
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("below one request's price"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_grace_period_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                123, // wrong grace period
+                &f.payer,
+                &f.recipient,
+                &f.payer,
+                &f.mint,
+                pc::distribution_hash(&[]),
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("grace_period"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_distribution_hash_mismatch() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        // On-chain commits to a non-empty split, but the server advertised none.
+        let wrong = pc::distribution_hash(&[pc::Distribution {
+            recipient: Pubkey::new_unique(),
+            bps: 10_000,
+        }]);
+        f.mock.set_account(
+            &pc::pubkey_string(&f.channel_id),
+            channel_bytes(
+                CHANNEL_STATUS_OPEN,
+                1_000_000,
+                DEFAULT_GRACE_PERIOD_SECONDS,
+                &f.payer,
+                &f.recipient,
+                &f.payer,
+                &f.mint,
+                wrong,
+            ),
+            &program_id_b58(),
+        );
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("distribution does not match"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_surfaces_broadcast_error() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        f.mock
+            .fail_send("preflight failed: custom program error 0x1");
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_surfaces_channel_fetch_error() {
+        let f = deposit_fixture(1_000_000, 100_000).await;
+        // Broadcast succeeds, but the channel read-back fails.
+        f.mock.fail_account("account fetch unavailable");
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deposit_rejects_underpriced_first_voucher_before_broadcast() {
+        // First voucher (1) is below per_request (100_000) → rejected before any
+        // on-chain work (no account is bound).
+        let f = deposit_fixture(1_000_000, 1).await;
+        let err = f
+            .handler
+            .verify_payment(&f.header, &f.amount)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("below the required"), "got: {err}");
+    }
+
+    // ── challenge() / payment_required_header() (blockhash fetch) ────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn challenge_fetches_blockhash_and_builds_envelope() {
+        let mock = MockRpc::start();
+        let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
+        let recipient = Pubkey::new_unique();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(22)),
+            &recipient,
+            store,
+            vec![],
+        );
+        let envelope = handler.challenge("0.10").unwrap();
+        assert_eq!(envelope.accepts.len(), 1);
+        assert_eq!(
+            envelope.accepts[0].extra.recent_blockhash.as_deref(),
+            Some("11111111111111111111111111111111")
+        );
+
+        // And the header helper base64-encodes the same envelope.
+        let (name, value) = handler.payment_required_header("0.10").unwrap();
+        assert_eq!(name, PAYMENT_REQUIRED_HEADER);
+        assert!(!value.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn challenge_surfaces_blockhash_error() {
+        let mock = MockRpc::start();
+        mock.fail_blockhash("node unhealthy");
+        let store: Arc<dyn ChannelStore> = Arc::new(MemoryChannelStore::new());
+        let recipient = Pubkey::new_unique();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(23)),
+            &recipient,
+            store,
+            vec![],
+        );
+        let err = handler.challenge("0.10").unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    // ── settle_batch (voucher redemption broadcast) ─────────────────────────
+
+    /// Seed a store with a channel carrying an accepted voucher so `settle_batch`
+    /// and `distribute` have something to redeem.
+    async fn seed_channel_with_voucher(
+        store: &Arc<MemoryChannelStore>,
+        channel: &Pubkey,
+        signer: &MemorySigner,
+        cumulative: u64,
+    ) -> String {
+        let channel_b58 = pc::pubkey_string(channel);
+        let voucher = sign_voucher(signer, channel, cumulative, FAR_FUTURE)
+            .await
+            .unwrap();
+        let mut state = seeded_state(
+            &channel_b58,
+            &pc::pubkey_string(&signer.pubkey()),
+            cumulative,
+        );
+        state.highest_voucher_signature = Some(voucher.signature.clone());
+        state.highest_voucher_expires_at = Some(FAR_FUTURE);
+        state.operator = Some(pc::pubkey_string(&signer.pubkey()));
+        store.put_channel(&channel_b58, state).await.unwrap();
+        channel_b58
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_batch_redeems_channels_with_vouchers() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(24);
+        let signer = memory_signer(25);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = seed_channel_with_voucher(&store, &channel, &signer, 500_000).await;
+
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store.clone() as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let sigs = handler.settle_batch(&[channel_b58]).await.unwrap();
+        assert_eq!(sigs.len(), 1, "one packed settlement tx expected");
+        assert!(!sigs[0].is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_batch_skips_channels_without_vouchers() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let recipient = Pubkey::new_unique();
+        // A channel with no accepted voucher (cumulative 0, no signature).
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(
+                    &channel_b58,
+                    &pc::pubkey_string(&memory_signer(9).pubkey()),
+                    0,
+                ),
+            )
+            .await
+            .unwrap();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(26)),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        // A missing id and a voucher-less channel both yield no settlement txs.
+        let sigs = handler
+            .settle_batch(&[channel_b58, "MissingChannel1111".to_string()])
+            .await
+            .unwrap();
+        assert!(sigs.is_empty(), "nothing to settle → no txs");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_batch_surfaces_broadcast_error() {
+        let mock = MockRpc::start();
+        mock.fail_send("blockhash expired");
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(27);
+        let signer = memory_signer(28);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = seed_channel_with_voucher(&store, &channel, &signer, 500_000).await;
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let err = handler.settle_batch(&[channel_b58]).await.unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
+    }
+
+    // ── distribute (sweep) ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distribute_sweeps_channel_pool() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(29);
+        let signer = memory_signer(30);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = seed_channel_with_voucher(&store, &channel, &signer, 500_000).await;
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let sig = handler.distribute(&channel_b58).await.unwrap();
+        assert!(sig.is_some(), "distribute broadcasts a sweep tx");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distribute_errors_when_payer_unknown() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        // No `operator` (payer) stashed → distribute cannot refund.
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(
+                    &channel_b58,
+                    &pc::pubkey_string(&memory_signer(9).pubkey()),
+                    500_000,
+                ),
+            )
+            .await
+            .unwrap();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(31)),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let err = handler.distribute(&channel_b58).await.unwrap_err();
+        assert!(err.to_string().contains("payer unknown"), "got: {err}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distribute_errors_on_unknown_channel() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let recipient = Pubkey::new_unique();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(32)),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let err = handler.distribute("Missing1111").await.unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
+    }
+
+    // ── refund (cooperative close: settle_and_finalize + distribute) ─────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refund_settles_finalizes_and_distributes() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(33);
+        let owner = memory_signer(34);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = seed_channel_with_voucher(&store, &channel, &owner, 400_000).await;
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store.clone() as Arc<dyn ChannelStore>,
+            vec![],
+        );
+
+        // Refund with a proof-of-ownership voucher at the current watermark.
+        let voucher = sign_voucher(&owner, &channel, 400_000, FAR_FUTURE)
+            .await
+            .unwrap();
+        let outcome = handler
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .unwrap();
+        assert!(!outcome.serve, "a refund is never served");
+        assert!(outcome.response.success);
+        // settled > 0 → distribute ran and the channel is finalized.
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.finalized);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refund_with_zero_watermark_finalizes_without_distribute() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(35);
+        let owner = memory_signer(36);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = pc::pubkey_string(&channel);
+        // Watermark 0 (nothing settled): settle_and_finalize runs but distribute
+        // is skipped.
+        store
+            .put_channel(
+                &channel_b58,
+                seeded_state(&channel_b58, &pc::pubkey_string(&owner.pubkey()), 0),
+            )
+            .await
+            .unwrap();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store.clone() as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let voucher = sign_voucher(&owner, &channel, 0, FAR_FUTURE).await.unwrap();
+        let outcome = handler
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .unwrap();
+        assert!(!outcome.serve);
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert!(state.finalized);
+        // paid_out stays 0 when distribute is skipped.
+        assert_eq!(
+            outcome.response.channel_state.as_ref().unwrap().paid_out,
+            "0"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refund_advancing_voucher_settles_the_new_amount() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let operator = memory_signer(37);
+        let owner = memory_signer(38);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let channel_b58 = seed_channel_with_voucher(&store, &channel, &owner, 100_000).await;
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(operator),
+            &recipient,
+            store.clone() as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        // A refund voucher that advances the watermark (200_000 > 100_000).
+        let voucher = sign_voucher(&owner, &channel, 200_000, FAR_FUTURE)
+            .await
+            .unwrap();
+        let outcome = handler
+            .process_refund(&channel_b58, Some(voucher))
+            .await
+            .unwrap();
+        assert!(outcome.response.success);
+        let state = store.get_channel(&channel_b58).await.unwrap().unwrap();
+        assert_eq!(state.cumulative, 200_000, "refund advanced the watermark");
+        assert!(state.finalized);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refund_unknown_channel_is_rejected() {
+        let mock = MockRpc::start();
+        let store = Arc::new(MemoryChannelStore::new());
+        let owner = memory_signer(39);
+        let recipient = Pubkey::new_unique();
+        let channel = Pubkey::new_unique();
+        let handler = handler_with_rpc(
+            mock.url(),
+            Arc::new(memory_signer(40)),
+            &recipient,
+            store as Arc<dyn ChannelStore>,
+            vec![],
+        );
+        let voucher = sign_voucher(&owner, &channel, 100, FAR_FUTURE)
+            .await
+            .unwrap();
+        let err = handler
+            .process_refund(&pc::pubkey_string(&channel), Some(voucher))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
     }
 }

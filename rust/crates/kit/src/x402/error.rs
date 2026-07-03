@@ -67,3 +67,57 @@ impl From<crate::core::Error> for Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_core_serialization_maps_to_other() {
+        let core = crate::core::Error::Serialization("bad borsh".to_string());
+        let err: Error = core.into();
+        match err {
+            Error::Other(msg) => assert_eq!(msg, "bad borsh"),
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_core_other_maps_to_other() {
+        let core = crate::core::Error::Other("boom".to_string());
+        let err: Error = core.into();
+        match err {
+            Error::Other(msg) => assert_eq!(msg, "boom"),
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn display_messages_render_fields() {
+        assert_eq!(
+            Error::AmountMismatch {
+                expected: "10".to_string(),
+                actual: "9".to_string(),
+            }
+            .to_string(),
+            "Amount mismatch: expected 10, got 9"
+        );
+        assert_eq!(
+            Error::WrongNetwork {
+                expected: "solana:mainnet".to_string(),
+                received: "solana:devnet".to_string(),
+            }
+            .to_string(),
+            "Signed against solana:devnet but the server expects solana:mainnet. \
+             Switch your client RPC to solana:mainnet and re-sign."
+        );
+        assert_eq!(
+            Error::TransactionNotFound.to_string(),
+            "Transaction not found or not yet confirmed"
+        );
+        assert_eq!(
+            Error::MissingPaymentHeader.to_string(),
+            "Payment header missing from 402 response"
+        );
+    }
+}

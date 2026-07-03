@@ -1816,4 +1816,99 @@ mod tests {
         assert!(check_network_blockhash("devnet", "11111111111111111111111111111111").is_ok());
         assert!(check_network_blockhash("localnet", "11111111111111111111111111111111").is_ok());
     }
+
+    // ── settle_exact (broadcast) against a mock JSON-RPC server ─────────────
+    //
+    // `settle_exact` is the only RPC-touching path in this module: it co-signs
+    // the fee-payer slot, then `send_and_confirm_transaction`s the tx. These
+    // tests point the handler's RPC at the in-process mock so the broadcast +
+    // confirm path runs end to end (success + error branches), without a live
+    // validator.
+
+    use crate::x402::server::mock_rpc::MockRpc;
+    use solana_keychain::memory::MemorySigner;
+
+    fn memory_signer(seed: u8) -> MemorySigner {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        MemorySigner::from_bytes(&sk.to_keypair_bytes()).unwrap()
+    }
+
+    /// Build an `X402` handler whose RPC points at `url`.
+    fn handler_with_rpc(url: String) -> X402 {
+        let mut cfg = config();
+        cfg.rpc_url = Some(url);
+        X402::new(cfg).unwrap()
+    }
+
+    /// Build a fee-payer-at-index-0 verified transaction proof carrying a single
+    /// (empty) signature slot for the fee payer to fill.
+    fn verified_transfer_tx(fee_payer: Pubkey) -> VerifiedExactPayment {
+        let recipient = Pubkey::new_unique();
+        let ix = system_instruction::transfer(&fee_payer, &recipient, 1000);
+        let message = Message::new_with_blockhash(
+            &[ix],
+            Some(&fee_payer),
+            &Hash::from_str("11111111111111111111111111111111").unwrap(),
+        );
+        let tx = Transaction::new_unsigned(message);
+        VerifiedExactPayment::Transaction(VersionedTransaction::from(tx))
+    }
+
+    #[tokio::test]
+    async fn settle_exact_signature_proof_is_returned_as_is() {
+        // A push (`Signature`) proof is already on-chain — no RPC needed.
+        let x402 = X402::new(config()).unwrap();
+        let signer = memory_signer(9);
+        let out = x402
+            .settle_exact(
+                VerifiedExactPayment::Signature("already-on-chain".to_string()),
+                &signer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out, "already-on-chain");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_broadcasts_and_confirms() {
+        let mock = MockRpc::start();
+        let x402 = handler_with_rpc(mock.url());
+        let fee_payer = memory_signer(10);
+        let verified = verified_transfer_tx(fee_payer.pubkey());
+
+        let sig = x402.settle_exact(verified, &fee_payer).await.unwrap();
+        // The mock echoes the tx's own (fee-payer-signed) signature; a
+        // non-empty base58 signature means the broadcast+confirm path ran.
+        assert!(!sig.is_empty());
+        assert_ne!(sig, Signature::default().to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_surfaces_broadcast_error() {
+        let mock = MockRpc::start();
+        mock.fail_send("simulation failed: custom program error 0x1");
+        let x402 = handler_with_rpc(mock.url());
+        let fee_payer = memory_signer(11);
+        let verified = verified_transfer_tx(fee_payer.pubkey());
+
+        let err = x402.settle_exact(verified, &fee_payer).await.unwrap_err();
+        assert!(
+            matches!(err, Error::Rpc(_)),
+            "broadcast failure must map to Error::Rpc, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn settle_exact_rejects_wrong_fee_payer_before_rpc() {
+        // Fee payer isn't at index 0 → rejected before any RPC round-trip.
+        let x402 = X402::new(config()).unwrap();
+        let real_fee_payer = memory_signer(12);
+        let other = Pubkey::new_unique();
+        let verified = verified_transfer_tx(other);
+        let err = x402
+            .settle_exact(verified, &real_fee_payer)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("fee payer"));
+    }
 }

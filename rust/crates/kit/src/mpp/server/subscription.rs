@@ -513,67 +513,16 @@ impl SubscriptionServer {
             .fetch_subscription_delegation(&subscription_pda)
             .await?;
 
-        // ── Validate snapshotted terms ──────────────────────────────────
-        let expected_amount: u64 = request.amount.parse().map_err(|_| {
-            VerificationError::invalid_payload(format!(
-                "Challenge amount `{}` is not a positive integer",
-                request.amount
-            ))
-        })?;
-        let expected_period_hours = request
-            .period_hours()
-            .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
-
-        if delegation.amount_per_period != expected_amount {
-            return Err(VerificationError::credential_mismatch(format!(
-                "SubscriptionDelegation amount mismatch: expected {expected_amount}, got {}",
-                delegation.amount_per_period
-            )));
-        }
-        if delegation.period_hours != expected_period_hours {
-            return Err(VerificationError::credential_mismatch(format!(
-                "SubscriptionDelegation period mismatch: expected {expected_period_hours}h, got {}h",
-                delegation.period_hours
-            )));
-        }
-        if delegation.plan_pda != plan_pda {
-            return Err(VerificationError::credential_mismatch(format!(
-                "SubscriptionDelegation plan mismatch: expected {plan_pda}, got {}",
-                delegation.plan_pda
-            )));
-        }
-        // Mint isn't stored on the delegation — the on-chain `Subscribe`
-        // ix binds the delegation's terms to the parent Plan's mint, and
-        // we already validated `plan_pda` matches the configured plan.
-        if delegation.amount_pulled_in_period != expected_amount {
-            return Err(VerificationError::new(
-                "Activation transaction did not execute the first-period charge",
-            ));
-        }
-
-        // ── Build the receipt ───────────────────────────────────────────
-        let period_start_secs = delegation.current_period_start_ts;
-        let period_end_secs = period_start_secs.saturating_add(expected_period_hours as i64 * 3600);
-
-        let receipt = ReceiptKind::Subscription {
-            base: Receipt {
-                status: crate::mpp::protocol::core::ReceiptStatus::Success,
-                method: METHOD_NAME.into(),
-                timestamp: format_rfc3339_seconds(now_unix_secs()),
-                reference: subscription_pda.to_string(),
-                challenge_id: credential.challenge.id.clone(),
-            },
-            extensions: SubscriptionReceiptExtensions {
-                subscription_id: subscription_pda.to_string(),
-                plan_id: self.config.plan_id.clone(),
-                period_index: "0".to_string(),
-                period_start_ts: format_rfc3339_seconds(period_start_secs),
-                period_end_ts: format_rfc3339_seconds(period_end_secs),
-                expires_at: request.subscription_expires.clone(),
-                activation_signature,
-            },
-        };
-        Ok(receipt)
+        // ── Validate snapshotted terms + build the receipt ───────────────
+        validate_terms_and_build_receipt(
+            &delegation,
+            &request,
+            &plan_pda,
+            &subscription_pda,
+            &self.config.plan_id,
+            &credential.challenge.id,
+            activation_signature,
+        )
     }
 
     /// Broadcast a signed transaction and wait for `confirmed` (NOT
@@ -878,6 +827,82 @@ async fn co_sign_as_fee_payer(
     }
     tx.signatures[idx] = Signature::from(<[u8; 64]>::from(sig_bytes));
     Ok(())
+}
+
+/// Validate a fetched `SubscriptionDelegation` against the challenge's
+/// snapshotted terms, then build the success receipt. Pure over its
+/// inputs (no RPC), so the terms-mismatch branches are unit-testable
+/// without a live chain. Extracted verbatim from `verify_credential`'s
+/// post-fetch block — behaviour is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn validate_terms_and_build_receipt(
+    delegation: &SubscriptionDelegationView,
+    request: &SubscriptionRequest,
+    plan_pda: &Pubkey,
+    subscription_pda: &Pubkey,
+    plan_id: &str,
+    challenge_id: &str,
+    activation_signature: Option<String>,
+) -> Result<ReceiptKind, VerificationError> {
+    let expected_amount: u64 = request.amount.parse().map_err(|_| {
+        VerificationError::invalid_payload(format!(
+            "Challenge amount `{}` is not a positive integer",
+            request.amount
+        ))
+    })?;
+    let expected_period_hours = request
+        .period_hours()
+        .map_err(|e| VerificationError::invalid_payload(e.to_string()))?;
+
+    if delegation.amount_per_period != expected_amount {
+        return Err(VerificationError::credential_mismatch(format!(
+            "SubscriptionDelegation amount mismatch: expected {expected_amount}, got {}",
+            delegation.amount_per_period
+        )));
+    }
+    if delegation.period_hours != expected_period_hours {
+        return Err(VerificationError::credential_mismatch(format!(
+            "SubscriptionDelegation period mismatch: expected {expected_period_hours}h, got {}h",
+            delegation.period_hours
+        )));
+    }
+    if delegation.plan_pda != *plan_pda {
+        return Err(VerificationError::credential_mismatch(format!(
+            "SubscriptionDelegation plan mismatch: expected {plan_pda}, got {}",
+            delegation.plan_pda
+        )));
+    }
+    // Mint isn't stored on the delegation — the on-chain `Subscribe`
+    // ix binds the delegation's terms to the parent Plan's mint, and
+    // we already validated `plan_pda` matches the configured plan.
+    if delegation.amount_pulled_in_period != expected_amount {
+        return Err(VerificationError::new(
+            "Activation transaction did not execute the first-period charge",
+        ));
+    }
+
+    // ── Build the receipt ───────────────────────────────────────────
+    let period_start_secs = delegation.current_period_start_ts;
+    let period_end_secs = period_start_secs.saturating_add(expected_period_hours as i64 * 3600);
+
+    Ok(ReceiptKind::Subscription {
+        base: Receipt {
+            status: crate::mpp::protocol::core::ReceiptStatus::Success,
+            method: METHOD_NAME.into(),
+            timestamp: format_rfc3339_seconds(now_unix_secs()),
+            reference: subscription_pda.to_string(),
+            challenge_id: challenge_id.to_string(),
+        },
+        extensions: SubscriptionReceiptExtensions {
+            subscription_id: subscription_pda.to_string(),
+            plan_id: plan_id.to_string(),
+            period_index: "0".to_string(),
+            period_start_ts: format_rfc3339_seconds(period_start_secs),
+            period_end_ts: format_rfc3339_seconds(period_end_secs),
+            expires_at: request.subscription_expires.clone(),
+            activation_signature,
+        },
+    })
 }
 
 /// Minimal in-process view of the on-chain `SubscriptionDelegation`
@@ -1377,5 +1402,1175 @@ mod tests {
             msg.contains("push-mode") || msg.contains("not yet supported"),
             "{err:?}"
         );
+    }
+
+    // ── Transaction-building helpers for the static verify checks ───────
+
+    /// Build a legacy `Transaction` over the given account keys and
+    /// instructions on the configured subscriptions program. `keys[0]` is
+    /// treated as the fee payer / first signer.
+    fn build_tx(keys: &[Pubkey], instructions: Vec<(u8, Vec<u8>)>) -> Transaction {
+        use solana_hash::Hash;
+        use solana_message::compiled_instruction::CompiledInstruction;
+        use solana_message::{Message, MessageHeader};
+
+        // Append the program id as the last account key so instructions can
+        // reference it by index. Only do so when there are instructions —
+        // otherwise the extra trailing key would be mistaken for a signer
+        // by callers that scan account_keys (e.g. subscriber extraction).
+        let program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "program").unwrap();
+        let mut account_keys: Vec<Pubkey> = keys.to_vec();
+        let program_idx = account_keys.len() as u8;
+        if !instructions.is_empty() {
+            account_keys.push(program);
+        }
+
+        let compiled: Vec<CompiledInstruction> = instructions
+            .into_iter()
+            .map(|(disc, mut extra)| {
+                let mut data = vec![disc];
+                data.append(&mut extra);
+                CompiledInstruction {
+                    program_id_index: program_idx,
+                    accounts: vec![],
+                    data,
+                }
+            })
+            .collect();
+
+        let readonly_unsigned = if account_keys.len() > keys.len() {
+            1
+        } else {
+            0
+        };
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: keys.len() as u8,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: readonly_unsigned,
+            },
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions: compiled,
+        };
+        Transaction {
+            signatures: vec![Signature::default(); keys.len()],
+            message,
+        }
+    }
+
+    fn dummy_request() -> SubscriptionRequest {
+        SubscriptionRequest {
+            amount: "1".into(),
+            currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(),
+            recipient: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".into(),
+            ..Default::default()
+        }
+    }
+
+    // ── extract_subscriber_from_tx ──────────────────────────────────────
+
+    #[test]
+    fn extract_subscriber_rejects_empty_account_keys() {
+        let cfg = make_config();
+        let tx = build_tx(&[], vec![]);
+        // build_tx appends the program id, so drop it to get a truly empty
+        // account_keys vec.
+        let mut tx = tx;
+        tx.message.account_keys.clear();
+        let err = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap_err();
+        assert!(err.message.contains("no account keys"), "{}", err.message);
+    }
+
+    #[test]
+    fn extract_subscriber_returns_first_key_no_fee_payer() {
+        let cfg = make_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[subscriber], vec![]);
+        let got = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap();
+        assert_eq!(got, subscriber);
+    }
+
+    #[test]
+    fn extract_subscriber_rejects_subscriber_equal_puller() {
+        let cfg = make_config();
+        let puller = parse_pubkey(&cfg.puller, "puller").unwrap();
+        let tx = build_tx(&[puller], vec![]);
+        let err = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap_err();
+        assert!(
+            err.message.contains("cannot equal the server puller"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn extract_subscriber_finds_subscriber_after_fee_payer() {
+        let mut cfg = make_config();
+        let fee_payer = Pubkey::new_unique();
+        cfg.fee_payer = true;
+        cfg.fee_payer_pubkey = Some(fee_payer.to_string());
+        let puller = parse_pubkey(&cfg.puller, "puller").unwrap();
+        let subscriber = Pubkey::new_unique();
+        // account_keys[0] is the fee-payer, then puller, then subscriber.
+        let tx = build_tx(&[fee_payer, puller, subscriber], vec![]);
+        let got = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap();
+        assert_eq!(got, subscriber);
+    }
+
+    #[test]
+    fn extract_subscriber_fee_payer_no_candidate_rejects() {
+        let mut cfg = make_config();
+        let fee_payer = Pubkey::new_unique();
+        cfg.fee_payer = true;
+        cfg.fee_payer_pubkey = Some(fee_payer.to_string());
+        let puller = parse_pubkey(&cfg.puller, "puller").unwrap();
+        // Only fee-payer + puller signers, no subscriber to find.
+        let tx = build_tx(&[fee_payer, puller], vec![]);
+        let err = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap_err();
+        assert!(
+            err.message.contains("Could not identify subscriber"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn extract_subscriber_fee_payer_from_signer_pubkey() {
+        use solana_keychain::{MemorySigner, SolanaSigner};
+        let mut cfg = make_config();
+        cfg.fee_payer = true;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        let signer = MemorySigner::from_bytes(&kp).expect("kp");
+        let fee_payer = signer.pubkey();
+        cfg.fee_payer_signer = Some(Arc::new(signer));
+        // No explicit fee_payer_pubkey — must derive it from the signer.
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[fee_payer, subscriber], vec![]);
+        let got = extract_subscriber_from_tx(&tx, &dummy_request(), &cfg).unwrap();
+        assert_eq!(got, subscriber);
+    }
+
+    // ── validate_activation_scope ───────────────────────────────────────
+
+    fn program_id_str() -> String {
+        SUBSCRIPTIONS_PROGRAM_ID.to_string()
+    }
+
+    #[test]
+    fn validate_scope_accepts_subscribe_then_transfer() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        validate_activation_scope(&tx, &dummy_request(), &program_id_str()).expect("valid scope");
+    }
+
+    #[test]
+    fn validate_scope_rejects_missing_subscribe() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![(INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![])],
+        );
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(err.message.contains("missing subscribe"), "{}", err.message);
+    }
+
+    #[test]
+    fn validate_scope_rejects_missing_transfer() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[subscriber], vec![(INSTRUCTION_SUBSCRIBE, vec![])]);
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(
+            err.message.contains("missing transfer_subscription"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_duplicate_subscribe() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(
+            err.message.contains("multiple subscribe"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_duplicate_transfer() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(
+            err.message.contains("multiple transfer_subscription"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_transfer_before_subscribe() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+            ],
+        );
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        assert!(err.message.contains("must precede"), "{}", err.message);
+    }
+
+    #[test]
+    fn validate_scope_ignores_instructions_on_other_programs() {
+        // An instruction whose program index points at a non-subscriptions
+        // account key must be skipped, and empty-data instructions too.
+        use solana_hash::Hash;
+        use solana_message::compiled_instruction::CompiledInstruction;
+        use solana_message::{Message, MessageHeader};
+        let subscriber = Pubkey::new_unique();
+        let other_program = Pubkey::new_unique();
+        let sub_program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "program").unwrap();
+        let account_keys = vec![subscriber, other_program, sub_program];
+        let instructions = vec![
+            // Program index out of range — skipped via the bounds guard.
+            CompiledInstruction {
+                program_id_index: 99,
+                accounts: vec![],
+                data: vec![INSTRUCTION_SUBSCRIBE],
+            },
+            // On another program — skipped.
+            CompiledInstruction {
+                program_id_index: 1,
+                accounts: vec![],
+                data: vec![INSTRUCTION_SUBSCRIBE],
+            },
+            // Empty data — skipped (no discriminator byte).
+            CompiledInstruction {
+                program_id_index: 2,
+                accounts: vec![],
+                data: vec![],
+            },
+            // The real subscribe + transfer on the subscriptions program.
+            CompiledInstruction {
+                program_id_index: 2,
+                accounts: vec![],
+                data: vec![INSTRUCTION_SUBSCRIBE],
+            },
+            CompiledInstruction {
+                program_id_index: 2,
+                accounts: vec![],
+                data: vec![INSTRUCTION_TRANSFER_SUBSCRIPTION],
+            },
+        ];
+        let message = Message {
+            header: MessageHeader {
+                num_required_signatures: 1,
+                num_readonly_signed_accounts: 0,
+                num_readonly_unsigned_accounts: 2,
+            },
+            account_keys,
+            recent_blockhash: Hash::default(),
+            instructions,
+        };
+        let tx = Transaction {
+            signatures: vec![Signature::default(); 1],
+            message,
+        };
+        validate_activation_scope(&tx, &dummy_request(), &program_id_str()).expect("valid scope");
+    }
+
+    #[test]
+    fn validate_scope_rejects_invalid_program_id_string() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[subscriber], vec![]);
+        let err = validate_activation_scope(&tx, &dummy_request(), "not-a-pubkey").unwrap_err();
+        assert!(!err.message.is_empty());
+    }
+
+    // ── decode_base64_transaction ───────────────────────────────────────
+
+    #[test]
+    fn decode_base64_transaction_rejects_bad_base64() {
+        let err = decode_base64_transaction("!!!not base64!!!").unwrap_err();
+        assert!(err.message.contains("base64 decode"), "{}", err.message);
+    }
+
+    #[test]
+    fn decode_base64_transaction_rejects_bad_bincode() {
+        // Valid base64 but not a bincode-serialised Transaction.
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [0xFFu8; 8]);
+        let err = decode_base64_transaction(&b64).unwrap_err();
+        assert!(err.message.contains("bincode decode"), "{}", err.message);
+    }
+
+    #[test]
+    fn decode_base64_transaction_round_trips_real_tx() {
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[subscriber], vec![(INSTRUCTION_SUBSCRIBE, vec![])]);
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let decoded = decode_base64_transaction(&b64).unwrap();
+        assert_eq!(decoded.message.account_keys, tx.message.account_keys);
+    }
+
+    // ── co_sign_as_fee_payer ────────────────────────────────────────────
+
+    fn fee_payer_signer_and_key() -> (Arc<dyn solana_keychain::SolanaSigner>, Pubkey) {
+        use solana_keychain::{MemorySigner, SolanaSigner};
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        let signer = MemorySigner::from_bytes(&kp).expect("kp");
+        let pk = signer.pubkey();
+        (Arc::new(signer), pk)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn co_sign_fills_fee_payer_slot() {
+        let (signer, fee_payer) = fee_payer_signer_and_key();
+        let subscriber = Pubkey::new_unique();
+        // fee-payer is account_keys[0].
+        let mut tx = build_tx(&[fee_payer, subscriber], vec![]);
+        assert_eq!(tx.signatures[0], Signature::default());
+        co_sign_as_fee_payer(&mut tx, &signer)
+            .await
+            .expect("co-sign");
+        assert_ne!(tx.signatures[0], Signature::default());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn co_sign_rejects_missing_fee_payer_key() {
+        let (signer, _fee_payer) = fee_payer_signer_and_key();
+        // A tx that does NOT include the fee-payer pubkey in account_keys.
+        let other = Pubkey::new_unique();
+        let mut tx = build_tx(&[other], vec![]);
+        let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
+        assert!(
+            err.message.contains("Fee payer pubkey not present"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn co_sign_rejects_short_signatures_vec() {
+        let (signer, fee_payer) = fee_payer_signer_and_key();
+        let subscriber = Pubkey::new_unique();
+        // Put the fee-payer at index 1, then truncate the signatures vec so
+        // it's shorter than that index.
+        let mut tx = build_tx(&[subscriber, fee_payer], vec![]);
+        tx.signatures.clear();
+        let err = co_sign_as_fee_payer(&mut tx, &signer).await.unwrap_err();
+        assert!(
+            err.message.contains("signatures vec is shorter"),
+            "{}",
+            err.message
+        );
+    }
+
+    // ── verify_credential pre-RPC error branches ────────────────────────
+
+    /// Build a credential whose challenge is issued by `server` (so HMAC +
+    /// pinned fields pass) carrying the given activation payload.
+    fn credential_for_server(
+        server: &SubscriptionServer,
+        payload: ActivatePayload,
+    ) -> PaymentCredential {
+        let challenge = server
+            .subscription_challenge("10000000")
+            .expect("challenge");
+        PaymentCredential::new(challenge.to_echo(), payload)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_wrong_method() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let challenge = server.subscription_challenge("10000000").unwrap();
+        let mut echo = challenge.to_echo();
+        // Corrupt the id so it's recomputed to match, but flip the method.
+        // Instead: build a fresh challenge with a mismatched method via a
+        // server that pins a different method is not possible; directly
+        // tamper the echoed method — HMAC will then mismatch first, so we
+        // recompute the id to bind the tampered method.
+        echo.method = "notsolana".into();
+        echo.id = compute_challenge_id(
+            &server.challenge_binding_secret,
+            &server.realm,
+            echo.method.as_str(),
+            echo.intent.as_str(),
+            echo.request.raw(),
+            echo.expires.as_deref(),
+            echo.digest.as_deref(),
+            echo.opaque.as_ref().map(|o| o.raw()),
+        );
+        let credential = PaymentCredential::new(
+            echo,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("AQAAAA==".into()),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("does not match"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_wrong_intent() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let challenge = server.subscription_challenge("10000000").unwrap();
+        let mut echo = challenge.to_echo();
+        echo.intent = "charge".into();
+        echo.id = compute_challenge_id(
+            &server.challenge_binding_secret,
+            &server.realm,
+            echo.method.as_str(),
+            echo.intent.as_str(),
+            echo.request.raw(),
+            echo.expires.as_deref(),
+            echo.digest.as_deref(),
+            echo.opaque.as_ref().map(|o| o.raw()),
+        );
+        let credential = PaymentCredential::new(
+            echo,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("AQAAAA==".into()),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(
+            err.message.contains("not a subscription"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_wrong_realm() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let challenge = server.subscription_challenge("10000000").unwrap();
+        let mut echo = challenge.to_echo();
+        echo.realm = "other-realm".into();
+        echo.id = compute_challenge_id(
+            &server.challenge_binding_secret,
+            &server.realm,
+            echo.method.as_str(),
+            echo.intent.as_str(),
+            echo.request.raw(),
+            echo.expires.as_deref(),
+            echo.digest.as_deref(),
+            echo.opaque.as_ref().map(|o| o.raw()),
+        );
+        let credential = PaymentCredential::new(
+            echo,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("AQAAAA==".into()),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("realm"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_mint_mismatch() {
+        // Two servers with different mints but the SAME secret + realm, so
+        // the HMAC passes but the decoded mint won't match.
+        let mut cfg_a = make_config();
+        cfg_a.challenge_binding_secret = "shared-secret".into();
+        cfg_a.realm = "shared-realm".into();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.mint = keypair_base58(); // different mint
+        let server_a = SubscriptionServer::new(cfg_a).expect("a");
+        let server_b = SubscriptionServer::new(cfg_b).expect("b");
+        // Challenge issued by A (its mint), verified by B (different mint).
+        let challenge = server_a.subscription_challenge("10000000").unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("AQAAAA==".into()),
+                signature: None,
+            },
+        );
+        let err = server_b.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("mint"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_recipient_mismatch() {
+        let mut cfg_a = make_config();
+        cfg_a.challenge_binding_secret = "shared-secret2".into();
+        cfg_a.realm = "shared-realm2".into();
+        let mut cfg_b = cfg_a.clone();
+        cfg_b.recipient = keypair_base58(); // different recipient, same mint
+        let server_a = SubscriptionServer::new(cfg_a).expect("a");
+        let server_b = SubscriptionServer::new(cfg_b).expect("b");
+        let challenge = server_a.subscription_challenge("10000000").unwrap();
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("AQAAAA==".into()),
+                signature: None,
+            },
+        );
+        let err = server_b.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("recipient"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_unsupported_payload_type() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "wat".into(),
+                transaction: None,
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(
+            err.message.contains("Unsupported payload type"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_transaction_missing_transaction_field() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: None, // missing
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(
+            err.message.contains("missing `transaction` field"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_signature_with_fee_sponsorship() {
+        // type="signature" combined with fee sponsorship must be rejected
+        // before the push-mode branch.
+        use solana_keychain::MemorySigner;
+        let mut cfg = make_config();
+        cfg.fee_payer = true;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[13u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        cfg.fee_payer_signer = Some(Arc::new(MemorySigner::from_bytes(&kp).expect("kp")));
+        let server = SubscriptionServer::new(cfg).expect("server");
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "signature".into(),
+                transaction: None,
+                signature: Some("5J8Sig".into()),
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("fee sponsorship"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_transaction_bad_base64() {
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some("!!!bad!!!".into()),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("base64 decode"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_transaction_empty_account_keys() {
+        // A real (decodable) tx whose account_keys are empty exercises the
+        // extract_subscriber "no account keys" branch through verify.
+        use solana_hash::Hash;
+        use solana_message::{Message, MessageHeader};
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let tx = Transaction {
+            signatures: vec![],
+            message: Message {
+                header: MessageHeader {
+                    num_required_signatures: 0,
+                    num_readonly_signed_accounts: 0,
+                    num_readonly_unsigned_accounts: 0,
+                },
+                account_keys: vec![],
+                recent_blockhash: Hash::default(),
+                instructions: vec![],
+            },
+        };
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("no account keys"), "{}", err.message);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_rejects_transaction_missing_scope() {
+        // A decodable tx with a valid subscriber but no subscribe/transfer
+        // instructions reaches validate_activation_scope and fails there.
+        let server = SubscriptionServer::new(make_config()).expect("server");
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(&[subscriber], vec![]); // no instructions
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+        let err = server.verify_credential(&credential).await.unwrap_err();
+        assert!(err.message.contains("missing subscribe"), "{}", err.message);
+    }
+
+    // ── validate_terms_and_build_receipt (post-fetch terms check) ───────
+
+    fn make_delegation_view(
+        plan_pda: Pubkey,
+        amount: u64,
+        period_hours: u64,
+        pulled: u64,
+    ) -> SubscriptionDelegationView {
+        SubscriptionDelegationView {
+            subscriber: Pubkey::new_unique(),
+            plan_pda,
+            amount_per_period: amount,
+            period_hours,
+            current_period_start_ts: 1_700_000_000,
+            amount_pulled_in_period: pulled,
+        }
+    }
+
+    fn terms_request(amount: &str) -> SubscriptionRequest {
+        SubscriptionRequest {
+            amount: amount.into(),
+            currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into(),
+            period_unit: SubscriptionPeriodUnit::Day,
+            period_count: "30".into(), // 30 days => 720 hours
+            recipient: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin".into(),
+            subscription_expires: Some("2030-01-01T00:00:00Z".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn terms_check_success_builds_subscription_receipt() {
+        let plan_pda = Pubkey::new_unique();
+        let sub_pda = Pubkey::new_unique();
+        let delegation = make_delegation_view(plan_pda, 720, 720, 720);
+        let receipt = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("720"),
+            &plan_pda,
+            &sub_pda,
+            "PLAN123",
+            "chal-id",
+            Some("sig123".into()),
+        )
+        .expect("valid terms");
+        match receipt {
+            ReceiptKind::Subscription { base, extensions } => {
+                assert_eq!(base.reference, sub_pda.to_string());
+                assert_eq!(base.challenge_id, "chal-id");
+                assert_eq!(extensions.subscription_id, sub_pda.to_string());
+                assert_eq!(extensions.plan_id, "PLAN123");
+                assert_eq!(extensions.period_index, "0");
+                assert_eq!(extensions.activation_signature.as_deref(), Some("sig123"));
+                assert_eq!(
+                    extensions.expires_at.as_deref(),
+                    Some("2030-01-01T00:00:00Z")
+                );
+                // period_start = 1_700_000_000 (2023-11-14T22:13:20Z);
+                // period_end = start + 720h.
+                assert_eq!(extensions.period_start_ts, "2023-11-14T22:13:20Z");
+            }
+            other => panic!("expected Subscription receipt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terms_check_rejects_amount_mismatch() {
+        let plan_pda = Pubkey::new_unique();
+        let delegation = make_delegation_view(plan_pda, 999, 720, 999);
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("720"), // expects 720, delegation has 999
+            &plan_pda,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("amount mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn terms_check_rejects_period_mismatch() {
+        let plan_pda = Pubkey::new_unique();
+        // amount matches, period_hours (24) != expected 720.
+        let delegation = make_delegation_view(plan_pda, 720, 24, 720);
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("720"),
+            &plan_pda,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("period mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn terms_check_rejects_plan_mismatch() {
+        let expected_plan = Pubkey::new_unique();
+        let wrong_plan = Pubkey::new_unique();
+        // amount + period match, but delegation.plan_pda differs.
+        let delegation = make_delegation_view(wrong_plan, 720, 720, 720);
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("720"),
+            &expected_plan,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("plan mismatch"), "{}", err.message);
+    }
+
+    #[test]
+    fn terms_check_rejects_uncharged_first_period() {
+        let plan_pda = Pubkey::new_unique();
+        // amount + period + plan match, but nothing was pulled (0 != 720).
+        let delegation = make_delegation_view(plan_pda, 720, 720, 0);
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("720"),
+            &plan_pda,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.message
+                .contains("did not execute the first-period charge"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn terms_check_rejects_non_integer_amount() {
+        let plan_pda = Pubkey::new_unique();
+        let delegation = make_delegation_view(plan_pda, 720, 720, 720);
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &terms_request("not-a-number"),
+            &plan_pda,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("not a positive integer"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn terms_check_rejects_invalid_period_request() {
+        let plan_pda = Pubkey::new_unique();
+        let delegation = make_delegation_view(plan_pda, 720, 720, 720);
+        // period_count that maps out of [1, 8760] hours (400 days => 9600h).
+        let mut req = terms_request("720");
+        req.period_count = "400".into();
+        let err = validate_terms_and_build_receipt(
+            &delegation,
+            &req,
+            &plan_pda,
+            &Pubkey::new_unique(),
+            "PLAN",
+            "id",
+            None,
+        )
+        .unwrap_err();
+        assert!(!err.message.is_empty());
+    }
+
+    // ── RPC method error paths (dead endpoint) ──────────────────────────
+    //
+    // These exercise the RPC round-trip + error `.map_err` closures without
+    // a live validator: a server pointed at a closed port fails fast with a
+    // connection-refused error, driving the not_found / transaction_failed /
+    // network_error branches.
+
+    fn server_with_dead_rpc() -> SubscriptionServer {
+        let mut cfg = make_config();
+        // Port 1 refuses connections immediately.
+        cfg.rpc_url = Some("http://127.0.0.1:1".into());
+        SubscriptionServer::new(cfg).expect("server")
+    }
+
+    /// Build the 155-byte on-chain `SubscriptionDelegation` account bytes
+    /// for the given plan/subscriber/terms, matching the layout the decoder
+    /// reads.
+    fn encode_delegation_account(
+        subscriber: [u8; 32],
+        plan_pda: [u8; 32],
+        amount: u64,
+        period_hours: u64,
+        pulled: u64,
+        period_start: i64,
+    ) -> Vec<u8> {
+        let mut data = Vec::with_capacity(SUBSCRIPTION_DELEGATION_LEN);
+        data.push(2); // discriminator
+        data.push(1); // version
+        data.push(255); // bump
+        data.extend_from_slice(&subscriber); // delegator
+        data.extend_from_slice(&plan_pda); // delegatee
+        data.extend_from_slice(&[3u8; 32]); // payer
+        data.extend_from_slice(&77i64.to_le_bytes()); // init_id
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&period_hours.to_le_bytes());
+        data.extend_from_slice(&1_780_000_000i64.to_le_bytes()); // created_at
+        data.extend_from_slice(&pulled.to_le_bytes());
+        data.extend_from_slice(&period_start.to_le_bytes());
+        data.extend_from_slice(&0i64.to_le_bytes()); // expires_at
+        data
+    }
+
+    /// Spawn a one-shot HTTP server that answers a single JSON-RPC
+    /// `getAccountInfo` request with the given account bytes, then returns
+    /// the `http://127.0.0.1:<port>` URL to point an RpcClient at.
+    fn spawn_mock_getaccount_rpc(account_data: Vec<u8>, owner: Pubkey) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let data_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &account_data);
+        let owner_str = owner.to_string();
+        std::thread::spawn(move || {
+            // Serve several requests (verify makes multiple RPC round-trips:
+            // idempotency fetch, signature lookup, terms fetch).
+            for _ in 0..12 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let body = format!(
+                    "{{\"jsonrpc\":\"2.0\",\"result\":{{\"context\":{{\"slot\":1,\"apiVersion\":\"2.0.0\"}},\"value\":{{\"data\":[\"{data_b64}\",\"base64\"],\"executable\":false,\"lamports\":1000000,\"owner\":\"{owner_str}\",\"rentEpoch\":0,\"space\":{}}}}},\"id\":1}}",
+                    account_data.len()
+                );
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        url
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_subscription_delegation_decodes_account_from_rpc() {
+        let mut cfg = make_config();
+        let plan_pda = parse_pubkey(&cfg.plan_id, "plan").unwrap();
+        let subscriber = Pubkey::new_unique();
+        let program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "prog").unwrap();
+        let account = encode_delegation_account(
+            subscriber.to_bytes(),
+            plan_pda.to_bytes(),
+            720,
+            720,
+            720,
+            1_700_000_000,
+        );
+        let url = spawn_mock_getaccount_rpc(account, program);
+        cfg.rpc_url = Some(url);
+        let server = SubscriptionServer::new(cfg).expect("server");
+        let pda = Pubkey::new_unique();
+        let view = server
+            .fetch_subscription_delegation(&pda)
+            .await
+            .expect("mock RPC returns a decodable delegation");
+        assert_eq!(view.amount_per_period, 720);
+        assert_eq!(view.period_hours, 720);
+        assert_eq!(view.plan_pda, plan_pda);
+        assert_eq!(view.current_period_start_ts, 1_700_000_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_full_success_via_mock_rpc() {
+        // Point the server at a mock RPC that always returns a valid
+        // delegation account. verify_credential then: extracts the
+        // subscriber, validates scope, sees the delegation already exists
+        // (idempotent branch — skips broadcast), fetches it again, checks
+        // the terms, and builds the success receipt. Exercises the RPC
+        // success path end-to-end without a live validator.
+        let mut cfg = make_config();
+        let plan_pda = parse_pubkey(&cfg.plan_id, "plan").unwrap();
+        let program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "prog").unwrap();
+        // The delegation's amount/period must match the challenge terms:
+        // amount = 720 base units, Day * 30 => 720 period hours.
+        let subscriber = Pubkey::new_unique();
+        let account = encode_delegation_account(
+            subscriber.to_bytes(),
+            plan_pda.to_bytes(),
+            720,
+            720,
+            720,
+            1_700_000_000,
+        );
+        let url = spawn_mock_getaccount_rpc(account, program);
+        cfg.rpc_url = Some(url);
+        let server = SubscriptionServer::new(cfg).expect("server");
+
+        // Build an activation tx with a valid subscriber + subscribe/transfer
+        // scope, and issue a challenge for amount "720" so terms match.
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let challenge = server.subscription_challenge("720").expect("challenge");
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+
+        let receipt = server
+            .verify_credential(&credential)
+            .await
+            .expect("full verify succeeds against mock RPC");
+        match receipt {
+            ReceiptKind::Subscription { extensions, .. } => {
+                assert_eq!(extensions.plan_id, server.plan_id());
+                assert_eq!(extensions.period_index, "0");
+            }
+            other => panic!("expected Subscription receipt, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_subscription_delegation_errors_on_dead_rpc() {
+        let server = server_with_dead_rpc();
+        let pda = Pubkey::new_unique();
+        let err = server
+            .fetch_subscription_delegation(&pda)
+            .await
+            .expect_err("dead RPC must error");
+        assert!(!err.message.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetch_subscription_creation_signature_errors_on_dead_rpc() {
+        let server = server_with_dead_rpc();
+        let pda = Pubkey::new_unique();
+        let err = server
+            .fetch_subscription_creation_signature(&pda)
+            .await
+            .expect_err("dead RPC must error");
+        assert!(!err.message.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broadcast_and_confirm_errors_on_dead_rpc() {
+        let server = server_with_dead_rpc();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let err = server
+            .broadcast_and_confirm(&tx)
+            .await
+            .expect_err("dead RPC must error");
+        assert!(!err.message.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_with_fee_sponsorship_cosigns_then_hits_rpc() {
+        // A fee-payer-configured server drives verify_credential through the
+        // co_sign_as_fee_payer branch before the (dead) RPC broadcast.
+        use solana_keychain::{MemorySigner, SolanaSigner};
+        let mut cfg = make_config();
+        cfg.rpc_url = Some("http://127.0.0.1:1".into());
+        cfg.fee_payer = true;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[21u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        let signer = MemorySigner::from_bytes(&kp).expect("kp");
+        let fee_payer = signer.pubkey();
+        cfg.fee_payer_signer = Some(Arc::new(signer));
+        let server = SubscriptionServer::new(cfg).expect("server");
+
+        // Build an activation tx: fee-payer at index 0, subscriber next,
+        // carrying subscribe + transfer instructions so scope validation
+        // passes and co-signing has a slot to fill.
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[fee_payer, subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+        let err = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("dead RPC after co-sign must error");
+        assert!(!err.message.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_hits_rpc_and_errors_on_dead_endpoint() {
+        // Drive the full verify path through instruction-scope validation
+        // up to the broadcast, which fails against the dead RPC. Covers the
+        // settlement branch of verify_credential (subscriber extraction +
+        // scope check + broadcast attempt).
+        let server = server_with_dead_rpc();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+        let err = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("dead RPC must surface an error");
+        assert!(!err.message.is_empty());
+    }
+
+    // ── format_rfc3339_seconds edge branches ────────────────────────────
+
+    #[test]
+    fn format_rfc3339_handles_jan_feb_and_pre_epoch() {
+        // A date in January exercises the `mp >= 10` month remap and the
+        // `mo <= 2` year adjustment.
+        // 2021-01-31T00:00:00Z = 1612051200
+        assert_eq!(
+            format_rfc3339_seconds(1_612_051_200),
+            "2021-01-31T00:00:00Z"
+        );
+        // A February date.
+        // 2020-02-29T23:59:59Z = 1583020799 (leap day)
+        assert_eq!(
+            format_rfc3339_seconds(1_583_020_799),
+            "2020-02-29T23:59:59Z"
+        );
+        // A pre-epoch (negative) timestamp exercises the `z < 0` era branch.
+        // 1969-12-31T00:00:00Z = -86400
+        assert_eq!(format_rfc3339_seconds(-86_400), "1969-12-31T00:00:00Z");
     }
 }

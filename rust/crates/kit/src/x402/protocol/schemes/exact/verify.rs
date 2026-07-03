@@ -575,7 +575,7 @@ mod tests {
     use solana_transaction::TransactionError;
     use solana_transaction_status_client_types::{
         option_serializer::OptionSerializer, EncodedTransaction, EncodedTransactionWithStatusMeta,
-        UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
+        UiCompiledInstruction, UiMessage, UiRawMessage, UiTransaction, UiTransactionStatusMeta,
     };
 
     fn requirements(amount: &str) -> PaymentRequirements {
@@ -1219,5 +1219,367 @@ mod tests {
         assert!(
             matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_unknown_fourth_instruction")
         );
+    }
+
+    // ---- Raw (compiled) `UiMessage::Raw` path for verify_transaction_details ----
+
+    /// Build an `EncodedConfirmedTransactionWithStatusMeta` whose message is
+    /// `UiMessage::Raw` and carries a compiled `transferChecked` (discriminator
+    /// 12) matching `requirements`, optionally followed by memo instructions.
+    fn tx_with_raw_transfer_and_memos(
+        requirements: &PaymentRequirements,
+        amount: u64,
+        memos: &[&str],
+    ) -> EncodedConfirmedTransactionWithStatusMeta {
+        let mut tx = tx_with_meta(None);
+        let mint = Pubkey::from_str(&requirements.currency).unwrap();
+        let recipient = Pubkey::from_str(&requirements.recipient).unwrap();
+        let token_program =
+            Pubkey::from_str(requirements.token_program.as_deref().unwrap()).unwrap();
+        let destination = get_associated_token_address(&recipient, &mint, &token_program);
+
+        // account_keys layout: [token_program, source, mint, destination, memo_program]
+        let source = Pubkey::new_unique();
+        let account_keys = vec![
+            programs::TOKEN_PROGRAM.to_string(),
+            source.to_string(),
+            mint.to_string(),
+            destination.to_string(),
+            programs::MEMO_PROGRAM.to_string(),
+        ];
+
+        let mut data = vec![12u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.push(requirements.decimals.unwrap_or(6));
+        // transferChecked accounts: [source, mint, destination, authority].
+        let transfer = UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1, 2, 3, 1],
+            data: bs58::encode(&data).into_string(),
+            stack_height: None,
+        };
+
+        let mut instructions = vec![transfer];
+        for memo in memos {
+            instructions.push(UiCompiledInstruction {
+                program_id_index: 4,
+                accounts: vec![],
+                data: bs58::encode(memo.as_bytes()).into_string(),
+                stack_height: None,
+            });
+        }
+
+        tx.transaction.transaction = EncodedTransaction::Json(UiTransaction {
+            signatures: vec!["sig".to_string()],
+            message: UiMessage::Raw(UiRawMessage {
+                header: MessageHeader {
+                    num_required_signatures: 1,
+                    num_readonly_signed_accounts: 0,
+                    num_readonly_unsigned_accounts: 2,
+                },
+                account_keys,
+                recent_blockhash: "blockhash".to_string(),
+                instructions,
+                address_table_lookups: None,
+            }),
+        });
+        tx
+    }
+
+    #[test]
+    fn verify_transaction_details_accepts_raw_transfer() {
+        let requirements = requirements("1000");
+        let tx = tx_with_raw_transfer_and_memos(&requirements, 1000, &[]);
+        assert!(verify_transaction_details(&tx, &requirements).is_ok());
+    }
+
+    #[test]
+    fn verify_transaction_details_raw_rejects_wrong_amount() {
+        let requirements = requirements("1000");
+        let tx = tx_with_raw_transfer_and_memos(&requirements, 999, &[]);
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(ref reason) if reason == "invalid_exact_svm_payload_no_transfer_instruction"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_transaction_details_raw_enforces_expected_memo() {
+        let mut requirements = requirements("1000");
+        requirements.extra = Some(serde_json::json!({ "memo": "hello" }));
+        let tx = tx_with_raw_transfer_and_memos(&requirements, 1000, &["hello"]);
+        assert!(verify_transaction_details(&tx, &requirements).is_ok());
+
+        // Mismatched memo text.
+        let tx_bad = tx_with_raw_transfer_and_memos(&requirements, 1000, &["world"]);
+        let err = verify_transaction_details(&tx_bad, &requirements).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_memo_mismatch")
+        );
+    }
+
+    #[test]
+    fn verify_transaction_details_raw_rejects_memo_count() {
+        let mut requirements = requirements("1000");
+        requirements.extra = Some(serde_json::json!({ "memo": "hello" }));
+        // Two memos when exactly one is expected.
+        let tx = tx_with_raw_transfer_and_memos(&requirements, 1000, &["hello", "hello"]);
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_memo_count")
+        );
+    }
+
+    #[test]
+    fn verify_transaction_details_rejects_non_json_encoding() {
+        // A base64/binary-encoded tx is not the JsonParsed shape we require.
+        let requirements = requirements("1000");
+        let mut tx = tx_with_meta(None);
+        tx.transaction.transaction = EncodedTransaction::LegacyBinary("aGVsbG8=".to_string());
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_no_transfer_instruction")
+        );
+    }
+
+    #[test]
+    fn verify_transaction_details_rejects_invalid_recipient() {
+        let mut requirements = requirements("1000");
+        requirements.recipient = "not-a-pubkey".to_string();
+        let tx = tx_with_meta(None);
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("Invalid recipient")));
+    }
+
+    #[test]
+    fn verify_transaction_details_rejects_invalid_token_program() {
+        let mut requirements = requirements("1000");
+        requirements.token_program = Some("bad".to_string());
+        let tx = tx_with_meta(None);
+        let err = verify_transaction_details(&tx, &requirements).unwrap_err();
+        assert!(matches!(err, Error::Other(reason) if reason.contains("Invalid token program")));
+    }
+
+    #[test]
+    fn verify_transaction_details_defaults_token_program_when_absent() {
+        // Build the tx against the default TOKEN_PROGRAM, then verify with
+        // token_program = None so the `unwrap_or_else` default branch runs and
+        // still resolves to the same destination ATA.
+        let with_program = requirements("1000");
+        let tx = tx_with_parsed_transfer_and_memos(&with_program, &[]);
+        let mut without_program = with_program.clone();
+        without_program.token_program = None;
+        assert!(verify_transaction_details(&tx, &without_program).is_ok());
+    }
+
+    // ---- versioned transaction error branches ----
+
+    #[test]
+    fn verify_exact_versioned_transaction_rejects_amount_mismatch() {
+        let mut requirements = requirements("1000");
+        requirements.amount = "2000".to_string();
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        // The versioned builder always transfers 1000, so 2000 required fails.
+        let tx =
+            build_exact_versioned_transaction(&requirements, &fee_payer, &owner, vec![memo_ix()]);
+        let err = verify_exact_versioned_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_amount_mismatch")
+        );
+    }
+
+    #[test]
+    fn verify_exact_transaction_rejects_invalid_utf8_memo() {
+        let mut requirements = requirements("1000");
+        requirements.extra = Some(serde_json::json!({ "memo": "expected" }));
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        // A memo with invalid UTF-8 bytes exercises the from_utf8 error path.
+        let bad_memo = Instruction {
+            program_id: Pubkey::from_str(programs::MEMO_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: vec![0xff, 0xfe],
+        };
+        let tx = build_exact_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![bad_memo],
+            1000,
+            None,
+            None,
+        );
+        let err = verify_exact_transaction(&tx, &requirements, &[fee_payer]).unwrap_err();
+        assert!(
+            matches!(err, Error::Other(reason) if reason == "invalid_exact_svm_payload_memo_mismatch")
+        );
+    }
+
+    #[test]
+    fn verify_exact_transaction_accepts_lighthouse_optional() {
+        // A LIGHTHOUSE_PROGRAM optional instruction is allowed (continue branch).
+        let requirements = requirements("1000");
+        let fee_payer = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let lighthouse = Instruction {
+            program_id: Pubkey::from_str(programs::LIGHTHOUSE_PROGRAM).unwrap(),
+            accounts: vec![],
+            data: vec![1],
+        };
+        let tx = build_exact_transaction(
+            &requirements,
+            &fee_payer,
+            &owner,
+            vec![lighthouse],
+            1000,
+            None,
+            None,
+        );
+        assert!(verify_exact_transaction(&tx, &requirements, &[fee_payer]).is_ok());
+    }
+
+    // ---- direct unit tests of the raw/parsed matcher and memo helpers ----
+
+    #[test]
+    fn matches_raw_transfer_rejects_bad_base58_data() {
+        let ix = UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1, 2, 3, 1],
+            data: "0OIl".to_string(), // invalid base58 alphabet
+            stack_height: None,
+        };
+        let account_keys = vec![
+            programs::TOKEN_PROGRAM.to_string(),
+            Pubkey::new_unique().to_string(),
+            Pubkey::new_unique().to_string(),
+            Pubkey::new_unique().to_string(),
+        ];
+        assert!(!matches_raw_transfer(&ix, &account_keys, "dest", "mint", 1));
+    }
+
+    #[test]
+    fn matches_raw_transfer_rejects_unknown_program_and_oob() {
+        // program_id_index out of range -> false.
+        let ix = UiCompiledInstruction {
+            program_id_index: 9,
+            accounts: vec![1, 2, 3, 1],
+            data: bs58::encode([12u8; 10]).into_string(),
+            stack_height: None,
+        };
+        assert!(!matches_raw_transfer(&ix, &[], "dest", "mint", 1));
+
+        // Too few accounts.
+        let mut data = vec![12u8];
+        data.extend_from_slice(&1u64.to_le_bytes());
+        data.push(6);
+        let ix2 = UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![1, 2],
+            data: bs58::encode(&data).into_string(),
+            stack_height: None,
+        };
+        let keys = vec![programs::TOKEN_PROGRAM.to_string()];
+        assert!(!matches_raw_transfer(&ix2, &keys, "dest", "mint", 1));
+    }
+
+    #[test]
+    fn matches_parsed_transfer_rejects_non_parsed_and_wrong_type() {
+        // A partially-decoded instruction is not a Parsed transfer.
+        let compiled = UiInstruction::Compiled(UiCompiledInstruction {
+            program_id_index: 0,
+            accounts: vec![],
+            data: "x".to_string(),
+            stack_height: None,
+        });
+        assert!(!matches_parsed_transfer(&compiled, "d", "m", "1"));
+
+        // Right program but wrong parsed `type`.
+        let wrong_type = UiInstruction::Parsed(UiParsedInstruction::Parsed(
+            serde_json::from_value(serde_json::json!({
+                "program": "spl-token",
+                "programId": programs::TOKEN_PROGRAM,
+                "parsed": { "type": "burn", "info": {} },
+                "stackHeight": null
+            }))
+            .unwrap(),
+        ));
+        assert!(!matches_parsed_transfer(&wrong_type, "d", "m", "1"));
+    }
+
+    #[test]
+    fn matches_parsed_transfer_rejects_wrong_program() {
+        let ix = UiInstruction::Parsed(UiParsedInstruction::Parsed(
+            serde_json::from_value(serde_json::json!({
+                "program": "system",
+                "programId": "11111111111111111111111111111111",
+                "parsed": { "type": "transferChecked", "info": {} },
+                "stackHeight": null
+            }))
+            .unwrap(),
+        ));
+        assert!(!matches_parsed_transfer(&ix, "d", "m", "1"));
+    }
+
+    #[test]
+    fn decode_memo_data_handles_valid_and_invalid() {
+        let encoded = bs58::encode(b"hi there").into_string();
+        assert_eq!(decode_memo_data(&encoded).unwrap(), "hi there");
+        // Invalid base58.
+        assert!(decode_memo_data("0OIl").is_err());
+        // Valid base58 but non-UTF8 bytes.
+        let bad = bs58::encode([0xffu8, 0xfe]).into_string();
+        assert!(decode_memo_data(&bad).is_err());
+    }
+
+    #[test]
+    fn parsed_memo_text_extracts_variants() {
+        assert_eq!(
+            parsed_memo_text(&serde_json::json!("plain")),
+            Some("plain".to_string())
+        );
+        assert_eq!(
+            parsed_memo_text(&serde_json::json!({ "info": { "memo": "m" } })),
+            Some("m".to_string())
+        );
+        assert_eq!(
+            parsed_memo_text(&serde_json::json!({ "info": { "data": "d" } })),
+            Some("d".to_string())
+        );
+        assert_eq!(parsed_memo_text(&serde_json::json!(42)), None);
+    }
+
+    #[test]
+    fn transaction_memos_reads_raw_and_parsed() {
+        let requirements = requirements("1000");
+        // Raw path with a memo.
+        let raw = tx_with_raw_transfer_and_memos(&requirements, 1000, &["raw-memo"]);
+        assert_eq!(
+            transaction_memos(&raw).unwrap(),
+            vec!["raw-memo".to_string()]
+        );
+
+        // Parsed path with a memo.
+        let parsed = tx_with_parsed_transfer_and_memos(&requirements, &["parsed-memo"]);
+        assert_eq!(
+            transaction_memos(&parsed).unwrap(),
+            vec!["parsed-memo".to_string()]
+        );
+
+        // Non-json encoding yields an empty memo list.
+        let mut binary = tx_with_meta(None);
+        binary.transaction.transaction = EncodedTransaction::LegacyBinary("x".to_string());
+        assert!(transaction_memos(&binary).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fetch_transaction_maps_rpc_error() {
+        // Points at a closed port so the RPC call fails with a transport error
+        // that is not "not found", mapping to Error::Rpc.
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_string());
+        let sig = Signature::default().to_string();
+        let err = fetch_transaction(&rpc, &sig).unwrap_err();
+        assert!(matches!(err, Error::Rpc(_)), "got: {err:?}");
     }
 }
