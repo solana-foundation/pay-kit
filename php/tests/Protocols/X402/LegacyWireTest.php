@@ -13,6 +13,7 @@ use PayKit\PayCore\Network;
 use PayKit\Price;
 use PayKit\Protocols\X402\Adapter;
 use PayKit\Signer;
+use PayKit\Store\MemoryStore;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ServerRequestInterface;
 use ReflectionMethod;
@@ -45,7 +46,7 @@ final class LegacyWireTest extends TestCase
             ),
             preflight: false,
         );
-        return new Adapter($config, recentBlockhashProvider: fn () => null);
+        return new Adapter($config, replayStore: new MemoryStore(), recentBlockhashProvider: fn () => null);
     }
 
     private function makeGate(): Gate

@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace PayKit\Protocols\X402;
 
 use PayKit\Config;
+use PayKit\Exception\ConfigurationException;
 use PayKit\Exception\InvalidProofException;
 use PayKit\Gate;
+use PayKit\PayCore\Network;
 use PayKit\Payment;
 use PayKit\Protocol;
 use PayKit\PayCore\Rpc\RpcGateway;
@@ -91,23 +93,39 @@ final class Adapter
                 . 'leave X402Config::$facilitatorUrl null for self-hosted',
             );
         }
-        if ($replayStore === null) {
-            self::warnDefaultReplayStore();
-            $replayStore = new MemoryStore();
-        }
-        $this->replayStore = $replayStore;
+        $this->replayStore = $replayStore ?? self::defaultReplayStore($config->network);
         $this->recentBlockhashProvider = $recentBlockhashProvider;
         $this->rpc = $rpc;
     }
 
-    private static function warnDefaultReplayStore(): void
+    /**
+     * Resolve the fallback replay store when the caller passed none.
+     *
+     * The in-memory default is only safe on localnet (single-process dev). Off
+     * localnet it is a replay hole: markers are process-local, so a restart or a
+     * second worker/replica would accept a replayed settlement. Fail closed
+     * unless `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` acknowledges single-process
+     * scope. Mirrors the MPP adapter guard.
+     */
+    private static function defaultReplayStore(Network $network): Store
     {
-        if (function_exists('error_log')) {
-            error_log(
-                'pay_kit: WARN: x402 adapter using in-memory replay store; '
-                . 'dev-only. Inject a shared atomic Store (Redis/Postgres) in production.',
+        $allowInMemory = getenv('PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE') === '1';
+        if ($network !== Network::SolanaLocalnet && !$allowInMemory) {
+            throw new ConfigurationException(
+                'pay_kit: a shared replay store is required outside localnet. The default in-memory '
+                . 'store is process-local, so a second replica or a restart would accept a replayed '
+                . 'settlement. Inject a shared, persistent Store (ideally one with an atomic reserve, '
+                . 'e.g. Redis SET NX) into the x402 adapter, or set '
+                . 'PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1 to acknowledge single-process replay scope.',
             );
         }
+        if ($network !== Network::SolanaLocalnet && function_exists('error_log')) {
+            error_log(
+                'pay_kit: WARN: x402 adapter using in-memory replay store off localnet '
+                . '(PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1); replay protection is process-local.',
+            );
+        }
+        return new MemoryStore();
     }
 
     private function rpc(): RpcGateway
