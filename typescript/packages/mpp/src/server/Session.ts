@@ -23,6 +23,7 @@ import type {
 import { normalizeSignedVoucher, verifyVoucherSignature } from '../shared/voucher.js';
 import { createLifecycle, type Lifecycle } from './session/lifecycle.js';
 import {
+    fetchTransactionBase64,
     isGetTransactionRpc,
     type MultiDelegateSubmitRpc,
     PAYMENT_CHANNELS_PROGRAM_ID,
@@ -112,6 +113,7 @@ export function session(parameters: session.Parameters) {
         openTxSubmitter = 'client',
         paymentChannelPayerSigner,
         settlementWindowSeconds,
+        trustedClientOpen,
     } = parameters;
 
     if (cap <= 0n) {
@@ -264,6 +266,7 @@ export function session(parameters: session.Parameters) {
                         recipient,
                         rpc,
                         store,
+                        trustedClientOpen,
                     });
                 case 'voucher':
                     return await handleVoucher({
@@ -415,6 +418,8 @@ interface HandleOpenArgs {
     readonly recipient: string;
     readonly rpc: RpcLike | undefined;
     readonly store: SessionStore;
+    /** Explicit opt-in: accept bare push-open assertions with no rpc. */
+    readonly trustedClientOpen: boolean | undefined;
 }
 
 async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
@@ -438,23 +443,23 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         throw new Error('open payload missing transaction or channelId');
     }
 
+    const expected = {
+        authorizedSigner: payload.authorizedSigner,
+        currency: args.currency,
+        maxCap: args.cap,
+        mint: args.mint,
+        network: args.network,
+        operator: args.operator,
+        programId: args.programId.toString(),
+        recipient: args.recipient,
+    };
+
     if (payload.transaction) {
         // Payment-channel-backed open. This covers push sessions and
         // clientVoucher pull sessions whose deposit lives in an on-chain
         // payment channel (the `createPaymentChannelSessionOpener` flow):
         // both attach the pre-signed open transaction for verification —
         // and, with `openTxSubmitter: 'server'`, server-side broadcast.
-        const expected = {
-            authorizedSigner: payload.authorizedSigner,
-            currency: args.currency,
-            maxCap: args.cap,
-            mint: args.mint,
-            network: args.network,
-            operator: args.operator,
-            programId: args.programId.toString(),
-            recipient: args.recipient,
-        };
-
         if (args.openTxSubmitter === 'server') {
             if (!args.rpc) throw new Error('openTxSubmitter=server requires an rpc client');
             // Decode (no RPC) first so an idempotent replay of an
@@ -491,18 +496,38 @@ async function handleOpen(args: HandleOpenArgs): Promise<Receipt.Receipt> {
         }
     } else if (mode === 'push') {
         // No transaction in payload: the client asserts a previously
-        // broadcast open. When an RPC client is configured the open
-        // signature is confirmed on-chain before persisting (mirrors
-        // Rust `process_open`); without one the channelId/deposit
-        // fields are trusted as-is, matching Rust with `rpc_url`
-        // unset. The generated payment-channels client has no Channel
-        // account decoder yet, so the on-chain channel fields
-        // (payee/mint/authorizedSigner/deposit) are not re-checked.
+        // broadcast open. When an RPC client is configured, the open
+        // transaction is fetched by the asserted signature and run
+        // through the full verifyOpenTx binding — a live signature alone
+        // proves nothing about the asserted channelId/deposit. Without
+        // an RPC the fields would be trusted as-is, so that mode
+        // requires the explicit `trustedClientOpen` opt-in.
         channelId = expectString(payload.channelId, 'channelId');
         deposit = parseU64String(expectString(payload.deposit, 'deposit'), 'deposit');
         signature = payload.signature;
         if (args.rpc) {
-            await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, expectString(signature, 'signature'), 'open');
+            const sig = expectString(signature, 'signature');
+            await assertSignatureSucceeded(args.rpc as VerifyOpenRpc, sig, 'open');
+            if (!isGetTransactionRpc(args.rpc)) {
+                throw new Error(
+                    'open: configured rpc does not expose getTransaction — cannot bind the open signature to a transaction',
+                );
+            }
+            const transaction = await fetchTransactionBase64(args.rpc, sig, 'open');
+            // verifyOpenTx re-checks payload.channelId against the tx's
+            // channel PDA and payload.signature against the tx's own
+            // fee-payer signature, so an unrelated (but successful)
+            // signature or a foreign channel id cannot pass.
+            const verified = await verifyOpenTx({ expected, openPayload: { ...payload, transaction } });
+            if (verified.deposit !== deposit) {
+                throw new Error(`open: asserted deposit ${deposit} != transaction deposit ${verified.deposit}`);
+            }
+            channelId = verified.channelId;
+            channelPayer = verified.payer;
+        } else if (!args.trustedClientOpen) {
+            throw new Error(
+                'open: bare push open (no transaction bytes) requires an rpc for verification; set trustedClientOpen to accept client-asserted channels without one',
+            );
         }
     } else {
         // pull mode: trust the channelId/tokenAccount + approvedAmount.
@@ -1305,5 +1330,15 @@ export declare namespace session {
         readonly store?: SessionStore;
         /** SPL token program (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from currency/network. */
         readonly tokenProgram?: string;
+        /**
+         * Explicit opt-in to accept bare push-open assertions — payloads
+         * carrying only `channelId`/`deposit`/`signature`, no transaction
+         * bytes — when no `rpc` is configured. Without an rpc the server
+         * cannot verify that the asserted channel exists, targets this
+         * recipient, or holds the claimed deposit, so it is trusting the
+         * client outright. Enable only for trusted first-party clients.
+         * Defaults to false: a bare push open with no rpc is rejected.
+         */
+        readonly trustedClientOpen?: boolean;
     }
 }

@@ -80,6 +80,9 @@ function baseParams(overrides: Record<string, unknown> = {}) {
         operator: OPERATOR,
         pricing: {},
         recipient: RECIPIENT,
+        // Tests in this suite open channels via bare push assertions with
+        // no rpc — that path now requires the explicit trusted-client opt-in.
+        trustedClientOpen: true,
         ...overrides,
     } as Parameters<typeof session>[0];
 }
@@ -624,22 +627,26 @@ describe('session() request() optional-field branches', () => {
 // ── open signature verification against an RPC ──────────────────────────
 
 describe('session() verify() open signature checks', () => {
-    test('a confirmed open signature is accepted when an rpc is configured', async () => {
+    test('a bare open against a status-only rpc fails closed (cannot fetch the transaction)', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
+        // The signature is confirmed, but a status-only rpc cannot fetch
+        // the transaction to bind the asserted channelId/deposit to it.
         const method = session(baseParams({ store, rpc: mockStatusRpc({ 'good-sig': { err: null } }) as never }));
-        const receipt = await method.verify({
-            credential: makeCred({
-                action: 'open',
-                authorizedSigner: signer.address,
-                channelId: CHANNEL_ID,
-                deposit: '1000',
-                mode: 'push',
-                signature: 'good-sig',
+        await expect(
+            method.verify({
+                credential: makeCred({
+                    action: 'open',
+                    authorizedSigner: signer.address,
+                    channelId: CHANNEL_ID,
+                    deposit: '1000',
+                    mode: 'push',
+                    signature: 'good-sig',
+                }),
+                request: {} as never,
             }),
-            request: {} as never,
-        });
-        expect(receipt.status).toBe('success');
+        ).rejects.toThrow(/does not expose getTransaction/);
+        expect(await store.getChannel(CHANNEL_ID)).toBeUndefined();
     });
 
     test('an unknown open signature is rejected when an rpc is configured', async () => {
@@ -942,8 +949,11 @@ describe('session() verify() close with on-chain settle', () => {
         const merchant = await generateKeyPairSigner();
         const method = session(baseParams({ store, rpc: mockSettleRpc() as never, signer: merchant }));
 
-        // Open with a payer so the refund destination is recorded.
-        await method.verify({
+        // Open with a payer so the refund destination is recorded. The open
+        // goes through a trusted no-rpc method sharing the store — the rpc
+        // method under test would require a fetchable open transaction.
+        const openMethod = session(baseParams({ store }));
+        await openMethod.verify({
             credential: makeCred({
                 action: 'open',
                 authorizedSigner: signer.address,

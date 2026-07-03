@@ -99,7 +99,7 @@ async function openPushChannel(
     signer: KeyPairSigner,
     options: { channelId?: string; deposit?: string; payer?: string } = {},
 ) {
-    const method = session(baseParams({ store }));
+    const method = session(baseParams({ store, trustedClientOpen: true }));
     await method.verify({
         credential: makeCred({
             action: 'open',

@@ -38,6 +38,25 @@ function mockStatusRpc(statuses: Record<string, { err: unknown } | null | undefi
 
 const FAR_FUTURE = Math.floor(Date.now() / 1000) + 3600;
 
+/**
+ * Open a channel through a trusted no-rpc session sharing `store`, so
+ * rpc-configured methods under test never see the bare open assertion.
+ */
+async function openTrusted(store: ReturnType<typeof createMemorySessionStore>, payload: Record<string, unknown>) {
+    const method = session({
+        cap: 5_000_000n,
+        currency: 'USDC',
+        decimals: 6,
+        network: 'devnet',
+        operator: OPERATOR,
+        pricing: {},
+        recipient: RECIPIENT,
+        store,
+        trustedClientOpen: true,
+    });
+    await method.verify({ credential: makeCred(payload), request: {} as never });
+}
+
 async function makeSignedVoucher(
     signer: KeyPairSigner,
     channelId: string,
@@ -106,6 +125,7 @@ describe('session() request()', () => {
 
     test('builds a SessionRequest that satisfies the canonical schema', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 10_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -133,6 +153,7 @@ describe('session() request()', () => {
 
     test('clamps requested cap to the server max', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -150,6 +171,7 @@ describe('session() request()', () => {
 
     test('includes modes + pullVoucherStrategy when pull is advertised', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -171,6 +193,7 @@ describe('session() request()', () => {
 
     test('skips blockhash prefetch when a credential is present', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -195,6 +218,7 @@ describe('session() verify() open', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -228,6 +252,7 @@ describe('session() verify() open', () => {
 
     test('open rejects when mode is not advertised', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -254,6 +279,7 @@ describe('session() verify() open', () => {
 
     test('open rejects deposit exceeding cap', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000n,
             currency: 'USDC',
             decimals: 6,
@@ -286,6 +312,7 @@ describe('session() verify() voucher', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -323,6 +350,7 @@ describe('session() verify() voucher', () => {
 
     test('rejects voucher for unknown channel', async () => {
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -345,6 +373,7 @@ describe('session() verify() voucher', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -388,6 +417,7 @@ describe('session() verify() topUp', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -429,6 +459,7 @@ describe('session() verify() topUp', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -469,6 +500,7 @@ describe('session() verify() close', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -507,6 +539,7 @@ describe('session() verify() close', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -546,6 +579,7 @@ describe('session() verify() commit', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -624,6 +658,7 @@ describe('session.routes()', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -694,6 +729,7 @@ describe('session() verify() open replay', () => {
 
     function makeMethod(store: ReturnType<typeof createMemorySessionStore>) {
         return session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -767,11 +803,15 @@ describe('session() verify() open replay', () => {
 describe('session() verify() open signature verification', () => {
     const channelId = '11111111111111111111111111111111';
 
-    test('verifies the open signature on-chain when rpc is configured', async () => {
+    test('bare open against a status-only rpc fails closed after the liveness check', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
+        // The signature is confirmed on-chain, but a status-only rpc
+        // cannot fetch the transaction to bind the asserted
+        // channelId/deposit — the open must be rejected.
         const rpc = mockStatusRpc({ 'open-sig': { err: null } });
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -783,20 +823,21 @@ describe('session() verify() open signature verification', () => {
             store,
         });
 
-        const receipt = await method.verify({
-            credential: makeCred({
-                action: 'open',
-                authorizedSigner: signer.address,
-                channelId,
-                deposit: '1000',
-                mode: 'push',
-                signature: 'open-sig',
+        await expect(
+            method.verify({
+                credential: makeCred({
+                    action: 'open',
+                    authorizedSigner: signer.address,
+                    channelId,
+                    deposit: '1000',
+                    mode: 'push',
+                    signature: 'open-sig',
+                }),
+                request: {} as never,
             }),
-            request: {} as never,
-        });
-        expect(receipt.status).toBe('success');
+        ).rejects.toThrow(/does not expose getTransaction/);
         expect(rpc.calls).toContain('open-sig');
-        expect(await store.getChannel(channelId)).toBeDefined();
+        expect(await store.getChannel(channelId)).toBeUndefined();
     });
 
     test('rejects when the open signature is unknown on-chain', async () => {
@@ -804,6 +845,7 @@ describe('session() verify() open signature verification', () => {
         const signer = await generateKeyPairSigner();
         const rpc = mockStatusRpc({});
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -836,6 +878,7 @@ describe('session() verify() open signature verification', () => {
         const signer = await generateKeyPairSigner();
         const rpc = mockStatusRpc({ 'open-sig': { err: { InstructionError: [0, 'Custom'] } } });
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -870,6 +913,7 @@ describe('session() verify() pull open keying', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -909,6 +953,7 @@ describe('session() verify() voucher wire compatibility', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -987,6 +1032,7 @@ describe('session() verify() voucher wire compatibility', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1041,10 +1087,31 @@ describe('session() verify() topUp hardening', () => {
         });
     }
 
+    /** Open through a trusted no-rpc method sharing `store`, so only the
+     * top-up under test hits the rpc-configured method. */
+    async function openChannelTrusted(
+        store: ReturnType<typeof createMemorySessionStore>,
+        signer: KeyPairSigner,
+    ): Promise<void> {
+        const method = session({
+            cap: 5_000_000n,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'devnet',
+            operator: OPERATOR,
+            pricing: {},
+            recipient: RECIPIENT,
+            store,
+            trustedClientOpen: true,
+        });
+        await openChannel(method, signer);
+    }
+
     test('topUp rejects when close is pending', async () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1069,6 +1136,7 @@ describe('session() verify() topUp hardening', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1097,6 +1165,7 @@ describe('session() verify() topUp hardening', () => {
         // rejected rather than trust the client-asserted newDeposit.
         const rpc = mockStatusRpc({ 'open-sig': { err: null }, 'topup-sig': { err: null } });
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1107,7 +1176,7 @@ describe('session() verify() topUp hardening', () => {
             rpc: rpc as never,
             store,
         });
-        await openChannel(method, signer);
+        await openChannelTrusted(store, signer);
 
         await expect(
             method.verify({
@@ -1124,6 +1193,7 @@ describe('session() verify() topUp hardening', () => {
         const signer = await generateKeyPairSigner();
         const rpc = mockStatusRpc({ 'open-sig': { err: null } });
         const method = session({
+            trustedClientOpen: true,
             cap: 5_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1134,7 +1204,7 @@ describe('session() verify() topUp hardening', () => {
             rpc: rpc as never,
             store,
         });
-        await openChannel(method, signer);
+        await openChannelTrusted(store, signer);
 
         await expect(
             method.verify({
@@ -1160,6 +1230,7 @@ describe('session() verify() close monotonicity', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1252,6 +1323,7 @@ describe('session() verify() close retry', () => {
         };
 
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1264,17 +1336,16 @@ describe('session() verify() close retry', () => {
             store,
         });
 
-        await method.verify({
-            credential: makeCred({
-                action: 'open',
-                authorizedSigner: signer.address,
-                channelId,
-                deposit: '1000',
-                mode: 'push',
-                payer: signer.address,
-                signature: 'open-sig',
-            }),
-            request: {} as never,
+        // Open through a trusted no-rpc method sharing the store — the
+        // rpc-configured method would demand a fetchable open transaction.
+        await openTrusted(store, {
+            action: 'open',
+            authorizedSigner: signer.address,
+            channelId,
+            deposit: '1000',
+            mode: 'push',
+            payer: signer.address,
+            signature: 'open-sig',
         });
 
         // First close: settlement submit fails — close stays pending.
@@ -1320,6 +1391,7 @@ describe('session() verify() close retry', () => {
             sendTransaction: () => ({ send: async () => 'Sig' }),
         };
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1332,16 +1404,13 @@ describe('session() verify() close retry', () => {
             store,
         });
         // Push open with NO payer field → no refund destination recorded.
-        await method.verify({
-            credential: makeCred({
-                action: 'open',
-                authorizedSigner: signer.address,
-                channelId,
-                deposit: '1000',
-                mode: 'push',
-                signature: 'open-sig',
-            }),
-            request: {} as never,
+        await openTrusted(store, {
+            action: 'open',
+            authorizedSigner: signer.address,
+            channelId,
+            deposit: '1000',
+            mode: 'push',
+            signature: 'open-sig',
         });
         // The settle must refuse rather than refund the merchant (args.recipient).
         await expect(
@@ -1357,6 +1426,7 @@ describe('session() verify() commit replay', () => {
         const store = createMemorySessionStore();
         const signer = await generateKeyPairSigner();
         const method = session({
+            trustedClientOpen: true,
             cap: 1_000_000n,
             currency: 'USDC',
             decimals: 6,
@@ -1415,6 +1485,7 @@ describe('session() default store sharing', () => {
             operator: OPERATOR,
             pricing: {},
             recipient: RECIPIENT,
+            trustedClientOpen: true,
         };
         const method = session(parameters);
         const routes = session.routes(parameters);

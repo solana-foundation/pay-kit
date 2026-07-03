@@ -658,6 +658,41 @@ export function isGetTransactionRpc(rpc: unknown): rpc is GetTransactionRpc {
     return typeof rpc === 'object' && rpc !== null && typeof (rpc as GetTransactionRpc).getTransaction === 'function';
 }
 
+/**
+ * Fetch a landed transaction's base64 wire bytes by signature. Throws if
+ * the transaction is unknown, failed on-chain, or the RPC answers with a
+ * non-base64 encoding.
+ */
+export async function fetchTransactionBase64(
+    rpc: GetTransactionRpc,
+    signature: string,
+    context: string,
+): Promise<string> {
+    const response = await rpc
+        .getTransaction(signature as Signature, {
+            commitment: 'confirmed',
+            encoding: 'base64',
+            maxSupportedTransactionVersion: 0,
+        })
+        .send();
+    if (!response) {
+        throw new Error(`${context}: tx ${signature} not found on-chain`);
+    }
+    if (response.meta?.err) {
+        throw new Error(`${context}: tx ${signature} failed on-chain: ${JSON.stringify(response.meta.err)}`);
+    }
+
+    // `encoding: 'base64'` responses carry a `[data, 'base64']` tuple; be
+    // lenient about a bare string but reject anything else (e.g. a
+    // jsonParsed shape) rather than guess at its account ordering.
+    const raw = response.transaction;
+    const transactionBase64 = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+    if (typeof transactionBase64 !== 'string') {
+        throw new Error(`${context}: unsupported getTransaction encoding (expected base64)`);
+    }
+    return transactionBase64;
+}
+
 /** Expected channel facts a top-up transaction must be bound to. */
 export interface VerifyTopUpTxExpected {
     /** Exact deposit increase (`newDeposit - currentDeposit`), base units. */
@@ -695,28 +730,7 @@ export interface VerifyTopUpTxArgs {
  */
 export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
     const { expected } = args;
-    const response = await args.rpc
-        .getTransaction(args.signature as Signature, {
-            commitment: 'confirmed',
-            encoding: 'base64',
-            maxSupportedTransactionVersion: 0,
-        })
-        .send();
-    if (!response) {
-        throw new Error(`verifyTopUpTx: tx ${args.signature} not found on-chain`);
-    }
-    if (response.meta?.err) {
-        throw new Error(`verifyTopUpTx: tx ${args.signature} failed on-chain: ${JSON.stringify(response.meta.err)}`);
-    }
-
-    // `encoding: 'base64'` responses carry a `[data, 'base64']` tuple; be
-    // lenient about a bare string but reject anything else (e.g. a
-    // jsonParsed shape) rather than guess at its account ordering.
-    const raw = response.transaction;
-    const transactionBase64 = Array.isArray(raw) ? (raw[0] as unknown) : raw;
-    if (typeof transactionBase64 !== 'string') {
-        throw new Error('verifyTopUpTx: unsupported getTransaction encoding (expected base64)');
-    }
+    const transactionBase64 = await fetchTransactionBase64(args.rpc, args.signature, 'verifyTopUpTx');
 
     const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as {
