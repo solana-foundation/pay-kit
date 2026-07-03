@@ -13,9 +13,10 @@
 //! `send_and_confirm_transaction` call while the mock answers it from its own
 //! thread — no runtime interference, no deadlock.
 //!
-//! Only the four methods the settlement paths touch are implemented:
-//! `getLatestBlockhash`, `sendTransaction`, `getSignatureStatuses`, and
-//! `getAccountInfo`. `sendTransaction` echoes back the submitted transaction's
+//! Only the methods the settlement paths touch are implemented:
+//! `getLatestBlockhash`, `sendTransaction`, `getSignatureStatuses`,
+//! `getAccountInfo`, and `getTransaction` (the last for the mpp push-mode
+//! `verify_on_chain` path). `sendTransaction` echoes back the submitted transaction's
 //! own signature (the real client rejects a mismatched signature), and
 //! `getSignatureStatuses` reports an immediately-finalized status so the confirm
 //! loop returns on the first poll.
@@ -39,6 +40,10 @@ struct MockState {
     /// `getAccountInfo` → account data keyed by base58 pubkey. Missing keys
     /// return `null` (account-not-found).
     accounts: HashMap<String, MockAccount>,
+    /// `getTransaction` → a canned `result` value keyed by base58 signature.
+    /// Missing keys return a "not found"-shaped JSON-RPC error so the mpp
+    /// push-mode path can exercise both the found and not-found branches.
+    transactions: HashMap<String, serde_json::Value>,
     /// When set, `sendTransaction` fails with this JSON-RPC error message
     /// (drives the broadcast-error branch).
     send_error: Option<String>,
@@ -118,6 +123,19 @@ impl MockRpc {
                 owner: owner.to_string(),
             },
         );
+    }
+
+    /// Register a canned `getTransaction` result for `signature` (base58).
+    /// `result` is the full JSON-RPC `result` value — i.e. a serialized
+    /// `EncodedConfirmedTransactionWithStatusMeta`. Signatures without a
+    /// registered result get a "Transaction not found"-shaped error so the
+    /// mpp push-mode not-found branch is reachable.
+    pub fn set_transaction(&self, signature: &str, result: serde_json::Value) {
+        self.state
+            .lock()
+            .unwrap()
+            .transactions
+            .insert(signature.to_string(), result);
     }
 
     /// Make `sendTransaction` fail (broadcast-error branch).
@@ -251,7 +269,7 @@ fn dispatch(body: &[u8], state: &Arc<Mutex<MockState>>) -> String {
                 serde_json::json!({
                     "slot": 1,
                     "confirmations": serde_json::Value::Null,
-                    "status": {"Err": {"InstructionError": [0, "Custom"]}},
+                    "status": {"Err": {"InstructionError": [0, {"Custom": 6}]}},
                     "err": {"InstructionError": [0, {"Custom": 6}]},
                     "confirmationStatus": "finalized",
                 })
@@ -303,6 +321,20 @@ fn dispatch(body: &[u8], state: &Arc<Mutex<MockState>>) -> String {
                     id,
                     serde_json::json!({"context": {"slot": 1}, "value": serde_json::Value::Null}),
                 ),
+            }
+        }
+        "getTransaction" => {
+            let signature = params
+                .get(0)
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string();
+            match st.transactions.get(&signature) {
+                Some(result) => result_response(id, result.clone()),
+                // Unknown signature: surface a JSON-RPC error whose message
+                // contains "not found" so the mpp push-mode path maps it to
+                // `not_found` (its branch keys on that substring).
+                None => error_response(id, -32004, "Transaction not found"),
             }
         }
         // Unknown method: report success-shaped null so a stray call never hangs
