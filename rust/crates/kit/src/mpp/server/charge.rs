@@ -29,12 +29,12 @@
 use std::{collections::HashSet, sync::Arc};
 
 use crate::core::rpc::SKIP_PREFLIGHT_SEND;
-use solana_client::client_error::{ClientError, ClientErrorKind};
-use solana_client::rpc_request::{RpcError, RpcResponseErrorData};
-use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
+use solana_rpc_client_api::client_error::{Error as ClientError, ErrorKind as ClientErrorKind};
+use solana_rpc_client_api::request::{RpcError, RpcResponseErrorData};
+use solana_rpc_client_api::response::RpcSimulateTransactionResult;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 // Legacy `Transaction` is only needed by the test-only pre-broadcast helper.

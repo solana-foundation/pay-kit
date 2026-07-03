@@ -31,4 +31,5 @@ pub use siwx::*;
 
 // Re-export crates callers need to use with the payment builder.
 pub use solana_keychain;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use solana_rpc_client;

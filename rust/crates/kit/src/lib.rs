@@ -21,6 +21,31 @@
 //! - [`generated`]: Codama-generated program clients (payment-channels +
 //!   subscriptions), consumed by `core`/`mpp`.
 
+// Server-side features need a tokio runtime and/or the native RPC client,
+// neither of which exists on browser wasm. Fail early with a readable message
+// instead of a cascade of missing-crate errors. Supported on wasm: `mpp`,
+// `x402`, `client` (via the `_offline` builder variants).
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    any(
+        feature = "server",
+        feature = "axum",
+        feature = "worker",
+        feature = "testkit",
+        feature = "confidential",
+        feature = "fetch",
+        feature = "gcp_kms",
+        feature = "otel",
+    )
+))]
+compile_error!(
+    "solana-pay-kit on wasm32-unknown-unknown supports only the `mpp`, `x402`, \
+     and `client` features; server-side features (`server`, `axum`, `worker`, \
+     `testkit`, `confidential`, `fetch`, `gcp_kms`, `otel`) require a native \
+     tokio runtime / RPC client"
+);
+
 /// Codama-generated program clients (payment-channels + subscriptions).
 #[cfg(any(feature = "mpp", feature = "x402"))]
 pub mod generated;

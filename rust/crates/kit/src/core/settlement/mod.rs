@@ -6,6 +6,9 @@
 //! timer, signing with the operator and broadcasting.
 
 pub mod packing;
+// The worker drives a tokio run-loop over a native RPC client; neither exists
+// on browser wasm (packing, the pure half, stays available there).
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub mod worker;
 
 /// Test/demo harness (open real channels, fund via cheatcodes, drive + observe

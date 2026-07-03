@@ -5,11 +5,13 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::SolanaSigner;
 use solana_message::{v0, VersionedMessage};
 use solana_pubkey::Pubkey;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
 use solana_transaction::versioned::VersionedTransaction;
 
+use crate::core::chain_source::ChainSource;
 use crate::x402::{
     error::Error,
     protocol::schemes::exact::{
@@ -25,9 +27,30 @@ use crate::x402::{
 /// Build a payment transaction from x402 payment requirements.
 ///
 /// Returns a `PaymentPayload` ready to be wrapped in `PAYMENT-SIGNATURE`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_payment(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
+    requirements: &PaymentRequirements,
+) -> Result<PaymentPayload, Error> {
+    build_payment_from_source(signer, ChainSource::Rpc(rpc), requirements).await
+}
+
+/// Build a payment transaction without an RPC client.
+///
+/// Like [`build_payment`], but never falls back to a chain fetch: the
+/// requirements must carry `recentBlockhash`. This is the only payment
+/// builder available on wasm32-unknown-unknown, where no RPC client exists.
+pub async fn build_payment_offline(
+    signer: &dyn SolanaSigner,
+    requirements: &PaymentRequirements,
+) -> Result<PaymentPayload, Error> {
+    build_payment_from_source(signer, ChainSource::OFFLINE, requirements).await
+}
+
+async fn build_payment_from_source(
+    signer: &dyn SolanaSigner,
+    source: ChainSource<'_>,
     requirements: &PaymentRequirements,
 ) -> Result<PaymentPayload, Error> {
     let amount: u64 = requirements
@@ -78,8 +101,19 @@ pub async fn build_payment(
     let blockhash = if let Some(bh) = &requirements.recent_blockhash {
         Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))?
     } else {
-        rpc.get_latest_blockhash()
-            .map_err(|e| Error::Rpc(e.to_string()))?
+        match source {
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            ChainSource::Rpc(rpc) => rpc
+                .get_latest_blockhash()
+                .map_err(|e| Error::Rpc(e.to_string()))?,
+            ChainSource::Offline(_) => {
+                return Err(Error::Other(
+                    "Requirements are missing recentBlockhash and no RPC client is \
+                     available to fetch one (offline build)"
+                        .into(),
+                ))
+            }
+        }
     };
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
@@ -129,6 +163,7 @@ pub async fn build_payment(
 /// [`PaymentExtensions::echoing`] and
 /// [`PaymentExtensions::with_payment_identifier_id`]. Pass `None` when
 /// the server didn't advertise any extensions.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_payment_header(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -136,6 +171,28 @@ pub async fn build_payment_header(
     extensions: Option<PaymentExtensions>,
 ) -> Result<String, Error> {
     let payload = build_payment(signer, rpc, requirements).await?;
+    encode_v2_payment_header(requirements, payload, extensions)
+}
+
+/// Build a `PAYMENT-SIGNATURE` header value without an RPC client.
+///
+/// Like [`build_payment_header`], but never falls back to a chain fetch: the
+/// requirements must carry `recentBlockhash`. This is the only header builder
+/// available on wasm32-unknown-unknown, where no RPC client exists.
+pub async fn build_payment_header_offline(
+    signer: &dyn SolanaSigner,
+    requirements: &PaymentRequirements,
+    extensions: Option<PaymentExtensions>,
+) -> Result<String, Error> {
+    let payload = build_payment_offline(signer, requirements).await?;
+    encode_v2_payment_header(requirements, payload, extensions)
+}
+
+fn encode_v2_payment_header(
+    requirements: &PaymentRequirements,
+    payload: PaymentPayload,
+    extensions: Option<PaymentExtensions>,
+) -> Result<String, Error> {
     let envelope = PaymentSignatureEnvelope {
         scheme: None,
         network: None,
@@ -150,12 +207,30 @@ pub async fn build_payment_header(
 }
 
 /// Build a legacy v1 `X-PAYMENT` header value for older integrations.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_payment_header_v1(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
     requirements: &PaymentRequirements,
 ) -> Result<String, Error> {
     let payload = build_payment(signer, rpc, requirements).await?;
+    encode_v1_payment_header(requirements, payload)
+}
+
+/// Build a legacy v1 `X-PAYMENT` header value without an RPC client (see
+/// [`build_payment_offline`] for the constraints).
+pub async fn build_payment_header_v1_offline(
+    signer: &dyn SolanaSigner,
+    requirements: &PaymentRequirements,
+) -> Result<String, Error> {
+    let payload = build_payment_offline(signer, requirements).await?;
+    encode_v1_payment_header(requirements, payload)
+}
+
+fn encode_v1_payment_header(
+    requirements: &PaymentRequirements,
+    payload: PaymentPayload,
+) -> Result<String, Error> {
     let envelope = PaymentSignatureEnvelope {
         scheme: Some(EXACT_SCHEME.to_string()),
         network: Some(v1_network_for_requirements(requirements).to_string()),
@@ -1032,6 +1107,33 @@ mod tests {
         assert_eq!(tx.message.instructions()[0].data[0], 2);
         assert_eq!(tx.message.instructions()[1].data[0], 3);
         assert!(memo_instruction_from_tx(&tx).accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_payment_offline_with_blockhash_succeeds() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let requirements = test_requirements("USDC");
+
+        let payload = build_payment_offline(&signer, &requirements).await.unwrap();
+        assert!(matches!(payload.proof, PaymentProof::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_payment_offline_missing_blockhash_is_descriptive() {
+        let signer = MockSigner {
+            pubkey: Pubkey::new_unique(),
+            fail_sign: false,
+        };
+        let mut requirements = test_requirements("USDC");
+        requirements.recent_blockhash = None;
+
+        let err = build_payment_offline(&signer, &requirements)
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("recentBlockhash"));
     }
 
     #[tokio::test]

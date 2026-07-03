@@ -14,3 +14,8 @@ members = [
 [patch.crates-io]
 litesvm = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
 litesvm-token = { git = "https://github.com/LiteSVM/litesvm.git", branch = "master" }
+# solana-keychain 1.4.0 hard-depends on tokio `full`, which cannot build for
+# wasm32-unknown-unknown (mio). The fix (tokio optional, only pulled by the
+# polling remote backends) is on this branch; drop the patch once it lands in
+# a crates.io release (> 1.4.0) and bump the kit dependency instead.
+solana-keychain = { git = "https://github.com/solana-foundation/solana-keychain.git", branch = "fix/rust-wasm-tokio" }

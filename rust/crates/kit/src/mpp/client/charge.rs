@@ -3,12 +3,14 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_keychain::SolanaSigner;
 use solana_message::Message;
 use solana_pubkey::Pubkey;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
 use solana_system_interface::instruction as system_instruction;
 use solana_transaction::Transaction;
 use std::str::FromStr;
 
+use crate::core::chain_source::ChainSource;
 use crate::mpp::error::Error;
 use crate::mpp::protocol::core::{
     format_authorization, parse_www_authenticate, PaymentChallenge, PaymentCredential,
@@ -22,6 +24,7 @@ use crate::mpp::protocol::solana::{
 ///
 /// Returns a `CredentialPayload::Transaction` with the signed (or
 /// partially signed) transaction ready to send to the server.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_charge_transaction(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -38,6 +41,53 @@ pub async fn build_charge_transaction(
         recipient,
         method_details,
         BuildChargeTransactionOptions::default(),
+    )
+    .await
+}
+
+/// Build a charge transaction without an RPC client.
+///
+/// Like [`build_charge_transaction`], but never falls back to a chain fetch:
+/// the challenge's `methodDetails` must carry `recentBlockhash` (and
+/// `tokenProgram` for SPL charges). This is the only builder available on
+/// wasm32-unknown-unknown, where no RPC client exists.
+pub async fn build_charge_transaction_offline(
+    signer: &dyn SolanaSigner,
+    amount: &str,
+    currency: &str,
+    recipient: &str,
+    method_details: &MethodDetails,
+) -> Result<CredentialPayload, Error> {
+    build_charge_transaction_from_source(
+        signer,
+        ChainSource::OFFLINE,
+        amount,
+        currency,
+        recipient,
+        method_details,
+        BuildChargeTransactionOptions::default(),
+    )
+    .await
+}
+
+/// Like [`build_charge_transaction_offline`], with explicit
+/// [`BuildChargeTransactionOptions`].
+pub async fn build_charge_transaction_offline_with_options(
+    signer: &dyn SolanaSigner,
+    amount: &str,
+    currency: &str,
+    recipient: &str,
+    method_details: &MethodDetails,
+    options: BuildChargeTransactionOptions,
+) -> Result<CredentialPayload, Error> {
+    build_charge_transaction_from_source(
+        signer,
+        ChainSource::OFFLINE,
+        amount,
+        currency,
+        recipient,
+        method_details,
+        options,
     )
     .await
 }
@@ -96,28 +146,63 @@ pub struct SelectChargeChallengeOptions<'a> {
     pub allow_unknown_token_2022: bool,
 }
 
-/// Build a charge transaction from challenge parameters and additional client options.
 /// Resolve the blockhash to sign with: prefer the server-provided
-/// `recentBlockhash`, else fetch one at `confirmed` commitment.
+/// `recentBlockhash`, else fetch one at `confirmed` commitment (native only —
+/// the offline source errors instead).
 ///
 /// Audit #36: ask for `confirmed` explicitly instead of leaning on the RPC
 /// client's default commitment. Solana's client guidance recommends
 /// `confirmed` for blockhash fetches — a `processed` hash can disappear under
 /// reorgs and produce signed transactions that fail with BlockhashNotFound.
-fn resolve_blockhash(rpc: &RpcClient, method_details: &MethodDetails) -> Result<Hash, Error> {
+fn resolve_blockhash(
+    source: ChainSource<'_>,
+    method_details: &MethodDetails,
+) -> Result<Hash, Error> {
     if let Some(bh) = &method_details.recent_blockhash {
-        Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")))
-    } else {
-        use solana_commitment_config::CommitmentConfig;
-        rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
-            .map(|(hash, _last_valid_block_height)| hash)
-            .map_err(|e| Error::Rpc(e.to_string()))
+        return Hash::from_str(bh).map_err(|e| Error::Other(format!("Invalid blockhash: {e}")));
+    }
+    match source {
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        ChainSource::Rpc(rpc) => {
+            use solana_commitment_config::CommitmentConfig;
+            rpc.get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+                .map(|(hash, _last_valid_block_height)| hash)
+                .map_err(|e| Error::Rpc(e.to_string()))
+        }
+        ChainSource::Offline(_) => Err(Error::Other(
+            "Challenge is missing methodDetails.recentBlockhash and no RPC client is \
+             available to fetch one (offline build)"
+                .into(),
+        )),
     }
 }
 
+/// Build a charge transaction from challenge parameters and additional client options.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_charge_transaction_with_options(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
+    amount: &str,
+    currency: &str,
+    recipient: &str,
+    method_details: &MethodDetails,
+    options: BuildChargeTransactionOptions,
+) -> Result<CredentialPayload, Error> {
+    build_charge_transaction_from_source(
+        signer,
+        ChainSource::Rpc(rpc),
+        amount,
+        currency,
+        recipient,
+        method_details,
+        options,
+    )
+    .await
+}
+
+async fn build_charge_transaction_from_source(
+    signer: &dyn SolanaSigner,
+    source: ChainSource<'_>,
     amount: &str,
     currency: &str,
     recipient: &str,
@@ -154,8 +239,18 @@ pub async fn build_charge_transaction_with_options(
     // charge as a cleartext transfer.
     crate::mpp::protocol::solana::validate_confidential_charge(currency, method_details)?;
     if method_details.confidential.unwrap_or(false) {
+        // The `confidential` feature is native-only (rejected on wasm by the
+        // compile_error in lib.rs), so an offline source can never reach the
+        // bundle builder below — fail with a description instead of a panic.
         #[cfg(feature = "confidential")]
         {
+            let ChainSource::Rpc(rpc) = source else {
+                return Err(Error::Other(
+                    "Confidential-transfer charges require an RPC client; they cannot \
+                     be built offline"
+                        .into(),
+                ));
+            };
             // Clients hold no SOL, so confidential bundles are gateway-paid: the
             // challenge MUST carry the gateway fee-payer key, which becomes the
             // fee payer, rent funder, and proof/record-account authority for
@@ -181,7 +276,7 @@ pub async fn build_charge_transaction_with_options(
                             .into(),
                     )
                 })?;
-            let blockhash = resolve_blockhash(rpc, method_details)?;
+            let blockhash = resolve_blockhash(source, method_details)?;
             return super::confidential::confidential_charge_payload(
                 signer,
                 rpc,
@@ -261,7 +356,7 @@ pub async fn build_charge_transaction_with_options(
             &mut instructions,
             &signer_pubkey,
             &recipient_pubkey,
-            rpc,
+            source,
             mint_str,
             method_details,
             primary_amount,
@@ -282,7 +377,7 @@ pub async fn build_charge_transaction_with_options(
     }
 
     // Build and sign.
-    let blockhash = resolve_blockhash(rpc, method_details)?;
+    let blockhash = resolve_blockhash(source, method_details)?;
 
     let actual_fee_payer = fee_payer_pubkey.unwrap_or(signer_pubkey);
     let message = Message::new_with_blockhash(&instructions, Some(&actual_fee_payer), &blockhash);
@@ -314,6 +409,7 @@ pub async fn build_charge_transaction_with_options(
 ///
 /// Parses the challenge, builds and signs the transaction, and formats the
 /// credential as `"Payment <base64url(credential_json)>"`.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_credential_header(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
@@ -326,9 +422,43 @@ pub async fn build_credential_header(
 /// `BuildChargeTransactionOptions` — in particular
 /// `allow_unknown_token_2022` to opt into signing for unknown Token-2022
 /// mints (see that field's docs).
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub async fn build_credential_header_with_options(
     signer: &dyn SolanaSigner,
     rpc: &RpcClient,
+    challenge: &PaymentChallenge,
+    options: BuildChargeTransactionOptions,
+) -> Result<String, Error> {
+    build_credential_header_from_source(signer, ChainSource::Rpc(rpc), challenge, options).await
+}
+
+/// Build a credential header without an RPC client.
+///
+/// Like [`build_credential_header`], but never falls back to a chain fetch:
+/// the challenge's `methodDetails` must carry `recentBlockhash` (and
+/// `tokenProgram` for SPL charges). This is the only credential builder
+/// available on wasm32-unknown-unknown, where no RPC client exists.
+pub async fn build_credential_header_offline(
+    signer: &dyn SolanaSigner,
+    challenge: &PaymentChallenge,
+) -> Result<String, Error> {
+    build_credential_header_from_source(signer, ChainSource::OFFLINE, challenge, Default::default())
+        .await
+}
+
+/// Like [`build_credential_header_offline`], with explicit
+/// [`BuildChargeTransactionOptions`].
+pub async fn build_credential_header_offline_with_options(
+    signer: &dyn SolanaSigner,
+    challenge: &PaymentChallenge,
+    options: BuildChargeTransactionOptions,
+) -> Result<String, Error> {
+    build_credential_header_from_source(signer, ChainSource::OFFLINE, challenge, options).await
+}
+
+async fn build_credential_header_from_source(
+    signer: &dyn SolanaSigner,
+    source: ChainSource<'_>,
     challenge: &PaymentChallenge,
     mut options: BuildChargeTransactionOptions,
 ) -> Result<String, Error> {
@@ -381,9 +511,9 @@ pub async fn build_credential_header_with_options(
         options.external_id = request.external_id.clone();
     }
 
-    let payload = build_charge_transaction_with_options(
+    let payload = build_charge_transaction_from_source(
         signer,
-        rpc,
+        source,
         &request.amount,
         &request.currency,
         recipient,
@@ -551,7 +681,7 @@ fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
     recipient: &Pubkey,
-    rpc: &RpcClient,
+    source: ChainSource<'_>,
     spl: &str,
     method_details: &MethodDetails,
     primary_amount: u64,
@@ -561,7 +691,7 @@ fn build_spl_instructions(
     allow_unknown_token_2022: bool,
 ) -> Result<(), Error> {
     let mint = Pubkey::from_str(spl).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
-    let token_program = resolve_token_program(rpc, &mint, method_details)?;
+    let token_program = resolve_token_program(source, &mint, method_details)?;
 
     // Spec §13.3: refuse to sign for an arbitrary Token-2022 mint unless
     // the caller opted in. Transfer hooks run on every transfer and can
@@ -671,7 +801,7 @@ fn push_memo_instruction(
 }
 
 fn resolve_token_program(
-    rpc: &RpcClient,
+    source: ChainSource<'_>,
     mint: &Pubkey,
     method_details: &MethodDetails,
 ) -> Result<Pubkey, Error> {
@@ -679,9 +809,20 @@ fn resolve_token_program(
         Pubkey::from_str(token_program)
             .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?
     } else {
-        rpc.get_account(mint)
-            .map_err(|e| Error::Rpc(format!("Failed to fetch mint account: {e}")))?
-            .owner
+        match source {
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            ChainSource::Rpc(rpc) => {
+                rpc.get_account(mint)
+                    .map_err(|e| Error::Rpc(format!("Failed to fetch mint account: {e}")))?
+                    .owner
+            }
+            ChainSource::Offline(_) => {
+                return Err(Error::Other(format!(
+                    "Challenge is missing methodDetails.tokenProgram and no RPC client \
+                     is available to fetch the owner of mint {mint} (offline build)"
+                )))
+            }
+        }
     };
 
     let token_program_str = token_program.to_string();
@@ -1590,6 +1731,65 @@ mod tests {
         assert!(matches!(payload, CredentialPayload::Transaction { .. }));
     }
 
+    // ── offline builders (wasm-compatible path) ──
+
+    #[tokio::test]
+    async fn build_charge_offline_with_self_contained_challenge() {
+        let signer = make_signer();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction_offline(signer.as_ref(), "1000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_offline_missing_blockhash_is_descriptive() {
+        let signer = make_signer();
+        let md = MethodDetails::default();
+        let err =
+            build_charge_transaction_offline(signer.as_ref(), "1000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(format!("{err}").contains("recentBlockhash"));
+    }
+
+    #[tokio::test]
+    async fn build_charge_offline_spl_missing_token_program_is_descriptive() {
+        let signer = make_signer();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("mainnet".to_string()),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction_offline(signer.as_ref(), "1000000", "USDC", RECIPIENT, &md)
+                .await
+                .unwrap_err();
+        assert!(format!("{err}").contains("tokenProgram"));
+    }
+
+    #[tokio::test]
+    async fn build_charge_offline_spl_with_token_program_succeeds() {
+        let signer = make_signer();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            network: Some("mainnet".to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction_offline(signer.as_ref(), "1000000", "USDC", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
     // ── build_charge_transaction: error cases ──
 
     #[tokio::test]
@@ -1825,7 +2025,7 @@ mod tests {
             token_program: Some(programs::TOKEN_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(ChainSource::Rpc(&rpc), &mint, &md).unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_PROGRAM);
     }
 
@@ -1837,7 +2037,7 @@ mod tests {
             token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
             ..Default::default()
         };
-        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        let tp = resolve_token_program(ChainSource::Rpc(&rpc), &mint, &md).unwrap();
         assert_eq!(tp.to_string(), programs::TOKEN_2022_PROGRAM);
     }
 
@@ -1849,7 +2049,7 @@ mod tests {
             token_program: Some("invalid-key!!!".to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(ChainSource::Rpc(&rpc), &mint, &md);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid token program"));
     }
@@ -1863,7 +2063,7 @@ mod tests {
             token_program: Some(programs::SYSTEM_PROGRAM.to_string()),
             ..Default::default()
         };
-        let err = resolve_token_program(&rpc, &mint, &md);
+        let err = resolve_token_program(ChainSource::Rpc(&rpc), &mint, &md);
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
     }
@@ -1885,7 +2085,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -1915,7 +2115,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -1947,7 +2147,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -1983,7 +2183,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -2018,7 +2218,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         )
         .unwrap();
@@ -2048,7 +2257,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         )
         .unwrap();
@@ -2076,7 +2294,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         )
         .unwrap();
@@ -2111,7 +2338,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         )
         .unwrap_err();
@@ -2145,7 +2381,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -2187,7 +2423,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             USDC_MINT,
             &md,
             1_000_000,
@@ -2220,7 +2456,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             UNKNOWN_MINT,
             &md,
             1_000_000,
@@ -2255,7 +2491,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             UNKNOWN_MINT,
             &md,
             1_000_000,
@@ -2287,7 +2523,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             UNKNOWN_MINT,
             &md,
             1_000_000,
@@ -2317,7 +2553,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             mints::PYUSD_MAINNET,
             &md,
             1_000_000,
@@ -2344,7 +2580,7 @@ mod tests {
             &mut ixs,
             &signer_pk,
             &recipient,
-            &rpc,
+            ChainSource::Rpc(&rpc),
             "not-a-mint!!!",
             &md,
             1_000_000,
@@ -2376,7 +2612,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         );
         assert!(err.is_err());
@@ -2403,7 +2648,16 @@ mod tests {
         }];
         let mut ixs = vec![];
         let err = build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, None, &splits, None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            ChainSource::Rpc(&rpc),
+            USDC_MINT,
+            &md,
+            1_000_000,
+            None,
+            &splits,
+            None,
             false,
         );
         assert!(err.is_err());

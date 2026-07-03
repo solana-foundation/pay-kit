@@ -6,7 +6,7 @@
 //! dependency. Those flows broadcast directly and rely on the existing
 //! confirmation/reconciliation path for the durable result.
 
-use solana_client::rpc_config::RpcSendTransactionConfig;
+use solana_rpc_client_api::config::RpcSendTransactionConfig;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RpcSendPolicy {

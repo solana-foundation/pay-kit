@@ -159,6 +159,12 @@ rs-fmt:
 rs-lint:
     cd rust && cargo clippy -- -D warnings
 
+# Check the Rust SDK builds for browser wasm (mpp,x402,client feature set)
+rs-wasm-check:
+    cd rust && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+        cargo check -p solana-pay-kit --target wasm32-unknown-unknown \
+        --no-default-features --features mpp,x402,client
+
 # ── Go ──
 # Recipes live in go/Justfile. The wrappers below delegate so the
 # orchestration targets ("build", "test", "test-all", "fmt", "pre-commit")

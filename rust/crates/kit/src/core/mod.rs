@@ -16,10 +16,13 @@
 //!   `batch-settlement` scheme.
 
 pub mod blockhash;
+#[cfg(feature = "client")]
+pub(crate) mod chain_source;
 pub mod mints;
 #[cfg(feature = "otel")]
 pub mod otel;
 pub mod payment_channels;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) mod rpc;
 pub mod session;
 pub mod settlement;

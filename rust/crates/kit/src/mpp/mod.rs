@@ -100,6 +100,7 @@ pub use store::{
 
 // Re-export crates callers need to use with the charge builder.
 pub use solana_keychain;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use solana_rpc_client;
 
 /// Reusable OpenTelemetry init (feature `otel`), shared with x402/pay so spans

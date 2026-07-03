@@ -9,6 +9,12 @@ repository = "https://github.com/solana-foundation/pay-kit"
 # published crate README so crates.io renders the same guide.
 readme = "../../README.md"
 
+# wasm32-unknown-unknown builds: `mpp`, `x402`, and `client` are supported
+# (client builders use the `_offline` variants — the challenge must carry
+# `recentBlockhash`/`tokenProgram`). Server-side features (`server`, `axum`,
+# `worker`, `testkit`, `confidential`, `fetch`, `gcp_kms`, `otel`) need a tokio
+# runtime and/or a native RPC client and are rejected with a compile_error.
+# Build with RUSTFLAGS='--cfg getrandom_backend="wasm_js"' (getrandom 0.3).
 [features]
 default = ["mpp", "x402"]
 # Protocol modules. `mpp`/`x402` gate `pub mod mpp`/`pub mod x402` in lib.rs;
@@ -41,9 +47,8 @@ confidential = [
     "dep:solana-signer",
 ]
 # Single confidential-settlement worker run-loop (tokio actor) + the orphan
-# sweeper. Needs the server (tokio) + confidential settlement primitives, plus
-# solana-rpc-client-api for the getProgramAccounts scan.
-worker = ["confidential", "server", "dep:solana-rpc-client-api"]
+# sweeper. Needs the server (tokio) + confidential settlement primitives.
+worker = ["confidential", "server"]
 # Settlement test/demo harness (open real channels, fund, drive + observe).
 testkit = ["dep:reqwest"]
 # Generated program-client account fetch helpers (RPC). Off by default — the
@@ -84,12 +89,15 @@ solana-instruction = { version = "3.1", default-features = false }
 solana-message = { version = "3", default-features = false }
 solana-pubkey = { version = "3.0", default-features = false }
 solana-commitment-config = { version = "3.0", default-features = false }
-solana-rpc-client = { version = "4", default-features = false }
-# Program-account scan (memcmp by gateway authority) for the confidential
-# orphan sweeper. Optional; pulled in only by the `worker` feature.
-solana-rpc-client-api = { version = "4", default-features = false, optional = true }
+# RPC wire types (send config, program-account filters). Types only, so it is
+# wasm-safe — unlike the full solana-rpc-client, which lives in the non-wasm
+# target section below.
+solana-rpc-client-api = { version = "4", default-features = false }
 solana-signature = { version = "3.1", default-features = false, features = ["default", "verify"] }
-solana-system-interface = { version = "2.0", default-features = false }
+# `bincode` gates the instruction constructors (system_instruction::transfer);
+# natively it arrived transitively via the RPC client stack, but wasm builds
+# drop that stack, so ask for it explicitly.
+solana-system-interface = { version = "2.0", default-features = false, features = ["bincode"] }
 solana-transaction = { version = "3", default-features = false }
 # transaction-status 4.0 gates its whole lib behind `agave-unstable-api`; the
 # wire types we use live in the stable client-types crate.
@@ -103,7 +111,6 @@ num-traits = "0.2"
 solana-account-info = "^3"
 solana-program-error = "^3"
 solana-cpi = "^3"
-solana-client = "^4"
 solana-account = { version = "^3", optional = true }
 
 # Confidential transfers (opt-in via the `confidential` feature).
@@ -120,10 +127,8 @@ bytemuck = { version = "1.25", optional = true }
 solana-keypair = { version = "3.0", optional = true }
 solana-signer = { version = "3.0", optional = true }
 
-# Async server run-loops + settlement worker.
-tokio = { version = "1", features = ["full"] }
-
 # HTTP client (client-side payment building + testkit cheatcodes) — optional.
+# Works on wasm32-unknown-unknown too (fetch-backed).
 reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
 
 # Axum extractor / unified gate (opt-in).
@@ -164,6 +169,24 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 
 # Errors
 thiserror = "2"
+
+# Native-only deps. wasm32-unknown-unknown has no sockets (mio) and no blocking
+# HTTP, so the tokio runtime and the RPC client only exist off-wasm; client
+# builders fall back to the `_offline` variants there (challenge must carry
+# `recentBlockhash`/`tokenProgram`).
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+# Async server run-loops + settlement worker.
+tokio = { version = "1", features = ["full"] }
+solana-rpc-client = { version = "4", default-features = false }
+
+# getrandom is split across two majors in the dependency graph (0.2 via the
+# solana crypto stack, 0.3 direct + via solana-address→rand 0.9). Both refuse
+# to build for browser wasm unless their js backend is switched on. getrandom
+# 0.3 additionally requires the final binary to select the backend with
+# RUSTFLAGS='--cfg getrandom_backend="wasm_js"'.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 # Kept lean so `cargo publish` resolves without the workspace litesvm patch.

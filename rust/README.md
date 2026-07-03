@@ -218,6 +218,25 @@ let authorization = build_credential_header(&signer, &rpc, &challenge).await?;
 cap (`max_amount_base_units`), an expected-network pin, and a refusal to sign
 unknown Token-2022 mints unless opted in.
 
+### Browser wasm
+
+The `mpp`, `x402`, and `client` features build for `wasm32-unknown-unknown`.
+There is no RPC client on that target, so use the `_offline` builder variants
+(`build_credential_header_offline`, `build_charge_transaction_offline`,
+`build_payment_offline`, `build_payment_header_offline`); they require the
+server's challenge to carry `recentBlockhash` (and `tokenProgram` for SPL
+charges) instead of falling back to a chain fetch. Server-side features
+(`server`, `axum`, `worker`, `testkit`, `confidential`, `fetch`, `gcp_kms`,
+`otel`) are rejected on wasm with a compile error.
+
+The getrandom crate needs its JavaScript backend selected by the final binary:
+
+```bash
+RUSTFLAGS='--cfg getrandom_backend="wasm_js"' \
+    cargo build --target wasm32-unknown-unknown \
+    --no-default-features --features mpp,x402,client
+```
+
 ---
 
 ## Vocabulary

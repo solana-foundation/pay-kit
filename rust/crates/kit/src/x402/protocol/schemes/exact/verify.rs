@@ -2,13 +2,17 @@ use std::str::FromStr;
 
 use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use solana_rpc_client::rpc_client::RpcClient;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction::Transaction;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use solana_transaction_status_client_types::UiTransactionEncoding;
 use solana_transaction_status_client_types::{
     EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiInstruction, UiMessage,
-    UiParsedInstruction, UiTransactionEncoding,
+    UiParsedInstruction,
 };
 
 use super::{programs, resolve_stablecoin_mint, PaymentRequirements};
@@ -299,7 +303,9 @@ fn verify_exact_instructions(
     Ok(())
 }
 
-/// Fetch a confirmed transaction from an RPC endpoint.
+/// Fetch a confirmed transaction from an RPC endpoint (native only — wasm
+/// builds have no RPC client).
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn fetch_transaction(
     rpc: &RpcClient,
     signature_str: &str,
