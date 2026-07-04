@@ -47,6 +47,11 @@ const PAYMENT_REQUIRED_HEADER = 'payment-required';
  * releasing only on a definitive not-landed status (Charge.ts, release only on
  * `TransactionNotLandedError`). Any unknown/dynamic reason defaults to KEEP so
  * a landed-but-unconfirmed transfer cannot be re-served on another replica.
+ *
+ * These strings are the `errorReason` values emitted by `@x402/svm` 2.16.0 (the
+ * vendored `.x402-vendor/x402-svm-2.16.0.tgz`). If that dependency is upgraded,
+ * re-derive this set against the new package: a renamed or consolidated reason
+ * would otherwise silently flip a payload between the release and KEEP paths.
  */
 const RELEASE_SAFE_SETTLE_REASONS: ReadonlySet<string> = new Set([
     'verification_failed',
