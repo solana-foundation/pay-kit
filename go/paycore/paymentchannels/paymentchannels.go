@@ -18,6 +18,7 @@ import (
 	ag_binary "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
@@ -219,11 +220,11 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 	if err != nil {
 		return nil, err
 	}
-	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
+	payerToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive payer token account: %w", err)
 	}
-	channelToken, _, err := solana.FindAssociatedTokenAddressWithProgram(channel, params.Mint, params.TokenProgram)
+	channelToken, err := solanatx.FindAssociatedTokenAddressWithProgram(channel, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive channel token account: %w", err)
 	}
@@ -272,11 +273,11 @@ func BuildOpenInstruction(params OpenChannelParams) (solana.Instruction, error) 
 // instruction with every account set in the exact order the on-chain program
 // expects, using the production program id.
 func BuildTopUpInstruction(params TopUpParams) (solana.Instruction, error) {
-	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
+	payerToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive payer token account: %w", err)
 	}
-	channelToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Channel, params.Mint, params.TokenProgram)
+	channelToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Channel, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive channel token account: %w", err)
 	}
