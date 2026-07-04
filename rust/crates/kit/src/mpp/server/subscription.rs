@@ -910,8 +910,8 @@ fn validate_activation_ata_instruction(
         ));
     }
 
-    let expected_mint = parse_pubkey(&config.mint, "mint")
-        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let expected_mint =
+        parse_pubkey(&config.mint, "mint").map_err(|e| VerificationError::new(e.to_string()))?;
     if mint != expected_mint {
         return Err(VerificationError::invalid_payload(
             "ATA creation mint does not match the plan mint",
@@ -1769,7 +1769,14 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).expect("valid scope");
+        validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .expect("valid scope");
     }
 
     #[test]
@@ -1779,7 +1786,14 @@ mod tests {
             &[subscriber],
             vec![(INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![])],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("missing subscribe"), "{}", err.message);
     }
 
@@ -1787,7 +1801,14 @@ mod tests {
     fn validate_scope_rejects_missing_transfer() {
         let subscriber = Pubkey::new_unique();
         let tx = build_tx(&[subscriber], vec![(INSTRUCTION_SUBSCRIBE, vec![])]);
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("missing transfer_subscription"),
             "{}",
@@ -1806,7 +1827,14 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("multiple subscribe"),
             "{}",
@@ -1825,7 +1853,14 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("multiple transfer_subscription"),
             "{}",
@@ -1843,7 +1878,14 @@ mod tests {
                 (INSTRUCTION_SUBSCRIBE, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("must precede"), "{}", err.message);
     }
 
@@ -1900,7 +1942,14 @@ mod tests {
             signatures: vec![Signature::default(); 1],
             message,
         };
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(
             err.message.contains("disallowed program"),
             "{}",
@@ -1938,7 +1987,14 @@ mod tests {
             signatures: vec![Signature::default(); 1],
             message,
         };
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(err.message.contains("out-of-range"), "{}", err.message);
     }
 
@@ -1959,7 +2015,14 @@ mod tests {
                 ),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("disallowed subscriptions-program instruction"),
@@ -2036,7 +2099,9 @@ mod tests {
             token_program,
         ];
         // Default canonical CreateIdempotent layout referencing slots 5..=10.
-        let ata_accounts = overrides.accounts.unwrap_or_else(|| vec![5, 6, 7, 8, 9, 10]);
+        let ata_accounts = overrides
+            .accounts
+            .unwrap_or_else(|| vec![5, 6, 7, 8, 9, 10]);
         let ata_data = overrides.data.unwrap_or_else(|| vec![1]);
 
         let mk = |prog: u8, accounts: Vec<u8>, data: Vec<u8>| CompiledInstruction {
@@ -2045,12 +2110,12 @@ mod tests {
             data,
         };
         let instructions = vec![
-            mk(1, vec![], vec![3]),                             // SetComputeUnitPrice
-            mk(1, vec![], vec![2]),                             // SetComputeUnitLimit
-            mk(2, ata_accounts, ata_data),                     // ATA CreateIdempotent
-            mk(4, vec![], vec![INSTRUCTION_SUBSCRIBE]),         // subscribe
+            mk(1, vec![], vec![3]),                                 // SetComputeUnitPrice
+            mk(1, vec![], vec![2]),                                 // SetComputeUnitLimit
+            mk(2, ata_accounts, ata_data),                          // ATA CreateIdempotent
+            mk(4, vec![], vec![INSTRUCTION_SUBSCRIBE]),             // subscribe
             mk(4, vec![], vec![INSTRUCTION_TRANSFER_SUBSCRIPTION]), // transfer
-            mk(3, vec![], b"external-id".to_vec()),             // memo
+            mk(3, vec![], b"external-id".to_vec()),                 // memo
         ];
         let message = Message {
             header: MessageHeader {
@@ -2077,8 +2142,14 @@ mod tests {
         let config = scope_config();
         let subscriber = Pubkey::new_unique();
         let tx = build_activation_tx_with_ata(&config, &subscriber, AtaOverrides::default());
-        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-            .expect("valid scope");
+        validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .expect("valid scope");
     }
 
     #[test]
@@ -2095,8 +2166,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-            .expect("recipient ATA is authorized");
+        validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .expect("recipient ATA is authorized");
     }
 
     #[test]
@@ -2112,11 +2189,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
-            err.message.contains("ATA payer must be the transaction fee payer"),
+            err.message
+                .contains("ATA payer must be the transaction fee payer"),
             "{}",
             err.message
         );
@@ -2135,11 +2218,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
-            err.message.contains("ATA creation mint does not match the plan mint"),
+            err.message
+                .contains("ATA creation mint does not match the plan mint"),
             "{}",
             err.message
         );
@@ -2158,9 +2247,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("ATA creation owner is not authorized by the challenge"),
@@ -2182,11 +2276,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
-            err.message.contains("Only idempotent ATA creation is allowed"),
+            err.message
+                .contains("Only idempotent ATA creation is allowed"),
             "{}",
             err.message
         );
@@ -2200,9 +2300,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("Unexpected ATA creation account layout"),
@@ -2240,9 +2345,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("ATA creation token program does not match the configured token program"),
@@ -2264,9 +2374,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        let err =
-            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
-                .unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            &program_id_str(),
+            &config,
+            &subscriber,
+        )
+        .unwrap_err();
         assert!(
             err.message
                 .contains("ATA creation address does not match owner/mint/token program"),
@@ -2279,7 +2394,14 @@ mod tests {
     fn validate_scope_rejects_invalid_program_id_string() {
         let subscriber = Pubkey::new_unique();
         let tx = build_tx(&[subscriber], vec![]);
-        let err = validate_activation_scope(&tx, &dummy_request(), "not-a-pubkey", &scope_config(), &scope_subscriber()).unwrap_err();
+        let err = validate_activation_scope(
+            &tx,
+            &dummy_request(),
+            "not-a-pubkey",
+            &scope_config(),
+            &scope_subscriber(),
+        )
+        .unwrap_err();
         assert!(!err.message.is_empty());
     }
 

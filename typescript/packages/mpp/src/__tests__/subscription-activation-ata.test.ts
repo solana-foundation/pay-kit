@@ -202,9 +202,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 tokenProgram: TOKEN_PROGRAM,
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/ATA payer must be the transaction fee payer/);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /ATA payer must be the transaction fee payer/,
+        );
     });
 
     test('(b) rejects an ATA created for a mint other than the plan mint', async () => {
@@ -219,9 +219,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 tokenProgram: TOKEN_PROGRAM,
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/ATA creation mint does not match the plan mint/);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /ATA creation mint does not match the plan mint/,
+        );
     });
 
     test('(c) rejects an ATA whose owner is not authorized by the challenge', async () => {
@@ -236,9 +236,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 tokenProgram: TOKEN_PROGRAM,
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/ATA creation owner is not authorized by the challenge/);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /ATA creation owner is not authorized by the challenge/,
+        );
     });
 
     test('(d) rejects a non-canonical layout (wrong discriminator)', async () => {
@@ -253,9 +253,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 data: new Uint8Array([0]), // Create (0), not CreateIdempotent (1)
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/idempotent/i);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /idempotent/i,
+        );
     });
 
     test('(d) rejects a non-canonical layout (wrong account count)', async () => {
@@ -277,9 +277,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 ],
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/Unexpected ATA creation account layout/);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /Unexpected ATA creation account layout/,
+        );
     });
 
     test('(d) rejects a token program that does not match the configured one', async () => {
@@ -329,9 +329,9 @@ describe('subscription activation ATA scope (M-5)', () => {
                 tokenProgram: TOKEN_PROGRAM,
             }),
         );
-        await expect(
-            __testing.validateActivationInstructions(transaction, challengeFor(feePayer)),
-        ).rejects.toThrow(/ATA creation address does not match owner\/mint\/token program/);
+        await expect(__testing.validateActivationInstructions(transaction, challengeFor(feePayer))).rejects.toThrow(
+            /ATA creation address does not match owner\/mint\/token program/,
+        );
     });
 
     test('verify() rejects a malicious ATA before the fee-payer signer is invoked', async () => {
@@ -403,9 +403,9 @@ describe('subscription activation ATA scope (M-5)', () => {
             payload: { transaction, type: 'transaction' },
         };
 
-        await expect(
-            method.verify!({ credential: credential as never, request: {} as never }),
-        ).rejects.toThrow(/ATA creation owner is not authorized by the challenge/);
+        await expect(method.verify!({ credential: credential as never, request: {} as never })).rejects.toThrow(
+            /ATA creation owner is not authorized by the challenge/,
+        );
         expect(signerInvoked).toBe(false);
     });
 });

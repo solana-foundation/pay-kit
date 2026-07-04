@@ -1234,8 +1234,7 @@ mod tests {
             .unwrap();
         let hb = h.clone();
         let cb = channel_b58.clone();
-        let task_b =
-            tokio::spawn(async move { hb.process_voucher(&cb, voucher_b, 100).await });
+        let task_b = tokio::spawn(async move { hb.process_voucher(&cb, voucher_b, 100).await });
 
         // Wait until B has reached the seam (so B, not A, holds it). Now A cannot
         // consume the seam and runs straight through to commit cumulative 100.

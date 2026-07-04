@@ -97,17 +97,13 @@ describe('voucher reject tags match the shared cross-SDK vector', () => {
         const vectors = loadRejectVectors();
         expect(vectors.length).toBe(Object.keys(EMITTED).length);
         for (const vector of vectors) {
-            expect(EMITTED, `vector tag ${vector.tag} has no TypeScript mapping`).toHaveProperty(
-                vector.tag,
-            );
+            expect(EMITTED, `vector tag ${vector.tag} has no TypeScript mapping`).toHaveProperty(vector.tag);
             expect(EMITTED[vector.tag]).toBe(vector.reason);
         }
     });
 
     it('emits the canonical settlement-window reason from the verifier', async () => {
-        const want = loadRejectVectors().find(
-            (v) => v.tag === 'expires-within-settlement-window',
-        )?.reason;
+        const want = loadRejectVectors().find(v => v.tag === 'expires-within-settlement-window')?.reason;
         expect(want).toBeDefined();
 
         const signer = await generateKeyPairSigner();

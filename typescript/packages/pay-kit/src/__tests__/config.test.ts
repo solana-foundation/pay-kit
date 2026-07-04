@@ -78,7 +78,12 @@ describe('configure', () => {
             ConfigurationError,
         );
 
-        const provided = await configure({ ...SECRET, network: 'solana_devnet', operator: { signer }, replayStore: Store.memory() });
+        const provided = await configure({
+            ...SECRET,
+            network: 'solana_devnet',
+            operator: { signer },
+            replayStore: Store.memory(),
+        });
         expect(provided.replayStore).toBeDefined();
 
         process.env.PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE = '1';
