@@ -117,6 +117,9 @@ class _FakeRpc:
     async def get_latest_blockhash(self, commitment: str = "confirmed"):  # noqa: ANN201
         raise NotImplementedError
 
+    async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201
+        raise NotImplementedError  # the top-up bind path reads channel state, it never broadcasts
+
 
 def _core_config(*, network: str) -> SessionConfig:
     return SessionConfig(

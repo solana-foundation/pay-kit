@@ -293,12 +293,20 @@ def test_new_session_requires_store_off_localnet(monkeypatch: pytest.MonkeyPatch
     watermark lost across replicas/restarts), so new_session refuses it unless a
     store is provided or the single-process opt-out is set."""
     monkeypatch.delenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", raising=False)
-    off_localnet = dict(recipient=SESSION_TEST_RECIPIENT, cap=1_000, secret_key=SESSION_METHOD_SECRET, network="devnet")
+
+    def off_localnet_options() -> SessionOptions:
+        return SessionOptions(
+            recipient=SESSION_TEST_RECIPIENT,
+            cap=1_000,
+            secret_key=SESSION_METHOD_SECRET,
+            network="devnet",
+        )
+
     with pytest.raises(PaymentError, match="shared channel store is required"):
-        new_session(SessionOptions(**off_localnet))
+        new_session(off_localnet_options())
 
     monkeypatch.setenv("PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE", "1")
-    session = new_session(SessionOptions(**off_localnet))
+    session = new_session(off_localnet_options())
     assert session._network == "devnet"
 
 

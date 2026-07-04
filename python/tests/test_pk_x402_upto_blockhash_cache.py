@@ -28,6 +28,7 @@ from solana_pay_kit import (
 )
 from solana_pay_kit.config import reset
 from solana_pay_kit.protocols.x402.upto import X402Upto
+from solana_pay_kit.protocols.x402.upto.types import UptoRequirements
 
 BH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 
@@ -118,7 +119,7 @@ def test_challenge_burst_collapses_to_one_fetch_per_ttl() -> None:
     eng = X402Upto(cfg, recent_blockhash_provider=provider, clock=_Clock())
     gate, request = _gate(cfg), {"path": "/usage"}
 
-    results: list[dict] = []
+    results: list[UptoRequirements] = []
     barrier = threading.Barrier(20)
 
     def _fire() -> None:
@@ -137,7 +138,9 @@ def test_challenge_burst_collapses_to_one_fetch_per_ttl() -> None:
     assert provider.calls == 1
     assert len(results) == 20
     blockhashes = {entry["extra"].get("recentBlockhash") for entry in results}
-    assert blockhashes == {results[0]["extra"]["recentBlockhash"]}
+    expected = results[0]["extra"].get("recentBlockhash")
+    assert expected is not None
+    assert blockhashes == {expected}
 
 
 def test_cache_expires_after_ttl() -> None:

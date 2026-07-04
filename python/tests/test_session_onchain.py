@@ -88,6 +88,9 @@ class _FakeRpc:
     async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
         raise NotImplementedError  # not exercised by the open/top-up verifier tests
 
+    async def get_account_info(self, address: str, commitment: str = "confirmed") -> tuple[bytes, str] | None:
+        raise NotImplementedError  # the open-tx verifier tests do not read on-chain channel accounts
+
 
 def _kp(seed: int) -> Keypair:
     return Keypair.from_seed(bytes([seed] * 32))
@@ -601,6 +604,12 @@ class _TopUpFakeRpc:
 
     async def get_signature_statuses(self, signatures: list[str]) -> list[dict | None]:
         return [self.statuses.get(sig, {"err": None, "confirmationStatus": "confirmed"}) for sig in signatures]
+
+    async def get_latest_blockhash(self, commitment: str = "confirmed"):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # the top-up bind path never broadcasts, only reads state
+
+    async def send_raw_transaction(self, raw_tx: bytes):  # noqa: ANN201 (RPC seam stub)
+        raise NotImplementedError  # the top-up bind path never broadcasts, only reads state
 
 
 def test_new_top_up_tx_verifier_none_rpc_disables_the_seam_on_localnet() -> None:

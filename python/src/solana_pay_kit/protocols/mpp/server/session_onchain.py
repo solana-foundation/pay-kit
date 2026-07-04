@@ -557,12 +557,23 @@ async def _fetch_top_up_channel_account(
 class TopUpVerifierConfig(Protocol):
     """The subset of the session config :func:`new_top_up_tx_verifier` reads:
     the challenge currency / network / recipient and the optional
-    payment-channels program id override."""
+    payment-channels program id override.
+
+    The verifier only reads these fields, so ``program_id`` is declared as a
+    read-only property: a mutable attribute annotation is invariant, which would
+    reject a ``SessionConfig`` whose ``program_id`` is the narrower ``str | None``
+    even though this seam only ever passes the value through to
+    :func:`_fetch_top_up_channel_account` (which accepts ``Pubkey | str | None``).
+    A read-only property is covariant, so both the production ``SessionConfig``
+    (``str | None``) and callers overriding with a ``Pubkey`` structurally match.
+    """
 
     currency: str
     network: str
     recipient: str
-    program_id: Pubkey | str | None
+
+    @property
+    def program_id(self) -> Pubkey | str | None: ...
 
 
 def new_top_up_tx_verifier(config: TopUpVerifierConfig, rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
