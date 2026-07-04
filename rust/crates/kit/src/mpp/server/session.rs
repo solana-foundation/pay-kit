@@ -673,14 +673,63 @@ impl<S: ChannelStore> SessionServer<S> {
             .parse()
             .map_err(|_| Error::Other("Invalid new_deposit".to_string()))?;
 
-        // On-chain verification: confirm the top-up transaction was accepted
-        // (same RPC path as process_open).
-        if let Some(ref rpc_url) = self.config.rpc_url {
-            verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp).map_err(|e| {
-                tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
-                e
-            })?;
-            tracing::debug!(signature = %payload.signature, "top-up tx confirmed on-chain");
+        // On-chain verification and binding.
+        //
+        // Confirming that *some* transaction signature succeeded proves nothing
+        // about the deposit: any confirmed signature would otherwise raise the
+        // channel to the client's asserted `new_deposit`. Bind to the on-chain
+        // Channel account instead — its `deposit` must have actually reached
+        // `new_deposit` (not merely that a top_up instruction with the right
+        // delta was submitted, which a racing top-up could also satisfy).
+        // Mirrors `process_open`'s fetch-and-bind.
+        match self.config.rpc_url.as_deref() {
+            Some(rpc_url) => {
+                verify_transaction_signature(&payload.signature, rpc_url, VerifiedTx::TopUp).map_err(
+                    |e| {
+                        tracing::warn!(signature = %payload.signature, %e, "top-up tx verification failed");
+                        e
+                    },
+                )?;
+
+                let channel_pda = parse_pubkey_field(&payload.channel_id, "channelId")?;
+                let channel = fetch_channel_account(rpc_url, &channel_pda)?;
+                if channel.status != CHANNEL_STATUS_OPEN {
+                    return Err(Error::Other(format!(
+                        "channel {} is not open on-chain (status {})",
+                        payload.channel_id, channel.status
+                    )));
+                }
+                let expected_mint = expected_payment_channel_mint(&self.config)?;
+                if payment_channels::from_address(&channel.mint) != expected_mint {
+                    return Err(Error::Other("on-chain channel mint mismatch".to_string()));
+                }
+                let expected_payee = parse_pubkey_field(&self.config.recipient, "recipient")?;
+                if payment_channels::from_address(&channel.payee) != expected_payee {
+                    return Err(Error::Other("on-chain channel payee mismatch".to_string()));
+                }
+                if channel.deposit != new_deposit {
+                    return Err(Error::Other(format!(
+                        "on-chain channel deposit {} != asserted new_deposit {new_deposit}",
+                        channel.deposit
+                    )));
+                }
+                tracing::debug!(
+                    signature = %payload.signature,
+                    deposit = channel.deposit,
+                    "top-up bound to on-chain channel"
+                );
+            }
+            None => {
+                // No RPC configured: the raised deposit cannot be bound to
+                // on-chain state. Fail closed on any real network; only localnet
+                // (unit/dev) may skip the bind, matching `process_open`.
+                if self.config.network.as_str() != "localnet" {
+                    return Err(Error::Other(
+                        "payment-channel top-up requires an rpc_url to bind the on-chain channel off localnet"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         let max_cap = self.config.max_cap;
@@ -3318,23 +3367,126 @@ mod tests {
             .unwrap();
     }
 
+    /// Build a channel PDA + register an on-chain Channel account holding
+    /// `on_chain_deposit`, seed the store at `store_deposit`, and return the
+    /// channel id. Shared by the rpc top-up binding tests.
+    async fn seed_bound_channel(
+        server: &SessionServer<MemoryChannelStore>,
+        mock: &crate::x402::server::mock_rpc::MockRpc,
+        store_deposit: u64,
+        on_chain_deposit: u64,
+        mint: &Pubkey,
+    ) -> String {
+        let (_payload, channel, payer, authorized_signer, _mint) =
+            push_open_and_params(store_deposit);
+        let channel_id = payment_channels::pubkey_string(&channel);
+        seed_channel(server, &channel_id, store_deposit).await;
+        mock.set_account(
+            &channel_id,
+            channel_account_bytes(
+                CHANNEL_STATUS_OPEN,
+                on_chain_deposit,
+                payment_channels::DEFAULT_GRACE_PERIOD_SECONDS,
+                &payer,
+                &parse_pubkey(RECIPIENT).unwrap(),
+                &authorized_signer,
+                mint,
+            ),
+            &program_owner_b58(),
+        );
+        channel_id
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn process_topup_with_rpc_confirms_and_raises_deposit() {
         use crate::x402::server::mock_rpc::MockRpc;
         let mock = MockRpc::start();
         let server = make_server_with_rpc(mock.url());
-        seed_channel(&server, "chan1", 1_000_000).await;
+        // On-chain channel actually holds 3_000_000 (== new_deposit).
+        let channel_id =
+            seed_bound_channel(&server, &mock, 1_000_000, 3_000_000, &config_mint()).await;
 
         let sig = bs58::encode([5u8; 64]).into_string();
         let state = server
             .process_topup(&TopUpPayload {
-                channel_id: "chan1".to_string(),
+                channel_id,
                 new_deposit: "3000000".to_string(),
                 signature: sig,
             })
             .await
             .unwrap();
         assert_eq!(state.deposit, 3_000_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_with_rpc_rejects_on_chain_deposit_mismatch() {
+        use crate::x402::server::mock_rpc::MockRpc;
+        let mock = MockRpc::start();
+        let server = make_server_with_rpc(mock.url());
+        // Client asserts new_deposit 3_000_000, but the on-chain channel only
+        // reached 2_000_000 (a racing/partial top-up). The signature confirms,
+        // but the account-state bind must reject.
+        let channel_id =
+            seed_bound_channel(&server, &mock, 1_000_000, 2_000_000, &config_mint()).await;
+
+        let sig = bs58::encode([5u8; 64]).into_string();
+        let err = server
+            .process_topup(&TopUpPayload {
+                channel_id,
+                new_deposit: "3000000".to_string(),
+                signature: sig,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("!= asserted new_deposit 3000000"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_topup_with_rpc_rejects_on_chain_mint_mismatch() {
+        use crate::x402::server::mock_rpc::MockRpc;
+        let mock = MockRpc::start();
+        let server = make_server_with_rpc(mock.url());
+        // On-chain deposit matches, but the channel's mint is a different token.
+        let channel_id =
+            seed_bound_channel(&server, &mock, 1_000_000, 3_000_000, &Pubkey::new_unique()).await;
+
+        let sig = bs58::encode([5u8; 64]).into_string();
+        let err = server
+            .process_topup(&TopUpPayload {
+                channel_id,
+                new_deposit: "3000000".to_string(),
+                signature: sig,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("mint mismatch"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn process_topup_without_rpc_off_localnet_fails_closed() {
+        let server = SessionServer::new(
+            SessionConfig {
+                network: "mainnet".to_string(),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        seed_channel(&server, "chan1", 1_000_000).await;
+        let err = server
+            .process_topup(&TopUpPayload {
+                channel_id: "chan1".to_string(),
+                new_deposit: "3000000".to_string(),
+                signature: "topup_sig".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("requires an rpc_url"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
