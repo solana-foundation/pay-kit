@@ -1,4 +1,5 @@
 import { createSolanaRpc, getBase58Decoder, getBase64Codec, getTransactionDecoder } from '@solana/kit';
+import { isReservingStore } from '@solana/mpp/server';
 import { x402Facilitator } from '@x402/core/facilitator';
 import {
     decodePaymentSignatureHeader,
@@ -48,17 +49,26 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
         ),
     );
 
-    // Local in-flight/consumed dedup for exact payloads, mirroring the Rust
-    // x402 exact signature-consume store and the `inFlightUptoChannels` guard
-    // on the upto path: without it, a duplicate X-PAYMENT payload racing (or
-    // trailing) the original settles the resource twice for one payment
-    // before the ledger can dedupe the broadcast. Keyed by the payload
-    // transaction's client signature(s) — the fee-payer signature slot is
-    // zeroed until the facilitator countersigns, so raw header bytes are
-    // malleable while the client signature is not. Entries expire after
-    // MAX_TIMEOUT_SECONDS: past that window the payment's blockhash has long
-    // expired and a rebroadcast is rejected on-chain anyway.
+    // In-flight/consumed dedup for exact payloads, mirroring the Rust x402
+    // exact signature-consume store and the `inFlightUptoChannels` guard on the
+    // upto path: without it, a duplicate X-PAYMENT payload racing (or trailing)
+    // the original settles the resource twice for one payment before the ledger
+    // can dedupe the broadcast. Keyed by the payload transaction's client
+    // signature(s) — the fee-payer signature slot is zeroed until the
+    // facilitator countersigns, so raw header bytes are malleable while the
+    // client signature is not.
+    //
+    // When the configured replay store implements the atomic reserve capability
+    // (put-if-absent, e.g. Redis SET NX EX), the claim is cross-process safe:
+    // two replicas sharing the store cannot both settle the same payload. The
+    // reservation is given a MAX_TIMEOUT_SECONDS TTL — past that window the
+    // payment's blockhash has expired and a rebroadcast is rejected on-chain
+    // anyway. Without a reserving store the guard degrades to a process-local
+    // Map with the same TTL (single-process scope; see SECURITY.md).
+    const reserveStore =
+        config.replayStore !== undefined && isReservingStore(config.replayStore) ? config.replayStore : undefined;
     const consumedPayloads = new Map<string, number>();
+    const CONSUMED_PREFIX = 'x402-exact:consumed:';
 
     function pruneConsumed(now: number): void {
         // Insertion order is timestamp order (keys are only ever added), so
@@ -67,6 +77,31 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
             if (now - at <= MAX_TIMEOUT_SECONDS * 1000) break;
             consumedPayloads.delete(key);
         }
+    }
+
+    /**
+     * Atomically claim `key` as consumed. Returns true when newly claimed,
+     * false when a live duplicate already holds it. Uses the reserving store
+     * (cross-process) when available, else the process-local Map.
+     */
+    async function claimPayload(key: string): Promise<boolean> {
+        if (reserveStore) {
+            return await reserveStore.reserve(`${CONSUMED_PREFIX}${key}`, true, MAX_TIMEOUT_SECONDS);
+        }
+        const now = Date.now();
+        pruneConsumed(now);
+        if (consumedPayloads.has(key)) return false;
+        consumedPayloads.set(key, now);
+        return true;
+    }
+
+    /** Release a claim so a failed settle can be retried. */
+    async function releasePayload(key: string): Promise<void> {
+        if (reserveStore) {
+            await reserveStore.delete(`${CONSUMED_PREFIX}${key}`);
+            return;
+        }
+        consumedPayloads.delete(key);
     }
 
     function payloadKey(header: string, payload: PaymentPayload): string {
@@ -166,29 +201,24 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
                 throw new InvalidProofError(verification.invalidReason ?? 'invalid_proof', verification.invalidMessage);
             }
 
-            // Consume the payload before settling. has()+set() run with no
-            // await between them, so the check is atomic on the event loop —
-            // a concurrent duplicate is rejected here, and a settled payload
-            // stays consumed for the advertised completion window. Only a
-            // FAILED settle releases the key (the payment did not happen, a
-            // retry must be able to proceed).
+            // Consume the payload before settling: a concurrent duplicate is
+            // rejected here, and a settled payload stays consumed for the
+            // advertised completion window. Only a FAILED settle releases the
+            // key (the payment did not happen, a retry must be able to proceed).
             const key = payloadKey(header, payload);
-            const now = Date.now();
-            pruneConsumed(now);
-            if (consumedPayloads.has(key)) {
+            if (!(await claimPayload(key))) {
                 throw new InvalidProofError('x402_payment_replayed', 'payment payload already used or in flight');
             }
-            consumedPayloads.set(key, now);
 
             let settlement;
             try {
                 settlement = await facilitator.settle(payload, requirements);
             } catch (error) {
-                consumedPayloads.delete(key);
+                await releasePayload(key);
                 throw error;
             }
             if (!settlement.success) {
-                consumedPayloads.delete(key);
+                await releasePayload(key);
                 throw new InvalidProofError(settlement.errorReason ?? 'settlement_failed', settlement.errorMessage);
             }
 

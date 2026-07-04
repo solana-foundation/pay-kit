@@ -363,4 +363,107 @@ describe('createX402ExactAdapter', () => {
             vi.useRealTimers();
         }
     });
+
+    // ── cross-process dedup via a reserving replay store ────────────────────
+
+    /** A reserving Store double: `reserve` is an atomic check-and-set. */
+    function reservingStore() {
+        const map = new Map<string, unknown>();
+        const calls: { reserve: Array<{ key: string; ttlSeconds?: number }>; deletes: string[] } = {
+            reserve: [],
+            deletes: [],
+        };
+        return {
+            calls,
+            store: {
+                get: (key: string) => Promise.resolve(map.get(key) ?? null),
+                put: (key: string, value: unknown) => {
+                    map.set(key, value);
+                    return Promise.resolve();
+                },
+                delete: (key: string) => {
+                    calls.deletes.push(key);
+                    map.delete(key);
+                    return Promise.resolve();
+                },
+                reserve: (key: string, value: unknown = true, ttlSeconds?: number) => {
+                    calls.reserve.push({ key, ttlSeconds });
+                    if (map.has(key)) return Promise.resolve(false);
+                    map.set(key, value);
+                    return Promise.resolve(true);
+                },
+            },
+        };
+    }
+
+    async function setupWithStore(store: unknown) {
+        const config = await configure({
+            mpp: { challengeBindingSecret: 'x402-adapter-secret' },
+            network: 'solana_localnet',
+            replayStore: store as never,
+        });
+        return { adapter: createX402ExactAdapter(config) };
+    }
+
+    it('claims through the reserving store (with a TTL) when one is configured', async () => {
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        await adapter.verifyAndSettle(gate, paidRequest('STORE_CRED'));
+        expect(reserving.calls.reserve).toHaveLength(1);
+        expect(reserving.calls.reserve[0]!.key.startsWith('x402-exact:consumed:')).toBe(true);
+        expect(reserving.calls.reserve[0]!.ttlSeconds).toBe(300);
+    });
+
+    it('rejects a sequential replay via the reserving store', async () => {
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        await adapter.verifyAndSettle(gate, paidRequest('DUP_CRED'));
+        await expect(adapter.verifyAndSettle(gate, paidRequest('DUP_CRED'))).rejects.toMatchObject({
+            code: 'x402_payment_replayed',
+        });
+    });
+
+    it('rejects a concurrent duplicate via the reserving store', async () => {
+        let settleCalls = 0;
+        facilitatorControl.settle = () => {
+            settleCalls += 1;
+            return new Promise(resolve =>
+                setTimeout(() => resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' }), 20),
+            );
+        };
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        const results = await Promise.allSettled([
+            adapter.verifyAndSettle(gate, paidRequest('RACE_STORE')),
+            adapter.verifyAndSettle(gate, paidRequest('RACE_STORE')),
+        ]);
+        expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+        expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+        expect(settleCalls).toBe(1);
+    });
+
+    it('releases the reserving-store key when settlement fails', async () => {
+        facilitatorControl.settle = () =>
+            Promise.resolve({ errorMessage: 'rpc down', errorReason: 'settlement_failed', success: false });
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('REL_CRED'))).rejects.toMatchObject({
+            code: 'settlement_failed',
+        });
+        expect(reserving.calls.deletes).toHaveLength(1);
+
+        // The released key can be reclaimed by a retry.
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        const retried = await adapter.verifyAndSettle(gate, paidRequest('REL_CRED'));
+        expect(retried.transaction).toBe('TxSig');
+    });
 });

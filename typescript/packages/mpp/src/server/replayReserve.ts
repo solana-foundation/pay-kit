@@ -22,12 +22,16 @@ import { Store } from 'mppx';
  * only when it is absent, returning `true` when it created the marker (the
  * caller now owns the reservation) and `false` when a marker already existed.
  *
- * A Redis-backed implementation maps this to `SET key val NX`; an in-memory
- * one to a check-and-set on its Map. Implementing it makes replay protection
- * safe across processes/replicas, not just within one Node process.
+ * `ttlSeconds`, when provided, is a hint that the reservation may expire after
+ * that many seconds — used by the x402 in-flight guard, whose duplicate window
+ * is bounded by the transaction blockhash lifetime, so the marker need not live
+ * forever. A Redis-backed implementation maps `reserve` to `SET key val NX`
+ * (plus `EX ttlSeconds` when set); an in-memory one to a check-and-set on its
+ * Map. Implementing it makes replay protection safe across processes/replicas,
+ * not just within one Node process.
  */
 export interface ReservingStore extends Store.Store {
-    reserve(key: string, value?: unknown): Promise<boolean>;
+    reserve(key: string, value?: unknown, ttlSeconds?: number): Promise<boolean>;
 }
 
 /** Whether `store` implements the atomic {@link ReservingStore.reserve}. */
