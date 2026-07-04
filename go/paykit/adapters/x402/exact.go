@@ -16,15 +16,40 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/solana-foundation/pay-kit/go/paycore"
 	"github.com/solana-foundation/pay-kit/go/paykit"
+	mppcore "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 	proto "github.com/solana-foundation/pay-kit/go/protocols/x402"
 )
+
+// consumedPrefix namespaces the replay markers this adapter writes into the
+// shared store so they never collide with other schemes' keys. Mirrors the
+// MPP charge server's consumed-signature namespace.
+const consumedPrefix = "x402-exact:consumed:"
 
 type Adapter struct {
 	cfg               paykit.Config
 	signer            paykit.Signer
 	rpc               proto.RPCClient
-	replay            sync.Map
+	replay            mppcore.Store
+	replayOnce        sync.Once
 	blockhashProvider func() (string, error)
+	// confirmAttempts and confirmDelay bound the settlement confirmation
+	// poll. Zero values fall back to the package defaults; tests set them
+	// small to exercise the confirmation-timeout path deterministically.
+	confirmAttempts int
+	confirmDelay    time.Duration
+}
+
+// replayStore returns the adapter's consumed-signature store, lazily
+// defaulting to a process-local in-memory store when the adapter was built
+// without one (New always injects one; a bare literal, e.g. in tests, may
+// not). Cached so repeated settlements share the same replay set.
+func (a *Adapter) replayStore() mppcore.Store {
+	a.replayOnce.Do(func() {
+		if a.replay == nil {
+			a.replay = mppcore.NewMemoryStore()
+		}
+	})
+	return a.replay
 }
 
 func New(cfg paykit.Config) (paykit.Adapter, error) {
@@ -39,10 +64,15 @@ func New(cfg paykit.Config) (paykit.Adapter, error) {
 	if sgn == nil {
 		sgn = cfg.Operator.Signer
 	}
+	store := cfg.X402.ReplayStore
+	if store == nil {
+		store = mppcore.NewMemoryStore()
+	}
 	a := &Adapter{
 		cfg:               cfg,
 		signer:            sgn,
 		rpc:               rpc.New(rpcURL),
+		replay:            store,
 		blockhashProvider: cfg.RecentBlockhashProvider,
 	}
 	return a, nil
@@ -203,13 +233,32 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "invalid_payload", Err: err, Gate: req.Gate}
 	}
-	if _, loaded := a.replay.LoadOrStore(replayKey, struct{}{}); loaded {
+	// Reserve the credential before broadcast so a concurrent duplicate is
+	// rejected during the verify + cosign window. The reservation is released
+	// ONLY on a definitive pre-broadcast failure (cosign error, send error) —
+	// cases where the transaction provably never reached the chain. Once the
+	// broadcast succeeds the marker becomes permanent and is never deleted on
+	// a confirmation timeout, because the transaction may still land on-chain;
+	// deleting it would reopen a double-serve window on this replica (and, with
+	// a shared store, across replicas) while the original settlement lands.
+	// Mirrors the MPP charge server's consumed-signature invariant
+	// (protocols/mpp/server/server.go: cleanupConsumed pinned to false right
+	// after SendTransaction succeeds, never released on a confirmation timeout).
+	consumedKey := consumedPrefix + replayKey
+	store := a.replayStore()
+	inserted, err := store.PutIfAbsent(ctx, consumedKey, true)
+	if err != nil {
+		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: err, Gate: req.Gate}
+	}
+	if !inserted {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
 	}
-	settled := false
+	cleanupConsumed := true
 	defer func() {
-		if !settled {
-			a.replay.Delete(replayKey)
+		if cleanupConsumed {
+			// Detach cancellation but keep values so the rollback still runs
+			// when the caller's context is already canceled.
+			_ = store.Delete(context.WithoutCancel(ctx), consumedKey)
 		}
 	}()
 	wire, err := a.cosign(ctx, tx, rawTx)
@@ -226,10 +275,14 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	if err != nil {
 		return nil, &paykit.PaymentError{Code: "send_failed", Err: err, Gate: req.Gate}
 	}
+	// The RPC accepted the broadcast. From here the transaction may land even
+	// if confirmation polling times out, so pin the replay marker now: a
+	// confirmation/verify timeout must not delete it and reopen the credential
+	// for a second submission while the original lands and double-pays.
+	cleanupConsumed = false
 	if err := a.awaitConfirmation(ctx, signature); err != nil {
 		return nil, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: req.Gate}
 	}
-	settled = true
 	respEnvelope := proto.SettlementResponse{
 		Success:     true,
 		Transaction: signature.String(),
@@ -406,8 +459,14 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 }
 
 func (a *Adapter) awaitConfirmation(ctx context.Context, signature solana.Signature) error {
-	const attempts = 40
-	const delay = 250 * time.Millisecond
+	attempts := a.confirmAttempts
+	if attempts <= 0 {
+		attempts = 40
+	}
+	delay := a.confirmDelay
+	if delay <= 0 {
+		delay = 250 * time.Millisecond
+	}
 	for range attempts {
 		statuses, err := a.rpc.GetSignatureStatuses(ctx, true, signature)
 		if err == nil && statuses != nil && len(statuses.Value) > 0 {

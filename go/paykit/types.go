@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	mppcore "github.com/solana-foundation/pay-kit/go/protocols/mpp/core"
 )
 
 // Protocol enumerates the payment protocols the kit speaks. Order matters in
@@ -205,6 +206,15 @@ type X402Config struct {
 	// ChannelProgram overrides the payment-channels program id advertised
 	// by x402 upto. Leave empty for the canonical mainnet deployment.
 	ChannelProgram string
+	// ReplayStore backs the x402 exact adapter's consumed-signature guard,
+	// which rejects a second submission of an already-settled (or in-flight)
+	// credential. When nil the adapter uses a process-local in-memory store,
+	// which only dedups within a single replica. Multi-replica deployments
+	// MUST inject a shared store (the same core.Store an MPP server takes on
+	// its Store field) so a signature consumed on one replica is rejected on
+	// every other; without it each replica keeps its own set and the same
+	// credential can be settled once per replica.
+	ReplayStore mppcore.Store
 }
 
 // MPPConfig groups the MPP-charge-specific knobs.
