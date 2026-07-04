@@ -564,7 +564,7 @@ async def test_session_open_verifies_signature_on_chain() -> None:
     """Mirrors TestSessionOpenVerifiesSignatureOnChain.
 
     With an RPC configured, a channelId + signature push open is confirmed
-    on-chain and then bound to the fetched Channel account (H1)."""
+    on-chain and then bound to the fetched Channel account."""
     fake = _FakeRpc()
     ok_sig = _confirmed_signature(0x11)
     ghost_sig = _confirmed_signature(0x22)

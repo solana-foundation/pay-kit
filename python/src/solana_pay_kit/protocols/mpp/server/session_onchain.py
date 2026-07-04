@@ -429,7 +429,7 @@ async def fetch_and_bind_channel_account(
     """Read the authoritative on-chain ``Channel`` account for a push-mode open
     and bind every economically-relevant field to it.
 
-    SECURITY (H1): a client-supplied ``channelId`` + confirmation ``signature``
+    SECURITY: a client-supplied ``channelId`` + confirmation ``signature``
     proves only that *some* transaction succeeded, not what channel it opened or
     how large the deposit is. Trusting ``OpenPayload.deposit`` would let a client
     claim a fabricated deposit (up to ``max_cap``) against any confirmed

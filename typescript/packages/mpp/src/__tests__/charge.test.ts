@@ -1806,7 +1806,7 @@ test('pull: concurrent requests with the same transaction settle at most once', 
     expect(rejectedConsumed).toHaveLength(7);
 });
 
-// ── Lamports precision (M1) ──
+// ── Lamports precision ──
 // jsonParsed returns SOL `lamports` as a JS number. Above the safe-integer range
 // the value is already lossy, so the verifier must fail closed rather than match
 // a lossy `String(number)` against the expected amount.

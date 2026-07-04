@@ -626,7 +626,7 @@ class Session:
             payload.deposit = str(verified.deposit)
         elif mode == "push" and self._rpc is not None:
             # No transaction attached, but a channelId + confirmation signature.
-            # SECURITY (H1): confirming that *some* signature succeeded proves
+            # SECURITY: confirming that *some* signature succeeded proves
             # nothing about the channel, so the client-supplied deposit / payer /
             # authorizedSigner MUST NOT be trusted. Confirm the open signature,
             # then read the authoritative on-chain Channel account and bind the
