@@ -178,6 +178,73 @@ async def test_delete_and_mark_finalized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evicts_idle_locks() -> None:
+    """Idle per-channel lock entries are evicted rather than retained for the
+    store's lifetime.
+
+    Runs sequential and concurrent update_channel cycles across many distinct
+    channel ids; once all updates settle with no waiter remaining, the internal
+    lock map must be empty.
+    """
+    store = MemoryChannelStore()
+
+    sequential_ids = 200
+    for i in range(sequential_ids):
+        cid = f"seq-{i}"
+        await store.update_channel(cid, lambda _current, _cid=cid: _test_channel_state(_cid, 1))
+
+    concurrent_ids = 100
+    per_id = 8
+
+    def increment(current: ChannelState | None, cid: str) -> ChannelState:
+        if current is None:
+            return _test_channel_state(cid, 1)
+        current.cumulative += 1
+        return current
+
+    async def burst(cid: str) -> None:
+        await store.update_channel(cid, lambda current, _cid=cid: increment(current, _cid))
+
+    tasks = [burst(f"con-{i}") for i in range(concurrent_ids) for _ in range(per_id)]
+    await asyncio.gather(*tasks)
+
+    assert len(store._locks) == 0
+
+    all_channels = await store.list_channels(None)
+    assert len(all_channels) == sequential_ids + concurrent_ids
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_updates_serialized() -> None:
+    """Eviction must never let two updates for one channel run unserialized.
+
+    Races many concurrent increments for a single channel; the per-channel lock
+    makes the read-modify-write atomic, so the final cumulative equals the
+    number of increments, and the lock map is empty once the burst settles.
+    """
+    store = MemoryChannelStore()
+    await store.update_channel("c1", lambda _current: _test_channel_state("c1", 0))
+
+    workers = 64
+
+    def increment(current: ChannelState | None) -> ChannelState:
+        assert current is not None
+        current.cumulative += 1
+        return current
+
+    async def run() -> None:
+        await store.update_channel("c1", increment)
+
+    await asyncio.gather(*(run() for _ in range(workers)))
+
+    stored = await store.get_channel("c1")
+    assert stored is not None
+    assert stored.cumulative == workers
+
+    assert len(store._locks) == 0
+
+
+@pytest.mark.asyncio
 async def test_returns_clones() -> None:
     """Mirrors TestMemoryChannelStoreReturnsClones.
 

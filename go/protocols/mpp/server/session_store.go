@@ -190,6 +190,16 @@ type ChannelStore interface {
 	MarkFinalized(ctx context.Context, channelID string) (ChannelState, error)
 }
 
+// channelLockEntry is a per-channel mutex plus a refcount of the callers that
+// hold or are waiting on it. The entry lives in MemoryChannelStore.locks only
+// while refs > 0, so idle channel ids leave no lock behind.
+type channelLockEntry struct {
+	mu sync.Mutex
+	// refs counts holders plus waiters. Guarded by MemoryChannelStore.mu, so
+	// the last releaser observing refs == 0 can safely delete the map entry.
+	refs int
+}
+
 // MemoryChannelStore is an in-memory ChannelStore with per-channel locking:
 // UpdateChannel calls for the same channel id run strictly sequentially while
 // calls for different ids run concurrently.
@@ -201,29 +211,56 @@ type MemoryChannelStore struct {
 	// and out so callers never share memory with the store.
 	data map[string]ChannelState
 
-	// locks holds the per-channel mutex serializing UpdateChannel calls for
-	// the same channel id.
-	locks map[string]*sync.Mutex
+	// locks holds the per-channel lock entry serializing UpdateChannel calls
+	// for the same channel id. Entries are refcounted and evicted once idle
+	// (see acquireChannelLock / releaseChannelLock), so the map does not grow
+	// unbounded with the number of distinct channel ids ever seen.
+	locks map[string]*channelLockEntry
 }
 
 // NewMemoryChannelStore creates an empty MemoryChannelStore.
 func NewMemoryChannelStore() *MemoryChannelStore {
 	return &MemoryChannelStore{
 		data:  map[string]ChannelState{},
-		locks: map[string]*sync.Mutex{},
+		locks: map[string]*channelLockEntry{},
 	}
 }
 
-// channelLock returns the mutex serializing updates for channelID.
-func (s *MemoryChannelStore) channelLock(channelID string) *sync.Mutex {
+// acquireChannelLock takes the per-channel lock for channelID, creating its
+// entry if none exists. The entry's refcount is bumped under s.mu before the
+// (potentially blocking) lock is taken, so a concurrent releaser cannot evict
+// the entry while this caller is still queued on it. Every acquire must be
+// paired with exactly one releaseChannelLock.
+func (s *MemoryChannelStore) acquireChannelLock(channelID string) *channelLockEntry {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	lock, ok := s.locks[channelID]
+	entry, ok := s.locks[channelID]
 	if !ok {
-		lock = &sync.Mutex{}
-		s.locks[channelID] = lock
+		entry = &channelLockEntry{}
+		s.locks[channelID] = entry
 	}
-	return lock
+	entry.refs++
+	s.mu.Unlock()
+
+	entry.mu.Lock()
+	return entry
+}
+
+// releaseChannelLock releases a lock taken by acquireChannelLock and evicts the
+// map entry once no holder or waiter remains, keeping the lock map bounded by
+// the number of concurrently active channels rather than all ids ever seen.
+func (s *MemoryChannelStore) releaseChannelLock(channelID string, entry *channelLockEntry) {
+	entry.mu.Unlock()
+
+	s.mu.Lock()
+	entry.refs--
+	if entry.refs == 0 {
+		// A late acquirer may have created a fresh entry only if this one was
+		// already gone; guard against deleting a replacement by identity.
+		if cur, ok := s.locks[channelID]; ok && cur == entry {
+			delete(s.locks, channelID)
+		}
+	}
+	s.mu.Unlock()
 }
 
 // GetChannel reads a channel. Returns nil when it does not exist.
@@ -241,9 +278,8 @@ func (s *MemoryChannelStore) GetChannel(_ context.Context, channelID string) (*C
 // UpdateChannel atomically read-modify-writes a channel's state. A mutator
 // error leaves the stored state unchanged and does not poison later updates.
 func (s *MemoryChannelStore) UpdateChannel(_ context.Context, channelID string, mutator ChannelMutator) (ChannelState, error) {
-	lock := s.channelLock(channelID)
-	lock.Lock()
-	defer lock.Unlock()
+	entry := s.acquireChannelLock(channelID)
+	defer s.releaseChannelLock(channelID, entry)
 
 	s.mu.Lock()
 	current, ok := s.data[channelID]

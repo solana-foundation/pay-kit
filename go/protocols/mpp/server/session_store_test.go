@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -232,6 +233,116 @@ func TestMemoryChannelStoreDeleteAndMarkFinalized(t *testing.T) {
 
 	if _, err := store.MarkFinalized(ctx, "ghost"); err == nil {
 		t.Fatal("expected error marking missing channel finalized")
+	}
+}
+
+func TestMemoryChannelStoreEvictsIdleLocks(t *testing.T) {
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+
+	// Sequential cycles across many distinct channel ids: every id is touched
+	// once and then left idle, so no lock entry should survive.
+	const sequentialIDs = 200
+	for i := range sequentialIDs {
+		id := fmt.Sprintf("seq-%d", i)
+		if _, err := store.UpdateChannel(ctx, id, func(*ChannelState) (ChannelState, error) {
+			return testChannelState(id, 1), nil
+		}); err != nil {
+			t.Fatalf("sequential update %s: %v", id, err)
+		}
+	}
+
+	// Concurrent cycles across many distinct channel ids: each id gets a burst
+	// of concurrent updates that serialize, then goes idle.
+	const concurrentIDs = 100
+	const perID = 8
+	var wg sync.WaitGroup
+	for i := range concurrentIDs {
+		id := fmt.Sprintf("con-%d", i)
+		for range perID {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := store.UpdateChannel(ctx, id, func(current *ChannelState) (ChannelState, error) {
+					if current == nil {
+						return testChannelState(id, 1), nil
+					}
+					out := *current
+					out.Cumulative++
+					return out, nil
+				})
+				if err != nil {
+					t.Errorf("concurrent update %s: %v", id, err)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+
+	// Once every update has settled and no waiter remains, the lock map must be
+	// empty: idle per-channel lock entries are evicted rather than retained for
+	// the store's lifetime.
+	store.mu.Lock()
+	remaining := len(store.locks)
+	store.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("len(store.locks) = %d after all updates settled, want 0", remaining)
+	}
+
+	// The data itself is unaffected by lock eviction.
+	all, err := store.ListChannels(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	if len(all) != sequentialIDs+concurrentIDs {
+		t.Fatalf("channel count = %d, want %d", len(all), sequentialIDs+concurrentIDs)
+	}
+}
+
+func TestMemoryChannelStoreEvictionKeepsUpdatesSerialized(t *testing.T) {
+	store := NewMemoryChannelStore()
+	ctx := context.Background()
+
+	if _, err := store.UpdateChannel(ctx, "c1", func(*ChannelState) (ChannelState, error) {
+		return testChannelState("c1", 0), nil
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Race many concurrent increments for a single channel under the race
+	// detector: eviction must never let two updates run unserialized, so the
+	// final count equals the number of increments and -race sees no data race
+	// on the read-modify-write.
+	const workers = 64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			if _, err := store.UpdateChannel(ctx, "c1", func(current *ChannelState) (ChannelState, error) {
+				out := *current
+				out.Cumulative++
+				return out, nil
+			}); err != nil {
+				t.Errorf("increment: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	stored, err := store.GetChannel(ctx, "c1")
+	if err != nil || stored == nil {
+		t.Fatalf("GetChannel: state=%v err=%v", stored, err)
+	}
+	if stored.Cumulative != workers {
+		t.Fatalf("cumulative = %d, want %d (updates were not serialized)", stored.Cumulative, workers)
+	}
+
+	store.mu.Lock()
+	remaining := len(store.locks)
+	store.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("len(store.locks) = %d after burst settled, want 0", remaining)
 	}
 }
 
