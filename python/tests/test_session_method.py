@@ -747,6 +747,15 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
     )
     await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
 
+    # The on-chain top-up has landed: the channel account now reflects 5_000.
+    fake.seed_channel(
+        channel_id,
+        deposit=5_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
     receipt = await _verify_session_action(
         session,
         SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature=topup_sig)),
@@ -762,6 +771,95 @@ async def test_session_top_up_verifies_signature_on_chain() -> None:
         )
     state = await _get_channel(session, channel_id)
     assert state is not None and state.deposit == 5_000
+
+
+async def test_session_top_up_rejects_on_chain_deposit_mismatch() -> None:
+    """The top_up signature confirms, but the on-chain channel deposit did not
+    reach newDeposit (a racing/partial top-up) — the account-state bind rejects."""
+    fake = _FakeRpc()
+    open_sig = _confirmed_signature(0x21)
+    topup_sig = _confirmed_signature(0x22)
+    session = _new_test_session(rpc=fake)
+    signer = _TestVoucherSigner(1)
+    channel_id = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
+
+    # Client asserts newDeposit 5_000, but the on-chain account only reached 3_000.
+    fake.seed_channel(
+        channel_id,
+        deposit=3_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    with pytest.raises(PaymentError, match="!= asserted newDeposit 5000"):
+        await _verify_session_action(
+            session,
+            SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature=topup_sig)),
+        )
+    state = await _get_channel(session, channel_id)
+    assert state is not None and state.deposit == 1_000
+
+
+async def test_session_top_up_rejects_on_chain_mint_mismatch() -> None:
+    """On-chain deposit matches, but the channel's mint is a different token."""
+    fake = _FakeRpc()
+    open_sig = _confirmed_signature(0x31)
+    topup_sig = _confirmed_signature(0x32)
+    session = _new_test_session(rpc=fake)
+    signer = _TestVoucherSigner(1)
+    channel_id = _new_wallet()
+    fake.seed_channel(
+        channel_id,
+        deposit=1_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    await _open_session_channel(session, channel_id, 1_000, signer.address(), open_sig)
+
+    fake.seed_channel(
+        channel_id,
+        deposit=5_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=_new_wallet(),  # wrong mint
+    )
+    with pytest.raises(PaymentError, match="mint"):
+        await _verify_session_action(
+            session,
+            SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature=topup_sig)),
+        )
+
+
+async def test_session_top_up_no_rpc_off_localnet_fails_closed() -> None:
+    """Without an rpc the raised deposit is unbindable; fail closed off localnet."""
+    from solana_pay_kit.protocols.mpp.server.session_store import ChannelState
+
+    session = _new_test_session(network="devnet", rpc=None)
+    signer = _TestVoucherSigner(0x21)
+    channel_id = _new_wallet()
+
+    def seed(_current: ChannelState | None) -> ChannelState:
+        return ChannelState(channel_id=channel_id, authorized_signer=signer.address(), deposit=1_000)
+
+    await session.core().store().update_channel(channel_id, seed)
+    with pytest.raises(PaymentError, match="requires an rpc client"):
+        await _verify_session_action(
+            session,
+            SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature="topup-sig")),
+        )
 
 
 # ── close ──

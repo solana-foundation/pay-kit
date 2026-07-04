@@ -697,7 +697,37 @@ class Session:
                 code="invalid-payload",
             )
         if self._rpc is not None:
+            # SECURITY: confirming the signature succeeded proves nothing about
+            # the deposit — any confirmed signature would otherwise raise the
+            # channel to the client-asserted newDeposit. Confirm the signature,
+            # then read the authoritative on-chain Channel account and require
+            # its deposit to have actually reached newDeposit (not merely that a
+            # top_up instruction with the right delta was submitted, which a
+            # racing top-up could also satisfy). Mirrors the open fetch-and-bind
+            # and the Rust process_topup path.
             await confirm_transaction_signature(self._rpc, payload.signature, "topUp")
+            bound = await fetch_and_bind_channel_account(
+                self._rpc,
+                payload.channel_id,
+                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
+                max_cap=self._core.config.max_cap,
+                expected_authorized_signer=existing.authorized_signer,
+                expected_payee=self._recipient,
+                expected_mint=self._expected_mint(),
+            )
+            if bound.deposit != new_deposit:
+                raise PaymentError(
+                    f"on-chain channel deposit {bound.deposit} != asserted newDeposit {new_deposit}",
+                    code="invalid-payload",
+                )
+        elif self._network != "localnet":
+            # No RPC configured: the raised deposit cannot be bound to on-chain
+            # state. Fail closed on any real network; only localnet (unit/dev)
+            # may skip the bind, matching the open path and the Rust process_topup.
+            raise PaymentError(
+                "payment-channel top-up requires an rpc client to bind the on-chain channel off localnet",
+                code="invalid-config",
+            )
         try:
             await self._core.process_top_up(payload)
         except ValueError as exc:
