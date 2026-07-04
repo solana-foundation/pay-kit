@@ -30,6 +30,21 @@ const X402_VERSION = 2;
 const MAX_TIMEOUT_SECONDS = 300;
 const UPTO_ASSET_TRANSFER_METHOD = 'payment-channel';
 const BASIS_POINTS_DENOMINATOR = 10_000;
+/**
+ * How long a challenge blockhash is reused before refetching. The unauthenticated
+ * 402 challenge fetches `getLatestBlockhash` per request, so an unauthenticated
+ * burst amplifies straight into the RPC quota; caching collapses it to at most one
+ * RPC per TTL. Kept well under the ~60s blockhash validity so the stamped value
+ * stays fresh enough for the client to build the channel-open.
+ */
+const CHALLENGE_BLOCKHASH_TTL_MS = 5_000;
+
+/** A cached recent blockhash with the wall-clock time it was fetched. */
+type CachedBlockhash = {
+    readonly blockhash: string;
+    readonly fetchedAtMs: number;
+    readonly lastValidBlockHeight: string;
+};
 
 /**
  * Usage meter handed to a usage-gated handler. The handler reports the actual
@@ -100,6 +115,10 @@ export class X402Upto {
     readonly #facilitatorFee: number;
     readonly #rpcUrl: string;
     readonly #stablecoins: readonly string[];
+    /** Short-TTL challenge-blockhash cache keyed by RPC url (see {@link CHALLENGE_BLOCKHASH_TTL_MS}). */
+    readonly #blockhashCache = new Map<string, CachedBlockhash>();
+    /** In-flight fetch per RPC url so a concurrent burst collapses to one RPC. */
+    readonly #blockhashInFlight = new Map<string, Promise<CachedBlockhash | undefined>>();
 
     constructor(config: PayKitConfig) {
         this.#network = caip2(config.network) as Network;
@@ -262,19 +281,50 @@ export class X402Upto {
      */
     async #challengeRequirements(maxPrice: Price): Promise<PaymentRequirements> {
         const base = this.#requirements(maxPrice);
-        try {
-            const { value } = await createSolanaRpc(this.#rpcUrl).getLatestBlockhash().send();
-            return {
-                ...base,
-                extra: {
-                    ...base.extra,
-                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
-                    recentBlockhash: value.blockhash,
-                },
-            };
-        } catch {
-            return base;
+        const cached = await this.#recentBlockhash();
+        if (cached === undefined) return base;
+        return {
+            ...base,
+            extra: {
+                ...base.extra,
+                lastValidBlockHeight: cached.lastValidBlockHeight,
+                recentBlockhash: cached.blockhash,
+            },
+        };
+    }
+
+    /**
+     * A recent blockhash for the challenge, served from a short-TTL cache keyed
+     * by RPC url. A concurrent burst collapses to a single RPC via the in-flight
+     * promise; a fetch failure yields `undefined` (the challenge degrades to no
+     * pre-fetched blockhash) without poisoning the cache.
+     */
+    async #recentBlockhash(): Promise<CachedBlockhash | undefined> {
+        const key = this.#rpcUrl;
+        const fresh = this.#blockhashCache.get(key);
+        if (fresh !== undefined && Date.now() - fresh.fetchedAtMs < CHALLENGE_BLOCKHASH_TTL_MS) {
+            return fresh;
         }
+        const pending = this.#blockhashInFlight.get(key);
+        if (pending !== undefined) return await pending;
+        const fetchPromise = (async (): Promise<CachedBlockhash | undefined> => {
+            try {
+                const { value } = await createSolanaRpc(key).getLatestBlockhash().send();
+                const entry: CachedBlockhash = {
+                    blockhash: value.blockhash,
+                    fetchedAtMs: Date.now(),
+                    lastValidBlockHeight: value.lastValidBlockHeight.toString(),
+                };
+                this.#blockhashCache.set(key, entry);
+                return entry;
+            } catch {
+                return undefined;
+            } finally {
+                this.#blockhashInFlight.delete(key);
+            }
+        })();
+        this.#blockhashInFlight.set(key, fetchPromise);
+        return await fetchPromise;
     }
 }
 
