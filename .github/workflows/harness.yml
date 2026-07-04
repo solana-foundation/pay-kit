@@ -123,7 +123,14 @@ jobs:
       # spawned server imports solana_pay_kit; reverting the caps flips this red.
       - name: Run Python harness server IO-cap tests
         working-directory: python
-        run: uv run pytest ../harness/python-server/test_harness_adapter.py
+        # Disable the anchorpy pytest plugin explicitly on the command line: it
+        # imports pytest-xprocess at collection time, which we do not install
+        # (see python/pyproject.toml). The `-p no:pytest_anchorpy` in that file's
+        # addopts only applies when pytest resolves it as the config file, and it
+        # does not here because the test target lives outside python/, so the
+        # plugin autoloads and crashes on the missing xprocess import. Passing the
+        # flag on the command line disables the plugin before entry points load.
+        run: uv run pytest -p no:pytest_anchorpy ../harness/python-server/test_harness_adapter.py
       - name: Run Python cross-SDK conformance vectors
         working-directory: harness
         env:
