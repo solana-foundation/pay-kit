@@ -935,6 +935,126 @@ class X402ServerExactTest < Minitest::Test
     assert retried
   end
 
+  # The DEFAULT confirmer (not an injected test lambda) must be able to prove a
+  # transaction never landed and release the reservation. Broadcast is accepted,
+  # the confirmation poll is exhausted, then the definitive check runs:
+  # getSignatureStatuses(searchTransactionHistory: true) reports the signature
+  # absent AND getBlockHeight is past the credential's lastValidBlockHeight, so
+  # the blockhash is provably expired. The default await_confirmation raises
+  # Error::TransactionNotFound, the settlement cache entry is deleted, and a
+  # resubmission of a corrected credential is accepted. Mirrors the Rust
+  # PullSettlementOutcome::NotLanded contract and the Go never-landed release.
+  def test_default_confirmer_releases_reservation_when_provably_never_landed
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "never-landed-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    # RPC transport: the signature is never found (poll + definitive check),
+    # and the chain has advanced past lastValidBlockHeight -> blockhash expired.
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      "getBlockHeight" => {"result" => 1001}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    assert_match(/never-landed-sig/, error.message)
+
+    # The reservation was released.
+    refute cache.duplicate?("x402-svm-exact:consumed:never-landed-sig"),
+      "a provably never-landed default-confirmer outcome must release the reservation"
+
+    # A resubmission of the same credential is now free to broadcast again
+    # (fresh signature) and settles cleanly under an injected happy confirmer.
+    retried = false
+    resubmit_state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) {
+        retried = true
+        "corrected-sig"
+      },
+      settlement_cache: cache,
+      signature_confirmer: ->(_state, signature) { signature }
+    )
+    assert_equal "corrected-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(resubmit_state, build_payment_header(resubmit_state))
+    assert retried
+  end
+
+  # Companion: with the DEFAULT confirmer, when the signature is absent but the
+  # blockhash is still valid (chain height has NOT passed lastValidBlockHeight),
+  # the outcome is indeterminate — the tx may still land — so the plain timeout
+  # RuntimeError propagates and the reservation is KEPT. A resubmission is
+  # rejected as a replay.
+  def test_default_confirmer_keeps_reservation_when_blockhash_still_valid
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "pending-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      # Chain height is still at/under lastValidBlockHeight -> not expired.
+      "getBlockHeight" => {"result" => 1000}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(RuntimeError) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error
+    assert_match(/timed out awaiting confirmation/, error.message)
+
+    # The reservation is kept (the tx may still land within the blockhash window).
+    assert cache.duplicate?("x402-svm-exact:consumed:pending-sig"),
+      "an indeterminate (still-valid blockhash) outcome must keep the reservation"
+  end
+
+  # Companion: with the DEFAULT confirmer, when the signature is absent and the
+  # definitive block-height RPC itself errors, we cannot prove non-landing, so
+  # the reservation is KEPT (fail-closed) and the plain timeout error surfaces.
+  def test_default_confirmer_keeps_reservation_when_definitive_check_rpc_errors
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state_with_block_context(
+      last_valid_block_height: 1000,
+      sender: ->(_state, _transaction) { "rpc-flaky-sig" },
+      settlement_cache: cache
+    )
+    payment_header = build_payment_header(state)
+
+    router = rpc_router(
+      "getSignatureStatuses" => {"result" => {"value" => [nil]}},
+      "getBlockHeight" => {"error" => {"code" => -32000, "message" => "node behind"}}
+    )
+
+    error = with_stubbed_rpc(router) do
+      no_op_sleep do
+        assert_raises(RuntimeError) do
+          PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, payment_header)
+        end
+      end
+    end
+    refute_instance_of PayKit::Protocols::X402::Error::TransactionNotFound, error
+
+    assert cache.duplicate?("x402-svm-exact:consumed:rpc-flaky-sig"),
+      "a failed definitive check must keep the reservation (fail-closed)"
+  end
+
   def test_settlement_consumed_key_namespace_is_scheme_scoped
     assert_equal "x402-svm-exact:consumed:abc123",
       PayKit::Protocols::X402::Server::Exact.signature_consumed_key("abc123")
@@ -1349,6 +1469,74 @@ class X402ServerExactTest < Minitest::Test
       kwargs[:extra_offered_mints] = extra_offered_mints.split(",").map(&:strip).reject(&:empty?)
     end
     PayKit::Protocols::X402::Server::Exact::Config.new(**kwargs)
+  end
+
+  # State whose challenge embeds a real recentBlockhash AND its
+  # lastValidBlockHeight, so a fixture-built credential echoes both under
+  # accepted.extra. Exercises the DEFAULT confirmer's provably-never-landed
+  # release path end-to-end (the credential's echoed lastValidBlockHeight is the
+  # height the definitive getBlockHeight check compares against).
+  def build_state_with_block_context(
+    last_valid_block_height:,
+    sender:,
+    settlement_cache:,
+    signature_confirmer: nil
+  )
+    kwargs = {
+      rpc_url: "http://127.0.0.1:8899",
+      network: NETWORK,
+      mint: ASSET,
+      pay_to: PAY_TO,
+      facilitator_secret_key: JSON.generate(secret(65)),
+      amount: "$0.001",
+      transaction_sender: sender,
+      account_checker: ->(_state, _account) { true },
+      settlement_cache: settlement_cache,
+      recent_blockhash_provider: -> { {"blockhash" => BLOCKHASH, "lastValidBlockHeight" => last_valid_block_height} }
+    }
+    # Only override the confirmer when explicitly given; otherwise the DEFAULT
+    # confirmer (Exact.await_confirmation) is exercised, which is the point.
+    kwargs[:signature_confirmer] = signature_confirmer unless signature_confirmer.nil?
+    PayKit::Protocols::X402::Server::Exact::Config.new(**kwargs)
+  end
+
+  # Build a Net::HTTP.start stub that routes canned JSON-RPC responses by the
+  # request's `method` field, so a single test can answer getSignatureStatuses
+  # and getBlockHeight differently.
+  def rpc_router(responses)
+    ->(request) {
+      method = JSON.parse(request.body).fetch("method")
+      body = responses.fetch(method) { raise "unexpected RPC method in test: #{method}" }
+      response = Object.new
+      base_is_a = response.method(:is_a?)
+      response.define_singleton_method(:is_a?) { |klass| klass == Net::HTTPSuccess || base_is_a.call(klass) }
+      response.define_singleton_method(:code) { "200" }
+      response.define_singleton_method(:body) { JSON.generate(body) }
+      response
+    }
+  end
+
+  def with_stubbed_rpc(router)
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) { |request| router.call(request) }
+    singleton = class << Net::HTTP; self; end
+    original_start = Net::HTTP.method(:start)
+    singleton.define_method(:start, ->(_hostname, _port, _options, &block) { block.call(fake_http) })
+    yield
+  ensure
+    singleton.define_method(:start, original_start)
+  end
+
+  # Make the default confirmer's inter-poll sleep a no-op so the 40-attempt poll
+  # loop does not stall the test before the definitive check runs.
+  def no_op_sleep
+    exact = PayKit::Protocols::X402::Server::Exact
+    singleton = class << exact; self; end
+    original_sleep = exact.method(:sleep)
+    singleton.define_method(:sleep) { |*_args| 0 }
+    yield
+  ensure
+    singleton.define_method(:sleep, original_sleep)
   end
 
   def build_payment_header(state, resource: nil, extensions: nil)
