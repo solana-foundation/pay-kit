@@ -58,43 +58,9 @@ func fetchAndBindChannelAccount(
 	expectedAuthorizedSigner string,
 	programID *solana.PublicKey,
 ) (boundChannel, error) {
-	program := paymentchannels.ProgramPubkey()
-	if programID != nil {
-		program = *programID
-	}
-	info, err := rpcClient.GetAccountInfoWithOpts(ctx, channelID, &rpc.GetAccountInfoOpts{
-		Commitment: rpc.CommitmentConfirmed,
-		Encoding:   solana.EncodingBase64,
-	})
+	channel, err := fetchAndValidateChannel(ctx, rpcClient, channelID, expectedMint, expectedPayee, programID)
 	if err != nil {
-		return boundChannel{}, fmt.Errorf("channel %s account fetch failed: %w", channelID, err)
-	}
-	if info == nil || info.Value == nil || info.Value.Data == nil {
-		return boundChannel{}, fmt.Errorf("channel %s account not found on-chain", channelID)
-	}
-	if !info.Value.Owner.Equals(program) {
-		return boundChannel{}, fmt.Errorf(
-			"channel %s is not owned by the payment-channels program %s", channelID, program)
-	}
-	data := info.Value.Data.GetBinary()
-	if len(data) == 0 {
-		return boundChannel{}, fmt.Errorf("channel %s account data is empty", channelID)
-	}
-	channel := new(pcgen.Channel)
-	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
-		return boundChannel{}, fmt.Errorf("channel %s decode failed: %w", channelID, err)
-	}
-	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
-		return boundChannel{}, fmt.Errorf(
-			"channel %s is not open on-chain (status %d)", channelID, channel.Status)
-	}
-	if channel.Mint.String() != expectedMint {
-		return boundChannel{}, fmt.Errorf(
-			"on-chain channel mint %s != expected mint %s", channel.Mint, expectedMint)
-	}
-	if channel.Payee.String() != expectedPayee {
-		return boundChannel{}, fmt.Errorf(
-			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
+		return boundChannel{}, err
 	}
 	// Compare the authorizedSigner unconditionally: an empty expected signer must
 	// fail closed rather than short-circuit the check (Rust rejects empty at
@@ -112,6 +78,63 @@ func fetchAndBindChannelAccount(
 		Payee:            channel.Payee.String(),
 		Mint:             channel.Mint.String(),
 	}, nil
+}
+
+// fetchAndValidateChannel reads the on-chain payment-channels Channel account
+// and runs the checks shared by every binder: the account must exist, be owned
+// by the payment-channels program, carry non-empty data that decodes as a
+// Channel, be open, and match the challenge mint and payee. It returns the
+// decoded Channel so each caller can apply only its divergent trailing check
+// (fetchAndBindChannelAccount cross-checks the stored authorizedSigner; the
+// top-up path binds the deposit). The validation order and error messages are
+// identical across callers so behavior is unchanged when factored out.
+func fetchAndValidateChannel(
+	ctx context.Context,
+	rpcClient solanatx.RPCClient,
+	channelID solana.PublicKey,
+	expectedMint string,
+	expectedPayee string,
+	programID *solana.PublicKey,
+) (*pcgen.Channel, error) {
+	program := paymentchannels.ProgramPubkey()
+	if programID != nil {
+		program = *programID
+	}
+	info, err := rpcClient.GetAccountInfoWithOpts(ctx, channelID, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("channel %s account fetch failed: %w", channelID, err)
+	}
+	if info == nil || info.Value == nil || info.Value.Data == nil {
+		return nil, fmt.Errorf("channel %s account not found on-chain", channelID)
+	}
+	if !info.Value.Owner.Equals(program) {
+		return nil, fmt.Errorf(
+			"channel %s is not owned by the payment-channels program %s", channelID, program)
+	}
+	data := info.Value.Data.GetBinary()
+	if len(data) == 0 {
+		return nil, fmt.Errorf("channel %s account data is empty", channelID)
+	}
+	channel := new(pcgen.Channel)
+	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
+		return nil, fmt.Errorf("channel %s decode failed: %w", channelID, err)
+	}
+	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
+		return nil, fmt.Errorf(
+			"channel %s is not open on-chain (status %d)", channelID, channel.Status)
+	}
+	if channel.Mint.String() != expectedMint {
+		return nil, fmt.Errorf(
+			"on-chain channel mint %s != expected mint %s", channel.Mint, expectedMint)
+	}
+	if channel.Payee.String() != expectedPayee {
+		return nil, fmt.Errorf(
+			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
+	}
+	return channel, nil
 }
 
 // openInstructionDiscriminator is the payment-channel open instruction
@@ -400,43 +423,9 @@ func fetchTopUpChannelAccount(
 	expectedPayee string,
 	programID *solana.PublicKey,
 ) (boundChannel, error) {
-	program := paymentchannels.ProgramPubkey()
-	if programID != nil {
-		program = *programID
-	}
-	info, err := rpcClient.GetAccountInfoWithOpts(ctx, channelID, &rpc.GetAccountInfoOpts{
-		Commitment: rpc.CommitmentConfirmed,
-		Encoding:   solana.EncodingBase64,
-	})
+	channel, err := fetchAndValidateChannel(ctx, rpcClient, channelID, expectedMint, expectedPayee, programID)
 	if err != nil {
-		return boundChannel{}, fmt.Errorf("channel %s account fetch failed: %w", channelID, err)
-	}
-	if info == nil || info.Value == nil || info.Value.Data == nil {
-		return boundChannel{}, fmt.Errorf("channel %s account not found on-chain", channelID)
-	}
-	if !info.Value.Owner.Equals(program) {
-		return boundChannel{}, fmt.Errorf(
-			"channel %s is not owned by the payment-channels program %s", channelID, program)
-	}
-	data := info.Value.Data.GetBinary()
-	if len(data) == 0 {
-		return boundChannel{}, fmt.Errorf("channel %s account data is empty", channelID)
-	}
-	channel := new(pcgen.Channel)
-	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
-		return boundChannel{}, fmt.Errorf("channel %s decode failed: %w", channelID, err)
-	}
-	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
-		return boundChannel{}, fmt.Errorf(
-			"channel %s is not open on-chain (status %d)", channelID, channel.Status)
-	}
-	if channel.Mint.String() != expectedMint {
-		return boundChannel{}, fmt.Errorf(
-			"on-chain channel mint %s != expected mint %s", channel.Mint, expectedMint)
-	}
-	if channel.Payee.String() != expectedPayee {
-		return boundChannel{}, fmt.Errorf(
-			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
+		return boundChannel{}, err
 	}
 	return boundChannel{
 		Deposit:          channel.Deposit,

@@ -446,35 +446,14 @@ async def fetch_and_bind_channel_account(
     payment-channels program, is not open, mismatches the challenge, or carries a
     deposit that is zero or above ``max_cap``.
     """
-    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+    channel = await _fetch_and_validate_channel(
+        rpc_client,
+        channel_id,
+        program_id=program_id,
+        expected_payee=expected_payee,
+        expected_mint=expected_mint,
+    )
 
-    resolved_program = program_id if program_id is not None else PROGRAM_ID
-
-    account = await rpc_client.get_account_info(channel_id)
-    if account is None:
-        raise PaymentError(f"channel {channel_id} account not found on-chain", code="invalid-payload")
-    data, owner = account
-    if owner != str(resolved_program):
-        raise PaymentError(f"channel {channel_id} is not owned by the payment-channels program", code="invalid-payload")
-    if len(data) < 1:
-        raise PaymentError(f"channel {channel_id} account data is empty", code="invalid-payload")
-    try:
-        channel = Channel.decode(data)
-    except Exception as exc:
-        raise PaymentError(f"channel {channel_id} account decode failed: {exc}", code="invalid-payload") from exc
-
-    if int(channel.status) != _CHANNEL_STATUS_OPEN:
-        raise PaymentError(
-            f"channel {channel_id} is not open on-chain (status {channel.status})", code="invalid-payload"
-        )
-    if str(channel.mint) != expected_mint:
-        raise PaymentError(
-            f"on-chain channel mint {channel.mint} != expected mint {expected_mint}", code="invalid-payload"
-        )
-    if str(channel.payee) != expected_payee:
-        raise PaymentError(
-            f"on-chain channel payee {channel.payee} != expected recipient {expected_payee}", code="invalid-payload"
-        )
     if str(channel.authorizedSigner) != expected_authorized_signer:
         raise PaymentError(
             f"on-chain channel authorized_signer {channel.authorizedSigner} != expected {expected_authorized_signer}",
@@ -495,21 +474,25 @@ async def fetch_and_bind_channel_account(
     )
 
 
-async def _fetch_top_up_channel_account(
+async def _fetch_and_validate_channel(
     rpc_client: RpcClient,
     channel_id: str,
     *,
     program_id: Pubkey | str | None,
     expected_payee: str,
     expected_mint: str,
-) -> BoundChannel:
-    """Read the on-chain ``Channel`` account for a top-up and bind its status /
-    mint / payee to the challenge, returning the authoritative facts.
+) -> Any:
+    """Read the on-chain ``Channel`` account and run the checks shared by every
+    binder: the account must exist, be owned by the payment-channels program,
+    carry non-empty data that decodes as a ``Channel``, be open, and match the
+    challenge mint and payee.
 
-    Unlike :func:`fetch_and_bind_channel_account` it does not cross-check a
-    stored ``authorizedSigner``: the top-up payload carries none, and the channel
-    PDA already pins the channel identity (mirrors Rust ``process_topup``, which
-    binds status / mint / payee / deposit only)."""
+    Returns the decoded ``Channel`` so each caller can apply only its divergent
+    trailing check — :func:`fetch_and_bind_channel_account` cross-checks the
+    stored ``authorizedSigner`` and bounds the deposit against ``max_cap``; the
+    top-up path binds the raised deposit. The validation order and error messages
+    are identical across callers, so behavior is unchanged when factored out.
+    """
     from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
 
     if program_id is None:
@@ -544,6 +527,31 @@ async def _fetch_top_up_channel_account(
         raise PaymentError(
             f"on-chain channel payee {channel.payee} != expected recipient {expected_payee}", code="invalid-payload"
         )
+    return channel
+
+
+async def _fetch_top_up_channel_account(
+    rpc_client: RpcClient,
+    channel_id: str,
+    *,
+    program_id: Pubkey | str | None,
+    expected_payee: str,
+    expected_mint: str,
+) -> BoundChannel:
+    """Read the on-chain ``Channel`` account for a top-up and bind its status /
+    mint / payee to the challenge, returning the authoritative facts.
+
+    Unlike :func:`fetch_and_bind_channel_account` it does not cross-check a
+    stored ``authorizedSigner``: the top-up payload carries none, and the channel
+    PDA already pins the channel identity (mirrors Rust ``process_topup``, which
+    binds status / mint / payee / deposit only)."""
+    channel = await _fetch_and_validate_channel(
+        rpc_client,
+        channel_id,
+        program_id=program_id,
+        expected_payee=expected_payee,
+        expected_mint=expected_mint,
+    )
 
     return BoundChannel(
         deposit=int(channel.deposit),
