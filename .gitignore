@@ -25,6 +25,9 @@ Cargo.lock
 .surfpool
 .DS_Store
 .npm-pack/
+# Vendored @solana/mpp tarballs must never be committed under packages/mpp:
+# the live dep is resolved via `workspace:^`, so any tarball here is stale.
+typescript/packages/mpp/*.tgz
 DUMP.md
 package/
 __pycache__/
