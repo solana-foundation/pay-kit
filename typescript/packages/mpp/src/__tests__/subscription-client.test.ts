@@ -24,6 +24,7 @@ import {
     TOKEN_PROGRAM,
 } from '../constants.js';
 import { buildSubscriptionActivationTransaction, subscription as subscriptionClient } from '../client/Subscription.js';
+import { __testing as serverTesting } from '../server/Subscription.js';
 
 const PLAN_ID = '8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT';
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -53,37 +54,49 @@ function rpcSuccess(result: unknown) {
 }
 
 /**
- * Default RPC mock: pretend the SubscriptionAuthority does not exist, return a
- * blockhash for getLatestBlockhash, accept sendTransaction, and report the
+ * Default RPC mock modelling a first-time subscriber. The SubscriptionAuthority
+ * is absent on the first read; after the client broadcasts and confirms the
+ * standalone init transaction the account reads back present. Returns a
+ * blockhash for getLatestBlockhash, accepts sendTransaction, and reports the
  * signature as confirmed.
+ *
+ * Pass `authorityExists: true` to model a returning subscriber whose SA already
+ * exists (no init broadcast happens).
  */
 function defaultMockFetch(opts: { authorityExists?: boolean } = {}): typeof globalThis.fetch {
+    let initBroadcast = false;
+    let confirmed = false;
+    const presentAccount = {
+        context: { slot: 1 },
+        value: {
+            data: ['', 'base64'],
+            executable: false,
+            lamports: 1,
+            owner: SUBSCRIPTIONS_PROGRAM,
+            rentEpoch: 0,
+            space: 0,
+        },
+    };
     return async (_input: RequestInfo | URL, init?: RequestInit) => {
         const body = JSON.parse(init?.body as string) as { method?: string };
         switch (body.method) {
             case 'getAccountInfo':
+                // Present when the subscriber already had an SA, or once the
+                // standalone init transaction has broadcast and confirmed.
                 return rpcSuccess(
-                    opts.authorityExists
-                        ? {
-                              context: { slot: 1 },
-                              value: {
-                                  data: ['', 'base64'],
-                                  executable: false,
-                                  lamports: 1,
-                                  owner: SUBSCRIPTIONS_PROGRAM,
-                                  rentEpoch: 0,
-                                  space: 0,
-                              },
-                          }
+                    opts.authorityExists || (initBroadcast && confirmed)
+                        ? presentAccount
                         : { context: { slot: 1 }, value: null },
                 );
             case 'getLatestBlockhash':
                 return rpcSuccess({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
             case 'sendTransaction':
+                initBroadcast = true;
                 return rpcSuccess(
                     '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq',
                 );
             case 'getSignatureStatuses':
+                confirmed = true;
                 return rpcSuccess({ context: { slot: 1 }, value: [{ confirmationStatus: 'confirmed', err: null }] });
             default:
                 return rpcSuccess({});
@@ -131,7 +144,7 @@ function baseRequest(): Parameters<typeof buildSubscriptionActivationTransaction
 // ══════════════════════════════════════════════════════════════════════
 
 describe('buildSubscriptionActivationTransaction', () => {
-    test('includes initialize_subscription_authority when the authority does not exist', async () => {
+    test('pre-broadcasts initialize_subscription_authority instead of bundling it when the authority does not exist', async () => {
         globalThis.fetch = defaultMockFetch();
         const signer = await generateKeyPairSigner();
         const tx = await buildSubscriptionActivationTransaction({
@@ -141,11 +154,11 @@ describe('buildSubscriptionActivationTransaction', () => {
         });
         const message = decodeMessage(tx);
         const discriminators = instructionDiscriminatorsByProgram(message, SUBSCRIPTIONS_PROGRAM);
-        expect(discriminators).toEqual([
-            SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR,
-            SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
-            SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
-        ]);
+        // The init instruction (discriminator 0) is broadcast in its own
+        // subscriber-paid transaction; the activation transaction the server
+        // co-signs must carry ONLY subscribe + transfer_subscription so it
+        // passes the server's strict allowlist.
+        expect(discriminators).toEqual([SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR, SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR]);
     });
 
     test('omits initialize_subscription_authority when the authority already exists', async () => {
@@ -163,12 +176,13 @@ describe('buildSubscriptionActivationTransaction', () => {
 
     test('uses the server-provided recentBlockhash when present', async () => {
         let blockhashFetched = false;
+        const inner = defaultMockFetch();
         globalThis.fetch = async (_input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             if (body.method === 'getLatestBlockhash') {
                 blockhashFetched = true;
             }
-            return defaultMockFetch()(_input, init);
+            return inner(_input, init);
         };
         const signer = await generateKeyPairSigner();
         const req = baseRequest();
@@ -274,9 +288,10 @@ describe('buildSubscriptionActivationTransaction', () => {
 
     test('falls back to the default RPC URL when no rpcUrl is provided', async () => {
         const urls: string[] = [];
+        const inner = defaultMockFetch();
         globalThis.fetch = async (input, init) => {
             urls.push(String(input));
-            return defaultMockFetch()(input, init);
+            return inner(input, init);
         };
         const signer = await generateKeyPairSigner();
         await buildSubscriptionActivationTransaction({
@@ -289,9 +304,10 @@ describe('buildSubscriptionActivationTransaction', () => {
 
     test('normalizes a mixed-case network slug when resolving the default RPC URL', async () => {
         const urls: string[] = [];
+        const inner = defaultMockFetch();
         globalThis.fetch = async (input, init) => {
             urls.push(String(input));
-            return defaultMockFetch()(input, init);
+            return inner(input, init);
         };
         const signer = await generateKeyPairSigner();
         const req = baseRequest();
@@ -323,12 +339,16 @@ describe('subscription() client wrapper', () => {
         } as never;
     }
 
-    test('emits a credential in pull mode without broadcasting', async () => {
+    test('emits a credential in pull mode without broadcasting the activation tx', async () => {
+        // A returning subscriber (SA already exists) so no standalone init tx is
+        // broadcast; pull mode must then perform NO broadcast at all — the
+        // activation transaction is handed to the server unsent.
         const calls: string[] = [];
+        const inner = defaultMockFetch({ authorityExists: true });
         globalThis.fetch = async (input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             calls.push(body.method ?? '');
-            return defaultMockFetch()(input, init);
+            return inner(input, init);
         };
         const signer = await generateKeyPairSigner();
         const method = subscriptionClient({
@@ -345,10 +365,11 @@ describe('subscription() client wrapper', () => {
 
     test('broadcasts and emits a type="signature" credential when broadcast=true', async () => {
         const calls: string[] = [];
+        const inner = defaultMockFetch({ authorityExists: true });
         globalThis.fetch = async (input, init) => {
             const body = JSON.parse(init?.body as string) as { method?: string };
             calls.push(body.method ?? '');
-            return defaultMockFetch()(input, init);
+            return inner(input, init);
         };
         const signer = await generateKeyPairSigner();
         const method = subscriptionClient({
@@ -385,5 +406,189 @@ describe('subscription() client wrapper', () => {
             },
         } as never;
         await expect(method.createCredential!({ challenge })).rejects.toThrow(/fee sponsorship/);
+    });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// First-time-subscriber activation must pass the strict server allowlist
+// ══════════════════════════════════════════════════════════════════════
+//
+// The server's activation allowlist rejects every subscriptions-program
+// instruction other than subscribe (11) / transfer_subscription (10). When the
+// SubscriptionAuthority PDA does not yet exist, the client must NOT bundle the
+// initialize_subscription_authority instruction (discriminator 0) into the
+// activation transaction the server co-signs and broadcasts. Instead it
+// broadcasts a standalone subscriber-paid init transaction first, waits for
+// confirmation, and only then builds/signs the activation transaction — exactly
+// as the Rust client does. These tests reproduce that first-time flow against a
+// mock RPC sequenced absent -> confirmed -> present, capture every broadcast,
+// and feed the activation transaction through the server's own allowlist.
+
+/** A record of a captured sendTransaction broadcast, in call order. */
+type CapturedBroadcast = { base64: string };
+
+/**
+ * Sequenced RPC mock for the first-time-subscriber flow. The first
+ * getAccountInfo for the SubscriptionAuthority returns null (absent); after a
+ * sendTransaction lands and its status is polled confirmed, subsequent
+ * getAccountInfo calls return a present account. Every sendTransaction payload
+ * is captured (in order), and the sequence of RPC method names is recorded so a
+ * test can assert the init broadcast was confirmed before the activation was
+ * signed.
+ */
+function firstTimeSubscriberMock(): {
+    fetch: typeof globalThis.fetch;
+    broadcasts: CapturedBroadcast[];
+    methodOrder: string[];
+} {
+    const broadcasts: CapturedBroadcast[] = [];
+    const methodOrder: string[] = [];
+    let authorityInitBroadcast = false;
+    let confirmedAfterBroadcast = false;
+    const fetch: typeof globalThis.fetch = async (_input, init) => {
+        const body = JSON.parse(init?.body as string) as { method?: string; params?: unknown[] };
+        methodOrder.push(body.method ?? '');
+        switch (body.method) {
+            case 'getAccountInfo':
+                // Absent until the init tx has broadcast AND confirmed.
+                return rpcSuccess(
+                    authorityInitBroadcast && confirmedAfterBroadcast
+                        ? {
+                              context: { slot: 1 },
+                              value: {
+                                  data: ['', 'base64'],
+                                  executable: false,
+                                  lamports: 1,
+                                  owner: SUBSCRIPTIONS_PROGRAM,
+                                  rentEpoch: 0,
+                                  space: 0,
+                              },
+                          }
+                        : { context: { slot: 1 }, value: null },
+                );
+            case 'getLatestBlockhash':
+                return rpcSuccess({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
+            case 'sendTransaction':
+                broadcasts.push({ base64: (body.params?.[0] as string) ?? '' });
+                authorityInitBroadcast = true;
+                return rpcSuccess(
+                    '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq',
+                );
+            case 'getSignatureStatuses':
+                confirmedAfterBroadcast = true;
+                return rpcSuccess({ context: { slot: 1 }, value: [{ confirmationStatus: 'confirmed', err: null }] });
+            default:
+                return rpcSuccess({});
+        }
+    };
+    return { broadcasts, fetch, methodOrder };
+}
+
+function decodeFullTransaction(base64Tx: string): {
+    feePayer: string;
+    message: CompiledMessage;
+    signerCount: number;
+} {
+    const txBytes = getBase64Codec().encode(base64Tx);
+    const decoded = getTransactionDecoder().decode(txBytes) as unknown as {
+        messageBytes: Uint8Array;
+        signatures: Record<string, unknown>;
+    };
+    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+    return {
+        feePayer: message.staticAccounts[0].toString(),
+        message,
+        signerCount: Object.keys(decoded.signatures).length,
+    };
+}
+
+describe('first-time subscriber activation and the server allowlist', () => {
+    test('pre-broadcasts the SA init tx and produces an activation tx the server allowlist accepts', async () => {
+        const { broadcasts, fetch, methodOrder } = firstTimeSubscriberMock();
+        globalThis.fetch = fetch;
+        const signer = await generateKeyPairSigner();
+
+        const activationTx = await buildSubscriptionActivationTransaction({
+            request: baseRequest(),
+            rpcUrl: 'https://mock-rpc',
+            signer,
+        });
+
+        // (core) The activation transaction the server co-signs/broadcasts must
+        // pass the strict server allowlist. Before the fix the bundled init
+        // instruction (discriminator 0) makes this throw.
+        await expect(
+            serverTesting.validateActivationInstructions(activationTx, {
+                methodDetails: {
+                    mint: MINT,
+                    planId: PLAN_ID,
+                    programId: SUBSCRIPTIONS_PROGRAM,
+                    puller: PULLER,
+                    tokenProgram: TOKEN_PROGRAM,
+                },
+                recipient: RECIPIENT,
+            } as never),
+        ).resolves.toBeUndefined();
+
+        // The activation tx must carry ONLY subscribe + transfer_subscription
+        // for the subscriptions program — never the init discriminator.
+        const activationMessage = decodeMessage(activationTx);
+        const activationDiscriminators = instructionDiscriminatorsByProgram(activationMessage, SUBSCRIPTIONS_PROGRAM);
+        expect(activationDiscriminators).toEqual([
+            SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
+            SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
+        ]);
+
+        // (a) A separate, prior transaction carrying the discriminator-0 init
+        // instruction was broadcast, with the subscriber as its fee payer.
+        expect(broadcasts.length).toBe(1);
+        const initTx = decodeFullTransaction(broadcasts[0].base64);
+        const initDiscriminators = instructionDiscriminatorsByProgram(initTx.message, SUBSCRIPTIONS_PROGRAM);
+        expect(initDiscriminators).toEqual([SUBSCRIPTIONS_INIT_AUTHORITY_DISCRIMINATOR]);
+        expect(initTx.feePayer).toBe(signer.address);
+        // The init tx is a standalone subscriber-paid/-signed transaction.
+        expect(initTx.signerCount).toBe(1);
+
+        // (b) Confirmation of the init broadcast was awaited BEFORE the
+        // activation tx was signed. The activation builder re-reads the SA
+        // account after confirmation, so the RPC order must show:
+        //   sendTransaction (init) -> getSignatureStatuses (confirm) ->
+        //   getAccountInfo (post-confirm SA re-read).
+        const sendIdx = methodOrder.indexOf('sendTransaction');
+        const confirmIdx = methodOrder.indexOf('getSignatureStatuses');
+        const reReadIdx = methodOrder.lastIndexOf('getAccountInfo');
+        expect(sendIdx).toBeGreaterThanOrEqual(0);
+        expect(confirmIdx).toBeGreaterThan(sendIdx);
+        expect(reReadIdx).toBeGreaterThan(confirmIdx);
+    });
+
+    test('surfaces a clear client error when the SA init broadcast fails', async () => {
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string };
+            switch (body.method) {
+                case 'getAccountInfo':
+                    return rpcSuccess({ context: { slot: 1 }, value: null });
+                case 'getLatestBlockhash':
+                    return rpcSuccess({
+                        context: { slot: 1 },
+                        value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 },
+                    });
+                case 'sendTransaction':
+                    return new Response(
+                        JSON.stringify({
+                            jsonrpc: '2.0',
+                            id: 1,
+                            error: { code: -32002, message: 'blockhash expired' },
+                        }),
+                        { headers: { 'Content-Type': 'application/json' } },
+                    );
+                default:
+                    return rpcSuccess({});
+            }
+        };
+        const signer = await generateKeyPairSigner();
+        await expect(
+            buildSubscriptionActivationTransaction({ request: baseRequest(), rpcUrl: 'https://mock-rpc', signer }),
+        ).rejects.toThrow(/subscription authority/i);
     });
 });

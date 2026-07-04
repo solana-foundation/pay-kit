@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { generateKeyPairSigner } from '@solana/kit';
 
-import { TOKEN_PROGRAM } from '../constants.js';
+import { SUBSCRIPTIONS_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 import { buildSubscriptionActivationTransaction, subscription as subscriptionClient } from '../client/Subscription.js';
 
 const PLAN_ID = '8tWbqLkUJoYy7zXc5h2EvCRoaQEv2xnQjUuYhc3rzCgT';
@@ -35,20 +35,43 @@ function rpcSuccess(result: unknown) {
     });
 }
 
-/** RPC mock: authority absent, blockhash + sendTransaction ok, status per opts. */
+/**
+ * RPC mock modelling a first-time subscriber: the SubscriptionAuthority is
+ * absent until the standalone init transaction broadcasts and its status is
+ * polled, after which it reads back present. Blockhash + sendTransaction ok,
+ * signature status per opts.
+ */
 function mockFetch(opts: { signatureStatus?: unknown } = {}): typeof globalThis.fetch {
+    let initBroadcast = false;
+    let confirmed = false;
     return async (_input: RequestInfo | URL, init?: RequestInit) => {
         const body = JSON.parse(init?.body as string) as { method?: string };
         switch (body.method) {
             case 'getAccountInfo':
-                return rpcSuccess({ context: { slot: 1 }, value: null });
+                return rpcSuccess(
+                    initBroadcast && confirmed
+                        ? {
+                              context: { slot: 1 },
+                              value: {
+                                  data: ['', 'base64'],
+                                  executable: false,
+                                  lamports: 1,
+                                  owner: SUBSCRIPTIONS_PROGRAM,
+                                  rentEpoch: 0,
+                                  space: 0,
+                              },
+                          }
+                        : { context: { slot: 1 }, value: null },
+                );
             case 'getLatestBlockhash':
                 return rpcSuccess({ context: { slot: 1 }, value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } });
             case 'sendTransaction':
+                initBroadcast = true;
                 return rpcSuccess(
                     '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq',
                 );
             case 'getSignatureStatuses':
+                confirmed = true;
                 return rpcSuccess({
                     context: { slot: 1 },
                     value: [opts.signatureStatus ?? { confirmationStatus: 'confirmed', err: null }],
@@ -135,9 +158,10 @@ describe('subscription() createCredential defaulting', () => {
         // server-provided recentBlockhash avoids getLatestBlockhash, and fetch
         // is stubbed so no real RPC is contacted.
         const urls: string[] = [];
+        const inner = mockFetch();
         globalThis.fetch = async (input, init) => {
             urls.push(String(input));
-            return mockFetch()(input, init);
+            return inner(input, init);
         };
         const signer = await generateKeyPairSigner();
         const req = baseRequest();
