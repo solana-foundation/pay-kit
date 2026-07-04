@@ -793,24 +793,30 @@ async function handleTopUp(args: HandleTopUpArgs): Promise<Receipt.Receipt> {
             rpc: args.rpc,
             signature: args.payload.signature,
         });
-        // Defense-in-depth: bind the resulting on-chain Channel ACCOUNT too —
-        // its decoded `deposit` must have actually reached `newDeposit`, not
-        // just contain a top_up instruction with the right delta (which a
-        // racing top-up could also satisfy).
-        if (isGetAccountInfoRpc(args.rpc)) {
-            await verifyChannelAccountState({
-                channelId: args.payload.channelId,
-                expected: {
-                    authorizedSigner: existing.authorizedSigner,
-                    deposit: newDeposit,
-                    mint: args.mint,
-                    payee: args.recipient,
-                    payer: existing.operator,
-                    programId: args.programId.toString(),
-                },
-                rpc: args.rpc,
-            });
+        // Bind the resulting on-chain Channel ACCOUNT too — its decoded
+        // `deposit` must have actually reached `newDeposit`, not just contain a
+        // top_up instruction with the right delta (which a racing top-up could
+        // also satisfy). This is the authoritative check, so it is required
+        // rather than optional: an rpc that cannot fetch accounts must reject
+        // the deposit raise the same way a getTransaction-incapable rpc does,
+        // never silently degrade to the delta-only path.
+        if (!isGetAccountInfoRpc(args.rpc)) {
+            throw new Error(
+                'topUp: configured rpc does not expose getAccountInfo — cannot bind the raised deposit to the on-chain Channel account',
+            );
         }
+        await verifyChannelAccountState({
+            channelId: args.payload.channelId,
+            expected: {
+                authorizedSigner: existing.authorizedSigner,
+                deposit: newDeposit,
+                mint: args.mint,
+                payee: args.recipient,
+                payer: existing.operator,
+                programId: args.programId.toString(),
+            },
+            rpc: args.rpc,
+        });
     }
 
     const result = await args.store.updateChannel(args.payload.channelId, current => {

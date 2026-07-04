@@ -10,11 +10,13 @@
 
 import {
     address,
+    type Address,
     appendTransactionMessageInstruction,
     type Blockhash,
     createTransactionMessage,
     generateKeyPairSigner,
     getBase64Codec,
+    getBase64Decoder,
     getBase64EncodedWireTransaction,
     getCompiledTransactionMessageDecoder,
     getCompiledTransactionMessageEncoder,
@@ -29,6 +31,8 @@ import {
 } from '@solana/kit';
 import { describe, expect, test } from 'vitest';
 
+import { getChannelEncoder } from '../generated/payment-channels/accounts/channel.js';
+import { PAYMENT_CHANNELS_PROGRAM_ADDRESS } from '../generated/payment-channels/programs/paymentChannels.js';
 import { TOKEN_PROGRAM, USDC } from '../constants.js';
 import { session } from '../server/Session.js';
 import { buildTopUpInstruction, MULTI_DELEGATOR_PROGRAM_ID, verifyTopUpTx } from '../server/session/on-chain.js';
@@ -68,14 +72,62 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     } as Parameters<typeof session>[0];
 }
 
+const PROGRAM = PAYMENT_CHANNELS_PROGRAM_ADDRESS as string;
+
+/** Encode a Channel account to base64 with the given field overrides. */
+function encodeChannel(fields: {
+    authorizedSigner: string;
+    deposit: bigint;
+    mint: string;
+    payee: string;
+    payer: string;
+}): string {
+    const bytes = getChannelEncoder().encode({
+        discriminator: 0,
+        version: 1,
+        bump: 255,
+        status: 0,
+        salt: 7n,
+        deposit: fields.deposit,
+        settlement: { settled: 0n, payoutWatermark: 0n },
+        closureStartedAt: 0n,
+        payerWithdrawnAt: 0n,
+        gracePeriod: 900,
+        distributionHash: new Array(32).fill(0),
+        payer: address(fields.payer),
+        payee: address(fields.payee),
+        authorizedSigner: address(fields.authorizedSigner),
+        mint: address(fields.mint),
+        rentPayer: address(OPERATOR),
+    });
+    return getBase64Decoder().decode(bytes);
+}
+
 /**
- * RPC mock backing both calls handleTopUp makes: `getSignatureStatuses`
- * reports every known signature as landed, and `getTransaction` serves
- * the canned base64 transaction the way a real node does under
- * `encoding: 'base64'` (a `[data, 'base64']` tuple).
+ * RPC mock backing the calls handleTopUp makes: `getSignatureStatuses`
+ * reports every known signature as landed, `getTransaction` serves the
+ * canned base64 transaction the way a real node does under
+ * `encoding: 'base64'` (a `[data, 'base64']` tuple), and (when `accounts`
+ * is provided) `getAccountInfo` serves the on-chain Channel account so the
+ * authoritative account-state bind can run. Reject tests that throw inside
+ * the instruction-level bind never reach getAccountInfo, so they omit it.
  */
-function mockTxRpc(transactions: Record<string, string>) {
+function mockTxRpc(
+    transactions: Record<string, string>,
+    accounts?: Record<string, { data: string; owner?: string } | null>,
+) {
     return {
+        ...(accounts
+            ? {
+                  getAccountInfo: (addr: Address) => ({
+                      send: async () => {
+                          const acct = accounts[addr as string];
+                          if (acct === undefined || acct === null) return { value: null };
+                          return { value: { data: [acct.data, 'base64'], owner: acct.owner ?? PROGRAM } };
+                      },
+                  }),
+              }
+            : {}),
         getSignatureStatuses: (sigs: readonly string[]) => ({
             send: async () => ({ value: sigs.map(sig => (transactions[sig] !== undefined ? { err: null } : null)) }),
         }),
@@ -157,7 +209,21 @@ describe('session() verify() topUp transaction binding', () => {
         const signer = await generateKeyPairSigner();
         const payer = await generateKeyPairSigner();
         const topUp = await buildTopUpWire({ amount: 1_000n, payer });
-        const method = session(baseParams({ rpc: mockTxRpc({ [topUp.signature]: topUp.wire }) as never, store }));
+        // The authoritative account-state bind is required, so the rpc must be
+        // able to serve the on-chain Channel account showing the raised deposit.
+        const channel = encodeChannel({
+            authorizedSigner: signer.address,
+            deposit: 2_000n,
+            mint: DEVNET_USDC,
+            payee: RECIPIENT,
+            payer: payer.address,
+        });
+        const method = session(
+            baseParams({
+                rpc: mockTxRpc({ [topUp.signature]: topUp.wire }, { [CHANNEL_ID]: { data: channel } }) as never,
+                store,
+            }),
+        );
         await openPushChannel(store, signer);
 
         const receipt = await verifyTopUp(method, '2000', topUp.signature);
