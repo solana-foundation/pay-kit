@@ -158,3 +158,70 @@ def test_cache_expires_after_ttl() -> None:
     clock.now += 3600.0  # well past any sane sub-minute TTL
     eng.accepts_entry(gate, request)
     assert provider.calls == 2  # expired -> refetched
+
+
+class _WorkerAbort(BaseException):
+    """A BaseException (not Exception) escaping the provider - e.g. a worker
+    timeout/shutdown signal (SystemExit, gevent.Timeout). Uses a custom class,
+    not KeyboardInterrupt, to keep pytest sane while still bypassing the
+    ``except Exception`` guard.
+    """
+
+
+class _AbortThenValueProvider:
+    """Raises a BaseException on the first call, returns a good value after."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def __call__(self) -> str:
+        with self._lock:
+            self.calls += 1
+            n = self.calls
+        if n == 1:
+            raise _WorkerAbort("worker aborted mid-fetch")
+        return f"{BH[:-1]}{n % 10}"
+
+
+def test_base_exception_from_provider_does_not_wedge_single_flight() -> None:
+    """A BaseException escaping the leader's provider call must reset the fetch
+    flag and wake waiters, so later callers refetch instead of blocking forever.
+    """
+    cfg = _cfg()
+    provider = _AbortThenValueProvider()
+    eng = X402Upto(cfg, recent_blockhash_provider=provider, clock=_Clock())
+
+    # Leader thread: the provider raises a BaseException that escapes the
+    # ``except Exception`` guard. The leader catches it so the thread exits.
+    leader_raised: list[BaseException] = []
+
+    def _lead() -> None:
+        try:
+            eng._fetch_recent_blockhash()
+        except _WorkerAbort as exc:  # noqa: SLF001 - exercising the internal seam
+            leader_raised.append(exc)
+
+    leader = threading.Thread(target=_lead)
+    leader.start()
+    leader.join(timeout=5)
+    assert not leader.is_alive()
+    assert len(leader_raised) == 1
+
+    # The single-flight flag must be cleared once the BaseException escapes;
+    # otherwise every later fetch loops on _blockhash_ready.wait forever.
+    assert eng._blockhash_fetching is False  # noqa: SLF001
+
+    # A second caller must be able to become leader and get the fresh value
+    # rather than block indefinitely. Run it on a thread with a bounded join so
+    # a wedge shows up as a still-alive thread (fails today).
+    result: list[str | None] = []
+
+    def _follow() -> None:
+        result.append(eng._fetch_recent_blockhash())  # noqa: SLF001
+
+    follower = threading.Thread(target=_follow)
+    follower.start()
+    follower.join(timeout=3)
+    assert not follower.is_alive(), "second fetch wedged on the single-flight flag"
+    assert result == [f"{BH[:-1]}2"]

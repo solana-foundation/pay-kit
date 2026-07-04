@@ -476,18 +476,25 @@ class X402Upto:
                 # Become the leader for this fetch.
                 self._blockhash_fetching = True
                 break
+        value: str | None = None
         try:
-            value = self._recent_blockhash_provider()
+            result = self._recent_blockhash_provider()
+            value = result if isinstance(result, str) and result != "" else None
         except Exception:  # noqa: BLE001 - provider failures are non-fatal at challenge time
             value = None
-        fresh = value if isinstance(value, str) and value != "" else None
-        with self._blockhash_lock:
-            if fresh is not None:
-                self._blockhash_value = fresh
-                self._blockhash_fetched_at = self._clock()
-            self._blockhash_fetching = False
-            self._blockhash_ready.notify_all()
-        return fresh
+        finally:
+            # Always clear the single-flight flag and wake waiters, even if a
+            # BaseException (SystemExit, worker/gevent timeout, KeyboardInterrupt)
+            # escapes the provider - otherwise the flag stays set and every later
+            # challenge blocks on the condition forever. The BaseException still
+            # propagates out of this finally after the flag is reset.
+            with self._blockhash_lock:
+                if value is not None:
+                    self._blockhash_value = value
+                    self._blockhash_fetched_at = self._clock()
+                self._blockhash_fetching = False
+                self._blockhash_ready.notify_all()
+        return value
 
     def _distribution(self, requirements: UptoRequirements) -> list[Distribution]:
         operator = Pubkey.from_string(self._signer().pubkey())
