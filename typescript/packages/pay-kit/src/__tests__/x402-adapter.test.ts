@@ -37,6 +37,11 @@ const blockhashControl: { impl: () => Promise<{ value: unknown }> } = {
         }),
 };
 
+// Counts every getLatestBlockhash().send() invocation, and an optional gate the
+// test releases once all concurrent challenges are in flight — a
+// non-single-flight cache would already have fired N RPCs by then.
+const rpcMeter: { calls: number; gate?: Promise<void>; release?: () => void } = { calls: 0 };
+
 const decodeControl: { impl: (header: string) => unknown } = {
     impl: () => ({ accepted: { network: 'solana:test' }, payload: {} }),
 };
@@ -74,7 +79,13 @@ vi.mock('@solana/kit', async () => {
     return {
         ...actual,
         createSolanaRpc: () => ({
-            getLatestBlockhash: () => ({ send: () => blockhashControl.impl() }),
+            getLatestBlockhash: () => ({
+                send: async () => {
+                    rpcMeter.calls += 1;
+                    if (rpcMeter.gate) await rpcMeter.gate;
+                    return blockhashControl.impl();
+                },
+            }),
         }),
     };
 });
@@ -113,6 +124,9 @@ describe('createX402ExactAdapter', () => {
         blockhashControl.impl = () =>
             Promise.resolve({ value: { blockhash: 'BlockHash111', lastValidBlockHeight: 4242n } });
         decodeControl.impl = () => ({ accepted: { network: 'solana:test' }, payload: {} });
+        rpcMeter.calls = 0;
+        rpcMeter.gate = undefined;
+        rpcMeter.release = undefined;
     });
 
     afterEach(() => {
@@ -139,6 +153,34 @@ describe('createX402ExactAdapter', () => {
         // Still produces a challenge — the catch branch swallows the RPC error.
         const headers = await adapter.challengeHeaders(gate, new Request('http://localhost/report'));
         expect(headers['payment-required']).toBe('ENCODED_PAYMENT_REQUIRED');
+    });
+
+    it('collapses a concurrent challenge burst to a single getLatestBlockhash RPC', async () => {
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        // Latch the RPC so every concurrent challenge enters challengeRequirements
+        // before the first fetch resolves; without single-flight this fires N RPCs.
+        rpcMeter.gate = new Promise<void>(resolve => {
+            rpcMeter.release = resolve;
+        });
+        const bursts = Array.from({ length: 20 }, () =>
+            adapter.challengeHeaders(gate, new Request('http://localhost/report')),
+        );
+        // Give the microtask queue a chance to line every request up at the gate.
+        await Promise.resolve();
+        rpcMeter.release?.();
+        await Promise.all(bursts);
+
+        expect(rpcMeter.calls).toBe(1);
+    });
+
+    it('reuses the cached blockhash for a second challenge within the TTL (no extra RPC)', async () => {
+        const { adapter } = await setup();
+        const gate = await gateFor();
+        await adapter.challengeHeaders(gate, new Request('http://localhost/report'));
+        await adapter.challengeHeaders(gate, new Request('http://localhost/report'));
+        expect(rpcMeter.calls).toBe(1);
     });
 
     it('rejects a request with no payment header', async () => {
@@ -362,20 +404,37 @@ describe('createX402ExactAdapter', () => {
         });
     });
 
-    it('keeps the payload key when settlement throws after a possible broadcast', async () => {
-        // A thrown settle can happen while polling for confirmation of a tx that
-        // already broadcast, so the reservation is kept (the ledger owns dedup).
-        facilitatorControl.settle = () => Promise.reject(new Error('facilitator crashed'));
+    it('releases the payload key when settlement throws (provably pre-broadcast) so a retry can proceed', async () => {
+        // The `@x402/svm` exact scheme's `settle()` internally try/catches every
+        // step from cosign through send/confirm and returns them as a structured
+        // {success:false, errorReason:'transaction_failed'} — it never THROWS
+        // once a broadcast is possible. A thrown settle therefore escapes only
+        // from the pre-broadcast phase (re-verify / decode), where the tx
+        // provably never reached the chain, so the reservation is released and an
+        // honest retry can reclaim the key. Mirrors Go's cleanupConsumed on a
+        // cosign/build failure before SendTransaction.
+        facilitatorControl.settle = () => Promise.reject(new Error('cosign failed'));
         const { adapter } = await setup();
         const gate = await gateFor();
 
-        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'))).rejects.toThrow(/facilitator crashed/);
+        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'))).rejects.toThrow(/cosign failed/);
 
         facilitatorControl.settle = () =>
             Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
-        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'))).rejects.toMatchObject({
-            code: 'x402_payment_replayed',
-        });
+        const retried = await adapter.verifyAndSettle(gate, paidRequest('THROW_CRED'));
+        expect(retried.transaction).toBe('TxSig');
+    });
+
+    it('surfaces the original error type when settlement throws pre-broadcast', async () => {
+        // The thrown value is wrapped as an InvalidProofError with a stable code
+        // so callers get the canonical taxonomy, not the raw internal error.
+        facilitatorControl.settle = () => Promise.reject(new Error('cosign boom'));
+        const { adapter } = await setup();
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_CODE_CRED'))).rejects.toBeInstanceOf(
+            InvalidProofError,
+        );
     });
 
     it('lets distinct payloads settle independently', async () => {
@@ -536,5 +595,21 @@ describe('createX402ExactAdapter', () => {
         await expect(replica.verifyAndSettle(gate, paidRequest('KEEP_CRED'))).rejects.toMatchObject({
             code: 'x402_payment_replayed',
         });
+    });
+
+    it('releases the reserving-store key when settlement throws (pre-broadcast)', async () => {
+        facilitatorControl.settle = () => Promise.reject(new Error('cosign failed'));
+        const reserving = reservingStore();
+        const { adapter } = await setupWithStore(reserving.store);
+        const gate = await gateFor();
+
+        await expect(adapter.verifyAndSettle(gate, paidRequest('THROW_STORE'))).rejects.toThrow(/cosign failed/);
+        expect(reserving.calls.deletes).toHaveLength(1);
+
+        // The released shared key can be reclaimed by a retry (any replica).
+        facilitatorControl.settle = () =>
+            Promise.resolve({ payer: 'SettlePayer', success: true, transaction: 'TxSig' });
+        const retried = await adapter.verifyAndSettle(gate, paidRequest('THROW_STORE'));
+        expect(retried.transaction).toBe('TxSig');
     });
 });
