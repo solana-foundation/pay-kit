@@ -891,11 +891,14 @@ async def test_session_top_up_no_rpc_off_localnet_fails_closed() -> None:
         return ChannelState(channel_id=channel_id, authorized_signer=signer.address(), deposit=1_000)
 
     await session.core().store().update_channel(channel_id, seed)
-    with pytest.raises(PaymentError, match="requires an rpc client"):
+    # The operator-misconfiguration (no rpc off localnet) reaches the client as
+    # invalid-config, not the client-fault invalid-payload.
+    with pytest.raises(PaymentError, match="requires an rpc client") as excinfo:
         await _verify_session_action(
             session,
             SessionAction.top_up_action(TopUpPayload(channel_id=channel_id, new_deposit="5000", signature="topup-sig")),
         )
+    assert excinfo.value.code == "invalid-config"
 
 
 # ── close ──

@@ -719,6 +719,12 @@ class Session:
             )
         try:
             await self._core.process_top_up(payload)
+        except PaymentError:
+            # Propagate the seam's structured code unchanged: an operator
+            # misconfiguration surfaced by the on-chain bind (e.g. no RPC client
+            # off localnet, coded invalid-config) is a server fault and must not
+            # be flattened into the client-fault invalid-payload below.
+            raise
         except ValueError as exc:
             raise PaymentError(str(exc), code="invalid-payload") from exc
         self._touch(payload.channel_id)
@@ -963,11 +969,11 @@ def new_session(options: SessionOptions) -> Session:
             code="invalid-config",
         )
 
-    # H3: the default in-memory channel store is process-local, so a second
-    # replica or a restart drops the voucher watermark and would accept a replayed
-    # voucher. Off localnet, require an explicit shared store unless the operator
-    # opts into single-process scope (mirrors the charge/pay-kit replay-store guard
-    # and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE).
+    # Shared-store replay guard: the default in-memory channel store is
+    # process-local, so a second replica or a restart drops the voucher watermark
+    # and would accept a replayed voucher. Off localnet, require an explicit shared
+    # store unless the operator opts into single-process scope (mirrors the
+    # charge/pay-kit replay-store guard and PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE).
     if options.store is None and network != "localnet":
         import os
 

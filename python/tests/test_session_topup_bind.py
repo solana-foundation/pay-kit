@@ -162,12 +162,14 @@ async def test_process_top_up_binds_deposit_through_shipped_seam() -> None:
         authorized_signer=signer.address(),
         mint=SESSION_TEST_MINT,
     )
-    # process_top_up surfaces a seam rejection as a wrapped ValueError (the same
-    # contract as the process_open seam); the on-chain-bind detail is preserved.
-    with pytest.raises(ValueError, match="!= asserted newDeposit 5000000"):
+    # process_top_up surfaces a seam PaymentError unchanged so its structured
+    # code survives to the HTTP layer; the on-chain-bind detail is preserved and
+    # a client-fault deposit mismatch keeps the invalid-payload code.
+    with pytest.raises(PaymentError, match="!= asserted newDeposit 5000000") as excinfo:
         await server.process_top_up(
             TopUpPayload(channel_id=channel_id, new_deposit="5000000", signature=_confirmed_signature(0x88))
         )
+    assert excinfo.value.code == "invalid-payload"
     state = await server.store().get_channel(channel_id)
     assert state is not None and state.deposit == 1_000_000
 
@@ -184,10 +186,13 @@ async def test_process_top_up_bind_fails_closed_without_rpc_off_localnet() -> No
     channel_id = _new_wallet()
     await _seed_open_channel(server, channel_id, 1_000_000, signer.address())
 
-    with pytest.raises(ValueError, match="requires an rpc client"):
+    # The operator-misconfiguration seam error keeps its invalid-config code
+    # through process_top_up instead of being flattened to a plain ValueError.
+    with pytest.raises(PaymentError, match="requires an rpc client") as excinfo:
         await server.process_top_up(
             TopUpPayload(channel_id=channel_id, new_deposit="5000000", signature=_confirmed_signature(0x22))
         )
+    assert excinfo.value.code == "invalid-config"
 
 
 async def test_fetch_and_bind_empty_expected_signer_fails_closed() -> None:
@@ -277,3 +282,90 @@ async def test_session_top_up_production_wires_the_bind_seam() -> None:
         await session.verify_credential(topup_cred)
     state = await session.core().store().get_channel(channel_id)
     assert state is not None and state.deposit == 1_000_000
+
+
+async def _topup_credential(session, channel_id: str, new_deposit: str, signature: str):
+    from solana_pay_kit.protocols.mpp.core.types import PaymentCredential
+
+    challenge = await session.challenge()
+    return PaymentCredential(
+        challenge=challenge.to_echo(),
+        payload=SessionAction.top_up_action(
+            TopUpPayload(channel_id=channel_id, new_deposit=new_deposit, signature=signature)
+        ).to_dict(),
+    )
+
+
+async def test_session_top_up_no_rpc_off_localnet_surfaces_invalid_config() -> None:
+    """A server misconfiguration — no RPC client off localnet — must reach the
+    client under the operator-fault code 'invalid-config', not the client-fault
+    'invalid-payload'. The seam's PaymentError(code='invalid-config') must survive
+    the process_top_up wrap and the dispatcher's re-raise unchanged."""
+    signer = _TestVoucherSigner(1)
+    channel_id = _new_wallet()
+
+    options = SessionOptions(
+        operator=SESSION_TEST_RECIPIENT,
+        recipient=SESSION_TEST_RECIPIENT,
+        cap=5_000_000,
+        currency="USDC",
+        decimals=6,
+        network="mainnet",
+        secret_key=SESSION_METHOD_SECRET,
+        realm="api.test",
+        rpc=None,
+        store=MemoryChannelStore(),
+    )
+    session = new_session(options)
+    # Seed a channel so the dispatcher's cheap store pre-checks pass and the
+    # top-up reaches the fail-closed on-chain-bind seam.
+    await _seed_open_channel(session.core(), channel_id, 1_000_000, signer.address())
+
+    cred = await _topup_credential(session, channel_id, "5000000", _confirmed_signature(0x55))
+    with pytest.raises(PaymentError) as excinfo:
+        await session.verify_credential(cred)
+    assert excinfo.value.code == "invalid-config"
+    assert "requires an rpc client" in str(excinfo.value)
+    state = await session.core().store().get_channel(channel_id)
+    assert state is not None and state.deposit == 1_000_000
+
+
+async def test_session_top_up_on_chain_deposit_mismatch_stays_invalid_payload() -> None:
+    """A genuine client-side fault — the on-chain Channel did not reach the
+    asserted newDeposit — must still surface as 'invalid-payload' after the
+    taxonomy fix, proving the fix preserves the seam's original code rather than
+    blanket-relabelling every top-up seam error as 'invalid-config'."""
+    fake = _FakeRpc()
+    signer = _TestVoucherSigner(1)
+    channel_id = _new_wallet()
+
+    options = SessionOptions(
+        operator=SESSION_TEST_RECIPIENT,
+        recipient=SESSION_TEST_RECIPIENT,
+        cap=5_000_000,
+        currency="USDC",
+        decimals=6,
+        network="mainnet",
+        secret_key=SESSION_METHOD_SECRET,
+        realm="api.test",
+        rpc=fake,
+        store=MemoryChannelStore(),
+    )
+    session = new_session(options)
+    await _seed_open_channel(session.core(), channel_id, 1_000_000, signer.address())
+
+    # The signature confirms but the on-chain deposit only reached 2_000_000
+    # while the client asserts 5_000_000 — a client-fault, still invalid-payload.
+    fake.seed_channel(
+        channel_id,
+        deposit=2_000_000,
+        payer=_new_wallet(),
+        payee=SESSION_TEST_RECIPIENT,
+        authorized_signer=signer.address(),
+        mint=SESSION_TEST_MINT,
+    )
+    cred = await _topup_credential(session, channel_id, "5000000", _confirmed_signature(0x66))
+    with pytest.raises(PaymentError) as excinfo:
+        await session.verify_credential(cred)
+    assert excinfo.value.code == "invalid-payload"
+    assert "!= asserted newDeposit 5000000" in str(excinfo.value)

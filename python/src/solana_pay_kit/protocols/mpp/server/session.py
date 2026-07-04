@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from solana_pay_kit._paycore.errors import PaymentError
 from solana_pay_kit.protocols.mpp.intents.session import (
     DEFAULT_SESSION_EXPIRES_AT,
     ClosePayload,
@@ -337,6 +338,10 @@ class SessionServer:
         if payload.mode == "push" and self._config.verify_open_tx is not None:
             try:
                 await self._config.verify_open_tx(payload)
+            except PaymentError:
+                # Preserve the seam's structured code (e.g. invalid-config for an
+                # operator misconfiguration) through this layer unchanged.
+                raise
             except Exception as exc:
                 raise _wrap("open tx verification failed", exc) from exc
 
@@ -458,6 +463,10 @@ class SessionServer:
         if self._config.verify_top_up_tx is not None:
             try:
                 await self._config.verify_top_up_tx(payload)
+            except PaymentError:
+                # Preserve the seam's structured code (e.g. invalid-config for an
+                # operator misconfiguration) through this layer unchanged.
+                raise
             except Exception as exc:
                 raise _wrap("top-up tx verification failed", exc) from exc
 
@@ -751,5 +760,15 @@ def _raise_voucher_error(err: str | None) -> None:
 def _wrap(message: str, exc: Exception) -> Exception:
     """Wrap a seam error with a message prefix: the prefixed message is
     surfaced and the original error is preserved as the exception cause, so
-    callers can inspect ``__cause__`` to recover the underlying failure."""
+    callers can inspect ``__cause__`` to recover the underlying failure.
+
+    A ``PaymentError`` from the seam is returned unchanged so its structured
+    ``code`` survives to the HTTP layer: an operator-misconfiguration reported by
+    the seam (e.g. the top-up bind requiring an RPC client off localnet, coded
+    ``invalid-config``) must not be flattened into a plain ``ValueError`` that the
+    dispatcher then re-labels as the client-fault ``invalid-payload``. Only
+    non-``PaymentError`` seam failures are wrapped as a prefixed ``ValueError``.
+    """
+    if isinstance(exc, PaymentError):
+        return exc
     return ValueError(f"{message}: {exc}")
