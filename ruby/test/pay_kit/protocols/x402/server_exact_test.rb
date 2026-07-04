@@ -779,7 +779,7 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "signature_consumed", error.message
   end
 
-  def test_settlement_orders_broadcast_then_confirm_then_put_if_absent
+  def test_settlement_orders_broadcast_then_put_if_absent_then_confirm
     order = []
     cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
     tracking_cache = Class.new do
@@ -791,6 +791,11 @@ class X402ServerExactTest < Minitest::Test
       def put_if_absent(key, **kwargs)
         @order << [:put_if_absent, key]
         @inner.put_if_absent(key, **kwargs)
+      end
+
+      def delete(key, **kwargs)
+        @order << [:delete, key]
+        @inner.delete(key, **kwargs)
       end
 
       def duplicate?(key, **kwargs)
@@ -812,10 +817,13 @@ class X402ServerExactTest < Minitest::Test
     assert_equal "sig-ordering",
       PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
 
+    # The replay signature is reserved immediately after a successful
+    # broadcast and BEFORE confirmation is awaited, so the whole
+    # confirmation-poll window is protected against a concurrent duplicate.
     assert_equal [
       [:broadcast],
-      [:confirm, "sig-ordering"],
-      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"]
+      [:put_if_absent, "x402-svm-exact:consumed:sig-ordering"],
+      [:confirm, "sig-ordering"]
     ], order
   end
 
@@ -848,7 +856,11 @@ class X402ServerExactTest < Minitest::Test
     assert retried
   end
 
-  def test_settlement_does_not_record_signature_when_confirmation_fails
+  def test_settlement_keeps_signature_reserved_on_confirmation_timeout
+    # A broadcast that succeeds but times out awaiting confirmation may still
+    # have landed. The signature is reserved BEFORE confirmation, so the marker
+    # survives the timeout and any retry with the same credential is rejected
+    # as a replay rather than re-broadcasting a possibly-live transaction.
     cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
     state = build_state(
       sender: ->(_state, _transaction) { "unconfirmed-sig" },
@@ -861,11 +873,90 @@ class X402ServerExactTest < Minitest::Test
     end
     assert_match(/timed out awaiting confirmation/, error.message)
 
-    # Confirmation failed → put_if_absent never ran → the signature is not in
-    # the replay store. The retry is allowed to broadcast again, and Solana's
-    # own per-signature uniqueness inside the blockhash window prevents a
-    # double-pay if the original eventually confirms.
-    refute cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig")
+    # The marker is still present after a confirmation timeout.
+    assert cache.duplicate?("x402-svm-exact:consumed:unconfirmed-sig"),
+      "confirmation timeout must keep the reservation (the tx may have landed)"
+
+    # A retry that resolves to the same signature is rejected as a replay.
+    retried = false
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        retried = true
+        "unconfirmed-sig"
+      },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    error = assert_raises(RuntimeError) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+    assert_equal "signature_consumed", error.message
+    assert retried, "the retry broadcasts, resolves the same signature, then trips the reservation"
+  end
+
+  def test_settlement_reserves_signature_before_confirmation_completes
+    # The reservation is written the instant broadcast returns a signature —
+    # BEFORE confirmation is awaited. A confirmer that blocks (as it does while
+    # polling getSignatureStatuses) leaves the reservation in place, so a
+    # concurrent second settle of the same signature is rejected as a replay
+    # even though the first settle has not finished confirming.
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    key = "x402-svm-exact:consumed:pending-sig"
+    observed_reserved = nil
+    state = build_state(
+      sender: ->(_state, _transaction) { "pending-sig" },
+      signature_confirmer: ->(_state, signature) {
+        # Mid-confirmation: the signature is already reserved, so a duplicate
+        # settle arriving now cannot proceed.
+        observed_reserved = cache.duplicate?(key)
+        signature
+      },
+      settlement_cache: cache
+    )
+
+    assert_equal "pending-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+
+    assert_equal true, observed_reserved,
+      "the signature must be reserved before confirmation is awaited"
+  end
+
+  def test_settlement_releases_signature_on_definitively_never_landed
+    # A confirmer that determines the transaction definitively never landed
+    # (blockhash expired / dropped, surfaced as TransactionNotFound) releases
+    # the reservation so a corrected resubmission is free to broadcast again.
+    cache = PayKit::Protocols::X402::Server::Exact::SettlementCache.new
+    state = build_state(
+      sender: ->(_state, _transaction) { "dropped-sig" },
+      signature_confirmer: ->(_state, signature) {
+        raise PayKit::Protocols::X402::Error::TransactionNotFound.new(
+          "transaction #{signature} never landed"
+        )
+      },
+      settlement_cache: cache
+    )
+
+    assert_raises(PayKit::Protocols::X402::Error::TransactionNotFound) do
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    end
+
+    # Definitively-never-landed released the reservation.
+    refute cache.duplicate?("x402-svm-exact:consumed:dropped-sig"),
+      "a definitively never-landed outcome must release the reservation"
+
+    # The corrected resubmission (a fresh signature) settles cleanly.
+    retried = false
+    state = build_state(
+      sender: ->(_state, _transaction) {
+        retried = true
+        "corrected-sig"
+      },
+      signature_confirmer: ->(_state, signature) { signature },
+      settlement_cache: cache
+    )
+    assert_equal "corrected-sig",
+      PayKit::Protocols::X402::Server::Exact.settle_exact_payment(state, build_payment_header(state))
+    assert retried
   end
 
   def test_settlement_consumed_key_namespace_is_scheme_scoped

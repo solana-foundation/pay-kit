@@ -27,8 +27,13 @@ module PayKit::Protocols::X402
     #   11-rule `Protocol::Schemes::Exact::Verifier`.
     # - Apply the facilitator signature and broadcast.
     # - Enforce L8 settlement order:
-    #     broadcast -> confirm (getSignatureStatuses) -> put_if_absent
-    #   keyed on `x402-svm-exact:consumed:<base58_signature>`.
+    #     broadcast -> put_if_absent -> confirm (getSignatureStatuses)
+    #   keyed on `x402-svm-exact:consumed:<base58_signature>`. The
+    #   signature is reserved the instant broadcast returns and BEFORE
+    #   confirmation is awaited, so the whole confirmation-poll window is
+    #   closed to a concurrent duplicate. The marker is kept on a
+    #   confirmation timeout (the tx may have landed) and released only on
+    #   a definitively-never-landed outcome.
     # - Emit canonical `PAYMENT-RESPONSE` on success.
     class Exact
       # Aliases for readability inside the class body.
@@ -84,6 +89,15 @@ module PayKit::Protocols::X402
             @entries[key] = now
             true
           end
+        end
+
+        # Release a reservation taken by `put_if_absent`. Used only on a
+        # definitively-never-landed settlement outcome so a corrected
+        # resubmission is free to broadcast again. A confirmation timeout
+        # deliberately does NOT release — the transaction may still have
+        # landed, so the marker stays to block a double-serve.
+        def delete(key)
+          @mutex.synchronize { @entries.delete(key) }
         end
 
         # Back-compat probe kept for tests asserting TTL eviction
@@ -415,7 +429,7 @@ module PayKit::Protocols::X402
           requirement
         end
 
-        # ---- L8 settlement: verify + broadcast + confirm + record ----
+        # ---- L8 settlement: verify + broadcast + reserve + confirm ----
         #
         # Order MUST be:
         #   (1) decode envelope
@@ -423,11 +437,18 @@ module PayKit::Protocols::X402
         #   (3) verify client signatures
         #   (4) apply facilitator signature
         #   (5) broadcast
-        #   (6) confirm via getSignatureStatuses poll
-        #   (7) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #   (6) put_if_absent("x402-svm-exact:consumed:<base58_sig>")
+        #       immediately, keyed on the resolved fee-payer signature; an
+        #       already-present key is a replay and is rejected here.
+        #   (7) confirm via getSignatureStatuses poll
         #
-        # Mirrors MPP `server/charge.rs:535-556` and the spine ordering
-        # at `rust/crates/x402/src/bin/harness_server.rs:316-324`.
+        # The reservation is taken BEFORE confirmation so the whole
+        # confirmation-poll window is closed to a concurrent duplicate.
+        # On a confirmation timeout the marker is kept (the tx may have
+        # landed); it is released only on a definitively-never-landed
+        # outcome (surfaced by the confirmer as `Error::TransactionNotFound`)
+        # so a corrected resubmission can broadcast again. Mirrors the MPP
+        # charge order and the sibling exact ports (Rust H-1, Go M-2).
         # Pick the settlement-response header for a credential by its wire
         # version: a v1 `X-PAYMENT` credential gets the legacy
         # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
@@ -479,14 +500,29 @@ module PayKit::Protocols::X402
             fee_payer_secret_key: config.fee_payer_secret_key
           )
 
-          # L8 settlement order. There is no release-on-failure path;
-          # the durable replay primitive is Solana's per-signature
-          # uniqueness inside the blockhash window.
+          # L8 settlement order: broadcast -> reserve -> confirm. The
+          # reservation is taken the instant broadcast returns a signature
+          # and BEFORE confirmation is awaited, so the confirmation-poll
+          # window cannot be double-served by a concurrent duplicate. An
+          # already-present key means the signature was already consumed
+          # (a replay) and is rejected.
           signature = config.transaction_sender.call(config, signed_transaction)
-          config.signature_confirmer.call(config, signature)
+          consumed_key = signature_consumed_key(signature)
 
-          unless config.settlement_cache.put_if_absent(signature_consumed_key(signature))
+          unless config.settlement_cache.put_if_absent(consumed_key)
             raise ::PayKit::Protocols::X402::Error::SignatureConsumed::TOKEN
+          end
+
+          begin
+            config.signature_confirmer.call(config, signature)
+          rescue ::PayKit::Protocols::X402::Error::TransactionNotFound
+            # Definitively never landed (blockhash expired / dropped). Release
+            # the reservation so a corrected resubmission can broadcast again.
+            # Any OTHER confirmation failure (notably a poll timeout) is left
+            # to propagate with the marker intact: the transaction may still
+            # have landed, so releasing it would open a double-serve window.
+            config.settlement_cache.delete(consumed_key)
+            raise
           end
 
           signature
