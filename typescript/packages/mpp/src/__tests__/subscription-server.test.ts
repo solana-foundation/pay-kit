@@ -348,42 +348,46 @@ describe('validateActivationInstructions', () => {
 
     test('accepts a well-formed [subscribe, transfer_subscription] sequence', async () => {
         const { transaction } = await buildActivationTransactionBase64();
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).not.toThrow();
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).resolves.toBeUndefined();
     });
 
     test('rejects a transaction missing subscribe', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'no-subscribe' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(/missing subscribe/);
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).rejects.toThrow(
+            /missing subscribe/,
+        );
     });
 
     test('rejects a transaction missing transfer_subscription', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'no-transfer' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).rejects.toThrow(
             /missing transfer_subscription/,
         );
     });
 
     test('rejects multiple subscribe instructions', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-subscribe' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(/Multiple subscribe/);
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).rejects.toThrow(
+            /Multiple subscribe/,
+        );
     });
 
     test('rejects multiple transfer_subscription instructions', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-transfer' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).rejects.toThrow(
             /Multiple transfer_subscription/,
         );
     });
 
     test('rejects when transfer_subscription precedes subscribe', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'reorder' });
-        expect(() => __testing.validateActivationInstructions(transaction, challenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, challenge)).rejects.toThrow(
             /subscribe must precede/,
         );
     });
 
-    test('rejects an undecodable base64 input', () => {
-        expect(() => __testing.validateActivationInstructions('not-a-real-tx', challenge)).toThrow(
+    test('rejects an undecodable base64 input', async () => {
+        await expect(__testing.validateActivationInstructions('not-a-real-tx', challenge)).rejects.toThrow(
             /Invalid transaction/,
         );
     });

@@ -40,7 +40,7 @@ use crate::mpp::expires;
 use crate::mpp::program::subscriptions::{
     find_subscription_pda, parse_pubkey, ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
     INSTRUCTION_SUBSCRIBE, INSTRUCTION_TRANSFER_SUBSCRIPTION, MEMO_PROGRAM_ID,
-    SUBSCRIPTIONS_PROGRAM_ID,
+    SUBSCRIPTIONS_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 use crate::mpp::protocol::core::{
     compute_challenge_id, Base64UrlJson, PaymentChallenge, PaymentCredential, Receipt, ReceiptKind,
@@ -50,7 +50,7 @@ use crate::mpp::protocol::intents::{
     ActivatePayload, SubscriptionAction, SubscriptionPeriodUnit, SubscriptionReceiptExtensions,
     SubscriptionRequest,
 };
-use crate::mpp::protocol::solana::default_rpc_url;
+use crate::mpp::protocol::solana::{default_rpc_url, programs};
 use crate::mpp::server::charge::VerificationError;
 use crate::mpp::store::{MemoryStore, Store};
 
@@ -452,7 +452,13 @@ impl SubscriptionServer {
                 })?;
                 let mut tx = decode_base64_transaction(tx_b64)?;
                 let subscriber = extract_subscriber_from_tx(&tx, &request, &self.config)?;
-                validate_activation_scope(&tx, &request, &self.program_id)?;
+                validate_activation_scope(
+                    &tx,
+                    &request,
+                    &self.program_id,
+                    &self.config,
+                    &subscriber,
+                )?;
 
                 if fee_payer_configured {
                     co_sign_as_fee_payer(&mut tx, self.config.fee_payer_signer.as_ref().unwrap())
@@ -749,6 +755,8 @@ fn validate_activation_scope(
     tx: &Transaction,
     _request: &SubscriptionRequest,
     program_id_str: &str,
+    config: &SubscriptionConfig,
+    subscriber: &Pubkey,
 ) -> Result<(), VerificationError> {
     let program_id = parse_pubkey(program_id_str, "program_id")
         .map_err(|e| VerificationError::new(e.to_string()))?;
@@ -810,11 +818,19 @@ fn validate_activation_scope(
                     )));
                 }
             }
-        } else if *prog == compute_budget || *prog == ata_program || *prog == memo_program {
-            // Compute-budget (price/limit), idempotent-ATA bootstrap, and the
-            // optional external-id memo are the only auxiliary programs a
-            // legitimate activation transaction touches. These carry no
-            // fee-payer fund/authority risk on their own, so they are allowed.
+        } else if *prog == compute_budget || *prog == memo_program {
+            // Compute-budget (price/limit) and the optional external-id memo
+            // carry no fee-payer fund/authority risk on their own, so they are
+            // allowed with no further inspection.
+            continue;
+        } else if *prog == ata_program {
+            // The idempotent-ATA bootstrap DOES carry fee-payer fund risk: an
+            // ATA `CreateIdempotent` names the funding account (charged the
+            // rent) as a required signer, so a blind co-sign would let a client
+            // make the sponsored fee payer fund an arbitrary ATA. Validate the
+            // instruction the same way the charge verifier does before letting
+            // the fee payer co-sign it.
+            validate_activation_ata_instruction(ix, keys, config, subscriber)?;
             continue;
         } else {
             return Err(VerificationError::invalid_payload(format!(
@@ -837,6 +853,119 @@ fn validate_activation_scope(
             "subscribe must precede transfer_subscription in activation tx",
         ));
     }
+    Ok(())
+}
+
+/// Validate an Associated-Token-Account `CreateIdempotent` instruction in an
+/// activation transaction before the fee payer co-signs it.
+///
+/// An ATA create names the funding account (which is charged the account's
+/// rent) as a required signer. If the server blindly co-signed, a client could
+/// make the sponsored fee payer fund the rent for an arbitrary ATA. This
+/// mirrors the charge verifier's `validate_create_ata_idempotent_instruction`:
+/// require the `CreateIdempotent` discriminator with the canonical 6-account
+/// layout, and assert that the funding account is the transaction fee payer,
+/// the mint is the plan mint, the token program is the configured one, the
+/// owner is one the challenge authorizes (subscriber, recipient, or puller),
+/// and that the ATA address re-derives from `(owner, token_program, mint)`.
+fn validate_activation_ata_instruction(
+    ix: &solana_message::compiled_instruction::CompiledInstruction,
+    account_keys: &[Pubkey],
+    config: &SubscriptionConfig,
+    subscriber: &Pubkey,
+) -> Result<(), VerificationError> {
+    if ix.data.as_slice() != [1] {
+        return Err(VerificationError::invalid_payload(
+            "Only idempotent ATA creation is allowed in activation tx",
+        ));
+    }
+    if ix.accounts.len() != 6 {
+        return Err(VerificationError::invalid_payload(
+            "Unexpected ATA creation account layout in activation tx",
+        ));
+    }
+
+    let ata_account_key = |slot: usize, label: &str| -> Result<Pubkey, VerificationError> {
+        let idx = ix.accounts[slot] as usize;
+        account_keys.get(idx).copied().ok_or_else(|| {
+            VerificationError::invalid_payload(format!("Invalid {label} account index"))
+        })
+    };
+    let payer = ata_account_key(0, "ATA payer")?;
+    let ata = ata_account_key(1, "ATA address")?;
+    let owner = ata_account_key(2, "ATA owner")?;
+    let mint = ata_account_key(3, "ATA mint")?;
+    let system_program = ata_account_key(4, "ATA system program")?;
+    let token_program = ata_account_key(5, "ATA token program")?;
+
+    // The funding account (charged the rent) must be the transaction fee payer
+    // at index 0 — the slot the server signs as. Anything else means the client
+    // is asking the server to fund rent for an account it does not control.
+    let expected_payer = account_keys.first().ok_or_else(|| {
+        VerificationError::invalid_payload("Activation tx has no fee payer account")
+    })?;
+    if payer != *expected_payer {
+        return Err(VerificationError::invalid_payload(
+            "ATA payer must be the transaction fee payer in activation tx",
+        ));
+    }
+
+    let expected_mint = parse_pubkey(&config.mint, "mint")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    if mint != expected_mint {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation mint does not match the plan mint",
+        ));
+    }
+
+    // Owner must be one of the parties the challenge authorizes: the subscriber
+    // themselves, the primary recipient, or the server puller.
+    let recipient = parse_pubkey(&config.recipient, "recipient")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let puller = parse_pubkey(&config.puller, "puller")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    if owner != *subscriber && owner != recipient && owner != puller {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation owner is not authorized by the challenge",
+        ));
+    }
+
+    let system_program_id = parse_pubkey(SYSTEM_PROGRAM_ID, "system_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    if system_program != system_program_id {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation must reference the System Program",
+        ));
+    }
+
+    let token_program_str = token_program.to_string();
+    if token_program_str != programs::TOKEN_PROGRAM
+        && token_program_str != programs::TOKEN_2022_PROGRAM
+    {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation uses an unsupported token program",
+        ));
+    }
+    let expected_token_program = parse_pubkey(&config.token_program, "token_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    if token_program != expected_token_program {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation token program does not match the configured token program",
+        ));
+    }
+
+    let ata_program = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "associated_token_program")
+        .map_err(|e| VerificationError::new(e.to_string()))?;
+    let (expected_ata, _) = Pubkey::find_program_address(
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &ata_program,
+    );
+    if ata != expected_ata {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation address does not match owner/mint/token program",
+        ));
+    }
+
     Ok(())
 }
 
@@ -1526,6 +1655,18 @@ mod tests {
         }
     }
 
+    /// A config for the scope tests. The subscribe/transfer ordering checks are
+    /// independent of these values; the ATA-layout checks read `mint`,
+    /// `token_program`, `recipient`, and `puller` from here.
+    fn scope_config() -> SubscriptionConfig {
+        make_config()
+    }
+
+    /// A throwaway subscriber for scope tests that do not construct an ATA.
+    fn scope_subscriber() -> Pubkey {
+        Pubkey::new_unique()
+    }
+
     // ── extract_subscriber_from_tx ──────────────────────────────────────
 
     #[test]
@@ -1628,7 +1769,7 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        validate_activation_scope(&tx, &dummy_request(), &program_id_str()).expect("valid scope");
+        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).expect("valid scope");
     }
 
     #[test]
@@ -1638,7 +1779,7 @@ mod tests {
             &[subscriber],
             vec![(INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![])],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(err.message.contains("missing subscribe"), "{}", err.message);
     }
 
@@ -1646,7 +1787,7 @@ mod tests {
     fn validate_scope_rejects_missing_transfer() {
         let subscriber = Pubkey::new_unique();
         let tx = build_tx(&[subscriber], vec![(INSTRUCTION_SUBSCRIBE, vec![])]);
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(
             err.message.contains("missing transfer_subscription"),
             "{}",
@@ -1665,7 +1806,7 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(
             err.message.contains("multiple subscribe"),
             "{}",
@@ -1684,7 +1825,7 @@ mod tests {
                 (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(
             err.message.contains("multiple transfer_subscription"),
             "{}",
@@ -1702,7 +1843,7 @@ mod tests {
                 (INSTRUCTION_SUBSCRIBE, vec![]),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(err.message.contains("must precede"), "{}", err.message);
     }
 
@@ -1759,7 +1900,7 @@ mod tests {
             signatures: vec![Signature::default(); 1],
             message,
         };
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(
             err.message.contains("disallowed program"),
             "{}",
@@ -1797,7 +1938,7 @@ mod tests {
             signatures: vec![Signature::default(); 1],
             message,
         };
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(err.message.contains("out-of-range"), "{}", err.message);
     }
 
@@ -1818,7 +1959,7 @@ mod tests {
                 ),
             ],
         );
-        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str()).unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(
             err.message
                 .contains("disallowed subscriptions-program instruction"),
@@ -1827,56 +1968,318 @@ mod tests {
         );
     }
 
-    #[test]
-    fn validate_scope_accepts_full_legit_activation_shape() {
-        // The exact shape the client builder emits:
-        // [compute_budget price, compute_budget limit, create_idempotent_ata,
-        //  subscribe, transfer_subscription, memo] must pass.
+    /// A per-account override for the ATA `CreateIdempotent` instruction so
+    /// negative tests can corrupt exactly one field. `None` fields fall back to
+    /// the canonical value derived from `config` + `subscriber`.
+    #[derive(Default)]
+    struct AtaOverrides {
+        payer: Option<Pubkey>,
+        owner: Option<Pubkey>,
+        mint: Option<Pubkey>,
+        token_program: Option<Pubkey>,
+        ata: Option<Pubkey>,
+        data: Option<Vec<u8>>,
+        accounts: Option<Vec<u8>>,
+    }
+
+    /// Build a full activation transaction in the exact shape the client
+    /// builder emits — compute-budget price/limit, an ATA `CreateIdempotent`,
+    /// subscribe, transfer, and a memo — with the ATA instruction fields
+    /// controllable via `overrides`. The tx fee payer is `account_keys[0]`.
+    fn build_activation_tx_with_ata(
+        config: &SubscriptionConfig,
+        subscriber: &Pubkey,
+        overrides: AtaOverrides,
+    ) -> Transaction {
         use solana_hash::Hash;
         use solana_message::compiled_instruction::CompiledInstruction;
         use solana_message::{Message, MessageHeader};
+
         let fee_payer = Pubkey::new_unique();
+        let mint = overrides
+            .mint
+            .unwrap_or_else(|| parse_pubkey(&config.mint, "mint").unwrap());
+        let token_program = overrides
+            .token_program
+            .unwrap_or_else(|| parse_pubkey(&config.token_program, "token_program").unwrap());
+        let owner = overrides.owner.unwrap_or(*subscriber);
+        let payer = overrides.payer.unwrap_or(fee_payer);
+        let system_program = parse_pubkey(SYSTEM_PROGRAM_ID, "system").unwrap();
+        let ata_program = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "ata").unwrap();
+        // Canonical ATA re-derives from (owner, token_program, mint); a test
+        // that wants a bogus ATA address overrides `ata` directly.
+        let ata_addr = overrides.ata.unwrap_or_else(|| {
+            Pubkey::find_program_address(
+                &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+                &ata_program,
+            )
+            .0
+        });
+
         let cb = parse_pubkey(COMPUTE_BUDGET_PROGRAM_ID, "cb").unwrap();
-        let ata = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "ata").unwrap();
         let memo = parse_pubkey(MEMO_PROGRAM_ID, "memo").unwrap();
         let sub = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "sub").unwrap();
-        // keys: [fee_payer(0), cb(1), ata(2), memo(3), sub(4)]
-        let account_keys = vec![fee_payer, cb, ata, memo, sub];
-        let mk = |prog: u8, data: Vec<u8>| CompiledInstruction {
+        // Program ids occupy the first slots; the ATA's six referenced accounts
+        // follow. keys: [fee_payer(0), cb(1), ata_program(2), memo(3), sub(4),
+        //   payer(5), ata_addr(6), owner(7), mint(8), system(9), token(10)]
+        let account_keys = vec![
+            fee_payer,
+            cb,
+            ata_program,
+            memo,
+            sub,
+            payer,
+            ata_addr,
+            owner,
+            mint,
+            system_program,
+            token_program,
+        ];
+        // Default canonical CreateIdempotent layout referencing slots 5..=10.
+        let ata_accounts = overrides.accounts.unwrap_or_else(|| vec![5, 6, 7, 8, 9, 10]);
+        let ata_data = overrides.data.unwrap_or_else(|| vec![1]);
+
+        let mk = |prog: u8, accounts: Vec<u8>, data: Vec<u8>| CompiledInstruction {
             program_id_index: prog,
-            accounts: vec![],
+            accounts,
             data,
         };
         let instructions = vec![
-            mk(1, vec![3]),                                 // SetComputeUnitPrice
-            mk(1, vec![2]),                                 // SetComputeUnitLimit
-            mk(2, vec![1]),                                 // ATA CreateIdempotent
-            mk(4, vec![INSTRUCTION_SUBSCRIBE]),             // subscribe
-            mk(4, vec![INSTRUCTION_TRANSFER_SUBSCRIPTION]), // transfer
-            mk(3, b"external-id".to_vec()),                 // memo
+            mk(1, vec![], vec![3]),                             // SetComputeUnitPrice
+            mk(1, vec![], vec![2]),                             // SetComputeUnitLimit
+            mk(2, ata_accounts, ata_data),                     // ATA CreateIdempotent
+            mk(4, vec![], vec![INSTRUCTION_SUBSCRIBE]),         // subscribe
+            mk(4, vec![], vec![INSTRUCTION_TRANSFER_SUBSCRIPTION]), // transfer
+            mk(3, vec![], b"external-id".to_vec()),             // memo
         ];
         let message = Message {
             header: MessageHeader {
                 num_required_signatures: 1,
                 num_readonly_signed_accounts: 0,
-                num_readonly_unsigned_accounts: 4,
+                num_readonly_unsigned_accounts: (account_keys.len() - 1) as u8,
             },
             account_keys,
             recent_blockhash: Hash::default(),
             instructions,
         };
-        let tx = Transaction {
+        Transaction {
             signatures: vec![Signature::default(); 1],
             message,
-        };
-        validate_activation_scope(&tx, &dummy_request(), &program_id_str()).expect("valid scope");
+        }
+    }
+
+    #[test]
+    fn validate_scope_accepts_full_legit_activation_shape() {
+        // The exact shape the client builder emits:
+        // [compute_budget price, compute_budget limit, create_idempotent_ata,
+        //  subscribe, transfer_subscription, memo] must pass, with a canonical
+        // ATA that funds from the fee payer and re-derives for the subscriber.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(&config, &subscriber, AtaOverrides::default());
+        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+            .expect("valid scope");
+    }
+
+    #[test]
+    fn validate_scope_accepts_ata_owned_by_recipient() {
+        // An ATA created for the plan recipient (a split target) is authorized.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let recipient = parse_pubkey(&config.recipient, "recipient").unwrap();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                owner: Some(recipient),
+                ..Default::default()
+            },
+        );
+        validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+            .expect("recipient ATA is authorized");
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_funded_by_non_fee_payer() {
+        // (a) funding account != the fee payer at index 0.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                payer: Some(Pubkey::new_unique()),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message.contains("ATA payer must be the transaction fee payer"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_wrong_mint() {
+        // (b) ATA created for a mint other than the plan mint.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                mint: Some(Pubkey::new_unique()),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message.contains("ATA creation mint does not match the plan mint"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_wrong_owner() {
+        // (c) ATA owner is neither subscriber, recipient, nor puller.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                owner: Some(Pubkey::new_unique()),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message
+                .contains("ATA creation owner is not authorized by the challenge"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_non_canonical_layout() {
+        // (d1) Non-idempotent discriminator (Create = 0) is rejected.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                data: Some(vec![0]),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message.contains("Only idempotent ATA creation is allowed"),
+            "{}",
+            err.message
+        );
+
+        // (d2) Wrong account count (canonical is 6) is rejected.
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                accounts: Some(vec![5, 6, 7, 8, 9]),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message
+                .contains("Unexpected ATA creation account layout"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_wrong_token_program() {
+        // (d3) Token program does not match the configured one. Use the other
+        // supported token program so it passes the "supported" gate but fails
+        // the configured-program equality gate.
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let other_token_program = parse_pubkey(programs::TOKEN_2022_PROGRAM, "t22").unwrap();
+        // Re-derive the ATA against the substituted token program so the only
+        // failing check is the token-program mismatch, not the re-derivation.
+        let mint = parse_pubkey(&config.mint, "mint").unwrap();
+        let ata_program = parse_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID, "ata").unwrap();
+        let (ata_addr, _) = Pubkey::find_program_address(
+            &[
+                subscriber.as_ref(),
+                other_token_program.as_ref(),
+                mint.as_ref(),
+            ],
+            &ata_program,
+        );
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                token_program: Some(other_token_program),
+                ata: Some(ata_addr),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message
+                .contains("ATA creation token program does not match the configured token program"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn validate_scope_rejects_ata_that_does_not_rederive() {
+        // (e) ATA address that does not re-derive from (owner, token, mint).
+        let config = scope_config();
+        let subscriber = Pubkey::new_unique();
+        let tx = build_activation_tx_with_ata(
+            &config,
+            &subscriber,
+            AtaOverrides {
+                ata: Some(Pubkey::new_unique()),
+                ..Default::default()
+            },
+        );
+        let err =
+            validate_activation_scope(&tx, &dummy_request(), &program_id_str(), &config, &subscriber)
+                .unwrap_err();
+        assert!(
+            err.message
+                .contains("ATA creation address does not match owner/mint/token program"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
     fn validate_scope_rejects_invalid_program_id_string() {
         let subscriber = Pubkey::new_unique();
         let tx = build_tx(&[subscriber], vec![]);
-        let err = validate_activation_scope(&tx, &dummy_request(), "not-a-pubkey").unwrap_err();
+        let err = validate_activation_scope(&tx, &dummy_request(), "not-a-pubkey", &scope_config(), &scope_subscriber()).unwrap_err();
         assert!(!err.message.is_empty());
     }
 

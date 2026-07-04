@@ -495,28 +495,28 @@ describe('transaction parsing branches', () => {
 
     test('validateActivationInstructions rejects duplicate subscribe instructions', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-subscribe' });
-        expect(() =>
+        await expect(
             __testing.validateActivationInstructions(transaction, {
                 methodDetails: { programId: SUBSCRIPTIONS_PROGRAM },
             } as never),
-        ).toThrow(/Multiple subscribe/);
+        ).rejects.toThrow(/Multiple subscribe/);
     });
 
     test('validateActivationInstructions rejects duplicate transfer instructions', async () => {
         const { transaction } = await buildActivationTransactionBase64({ extraInstructions: 'duplicate-transfer' });
-        expect(() =>
+        await expect(
             __testing.validateActivationInstructions(transaction, {
                 methodDetails: { programId: SUBSCRIPTIONS_PROGRAM },
             } as never),
-        ).toThrow(/Multiple transfer_subscription/);
+        ).rejects.toThrow(/Multiple transfer_subscription/);
     });
 
     test('validateActivationInstructions defaults the programId when the challenge omits it', async () => {
         const { transaction } = await buildActivationTransactionBase64();
         // No programId in methodDetails → the `?? SUBSCRIPTIONS_PROGRAM` default is used.
-        expect(() =>
+        await expect(
             __testing.validateActivationInstructions(transaction, { methodDetails: {} } as never),
-        ).not.toThrow();
+        ).resolves.toBeUndefined();
     });
 });
 
@@ -664,11 +664,11 @@ describe('subscription() additional branches', () => {
         // tx, so we re-encode a real activation tx with a synthetic ALT entry.
         const { transaction } = await buildActivationTransactionBase64();
         const tampered = injectAddressTableLookup(transaction);
-        expect(() =>
+        await expect(
             __testing.validateActivationInstructions(tampered, {
                 methodDetails: { programId: SUBSCRIPTIONS_PROGRAM },
             } as never),
-        ).toThrow(/address lookup tables are not supported/);
+        ).rejects.toThrow(/address lookup tables are not supported/);
     });
 
     test('validateActivationInstructions rejects a reordered subscribe/transfer', async () => {
@@ -692,11 +692,11 @@ describe('subscription() additional branches', () => {
         );
         const signed = await partiallySignTransactionMessageWithSigners(txMessage);
         const transaction = getBase64EncodedWireTransaction(signed);
-        expect(() =>
+        await expect(
             __testing.validateActivationInstructions(transaction, {
                 methodDetails: { programId: SUBSCRIPTIONS_PROGRAM },
             } as never),
-        ).toThrow(/subscribe must precede transfer_subscription/);
+        ).rejects.toThrow(/subscribe must precede transfer_subscription/);
     });
 
     test('simulation surfaces an RPC error object', async () => {

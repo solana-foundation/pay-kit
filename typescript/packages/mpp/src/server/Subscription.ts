@@ -7,6 +7,7 @@ import {
     isTransactionPartialSigner,
     type TransactionPartialSigner,
 } from '@solana/kit';
+import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
 import {
@@ -17,6 +18,7 @@ import {
     SUBSCRIPTIONS_PROGRAM,
     SUBSCRIPTIONS_SUBSCRIBE_DISCRIMINATOR,
     SUBSCRIPTIONS_TRANSFER_DISCRIMINATOR,
+    SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
 } from '../constants.js';
@@ -266,7 +268,7 @@ async function settleActivation(
         }
 
         const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
-        validateActivationInstructions(clientTxBase64, challenge);
+        await validateActivationInstructions(clientTxBase64, challenge);
 
         let txToSend = clientTxBase64;
         if (signer) {
@@ -330,6 +332,15 @@ type CompiledInstruction = {
     programAddressIndex: number;
 };
 
+/** Resolve a static account address by index, throwing on an out-of-range index. */
+function accountAddress(message: CompiledMessage, index: number, label: string): string {
+    const value = message.staticAccounts[index];
+    if (value === undefined) {
+        throw new Error(`Invalid ${label} index`);
+    }
+    return value;
+}
+
 function decodeCompiledMessage(clientTxBase64: string): CompiledMessage {
     let message: CompiledMessage;
     try {
@@ -369,7 +380,7 @@ function extractSubscriberFromTransaction(clientTxBase64: string, challenge: Cha
     return firstAccount;
 }
 
-function validateActivationInstructions(clientTxBase64: string, challenge: ChallengeRequest): void {
+async function validateActivationInstructions(clientTxBase64: string, challenge: ChallengeRequest): Promise<void> {
     const message = decodeCompiledMessage(clientTxBase64);
 
     if (message.addressTableLookups?.length) {
@@ -377,6 +388,17 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
     }
 
     const programId = challenge.methodDetails.programId ?? SUBSCRIPTIONS_PROGRAM;
+
+    // The set of owners an ATA created in this activation may fund an account
+    // for: the subscriber themselves, the plan recipient, or the server puller.
+    // Re-derive the subscriber from the same transaction the caller settles.
+    const subscriber = extractSubscriberFromTransaction(clientTxBase64, challenge);
+    const allowedAtaOwners = new Set<string>([subscriber]);
+    if (challenge.recipient) allowedAtaOwners.add(challenge.recipient);
+    if (challenge.methodDetails.puller) allowedAtaOwners.add(challenge.methodDetails.puller);
+    // The funding account (charged the ATA rent) must be the transaction fee
+    // payer at static-account index 0 — the slot the server co-signs as.
+    const expectedAtaPayer = message.staticAccounts[0];
 
     let sawSubscribe = false;
     let sawTransferSubscription = false;
@@ -419,12 +441,14 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
             // carry no fee-payer fund/authority risk, so they are allowed.
             continue;
         } else if (program === ASSOCIATED_TOKEN_PROGRAM) {
-            // Only idempotent ATA creation (discriminator 1) is permitted — the
-            // same restriction the charge allowlist enforces. Create (0) or any
-            // other ATA-program instruction is rejected.
-            if (ix.data.length !== 1 || ix.data[0] !== 1) {
-                throw new Error('Activation transaction may only use idempotent ATA creation');
-            }
+            // An ATA `CreateIdempotent` names the funding account (charged the
+            // account's rent) as a required signer, so a blind co-sign would let
+            // a client make the sponsored fee payer fund an arbitrary ATA.
+            // Validate the instruction the same way the charge verifier does —
+            // idempotent discriminator, canonical 6-account layout, funding ==
+            // fee payer, mint == plan mint, owner authorized, token program ==
+            // the configured one, and the ATA address re-derives.
+            await validateActivationAtaInstruction(message, ix, challenge, allowedAtaOwners, expectedAtaPayer);
             continue;
         } else {
             throw new Error(
@@ -438,6 +462,65 @@ function validateActivationInstructions(clientTxBase64: string, challenge: Chall
         throw new Error('Activation transaction is missing transfer_subscription instruction');
     if (transferIndex < subscribeIndex) {
         throw new Error('subscribe must precede transfer_subscription in activation transaction');
+    }
+}
+
+/**
+ * Validate an Associated-Token-Account `CreateIdempotent` instruction in an
+ * activation transaction before the fee payer co-signs it. Mirrors the charge
+ * verifier's `validateCreateAtaIdempotentInstruction`: require the idempotent
+ * discriminator with the canonical 6-account layout, and assert that the
+ * funding account is the transaction fee payer, the mint is the plan mint, the
+ * token program is the configured one, the owner is one the challenge
+ * authorizes, and that the ATA address re-derives from `(owner, mint, token)`.
+ */
+async function validateActivationAtaInstruction(
+    message: CompiledMessage,
+    ix: CompiledInstruction,
+    challenge: ChallengeRequest,
+    allowedAtaOwners: Set<string>,
+    expectedPayer: string | undefined,
+): Promise<void> {
+    if (ix.data.length !== 1 || ix.data[0] !== 1) {
+        throw new Error('Activation transaction may only use idempotent ATA creation');
+    }
+    if (ix.accountIndices.length !== 6) {
+        throw new Error('Unexpected ATA creation account layout in activation transaction');
+    }
+
+    const payer = accountAddress(message, ix.accountIndices[0], 'ATA payer');
+    const ata = accountAddress(message, ix.accountIndices[1], 'ATA address');
+    const owner = accountAddress(message, ix.accountIndices[2], 'ATA owner');
+    const mint = accountAddress(message, ix.accountIndices[3], 'ATA mint');
+    const systemProgram = accountAddress(message, ix.accountIndices[4], 'ATA system program');
+    const tokenProgram = accountAddress(message, ix.accountIndices[5], 'ATA token program');
+
+    if (expectedPayer === undefined || payer !== expectedPayer) {
+        throw new Error('ATA payer must be the transaction fee payer in activation transaction');
+    }
+    if (mint !== challenge.methodDetails.mint) {
+        throw new Error('ATA creation mint does not match the plan mint');
+    }
+    if (!allowedAtaOwners.has(owner)) {
+        throw new Error('ATA creation owner is not authorized by the challenge');
+    }
+    if (systemProgram !== SYSTEM_PROGRAM) {
+        throw new Error('ATA creation must reference the System Program');
+    }
+    if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error('ATA creation uses an unsupported token program');
+    }
+    if (challenge.methodDetails.tokenProgram && tokenProgram !== challenge.methodDetails.tokenProgram) {
+        throw new Error('ATA creation token program does not match the configured token program');
+    }
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        mint: address(mint),
+        owner: address(owner),
+        tokenProgram: address(tokenProgram),
+    });
+    if (ata !== expectedAta) {
+        throw new Error('ATA creation address does not match owner/mint/token program');
     }
 }
 

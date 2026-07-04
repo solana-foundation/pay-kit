@@ -186,7 +186,7 @@ describe('validateActivationInstructions strict allowlist (C-1a)', () => {
         const { transaction } = await buildSponsoredActivation(({ feePayer, subscriber }) => [
             getTransferSolInstruction({ amount: 1_000_000_000n, destination: subscriber.address, source: feePayer }),
         ]);
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, activationChallenge)).rejects.toThrow(
             /disallowed program/,
         );
     });
@@ -200,7 +200,7 @@ describe('validateActivationInstructions strict allowlist (C-1a)', () => {
                 programAddress: stranger.address,
             },
         ]);
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, activationChallenge)).rejects.toThrow(
             /disallowed program/,
         );
     });
@@ -213,13 +213,16 @@ describe('validateActivationInstructions strict allowlist (C-1a)', () => {
                 programAddress: address(SUBSCRIPTIONS_PROGRAM),
             },
         ]);
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).toThrow(
+        await expect(__testing.validateActivationInstructions(transaction, activationChallenge)).rejects.toThrow(
             /disallowed subscriptions-program instruction/,
         );
     });
 
-    test('accepts the auxiliary allowlist programs (compute-budget, memo, idempotent ATA)', async () => {
-        const { transaction } = await buildSponsoredActivation(({ feePayer, subscriber }) => [
+    test('accepts the auxiliary allowlist programs (compute-budget, memo)', async () => {
+        // Compute-budget (price/limit) and the optional external-id memo carry
+        // no fee-payer fund/authority risk and are always allowed. A canonical
+        // idempotent-ATA happy path is covered in subscription-activation-ata.
+        const { transaction } = await buildSponsoredActivation(({ subscriber }) => [
             {
                 accounts: [],
                 data: new Uint8Array([2, 0x40, 0x0d, 0x03, 0x00]),
@@ -230,16 +233,10 @@ describe('validateActivationInstructions strict allowlist (C-1a)', () => {
                 data: new TextEncoder().encode('ext-id'),
                 programAddress: address(MEMO_PROGRAM),
             },
-            {
-                accounts: [
-                    { address: feePayer.address, role: AccountRole.WRITABLE_SIGNER },
-                    { address: subscriber.address, role: AccountRole.READONLY },
-                ],
-                data: new Uint8Array([1]),
-                programAddress: address(ASSOCIATED_TOKEN_PROGRAM),
-            },
         ]);
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).not.toThrow();
+        await expect(
+            __testing.validateActivationInstructions(transaction, activationChallenge),
+        ).resolves.toBeUndefined();
     });
 
     test('rejects a non-idempotent (Create, not CreateIdempotent) ATA instruction', async () => {
@@ -254,12 +251,16 @@ describe('validateActivationInstructions strict allowlist (C-1a)', () => {
                 programAddress: address(ASSOCIATED_TOKEN_PROGRAM),
             },
         ]);
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).toThrow(/idempotent/i);
+        await expect(__testing.validateActivationInstructions(transaction, activationChallenge)).rejects.toThrow(
+            /idempotent/i,
+        );
     });
 
     test('still accepts a clean subscribe + transfer_subscription activation', async () => {
         const { transaction } = await buildSponsoredActivation();
-        expect(() => __testing.validateActivationInstructions(transaction, activationChallenge)).not.toThrow();
+        await expect(
+            __testing.validateActivationInstructions(transaction, activationChallenge),
+        ).resolves.toBeUndefined();
     });
 });
 
@@ -391,11 +392,11 @@ describe('verifyChannelAccountState channel-status guard (A3)', () => {
 // ══════════════════════════════════════════════════════════════════════
 
 describe('transaction-version guard (A5)', () => {
-    test('validateActivationInstructions rejects a v1 message with a typed error', () => {
+    test('validateActivationInstructions rejects a v1 message with a typed error', async () => {
         const wire = buildV1WireTransaction();
         let error: unknown;
         try {
-            __testing.validateActivationInstructions(wire, activationChallenge);
+            await __testing.validateActivationInstructions(wire, activationChallenge);
         } catch (e) {
             error = e;
         }
