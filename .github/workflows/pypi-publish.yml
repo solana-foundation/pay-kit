@@ -27,9 +27,12 @@ on:
         default: true
         type: boolean
 
+# Least privilege at the workflow level: read-only. The release-gate fan-out
+# (every SDK's test/build job, run via the reusable release-gate.yml) inherits
+# this default and gets no write token. contents: write and id-token: write are
+# granted explicitly on the publish job below, and nowhere else.
 permissions:
-  contents: write
-  id-token: write # PyPI Trusted Publishing (OIDC)
+  contents: read
 
 # Prevent concurrent publishes
 concurrency:
@@ -37,11 +40,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Guard the publish workflow's own hardening: fail early if the top-level
+  # permissions ever regain a write grant or a tag/release step loses its
+  # publish-success gate. This is the release-integrity self-check.
+  guards:
+    name: Publish workflow guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Assert least-privilege permissions and publish-success gating
+        run: |
+          scripts/check-publish-workflow-guards.sh \
+            .github/workflows/npm-publish.yml \
+            .github/workflows/pypi-publish.yml
+
   # Full release gate: core CI + cross-language harness + on-chain legs +
   # every SDK matrix (see release-gate.yml). Publishing must never gate on
   # a single workflow's view of the commit.
   gate:
     name: Release gate
+    needs: [guards]
     uses: ./.github/workflows/release-gate.yml
     secrets: inherit
 
@@ -52,6 +71,11 @@ jobs:
     environment:
       name: pypi
       url: https://pypi.org/project/solana-pay-kit/
+    # Write scope lives only on the publish job: contents: write for the git
+    # tag + GitHub Release, id-token: write for PyPI OIDC trusted publishing.
+    permissions:
+      contents: write
+      id-token: write # PyPI Trusted Publishing (OIDC)
 
     steps:
       - name: Checkout repository
@@ -117,6 +141,7 @@ jobs:
           echo "twine check passed and solana_pay_kit is present"
 
       - name: Publish to PyPI
+        id: publish
         if: ${{ github.event.inputs.publish-to-pypi == 'true' }}
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
@@ -124,8 +149,13 @@ jobs:
           # No `password:` — Trusted Publishing (OIDC) authenticates via the
           # id-token permission + the `pypi` environment configured above.
 
+      # Tag + Release only after a real, successful publish. Gating on the input
+      # alone let a dry run (publish-to-pypi=false) tag and release a version
+      # that was never published; requiring steps.publish.outcome == 'success'
+      # closes that (the publish step is skipped on a dry run, so outcome !=
+      # success).
       - name: Create and push tag
-        if: ${{ github.event.inputs.publish-to-pypi == 'true' }}
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-pypi == 'true' }}
         run: |
           TAG="python-v${{ steps.version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -137,7 +167,7 @@ jobs:
           git push origin "$TAG" 2>/dev/null || echo "Tag already pushed"
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create-github-release == 'true' }}
+        if: ${{ steps.publish.outcome == 'success' && github.event.inputs.publish-to-pypi == 'true' && github.event.inputs.create-github-release == 'true' }}
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
