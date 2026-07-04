@@ -1502,7 +1502,7 @@ mod tests {
     async fn process_open_push_without_rpc_off_localnet_fails_closed() {
         // Off localnet with no rpc_url, a push open cannot be bound to the
         // on-chain channel, so the server must refuse rather than trust the
-        // client-claimed deposit/channelId (the H1 fabrication guard). On
+        // client-claimed deposit/channelId (the fabrication guard). On
         // localnet (see other tests) the bind is skipped for unit/dev use.
         let server = SessionServer::new(
             SessionConfig {

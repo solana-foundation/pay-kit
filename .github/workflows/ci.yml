@@ -258,7 +258,7 @@ jobs:
       # blocks (missing `scheme`, bare network slug, missing `maxTimeoutSeconds`).
       - name: Run solana-pay-kit x402 library tests
         working-directory: rust
-        run: cargo test --locked -p solana-pay-kit --lib x402
+        run: cargo test --locked -p solana-pay-kit --lib x402 --features server,client
 
       - name: Enforce Rust coverage floors (mpp + x402, line + region, aggregate + per-file)
         working-directory: rust

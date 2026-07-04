@@ -1932,7 +1932,7 @@ mod tests {
 
     #[test]
     fn validate_scope_rejects_instruction_on_unknown_program() {
-        // C1 regression: an instruction on a program outside the activation
+        // Regression: an instruction on a program outside the activation
         // allowlist must be REJECTED, not skipped. The old behaviour scanned
         // for the subscribe/transfer pair and ignored everything else, so a
         // client could smuggle e.g. a System transfer that spends the
@@ -2510,7 +2510,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn co_sign_rejects_fee_payer_not_at_index_zero() {
-        // C1 regression: the fee-payer key present at a NON-zero index (e.g.
+        // Regression: the fee-payer key present at a NON-zero index (e.g.
         // as the authority of an attacker-inserted instruction) must NOT be
         // co-signed. The old code used `position()` and would sign wherever
         // the key appeared.

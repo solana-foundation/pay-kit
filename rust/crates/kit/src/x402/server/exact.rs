@@ -2309,7 +2309,7 @@ mod tests {
         ));
     }
 
-    // ── H3: signature-mode replay / freshness / binding ─────────────────────
+    // ── Signature-mode replay / freshness / binding ─────────────────────
     //
     // Signature (push) mode presents an already-confirmed on-chain
     // transaction. These tests pin the three guards that stop a single
