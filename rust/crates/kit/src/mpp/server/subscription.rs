@@ -441,7 +441,15 @@ impl SubscriptionServer {
         }
 
         // ── Settle the activation transaction ────────────────────────────
-        let (subscriber, activation_signature) = match payload_type {
+        //
+        // The `"transaction"` arm claims the replay marker atomically before
+        // broadcasting, then owns a reservation that MUST be released on every
+        // failure path (inside this arm and in the tail below) until a receipt
+        // is produced. The arm hands the claimed key back so the tail can
+        // release it on error; the other arms early-return and never claim. The
+        // happy path is disarmed explicitly at the end so a real replay stays
+        // rejected.
+        let (subscriber, activation_signature, claimed_key) = match payload_type {
             "transaction" => {
                 let tx_b64 = activate.transaction.as_deref().ok_or_else(|| {
                     VerificationError::invalid_payload(
@@ -466,14 +474,9 @@ impl SubscriptionServer {
                 // Replay guard. The activation signature is the transaction's
                 // own first signature — the fee payer's (index 0) once the
                 // server co-signs, or the subscriber's otherwise — and it is
-                // exactly what `sendTransaction` echoes back. Reject a duplicate
-                // credential up front, before any RPC broadcast or receipt
-                // re-issuance, once the first activation has been recorded. The
-                // key mirrors the TypeScript port
-                // (`solana-subscription:consumed:<sig>`) so a shared store
-                // rejects the replay across language runtimes. Broadcast itself
-                // is idempotent on-chain; the marker only prevents re-issuing a
-                // receipt for an already-settled activation.
+                // exactly what `sendTransaction` echoes back. The key mirrors
+                // the TypeScript port (`solana-subscription:consumed:<sig>`) so
+                // a shared store rejects the replay across language runtimes.
                 let activation_sig =
                     tx.signatures
                         .first()
@@ -484,17 +487,31 @@ impl SubscriptionServer {
                             )
                         })?;
                 let consumed_key = format!("solana-subscription:consumed:{activation_sig}");
-                if self
+
+                // Atomically claim the marker up front, before any RPC
+                // broadcast or receipt re-issuance. `put_if_absent` returns
+                // `false` when the key already exists, which means a prior (or
+                // concurrent) activation already owns this signature — reject
+                // the replay. A non-atomic get-then-put would let two
+                // concurrent identical activations both pass the check and both
+                // issue a server-signed receipt. On a winning claim the caller
+                // now owns the reservation and MUST release it on every failure
+                // path until a receipt is produced (below); broadcast itself is
+                // idempotent on-chain, so the marker's sole job is to prevent
+                // re-issuing a receipt for an already-settled activation.
+                let claimed = self
                     .store
-                    .get(&consumed_key)
+                    .put_if_absent(&consumed_key, serde_json::json!(true))
                     .await
-                    .map_err(|e| VerificationError::network_error(e.to_string()))?
-                    .is_some()
-                {
+                    .map_err(|e| VerificationError::network_error(e.to_string()))?;
+                if !claimed {
                     return Err(VerificationError::signature_consumed(
                         "Activation signature already consumed",
                     ));
                 }
+                // We own the reservation now; from here every failure path
+                // must release `consumed_key` via `release_on_err`.
+                let claimed_key = consumed_key;
 
                 // Idempotent broadcast: if the delegation PDA already exists
                 // (a previous activation landed on-chain but the receipt
@@ -503,10 +520,26 @@ impl SubscriptionServer {
                 // `AlreadySubscribed` (0x205) and abort the whole tx,
                 // burying the actual outcome. The subsequent fetch +
                 // terms-check on lines below catches any divergence.
-                let program_id = parse_pubkey(&self.program_id, "program_id")
-                    .map_err(|e| VerificationError::new(e.to_string()))?;
-                let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
-                    .map_err(|e| VerificationError::new(e.to_string()))?;
+                //
+                // Any error between the claim above and the receipt release
+                // (parse, PDA fetch, broadcast) must release the marker so a
+                // transient RPC failure does not permanently brick this
+                // activation signature — `release_on_err` wraps each fallible
+                // step to guarantee that.
+                let program_id = release_on_err(
+                    &*self.store,
+                    &claimed_key,
+                    parse_pubkey(&self.program_id, "program_id")
+                        .map_err(|e| VerificationError::new(e.to_string())),
+                )
+                .await?;
+                let plan_pda = release_on_err(
+                    &*self.store,
+                    &claimed_key,
+                    parse_pubkey(&self.config.plan_id, "plan_id")
+                        .map_err(|e| VerificationError::new(e.to_string())),
+                )
+                .await?;
                 let (delegation_pda, _) =
                     find_subscription_pda(&plan_pda, &subscriber, &program_id);
                 let delegation_already_exists = self
@@ -521,19 +554,18 @@ impl SubscriptionServer {
                         .await
                         .ok()
                 } else {
-                    Some(self.broadcast_and_confirm(&tx).await?.to_string())
+                    Some(
+                        release_on_err(
+                            &*self.store,
+                            &claimed_key,
+                            self.broadcast_and_confirm(&tx).await,
+                        )
+                        .await?
+                        .to_string(),
+                    )
                 };
 
-                // Record the consumed marker after a successful broadcast /
-                // receipt fetch, matching the TypeScript port's ordering — the
-                // funds path is protected by the idempotent broadcast, so the
-                // marker exists solely to reject receipt re-issuance on replay.
-                self.store
-                    .put(&consumed_key, serde_json::json!(true))
-                    .await
-                    .map_err(|e| VerificationError::network_error(e.to_string()))?;
-
-                (subscriber, sig)
+                (subscriber, sig, claimed_key)
             }
             "signature" => {
                 // Push mode (client already broadcast). Not yet supported
@@ -554,26 +586,52 @@ impl SubscriptionServer {
         };
 
         // ── Derive subscription PDA and read on-chain state ──────────────
-        let program_id = parse_pubkey(&self.program_id, "program_id")
-            .map_err(|e| VerificationError::new(e.to_string()))?;
-        let plan_pda = parse_pubkey(&self.config.plan_id, "plan_id")
-            .map_err(|e| VerificationError::new(e.to_string()))?;
+        // Still inside the reservation window: any error here (PDA parse,
+        // on-chain fetch, terms mismatch) must release the marker so a
+        // legitimate client can retry, so every fallible step below is wrapped.
+        let program_id = release_on_err(
+            &*self.store,
+            &claimed_key,
+            parse_pubkey(&self.program_id, "program_id")
+                .map_err(|e| VerificationError::new(e.to_string())),
+        )
+        .await?;
+        let plan_pda = release_on_err(
+            &*self.store,
+            &claimed_key,
+            parse_pubkey(&self.config.plan_id, "plan_id")
+                .map_err(|e| VerificationError::new(e.to_string())),
+        )
+        .await?;
         let (subscription_pda, _) = find_subscription_pda(&plan_pda, &subscriber, &program_id);
 
-        let delegation = self
-            .fetch_subscription_delegation(&subscription_pda)
-            .await?;
+        let delegation = release_on_err(
+            &*self.store,
+            &claimed_key,
+            self.fetch_subscription_delegation(&subscription_pda).await,
+        )
+        .await?;
 
         // ── Validate snapshotted terms + build the receipt ───────────────
-        validate_terms_and_build_receipt(
-            &delegation,
-            &request,
-            &plan_pda,
-            &subscription_pda,
-            &self.config.plan_id,
-            &credential.challenge.id,
-            activation_signature,
+        let receipt = release_on_err(
+            &*self.store,
+            &claimed_key,
+            validate_terms_and_build_receipt(
+                &delegation,
+                &request,
+                &plan_pda,
+                &subscription_pda,
+                &self.config.plan_id,
+                &credential.challenge.id,
+                activation_signature,
+            ),
         )
+        .await?;
+
+        // Happy path: a receipt was produced, so the claim is permanent. Do NOT
+        // release — a genuine replay of this activation signature must stay
+        // rejected.
+        Ok(receipt)
     }
 
     /// Broadcast a signed transaction and wait for `confirmed` (NOT
@@ -695,6 +753,27 @@ impl SubscriptionServer {
 }
 
 // ── Verify helpers ──────────────────────────────────────────────────────────
+
+/// Release-on-failure guard for the activation replay reservation.
+///
+/// Once the activation signature has been atomically claimed (via
+/// `put_if_absent`), every fallible step up to receipt construction must
+/// release that claim on error so a transient failure (RPC hiccup, terms
+/// mismatch, …) does not permanently brick the activation signature for a
+/// legitimate retry. Wrapping each `Result` in this helper deletes the marker
+/// at `key` on `Err` and passes `Ok` through untouched. The delete is
+/// best-effort: a failed delete cannot make the original error any worse, so it
+/// is ignored.
+async fn release_on_err<T>(
+    store: &dyn Store,
+    key: &str,
+    result: Result<T, VerificationError>,
+) -> Result<T, VerificationError> {
+    if result.is_err() {
+        let _ = store.delete(key).await;
+    }
+    result
+}
 
 /// Pluck the `ActivatePayload` out of a credential's `payload` field,
 /// accepting both the raw `ActivatePayload` shape (the v0 spec) and the
@@ -3548,6 +3627,164 @@ mod tests {
         assert_eq!(
             c.get_account, get_account_before_replay,
             "replay must be rejected before any RPC account fetch",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_identical_activations_admit_exactly_one() {
+        // The core TOCTOU gate. Two concurrent activation verifications with
+        // the SAME activation signature race through one shared store. The
+        // atomic `put_if_absent` claim admits exactly one — the other is
+        // rejected as `signature-consumed`. The winner runs the full happy
+        // path against the counting mock and keeps its marker (it never fails,
+        // so it never releases), so the loser observes the claim no matter how
+        // the two tasks interleave.
+        //
+        // Against the OLD non-atomic get-then-put, both verifications would
+        // pass the get() check before either wrote the marker and BOTH would
+        // broadcast + issue a receipt — zero `signature-consumed`, so this test
+        // fails. It passes only with the atomic claim.
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let mut cfg = make_config();
+        cfg.store = Some(store.clone());
+        let plan_pda = parse_pubkey(&cfg.plan_id, "plan").unwrap();
+        let program = parse_pubkey(SUBSCRIPTIONS_PROGRAM_ID, "prog").unwrap();
+        let subscriber = Pubkey::new_unique();
+        let account = encode_delegation_account(
+            subscriber.to_bytes(),
+            plan_pda.to_bytes(),
+            720,
+            720,
+            720,
+            1_700_000_000,
+        );
+        let (url, counters) = spawn_counting_activation_rpc(account, program);
+        cfg.rpc_url = Some(url);
+        let server = Arc::new(SubscriptionServer::new(cfg).expect("server"));
+
+        let mut tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        tx.signatures[0] = Signature::from([9u8; 64]);
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let challenge = server.subscription_challenge("720").expect("challenge");
+        let credential = PaymentCredential::new(
+            challenge.to_echo(),
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+
+        let s1 = server.clone();
+        let s2 = server.clone();
+        let c1 = credential.clone();
+        let c2 = credential.clone();
+        let h1 = tokio::spawn(async move { s1.verify_credential(&c1).await });
+        let h2 = tokio::spawn(async move { s2.verify_credential(&c2).await });
+        let r1 = h1.await.expect("task 1 joins");
+        let r2 = h2.await.expect("task 2 joins");
+
+        let ok_count = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+        let consumed_count = [&r1, &r2]
+            .iter()
+            .filter(|r| matches!(r, Err(e) if e.code == Some("signature-consumed")))
+            .count();
+        assert_eq!(
+            ok_count, 1,
+            "exactly one activation must succeed, got r1={r1:?} r2={r2:?}",
+        );
+        assert_eq!(
+            consumed_count, 1,
+            "the loser must be rejected as signature-consumed, got r1={r1:?} r2={r2:?}",
+        );
+
+        // Exactly one broadcast reached the chain — the second activation was
+        // rejected before it could re-settle.
+        assert_eq!(
+            counters.lock().unwrap().send,
+            1,
+            "only the winning activation may broadcast",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broadcast_failure_releases_claim_for_retry() {
+        // Release-on-failure. The claim is taken atomically up front, but a
+        // broadcast failure afterwards must delete the marker so a legitimate
+        // client can retry — otherwise a transient RPC error would permanently
+        // brick the activation signature. The dead RPC makes broadcast fail
+        // after the claim; the retry must NOT be rejected as consumed.
+        //
+        // Against the OLD get-then-put, the marker was only written AFTER a
+        // successful broadcast, so a failed broadcast left no marker and this
+        // assertion was vacuous. With the atomic upfront claim it is load-
+        // bearing: the marker exists after the claim and MUST be released on
+        // the broadcast error path.
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let mut cfg = make_config();
+        cfg.store = Some(store.clone());
+        // Port 1 refuses connections immediately, so broadcast_and_confirm
+        // errors after the claim.
+        cfg.rpc_url = Some("http://127.0.0.1:1".into());
+        let server = SubscriptionServer::new(cfg).expect("server");
+
+        let subscriber = Pubkey::new_unique();
+        let mut tx = build_tx(
+            &[subscriber],
+            vec![
+                (INSTRUCTION_SUBSCRIBE, vec![]),
+                (INSTRUCTION_TRANSFER_SUBSCRIPTION, vec![]),
+            ],
+        );
+        tx.signatures[0] = Signature::from([5u8; 64]);
+        let sig = tx.signatures[0].to_string();
+        let consumed_key = format!("solana-subscription:consumed:{sig}");
+        let bytes = bincode::serialize(&tx).unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let credential = credential_for_server(
+            &server,
+            ActivatePayload {
+                payload_type: "transaction".into(),
+                transaction: Some(b64),
+                signature: None,
+            },
+        );
+
+        // First attempt: broadcast fails against the dead RPC.
+        let err = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("dead RPC must fail the broadcast");
+        assert_ne!(
+            err.code,
+            Some("signature-consumed"),
+            "the first attempt is a broadcast failure, not a replay: {err:?}",
+        );
+
+        // The claim must have been released so the signature is not bricked.
+        assert_eq!(
+            store.get(&consumed_key).await.unwrap(),
+            None,
+            "a broadcast failure must release the activation claim for retry",
+        );
+
+        // Retry: still fails on the dead RPC, but MUST NOT be rejected as a
+        // replay — proving the marker was released rather than kept.
+        let err = server
+            .verify_credential(&credential)
+            .await
+            .expect_err("retry still hits the dead RPC");
+        assert_ne!(
+            err.code,
+            Some("signature-consumed"),
+            "a retry after a released claim must not be rejected as consumed: {err:?}",
         );
     }
 }
