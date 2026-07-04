@@ -234,6 +234,11 @@ func NewSession(options SessionOptions) (*Session, error) {
 		Modes:               options.Modes,
 		PullVoucherStrategy: options.PullVoucherStrategy,
 	}
+	// Install the top-up bind seam in-core: ProcessTopUp confirms the signature
+	// and binds the raised deposit to the on-chain Channel account through it,
+	// so the deposit bind is not a parallel abstraction living only in the HTTP
+	// dispatcher. Off localnet without an RPC client the seam fails closed.
+	config.VerifyTopUpTx = NewTopUpTxVerifier(config, options.RPC)
 	session := &Session{
 		core:            NewSessionServer(config, store),
 		secretKey:       options.SecretKey,
@@ -649,9 +654,13 @@ func (s *Session) handleCommit(ctx context.Context, payload *intents.CommitPaylo
 	return fmt.Sprintf("%s:%s:%s", receipt.SessionID, receipt.DeliveryID, receipt.Cumulative), nil
 }
 
-// handleTopUp raises a channel's deposit after optional on-chain
-// confirmation of the top-up signature. The receipt reference is the top-up
-// transaction signature.
+// handleTopUp raises a channel's deposit. The on-chain confirm-and-bind (the
+// on-chain Channel account's deposit must equal the asserted newDeposit, fail-
+// closed off localnet) runs in the core ProcessTopUp via the installed
+// VerifyTopUpTx seam, so this dispatcher is a thin caller: it applies the
+// method-level cap clamp and the cheap store pre-checks (fast-fail before the
+// network round-trip inside the core bind) and delegates. The receipt
+// reference is the top-up transaction signature.
 func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
 	newDeposit, err := parseSessionU64(payload.NewDeposit, "newDeposit")
 	if err != nil {
@@ -661,7 +670,9 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 		return "", fmt.Errorf("newDeposit %d exceeds cap %d", newDeposit, s.cap)
 	}
 
-	// Cheap store pre-checks before touching the network.
+	// Cheap store pre-checks before the core bind touches the network. The
+	// authoritative checks (and the on-chain deposit bind) run inside
+	// ProcessTopUp; these only fast-fail an obviously doomed top-up.
 	existing, err := s.core.store.GetChannel(ctx, payload.ChannelID)
 	if err != nil {
 		return "", err
@@ -675,40 +686,7 @@ func (s *Session) handleTopUp(ctx context.Context, payload *intents.TopUpPayload
 	if existing.CloseRequestedAt != nil {
 		return "", fmt.Errorf("channel %s close is pending; no further top-ups accepted", payload.ChannelID)
 	}
-	if s.rpc != nil {
-		// Confirming the signature succeeded proves nothing about the deposit —
-		// any confirmed signature would otherwise raise the channel to the
-		// client-asserted newDeposit. Confirm the signature, then read the
-		// authoritative on-chain Channel account and require its deposit to have
-		// actually reached newDeposit (not merely that a top_up instruction with
-		// the right delta was submitted, which a racing top-up could also
-		// satisfy). Mirrors the open bind and the Rust/Python process_topup.
-		if err := confirmTransactionSignature(ctx, s.rpc, payload.Signature, "topUp"); err != nil {
-			return "", err
-		}
-		channelPDA, err := solana.PublicKeyFromBase58(payload.ChannelID)
-		if err != nil {
-			return "", fmt.Errorf("invalid channelId %q: %w", payload.ChannelID, err)
-		}
-		bound, err := fetchAndBindChannelAccount(
-			ctx, s.rpc, channelPDA,
-			paycore.ResolveMint(s.currency, s.network),
-			s.recipient, existing.AuthorizedSigner, s.core.config.ProgramID,
-		)
-		if err != nil {
-			return "", err
-		}
-		if bound.Deposit != newDeposit {
-			return "", fmt.Errorf(
-				"on-chain channel deposit %d != asserted newDeposit %d", bound.Deposit, newDeposit)
-		}
-	} else if s.network != "localnet" {
-		// No RPC configured: the raised deposit cannot be bound to on-chain
-		// state. Fail closed on any real network; only localnet (unit/dev) may
-		// skip the bind, matching the open path and the Rust/Python process_topup.
-		return "", fmt.Errorf(
-			"payment-channel top-up requires an rpc client to bind the on-chain channel off localnet")
-	}
+
 	if _, err := s.core.ProcessTopUp(ctx, payload); err != nil {
 		return "", err
 	}

@@ -9,10 +9,11 @@ signatures and deposit amounts are trusted as provided. :func:`verify_open_tx`
 always validates an attached open transaction structurally (decode, bind the
 payload signature, check the open instruction against the challenge, re-derive
 the channel PDA); confirming that the transaction actually landed additionally
-requires an RPC client. :func:`new_top_up_tx_verifier` is purely RPC-backed (the
-top-up payload carries only a signature, no transaction), so without an RPC
-client the top-up seam stays ``None`` and the new deposit is trusted as
-provided.
+requires an RPC client. :func:`new_top_up_tx_verifier` binds the raised deposit
+to the on-chain ``Channel`` account (the deposit must equal the asserted
+``new_deposit``, mirroring Rust ``process_topup``), not merely the signature's
+liveness. Without an RPC client the top-up seam fails closed off localnet and
+stays ``None`` only on localnet, where the new deposit is trusted as provided.
 """
 
 from __future__ import annotations
@@ -494,20 +495,131 @@ async def fetch_and_bind_channel_account(
     )
 
 
-def new_top_up_tx_verifier(rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
-    """Return the on-chain top-up verifier to install on the session config: it
-    confirms the top-up transaction signature on-chain via
-    ``getSignatureStatuses``.
+async def _fetch_top_up_channel_account(
+    rpc_client: RpcClient,
+    channel_id: str,
+    *,
+    program_id: Pubkey | str | None,
+    expected_payee: str,
+    expected_mint: str,
+) -> BoundChannel:
+    """Read the on-chain ``Channel`` account for a top-up and bind its status /
+    mint / payee to the challenge, returning the authoritative facts.
 
-    A ``None`` ``rpc_client`` returns ``None`` so the seam stays unset, and the
-    new deposit is trusted as provided; suitable only for unit tests or
+    Unlike :func:`fetch_and_bind_channel_account` it does not cross-check a
+    stored ``authorizedSigner``: the top-up payload carries none, and the channel
+    PDA already pins the channel identity (mirrors Rust ``process_topup``, which
+    binds status / mint / payee / deposit only)."""
+    from solana_pay_kit.protocols.programs.paymentchannels.accounts.channel import Channel
+
+    if program_id is None:
+        resolved_program = PROGRAM_ID
+    elif isinstance(program_id, str):
+        resolved_program = Pubkey.from_string(program_id)
+    else:
+        resolved_program = program_id
+
+    account = await rpc_client.get_account_info(channel_id)
+    if account is None:
+        raise PaymentError(f"channel {channel_id} account not found on-chain", code="invalid-payload")
+    data, owner = account
+    if owner != str(resolved_program):
+        raise PaymentError(f"channel {channel_id} is not owned by the payment-channels program", code="invalid-payload")
+    if len(data) < 1:
+        raise PaymentError(f"channel {channel_id} account data is empty", code="invalid-payload")
+    try:
+        channel = Channel.decode(data)
+    except Exception as exc:
+        raise PaymentError(f"channel {channel_id} account decode failed: {exc}", code="invalid-payload") from exc
+
+    if int(channel.status) != _CHANNEL_STATUS_OPEN:
+        raise PaymentError(
+            f"channel {channel_id} is not open on-chain (status {channel.status})", code="invalid-payload"
+        )
+    if str(channel.mint) != expected_mint:
+        raise PaymentError(
+            f"on-chain channel mint {channel.mint} != expected mint {expected_mint}", code="invalid-payload"
+        )
+    if str(channel.payee) != expected_payee:
+        raise PaymentError(
+            f"on-chain channel payee {channel.payee} != expected recipient {expected_payee}", code="invalid-payload"
+        )
+
+    return BoundChannel(
+        deposit=int(channel.deposit),
+        payer=str(channel.payer),
+        authorized_signer=str(channel.authorizedSigner),
+        payee=str(channel.payee),
+        mint=str(channel.mint),
+    )
+
+
+class TopUpVerifierConfig(Protocol):
+    """The subset of the session config :func:`new_top_up_tx_verifier` reads:
+    the challenge currency / network / recipient and the optional
+    payment-channels program id override."""
+
+    currency: str
+    network: str
+    recipient: str
+    program_id: Pubkey | str | None
+
+
+def new_top_up_tx_verifier(config: TopUpVerifierConfig, rpc_client: RpcClient | None) -> TopUpTxVerifier | None:
+    """Return the on-chain top-up verifier to install on the session config. It
+    confirms the top-up transaction signature on-chain, then reads the
+    authoritative ``Channel`` account and binds the raised deposit to it: the
+    on-chain deposit must equal the asserted ``new_deposit`` and the mint / payee
+    must match the challenge. Confirming the signature succeeded proves nothing
+    about the deposit, so the bind — not signature liveness — is the security
+    boundary (mirrors Rust ``process_topup``).
+
+    A ``None`` ``rpc_client`` fails closed off localnet: the returned seam raises
+    on every top-up because the raised deposit cannot be bound to on-chain state.
+    On localnet a ``None`` ``rpc_client`` returns ``None`` so the seam stays unset
+    and the new deposit is trusted as provided; suitable only for unit tests or
     deployments that verify transactions out of band.
     """
     if rpc_client is None:
-        return None
+        if config.network == "localnet":
+            return None
+
+        async def fail_closed(_payload: TopUpPayload) -> None:
+            raise PaymentError(
+                "payment-channel top-up requires an rpc client to bind the on-chain channel off localnet",
+                code="invalid-config",
+            )
+
+        return fail_closed
 
     async def verifier(payload: TopUpPayload) -> None:
-        await confirm_transaction_signature(rpc_client, payload.signature, "top-up")
+        try:
+            new_deposit = int(payload.new_deposit)
+        except (TypeError, ValueError) as exc:
+            raise PaymentError(f"invalid newDeposit: {payload.new_deposit}", code="invalid-payload") from exc
+        expected_mint = resolve_mint(config.currency, config.network)
+        if not expected_mint:
+            raise PaymentError(
+                f"payment-channel top-up requires an SPL token, got currency {config.currency!r}",
+                code="invalid-config",
+            )
+        await confirm_transaction_signature(rpc_client, payload.signature, "topUp")
+        # The top-up payload carries no stored authorized signer; the channel PDA
+        # pins the identity and the deposit bind is what matters economically, so
+        # read the on-chain account and bind the deposit / mint / payee only
+        # (matching Rust process_topup).
+        bound = await _fetch_top_up_channel_account(
+            rpc_client,
+            payload.channel_id,
+            program_id=config.program_id,
+            expected_payee=config.recipient,
+            expected_mint=expected_mint,
+        )
+        if bound.deposit != new_deposit:
+            raise PaymentError(
+                f"on-chain channel deposit {bound.deposit} != asserted newDeposit {new_deposit}",
+                code="invalid-payload",
+            )
 
     return verifier
 

@@ -150,8 +150,10 @@ class SessionConfig:
     # mode) before process_open persists channel state.
     verify_open_tx: SessionTxVerifier[OpenPayload] | None = None
 
-    # VerifyTopUpTx, when set, confirms the top-up transaction on-chain before
-    # process_top_up raises the deposit.
+    # VerifyTopUpTx, when set, confirms the top-up transaction on-chain and
+    # binds the raised deposit to the on-chain Channel account (the deposit must
+    # equal the asserted new_deposit) before process_top_up persists it. Install
+    # via new_top_up_tx_verifier.
     verify_top_up_tx: SessionTxVerifier[TopUpPayload] | None = None
 
 
@@ -436,13 +438,23 @@ class SessionServer:
         The new deposit must exceed the current deposit and must not exceed the
         configured max cap. Top-ups are rejected once the channel is finalized
         or a close has been requested.
+
+        The on-chain deposit bind runs here, in-core: when the verify_top_up_tx
+        seam is installed (via new_top_up_tx_verifier) it confirms the signature
+        and requires the on-chain Channel account's deposit to equal the asserted
+        new_deposit before the write lands, matching the Rust process_topup
+        contract and fail-closed off localnet. When the seam is None the raw
+        new_deposit is trusted as provided; that mode is suitable only for
+        localnet or callers that verify transactions out of band.
         """
         try:
             new_deposit = _parse_u64(payload.new_deposit)
         except ValueError as exc:
             raise ValueError(f"invalid newDeposit: {payload.new_deposit}") from exc
 
-        # On-chain verification seam (same shape as process_open).
+        # On-chain verification and binding seam (same shape as process_open).
+        # The seam confirms the signature and binds the raised deposit to the
+        # on-chain Channel account.
         if self._config.verify_top_up_tx is not None:
             try:
                 await self._config.verify_top_up_tx(payload)

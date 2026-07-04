@@ -690,9 +690,13 @@ class Session:
         return f"{receipt.session_id}:{receipt.delivery_id}:{receipt.cumulative}"
 
     async def _handle_top_up(self, payload: TopUpPayload) -> str:
-        """Raise a channel's deposit after optional on-chain confirmation of the
-        top-up signature. The receipt reference is the top-up transaction
-        signature."""
+        """Raise a channel's deposit. The on-chain confirm-and-bind (the on-chain
+        Channel account's deposit must equal the asserted newDeposit, fail-closed
+        off localnet) runs in the core process_top_up via the installed
+        verify_top_up_tx seam, so this dispatcher is a thin caller: it applies
+        the method-level cap clamp and the cheap store pre-checks (fast-fail
+        before the network round-trip inside the core bind) and delegates. The
+        receipt reference is the top-up transaction signature."""
         try:
             new_deposit = _parse_session_u64(payload.new_deposit, "newDeposit")
         except ValueError as exc:
@@ -700,7 +704,9 @@ class Session:
         if new_deposit > self._cap:
             raise PaymentError(f"newDeposit {new_deposit} exceeds cap {self._cap}", code="invalid-payload")
 
-        # Cheap store pre-checks before touching the network.
+        # Cheap store pre-checks before the core bind touches the network. The
+        # authoritative checks (and the on-chain deposit bind) run inside
+        # process_top_up; these only fast-fail an obviously doomed top-up.
         existing = await self._core.store().get_channel(payload.channel_id)
         if existing is None:
             raise PaymentError(f"channel {payload.channel_id} not found", code="invalid-payload")
@@ -710,38 +716,6 @@ class Session:
             raise PaymentError(
                 f"channel {payload.channel_id} close is pending; no further top-ups accepted",
                 code="invalid-payload",
-            )
-        if self._rpc is not None:
-            # SECURITY: confirming the signature succeeded proves nothing about
-            # the deposit — any confirmed signature would otherwise raise the
-            # channel to the client-asserted newDeposit. Confirm the signature,
-            # then read the authoritative on-chain Channel account and require
-            # its deposit to have actually reached newDeposit (not merely that a
-            # top_up instruction with the right delta was submitted, which a
-            # racing top-up could also satisfy). Mirrors the open fetch-and-bind
-            # and the Rust process_topup path.
-            await confirm_transaction_signature(self._rpc, payload.signature, "topUp")
-            bound = await fetch_and_bind_channel_account(
-                self._rpc,
-                payload.channel_id,
-                program_id=(Pubkey.from_string(self._core.config.program_id) if self._core.config.program_id else None),
-                max_cap=self._core.config.max_cap,
-                expected_authorized_signer=existing.authorized_signer,
-                expected_payee=self._recipient,
-                expected_mint=self._expected_mint(),
-            )
-            if bound.deposit != new_deposit:
-                raise PaymentError(
-                    f"on-chain channel deposit {bound.deposit} != asserted newDeposit {new_deposit}",
-                    code="invalid-payload",
-                )
-        elif self._network != "localnet":
-            # No RPC configured: the raised deposit cannot be bound to on-chain
-            # state. Fail closed on any real network; only localnet (unit/dev)
-            # may skip the bind, matching the open path and the Rust process_topup.
-            raise PaymentError(
-                "payment-channel top-up requires an rpc client to bind the on-chain channel off localnet",
-                code="invalid-config",
             )
         try:
             await self._core.process_top_up(payload)
@@ -1021,11 +995,16 @@ def new_session(options: SessionOptions) -> Session:
         modes=options.modes,
         pull_voucher_strategy=options.pull_voucher_strategy,
     )
-    # The method layer performs the optional on-chain liveness confirm inline in
-    # its open / topUp handlers, leaving the core SessionConfig verifier seams
-    # unset and confirming in the method, so the core is left to trust payload
-    # claims; the seam stays available for hosts that drive the lower-level
-    # SessionServer directly.
+    # Install the top-up bind seam in-core: process_top_up confirms the
+    # signature and binds the raised deposit to the on-chain Channel account
+    # through it, so the deposit bind is not a parallel abstraction living only
+    # in the HTTP dispatcher. Off localnet without an RPC client the seam fails
+    # closed. The open seam stays unset here (the method layer confirms opens
+    # inline), remaining available for hosts that drive the SessionServer
+    # directly.
+    from solana_pay_kit.protocols.mpp.server.session_onchain import new_top_up_tx_verifier
+
+    config.verify_top_up_tx = new_top_up_tx_verifier(config, options.rpc)
     core = SessionServer(config, store)
     session = Session(
         core=core,

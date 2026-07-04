@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	bin "github.com/gagliardetto/binary"
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/solana-foundation/pay-kit/go/paycore/paymentchannels"
 	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	"github.com/solana-foundation/pay-kit/go/protocols/mpp/intents"
+	pcgen "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
 // openTxFixture bundles a freshly built and signed payment-channel open
@@ -506,45 +508,98 @@ func TestNewOpenTxVerifierWithoutTransactionConfirmsSignature(t *testing.T) {
 
 // ── NewTopUpTxVerifier ──
 
-func TestNewTopUpTxVerifierNilRPCDisablesTheSeam(t *testing.T) {
-	if verifier := NewTopUpTxVerifier(nil); verifier != nil {
-		t.Fatal("NewTopUpTxVerifier(nil) must return nil so the seam stays trust-as-provided")
+// topUpVerifierConfig returns a config whose challenge values accept a top-up
+// bound against a seeded on-chain channel (payee = sessionTestRecipient, USDC
+// mainnet mint).
+func topUpVerifierConfig(network string) SessionConfig {
+	return SessionConfig{
+		Operator:  sessionTestRecipient,
+		Recipient: sessionTestRecipient,
+		MaxCap:    10_000_000,
+		Currency:  "USDC",
+		Decimals:  6,
+		Network:   network,
 	}
 }
 
-func TestNewTopUpTxVerifierConfirmsSignature(t *testing.T) {
-	signer := testutil.NewPrivateKey()
-	signature, err := signer.Sign([]byte("top-up"))
-	if err != nil {
-		t.Fatalf("sign: %v", err)
+// seedTopUpChannel registers an open on-chain channel account matching the
+// challenge so the top-up deposit bind can read authoritative state.
+func seedTopUpChannel(t *testing.T, fake *testutil.FakeRPC, channelID solana.PublicKey, deposit uint64, authorizedSigner string) {
+	t.Helper()
+	acct := &pcgen.Channel{
+		Discriminator:    uint8(pcgen.AccountDiscriminator_Channel),
+		Status:           uint8(pcgen.ChannelStatus_Open),
+		Deposit:          deposit,
+		GracePeriod:      900,
+		Payer:            solana.NewWallet().PublicKey(),
+		Payee:            solana.MustPublicKeyFromBase58(sessionTestRecipient),
+		AuthorizedSigner: solana.MustPublicKeyFromBase58(authorizedSigner),
+		Mint:             solana.MustPublicKeyFromBase58(paycore.USDCMainnetMint),
+		RentPayer:        solana.MustPublicKeyFromBase58(sessionTestRecipient),
 	}
-	verifier := NewTopUpTxVerifier(testutil.NewFakeRPC())
-	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
+	buf := new(bytes.Buffer)
+	if err := acct.MarshalWithEncoder(bin.NewBorshEncoder(buf)); err != nil {
+		t.Fatalf("encode channel account: %v", err)
+	}
+	fake.SetAccount(channelID, paymentchannels.ProgramPubkey(), buf.Bytes())
+}
+
+func TestNewTopUpTxVerifierNilRPCDisablesTheSeamOnLocalnet(t *testing.T) {
+	if verifier := NewTopUpTxVerifier(topUpVerifierConfig("localnet"), nil); verifier != nil {
+		t.Fatal("NewTopUpTxVerifier(localnet, nil) must return nil so the seam stays trust-as-provided")
+	}
+}
+
+func TestNewTopUpTxVerifierNilRPCOffLocalnetFailsClosed(t *testing.T) {
+	verifier := NewTopUpTxVerifier(topUpVerifierConfig("mainnet"), nil)
+	if verifier == nil {
+		t.Fatal("NewTopUpTxVerifier(mainnet, nil) must return a fail-closed seam, not nil")
+	}
+	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: "sig"}
+	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "requires an rpc client") {
+		t.Fatalf("err = %v, want fail-closed rejection off localnet", err)
+	}
+}
+
+func TestNewTopUpTxVerifierBindsDeposit(t *testing.T) {
+	fake := testutil.NewFakeRPC()
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey()
+	signature := confirmedSignature(0x5A)
+	seedTopUpChannel(t, fake, channelID, 2_000_000, signer.Address())
+
+	verifier := NewTopUpTxVerifier(topUpVerifierConfig("mainnet"), fake)
+	payload := &intents.TopUpPayload{ChannelID: channelID.String(), NewDeposit: "2000000", Signature: signature}
 	if _, err := verifier(context.Background(), payload); err != nil {
-		t.Fatalf("verifier with confirmed signature: %v", err)
+		t.Fatalf("verifier with matching on-chain deposit: %v", err)
+	}
+
+	// A fabricated newDeposit the on-chain account does not back is rejected.
+	mismatch := &intents.TopUpPayload{ChannelID: channelID.String(), NewDeposit: "9000000", Signature: signature}
+	if _, err := verifier(context.Background(), mismatch); err == nil || !strings.Contains(err.Error(), "!= asserted newDeposit 9000000") {
+		t.Fatalf("err = %v, want on-chain deposit-bind rejection", err)
 	}
 }
 
 func TestNewTopUpTxVerifierSurfacesFailureAndNotFound(t *testing.T) {
-	signer := testutil.NewPrivateKey()
-	signature, err := signer.Sign([]byte("top-up"))
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	signer := newTestVoucherSigner(t)
+	channelID := solana.NewWallet().PublicKey()
+	signature := confirmedSignature(0x6B)
 	fakeRPC := testutil.NewFakeRPC()
-	fakeRPC.Statuses[signature.String()] = &rpc.SignatureStatusesResult{Err: "InstructionError"}
-	verifier := NewTopUpTxVerifier(fakeRPC)
-	payload := &intents.TopUpPayload{ChannelID: "chan", NewDeposit: "2000000", Signature: signature.String()}
-	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "top-up") {
+	seedTopUpChannel(t, fakeRPC, channelID, 2_000_000, signer.Address())
+	fakeRPC.Statuses[signature] = &rpc.SignatureStatusesResult{Err: "InstructionError"}
+	verifier := NewTopUpTxVerifier(topUpVerifierConfig("mainnet"), fakeRPC)
+	payload := &intents.TopUpPayload{ChannelID: channelID.String(), NewDeposit: "2000000", Signature: signature}
+	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "topUp") {
 		t.Fatalf("err = %v, want top-up failure rejection", err)
 	}
 
-	fakeRPC.Statuses[signature.String()] = nil
+	fakeRPC.Statuses[signature] = nil
 	if _, err := verifier(context.Background(), payload); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("err = %v, want not-found rejection", err)
 	}
 
-	if _, err := verifier(context.Background(), &intents.TopUpPayload{Signature: "not-base58!"}); err == nil || !strings.Contains(err.Error(), "invalid top-up tx signature") {
+	if _, err := verifier(context.Background(), &intents.TopUpPayload{ChannelID: channelID.String(), NewDeposit: "2000000", Signature: "not-base58!"}); err == nil || !strings.Contains(err.Error(), "invalid topUp tx signature") {
 		t.Fatalf("err = %v, want invalid-signature rejection", err)
 	}
 }

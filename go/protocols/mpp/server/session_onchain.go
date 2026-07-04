@@ -8,15 +8,17 @@ package server
 // validates an attached open transaction structurally (decode, bind the
 // payload signature, check the open instruction against the challenge,
 // re-derive the channel PDA); confirming that the transaction actually landed
-// additionally requires an RPC client. NewTopUpTxVerifier is purely RPC-backed
-// (the top-up payload carries only a signature, no transaction), so without an
-// RPC client the top-up seam stays nil and the new deposit is trusted as
-// provided.
+// additionally requires an RPC client. NewTopUpTxVerifier binds the raised
+// deposit to the on-chain Channel account (the deposit must equal the asserted
+// newDeposit, mirroring Rust process_topup), not merely the signature's
+// liveness. Without an RPC client the top-up seam fails closed off localnet and
+// stays nil only on localnet, where the new deposit is trusted as provided.
 
 import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 	"strings"
 
 	bin "github.com/gagliardetto/binary"
@@ -94,7 +96,12 @@ func fetchAndBindChannelAccount(
 		return boundChannel{}, fmt.Errorf(
 			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
 	}
-	if expectedAuthorizedSigner != "" && channel.AuthorizedSigner.String() != expectedAuthorizedSigner {
+	// Compare the authorizedSigner unconditionally: an empty expected signer must
+	// fail closed rather than short-circuit the check (Rust rejects empty at
+	// parse; Python compares unconditionally). Callers that legitimately carry no
+	// stored signer bind through the dedicated top-up path, which does not read
+	// this field.
+	if channel.AuthorizedSigner.String() != expectedAuthorizedSigner {
 		return boundChannel{}, fmt.Errorf(
 			"on-chain channel authorizedSigner %s != expected %s", channel.AuthorizedSigner, expectedAuthorizedSigner)
 	}
@@ -379,20 +386,121 @@ func NewOpenTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) Sessi
 	}
 }
 
+// fetchTopUpChannelAccount reads the on-chain Channel account for a top-up and
+// binds its mint / payee to the challenge, returning the authoritative facts.
+// Unlike fetchAndBindChannelAccount it does not cross-check a stored
+// authorizedSigner: the top-up payload carries none, and the channel PDA
+// already pins the channel identity (mirrors Rust process_topup, which binds
+// status / mint / payee / deposit only).
+func fetchTopUpChannelAccount(
+	ctx context.Context,
+	rpcClient solanatx.RPCClient,
+	channelID solana.PublicKey,
+	expectedMint string,
+	expectedPayee string,
+	programID *solana.PublicKey,
+) (boundChannel, error) {
+	program := paymentchannels.ProgramPubkey()
+	if programID != nil {
+		program = *programID
+	}
+	info, err := rpcClient.GetAccountInfoWithOpts(ctx, channelID, &rpc.GetAccountInfoOpts{
+		Commitment: rpc.CommitmentConfirmed,
+		Encoding:   solana.EncodingBase64,
+	})
+	if err != nil {
+		return boundChannel{}, fmt.Errorf("channel %s account fetch failed: %w", channelID, err)
+	}
+	if info == nil || info.Value == nil || info.Value.Data == nil {
+		return boundChannel{}, fmt.Errorf("channel %s account not found on-chain", channelID)
+	}
+	if !info.Value.Owner.Equals(program) {
+		return boundChannel{}, fmt.Errorf(
+			"channel %s is not owned by the payment-channels program %s", channelID, program)
+	}
+	data := info.Value.Data.GetBinary()
+	if len(data) == 0 {
+		return boundChannel{}, fmt.Errorf("channel %s account data is empty", channelID)
+	}
+	channel := new(pcgen.Channel)
+	if err := channel.UnmarshalWithDecoder(bin.NewBorshDecoder(data)); err != nil {
+		return boundChannel{}, fmt.Errorf("channel %s decode failed: %w", channelID, err)
+	}
+	if channel.Status != uint8(pcgen.ChannelStatus_Open) {
+		return boundChannel{}, fmt.Errorf(
+			"channel %s is not open on-chain (status %d)", channelID, channel.Status)
+	}
+	if channel.Mint.String() != expectedMint {
+		return boundChannel{}, fmt.Errorf(
+			"on-chain channel mint %s != expected mint %s", channel.Mint, expectedMint)
+	}
+	if channel.Payee.String() != expectedPayee {
+		return boundChannel{}, fmt.Errorf(
+			"on-chain channel payee %s != expected recipient %s", channel.Payee, expectedPayee)
+	}
+	return boundChannel{
+		Deposit:          channel.Deposit,
+		Payer:            channel.Payer.String(),
+		AuthorizedSigner: channel.AuthorizedSigner.String(),
+		Payee:            channel.Payee.String(),
+		Mint:             channel.Mint.String(),
+	}, nil
+}
+
 // NewTopUpTxVerifier returns the on-chain top-up verifier to install on
-// SessionConfig.VerifyTopUpTx: it confirms the top-up transaction signature
-// on-chain via getSignatureStatuses.
-// A nil rpcClient returns nil so the seam stays unset, and the new deposit is
-// trusted as provided; suitable only for unit tests or deployments that
-// verify transactions out of band.
-func NewTopUpTxVerifier(rpcClient solanatx.RPCClient) SessionTxVerifier[intents.TopUpPayload] {
+// SessionConfig.VerifyTopUpTx. It confirms the top-up transaction signature
+// on-chain, then reads the authoritative Channel account and binds the raised
+// deposit to it: the on-chain deposit must equal the asserted newDeposit and
+// the mint / payee must match the challenge. Confirming the signature succeeded
+// proves nothing about the deposit, so the bind — not signature liveness — is
+// the security boundary (mirrors Rust process_topup).
+//
+// A nil rpcClient fails closed off localnet: the returned seam errors on every
+// top-up because the raised deposit cannot be bound to on-chain state. On
+// localnet a nil rpcClient returns nil so the seam stays unset and the new
+// deposit is trusted as provided; suitable only for unit tests or deployments
+// that verify transactions out of band.
+func NewTopUpTxVerifier(config SessionConfig, rpcClient solanatx.RPCClient) SessionTxVerifier[intents.TopUpPayload] {
 	if rpcClient == nil {
-		return nil
+		if config.Network == "localnet" {
+			return nil
+		}
+		return func(context.Context, *intents.TopUpPayload) (string, error) {
+			return "", fmt.Errorf(
+				"payment-channel top-up requires an rpc client to bind the on-chain channel off localnet")
+		}
 	}
 	return func(ctx context.Context, payload *intents.TopUpPayload) (string, error) {
-		// A top-up carries only a signature, not an open transaction, so it
-		// never establishes the channel payer.
-		return "", confirmTransactionSignature(ctx, rpcClient, payload.Signature, "top-up")
+		newDeposit, err := strconv.ParseUint(payload.NewDeposit, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid newDeposit: %s", payload.NewDeposit)
+		}
+		expectedMint := paycore.ResolveMint(config.Currency, config.Network)
+		if expectedMint == "" {
+			return "", fmt.Errorf(
+				"payment-channel top-up requires an SPL token, got currency %q", config.Currency)
+		}
+		if err := confirmTransactionSignature(ctx, rpcClient, payload.Signature, "topUp"); err != nil {
+			return "", err
+		}
+		channelPDA, err := solana.PublicKeyFromBase58(payload.ChannelID)
+		if err != nil {
+			return "", fmt.Errorf("invalid channelId %q: %w", payload.ChannelID, err)
+		}
+		// The top-up payload carries no stored authorizedSigner; the channel PDA
+		// pins the identity and the deposit bind is what matters economically, so
+		// read the on-chain account and bind the deposit / mint / payee only
+		// (matching Rust process_topup). A top-up never establishes the channel
+		// payer, so the returned payer is ignored.
+		bound, err := fetchTopUpChannelAccount(ctx, rpcClient, channelPDA, expectedMint, config.Recipient, config.ProgramID)
+		if err != nil {
+			return "", err
+		}
+		if bound.Deposit != newDeposit {
+			return "", fmt.Errorf(
+				"on-chain channel deposit %d != asserted newDeposit %d", bound.Deposit, newDeposit)
+		}
+		return "", nil
 	}
 }
 
