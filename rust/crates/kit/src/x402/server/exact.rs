@@ -21,6 +21,11 @@ use crate::x402::{
     PAYMENT_REQUIRED_HEADER, PAYMENT_SIGNATURE_HEADER, X402_VERSION_V1, X402_VERSION_V2,
 };
 
+/// Maximum accepted `PAYMENT-SIGNATURE` header length, in bytes. Mirrors the
+/// MPP header parsers' `MAX_TOKEN_LEN` (16 KiB) so a hostile client cannot drive
+/// unbounded base64 + JSON decode work with an oversized credential header.
+const MAX_PAYMENT_SIGNATURE_HEADER_LEN: usize = 16 * 1024;
+
 /// Server configuration for Solana x402 `exact`.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -457,6 +462,14 @@ impl X402 {
     }
 
     pub fn parse_payment_signature(&self, header: &str) -> Result<PaymentSignatureEnvelope, Error> {
+        // Cap the header before any base64 / JSON work, matching the MPP
+        // parsers' 16 KiB `MAX_TOKEN_LEN`. Without it, an oversized credential
+        // header drives proportionally larger decode + parse work.
+        if header.len() > MAX_PAYMENT_SIGNATURE_HEADER_LEN {
+            return Err(Error::InvalidPaymentRequired(format!(
+                "PAYMENT-SIGNATURE header exceeds maximum length of {MAX_PAYMENT_SIGNATURE_HEADER_LEN} bytes"
+            )));
+        }
         let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, header)
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
         let envelope: PaymentSignatureEnvelope = serde_json::from_slice(&decoded)
@@ -690,15 +703,81 @@ impl X402 {
             .map_err(|e| Error::Other(format!("fee payer signing failed: {e}")))?;
         tx.signatures[signer_index] = Signature::from(<[u8; 64]>::from(signature));
 
-        // Broadcast + confirm, relying on the node's preflight simulation
-        // (skip_preflight stays off) instead of a separate simulate round-trip.
-        // Preflight still rejects a bad tx before it lands, and on failure the
-        // returned error carries the simulation error and program logs, so the
-        // diagnostics that the explicit simulate used to surface survive.
-        self.rpc
-            .send_and_confirm_transaction(&tx)
-            .map(|s| s.to_string())
-            .map_err(|e| Error::Rpc(format!("exact settlement broadcast failed: {e}")))
+        // Broadcast, then reserve, then confirm — mirroring the MPP charge
+        // order. Broadcast relies on the node's preflight simulation
+        // (skip_preflight stays off) instead of a separate simulate round-trip;
+        // on failure the returned error carries the simulation error + program
+        // logs. The reservation sits between broadcast and confirmation so that
+        // if the confirm poll times out after the transaction has already
+        // landed, the resolved fee-payer signature is still consumed and a
+        // retry of the same envelope cannot trigger a second broadcast. The
+        // pull path shares the `solana-x402-exact:consumed:` keyspace with the
+        // push (Signature) path, so one on-chain settlement is single-use
+        // regardless of which arm presented it.
+        let broadcast_sig = self
+            .rpc
+            .send_transaction(&tx)
+            .map_err(|e| Error::Rpc(format!("exact settlement broadcast failed: {e}")))?;
+        let signature = broadcast_sig.to_string();
+
+        // Reserve immediately after a successful broadcast. A replay of the
+        // same credential (same resolved signature) is rejected here before it
+        // can re-broadcast.
+        self.consume_signature(&signature).await?;
+
+        // Confirm to the settled (`confirmed`) commitment. On a confirmation
+        // timeout the reservation is KEPT unless the transaction is provably
+        // not landed — a landed-but-unconfirmed tx stays reserved so a
+        // legitimate retry is rejected rather than re-served (fail-closed).
+        self.confirm_pull_settlement(&broadcast_sig, &signature)
+            .await?;
+        Ok(signature)
+    }
+
+    /// Poll for `confirmed` commitment on a just-broadcast pull settlement whose
+    /// signature is already reserved. On a poll timeout, do one definitive
+    /// status check: a landed transaction (confirmed OK, or landed-but-failed,
+    /// or an indeterminate RPC error) keeps the reservation; only a provably
+    /// not-landed status releases it so a legitimate retry can re-broadcast.
+    async fn confirm_pull_settlement(
+        &self,
+        signature: &Signature,
+        signature_str: &str,
+    ) -> Result<(), Error> {
+        let commitment = CommitmentConfig::confirmed();
+        for _ in 0..30 {
+            if let Ok(resp) = self
+                .rpc
+                .confirm_transaction_with_commitment(signature, commitment)
+            {
+                if resp.value {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // The polling RPC may be lagging behind an endpoint that hasn't observed
+        // the signature yet while the tx is actually on-chain. Do one definitive
+        // status check before deciding whether the reservation should stand.
+        let final_status = self
+            .rpc
+            .get_signature_status(signature)
+            .map(|opt| opt.map(|inner| inner.map_err(|e| e.to_string())))
+            .map_err(|e| e.to_string());
+        match interpret_pull_settlement_status(final_status) {
+            PullSettlementOutcome::Confirmed => Ok(()),
+            PullSettlementOutcome::LandedButFailed(msg) => Err(Error::TransactionFailed(msg)),
+            PullSettlementOutcome::Indeterminate(msg) => Err(Error::Rpc(msg)),
+            PullSettlementOutcome::NotLanded(msg) => {
+                // Provably not landed: release the reservation so a legitimate
+                // client can retry with the same credential. This is the ONLY
+                // path that releases; everything else keeps the marker.
+                let consumed_key = format!("solana-x402-exact:consumed:{signature_str}");
+                let _ = self.store.delete(&consumed_key).await;
+                Err(Error::Rpc(msg))
+            }
+        }
     }
 
     async fn verify_envelope_payload(
@@ -965,6 +1044,51 @@ fn enforce_transaction_freshness(
         )));
     }
     Ok(())
+}
+
+/// The verdict of the definitive post-timeout status check for a pull
+/// settlement, deciding whether the reserved signature stays consumed.
+///
+/// Only [`NotLanded`](PullSettlementOutcome::NotLanded) releases the
+/// reservation; every "landed" or indeterminate outcome keeps it, so a
+/// landed-but-unconfirmed settlement is never re-served (fail-closed).
+#[derive(Debug, PartialEq, Eq)]
+enum PullSettlementOutcome {
+    /// The transaction landed and succeeded on-chain (confirmed via the final
+    /// status check after the poll loop lagged). Keep the reservation.
+    Confirmed,
+    /// The transaction landed but failed on-chain. It occupied its slot and is
+    /// on the ledger, so the reservation is kept — a retry would replay a
+    /// known-failed on-chain tx.
+    LandedButFailed(String),
+    /// The final status check itself failed (RPC error): we cannot prove the
+    /// transaction did NOT land, so keep the reservation (fail-closed).
+    Indeterminate(String),
+    /// The signature is provably absent from the node's recent history: the
+    /// broadcast was accepted but nothing landed. Release the reservation so a
+    /// legitimate retry can re-broadcast the same credential.
+    NotLanded(String),
+}
+
+/// Interpret the definitive `get_signature_status` result taken after the
+/// pull-settlement confirmation poll timed out. Pure; mirrors the MPP charge
+/// path's `interpret_post_timeout_status`, extended with the not-landed release
+/// branch that lets a legitimate retry re-broadcast a never-landed settlement.
+fn interpret_pull_settlement_status(
+    status: Result<Option<Result<(), String>>, String>,
+) -> PullSettlementOutcome {
+    match status {
+        Ok(Some(Ok(()))) => PullSettlementOutcome::Confirmed,
+        Ok(Some(Err(on_chain_err))) => PullSettlementOutcome::LandedButFailed(format!(
+            "exact settlement landed on-chain but failed: {on_chain_err}"
+        )),
+        Ok(None) => PullSettlementOutcome::NotLanded(
+            "exact settlement not confirmed within timeout and not found on-chain".to_string(),
+        ),
+        Err(rpc_err) => PullSettlementOutcome::Indeterminate(format!(
+            "exact settlement not confirmed within timeout; final status check failed: {rpc_err}"
+        )),
+    }
 }
 
 pub fn check_network_blockhash(network: &str, blockhash_b58: &str) -> Result<(), Error> {
@@ -1234,6 +1358,56 @@ mod tests {
             serde_json::to_vec(&wrong_scheme).unwrap(),
         );
         assert!(x402.parse_payment_signature(&wrong_scheme).is_err());
+    }
+
+    #[test]
+    fn parse_payment_signature_rejects_oversized_header() {
+        // A PAYMENT-SIGNATURE header larger than the 16 KiB cap must be
+        // rejected before the base64 decode + serde_json parse. The envelope
+        // below is otherwise well-formed (valid scheme + network), so without
+        // the size gate it decodes and parses fine — the oversize is the ONLY
+        // reason it must be rejected.
+        let x402 = X402::new(config()).unwrap();
+        let big_signature = "1".repeat(24 * 1024);
+        let envelope = PaymentSignatureEnvelope {
+            scheme: Some(EXACT_SCHEME.to_string()),
+            network: Some(SOLANA_DEVNET.to_string()),
+            x402_version: X402_VERSION_V1,
+            accepted: None,
+            resource: None,
+            payload: PaymentProof::Signature {
+                signature: big_signature,
+            },
+            extensions: None,
+        };
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        );
+        assert!(header.len() > 16 * 1024, "header should exceed the cap");
+        let err = x402
+            .parse_payment_signature(&header)
+            .expect_err("oversized header must be rejected");
+        assert!(
+            err.to_string().contains("exceeds maximum length"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_payment_signature_accepts_at_max_header_size() {
+        // A header of exactly 16 KiB must pass the size gate. Its contents are
+        // not valid base64 JSON, so it still fails — but with a decode/parse
+        // error, NOT the size error. This pins the boundary at exactly the cap.
+        let x402 = X402::new(config()).unwrap();
+        let at_max = "A".repeat(16 * 1024);
+        let err = x402
+            .parse_payment_signature(&at_max)
+            .expect_err("invalid payload still errors");
+        assert!(
+            !err.to_string().contains("exceeds maximum length"),
+            "size gate must not fire at exactly the cap: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -2007,6 +2181,132 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("fee payer"));
+    }
+
+    // ── Pull-mode (Transaction) settlement-signature reservation ─────────────
+    //
+    // The pull arm broadcasts and confirms a client-supplied transaction that
+    // the operator co-signs as fee payer. Without a consumed-signature
+    // reservation, the same envelope re-submitted after settlement re-broadcasts
+    // and serves again — one payment serves unlimited requests. These tests pin
+    // the reservation: it is taken between broadcast and confirmation, keyed on
+    // the resolved fee-payer signature, in the same `solana-x402-exact:consumed:`
+    // keyspace the Signature (push) arm uses.
+
+    /// A bare, clonable transfer transaction with the fee payer at index 0 and a
+    /// single (empty) signature slot for the operator to fill. Built with a
+    /// fixed recipient so repeated builds are byte-identical (and therefore
+    /// co-sign to the same signature).
+    fn transfer_tx(fee_payer: Pubkey, recipient: Pubkey) -> VersionedTransaction {
+        let ix = system_instruction::transfer(&fee_payer, &recipient, 1000);
+        let message = Message::new_with_blockhash(
+            &[ix],
+            Some(&fee_payer),
+            &Hash::from_str("11111111111111111111111111111111").unwrap(),
+        );
+        VersionedTransaction::from(Transaction::new_unsigned(message))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_pull_reserves_signature_and_rejects_replay() {
+        // First settlement of a pull transaction succeeds; re-settling the SAME
+        // transaction (same resolved fee-payer signature) is rejected as
+        // consumed. Pre-fix BOTH settled because the pull path never reserved.
+        let mock = MockRpc::start();
+        let x402 = handler_with_rpc(mock.url());
+        let fee_payer = memory_signer(20);
+        let recipient = Pubkey::new_unique();
+        let tx = transfer_tx(fee_payer.pubkey(), recipient);
+
+        let sig = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx.clone()), &fee_payer)
+            .await
+            .expect("first settlement succeeds");
+        assert!(!sig.is_empty());
+
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx), &fee_payer)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_pull_consumed_store_is_shared_when_injected() {
+        // The injected store enforces single-use across instances: two X402
+        // handlers sharing one store must not both settle the same pull
+        // transaction. Mirrors the Signature-arm shared-store test.
+        let mock = MockRpc::start();
+        let shared: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let a = handler_with_rpc(mock.url()).with_store(shared.clone());
+        let b = handler_with_rpc(mock.url()).with_store(shared.clone());
+        let fee_payer = memory_signer(21);
+        let recipient = Pubkey::new_unique();
+        let tx = transfer_tx(fee_payer.pubkey(), recipient);
+
+        a.settle_exact(VerifiedExactPayment::Transaction(tx.clone()), &fee_payer)
+            .await
+            .expect("first instance settles");
+        let err = b
+            .settle_exact(VerifiedExactPayment::Transaction(tx), &fee_payer)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn settle_exact_pull_keeps_reservation_on_confirmation_timeout() {
+        // The transaction broadcasts, but confirmation never reaches the
+        // commitment and the definitive status check shows it landed on-chain
+        // (here: landed-but-failed). A landed transaction stays reserved, so a
+        // retry of the same envelope is rejected as consumed rather than
+        // re-broadcast — the fail-closed direction. Pre-fix there was no
+        // reservation at all, so the retry would settle again.
+        let mock = MockRpc::start();
+        mock.fail_confirmation();
+        let x402 = handler_with_rpc(mock.url());
+        let fee_payer = memory_signer(22);
+        let recipient = Pubkey::new_unique();
+        let tx = transfer_tx(fee_payer.pubkey(), recipient);
+
+        // First settlement times out on confirm (the tx landed-but-failed) and
+        // returns an error, but the marker is kept.
+        let first = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx.clone()), &fee_payer)
+            .await;
+        assert!(first.is_err(), "confirmation failure should surface");
+
+        // Retrying the same envelope must be rejected as consumed — the marker
+        // was NOT released on the confirmation timeout.
+        let err = x402
+            .settle_exact(VerifiedExactPayment::Transaction(tx), &fee_payer)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::SignatureConsumed), "got: {err:?}");
+    }
+
+    // Pure post-timeout status interpreter: only a provably not-landed status
+    // releases the reservation; every landed/indeterminate outcome keeps it.
+    #[test]
+    fn interpret_pull_settlement_status_keeps_marker_unless_not_landed() {
+        assert_eq!(
+            interpret_pull_settlement_status(Ok(Some(Ok(())))),
+            PullSettlementOutcome::Confirmed
+        );
+        assert!(matches!(
+            interpret_pull_settlement_status(Ok(Some(Err("Custom(6)".into())))),
+            PullSettlementOutcome::LandedButFailed(_)
+        ));
+        assert!(matches!(
+            interpret_pull_settlement_status(Err("connection refused".into())),
+            PullSettlementOutcome::Indeterminate(_)
+        ));
+        // The ONLY release path: the signature is absent from the node's recent
+        // history, so the broadcast never landed.
+        assert!(matches!(
+            interpret_pull_settlement_status(Ok(None)),
+            PullSettlementOutcome::NotLanded(_)
+        ));
     }
 
     // ── H3: signature-mode replay / freshness / binding ─────────────────────

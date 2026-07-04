@@ -44,6 +44,11 @@ use crate::x402::{PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, X402_VERSION
 /// `ChannelStatus::Open` discriminant in the generated client.
 const CHANNEL_STATUS_OPEN: u8 = 0;
 
+/// Maximum accepted `PAYMENT-SIGNATURE` header length, in bytes. Mirrors the
+/// MPP header parsers' `MAX_TOKEN_LEN` (16 KiB) so a hostile client cannot drive
+/// unbounded base64 + JSON decode work with an oversized credential header.
+const MAX_PAYMENT_SIGNATURE_HEADER_LEN: usize = 16 * 1024;
+
 /// `Open` instruction discriminator in the generated payment-channels client
 /// (`crate::generated::payment_channels::generated::instructions::OPEN_DISCRIMINATOR`).
 const OPEN_INSTRUCTION_DISCRIMINATOR: u8 = 1;
@@ -441,6 +446,14 @@ impl X402Upto {
 
     /// Decode a `PAYMENT-SIGNATURE` header into an `upto` envelope.
     pub fn parse_payment_signature(&self, header: &str) -> Result<UptoSignatureEnvelope, Error> {
+        // Cap the header before any base64 / JSON work, matching the MPP
+        // parsers' 16 KiB `MAX_TOKEN_LEN`. Without it, an oversized credential
+        // header drives proportionally larger decode + parse work.
+        if header.len() > MAX_PAYMENT_SIGNATURE_HEADER_LEN {
+            return Err(Error::InvalidPaymentRequired(format!(
+                "PAYMENT-SIGNATURE header exceeds maximum length of {MAX_PAYMENT_SIGNATURE_HEADER_LEN} bytes"
+            )));
+        }
         let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, header)
             .map_err(|e| Error::InvalidPaymentRequired(e.to_string()))?;
         let envelope: UptoSignatureEnvelope = serde_json::from_slice(&decoded)
@@ -1589,6 +1602,61 @@ mod tests {
         assert!(
             err.to_string().contains("does not match any offered"),
             "got: {err}"
+        );
+    }
+
+    // ── PAYMENT-SIGNATURE header size cap ───────────────────────────────────
+
+    #[test]
+    fn parse_payment_signature_rejects_oversized_header() {
+        // A PAYMENT-SIGNATURE header larger than the 16 KiB cap must be
+        // rejected before the base64 decode + serde_json parse. The envelope
+        // below is otherwise well-formed (its `accepted.scheme` is the upto
+        // scheme), so without the size gate it decodes and parses fine — the
+        // oversize is the ONLY reason it must be rejected.
+        let engine = multi_currency_engine(&["USDC"]);
+        let big_nonce = "1".repeat(24 * 1024);
+        let envelope = serde_json::json!({
+            "x402Version": X402_VERSION_V2,
+            "accepted": { "scheme": UPTO_SCHEME },
+            "payload": {
+                "from": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "maxAmount": "1000000",
+                "expiresAt": 0,
+                "validAfter": 0,
+                "nonce": big_nonce,
+                "channelId": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
+                "deposit": "1000000",
+                "authorizedSigner": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+            }
+        });
+        let header = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            serde_json::to_vec(&envelope).unwrap(),
+        );
+        assert!(header.len() > 16 * 1024, "header should exceed the cap");
+        let err = engine
+            .parse_payment_signature(&header)
+            .expect_err("oversized header must be rejected");
+        assert!(
+            err.to_string().contains("exceeds maximum length"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_payment_signature_accepts_at_max_header_size() {
+        // A header of exactly 16 KiB must pass the size gate. Its contents are
+        // not valid base64 JSON, so it still fails — but with a decode/parse
+        // error, NOT the size error. This pins the boundary at exactly the cap.
+        let engine = multi_currency_engine(&["USDC"]);
+        let at_max = "A".repeat(16 * 1024);
+        let err = engine
+            .parse_payment_signature(&at_max)
+            .expect_err("invalid payload still errors");
+        assert!(
+            !err.to_string().contains("exceeds maximum length"),
+            "size gate must not fire at exactly the cap: {err:?}"
         );
     }
 
