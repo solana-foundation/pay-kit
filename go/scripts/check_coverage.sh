@@ -16,9 +16,13 @@ set -euo pipefail
 
 profile_path="${1:-coverage.out}"
 threshold="${2:-70}"
-# Per-file floor. Defaults below the aggregate threshold: individual files
-# legitimately run a few points under the whole-set average, so the per-file
-# gate catches real regressions without demanding every file match the mean.
+# Per-file floor. The two floors are set independently per invocation, so the
+# per-file floor is not required to sit below the aggregate one. The ad-hoc
+# local defaults (70 aggregate / 75 per-file) keep the per-file floor a touch
+# above the aggregate default; CI invokes the gate with explicit thresholds
+# (91 aggregate / 75 per-file), where the per-file floor sits below the
+# aggregate one so individual files may run under the whole-set average while
+# the per-file gate still catches real regressions.
 file_threshold="${3:-75}"
 
 if [ ! -f "$profile_path" ]; then
