@@ -101,4 +101,54 @@ if "$guard" "$revert_gate" > "$work/revert-gate.log" 2>&1; then
 fi
 echo "check-publish-workflow-guards_test: revert-gate fixture rejected (non-zero exit)"
 
+# ---- Case 2c: scalar write-all top-level permissions must fail ----
+# The permissions block also has a scalar shorthand form (`permissions: write-all`
+# on a single line) that grants blanket write. Rewrite the real npm workflow's
+# block-form top-level permissions to that scalar and assert the guard rejects it.
+writeall_perms="$work/writeall-permissions.yml"
+awk '
+  # Replace the top-level (column-0) permissions block with the scalar write-all
+  # shorthand: emit the scalar line and drop the indented grant/blank lines.
+  /^permissions:[[:space:]]*$/ { print "permissions: write-all"; in_perms = 1; next }
+  in_perms == 1 {
+    if ($0 ~ /^[^[:space:]]/) { in_perms = 0; print; next }
+    next
+  }
+  { print }
+' "$npm_workflow" > "$writeall_perms"
+
+if ! grep -Eq '^permissions:[[:space:]]*write-all[[:space:]]*$' "$writeall_perms"; then
+  fail "test setup error: writeall-permissions fixture did not reintroduce a scalar write-all top-level grant"
+fi
+if "$guard" "$writeall_perms" > "$work/writeall-perms.log" 2>&1; then
+  echo "---- guard output (writeall-permissions) ----" >&2
+  cat "$work/writeall-perms.log" >&2
+  fail "guard accepted a workflow whose top-level permissions is the scalar write-all (least-privilege guard not enforced for the scalar form)"
+fi
+echo "check-publish-workflow-guards_test: writeall-permissions (scalar) fixture rejected (non-zero exit)"
+
+# ---- Case 3: scalar read-all top-level permissions must pass ----
+# The scalar shorthand can also grant read-only (`permissions: read-all`), which
+# is least-privilege and must be accepted. This pins the guard so it rejects the
+# scalar form only when it grants write, not on the mere presence of the scalar.
+readall_perms="$work/readall-permissions.yml"
+awk '
+  /^permissions:[[:space:]]*$/ { print "permissions: read-all"; in_perms = 1; next }
+  in_perms == 1 {
+    if ($0 ~ /^[^[:space:]]/) { in_perms = 0; print; next }
+    next
+  }
+  { print }
+' "$npm_workflow" > "$readall_perms"
+
+if ! grep -Eq '^permissions:[[:space:]]*read-all[[:space:]]*$' "$readall_perms"; then
+  fail "test setup error: readall-permissions fixture did not produce a scalar read-all top-level grant"
+fi
+if ! "$guard" "$readall_perms" > "$work/readall-perms.log" 2>&1; then
+  echo "---- guard output (readall-permissions) ----" >&2
+  cat "$work/readall-perms.log" >&2
+  fail "guard rejected a workflow whose top-level permissions is the scalar read-all (read-only scalar must pass the least-privilege guard)"
+fi
+echo "check-publish-workflow-guards_test: readall-permissions (scalar) fixture accepted (exit 0)"
+
 echo "check-publish-workflow-guards_test: PASS - least-privilege and publish-success gating are enforced"

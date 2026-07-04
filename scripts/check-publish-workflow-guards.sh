@@ -91,6 +91,23 @@ check_one() {
     }
     next
   }
+  /^permissions:[[:space:]]*[^[:space:]{]/ {
+    # Scalar shorthand on one line, e.g. permissions: write-all / read-all.
+    # (The block form and flow-mapping form above already consumed their lines,
+    # so this only fires on a scalar value.) Least privilege at the workflow
+    # level means the sole acceptable scalar is read-all; write-all — or any
+    # other non-read scalar — grants blanket write to the whole release-gate
+    # fan-out and must fail.
+    scalar = $0
+    sub(/^permissions:[[:space:]]*/, "", scalar)
+    sub(/[[:space:]]*#.*$/, "", scalar)   # drop any trailing inline comment
+    scalar = trim(scalar)
+    if (lower(scalar) != "read-all") {
+      printf("FAIL[%s]: top-level permissions grants write (must be read-only): %s\n", file, trim($0)) > "/dev/stderr"
+      fail = 1
+    }
+    next
+  }
   in_top_perms == 1 {
     # A new column-0 key (non-space at position 1) ends the block.
     if ($0 ~ /^[^[:space:]]/) {
