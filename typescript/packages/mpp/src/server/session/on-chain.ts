@@ -40,6 +40,7 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 
 import { ASSOCIATED_TOKEN_PROGRAM, defaultTokenProgramForCurrency, resolveStablecoinMint } from '../../constants.js';
+import { getChannelDecoder } from '../../generated/payment-channels/accounts/channel.js';
 import { getDistributeInstruction } from '../../generated/payment-channels/instructions/distribute.js';
 import { getSettleAndFinalizeInstruction } from '../../generated/payment-channels/instructions/settleAndFinalize.js';
 import { getTopUpInstruction } from '../../generated/payment-channels/instructions/topUp.js';
@@ -805,6 +806,109 @@ export async function verifyTopUpTx(args: VerifyTopUpTxArgs): Promise<void> {
     const amount = view.getBigUint64(1, true);
     if (expected.amountDelta <= 0n || amount !== expected.amountDelta) {
         throw new Error(`verifyTopUpTx: top_up amount ${amount} != expected deposit delta ${expected.amountDelta}`);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// verifyChannelAccountState: decode the on-chain Channel and bind its
+// fields — defense-in-depth on top of the instruction-level binding.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Minimal RPC shape needed to fetch an account by address. */
+export interface GetAccountInfoRpc {
+    getAccountInfo(
+        address: Address,
+        config?: unknown,
+    ): {
+        send(): Promise<{
+            value: { readonly data?: unknown; readonly owner?: string } | null;
+        }>;
+    };
+}
+
+/** Narrow an arbitrary RPC-ish object to {@link GetAccountInfoRpc}. */
+export function isGetAccountInfoRpc(rpc: unknown): rpc is GetAccountInfoRpc {
+    return typeof rpc === 'object' && rpc !== null && typeof (rpc as GetAccountInfoRpc).getAccountInfo === 'function';
+}
+
+/** Expected on-chain Channel fields, checked against the decoded account. */
+export interface VerifyChannelStateExpected {
+    readonly authorizedSigner: string;
+    /**
+     * Expected `deposit` on the decoded channel. For a fresh open this is the
+     * open deposit; for a top-up it is the RAISED deposit (`newDeposit`) — the
+     * on-chain account must actually reflect it, not just contain a top_up
+     * instruction with the right delta.
+     */
+    readonly deposit: bigint;
+    readonly mint: string;
+    readonly payee: string;
+    /** Channel payer (base58). Checked when set. */
+    readonly payer?: string | undefined;
+    /** Payment-channels program id the account must be owned by. */
+    readonly programId?: string | undefined;
+}
+
+/**
+ * Fetch the on-chain Channel account and assert its decoded fields match
+ * what the session expects. The instruction-level binding
+ * ({@link verifyOpenTx} / {@link verifyTopUpTx}) proves the transaction
+ * *contained* a valid open/top_up; this proves the resulting *account
+ * state* on-chain is what the server is about to trust — catching a
+ * channel that was closed, re-opened with different authority, or whose
+ * deposit diverges from the asserted amount (e.g. a racing top-up).
+ *
+ * The account MUST be owned by the payment-channels program, so a
+ * look-alike account crafted under a different program cannot satisfy
+ * the field checks via forged bytes.
+ */
+export async function verifyChannelAccountState(args: {
+    readonly channelId: string;
+    readonly expected: VerifyChannelStateExpected;
+    readonly rpc: GetAccountInfoRpc;
+}): Promise<void> {
+    const { expected } = args;
+    const info = await args.rpc
+        .getAccountInfo(address(args.channelId), { commitment: 'confirmed', encoding: 'base64' })
+        .send();
+    const value = info.value;
+    if (!value) {
+        throw new Error(`verifyChannelAccountState: channel ${args.channelId} not found on-chain`);
+    }
+
+    const programIdStr = expected.programId ?? PAYMENT_CHANNELS_PROGRAM_ID;
+    if (value.owner !== undefined && value.owner !== programIdStr) {
+        throw new Error(
+            `verifyChannelAccountState: channel ${args.channelId} is owned by ${value.owner} != payment-channels program ${programIdStr}`,
+        );
+    }
+
+    // `encoding: 'base64'` account data is a `[data, 'base64']` tuple.
+    const raw = value.data;
+    const dataBase64 = Array.isArray(raw) ? (raw[0] as unknown) : raw;
+    if (typeof dataBase64 !== 'string' || dataBase64 === '') {
+        throw new Error('verifyChannelAccountState: unsupported getAccountInfo encoding (expected base64)');
+    }
+    const channel = getChannelDecoder().decode(getBase64Codec().encode(dataBase64));
+
+    if (channel.payee !== expected.payee) {
+        throw new Error(`verifyChannelAccountState: on-chain payee ${channel.payee} != expected ${expected.payee}`);
+    }
+    if (channel.mint !== expected.mint) {
+        throw new Error(`verifyChannelAccountState: on-chain mint ${channel.mint} != expected ${expected.mint}`);
+    }
+    if (channel.authorizedSigner !== expected.authorizedSigner) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain authorizedSigner ${channel.authorizedSigner} != expected ${expected.authorizedSigner}`,
+        );
+    }
+    if (channel.deposit !== expected.deposit) {
+        throw new Error(
+            `verifyChannelAccountState: on-chain deposit ${channel.deposit} != expected ${expected.deposit}`,
+        );
+    }
+    if (expected.payer !== undefined && channel.payer !== expected.payer) {
+        throw new Error(`verifyChannelAccountState: on-chain payer ${channel.payer} != expected ${expected.payer}`);
     }
 }
 
