@@ -20,6 +20,13 @@ const (
 // transaction may carry. Matches the Rust verifier's bound.
 const MaxComputeUnitPriceMicroLamports uint64 = 5_000_000
 
+// findATA is the associated-token-address derivation used by the structural
+// verifier. It is a package-level indirection over the golden-tested helper so
+// tests can force the (otherwise effectively-infallible) derivation to error
+// and confirm the fee-payer-ATA guard fails closed. Production code never
+// reassigns it.
+var findATA = solanatx.FindAssociatedTokenAddressWithProgram
+
 // VerifyError carries a canonical x402 reason code plus a human
 // message. The settle path surfaces Code verbatim as the
 // PaymentError.Code, matching the Rust verifier's specific
@@ -209,8 +216,17 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
 			"fee-payer is the transfer authority or funds source")
 	}
-	feePayerATA, err := solanatx.FindAssociatedTokenAddressWithProgram(req.FeePayer, mint, prog)
-	if err == nil && source.Equals(feePayerATA) {
+	// A derivation failure here must fail closed: if the fee-payer's ATA
+	// cannot be computed, the drain guard could not be evaluated, so the
+	// transaction is rejected rather than silently letting it through. The
+	// derivation is effectively infallible in practice, matching the Rust
+	// reference helper.
+	feePayerATA, err := findATA(req.FeePayer, mint, prog)
+	if err != nil {
+		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+			"fee-payer funds-source guard could not be evaluated")
+	}
+	if source.Equals(feePayerATA) {
 		return VerifyFail("invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
 			"fee-payer is the transfer authority or funds source")
 	}
@@ -218,7 +234,12 @@ func verifyTransfer(ix solana.CompiledInstruction, keys solana.PublicKeySlice, r
 		return VerifyFail("invalid_exact_svm_payload_mint_mismatch",
 			fmt.Sprintf("mint mismatch: got %s want %s", mint, req.Mint))
 	}
-	expectedDest, err := solanatx.FindAssociatedTokenAddressWithProgram(req.PayTo, req.Mint, req.TokenProgram)
+	// Derive the expected recipient ATA from the instruction's resolved token
+	// program (prog), not the advertised req.TokenProgram: a route may accept
+	// either token program, and the canonical recipient rule keys off the
+	// program the transfer actually runs under. Matches the Rust/TS/Ruby
+	// verifiers.
+	expectedDest, err := findATA(req.PayTo, req.Mint, prog)
 	if err != nil {
 		return fmt.Errorf("x402: derive recipient ATA: %w", err)
 	}
