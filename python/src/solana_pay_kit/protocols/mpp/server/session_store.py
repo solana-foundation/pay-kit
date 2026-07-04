@@ -349,8 +349,33 @@ class MemoryChannelStore(ChannelStore):
                 entry = _ChannelLockEntry()
                 self._locks[channel_id] = entry
             entry.refs += 1
-        await entry.lock.acquire()
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            # A cancellation (client disconnect / timeout) or any other
+            # exception while queued on a contended lock must not leak the ref
+            # bumped above: undo it and evict the entry when no holder or waiter
+            # remains, then re-raise so cancellation/KeyboardInterrupt/SystemExit
+            # still propagate. asyncio.Lock.acquire never returns the lock held
+            # to a cancelled waiter, so nothing needs releasing here. Shield the
+            # bookkeeping so a second cancellation cannot interrupt the ``_mu``
+            # re-acquisition and re-leak the ref we are undoing.
+            await asyncio.shield(self._drop_ref(channel_id, entry))
+            raise
         return entry
+
+    async def _drop_ref(self, channel_id: str, entry: _ChannelLockEntry) -> None:
+        """Decrement ``entry.refs`` under ``_mu`` and evict the map entry once no
+        holder or waiter remains.
+
+        A late acquirer may have replaced a fully-evicted entry with a fresh one,
+        so eviction is guarded by identity: only delete the map slot when it
+        still points at *this* entry.
+        """
+        async with self._mu:
+            entry.refs -= 1
+            if entry.refs == 0 and self._locks.get(channel_id) is entry:
+                del self._locks[channel_id]
 
     async def _release_channel_lock(self, channel_id: str, entry: _ChannelLockEntry) -> None:
         """Release a lock taken by :meth:`_acquire_channel_lock` and evict the
@@ -359,10 +384,12 @@ class MemoryChannelStore(ChannelStore):
         seen.
         """
         entry.lock.release()
-        async with self._mu:
-            entry.refs -= 1
-            if entry.refs == 0 and self._locks.get(channel_id) is entry:
-                del self._locks[channel_id]
+        # Shield the refcount bookkeeping: a cancellation landing on the ``_mu``
+        # re-acquisition (client disconnect / timeout) must not orphan the entry
+        # between ``lock.release()`` and the ``refs`` decrement. The shielded
+        # task runs to completion even when this coroutine is cancelled; the
+        # ``CancelledError`` still propagates to the caller afterwards.
+        await asyncio.shield(self._drop_ref(channel_id, entry))
 
     async def get_channel(self, channel_id: str) -> ChannelState | None:
         async with self._mu:
