@@ -14,6 +14,7 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 
+	"github.com/solana-foundation/pay-kit/go/paycore/solanatx"
 	generated "github.com/solana-foundation/pay-kit/go/protocols/programs/paymentchannels"
 )
 
@@ -237,19 +238,19 @@ func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, er
 		treasury = TreasuryOwner()
 	}
 
-	channelToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Channel, params.Mint, params.TokenProgram)
+	channelToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Channel, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive channel token account: %w", err)
 	}
-	payerToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
+	payerToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Payer, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive payer token account: %w", err)
 	}
-	payeeToken, _, err := solana.FindAssociatedTokenAddressWithProgram(params.Payee, params.Mint, params.TokenProgram)
+	payeeToken, err := solanatx.FindAssociatedTokenAddressWithProgram(params.Payee, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive payee token account: %w", err)
 	}
-	treasuryToken, _, err := solana.FindAssociatedTokenAddressWithProgram(treasury, params.Mint, params.TokenProgram)
+	treasuryToken, err := solanatx.FindAssociatedTokenAddressWithProgram(treasury, params.Mint, params.TokenProgram)
 	if err != nil {
 		return nil, fmt.Errorf("derive treasury token account: %w", err)
 	}
@@ -261,7 +262,7 @@ func BuildDistributeInstruction(params DistributeParams) (solana.Instruction, er
 	entries := make([]generated.DistributionEntry, 0, len(params.Recipients))
 	recipientTokenAccounts := make([]*solana.AccountMeta, 0, len(params.Recipients))
 	for _, entry := range params.Recipients {
-		recipientToken, _, err := solana.FindAssociatedTokenAddressWithProgram(entry.Recipient, params.Mint, params.TokenProgram)
+		recipientToken, err := solanatx.FindAssociatedTokenAddressWithProgram(entry.Recipient, params.Mint, params.TokenProgram)
 		if err != nil {
 			return nil, fmt.Errorf("derive recipient token account for %s: %w", entry.Recipient, err)
 		}
