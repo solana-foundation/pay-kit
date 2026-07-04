@@ -40,7 +40,15 @@ jobs:
             github.com/solana-foundation/pay-kit/go/protocols/x402/client \
             -coverprofile=coverage.out \
             -covermode=atomic
-          ./scripts/check_coverage.sh coverage.out 91
+          # Args: <profile> <aggregate floor> <per-file floor>. The per-file
+          # floor sits just under the current lowest shipped file so a single
+          # weak file cannot hide behind inflated easy ones (mirrors the
+          # Rust/TS per-file gates). Raise a file's coverage rather than
+          # lowering this floor.
+          ./scripts/check_coverage.sh coverage.out 91 75
+      - name: Check coverage gate enforces the per-file floor
+        working-directory: go
+        run: ./scripts/check_coverage_test.sh
       - name: Run all Go packages
         working-directory: go
         env:
@@ -236,7 +244,10 @@ jobs:
           done
       - name: Install HTML dependencies & Playwright
         working-directory: html
-        run: npm install && npx playwright install chromium
+        # Frozen, script-free install: the browser download runs via the
+        # explicit `npx playwright install`, and esbuild resolves its platform
+        # binary from @esbuild/<platform> without a postinstall script.
+        run: npm ci --ignore-scripts && npx playwright install chromium
       - name: Run Playwright tests (Go playground)
         working-directory: html
         run: FORTUNE_PATH=/api/v1/fortune npm run test:e2e:go
