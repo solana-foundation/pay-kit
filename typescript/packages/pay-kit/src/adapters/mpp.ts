@@ -1,4 +1,4 @@
-import { resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
+import { guardChallengeValue, resolveStablecoinMint, TOKEN_PROGRAM } from '@solana/mpp';
 import { Mppx, solana } from '@solana/mpp/server';
 import { Receipt } from 'mppx';
 
@@ -71,6 +71,16 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
         let handler = handlers.get(key);
         if (!handler) {
             const signer = config.operator.feePayer ? { signer: config.operator.signer.signer } : {};
+            // `realm` and `description` cross into mppx's raw (unescaped)
+            // WWW-Authenticate serializer as quoted-string auth-params. Guard
+            // them at the boundary: a CR/LF is a fail-fast configuration error
+            // (rejected here, when the handler is built, not as a per-request
+            // header-construction 500), and a quote/backslash is escaped so the
+            // emitted header round-trips through the client's `deserialize`.
+            const realm = guardChallengeValue('realm', config.mpp.realm);
+            // Preserve the original truthy gating (empty/undefined description is
+            // omitted); only a present, non-empty description is guarded/emitted.
+            const description = gate.description ? guardChallengeValue('description', gate.description) : undefined;
             if (gate.subscription) {
                 const { periodCount, periodUnit, planId, puller } = gate.subscription;
                 const mppx = Mppx.create({
@@ -89,14 +99,14 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             ...signer,
                         }),
                     ],
-                    realm: config.mpp.realm,
+                    realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
                 handler = request =>
                     mppx.subscription({
                         amount: totalAmount(gate).toString(),
                         currency: mint,
-                        ...(gate.description ? { description: gate.description } : {}),
+                        ...(description !== undefined ? { description } : {}),
                         ...(gate.externalId ? { externalId: gate.externalId } : {}),
                     })(request);
             } else {
@@ -114,20 +124,24 @@ export function createMppAdapter(config: PayKitConfig): ProtocolAdapter {
                             ...(config.replayStore ? { store: config.replayStore } : {}),
                         }),
                     ],
-                    realm: config.mpp.realm,
+                    realm,
                     secretKey: config.mpp.challengeBindingSecret,
                 });
-                handler = request => mppx.charge(optionsFor(gate))(request);
+                handler = request => mppx.charge(optionsFor(gate, description))(request);
             }
             handlers.set(key, handler);
         }
         return handler;
     }
 
-    function optionsFor(gate: Gate) {
+    // `description` is the already-guarded (CR/LF-rejected, quote/backslash-
+    // escaped) value from `handlerFor`; `externalId` flows into the base64url
+    // `request` param and on-chain memos, never a quoted-string header field, so
+    // it needs no header escaping.
+    function optionsFor(gate: Gate, description: string | undefined) {
         return {
             amount: totalAmount(gate).toString(),
-            ...(gate.description ? { description: gate.description } : {}),
+            ...(description !== undefined ? { description } : {}),
             ...(gate.externalId ? { externalId: gate.externalId } : {}),
             ...(config.mpp.expiresIn > 0
                 ? { expires: new Date(Date.now() + config.mpp.expiresIn * 1000).toISOString() }

@@ -80,6 +80,36 @@ function escapeQuotedString(value: string): string {
 }
 
 /**
+ * Value-level guard for a single challenge-bound string that will cross into
+ * `mppx`'s raw (unescaped) `serialize` as a quoted-string auth-param — e.g. a
+ * gate `description` or `realm` handed to `Mppx.create` / a charge's per-request
+ * options.
+ *
+ * mppx interpolates such values verbatim into the `WWW-Authenticate` header, so:
+ *   - a carriage-return / newline would split the emitted header (a
+ *     header-injection surface). We reject it outright, throwing the same
+ *     message shape the header-formatting guard uses. Callers apply this at
+ *     configuration time so the failure is a fail-fast error, not a per-request
+ *     header-construction 500.
+ *   - a backslash / double-quote would break the quoted string and truncate the
+ *     value on the client's escape-aware `deserialize`. We escape both so the
+ *     emitted header stays parseable and round-trips losslessly.
+ *
+ * The returned value is escaped exactly once; it must NOT be fed through the
+ * guarded {@link serialize} afterwards, which would double-escape it.
+ *
+ * @param field - The auth-param name, used only for the error message.
+ * @param value - The raw string to guard.
+ * @returns The escaped value, safe to interpolate into a quoted-string param.
+ */
+export function guardChallengeValue(field: string, value: string): string {
+    if (/[\r\n]/.test(value)) {
+        throw new Error(`challenge field "${field}" must not contain a carriage-return or newline`);
+    }
+    return escapeQuotedString(value);
+}
+
+/**
  * Produces the serialize-input clone: rejects CR/LF in any quoted-string field,
  * then escapes backslash / double-quote so the emitted header round-trips
  * through mppx's escape-aware `deserialize`. mppx's raw `serialize` does
