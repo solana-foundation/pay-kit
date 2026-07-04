@@ -58,6 +58,10 @@ def adapter_env() -> dict[str, str]:
         "MPP_HARNESS_AMOUNT": "1000",
         "MPP_HARNESS_PAY_TO": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
         "MPP_HARNESS_FEE_PAYER_SECRET_KEY": _fake_keypair_json(),
+        # The charge server enforces a >=32-byte HMAC secret at boot, so the
+        # adapter must be given one explicitly rather than falling back to the
+        # short default (matches the session default in server.py).
+        "MPP_HARNESS_SECRET_KEY": "mpp-harness-secret-key-with-32b-pad",
     }
 
 
