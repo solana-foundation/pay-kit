@@ -212,11 +212,14 @@ export async function configure(params: ConfigureParams = {}): Promise<PayKitCon
         ? resolveChallengeBindingSecret(network, params.mpp?.challengeBindingSecret)
         : (params.mpp?.challengeBindingSecret ?? '');
 
-    // Replay protection is only meaningful when MPP charge is accepted; an
-    // x402-only server keeps whatever the caller passed (may be undefined).
-    const replayStore = accept.includes('mpp')
-        ? resolveReplayStore(network, params.replayStore)
-        : params.replayStore;
+    // Replay protection is meaningful for every paid protocol: an x402-only
+    // server needs the same fail-closed store as MPP charge, otherwise it would
+    // silently fall back to a process-local map and accept replayed payments off
+    // localnet. Resolve for both x402 and mpp (in practice, any accepted protocol).
+    const replayStore =
+        accept.includes('mpp') || accept.includes('x402')
+            ? resolveReplayStore(network, params.replayStore)
+            : params.replayStore;
 
     return Object.freeze({
         accept: Object.freeze([...accept]),
