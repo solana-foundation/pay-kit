@@ -109,7 +109,7 @@ export function createX402ExactAdapter(config: PayKitConfig): ProtocolAdapter {
     const reserveStore =
         config.replayStore !== undefined && isReservingStore(config.replayStore) ? config.replayStore : undefined;
     const consumedPayloads = new Map<string, number>();
-    const CONSUMED_PREFIX = 'x402-exact:consumed:';
+    const CONSUMED_PREFIX = 'x402-svm-exact:consumed:';
 
     function pruneConsumed(now: number): void {
         // Insertion order is timestamp order (keys are only ever added), so

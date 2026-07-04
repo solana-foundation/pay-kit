@@ -711,7 +711,7 @@ impl X402 {
         // if the confirm poll times out after the transaction has already
         // landed, the resolved fee-payer signature is still consumed and a
         // retry of the same envelope cannot trigger a second broadcast. The
-        // pull path shares the `solana-x402-exact:consumed:` keyspace with the
+        // pull path shares the `x402-svm-exact:consumed:` keyspace with the
         // push (Signature) path, so one on-chain settlement is single-use
         // regardless of which arm presented it.
         let broadcast_sig = self
@@ -773,7 +773,7 @@ impl X402 {
                 // Provably not landed: release the reservation so a legitimate
                 // client can retry with the same credential. This is the ONLY
                 // path that releases; everything else keeps the marker.
-                let consumed_key = format!("solana-x402-exact:consumed:{signature_str}");
+                let consumed_key = format!("x402-svm-exact:consumed:{signature_str}");
                 let _ = self.store.delete(&consumed_key).await;
                 Err(Error::Rpc(msg))
             }
@@ -911,7 +911,7 @@ impl X402 {
     /// confirmed transaction cannot be replayed across requests. Returns
     /// [`Error::SignatureConsumed`] if the signature was already consumed.
     async fn consume_signature(&self, signature: &str) -> Result<(), Error> {
-        let consumed_key = format!("solana-x402-exact:consumed:{signature}");
+        let consumed_key = format!("x402-svm-exact:consumed:{signature}");
         let inserted = self
             .store
             .put_if_absent(&consumed_key, serde_json::json!(true))
@@ -2190,7 +2190,7 @@ mod tests {
     // reservation, the same envelope re-submitted after settlement re-broadcasts
     // and serves again — one payment serves unlimited requests. These tests pin
     // the reservation: it is taken between broadcast and confirmation, keyed on
-    // the resolved fee-payer signature, in the same `solana-x402-exact:consumed:`
+    // the resolved fee-payer signature, in the same `x402-svm-exact:consumed:`
     // keyspace the Signature (push) arm uses.
 
     /// A bare, clonable transfer transaction with the fee payer at index 0 and a

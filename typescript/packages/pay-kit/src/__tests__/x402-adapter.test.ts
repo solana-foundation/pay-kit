@@ -517,7 +517,7 @@ describe('createX402ExactAdapter', () => {
 
         await adapter.verifyAndSettle(gate, paidRequest('STORE_CRED'));
         expect(reserving.calls.reserve).toHaveLength(1);
-        expect(reserving.calls.reserve[0]!.key.startsWith('x402-exact:consumed:')).toBe(true);
+        expect(reserving.calls.reserve[0]!.key.startsWith('x402-svm-exact:consumed:')).toBe(true);
         expect(reserving.calls.reserve[0]!.ttlSeconds).toBe(300);
     });
 

@@ -23,7 +23,7 @@ import (
 // consumedPrefix namespaces the replay markers this adapter writes into the
 // shared store so they never collide with other schemes' keys. Mirrors the
 // MPP charge server's consumed-signature namespace.
-const consumedPrefix = "x402-exact:consumed:"
+const consumedPrefix = "x402-svm-exact:consumed:"
 
 type Adapter struct {
 	cfg               paykit.Config
