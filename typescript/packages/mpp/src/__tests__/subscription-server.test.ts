@@ -1131,3 +1131,188 @@ describe('subscription().verify() (push mode)', () => {
         }
     }
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// Activation replay guard is atomic (TOCTOU regression)
+// ══════════════════════════════════════════════════════════════════════
+
+describe('subscription().verify() activation replay guard (atomic)', () => {
+    function writeU64Le(buf: Uint8Array, offset: number, value: bigint) {
+        for (let i = 0; i < 8; i += 1) {
+            buf[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
+        }
+    }
+
+    /** Byte buffer for a SubscriptionDelegation that passes every terms check. */
+    function delegationAccountB64(subscriberAddress: string): string {
+        const data = new Uint8Array(1 + 32 * 3 + 8 + 32 + 32 + 8 + 8 + 8 + 8);
+        data.set(__testing.decodeBase58(subscriberAddress), 1);
+        data.set(__testing.decodeBase58(PLAN_ID), 1 + 32 * 3 + 8);
+        data.set(__testing.decodeBase58(MINT), 1 + 32 * 3 + 8 + 32);
+        writeU64Le(data, 1 + 32 * 3 + 8 + 32 + 32, 10_000_000n);
+        writeU64Le(data, 1 + 32 * 3 + 8 + 32 + 32 + 8, 720n);
+        writeU64Le(data, 1 + 32 * 3 + 8 + 32 + 32 + 8 + 8, 1737216000n);
+        writeU64Le(data, 1 + 32 * 3 + 8 + 32 + 32 + 8 + 8 + 8, 10_000_000n);
+        return Buffer.from(data).toString('base64');
+    }
+
+    function activationCredential(transaction: string) {
+        return {
+            challenge: {
+                id: 'test-challenge',
+                request: {
+                    amount: '10000000',
+                    currency: MINT,
+                    methodDetails: {
+                        decimals: 6,
+                        mint: MINT,
+                        network: 'devnet',
+                        planId: PLAN_ID,
+                        programId: SUBSCRIPTIONS_PROGRAM,
+                        puller: PULLER,
+                        tokenProgram: TOKEN_PROGRAM,
+                    },
+                    periodCount: '30',
+                    periodUnit: 'day',
+                    recipient: RECIPIENT,
+                },
+            },
+            payload: { transaction, type: 'transaction' },
+        };
+    }
+
+    test('two concurrent identical activations: exactly one succeeds, the other is rejected as consumed', async () => {
+        const { transaction, subscriberAddress } = await buildActivationTransactionBase64();
+        const accountB64 = delegationAccountB64(subscriberAddress);
+        const txSignature = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
+
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string };
+            switch (body.method) {
+                case 'simulateTransaction':
+                    return rpcSuccess({ value: { err: null, logs: [] } });
+                case 'sendTransaction':
+                    return rpcSuccess(txSignature);
+                case 'getSignatureStatuses':
+                    return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+                case 'getAccountInfo':
+                    return rpcSuccess({
+                        value: {
+                            data: [accountB64, 'base64'],
+                            executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
+                            rentEpoch: 0,
+                        },
+                    });
+                default:
+                    return rpcSuccess({});
+            }
+        };
+
+        // A single shared store across both concurrent verifications is what
+        // makes the consumed marker a shared resource they race for.
+        const store = Store.memory();
+        const method = subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            store,
+            tokenProgram: TOKEN_PROGRAM,
+        });
+
+        const run = () =>
+            method.verify!({
+                credential: activationCredential(transaction) as never,
+                request: {} as never,
+            });
+
+        const results = await Promise.allSettled([run(), run()]);
+        const fulfilled = results.filter(r => r.status === 'fulfilled');
+        const rejected = results.filter(r => r.status === 'rejected');
+
+        // The atomic upfront claim admits exactly one. Against the old
+        // get-then-put both would pass the check and both issue a receipt, so
+        // `rejected` would be empty and this assertion would fail.
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect((fulfilled[0] as PromiseFulfilledResult<{ status: string }>).value.status).toBe('success');
+        expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+            message: expect.stringContaining('Activation signature already consumed'),
+        });
+    });
+
+    test('a broadcast/confirmation failure after the claim releases the marker so a retry is not rejected as consumed', async () => {
+        const { transaction, subscriberAddress } = await buildActivationTransactionBase64();
+        const accountB64 = delegationAccountB64(subscriberAddress);
+        const txSignature = '5J8KKfgKBLPDoCSk7B7TwAdSP3KtkfxYGYQH52SVgyM5XQXfeaG3xH8E3uYmGNLcoNNgWp3JjPdvzNwM4ZmJyREq';
+
+        // First attempt: confirmation reports a definitive on-chain failure.
+        // Second attempt: the transaction confirms cleanly and terms match.
+        let attempt = 0;
+        globalThis.fetch = async (_input, init) => {
+            const body = JSON.parse(init?.body as string) as { method?: string };
+            switch (body.method) {
+                case 'simulateTransaction':
+                    return rpcSuccess({ value: { err: null, logs: [] } });
+                case 'sendTransaction':
+                    return rpcSuccess(txSignature);
+                case 'getSignatureStatuses':
+                    if (attempt === 0) {
+                        return rpcSuccess({
+                            value: [{ confirmationStatus: 'confirmed', err: { InstructionError: [0, 'Custom'] } }],
+                        });
+                    }
+                    return rpcSuccess({ value: [{ confirmationStatus: 'confirmed', err: null }] });
+                case 'getAccountInfo':
+                    return rpcSuccess({
+                        value: {
+                            data: [accountB64, 'base64'],
+                            executable: false,
+                            lamports: 0,
+                            owner: SUBSCRIPTIONS_PROGRAM,
+                            rentEpoch: 0,
+                        },
+                    });
+                default:
+                    return rpcSuccess({});
+            }
+        };
+
+        const store = Store.memory();
+        const method = subscription({
+            decimals: 6,
+            mint: MINT,
+            network: 'devnet',
+            periodCount: 30,
+            periodUnit: 'day',
+            planId: PLAN_ID,
+            puller: PULLER,
+            recipient: RECIPIENT,
+            rpcUrl: 'https://mock-rpc',
+            store,
+            tokenProgram: TOKEN_PROGRAM,
+        });
+
+        // First attempt fails during confirmation, after the marker was claimed.
+        await expect(
+            method.verify!({ credential: activationCredential(transaction) as never, request: {} as never }),
+        ).rejects.toThrow(/Transaction failed/);
+
+        // The marker must have been released, so an honest retry with the SAME
+        // activation signature is not bricked as "already consumed". Against a
+        // no-release implementation this second call would reject as consumed.
+        attempt = 1;
+        const receipt = await method.verify!({
+            credential: activationCredential(transaction) as never,
+            request: {} as never,
+        });
+        expect((receipt as { status: string }).status).toBe('success');
+    });
+});
