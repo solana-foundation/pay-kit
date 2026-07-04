@@ -248,7 +248,13 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	store := a.replayStore()
 	inserted, err := store.PutIfAbsent(ctx, consumedKey, true)
 	if err != nil {
-		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: err, Gate: req.Gate}
+		// A store I/O failure (e.g. a shared Redis outage) is NOT a replay: the
+		// credential's consumption state is simply unknown. Surface a distinct
+		// code so operators debugging an outage don't see honest clients told
+		// their credential was already spent (which could cause a client to
+		// discard a valid, unsettled credential). "signature_consumed" is
+		// reserved for the provably-already-reserved (!inserted) branch below.
+		return nil, &paykit.PaymentError{Code: "replay_store_error", Err: err, Gate: req.Gate}
 	}
 	if !inserted {
 		return nil, &paykit.PaymentError{Code: "signature_consumed", Err: errors.New("replay rejected"), Gate: req.Gate}
@@ -280,7 +286,25 @@ func (a *Adapter) VerifyAndSettle(req *paykit.AdapterRequest) (*paykit.Payment, 
 	// confirmation/verify timeout must not delete it and reopen the credential
 	// for a second submission while the original lands and double-pays.
 	cleanupConsumed = false
+	// Capture the blockhash validity window as of broadcast time. A fresh
+	// lastValidBlockHeight is an upper bound on the transaction's true expiry
+	// height (the client's blockhash is no newer than this fetch), so once the
+	// current height passes it the client's blockhash has provably expired and
+	// the transaction can never land. Using the upper bound keeps the
+	// not-landed release fail-closed: we may wait slightly longer than strictly
+	// necessary, never shorter.
+	lastValidBlockHeight := a.settlementValidityHeight(ctx)
 	if err := a.awaitConfirmation(ctx, signature); err != nil {
+		// Confirmation timed out. Do one definitive, evidence-based check: only
+		// when the signature is provably absent AND the blockhash is provably
+		// expired do we release the reservation so an honest client can rebuild
+		// and resubmit. On any ambiguity (landed, landed-but-failed, RPC error,
+		// blockhash still valid, or expiry unprovable) the marker is KEPT so a
+		// landed-but-unconfirmed settlement is never re-served (fail-closed).
+		// Mirrors the Rust exact pull path's not-landed release outcome.
+		if a.settlementNotLanded(ctx, signature, lastValidBlockHeight) {
+			_ = store.Delete(context.WithoutCancel(ctx), consumedKey)
+		}
 		return nil, &paykit.PaymentError{Code: "settlement_failed", Err: err, Gate: req.Gate}
 	}
 	respEnvelope := proto.SettlementResponse{
@@ -427,15 +451,32 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if err != nil {
 		return nil, fmt.Errorf("operator pubkey: %w", err)
 	}
-	cosignIdx := -1
-	for i, key := range tx.Message.AccountKeys {
-		if key.Equals(operator) && i < len(tx.Signatures) && tx.Signatures[i].IsZero() {
-			cosignIdx = i
-			break
-		}
-	}
-	if cosignIdx < 0 {
+	// The operator co-signs ONLY the fee-payer slot, which on Solana is always
+	// account key index 0. Pinning to slot 0 (rather than scanning for the
+	// operator key anywhere in the account list) closes the operator-signs-
+	// attacker-instruction path: a crafted transaction could place a different
+	// signer at index 0 and the operator's key at some later signer index, and
+	// a scan would then spend the operator's signature on a slot it never
+	// intended to authorize while leaving the real fee payer unsigned. Mirrors
+	// the Rust/TS index-0 pin.
+	keys := tx.Message.AccountKeys
+	if len(keys) == 0 || !keys[0].Equals(operator) {
+		// The operator is not this transaction's fee payer, so it has nothing to
+		// co-sign. Return the wire unchanged rather than signing an off-slot key.
 		return rawTx, nil
+	}
+	if len(tx.Signatures) == 0 || !tx.Signatures[0].IsZero() {
+		// Slot 0 is either absent or already filled (the operator or client
+		// already signed): nothing to do.
+		return rawTx, nil
+	}
+	// The signature array is serialized behind a compact-u16 (short-vec) length
+	// prefix. For fewer than 128 signatures that prefix is exactly one byte, so
+	// slot 0 begins at wire offset 1. With the fee payer pinned to index 0 the
+	// offset is constant, but assert the prefix width defensively so a future
+	// change that admits >=128 signers cannot silently mis-offset the write.
+	if len(tx.Signatures) >= 128 {
+		return nil, fmt.Errorf("signature count %d requires a multi-byte compact-u16 prefix; slot-0 offset assumption no longer holds", len(tx.Signatures))
 	}
 	msgBytes, err := tx.Message.MarshalBinary()
 	if err != nil {
@@ -448,7 +489,7 @@ func (a *Adapter) cosign(ctx context.Context, tx *solana.Transaction, rawTx []by
 	if len(signature) != 64 {
 		return nil, fmt.Errorf("operator signature length %d, want 64", len(signature))
 	}
-	offset := 1 + cosignIdx*64
+	const offset = 1 // one-byte short-vec prefix + slot index 0 (0*64).
 	if offset+64 > len(rawTx) {
 		return nil, errors.New("signature slot offset out of range")
 	}
@@ -488,6 +529,73 @@ func (a *Adapter) awaitConfirmation(ctx context.Context, signature solana.Signat
 		}
 	}
 	return fmt.Errorf("timed out confirming %s", signature)
+}
+
+// blockHeighter is the optional capability an RPC client exposes to report the
+// current block height. The concrete solana-go *rpc.Client satisfies it; test
+// doubles opt in only when they exercise the not-landed release path. The
+// exact adapter type-asserts a.rpc to this interface rather than widening the
+// shared proto.RPCClient contract, so an RPC without block-height support
+// simply keeps every reservation (fail-closed).
+type blockHeighter interface {
+	GetBlockHeight(ctx context.Context, commitment rpc.CommitmentType) (uint64, error)
+}
+
+// settlementValidityHeight returns lastValidBlockHeight for the blockhash the
+// server would hand out now, or 0 when it cannot be determined. Captured right
+// after broadcast, it is an upper bound on the transaction's true expiry
+// height. A zero return disables the not-landed release (the height comparison
+// can never prove expiry against 0), keeping the marker — fail-closed.
+func (a *Adapter) settlementValidityHeight(ctx context.Context) uint64 {
+	if a.rpc == nil {
+		return 0
+	}
+	resp, err := a.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
+	if err != nil || resp == nil || resp.Value == nil {
+		return 0
+	}
+	return resp.Value.LastValidBlockHeight
+}
+
+// settlementNotLanded reports whether the just-broadcast settlement is PROVABLY
+// not landed: the signature is absent from the node's recent history AND the
+// blockhash has provably expired (current height past lastValidBlockHeight).
+// Only that combination lets an honest client's dropped transaction be released
+// for resubmission. Every ambiguous outcome returns false so the reservation is
+// kept: a status lookup error (indeterminate), a landed or landed-but-failed
+// status (the tx occupied its slot), an unknown validity window, an
+// unsupported/erroring block-height RPC, or a still-valid blockhash. Mirrors the
+// Rust exact pull path's not-landed release, hardened with an explicit
+// blockhash-expiry gate so the double-pay protection cannot reopen while a
+// dropped-but-still-valid transaction could still land.
+func (a *Adapter) settlementNotLanded(ctx context.Context, signature solana.Signature, lastValidBlockHeight uint64) bool {
+	// Without a known validity window we cannot prove expiry: keep the marker.
+	if lastValidBlockHeight == 0 {
+		return false
+	}
+	// The RPC must expose block height for expiry to be provable.
+	bh, ok := a.rpc.(blockHeighter)
+	if !ok {
+		return false
+	}
+	// Definitive status lookup across the full transaction history. Any error,
+	// or a found (landed/landed-but-failed) status, keeps the reservation.
+	statuses, err := a.rpc.GetSignatureStatuses(ctx, true, signature)
+	if err != nil || statuses == nil || len(statuses.Value) == 0 {
+		return false
+	}
+	if statuses.Value[0] != nil {
+		// The signature is known to the node: it landed (or landed-but-failed).
+		// Either way the tx occupied its slot, so the credential stays consumed.
+		return false
+	}
+	// The signature is provably absent. Now require the blockhash to have
+	// expired so the transaction can never subsequently land.
+	height, err := bh.GetBlockHeight(ctx, rpc.CommitmentConfirmed)
+	if err != nil {
+		return false
+	}
+	return height > lastValidBlockHeight
 }
 
 func (a *Adapter) recentBlockhash() (string, error) {
