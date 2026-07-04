@@ -28,6 +28,7 @@ import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
 import { withKeyLock } from './keyLock.js';
 import { checkNetworkBlockhash } from './network-check.js';
+import { claimConsumed } from './replayReserve.js';
 
 /**
  * Creates a Solana `charge` method for usage on the server.
@@ -805,7 +806,14 @@ async function verifyTransaction(
         // Audit #3: reserve the signature BETWEEN broadcast and confirmation
         // polling. A tx that lands during a confirmation-poll timeout must not be
         // re-broadcast (double charge) or replayed, so reserve before polling.
-        await store.put(consumedKey, true);
+        // `claimConsumed` is an atomic put-if-absent when the Store supports it
+        // (cross-process safe across replicas), else a plain put guarded by the
+        // lock; a false result means another process claimed the same signature
+        // post-broadcast, so reject rather than settle twice (Solana dedups the
+        // identical signature on-chain, so at most one transfer occurred).
+        if (!(await claimConsumed(store, consumedKey))) {
+            throw new Error('Transaction signature already consumed');
+        }
 
         try {
             // Wait for on-chain confirmation (with a definitive post-timeout check).
@@ -872,26 +880,23 @@ async function verifySignature(
     const consumedKey = `solana-charge:consumed:${signature}`;
 
     // Replay prevention. The consumed-check, on-chain verify, and consumed-mark
-    // must run atomically per signature: `mppx`'s Store has no atomic
+    // must run atomically per signature: `mppx`'s base Store has no atomic
     // put-if-absent, so without serialization two concurrent requests carrying
     // the same confirmed signature both pass the check, both verify the same
     // real transaction, and both settle (one payment, two accesses). A cheap
     // read outside the lock rejects obvious replays without queueing; the
     // authoritative check-and-mark runs inside `withKeyLock`.
     //
-    // Scope: single Node process. Multi-process/replica deployments sharing one
-    // Store must back the consumed marker with an atomic reserve. See SECURITY.md.
+    // Cross-process: withKeyLock only serializes within one Node process. When
+    // the Store implements the atomic reserve capability (see replayReserve),
+    // `claimConsumed` closes the marker with a put-if-absent that is also safe
+    // across replicas; otherwise it degrades to get/put guarded by the lock.
+    // Multi-replica deployments MUST supply a reserving store. See SECURITY.md.
     if (await store.get(consumedKey)) {
         throw new Error('Transaction signature already consumed');
     }
 
     return await withKeyLock(consumedKey, async () => {
-        // Re-check inside the lock: a concurrent request in this process may
-        // have consumed the signature since the read above.
-        if (await store.get(consumedKey)) {
-            throw new Error('Transaction signature already consumed');
-        }
-
         // Fetch and verify the transaction on-chain.
         const tx = await fetchTransaction(rpcUrl, signature);
         if (!tx) throw new Error('Transaction not found or not yet confirmed');
@@ -900,9 +905,13 @@ async function verifySignature(
         const instructions = tx.transaction.message.instructions;
         await verifyInstructions(instructions, challenge, recipient);
 
-        // Mark consumed only after a successful verify, so a failed verify never
-        // burns a legitimately-retryable signature.
-        await store.put(consumedKey, true);
+        // Atomically claim the signature only after a successful verify, so a
+        // failed verify never burns a legitimately-retryable signature. A
+        // false result means another process claimed it during our verify —
+        // reject rather than settle a second time.
+        if (!(await claimConsumed(store, consumedKey))) {
+            throw new Error('Transaction signature already consumed');
+        }
 
         return Receipt.from({
             method: 'solana',

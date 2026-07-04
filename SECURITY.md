@@ -32,6 +32,17 @@ persistent store, and ideally one that offers an atomic reserve (for example Red
 `SET key value NX`) so the check-and-mark is atomic across processes rather than
 merely serialized in one.
 
+The Go, Python, and Rust stores expose an atomic put-if-absent
+(`PutIfAbsent` / `put_if_absent`) that the charge and x402 verifiers use directly,
+so a shared backing store there is cross-process safe. The TypeScript charge guards
+use the in-process `withKeyLock` by default, but detect and prefer an atomic
+reserve when the `Store` implements one: a store exposing
+`reserve(key): Promise<boolean>` (a put-if-absent; see `ReservingStore` /
+`isReservingStore` exported from `@solana/mpp/server`) makes the consumed marker
+cross-process safe like the other SDKs. Supply a reserving store (e.g. a Redis
+wrapper mapping `reserve` to `SET key val NX`) for any multi-replica TypeScript
+deployment.
+
 The TypeScript `configure()` enforces this by failing closed outside localnet when
 no `replayStore` is provided; set `PAY_KIT_ALLOW_INMEMORY_REPLAY_STORE=1` only if
 you accept single-process replay scope.
