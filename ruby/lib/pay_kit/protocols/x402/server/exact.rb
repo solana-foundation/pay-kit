@@ -448,7 +448,7 @@ module PayKit::Protocols::X402
         # landed); it is released only on a definitively-never-landed
         # outcome (surfaced by the confirmer as `Error::TransactionNotFound`)
         # so a corrected resubmission can broadcast again. Mirrors the MPP
-        # charge order and the sibling exact ports (Rust H-1, Go M-2).
+        # charge order and the sibling Rust and Go exact ports.
         # Pick the settlement-response header for a credential by its wire
         # version: a v1 `X-PAYMENT` credential gets the legacy
         # `X-PAYMENT-RESPONSE` receipt header, a v2 credential gets
