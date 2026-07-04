@@ -754,7 +754,7 @@ impl X402 {
                     return Ok(());
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
 
         // The polling RPC may be lagging behind an endpoint that hasn't observed
